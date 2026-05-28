@@ -1,0 +1,13 @@
+{
+  "patina": "0.71.0",
+  "components": {
+    "claude-interface": {
+      "version": "0.7.0",
+      "description": "Claude AI session management and context generation"
+    },
+    "gemini-interface": {
+      "version": "0.1.0",
+      "description": "Gemini AI context file generation"
+    }
+  }
+}
