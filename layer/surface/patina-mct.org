@@ -1,0 +1,268 @@
+#+title: Patina MCT feature map
+#+created: 2026-05-28
+#+status: draft
+#+source-legacy-repo: /Users/nicabar/Projects/Sandbox/AI/RUST/patina
+
+* Purpose
+
+This document starts the slow design map for the new greenfield ~patina-mct~ product.
+
+The current integrated Patina repository is *reference material*, not the source tree to move wholesale:
+
+- Legacy integrated repo: [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina][patina integrated repo]]
+- New MCT repo: [[file:/Users/nicabar/Projects/Patina/patina-mct][patina-mct]]
+
+The intent is to identify existing daemon/Mother/MCT-shaped features, decide what belongs in the clean MCT daemon, and leave Patina Belief features for the future ~patina-belief~ product.
+
+* Agreed answers so far
+
+These are the answers already established in conversation. Future sections should preserve this discipline: state the answer, why it is the answer, and what evidence or agreement supports it.
+
+| Answer | Status | Evidence / source |
+|--------+--------+-------------------|
+| Build ~patina-mct~ greenfield; do not move/copy the integrated repo wholesale. | agreed | User: “this is not about moving its about building new and clean” |
+| Treat the current integrated repo as legacy/reference material for MCT design. | agreed | User proposed three new repos and greenfield build order. |
+| Build order is MCT first, then SDK, then Belief. | agreed | User: “my order of building is mct first .. then once this is clean and ready sdk .. and then belief” |
+| MCT owns the launcher behavior currently surfaced as ~patina ai~. | agreed | User: “mct will also be the launcher 'patina ai' does this now” |
+| Belief is the later product for ~scry~, ~oxidize~, ~assay~, and belief-system behavior. | agreed | User: “patina is teh belief system that has scry oxidize assay etc” |
+| MCT is the Mother/Child/Toy infrastructure product. | agreed | User: “mother is the mct infra” |
+
+* Product boundary
+
+** MCT owns
+
+MCT is the Mother/Child/Toy runtime and private application fabric.
+
+It should own:
+
+- Mother daemon lifecycle
+- transports and control-plane API
+- child registry and child lifecycle
+- toy grants and capability policy
+- WIT/WASI child runtime and toy capability model
+- bridge/harness adapters: JVM bridge for banking infrastructure, process harnesses for protocol proof
+- pando/application composition
+- secrets/control-plane authority
+- mandatory observability and view buffers
+- HITL / AI interface launcher and control
+- Iroh p2p identity and Mother-to-Mother transport as v0 direction; private-cloud/cluster policy later
+
+** MCT does not own, initially
+
+These belong to ~patina-belief~ or other products, and should only attach to MCT through an app/child/protocol boundary:
+
+- ~scry~ retrieval internals
+- ~oxidize~ embeddings
+- ~assay~ structural knowledge queries
+- scrape/index pipelines
+- belief graph semantics
+- Patina project database federation
+- spec/lake/doctor builtins as hardcoded daemon internals
+
+* Design stance
+
+This is *not* an extraction checklist.
+
+MCT must lock into the layer/core values:
+
+- =dependable-rust=: small stable public APIs, private internals, one-sentence module jobs.
+- =adapter-pattern=: traits at external-system edges only when the seam is real; honest signatures and domain types.
+- =unix-philosophy=: compose focused modules/tools instead of a monolith.
+- =safety-boundaries=: explicit authority, fail-closed behavior, no surprising side effects.
+- =scalpel-commits=: build in small reviewable slices.
+
+Instead:
+
+1. Map the existing integrated features.
+2. Decide whether each concept belongs in clean MCT.
+3. Rebuild the minimal version in this repo only when the design is clear.
+4. Use old code as reference, not cargo-cult source.
+5. Apply the Jon Gjengset/Rust systems lens before implementation: typed seams, honest dependencies, explicit state machines, narrow public API, private internals.
+6. Avoid boiling the ocean: Iroh v0, JVM bridge, WIT/WASI children/toys, observability, and Clojure-above-MCT must be modular slices, not one mega-build.
+
+* Current integrated daemon shape
+
+Today the daemon is spread across the integrated repo:
+
+| Area | Existing code |
+|------+---------------|
+| CLI entry | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/mod.rs][src/commands/mother/mod.rs]] |
+| Main daemon state | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/daemon.rs][src/commands/mother/daemon.rs]] |
+| Startup assembly | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/daemon/startup.rs][src/commands/mother/daemon/startup.rs]] |
+| Request dispatch | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/daemon/dispatch.rs][src/commands/mother/daemon/dispatch.rs]] |
+| Router/API shell | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/http_routes.rs][mother/src/http_routes.rs]], [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/http_api.rs][mother/src/http_api.rs]] |
+| Transport/bootstrap | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/daemon_bootstrap_config.rs][mother/src/daemon_bootstrap_config.rs]], [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/daemon_runner.rs][mother/src/daemon_runner.rs]] |
+| Child trait/registry | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/runtime.rs][mother/src/runtime.rs]], [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/registry.rs][mother/src/registry.rs]] |
+| WASM child runtime | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/child][src/child/]] |
+| Child loader | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/loader.rs][src/commands/mother/loader.rs]] |
+| Store/state | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/state/mod.rs][mother/src/state/mod.rs]] |
+| Child registry control plane | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/child_registry][mother/src/child_registry/]], [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/children.rs][src/commands/mother/children.rs]] |
+| Pando/composition | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/pando.rs][mother/src/pando.rs]], [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/daemon/composition.rs][src/commands/mother/daemon/composition.rs]] |
+| Secrets authority | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/secrets_authority_api.rs][mother/src/secrets_authority_api.rs]], [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/secrets_authority_backend][mother/src/secrets_authority_backend/]] |
+| View buffers | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/view_buffer][mother/src/view_buffer/]], [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/http_api/view_buffer.rs][mother/src/http_api/view_buffer.rs]] |
+| Interface launcher/control | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/ai][src/commands/ai/]], [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/interface][src/commands/interface/]], [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/daemon/interface_control.rs][src/commands/mother/daemon/interface_control.rs]] |
+
+* Feature disposition answers
+
+These rows should read as answers, not vibes. The discipline is:
+
+- =Answer= says what we would do in clean MCT.
+- =Agreement= says whether the answer is already agreed, proposed for discussion, or still needs study.
+- =Evidence= links to the integrated repo surface that made the question concrete.
+- =Reason= states the product-boundary logic in plain language.
+
+Answer vocabulary:
+
+- =bring= :: belongs in clean MCT, rebuild intentionally.
+- =bring-minimal= :: belongs, but start smaller than old implementation.
+- =defer= :: belongs in MCT, but not the first daemon slice.
+- =bridge= :: attach through a child/app/protocol boundary rather than hardcoding into MCT.
+- =belief= :: belongs to the future ~patina-belief~ product.
+- =study= :: no answer yet; read and discuss before deciding.
+
+Agreement vocabulary:
+
+- =agreed= :: directly established in conversation or already accepted as a product boundary.
+- =proposed= :: current answer offered for review.
+- =study= :: intentionally unresolved.
+
+| Feature | Answer | Agreement | Evidence | Reason |
+|---------+--------+-----------+----------+--------|
+| Daemon bootstrap | bring-minimal | proposed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/daemon_bootstrap_config.rs][daemon_bootstrap_config.rs]], [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/daemon/startup.rs][startup.rs]] | MCT needs to run as a daemon, but should start UDS-first and simpler than current integrated startup. |
+| Transport server | bring-minimal | proposed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/http_daemon.rs][http_daemon.rs]], [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/socket.rs][socket.rs]], DuckDB Quack reference | MCT needs a local control plane; Quack suggests HTTP may be valuable because the world has optimized it deeply, but exact HTTP placement remains open. |
+| Iroh p2p transport | bring | agreed | architecture overview draft; cached reference repo [[file:/Users/nicabar/.patina/cache/repos/n0-computer/iroh][n0-computer/iroh]] | Iroh is the v0 Mother-to-Mother building system and should be production-shaped early: persistent node identity, endpoint lifecycle, relay/discovery, peer admission, ALPN protocol, direct streams, observations, and local multi-node tests. Full private-cloud and cluster policy can remain later. |
+| Router/API | bring-minimal | proposed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/http_routes.rs][http_routes.rs]], [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/http_api.rs][http_api.rs]] | MCT needs routes, but the old ~ApiRuntime~ is too broad and should be split by domain. |
+| Readiness/health | bring | proposed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/daemon/health.rs][health.rs]] | A daemon/control plane needs observable readiness for itself, runtimes, store, and children. |
+| Central daemon state | bring-minimal | proposed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/daemon.rs][daemon.rs]] | Clean MCT needs a daemon brain, but not the current all-in-one ~ServerState~ shape. |
+| Child trait | bring | agreed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/runtime.rs][runtime.rs]] | Mother/Child/Toy infrastructure requires a child boundary; in the clean design, child primarily means a WASM/WASI component governed by WIT contracts. |
+| Child registry runtime | bring | agreed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/registry.rs][registry.rs]] | MCT must know what children are active and route calls to them. Avoid WASM-only assumptions. |
+| Child package registry | bring | proposed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/child_registry][mother/src/child_registry/]], [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/children.rs][children.rs]] | MCT is the control plane for child approval/install/assignment; first version can be local-only. |
+| Child install/assignment | bring | proposed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/children.rs][children.rs]] | Explicit assignment keeps child activation governed instead of ambient. |
+| Process runtime | bring-minimal | proposed | no direct old equivalent | Process child is the simplest runtime to prove the child protocol without Wasmtime or JVM complexity. |
+| JVM bridge | bring | agreed | architecture overview draft, no direct old equivalent | Existing banking JVM infrastructure must connect through a first-class bridge into the WIT/WASI child/toy world so migration can happen over time; the JVM is not kernel internals. |
+| Clojure interface layer | defer | agreed direction | architecture overview draft, no direct old equivalent | Clojure becomes the interface/orchestration layer above MCT after the kernel is solid. |
+| WASM runtime | bring | agreed direction | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/child/internal][src/child/internal/]] | WASM/WIT/WASI is the design center: children are WASM/WASI components and exact runtime/component model should be worked out as MCT is built. |
+| Toy grant model | bring | agreed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/child/internal/mod.rs][child/internal/mod.rs]], [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/toys.rs][toys.rs]] | Toys/capability grants are WIT/WASI host capability contracts and the “T” in MCT; Mother grants them explicitly. |
+| Toy registry CLI | bring-minimal | proposed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/toys.rs][toys.rs]] | MCT should expose toy availability, but registry sync/pull can wait. |
+| WIT toy contracts | defer | proposed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/wit][wit/]] | WIT contracts matter, but long-term ownership may sit in SDK/contracts while MCT consumes them. |
+| Secrets authority | bring | proposed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/secrets_authority_backend][secrets_authority_backend/]] | Children, JVM apps, and launchers need controlled secrets; this is control-plane infrastructure, not Belief. |
+| Pando manifest | bring | proposed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/pando.rs][pando.rs]] | Pando is the MCT app/composition concept; start manifest-only before component composition. |
+| Component composition | defer | proposed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/daemon/composition.rs][composition.rs]] | Composition belongs to MCT, but is not needed to prove first daemon/child protocol. |
+| Lifecycle warmup/reload | bring | proposed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/daemon/startup.rs][startup.rs]], [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/lifecycle.rs][lifecycle.rs]] | Operating a daemon with children requires explicit warmup/reload lifecycle. |
+| View buffers | defer | proposed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/view_buffer][view_buffer/]] | Likely MCT observability/UI infrastructure, but too much for first daemon proof. |
+| Inspector typed-call history | bring-minimal | proposed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/http_api/inspector.rs][inspector.rs]], [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/registry.rs][registry.rs]] | Child calls need audit/observability; keep a tiny history first. |
+| Interface launcher | bring | agreed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/ai][src/commands/ai/]], [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/interface][src/commands/interface/]] | User explicitly said MCT will be the launcher and ~patina ai~ does this now. |
+| Interface control API | bring | proposed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/daemon/interface_control.rs][interface_control.rs]], [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/http_api/interface_control.rs][http_api/interface_control.rs]] | If MCT launches HITL guests, it also needs a small control/handshake API. |
+| Skill projection | defer | proposed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/skills_lifecycle.rs][skills_lifecycle.rs]], [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/mother/skills][src/mother/skills/]] | Belongs to launcher/control plane, but should wait until launcher basics are clear. |
+| Session lifecycle | defer | proposed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/session][src/session/]], [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/ai/internal.rs][ai/internal.rs]] | MCT likely owns interface session envelopes, but should avoid inheriting Belief artifact assumptions. |
+| Rivet dispatch | study | study | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/http_api/rivet.rs][rivet.rs]], [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/daemon/dispatch.rs][dispatch.rs]] | Could be external actor-runner adapter, but not enough agreement yet. |
+| Scry API | bridge | agreed boundary | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/adapters.rs][adapters.rs]], [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/http_api/scry.rs][http_api/scry.rs]] | User placed ~scry~ in Patina/Belief; MCT can route to a Belief app later. |
+| Federation over Patina DBs | belief/bridge | proposed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/federation.rs][federation.rs]] | Current federation is over Patina project DBs, so treat it as Belief-shaped until proven generic MCT p2p. |
+| Belief graph/search | belief/bridge | agreed boundary | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/beliefs][src/beliefs/]], [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/graph.rs][graph.rs]] | Belief graph semantics belong to Belief; MCT may route belief messages later. |
+| Builtin spec/lake/doctor | bridge | proposed | [[file:/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/builtin_children.rs][builtin_children.rs]] | Avoid hardcoded Patina product builtins in clean MCT; expose product apps through child/protocol seams. |
+
+* Clean MCT daemon composition answer
+
+Status: =proposed=. This is the current answer for what the daemon is made of. It should become =agreed= only after we review each line together.
+
+#+begin_src text
+MCT daemon
+  bootstrap
+  transport
+  Iroh node transport
+  router
+  runtime state
+  child registry
+  child lifecycle
+  toy grants
+  secrets authority
+  pando/composition
+  observability/view buffers
+  interface launcher/control
+#+end_src
+
+** First narrow daemon slice
+
+A narrow greenfield daemon could be:
+
+#+begin_src text
+mct-daemon v0
+  local HTTP/JSON or UDS control plane
+  Iroh node identity + production-shaped peer transport path
+  /health
+  /version
+  child/component registry in memory
+  process harness or simplest executable child path
+  JVM bridge/client connection path
+  child/component health
+  child/component call
+  append-only typed observation log
+#+end_src
+
+This proves the Mother/Child seam while making Iroh a real early substrate. It still keeps Wasmtime depth, full JVM orchestration, cluster policy, and the launcher out of the first slice.
+
+** First runtime/bridge order answer
+
+Status: =proposed=, with WIT/WASI child/toy center, Iroh Mother-to-Mother, JVM bridge, and Clojure-above-MCT direction now agreed.
+
+| Order | Surface | Why this order |
+|-------+---------+----------------|
+| 1 | Tight edge-ready Rust kernel + local control plane | Proves the daemon seam without bloating the trusted core. |
+| 2 | Iroh v0 identity/transport | Iroh is the Mother-to-Mother building system and must be a real early substrate, not a skeleton: identity, endpoint lifecycle, relay/discovery, peer admission, ALPN, direct streams, observations, and local multi-node tests. |
+| 3 | Process harness or simplest executable child path | Proves lifecycle/routing/call semantics with minimal runtime friction. |
+| 4 | JVM bridge/client path | Lets banking JVM infrastructure connect early into the WIT/WASI child/toy world without putting JVM internals in the kernel. |
+| 5 | WASM/WIT/WASI child runtime | WASM/WIT/WASI is the child/toy design center; exact model evolves as we build. |
+| 6 | Clojure interface/orchestration layer | Clojure sits above MCT as the developer/interface layer after the kernel is solid. |
+
+* Modularity gates
+
+Before any implementation slice, answer:
+
+1. What is the one-sentence job of this module?
+2. What public types/functions are stable enough to expose?
+3. What stays private under =internal/= or equivalent?
+4. Which external systems are touched, and are adapter traits justified by real seams?
+5. What typed domain values replace raw strings at the kernel boundary?
+6. What state machine or enum replaces boolean soup?
+7. What observation is emitted for every authority decision?
+8. Can the slice be committed and reverted independently?
+
+* Open design questions
+
+** Naming
+
+- Is the executable ~mct~, ~patina-mct~, or eventually ~patina~ with product subcommands?
+- Is “Mother” still the daemon name inside MCT?
+- Does “AI launcher” become “interface launcher”, “guest launcher”, or “HITL launcher”?
+
+** Protocol
+
+- Start local control with HTTP/JSON, UDS, stdio JSON-RPC, or a combination?
+- How much should MCT copy from Quack's pattern: familiar local interface, optimized substrate, typed semantic protocol, and remote capability feeling local?
+- Where does HTTP belong exactly: JVM bridge, local tooling, Clojure interface, Mother-to-Mother fallback, or only as inspiration?
+- What is the production-shaped Iroh v0 scope: direct streams + relay/discovery only, or also blobs/gossip/docs after reviewing the cached Iroh repo and companion protocol repos?
+- Process harnesses, JVM bridge clients, WASM components, local HTTP/UDS, and remote peers should share one semantic call envelope.
+- Remaining envelope question: exact Rust type names, payload codecs, and WIT operation encoding for the locked v1 shape recorded in [[file:../slate/work/mother-kernel-design/mother-kernel-design.md][mother-kernel-design]].
+
+** State
+
+- What is the smallest MCT state DB?
+- Which current ~MotherRuntimeStore~ tables are MCT-core vs Belief/session legacy?
+- Should project identity be MCT-owned, Belief-owned, or shared contract?
+
+** Launcher
+
+- Which old ~patina ai~ behavior is essential in MCT v0?
+- Should bundle projection and session artifact capture be part of first launcher slice or second?
+
+** SDK boundary
+
+- Which contracts must be authored in MCT first so SDK has a clean target?
+- Where do WIT files live before the SDK repo exists?
+
+* Notes
+
+- Do not import ~scry~, ~oxidize~, ~assay~, or scrape into the first MCT daemon.
+- Do not make WASM the only integration path; process harnesses and the JVM bridge are first-class bridge/proof paths into the WIT/WASI child/toy design, while Clojure belongs above MCT as interface/orchestration.
+- Preserve the authority rule: Mother/MCT owns grants and routing; children/apps/components execute within granted capability.
+- Apply the Quack lesson pragmatically: use optimized substrate choices where they fit, but keep MCT semantics centered on WIT/WASI children/toys, Iroh Mother-to-Mother communication, and transport-independent authority.

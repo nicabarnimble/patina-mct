@@ -1,0 +1,27 @@
+id = "mct-storage-core"
+title = "Build concrete narrow MCT storage core"
+kind = "build"
+status = "blocked"
+human_request = "Design and implement the first concrete private storage layer for MCT kernel state, peer state, child registry/install state, grants, lifecycle snapshots, and observations."
+allium_anchors = []
+user_alignment = "User wants to compare against current Mother without over-engineering; the answer is concrete, narrow, private, and performant storage rather than generic public storage abstractions."
+belief_refs = []
+proof_plan = [
+    "[ ] Storage tests pass using temp directories/databases.",
+    "[ ] Schema inventory documents what was intentionally not copied from current Mother.",
+    "[ ] Kernel public API is not generic over storage and does not leak SQL row structs.",
+]
+closure_evidence = []
+blocked_by = [
+    "mct-kernel-crate",
+    "mct-observation-log",
+]
+implementation_plan = [
+    "[ ] Compare current integrated `MotherRuntimeStore` tables with MCT-core storage needs.",
+    "[ ] Define a narrow private schema for node identity, peers, child installs, grants, lifecycle snapshots, and observations.",
+    "[ ] Keep Belief, session markdown, scrape/index, and view rendering tables outside MCT kernel storage.",
+    "[ ] Add migrations/replay/snapshot tests and keep SQL/file layout private.",
+]
+created_at = "1780068491"
+updated_at = "1780070122"
+block_reason = "Blocked until mct-observation-log is completed or explicitly superseded in the roadmap."

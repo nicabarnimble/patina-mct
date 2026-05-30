@@ -1,0 +1,28 @@
+id = "mct-node-identity-security"
+title = "Build node identity and security model"
+kind = "build"
+status = "blocked"
+human_request = "Define and implement MCT node identity, peer admission, caller authentication, child/component authorization, and WIT interface exposure policy across local and Iroh boundaries."
+allium_anchors = []
+user_alignment = "User wants a real Iroh substrate and explicit authority without over-engineering; node/security policy should be first-class rather than buried inside transport code."
+belief_refs = []
+proof_plan = [
+    "[ ] Unknown or untrusted peer/caller requests are denied with typed reasons and kernel observations.",
+    "[ ] Authorized node/child/interface identities can be represented without raw strings at the authority boundary.",
+    "[ ] Iroh, local control, JVM bridge, and process/WASM adapters share policy decisions instead of duplicating security logic.",
+]
+closure_evidence = []
+blocked_by = [
+    "mct-allium-foundation",
+    "mct-kernel-crate",
+    "mct-storage-core",
+]
+implementation_plan = [
+    "[ ] Define Mother/Node/User/Interface/Child/Component caller identities and their trust roots.",
+    "[ ] Define peer admission and local caller authentication rules for UDS/HTTP/Iroh/JVM/process boundaries.",
+    "[ ] Define component/WIT-interface exposure policy and how grants are derived from manifests and assignments.",
+    "[ ] Implement fail-closed authorization checks and observations that other adapters call into rather than reimplementing policy.",
+]
+created_at = "1780070076"
+updated_at = "1780070124"
+block_reason = "Blocked until mct-storage-core is completed or explicitly superseded in the roadmap."

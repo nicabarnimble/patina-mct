@@ -1,0 +1,28 @@
+id = "mct-kernel-crate"
+title = "Build mct-kernel crate authority core"
+kind = "build"
+status = "blocked"
+human_request = "Implement the `mct-kernel` crate as the small, typed, performance-sensitive authority core for child identity, lifecycle, routing, grants, errors, and kernel observations."
+allium_anchors = []
+user_alignment = "User mostly agrees with `mct-kernel` but wants the build to stay clean, performant, and not over-engineered."
+belief_refs = []
+proof_plan = [
+    "[ ] `cargo test` passes for the kernel crate.",
+    "[ ] Public API exposes typed domain concepts and not transport/runtime/storage implementation types.",
+    "[ ] Denied/unknown/not-ready paths fail closed with typed errors and kernel observations.",
+]
+closure_evidence = []
+blocked_by = [
+    "mother-kernel-design",
+    "mct-call-envelope",
+    "mct-allium-foundation",
+]
+implementation_plan = [
+    "[ ] Create the Rust crate/module boundary for `mct-kernel` with narrow public API and private internals.",
+    "[ ] Implement typed IDs, lifecycle state machine, operation references, grant decisions, routing decisions, and typed errors.",
+    "[ ] Keep HTTP, Iroh, JVM, Wasmtime, SQLite row types, and Belief/session logic out of the public kernel API.",
+    "[ ] Add focused unit tests for authority decisions and lifecycle transitions.",
+]
+created_at = "1780068471"
+updated_at = "1780070120"
+block_reason = "Blocked until mct-call-envelope is completed or explicitly superseded in the roadmap."
