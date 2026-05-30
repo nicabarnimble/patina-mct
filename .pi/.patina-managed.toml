@@ -1,0 +1,4 @@
+interface = "pi"
+bundle = "pi"
+version = "builtin"
+managed_by = "patina ai refresh"

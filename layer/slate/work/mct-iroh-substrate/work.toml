@@ -1,0 +1,29 @@
+id = "mct-iroh-substrate"
+title = "Build production-shaped Iroh v0 substrate"
+kind = "build"
+status = "blocked"
+human_request = "Implement Iroh as a real early Mother-to-Mother substrate: persistent node identity, endpoint lifecycle, relay/discovery, peer admission, ALPN protocol, direct streams, observations, and multi-node tests."
+allium_anchors = []
+user_alignment = "User rejected a skeleton Iroh path and pointed to the cached `n0-computer/iroh` repo as reference material."
+belief_refs = []
+proof_plan = [
+    "[ ] Local multi-node integration test sends an MCT call envelope over Iroh and receives a reply.",
+    "[ ] Peer admission denies unknown/untrusted peers and records a kernel observation.",
+    "[ ] Adapter observations capture endpoint and stream lifecycle without polluting kernel API with Iroh types.",
+]
+closure_evidence = []
+blocked_by = [
+    "mct-call-envelope",
+    "mct-node-identity-security",
+    "mct-observation-log",
+]
+implementation_plan = [
+    "[ ] Study `/Users/nicabar/.patina/cache/repos/n0-computer/iroh` and relevant companion protocol repos before finalizing scope.",
+    "[ ] Implement persistent node identity and typed NodeId mapping.",
+    "[ ] Implement endpoint lifecycle, relay/discovery config, address book, peer admission, and MCT ALPN.",
+    "[ ] Implement direct bidirectional request/reply streams carrying the MCT call envelope.",
+    "[ ] Emit adapter observations for connect/accept/send/receive/relay fallback/stream reset/close.",
+]
+created_at = "1780068505"
+updated_at = "1780070128"
+block_reason = "Blocked until mct-observation-log is completed or explicitly superseded in the roadmap."

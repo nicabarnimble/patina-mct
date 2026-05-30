@@ -1,0 +1,1117 @@
+-- allium: 3
+-- mct-product-map.allium
+
+-- Scope: Whole MCT product map as guiding behavioural principles.
+-- Includes:
+--   - Mother/Child/Toy authority boundary
+--   - MCT call envelope and routing semantics
+--   - Child lifecycle and assignment semantics
+--   - Toy grants and capability decisions
+--   - Mother-to-Mother peer substrate expectations, including Iroh as first-class v0 direction
+--   - Kernel and adapter observation responsibilities
+--   - Storage expectations only where they affect observable durability, replay, or audit
+--   - Interface launcher/control at the product boundary
+-- Excludes:
+--   - Belief internals: scry, assay, oxidize, scrape, belief graph semantics
+--   - SDK authoring surface except as future consumer of MCT contracts
+--   - Clojure orchestration internals except as future interface layer above MCT
+--   - Exact HTTP, SQLite, Wasmtime, JVM, or Iroh implementation APIs unless they affect observable behaviour
+--   - UI rendering/view-buffer details beyond observability obligations
+-- Slate anchors:
+--   - mct-build-roadmap
+--   - mother-kernel-design
+--   - mct-call-envelope
+--   - mct-kernel-crate
+--   - mct-observation-log
+--   - mct-storage-core
+--   - mct-node-identity-security
+--   - mct-daemon-control-plane
+--   - mct-iroh-substrate
+--   - mct-child-registry-lifecycle
+--   - mct-process-harness
+--   - mct-toy-grants
+--   - mct-jvm-bridge
+--   - mct-wasm-component-runtime
+--   - mct-secrets-authority
+--   - mct-pando-manifest
+--   - mct-interface-launcher-control
+--   - mct-inspector-observability
+--   - mct-cli-config-packaging
+--   - mct-release-hardening
+
+open question "Confirm the one-sentence product statement for MCT."
+-- Decision: Multi-Mother exists primarily to share selected data and compute across nodes under explicit Mother authority.
+-- Decision: MCT should choose the fastest authorized execution path for a task, not always send compute to data or data to compute.
+-- Decision: Path choice is environment-aware: node capability, hardware class, locality, network conditions, data size, secret/data authority, and child/toy availability all matter.
+-- Decision: Example distinction: a Raspberry Pi and a Mac Studio may both be Mothers, but routing should account for their different compute, storage, network, and device/locality roles.
+-- Decision: Data authority has final say. If data policy says data may not leave its owning node or authority domain, MCT must not move it even when moving data would be faster.
+-- Principle: Fastest path wins only among authorized paths.
+-- Decision: When data cannot move, MCT may move or run compute near that data only if the child/component is approved for that data-owning node or authority domain. Approval is not implied by route optimization.
+-- Reference finding: integrated Mother already has a tier-like identity plane in `/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/state/mod.rs`:
+--   - `mother_users` with active/suspended/revoked status.
+--   - `mother_nodes` with active/maintenance/retired status.
+--   - `mother_node_memberships` with full_admin/admin/member roles.
+--   - `mother_visions` owned by a user.
+--   - `mother_vision_memberships` with admin/member roles.
+--   - `mother_node_visions` linking nodes to visions.
+--   - `mother_project_identities` binding projects to user + vision + node.
+-- Reference finding: current Mother guardrails require each active node to keep one active full_admin, each active node to retain an active vision, and each active vision to retain an active admin.
+-- Reference finding: child approval already exists separately: `mother_child_registry_entries.state` is candidate/approved/blocked/deprecated, and active project child assignments require an approved child registry entry.
+-- Reference finding: toy tiers are separate from user/node/vision: `ToyTier` is `wasi-preview2` or `patina`, and toy governance state is local/community-experimental/candidate/approved/deprecated/retired.
+open question "What routing inputs are mandatory for fastest-path decisions versus advisory heuristics?"
+-- Decision: Vision is the primary data-sharing boundary. Nodes inside the same Vision may share selected data and compute under Vision policy; cross-Vision sharing requires explicit peer/grant approval.
+-- Decision: Adopt the existing Mother user/node/vision authority structure as the conceptual MCT authority spine, but rebuild it cleanly rather than copying `MotherRuntimeStore` wholesale.
+-- Decision: MCT should preserve the bones: User, Node, Vision, node membership, vision membership, node-vision binding, project/app identity binding, role guardrails, and approved child assignment.
+-- Decision: MCT must add what current Mother lacks for multi-node routing: Iroh peer identity, node capability profile, data movement policy, compute placement policy, health/load telemetry, remote trust/admission, and approval scoped by Vision/Node/data class/toy grants/child version.
+-- Principle: Same bones, cleaner body.
+
+-- Decision: MCT routing is two-phase.
+--   Phase 1 is the Authority Filter: it removes routes that violate data policy, Vision policy, peer trust, child/component approval, toy grants, or secrets scope.
+--   Phase 2 is the Environment Planner: it ranks and chooses among the remaining authorized routes using node capability, current load, data size, network conditions, locality, and deadlines.
+-- Principle: Phase 1 is a filter: set reduction with no ranking.
+-- Principle: Phase 2 is a sort: ranking with no authority expansion.
+-- Principle: Optimization must never make an inadmissible route admissible.
+-- Decision: Denials are policy outcomes and must be auditable as such. Slow or suboptimal execution is an environmental/planning outcome and must not be confused with policy denial.
+-- Decision: Policy can change independently of the planner, and the planner can improve independently of the authority model.
+-- Decision: Phase 1 should be cheap enough for hot routing. Expensive authority facts should be cached, pre-materialized, or represented as local decision tables when possible.
+-- Decision: Phase 2 must not feed new permissions back into Phase 1. It may report that authorized routes are unavailable, degraded, or deadline-impossible, causing the no-route path to run.
+-- Decision: Runtime policy checks may short-circuit for speed, while debug/dry-run checks may accumulate all violations for explanation.
+-- Decision: Routing decisions operate on snapshots. Execution must revalidate authority because stale authority is a security bug; stale optimization is a performance miss.
+
+contract TwoPhaseRouting {
+    @invariant AuthorityPrecedesOptimization
+        -- The system filters unauthorized route candidates before optimizing among permitted candidates.
+
+    @invariant PlannerRanksOnlyAdmissibleRoutes
+        -- The planner may rank, cost, or choose only route candidates that passed the authority filter.
+
+    @invariant OptimizationCannotGrantAuthority
+        -- A route cannot become allowed because it is faster, cheaper, closer, or more available.
+
+    @invariant DenyReasonsArePolicyReasons
+        -- A denied route records a policy reason rather than an optimizer preference.
+
+    @invariant ExecutionRevalidatesAuthority
+        -- Authority is rechecked at execution time so expired grants, revoked peers, revoked children, or changed data policy cannot be bypassed by a stale routing decision.
+}
+
+-- Decision: If Phase 1 eliminates every route, the default no-route result is hard denial with a clear policy reason.
+-- Decision: Deny is the passive default. Deferred retry, grant request, and escalation are active capabilities that require explicit policy authorization.
+-- Decision: A no-route denial records the specific Phase 1 rule class that eliminated the candidates, not only a generic `no route available` message.
+-- Decision: Internal audit may contain the full denial reason and candidate-elimination context. The requester receives only the safe denial detail it is authorized to know.
+-- Decision: Requesting a grant is itself privileged. A denied caller may request a grant only if its identity has an explicit `may-request-grant` capability.
+-- Decision: Grant requests should carry the original routing request plus the specific denial reason so the authority evaluating the request has context.
+-- Decision: Grant responses must be scoped and time-bounded rather than open-ended elevation.
+-- Decision: Retry is allowed only for temporal denials that policy marks as potentially becoming valid later. Structural denials do not retry.
+-- Decision: Queued retries need a TTL or retry budget and become final hard denials when that budget expires.
+-- Decision: Escalation must never happen silently. Escalation is visible in observations, initiated or permitted by an authorized actor/policy, and traceable to the denial that caused it.
+
+contract NoRouteDecision {
+    @invariant DenyByDefault
+        -- If no authorized route remains after the authority filter, the system denies by default.
+
+    @invariant RetryRequiresPolicy
+        -- A denied route is retried only when the denial is temporal and retry is explicitly permitted by policy.
+
+    @invariant GrantRequestRequiresAuthority
+        -- A denied requester can ask for additional authority only when it has an explicit capability to request that grant.
+
+    @invariant GrantResponsesAreScopedAndBounded
+        -- Granted exceptions are limited by subject, route or capability, data class or operation, and time.
+
+    @invariant NoSilentEscalation
+        -- Escalation cannot occur as an invisible fallback from denial.
+
+    @invariant SafeRequesterDisclosure
+        -- The audit log may know more about eliminated candidate routes than the requester is allowed to see.
+}
+
+-- Decision: Initial denial taxonomy has structural, temporal, and concealment-safe denial classes.
+-- Decision: Structural denials do not retry unless a later explicit authority change creates a new request. Initial structural denials include: data may not leave authority boundary; requester lacks identity or trust; peer is not admitted; child/component is not approved; toy grant is absent or forbidden; secret scope is forbidden; cross-Vision sharing is not granted.
+-- Decision: Temporal denials may retry only when policy marks them retryable and the retry has a TTL or budget. Initial temporal denials include: peer temporarily offline; node in maintenance; child approval pending; grant pending or scheduled but not active; node overloaded but retryable; network path unavailable but expected to recover.
+-- Decision: Concealment-safe denials expose only a safe requester message such as `not authorized`, while internal audit records full candidate, topology, and policy details.
+
+-- Decision: Environment-aware routing splits stable node capabilities from live node telemetry.
+-- Decision: `NodeCapabilityProfile` changes on node join, startup discovery, or explicit reconfiguration. It is versioned, cacheable, and propagated on join/config change rather than every telemetry tick.
+-- Decision: `NodeTelemetry` changes continuously, has a short staleness horizon, is propagated on heartbeat or significant change, and must not be cached as long-term truth.
+-- Decision: Phase 1 primarily consumes capability profiles: runtime support, installed/approved children and toys, data class authorization, locality compatibility, Iroh peer identity, and per-Vision declarations.
+-- Decision: Phase 2 primarily consumes telemetry: current load, memory pressure/utilization, child health, heartbeat freshness, peer RTT/path quality, relay/direct status, throughput samples, and route-quality feedback.
+-- Decision: If telemetry is missing or stale for an authority-admissible node, the planner applies an explicit policy such as skip, assume median/unknown cost, or probe. It must not reinterpret stale telemetry as authority denial.
+-- Decision: Current Mother already provides partial inputs: node id/slug/hostname/status, child and toy inventory/governance, readiness, child health, memory pressure, DB sizes, heartbeat, and uptime. MCT adds hardware inspection, locality tags, data-class authorization, Iroh peer binding, per-Vision capability declarations, CPU/load telemetry, memory utilization, and network observations.
+
+-- Decision: Capability publication is per-Vision. A Mother keeps a full private node capability profile, then publishes only policy-filtered capability views to each Vision.
+-- Decision: A public or cross-Vision discovery view exposes minimal information such as node identity and reachability, not sensitive data classes, JVM-backed child details, children, toys, or topology.
+-- Decision: For adoption domains such as banking, where JVM ecosystems are common, Vision is an authority and sharing boundary that may represent a tenant, institution, business unit, environment, compliance zone, data domain, or application fabric. Do not reduce it to only `tenant` too early.
+-- Decision: JVM-backed child capabilities are visible only in the Vision capability views that are approved to discover and use them.
+-- Decision: Route audit answers `why could this node be selected?` by referencing the relevant Vision capability view and policy revision, not a global node blob.
+
+contract NodeProfileAndTelemetry {
+    @invariant CapabilityProfileIsStableAndVersioned
+        -- Capability facts are versioned and replaced only when a newer profile revision is observed.
+
+    @invariant TelemetryExpires
+        -- Telemetry has a staleness horizon; stale telemetry is treated as unknown or handled by planner policy rather than trusted as fresh.
+
+    @invariant CapabilityBeforeTelemetry
+        -- Capability profile determines whether a node can be an admissible route candidate; telemetry helps choose among admissible candidates.
+
+    @invariant TelemetryDoesNotGrantAuthority
+        -- Good telemetry cannot make a node authorized for data, runtime, child, toy, or peer access.
+
+    @invariant PublicationIsVisionScoped
+        -- Each Vision receives only the capability view that policy allows it to discover and use.
+
+    @invariant PrivateProfileIsNotGlobalDiscovery
+        -- The full private node profile is not exposed as one global discovery blob.
+
+    @invariant JvmChildDiscoveryIsScoped
+        -- JVM-backed child capabilities are discoverable only to approved Visions.
+}
+
+-- Decision: `MctCall` is the atomic unit that Mother can authorize, route, execute, and observe.
+-- Decision: `MctCall` is designed before `WorkRequest`. `WorkRequest` is deferred until there is a real multi-call orchestration need such as fan-out, dependencies, partial failure, scheduling, or rollback.
+-- Decision: `MctCall` is the internal semantic representation, not a wire format. Iroh, JVM caller adapters, WASM host, process harness, and CLI adapters translate their own external formats into `MctCall`.
+-- Decision: `MctCall` is immutable after adapter construction. Routing decisions, execution results, and observations are separate records that reference `call_id`.
+-- Decision: `MctCall` is not a task. It carries no retry policy, dependency graph, schedule, or partial completion state.
+-- Decision: `MctCall` is not the result. The return path is a separate future concept, likely `MctResult` or `MctReply`.
+-- Decision: Actual payload bytes may travel separately. Routing consumes payload metadata so it can authorize and cost movement without deserializing business data.
+-- Decision: `origin` records which adapter produced the call for audit and telemetry, but must not create adapter-specific routing authority.
+
+value CallerIdentity {
+    node_id: String
+    user_id: String?
+    vision_id: String
+    project_id: String?
+}
+
+value OperationTarget {
+    namespace: String
+    interface_name: String
+    function_name: String
+}
+
+value PayloadMetadata {
+    data_classification: String
+    approximate_size_bytes: Integer
+    contains_secret_scoped_material: Boolean
+}
+
+value AuthorityContextSnapshot {
+    policy_revision: Integer
+    grants_revision: Integer
+    vision_policy_revision: Integer
+}
+
+value TraceContext {
+    trace_id: String
+    span_id: String
+}
+
+entity MctCall {
+    call_id: String
+    caller: CallerIdentity
+    target: OperationTarget
+    payload_metadata: PayloadMetadata
+    authority_context: AuthorityContextSnapshot
+    deadline: Timestamp
+    trace_context: TraceContext
+    origin: iroh | jvm_adapter | wasm_host | process_harness | cli
+}
+
+actor MotherAuthority {
+    within: MctCall
+    identified_by: call.caller.node_id
+}
+
+surface MctCallSubmission {
+    facing authority: MotherAuthority
+    context call: MctCall
+
+    exposes:
+        call.call_id
+        call.caller.node_id
+        call.caller.user_id
+        call.caller.vision_id
+        call.caller.project_id
+        call.target.namespace
+        call.target.interface_name
+        call.target.function_name
+        call.payload_metadata.data_classification
+        call.payload_metadata.approximate_size_bytes
+        call.payload_metadata.contains_secret_scoped_material
+        call.authority_context.policy_revision
+        call.authority_context.grants_revision
+        call.authority_context.vision_policy_revision
+        call.deadline
+        call.trace_context.trace_id
+        call.trace_context.span_id
+        call.origin
+}
+
+contract MctCallAtomicity {
+    @invariant OneOperation
+        -- An `MctCall` represents one operation with one caller, one target operation, one authority context, one deadline, and one trace context.
+
+    @invariant ImmutableAfterConstruction
+        -- Once an adapter constructs an `MctCall`, later phases do not mutate it.
+
+    @invariant ResultsAreSeparate
+        -- Route selections, execution outcomes, and replies are separate records that reference `call_id`.
+
+    @invariant AdapterNeutralAuthority
+        -- Iroh, JVM adapter, WASM host, process harness, and CLI calls enter the same authority pipeline after translation to `MctCall`.
+
+    @invariant OriginIsForObservationNotPermission
+        -- The origin adapter may be used for audit and telemetry but not as a shortcut around Vision, data, peer, child, toy, or secret policy.
+
+    @invariant PayloadMetadataPrecedesPayloadInspection
+        -- Routing can evaluate classification and movement cost from metadata without requiring business payload deserialization.
+}
+
+-- Decision: The terminal return concept is `MctResult`, not `MctReply`, because denial, timeout, failure, and cancellation are outcomes even when no component replies.
+-- Decision: `MctResult` is the immutable output fact for an `MctCall`. It is created only after a valid `MctCall` enters the MCT domain.
+-- Decision: Adapter-level malformed requests that never become a valid `MctCall` return native adapter errors rather than fabricated `MctResult` values.
+-- Decision: `MctResult` carries caller-safe outcome information and opaque references to internal audit/authority records. Full topology, candidate elimination, policy internals, and detailed execution telemetry stay in observations.
+-- Decision: `MctResult` outcome is a closed set: success, denied, failed, timed_out, cancelled.
+-- Decision: `route_taken` exists only when execution was attempted. Denied and cancelled-before-execution results have no route taken.
+-- Decision: `requester_message` is safe to return through JVM adapters, Iroh, CLI, WASM host, or process harness adapters without leaking topology or policy internals.
+-- Decision: `audit_ref` links caller/support/operator workflows to the durable observation trail.
+-- Decision: `MctCall`, `RouteDecision`, `MctResult`, and `Observation` are separate concepts with different audiences and retention policies.
+
+value RouteTaken {
+    node_id: String
+    child_id: String?
+    runtime_kind: process | jvm_child | wasm_component | remote_peer | internal
+}
+
+value ExecutionSummary {
+    wall_time_ms: Integer
+    execution_time_ms: Integer?
+    queue_wait_ms: Integer?
+    input_size_bytes: Integer
+    output_size_bytes: Integer?
+}
+
+entity MctResult {
+    call_id: String
+    outcome: success | denied | failed | timed_out | cancelled
+    route_taken: RouteTaken? when outcome = success | failed | timed_out
+    authority_decision_ref: String
+    execution_summary: ExecutionSummary
+    requester_message: String
+    audit_ref: String
+}
+
+actor ResultConsumer {
+    within: MctResult
+    identified_by: result.call_id
+}
+
+surface MctResultReturn {
+    facing consumer: ResultConsumer
+    context result: MctResult
+
+    exposes:
+        result.call_id
+        result.outcome
+        result.route_taken.node_id
+        result.authority_decision_ref
+        result.execution_summary.wall_time_ms
+        result.execution_summary.execution_time_ms
+        result.execution_summary.queue_wait_ms
+        result.execution_summary.input_size_bytes
+        result.execution_summary.output_size_bytes
+        result.requester_message
+        result.audit_ref
+}
+
+contract MctResultTerminality {
+    @invariant ResultRequiresCall
+        -- Every `MctResult` corresponds to exactly one valid `MctCall` by `call_id`.
+
+    @invariant ResultIsTerminal
+        -- An `MctResult` records the final outcome for an `MctCall` and is immutable once constructed.
+
+    @invariant ClosedOutcomeSet
+        -- Consumers must handle success, denied, failed, timed_out, and cancelled.
+
+    @invariant DeniedResultHasNoRouteTaken
+        -- If the call is denied before execution, no route was taken.
+
+    @invariant CallerSafeResult
+        -- `MctResult` exposes safe caller-facing fields and references internal records by opaque identifiers.
+
+    @invariant MalformedAdapterInputIsNotMctResult
+        -- If an external adapter request cannot be translated into a valid `MctCall`, the adapter returns its native validation error instead of constructing `MctResult`.
+}
+
+-- Decision: `RouteDecision` is internal-only by default. Callers learn what happened through `MctResult`; they do not receive the full route reasoning.
+-- Decision: `RouteDecision` records the two-phase reasoning: authority filtering, candidate eliminations, feasible set, planner scoring, selected route, no-route disposition, snapshot revisions, and revalidation chain.
+-- Decision: `RouteDecision` has its own `decision_id` because one `MctCall` may have multiple decisions, such as initial routing and pre-execution revalidation.
+-- Decision: Full `RouteDecision` records may reveal topology, data residency boundaries, GPU/compute inventory, Iroh direct-vs-relay paths, current load, JVM-backed child availability, and denied capabilities. This is operator-facing information, not caller-facing information.
+-- Decision: `MctResult.authority_decision_ref` is an opaque reference to `RouteDecision`; it is not permission to read the decision.
+-- Decision: Full `RouteDecision` access is itself governed by authority: a node operator may see decisions involving their node, a Vision operator may see decisions in their Vision, and a system operator may see broader records.
+-- Decision: `RouteDecision` retention may have full-fidelity and compacted forms later. This is storage policy; the domain structure should still capture the complete reasoning.
+
+value CandidateRoute {
+    candidate_id: String
+    node_id: String
+    child_id: String?
+    runtime_kind: process | jvm_child | wasm_component | remote_peer | internal
+    network_path: direct | relayed | local | unknown
+}
+
+value CandidateAuthorityEvaluation {
+    candidate: CandidateRoute
+    verdict: allowed | denied
+    denial_class: none | structural | temporal | concealment_safe
+    reason_code: String?
+    capability_profile_revision: Integer
+}
+
+value CandidatePlannerEvaluation {
+    candidate: CandidateRoute
+    rank: Integer
+    estimated_completion_ms: Integer?
+    telemetry_state: fresh | stale | missing
+    planner_reason: String
+}
+
+value DecisionSnapshotRevisions {
+    policy_revision: Integer
+    vision_capability_view_revision: Integer
+    telemetry_observed_at: Timestamp?
+}
+
+entity RouteDecision {
+    decision_id: String
+    call_id: String
+    decision_kind: initial | revalidation
+    initial_decision_id: String? when decision_kind = revalidation
+    phase1_evaluations: List<CandidateAuthorityEvaluation>
+    phase1_survivors: List<CandidateRoute>
+    phase2_evaluations: List<CandidatePlannerEvaluation>
+    selected_route: CandidateRoute?
+    no_route_outcome: none | hard_denied | retry_queued | escalation_requested
+    snapshot_revisions: DecisionSnapshotRevisions
+    safe_requester_message: String
+}
+
+actor RouteDecisionOperator {
+    within: RouteDecision
+    identified_by: decision.decision_id
+}
+
+surface RouteDecisionInspection {
+    facing operator: RouteDecisionOperator
+    context decision: RouteDecision
+
+    exposes:
+        decision.decision_id
+        decision.call_id
+        decision.decision_kind
+        decision.initial_decision_id
+        decision.phase1_evaluations
+        decision.phase1_survivors
+        decision.phase2_evaluations
+        decision.selected_route
+        decision.no_route_outcome
+        decision.snapshot_revisions
+        decision.safe_requester_message
+}
+
+contract RouteDecisionPrivacy {
+    @invariant InternalByDefault
+        -- Full `RouteDecision` records are not returned to callers by default.
+
+    @invariant OpaqueReferenceInResult
+        -- `MctResult` may expose `authority_decision_ref`, but the reference does not reveal the full decision without separate operator authority.
+
+    @invariant CandidateReasoningIsSensitive
+        -- Candidate elimination, topology, JVM-backed child availability, data location, peer path quality, and load details are protected internal reasoning.
+
+    @invariant RevalidationIsSeparateDecision
+        -- Pre-execution revalidation records a separate decision linked to the initial decision.
+
+    @invariant SafeSummaryOnlyToRequester
+        -- Requesters receive only `outcome`, safe requester message, and opaque references through `MctResult`.
+}
+
+-- Decision: WIT/WASI is not replaced by this lower-level routing model. `MctCall.target` is intentionally WIT-shaped: namespace, interface, function.
+-- Decision: JVM adapters, Iroh peer messages, process harnesses, CLI, and WASM hosts translate into the same WIT-shaped operation target instead of inventing separate target semantics.
+-- Decision: WASM/WIT/WASI remains the child/toy design center. JVM-backed and process-backed execution is modeled behind that semantic model, not as competing kernels.
+-- Decision: Toy grants map to WIT/WASI host capability contracts. Routing and RouteDecision decide where and whether a call may execute; WIT/WASI defines the component and host capability contract being invoked.
+
+contract WitWasiAlignment {
+    @invariant OperationTargetIsWitShaped
+        -- MCT operations are described as namespace/interface/function rather than adapter-specific method shapes.
+
+    @invariant AdaptersTranslateToWitSemantics
+        -- JVM, Iroh, process, CLI, and WASM adapters translate external formats into the same MCT operation target semantics.
+
+    @invariant WitsAndToysStayCentral
+        -- Child operations and toy capabilities remain centered on WIT/WASI contracts even when the route uses JVM-backed, process-backed, or remote peer execution.
+
+    @invariant RuntimeTypesStayOutsideKernel
+        -- Wasmtime, JVM, Iroh, HTTP, and process-specific implementation types do not become the kernel authority API.
+}
+
+-- Decision: The actively supported external children are compatibility fixtures, not accidental legacy input.
+-- Decision: `slate-manager@0.2.0` must remain loadable and callable as a WIT-only app child exporting `patina:slate/control@0.1.0` operations, including exact hyphenated operation ids such as `complete-work` and `archive-spec`.
+-- Decision: `folder-watch-actor@0.1.0` must remain loadable and callable as a WIT-oriented app child exporting `patina:watch/control@0.1.0`, with state, messaging, measure, logging, and scoped filesystem needs.
+-- Decision: `watch-null-sink@0.1.0` must remain loadable and callable as a WIT-only app child exporting `patina:watch/events@0.1.0` with logging and measure needs.
+-- Decision: These fixtures define valid MCT child shapes: a child may be a pure typed WIT component without legacy `patina:child` lifecycle exports, or it may include optional legacy lifecycle exports for compatibility.
+-- Decision: Child artifact version, WIT world/package version, and exported business interface version are separate facts. For example, `slate-manager@0.2.0` may export `patina:slate/control@0.1.0`; MCT must not collapse those versions into one identifier.
+-- Decision: A manifest's requested needs are not authority by themselves. MCT admits only canonical toy contracts that are explicitly granted for the fixture, Vision, Node, and data scope.
+-- Decision: Imported WASI support packages are not automatically ToyGrants. Authority-bearing resources such as filesystem preopens, state buckets, messaging streams, git operations, credentials, and network access require explicit canonical grants; non-authority runtime support may be supplied with least-privilege or sanitized defaults.
+-- Decision: MCT must not infer new child or toy shapes from broad legacy capability lists, experimental host imports, or Belief/Pando convenience surfaces unless those shapes are explicitly accepted into the canonical catalog.
+
+value WitInterfaceIdentity {
+    namespace: String
+    interface_name: String
+    version: String
+}
+
+entity ExternalChildCompatibilityFixture {
+    child_name: String
+    artifact_version: String
+    primary_export: WitInterfaceIdentity
+    ingress_mode: wit_only | hybrid | handle
+    lifecycle_exports: required | optional | absent_allowed
+    required_canonical_toys: List<String>
+}
+
+actor ExternalChildCompatibilityOperator {
+    within: ExternalChildCompatibilityFixture
+    identified_by: fixture.child_name
+}
+
+surface ExternalChildCompatibilityCatalog {
+    facing operator: ExternalChildCompatibilityOperator
+    context fixture: ExternalChildCompatibilityFixture
+
+    exposes:
+        fixture.child_name
+        fixture.artifact_version
+        fixture.primary_export.namespace
+        fixture.primary_export.interface_name
+        fixture.primary_export.version
+        fixture.ingress_mode
+        fixture.lifecycle_exports
+        fixture.required_canonical_toys
+}
+
+contract ExternalChildCompatibility {
+    @invariant RequiredFixturesDoNotRegress
+        -- Supported MCT implementations keep `slate-manager@0.2.0`, `folder-watch-actor@0.1.0`, and `watch-null-sink@0.1.0` loadable and callable through their declared WIT exports.
+
+    @invariant WitOnlyDoesNotRequireLegacyLifecycle
+        -- A WIT-only child can be valid without exporting legacy `init`, `on-load`, `health`, `handle`, `drain`, or `tick` functions.
+
+    @invariant LifecycleExportsAreCompatibilityNotIdentity
+        -- Legacy lifecycle exports may support warmup, health, or compatibility, but they do not define the business operation identity of a WIT-shaped child.
+
+    @invariant ExactWitOperationIds
+        -- Operation ids are matched exactly to WIT namespace, interface, version, and function names; hyphenated WIT function names are not rewritten by authority policy.
+
+    @invariant VersionsRemainSeparate
+        -- Child artifact versions, WIT package versions, and exported interface versions are compared and audited as separate version facts.
+
+    @invariant RequestedNeedsAreNotGrants
+        -- Manifest needs describe requested host contracts; execution authority comes only from explicit canonical grants.
+
+    @invariant LegacyInputsCannotExpandCatalog
+        -- Legacy or experimental capability names cannot create new canonical toys or child shapes without an explicit MCT design decision.
+}
+
+-- Decision: JVM integration for MCT should be modeled as WIT children, not as a separate competing call model.
+-- Decision: A JVM-backed child presents WIT namespace/interface/version/function exports to MCT even when its implementation runs on a JVM, talks to JDBC, invokes domain libraries, or manages a JVM process out of band.
+-- Decision: `jvm_child` remains an execution substrate detail in route observations; it does not create JVM-specific authority semantics outside the WIT child and ToyGrant model.
+-- Decision: JVM classpath, jars, drivers, database handles, credentials, and domain-specific APIs stay behind canonical toy grants and Vision/Node/data policy.
+-- Decision: A JVM WIT child can be routed like any other child only when its artifact/version/export, required toys, node placement, Vision scope, and data authority are approved.
+-- Decision: Banking is an adoption target and example domain for MCT because banking ecosystems often depend on JVM infrastructure; banking does not become a special core model.
+
+contract JvmAsWitChild {
+    @invariant JvmExportsWitOperations
+        -- JVM-backed integration exposes MCT-callable operations through WIT namespace, interface, version, and function identity.
+
+    @invariant JvmRuntimeDoesNotChangeAuthority
+        -- Running on or through a JVM does not bypass Vision, Node, data, child approval, or ToyGrant checks.
+
+    @invariant JvmDetailsStayBehindChildBoundary
+        -- JVM classpaths, jars, JDBC drivers, domain libraries, credentials, and process details remain implementation details of the WIT child or its approved toys.
+
+    @invariant RouteObservationMayNameJvmSubstrate
+        -- Route and execution observations may record that the selected route used a JVM substrate without exposing that as a separate caller-facing operation model.
+
+    @invariant BankingIsAdoptionTargetNotCoreModel
+        -- Banking validates MCT's JVM and compliance-zone needs as an adoption domain, but MCT does not hard-code banking-specific authority semantics.
+
+    @invariant DomainPolicyStillRules
+        -- Domain data movement, compute placement, secrets, and compliance-zone policy remain authoritative over JVM execution convenience.
+}
+
+-- Decision: MCT Observation is the durable source of truth for what Mother decided or what an adapter effected.
+-- Decision: Trace context is causal linkage across calls, route decisions, child invocations, toy checks, adapter effects, and Mother-to-Mother peer hops. Trace context is not authority-bearing.
+-- Decision: Logs, metrics, audit views, status dashboards, and OpenTelemetry exports are projections derived from MCT observations, not the authoritative record themselves.
+-- Decision: MCT borrows trace/span shape from OpenTelemetry, append-only fact discipline from event sourcing, audit discipline from CloudTrail/Linux audit, status condition shape from Kubernetes, and decision/effect separation from Temporal, but keeps `MctObservation` as the MCT primitive.
+-- Decision: Kernel and authority code emit typed facts, not unstructured log strings. Human-readable messages are safe projections of structured observation facts.
+-- Decision: Every authority decision emits an observation: allow, deny, revoke, expire, grant, revalidate, peer admission, data movement decision, secret decision, and child approval decision.
+-- Decision: Every adapter effect emits an observation: Iroh stream open/reset, remote call send/receive, process/JVM/WASM execution, child invocation, toy call, storage write, timeout, trap, and adapter failure.
+-- Decision: Observations are durable, append-only, and audience-filtered. The same underlying fact stream can produce caller-safe, Vision-operator, node-operator, system-operator, and internal-debug projections.
+-- Decision: Metrics aggregate observations. Logs add diagnostic detail. Audit views permission observations. Traces connect observations into causality.
+
+value ObservationTraceRef {
+    trace_id: String
+    span_id: String?
+    parent_span_id: String?
+    external_trace_id: String?
+}
+
+entity MctObservation {
+    observation_id: String
+    observed_at: Timestamp
+    kind: call_received | call_rejected | call_constructed | call_authorized | call_denied | candidate_considered | candidate_eliminated | route_selected | no_route_recorded | route_revalidated | result_recorded | artifact_verified | artifact_rejected | child_approved | child_revoked | child_assigned | child_assignment_revoked | child_instance_loading | child_instance_ready | child_instance_degraded | child_instance_draining | child_instance_stopped | child_instance_failed | child_invoked | toy_grant_allowed | toy_grant_denied | toy_grant_expired | toy_grant_revoked | toy_call_started | toy_call_completed | toy_call_failed | data_movement_allowed | data_movement_denied | secret_access_allowed | secret_access_denied | peer_connected | peer_admitted | peer_rejected | peer_call_sent | peer_call_received | peer_stream_opened | peer_stream_reset | iroh_path_observed | runtime_execution_started | runtime_execution_completed | runtime_execution_failed | runtime_execution_trapped | runtime_execution_timed_out | adapter_effect_started | adapter_effect_completed | adapter_effect_failed | storage_append_succeeded | storage_append_failed | observation_backpressure_applied | lifecycle_transition_recorded | node_health_reported | operator_action_recorded | telemetry_exported
+    source_plane: kernel | adapter | peer | child | toy | storage | operator
+    trace: ObservationTraceRef
+    call_id: String?
+    decision_id: String?
+    subject_id: String?
+    resource_id: String?
+    policy_revision: Integer?
+    grants_revision: Integer?
+    outcome: allowed | denied | started | completed | failed | timed_out | cancelled | informational
+    visibility: caller_safe | vision_operator | node_operator | system_operator | internal_only
+    safe_message: String
+    detail_ref: String?
+}
+
+actor ObservationReader {
+    within: MctObservation
+    identified_by: observation.observation_id
+}
+
+surface MctObservationProjection {
+    facing reader: ObservationReader
+    context observation: MctObservation
+
+    exposes:
+        observation.observation_id
+        observation.observed_at
+        observation.kind
+        observation.source_plane
+        observation.trace.trace_id
+        observation.trace.span_id
+        observation.trace.parent_span_id
+        observation.trace.external_trace_id
+        observation.call_id
+        observation.decision_id
+        observation.subject_id
+        observation.resource_id
+        observation.policy_revision
+        observation.grants_revision
+        observation.outcome
+        observation.visibility
+        observation.safe_message
+        observation.detail_ref
+}
+
+contract MctObservabilitySpine {
+    @invariant ObservationIsSourceOfTruth
+        -- MCT observations are the durable structured facts from which logs, metrics, audit views, status views, and external telemetry exports are derived.
+
+    @invariant TraceDoesNotGrantAuthority
+        -- Trace ids, span ids, baggage, or upstream trace headers never make a caller, child, peer, toy, secret, route, or data movement admissible.
+
+    @invariant AuthorityDecisionsAreObserved
+        -- Every allow, deny, revoke, expire, grant, admission, data movement, secret, child approval, and revalidation decision produces a typed observation.
+
+    @invariant AdapterEffectsAreObserved
+        -- Every effect performed outside the kernel authority decision, including peer transport, child execution, toy calls, storage effects, and runtime failures, produces a typed observation.
+
+    @invariant ObservationsJoinCausality
+        -- Related calls, decisions, results, child invocations, toy evaluations, adapter effects, and peer hops share trace references so operators can reconstruct causality.
+
+    @invariant ProjectionsAreAudienceFiltered
+        -- Caller, Vision operator, node operator, system operator, and internal debug views are filtered projections of the same observation stream.
+
+    @invariant DiagnosticsAreNotAuthorityRecord
+        -- Logs and metrics may help diagnose behaviour, but the authority and audit record is the structured observation fact.
+}
+
+-- Decision: The v0 observation contract matrix defines which MCT subsystems must produce observations before implementation starts.
+-- Decision: Call ingress observes received, rejected, and constructed calls.
+-- Decision: Authority observes call authorization, call denial, revalidation, peer admission, child approval, data movement, secret access, and toy grant decisions.
+-- Decision: Routing observes candidate consideration, candidate elimination, selected routes, no-route outcomes, and revalidation chains.
+-- Decision: Result return observes terminal result recording for success, denial, failure, timeout, and cancellation.
+-- Decision: Child registry and lifecycle observe artifact verification/rejection, approval/revocation, assignment/revocation, instance loading, ready, degraded, draining, stopped, and failed states.
+-- Decision: Toy authority observes grant allowed, denied, expired, and revoked; toy execution observes started, completed, and failed calls.
+-- Decision: Data movement and secret access observe allow and deny decisions separately from transport or backend errors.
+-- Decision: Iroh and peer transport observe connection, admission, rejection, direct-vs-relay path facts, stream open/reset, remote call send, and remote call receive.
+-- Decision: Runtime adapters observe process, JVM, and WASM execution start/completion/failure/trap/timeout without turning runtime details into authority semantics.
+-- Decision: Storage observes append success/failure and observation backpressure. Observation sink failure must become visible through bounded backpressure, health, or fallback diagnostic evidence.
+-- Decision: Node health and telemetry exports are projections or reported conditions derived from observations and telemetry facts; they do not become the authority record.
+-- Decision: Operator actions that alter policy, approvals, grants, peers, or visibility produce observations with the acting identity and policy/grant revision.
+
+value ObservationRequiredLinks {
+    trace_id: Boolean
+    call_id: Boolean
+    decision_id: Boolean
+    subject_id: Boolean
+    resource_id: Boolean
+    policy_revision: Boolean
+    grants_revision: Boolean
+}
+
+entity MctObservationObligation {
+    obligation_id: String
+    subsystem: call_ingress | authority_filter | route_planner | result_return | child_registry | child_lifecycle | toy_grant_authority | toy_execution | data_movement | secret_access | peer_transport | runtime_adapter | observation_storage | node_health | telemetry_export | operator_action
+    required_kind: String
+    required_links: ObservationRequiredLinks
+    durability_requirement: before_effect | buffered | projection_only
+    minimum_visibility: caller_safe | vision_operator | node_operator | system_operator | internal_only
+    failure_behavior: deny_effect | buffer_with_backpressure | record_health_degradation | projection_may_drop
+}
+
+actor ObservationContractOwner {
+    within: MctObservationObligation
+    identified_by: obligation.obligation_id
+}
+
+surface MctObservationContractMatrix {
+    facing owner: ObservationContractOwner
+    context obligation: MctObservationObligation
+
+    exposes:
+        obligation.obligation_id
+        obligation.subsystem
+        obligation.required_kind
+        obligation.required_links.trace_id
+        obligation.required_links.call_id
+        obligation.required_links.decision_id
+        obligation.required_links.subject_id
+        obligation.required_links.resource_id
+        obligation.required_links.policy_revision
+        obligation.required_links.grants_revision
+        obligation.durability_requirement
+        obligation.minimum_visibility
+        obligation.failure_behavior
+}
+
+contract MctObservationSubsystemCoverage {
+    @invariant CallIngressCoverage
+        -- The call ingress contract covers request receipt, malformed/unauthorized adapter rejection, and successful construction of an immutable `MctCall`.
+
+    @invariant AuthorityCoverage
+        -- The authority contract covers allow, deny, revalidation, peer admission, child approval, toy grant, data movement, and secret decisions.
+
+    @invariant RoutingCoverage
+        -- The routing contract covers candidates considered, candidates eliminated with policy/planner reasons, selected routes, no-route outcomes, and revalidation chains.
+
+    @invariant ResultCoverage
+        -- The result contract covers every terminal outcome recorded in `MctResult`.
+
+    @invariant ChildLifecycleCoverage
+        -- The child contract covers artifact verification, child approval, assignment, generation lifecycle, readiness, degradation, draining, stop, and failure.
+
+    @invariant ToyCoverage
+        -- The toy contract separates grant authority observations from toy execution observations.
+
+    @invariant PeerCoverage
+        -- The peer contract covers connection, admission, rejection, path quality, streams, and remote call send/receive facts.
+
+    @invariant RuntimeAdapterCoverage
+        -- Runtime adapter observations cover process, JVM, and WASM effects while preserving WIT child authority semantics.
+
+    @invariant StorageAndBackpressureCoverage
+        -- Observation storage failures, buffering, and backpressure are themselves visible rather than silently erasing evidence.
+
+    @invariant ProjectionCoverage
+        -- Metrics, logs, dashboards, audit views, and telemetry exports are checked against the observation obligations they derive from.
+}
+
+-- Decision: MCT uses a local-first append-only observation ledger as the durable system trace, analogous to Pi's JSONL session trace but generalized for Mother/Child/Toy decisions and effects.
+-- Decision: Each Mother owns its local ledger. There is no required global total ordering across Mothers; cross-Mother causality is reconstructed from trace ids, span ids, parent span ids, call ids, decision ids, and peer-hop observations.
+-- Decision: Ledger append order is local evidence order. Causal order is reconstructed from explicit references, not inferred only from wall-clock timestamps.
+-- Decision: External observability systems, OpenTelemetry collectors, LangSmith-like inspectors, dashboards, metrics stores, and audit reports are exports or projections. If they disagree with the local observation ledger, the ledger wins.
+-- Decision: A trace tree must be reconstructable from `MctObservation` ledger entries without any external SaaS or inspector database.
+-- Decision: Authority-critical observations require `before_effect` durability. If Mother cannot durably record or reserve the authority fact, the protected effect must deny or fail closed unless an explicit degraded policy says otherwise.
+-- Decision: Adapter-effect observations may use bounded buffering, but buffer pressure, drops, sink failures, and degraded observation health must themselves become visible observations or health conditions.
+-- Decision: Projection/export failures never delete or rewrite ledger truth. They only change export health and retry state.
+-- Decision: Ledger entries are immutable after append. Corrections are new observations that supersede or explain prior observations; prior evidence remains intact.
+
+entity MctObservationLedgerEntry {
+    ledger_id: String
+    mother_node_id: String
+    local_sequence: Integer
+    observation: MctObservation
+    previous_entry_hash: String?
+    entry_hash: String
+    appended_at: Timestamp
+    durability_class: before_effect | buffered | projection_only
+    export_status: not_required | pending | exported | failed
+}
+
+entity MctTraceProjection {
+    trace_id: String
+    reconstructed_from_ledger_id: String
+    root_observation_id: String?
+    observation_count: Integer
+    incomplete_reason: String?
+    includes_external_export_state: Boolean
+}
+
+actor ObservationLedgerReader {
+    within: MctObservationLedgerEntry
+    identified_by: entry.ledger_id
+}
+
+actor TraceInspector {
+    within: MctTraceProjection
+    identified_by: trace.trace_id
+}
+
+surface MctObservationLedgerRead {
+    facing reader: ObservationLedgerReader
+    context entry: MctObservationLedgerEntry
+
+    exposes:
+        entry.ledger_id
+        entry.mother_node_id
+        entry.local_sequence
+        entry.observation.observation_id
+        entry.observation.kind
+        entry.observation.trace.trace_id
+        entry.observation.trace.span_id
+        entry.observation.trace.parent_span_id
+        entry.observation.call_id
+        entry.observation.decision_id
+        entry.previous_entry_hash
+        entry.entry_hash
+        entry.appended_at
+        entry.durability_class
+        entry.export_status
+}
+
+surface MctTraceInspection {
+    facing inspector: TraceInspector
+    context trace: MctTraceProjection
+
+    exposes:
+        trace.trace_id
+        trace.reconstructed_from_ledger_id
+        trace.root_observation_id
+        trace.observation_count
+        trace.incomplete_reason
+        trace.includes_external_export_state
+}
+
+contract MctLocalFirstObservationLedger {
+    @invariant LocalLedgerIsCanonical
+        -- A Mother's local append-only observation ledger is canonical for that Mother's decisions and effects.
+
+    @invariant ExternalSystemsAreProjections
+        -- External trace systems, metrics stores, dashboards, reports, and inspectors cannot override ledger facts.
+
+    @invariant AppendOnlyEvidence
+        -- Ledger entries are appended, not rewritten; corrections and supersessions are represented by later observations.
+
+    @invariant LocalSequenceIsNotGlobalTime
+        -- Local sequence establishes local append order only; distributed causality requires explicit trace and peer-hop references.
+
+    @invariant TraceReconstructsFromLedger
+        -- A trace tree can be reconstructed from ledger entries using trace ids, span ids, parent span ids, call ids, decision ids, and peer-hop observations.
+
+    @invariant AuthorityFactsAreDurableBeforeEffect
+        -- Authority-critical allow/deny/admission/grant/secret/data movement observations are durable before the protected effect proceeds.
+
+    @invariant BufferedEffectsAreBounded
+        -- Buffered adapter-effect observations have bounded queues/backpressure and cannot fail silently.
+
+    @invariant ProjectionFailureDoesNotChangeTruth
+        -- Export or projection failure affects export health and retry state, not the underlying observation truth.
+}
+
+-- Decision: MCT adopts the Clojure-style distinction between identity, immutable value, and state as a succession of values.
+-- Decision: Change in MCT is represented by appending new immutable facts or publishing new immutable snapshots, not by rewriting hidden mutable objects.
+-- Decision: Old facts remain true as evidence. Corrections, revocations, retries, supersessions, and status changes are represented as later facts that explain or replace current projections.
+-- Decision: Current state is a projection over immutable facts and snapshots: node health, grant tables, child readiness, routing cache, trace tree, metrics, and audit views are derived views.
+-- Decision: Controlled mutation is allowed only at narrow named references such as in-memory caches, durable transactions, adapter queues, and projection cursors. Those mutation boundaries must be observable.
+-- Decision: Side effects remain at adapter boundaries. The kernel produces decisions and facts; adapters perform effects; observations prove what happened.
+-- Decision: MCT domain records should be plain structured data so they can be inspected, replayed, queried, exported, and rendered.
+
+value MctImmutableValueRef {
+    value_id: String
+    revision: Integer
+    content_hash: String
+    created_by_observation_id: String
+}
+
+entity MctIdentityTimeline {
+    identity_id: String
+    identity_kind: mother_node | vision | child | component_artifact | child_instance | toy_grant | peer | route | trace | projection
+    current_value: MctImmutableValueRef
+    current_revision: Integer
+    superseded_by_observation_id: String?
+}
+
+actor IdentityTimelineReader {
+    within: MctIdentityTimeline
+    identified_by: timeline.identity_id
+}
+
+surface MctIdentityTimelineView {
+    facing reader: IdentityTimelineReader
+    context timeline: MctIdentityTimeline
+
+    exposes:
+        timeline.identity_id
+        timeline.identity_kind
+        timeline.current_value.value_id
+        timeline.current_value.revision
+        timeline.current_value.content_hash
+        timeline.current_value.created_by_observation_id
+        timeline.current_revision
+        timeline.superseded_by_observation_id
+}
+
+entity MctProjectionCursor {
+    projection_id: String
+    projection_kind: route_cache | grant_table | child_readiness | node_health | trace_tree | metric_rollup | audit_view | telemetry_export
+    source_ledger_id: String
+    through_sequence: Integer
+    through_observation_id: String
+    projection_hash: String
+    updated_at: Timestamp
+}
+
+actor ProjectionMaintainer {
+    within: MctProjectionCursor
+    identified_by: projection.projection_id
+}
+
+surface MctProjectionStatus {
+    facing maintainer: ProjectionMaintainer
+    context projection: MctProjectionCursor
+
+    exposes:
+        projection.projection_id
+        projection.projection_kind
+        projection.source_ledger_id
+        projection.through_sequence
+        projection.through_observation_id
+        projection.projection_hash
+        projection.updated_at
+}
+
+contract MctImmutabilityModel {
+    @invariant IdentityHasSuccessiveValues
+        -- Long-lived MCT identities evolve through a succession of immutable values or facts rather than in-place mutation of their evidence.
+
+    @invariant FactsAreNotRewritten
+        -- Observations, calls, decisions, results, grant revisions, and lifecycle facts are not edited after append; later facts correct, revoke, or supersede them.
+
+    @invariant CurrentStateIsProjection
+        -- Current readiness, grant, routing, health, trace, metric, audit, and export state is derived from immutable source facts and snapshots.
+
+    @invariant MutationBoundariesAreNamed
+        -- In-memory caches, durable transactions, adapter queues, and projection cursors are the permitted mutation boundaries and are observable as such.
+
+    @invariant EffectsAtEdges
+        -- Kernel code decides and records; adapters perform external effects; observations connect decisions to effects.
+
+    @invariant PlainDataIsInspectable
+        -- MCT domain records remain structured data suitable for replay, query, export, and human inspection.
+}
+
+-- Decision: MCT separates child/component lifecycle into four distinct concepts: immutable `ComponentArtifact`, authority-bearing `ChildApproval`, scoped `ChildAssignment`, and live `ChildInstance` generation.
+-- Decision: A `ComponentArtifact` is an immutable package/code/WIT-export fact identified by digest and version facts. It is not approval to run.
+-- Decision: `ChildApproval` is an authority decision that an artifact/version/export shape may be used under scoped policy. It is not installation, assignment, or readiness.
+-- Decision: `ChildAssignment` binds an approved child artifact to Vision, Node, project, or app scope. Active assignment requires an approved child artifact and does not imply a live ready instance.
+-- Decision: `ChildInstance` is a live runtime generation created from an assignment. Calls route only to ready, authorized instances after authority revalidation.
+-- Decision: WIT-only children are valid MCT children. Legacy lifecycle exports are compatibility hooks, not the identity of a child or business operation.
+-- Decision: Replacement loads before swap: MCT creates and verifies the replacement generation, reaches ready or degraded policy state, then drains/stops the old generation. Failed replacement does not poison the current ready generation.
+-- Decision: Child lifecycle state is observable projection over immutable observations and snapshots. Loading, ready, degraded, draining, stopped, and failed transitions emit observations.
+-- Decision: `slate-manager@0.2.0`, `folder-watch-actor@0.1.0`, and `watch-null-sink@0.1.0` remain required fixture shapes for this lifecycle model.
+
+value ComponentWitExport {
+    namespace: String
+    interface_name: String
+    version: String
+    function_names: List<String>
+}
+
+entity ComponentArtifact {
+    artifact_id: String
+    child_name: String
+    artifact_version: String
+    content_hash: String
+    manifest_hash: String
+    primary_export: ComponentWitExport
+    runtime_shape: wasm_component | jvm_child | process_child | remote_child
+    ingress_mode: wit_only | hybrid | handle
+    lifecycle_exports: required | optional | absent_allowed
+    verification_status: verified | rejected
+    created_by_observation_id: String
+}
+
+entity ChildApproval {
+    approval_id: String
+    artifact_id: String
+    child_name: String
+    artifact_version: String
+    scope_vision_id: String?
+    scope_node_id: String?
+    scope_project_id: String?
+    approval_state: candidate | approved | blocked | revoked | deprecated
+    policy_revision: Integer
+    authority_observation_id: String
+}
+
+entity ChildAssignment {
+    assignment_id: String
+    approval_id: String
+    artifact_id: String
+    child_name: String
+    vision_id: String
+    node_id: String?
+    project_id: String?
+    assignment_state: active | revoked
+    pinned_artifact_version: String
+    assignment_observation_id: String
+}
+
+entity ChildInstance {
+    instance_id: String
+    assignment_id: String
+    artifact_id: String
+    child_name: String
+    generation: Integer
+    node_id: String
+    instance_state: loading | ready | degraded | draining | stopped | failed
+    readiness_observation_id: String?
+    last_lifecycle_observation_id: String
+}
+
+actor ComponentCatalogReader {
+    within: ComponentArtifact
+    identified_by: artifact.artifact_id
+}
+
+actor ChildAuthorityReader {
+    within: ChildApproval
+    identified_by: approval.approval_id
+}
+
+actor ChildAssignmentReader {
+    within: ChildAssignment
+    identified_by: assignment.assignment_id
+}
+
+actor ChildRuntimeReader {
+    within: ChildInstance
+    identified_by: instance.instance_id
+}
+
+surface ComponentArtifactCatalog {
+    facing reader: ComponentCatalogReader
+    context artifact: ComponentArtifact
+
+    exposes:
+        artifact.artifact_id
+        artifact.child_name
+        artifact.artifact_version
+        artifact.content_hash
+        artifact.manifest_hash
+        artifact.primary_export.namespace
+        artifact.primary_export.interface_name
+        artifact.primary_export.version
+        artifact.primary_export.function_names
+        artifact.runtime_shape
+        artifact.ingress_mode
+        artifact.lifecycle_exports
+        artifact.verification_status
+        artifact.created_by_observation_id
+}
+
+surface ChildApprovalProjection {
+    facing reader: ChildAuthorityReader
+    context approval: ChildApproval
+
+    exposes:
+        approval.approval_id
+        approval.artifact_id
+        approval.child_name
+        approval.artifact_version
+        approval.scope_vision_id
+        approval.scope_node_id
+        approval.scope_project_id
+        approval.approval_state
+        approval.policy_revision
+        approval.authority_observation_id
+}
+
+surface ChildAssignmentProjection {
+    facing reader: ChildAssignmentReader
+    context assignment: ChildAssignment
+
+    exposes:
+        assignment.assignment_id
+        assignment.approval_id
+        assignment.artifact_id
+        assignment.child_name
+        assignment.vision_id
+        assignment.node_id
+        assignment.project_id
+        assignment.assignment_state
+        assignment.pinned_artifact_version
+        assignment.assignment_observation_id
+}
+
+surface ChildInstanceProjection {
+    facing reader: ChildRuntimeReader
+    context instance: ChildInstance
+
+    exposes:
+        instance.instance_id
+        instance.assignment_id
+        instance.artifact_id
+        instance.child_name
+        instance.generation
+        instance.node_id
+        instance.instance_state
+        instance.readiness_observation_id
+        instance.last_lifecycle_observation_id
+}
+
+contract MctChildComponentLifecycle {
+    @invariant ArtifactIsImmutableValue
+        -- Component artifacts are immutable digest/version/export facts. Updating a package creates a new artifact value rather than mutating the old one.
+
+    @invariant ApprovalIsAuthorityNotRuntime
+        -- Child approval authorizes an artifact shape under policy scope but does not install, assign, load, or mark it ready.
+
+    @invariant AssignmentIsScopedBinding
+        -- Child assignment binds an approved artifact to Vision, Node, project, or app scope and can be revoked independently of artifact existence.
+
+    @invariant InstanceIsLiveGeneration
+        -- A child instance is a live generation derived from an assignment; reloads create new generations instead of rewriting old instance evidence.
+
+    @invariant WitOnlyChildrenAreValid
+        -- A WIT-only child can be approved, assigned, loaded, and called without legacy lifecycle exports.
+
+    @invariant LegacyLifecycleIsCompatibility
+        -- Legacy lifecycle functions may support warmup, health, drain, or compatibility but do not define business operation identity.
+
+    @invariant ReplacementLoadsBeforeSwap
+        -- Reload creates and verifies a replacement generation before draining or stopping the current generation.
+
+    @invariant CallsRequireReadyAuthorizedInstance
+        -- MCT routes calls only to instances whose artifact, approval, assignment, Vision/Node/project scope, and readiness remain authorized at execution time.
+
+    @invariant FailedReplacementDoesNotPoisonCurrent
+        -- A failed replacement generation does not make an existing ready generation invalid unless separate authority or lifecycle policy revokes it.
+
+    @invariant LifecycleTransitionsAreObserved
+        -- Artifact verification, approval, assignment, loading, readiness, degradation, draining, stop, failure, and revocation emit observations.
+}
