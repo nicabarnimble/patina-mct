@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    tags-ignore:
+      - "v*"
+  pull_request:
+    branches: [patina, main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  tier-1-specs:
+    name: Tier 1 — Allium specs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Allium
+        run: scripts/install-allium-ci.sh
+
+      - name: Check Allium specs
+        run: scripts/ci-tier0.sh
