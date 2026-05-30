@@ -1,0 +1,28 @@
+id = "mct-jvm-bridge"
+title = "Build JVM bridge ingress"
+kind = "build"
+status = "blocked"
+human_request = "Build the JVM bridge/client path so existing banking JVM infrastructure can enter the MCT WIT/WASI child/toy world without becoming kernel internals."
+allium_anchors = []
+user_alignment = "User agreed JVM bridge is first-class but not kernel internals; it enables migration into the child/toy model over time."
+belief_refs = []
+proof_plan = [
+    "[ ] JVM/client fixture can submit a call envelope and receive a reply through MCT.",
+    "[ ] Unauthorized JVM bridge requests are denied at the authority boundary.",
+    "[ ] JVM bridge code does not enter `mct-kernel` internals.",
+]
+closure_evidence = []
+blocked_by = [
+    "mct-daemon-control-plane",
+    "mct-call-envelope",
+    "mct-node-identity-security",
+]
+implementation_plan = [
+    "[ ] Define JVM bridge transport/protocol boundary and map requests into MCT call envelopes.",
+    "[ ] Implement bridge authentication/admission and timeout/error mapping.",
+    "[ ] Provide a small JVM/client fixture or protocol harness.",
+    "[ ] Emit adapter observations for connect/disconnect/request/reply/timeout/failure.",
+]
+created_at = "1780068531"
+updated_at = "1780070138"
+block_reason = "Blocked until mct-node-identity-security is completed or explicitly superseded in the roadmap."

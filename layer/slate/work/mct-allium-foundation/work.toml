@@ -1,0 +1,23 @@
+id = "mct-allium-foundation"
+title = "Elicit MCT Allium foundation specs"
+kind = "build"
+status = "active"
+human_request = "Run Allium elicitation for the clean MCT product and create the first behavioral specs for the MCT authority core, call envelope, Iroh peer substrate, child lifecycle, toy grants, and observations."
+allium_anchors = ["layer/allium/mct-product-map.allium"]
+user_alignment = "User asked whether Allium elicitation had happened; it has not, so the build needs explicit Allium anchors before implementation accelerates."
+belief_refs = []
+proof_plan = [
+    "[ ] `layer/allium/` contains at least one `.allium` file with explicit scope/includes/excludes.",
+    "[ ] The Allium spec references the MCT Slate lanes it anchors.",
+    "[ ] Allium validation passes or an explicit tool-unavailable note is captured with open questions.",
+]
+closure_evidence = []
+blocked_by = []
+implementation_plan = [
+    "[ ] Establish the first Allium boundary: MCT kernel only vs broader MCT daemon behavior.",
+    "[ ] Create `layer/allium/` and write coarse specs for authority decisions, child calls, lifecycle, grants, peer calls, and observations.",
+    "[ ] Record deferred specs for SDK, Belief, Clojure interface, and product-specific apps.",
+    "[ ] Run `allium check layer/allium` if the CLI is available; otherwise record the unavailable-tool reason.",
+]
+created_at = "1780068465"
+updated_at = "1780071246"

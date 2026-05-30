@@ -1,0 +1,28 @@
+id = "mct-secrets-authority"
+title = "Build MCT secrets authority"
+kind = "build"
+status = "blocked"
+human_request = "Implement controlled secrets authority for children, bridges, launchers, and toys without exposing secrets ambiently."
+allium_anchors = []
+user_alignment = "Secrets are MCT control-plane infrastructure and must be explicit, authorized, and observable."
+belief_refs = []
+proof_plan = [
+    "[ ] Unauthorized secret requests are denied and observed without leaking secret material.",
+    "[ ] Authorized secret use is scoped to child/bridge/toy identity.",
+    "[ ] Logs/observations redact secret values.",
+]
+closure_evidence = []
+blocked_by = [
+    "mct-storage-core",
+    "mct-node-identity-security",
+    "mct-toy-grants",
+]
+implementation_plan = [
+    "[ ] Define secret identity, scope, grant requirements, and redaction rules.",
+    "[ ] Choose local backing store/key management for first pass based on current Mother reference.",
+    "[ ] Implement get/cache/lock or equivalent minimal control-plane operations.",
+    "[ ] Emit kernel observations for authorization decisions and adapter observations for backend failures.",
+]
+created_at = "1780068545"
+updated_at = "1780070136"
+block_reason = "Blocked until mct-toy-grants is completed or explicitly superseded in the roadmap."

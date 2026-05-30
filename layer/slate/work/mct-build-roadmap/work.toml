@@ -1,0 +1,29 @@
+id = "mct-build-roadmap"
+title = "Plan MCT build slate roadmap"
+kind = "build"
+status = "complete"
+human_request = "Create and maintain the top-level Slate roadmap for the clean Patina MCT build, covering kernel, daemon, Iroh, child runtimes, toy grants, storage, observability, bridges, launcher, and hardening."
+allium_anchors = []
+user_alignment = "User asked to create Slates for the entire MCT build ASAP so work is no longer collapsed into the mct-kernel design Slate."
+belief_refs = []
+proof_plan = [
+    "[x] `patina slate next --json` and Slate work files show the MCT build split into kernel, daemon, Iroh, child runtime, toy, storage, observability, bridge, launcher, and hardening work items.",
+    "[x] Each created Slate has a user-aligned human request, implementation plan, and proof plan.",
+    "[x] Roadmap explicitly keeps Belief, SDK, and Clojure work outside the first MCT build unless a bridge boundary is named.",
+]
+closure_evidence = [
+    "[x] Created 20 MCT build lane Slates plus existing `mother-kernel-design`; see `layer/slate/work/` and `layer/slate/work/mct-build-roadmap/mct-build-roadmap.md`.",
+    "[x] Blocked downstream implementation Slates with explicit `blocked_by` dependencies so the backlog is ordered rather than flat.",
+    "[x] Roadmap maps current integrated Mother daemon surfaces to clean MCT Slate lanes and records Belief/SDK/Clojure deferrals.",
+]
+blocked_by = []
+implementation_plan = [
+    "[x] Inventory the build lanes from `layer/surface/patina-mct.org` and the current `mother-kernel-design` Slate.",
+    "[x] Create one Slate per major build lane with clear boundary, proof plan, and handoff relation.",
+    "[x] Keep MCT first and defer SDK/Belief internals to later product boundaries.",
+    "[x] Maintain a dependency order that avoids one mega-Slate while preserving the whole-build picture.",
+]
+belief_harvest_decision = "No new durable belief required; this Slate organizes existing agreed product boundaries into executable build lanes. Future belief extraction can happen after Allium elicitation and implementation evidence."
+created_at = "1780068325"
+updated_at = "1780070278"
+closed_at = "1780070278"

@@ -1,0 +1,28 @@
+id = "mct-cli-config-packaging"
+title = "Build MCT CLI, config, and packaging surface"
+kind = "build"
+status = "blocked"
+human_request = "Create the user-facing MCT executable/config/install surface for daemon lifecycle, local control, child/toy operations, Iroh peer operations, and release packaging."
+allium_anchors = []
+user_alignment = "Current Mother has useful CLI/launchd/local socket behavior; clean MCT needs the comparable operational surface without inheriting the integrated Patina command sprawl."
+belief_refs = []
+proof_plan = [
+    "[ ] CLI can start/status/stop the local MCT daemon and show socket/config paths.",
+    "[ ] Config roundtrip tests cover default paths, Iroh settings, storage paths, and child/toy registry locations.",
+    "[ ] Packaging docs explain how MCT runs without scry/assay/oxidize/Belief internals.",
+]
+closure_evidence = []
+blocked_by = [
+    "mct-daemon-control-plane",
+    "mct-iroh-substrate",
+    "mct-child-registry-lifecycle",
+]
+implementation_plan = [
+    "[ ] Decide executable naming and command groups for daemon, child, toy, peer, launch, inspect, and config surfaces.",
+    "[ ] Define config file layout for local control, storage paths, Iroh relay/discovery, secrets, and installed children.",
+    "[ ] Implement start/stop/status/install/uninstall or equivalent lifecycle commands for macOS first.",
+    "[ ] Prepare packaging/release artifacts and docs that make MCT runnable independent of Belief internals.",
+]
+created_at = "1780070082"
+updated_at = "1780070147"
+block_reason = "Blocked until mct-child-registry-lifecycle is completed or explicitly superseded in the roadmap."

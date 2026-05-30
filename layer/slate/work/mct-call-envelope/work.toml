@@ -1,0 +1,27 @@
+id = "mct-call-envelope"
+title = "Lock and implement MCT call envelope v1"
+kind = "build"
+status = "blocked"
+human_request = "Define and implement the stable MCT semantic call envelope shared by process harnesses, JVM bridge, WASM components, local control, and Iroh peer calls."
+allium_anchors = []
+user_alignment = "User agreed we need one stable envelope and asked to lock the shape rather than leave it vague."
+belief_refs = []
+proof_plan = [
+    "[ ] Roundtrip tests cover JSON edge encoding and typed kernel representation.",
+    "[ ] Envelope supports caller/target/operation/payload/auth/deadline/idempotency/trace without transport-specific types.",
+    "[ ] Existing Mother `ChildCallRequest { operation_id, args, correlation }` is explicitly compared and narrowed/improved.",
+]
+closure_evidence = []
+blocked_by = [
+    "mct-allium-foundation",
+    "mother-kernel-design",
+]
+implementation_plan = [
+    "[ ] Turn the `MctCallEnvelope v1` design shape into concrete typed Rust types.",
+    "[ ] Define caller, target, operation, payload codec, presented auth, deadline, idempotency, and trace fields.",
+    "[ ] Add edge conversions from JSON/control-plane inputs without making JSON the kernel truth.",
+    "[ ] Document how process, JVM, WASM, UDS/HTTP, and Iroh adapters map into the envelope.",
+]
+created_at = "1780068477"
+updated_at = "1780070118"
+block_reason = "Blocked until mother-kernel-design is completed or explicitly superseded in the roadmap."

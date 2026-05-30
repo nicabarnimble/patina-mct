@@ -1,0 +1,28 @@
+id = "mct-wasm-component-runtime"
+title = "Build WASM/WIT/WASI child runtime"
+kind = "build"
+status = "blocked"
+human_request = "Implement the WASM component runtime adapter for MCT children and WIT/WASI toy contracts once kernel, envelope, grants, and process harness seams are clear."
+allium_anchors = []
+user_alignment = "WASM/WIT/WASI is the design center, but runtime depth should attach to the kernel seam rather than distort it."
+belief_refs = []
+proof_plan = [
+    "[ ] Minimal WASM child activates and handles a typed call through MCT.",
+    "[ ] WASM traps and host-call failures are adapter observations linked to kernel call IDs.",
+    "[ ] WIT/WASI runtime types stay outside the kernel public API.",
+]
+closure_evidence = []
+blocked_by = [
+    "mct-child-registry-lifecycle",
+    "mct-toy-grants",
+    "mct-process-harness",
+]
+implementation_plan = [
+    "[ ] Review current integrated WASM child runtime as reference, not source to copy wholesale.",
+    "[ ] Define component loading, WIT operation binding, WASI context, and toy host-call mapping.",
+    "[ ] Implement instantiate, health, call, trap handling, and stop semantics.",
+    "[ ] Add minimal WASM child fixture and WIT contract tests.",
+]
+created_at = "1780068538"
+updated_at = "1780070140"
+block_reason = "Blocked until mct-process-harness is completed or explicitly superseded in the roadmap."

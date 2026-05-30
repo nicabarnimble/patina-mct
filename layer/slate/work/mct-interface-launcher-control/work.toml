@@ -1,0 +1,28 @@
+id = "mct-interface-launcher-control"
+title = "Build interface launcher and control API"
+kind = "build"
+status = "blocked"
+human_request = "Rebuild the launcher behavior currently surfaced as `patina ai` as an MCT-owned interface/HITL launcher and control-plane handshake."
+allium_anchors = []
+user_alignment = "User explicitly said MCT will own the launcher behavior currently in `patina ai`."
+belief_refs = []
+proof_plan = [
+    "[ ] Launcher can start or attach to a supported interface and complete a control-plane handshake.",
+    "[ ] Launcher records observations without requiring Belief scrape/session internals in the kernel.",
+    "[ ] Current `patina ai` behaviors are classified as bring/defer/bridge.",
+]
+closure_evidence = []
+blocked_by = [
+    "mct-daemon-control-plane",
+    "mct-observation-log",
+    "mct-secrets-authority",
+]
+implementation_plan = [
+    "[ ] Inventory current `patina ai` and interface-control behavior as reference material.",
+    "[ ] Define launcher session/envelope boundary without inheriting Belief artifact assumptions.",
+    "[ ] Implement launch/attach/handshake/control basics for supported interfaces.",
+    "[ ] Decide which skill projection/session artifact capture belongs in later slices.",
+]
+created_at = "1780068558"
+updated_at = "1780070145"
+block_reason = "Blocked until mct-secrets-authority is completed or explicitly superseded in the roadmap."

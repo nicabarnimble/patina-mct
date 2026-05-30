@@ -1,0 +1,28 @@
+id = "mct-child-registry-lifecycle"
+title = "Build child registry and lifecycle"
+kind = "build"
+status = "blocked"
+human_request = "Implement child package/install registry, active child registry, lifecycle state machine, assignment/activation policy, and call routing decisions."
+allium_anchors = []
+user_alignment = "MCT is Mother/Child/Toy infrastructure; child activation must be governed explicitly rather than ambient."
+belief_refs = []
+proof_plan = [
+    "[ ] Tests cover valid lifecycle transitions and reject illegal transitions.",
+    "[ ] Unknown/not-ready/unassigned child calls fail closed.",
+    "[ ] Registry design compares against current integrated `ChildRegistry` and removes accidental coupling.",
+]
+closure_evidence = []
+blocked_by = [
+    "mct-kernel-crate",
+    "mct-storage-core",
+    "mct-observation-log",
+]
+implementation_plan = [
+    "[ ] Define child package, child ID, runtime kind, manifest claims, install record, and active instance record.",
+    "[ ] Implement install/validate/assign/activate/reload/stop lifecycle transitions.",
+    "[ ] Route calls only to ready authorized child instances.",
+    "[ ] Record kernel observations for accepted/denied lifecycle and routing decisions.",
+]
+created_at = "1780068512"
+updated_at = "1780070130"
+block_reason = "Blocked until mct-observation-log is completed or explicitly superseded in the roadmap."

@@ -1,0 +1,28 @@
+id = "mct-pando-manifest"
+title = "Build Pando manifest composition foundation"
+kind = "build"
+status = "blocked"
+human_request = "Implement the MCT Pando manifest/app composition foundation, starting manifest-only before full component graph composition."
+allium_anchors = []
+user_alignment = "Pando belongs to MCT as app/composition concept, but full composition should not block the first daemon/child protocol."
+belief_refs = []
+proof_plan = [
+    "[ ] Valid manifest loads and produces an activation plan.",
+    "[ ] Invalid/missing child or grant requirements fail closed with typed diagnostics.",
+    "[ ] Manifest loader does not hardcode Belief/spec/lake/doctor builtins.",
+]
+closure_evidence = []
+blocked_by = [
+    "mct-child-registry-lifecycle",
+    "mct-toy-grants",
+    "mct-storage-core",
+]
+implementation_plan = [
+    "[ ] Define Pando manifest schema for child assignments, required toys, runtime kinds, and bridge needs.",
+    "[ ] Load/validate manifests and produce child activation plans.",
+    "[ ] Keep full component composition deferred until manifest semantics are proven.",
+    "[ ] Link manifest decisions to child lifecycle and grant observations.",
+]
+created_at = "1780068551"
+updated_at = "1780070142"
+block_reason = "Blocked until mct-storage-core is completed or explicitly superseded in the roadmap."

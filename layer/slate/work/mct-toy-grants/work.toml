@@ -1,0 +1,28 @@
+id = "mct-toy-grants"
+title = "Build toy grant authority model"
+kind = "build"
+status = "blocked"
+human_request = "Implement the Toy capability/grant model so children can only perform host effects through explicit Mother-authorized toy calls."
+allium_anchors = []
+user_alignment = "The T in MCT is central; toy calls must not bypass Mother authority."
+belief_refs = []
+proof_plan = [
+    "[ ] Tests prove toy execution requires an AuthorizedToyCall produced by the kernel.",
+    "[ ] Missing/expired/wrong-scope grants are denied with typed reasons.",
+    "[ ] Toy backend failures are adapter observations, not kernel authority decisions.",
+]
+closure_evidence = []
+blocked_by = [
+    "mct-kernel-crate",
+    "mct-call-envelope",
+    "mct-observation-log",
+]
+implementation_plan = [
+    "[ ] Define ToyId, capability IDs, grant policy, toy request/reply, and AuthorizedToyCall token.",
+    "[ ] Implement grant evaluation as pure kernel decision logic with fail-closed errors.",
+    "[ ] Implement a minimal toy adapter registry outside the kernel.",
+    "[ ] Record authorized/denied toy call observations.",
+]
+created_at = "1780068525"
+updated_at = "1780070134"
+block_reason = "Blocked until mct-observation-log is completed or explicitly superseded in the roadmap."

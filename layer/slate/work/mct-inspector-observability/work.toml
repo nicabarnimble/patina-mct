@@ -1,0 +1,27 @@
+id = "mct-inspector-observability"
+title = "Build inspector and observability surfaces"
+kind = "build"
+status = "blocked"
+human_request = "Expose useful MCT observability surfaces such as typed call history, health details, authority decisions, adapter diagnostics, and eventually view buffers."
+allium_anchors = []
+user_alignment = "Observability is mandatory, but view rendering and buffers should not bloat the first kernel/daemon slice."
+belief_refs = []
+proof_plan = [
+    "[ ] Inspector returns recent kernel and adapter observations by call_id/child/peer filters.",
+    "[ ] Observation capture works without the view-buffer subsystem.",
+    "[ ] View-buffer follow-up is explicitly deferred or scoped.",
+]
+closure_evidence = []
+blocked_by = [
+    "mct-observation-log",
+    "mct-daemon-control-plane",
+]
+implementation_plan = [
+    "[ ] Expose small inspector APIs for recent calls, denials, lifecycle transitions, peer state, and adapter diagnostics.",
+    "[ ] Keep observation capture separate from retention and presentation policy.",
+    "[ ] Defer rich view-buffer rendering until the basic observation stream is trustworthy.",
+    "[ ] Compare current integrated typed-call history/view-buffer surfaces and split capture from display.",
+]
+created_at = "1780068565"
+updated_at = "1780070143"
+block_reason = "Blocked until mct-daemon-control-plane is completed or explicitly superseded in the roadmap."
