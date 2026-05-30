@@ -1115,3 +1115,224 @@ contract MctChildComponentLifecycle {
     @invariant LifecycleTransitionsAreObserved
         -- Artifact verification, approval, assignment, loading, readiness, degradation, draining, stop, failure, and revocation emit observations.
 }
+
+-- Decision: `ToyGrant` is a first-class MCT authority record, not an implied consequence of manifest `needs`, imported WASI packages, or legacy capability names.
+-- Decision: MCT uses a closed canonical toy catalog. Unknown, legacy, experimental, or convenience capability names are denied by default until explicitly admitted as canonical toy contracts.
+-- Decision: A manifest `need` is a request for host authority. It can inform review, planning, and fixture compatibility, but it never grants execution authority by itself.
+-- Decision: A `ToyGrant` is scoped by subject, canonical toy contract, Vision, Node, project/app, data/resource/action, issuer, policy revision, and time bounds.
+-- Decision: Runtime toy execution requires an `AuthorizedToyCall` produced by grant evaluation for the current call, child assignment, artifact version, policy revision, and grant revision.
+-- Decision: Grant evaluation is part of Phase 1 authority. The route planner may consume grant snapshots for speed, but it cannot create or expand grants.
+-- Decision: Expiration, revocation, supersession, and correction of grants are represented as later immutable observations/facts. Prior grant facts remain audit evidence.
+-- Decision: Grant snapshots may be compiled for hot paths, but the source of truth remains structured `ToyGrant` facts plus the observation ledger.
+-- Decision: Toy backend/runtime failures are adapter-effect outcomes, not authority decisions. They emit toy execution observations and may result in failed or timed-out `MctResult` values.
+-- Decision: Required fixture children such as `slate-manager@0.2.0`, `folder-watch-actor@0.1.0`, and `watch-null-sink@0.1.0` must work through explicit canonical toy grants, not through broad legacy capability expansion.
+
+value ToyContractIdentity {
+    namespace: String
+    interface_name: String
+    version: String
+    function_name: String?
+    resource_name: String?
+}
+
+entity CanonicalToyContract {
+    toy_id: String
+    contract: ToyContractIdentity
+    authority_bearing: Boolean
+    catalog_revision: Integer
+    admitted_by_observation_id: String
+}
+
+value ToyGrantSubject {
+    child_name: String
+    artifact_id: String
+    artifact_version: String
+    assignment_id: String?
+    caller_node_id: String?
+}
+
+value ToyGrantScope {
+    vision_id: String
+    node_id: String?
+    project_id: String?
+    data_classification: String?
+    resource_id: String?
+    allowed_actions: List<String>
+}
+
+value ToyGrantConstraints {
+    starts_at: Timestamp?
+    expires_at: Timestamp?
+    max_uses: Integer?
+    max_duration_ms: Integer?
+    locality_required: Boolean
+}
+
+entity ToyGrant {
+    grant_id: String
+    toy_id: String
+    subject: ToyGrantSubject
+    scope: ToyGrantScope
+    constraints: ToyGrantConstraints
+    grant_state: requested | active | expired | revoked | superseded | denied
+    issuer_id: String
+    policy_revision: Integer
+    grants_revision: Integer
+    authority_observation_id: String
+}
+
+entity ToyGrantEvaluation {
+    evaluation_id: String
+    call_id: String
+    decision_id: String
+    grant_id: String?
+    toy_id: String
+    subject_child_name: String
+    verdict: allowed | denied
+    reason_code: active_grant | missing_grant | expired_grant | revoked_grant | wrong_scope | unknown_toy | policy_denied | stale_snapshot
+    policy_revision: Integer
+    grants_revision: Integer
+    observation_id: String
+}
+
+entity AuthorizedToyCall {
+    authorized_toy_call_id: String
+    call_id: String
+    evaluation_id: String
+    grant_id: String
+    toy_id: String
+    child_instance_id: String
+    authority_decision_id: String
+    expires_at: Timestamp
+}
+
+actor ToyCatalogReader {
+    within: CanonicalToyContract
+    identified_by: toy.toy_id
+}
+
+actor ToyGrantReader {
+    within: ToyGrant
+    identified_by: grant.grant_id
+}
+
+actor ToyGrantEvaluator {
+    within: ToyGrantEvaluation
+    identified_by: evaluation.evaluation_id
+}
+
+actor AuthorizedToyCaller {
+    within: AuthorizedToyCall
+    identified_by: authorized.authorized_toy_call_id
+}
+
+surface CanonicalToyCatalog {
+    facing reader: ToyCatalogReader
+    context toy: CanonicalToyContract
+
+    exposes:
+        toy.toy_id
+        toy.contract.namespace
+        toy.contract.interface_name
+        toy.contract.version
+        toy.contract.function_name
+        toy.contract.resource_name
+        toy.authority_bearing
+        toy.catalog_revision
+        toy.admitted_by_observation_id
+}
+
+surface ToyGrantProjection {
+    facing reader: ToyGrantReader
+    context grant: ToyGrant
+
+    exposes:
+        grant.grant_id
+        grant.toy_id
+        grant.subject.child_name
+        grant.subject.artifact_id
+        grant.subject.artifact_version
+        grant.subject.assignment_id
+        grant.subject.caller_node_id
+        grant.scope.vision_id
+        grant.scope.node_id
+        grant.scope.project_id
+        grant.scope.data_classification
+        grant.scope.resource_id
+        grant.scope.allowed_actions
+        grant.constraints.starts_at
+        grant.constraints.expires_at
+        grant.constraints.max_uses
+        grant.constraints.max_duration_ms
+        grant.constraints.locality_required
+        grant.grant_state
+        grant.issuer_id
+        grant.policy_revision
+        grant.grants_revision
+        grant.authority_observation_id
+}
+
+surface ToyGrantEvaluationProjection {
+    facing evaluator: ToyGrantEvaluator
+    context evaluation: ToyGrantEvaluation
+
+    exposes:
+        evaluation.evaluation_id
+        evaluation.call_id
+        evaluation.decision_id
+        evaluation.grant_id
+        evaluation.toy_id
+        evaluation.subject_child_name
+        evaluation.verdict
+        evaluation.reason_code
+        evaluation.policy_revision
+        evaluation.grants_revision
+        evaluation.observation_id
+}
+
+surface AuthorizedToyCallProjection {
+    facing caller: AuthorizedToyCaller
+    context authorized: AuthorizedToyCall
+
+    exposes:
+        authorized.authorized_toy_call_id
+        authorized.call_id
+        authorized.evaluation_id
+        authorized.grant_id
+        authorized.toy_id
+        authorized.child_instance_id
+        authorized.authority_decision_id
+        authorized.expires_at
+}
+
+contract MctToyGrantAuthority {
+    @invariant CanonicalCatalogIsClosed
+        -- Only explicitly admitted canonical toy contracts can be granted; unknown or legacy names deny by default.
+
+    @invariant NeedsAreRequestsNotGrants
+        -- Manifest needs and imported WASI support packages request host authority but never confer it.
+
+    @invariant GrantScopeIsExplicit
+        -- Grants name their subject, canonical toy, Vision/Node/project/data/resource/action scope, issuer, revision, and time bounds.
+
+    @invariant EvaluationProducesAuthorizationToken
+        -- Toy execution receives authority only through an `AuthorizedToyCall` produced by current grant evaluation.
+
+    @invariant RoutePlannerCannotGrantToys
+        -- The planner may rank routes that survived grant checks but cannot create, widen, or infer toy grants.
+
+    @invariant ExpiryAndRevocationAreFacts
+        -- Expired, revoked, superseded, denied, and corrected grants are represented by later immutable facts and observations.
+
+    @invariant GrantSnapshotsAreCacheNotTruth
+        -- Compiled grant snapshots accelerate hot checks but source truth remains structured grant facts plus the observation ledger.
+
+    @invariant ToyGrantDecisionsAreObserved
+        -- Grant allow, deny, expire, revoke, and stale-snapshot outcomes emit typed observations before protected toy effects proceed.
+
+    @invariant ToyBackendFailureIsAdapterEffect
+        -- A backend failure after authorization is an adapter/runtime observation and does not retroactively change the authority decision.
+
+    @invariant FixtureCompatibilityUsesExplicitGrants
+        -- Required fixture children continue to work through canonical toy grants without broad legacy capability expansion.
+}
