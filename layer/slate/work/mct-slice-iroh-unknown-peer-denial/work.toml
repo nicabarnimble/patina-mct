@@ -1,7 +1,7 @@
 id = "mct-slice-iroh-unknown-peer-denial"
 title = "Deny unknown Iroh peer before protected MCT call"
 kind = "build"
-status = "ready"
+status = "complete"
 execution_granularity = "slice"
 human_request = "Implement the next narrow Iroh authority slice: an EndpointId without active MctPeerBinding cannot execute mct/call/0."
 allium_anchors = ["MctRuntimeShape", "MctPeerBinding", "MctHelloProtocol", "MctCallProtocol", "MctObservation"]
@@ -22,20 +22,27 @@ non_goals = [
     "No ECH/OHTTP/privacy relay work.",
 ]
 implementation_plan = [
-    "[ ] Add a local Iroh integration test for an unknown peer endpoint with no active `MctPeerBinding`.",
-    "[ ] Ensure `mct/hello/0` denies the peer with a caller-safe response.",
-    "[ ] Ensure `mct/call/0` cannot proceed to routing after denied hello.",
-    "[ ] Return or record an observation-grade denial fact for the attempted protected effect.",
+    "[x] Add a local Iroh integration test for an unknown peer endpoint with no active `MctPeerBinding`.",
+    "[x] Ensure `mct/hello/0` denies the peer with a caller-safe response.",
+    "[x] Ensure `mct/call/0` cannot proceed to routing after denied hello.",
+    "[x] Return or record an observation-grade denial fact for the attempted protected effect.",
 ]
 proof_plan = [
-    "[ ] `cargo test -p mct-iroh unknown_peer_is_denied_before_call` passes.",
-    "[ ] Test proves Iroh EndpointId alone is insufficient authority.",
-    "[ ] Test proves denied hello prevents `mct/call/0` routing.",
-    "[ ] Test proves the denial is represented as an observation-grade fact or explicit kernel evaluation.",
-    "[ ] `cargo test --workspace` passes.",
-    "[ ] `allium check layer/allium` passes.",
+    "[x] `cargo test -p mct-iroh unknown_peer_is_denied_before_call` passes.",
+    "[x] Test proves Iroh EndpointId alone is insufficient authority.",
+    "[x] Test proves denied hello prevents `mct/call/0` routing.",
+    "[x] Test proves the denial is represented as an observation-grade fact or explicit kernel evaluation.",
+    "[x] `cargo test --workspace` passes.",
+    "[x] `allium check layer/allium` passes.",
 ]
-closure_evidence = []
+closure_evidence = [
+    "[x] Commit `e75d614 feat(iroh): deny unknown peer before call` adds `run_unknown_peer_denial_roundtrip` and the `unknown_peer_is_denied_before_call` local Iroh integration test.",
+    "[x] Test proves a local Iroh connection can complete transport negotiation while `mct/hello/0` denies with `MissingBinding` and safe message `not authorized`.",
+    "[x] Test proves a subsequent `mct/call/0` attempt returns `CallProtocolReplyOutcome::Denied`, no result ref, no route decision, and `HelloNotAdmitted`.",
+    "[x] Test asserts observation-grade decision ids `obs-iroh-hello-decision` and `obs-iroh-call-decision` on server-side kernel evaluations.",
+    "[x] `cargo test -p mct-iroh unknown_peer_is_denied_before_call`, `cargo test --workspace`, and `allium check layer/allium` passed before closure.",
+]
 blocked_by = ["mct-slice-local-iroh-roundtrip", "mct-allium-foundation"]
 created_at = "1780262310"
-updated_at = "1780264533"
+updated_at = "1780264915"
+closed_at = "1780264915"

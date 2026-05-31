@@ -13,8 +13,8 @@ core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/spec-driven-desig
 runtime_shape_role = "Transport-independent semantic call shape shared by local control, process/JVM/WASM adapters, and Iroh peer calls."
 design_style = "Typed immutable domain envelope; adapters translate edge formats into MctCall rather than making wire formats kernel truth."
 implementation_ready_requirements = ["Every slice states which edge format maps into MctCall.", "Proof gates cover roundtrip/denial/malformed behavior.", "No adapter-specific authority field becomes the canonical call model."]
-slice_refs = ["mct-slice-kernel-domain-records", "mct-slice-call-protocol-evaluation", "mct-slice-fake-daemon-echo", "mct-slice-local-iroh-roundtrip", "mct-slice-runtime-shape-anchors"]
-partial_evidence = ["[x] Semantic `MctCall`/`MctResult` records exist in `mct-kernel`.", "[x] `mct/call/0` protocol request/evaluation/reply records and pure evaluation exist.", "[ ] JSON/control-plane edge conversions and adapter mapping docs remain open."]
+slice_refs = ["mct-slice-kernel-domain-records", "mct-slice-call-protocol-evaluation", "mct-slice-fake-daemon-echo", "mct-slice-local-iroh-roundtrip", "mct-slice-runtime-shape-anchors", "mct-slice-iroh-unknown-peer-denial"]
+partial_evidence = ["[x] Semantic `MctCall`/`MctResult` records exist in `mct-kernel`.", "[x] `mct/call/0` protocol request/evaluation/reply records and pure evaluation exist.", "[x] `mct/call/0` reply path returns denied/no-result/no-route after denied hello.", "[ ] JSON/control-plane edge conversions and adapter mapping docs remain open."]
 next_slice_candidates = ["mct-slice-call-envelope-json-edge-roundtrip", "mct-slice-call-envelope-adapter-mapping-doc"]
 proof_plan = [
     "[ ] Roundtrip tests cover JSON edge encoding, mct/call/0 edge encoding, and typed kernel representation.",
@@ -33,5 +33,5 @@ implementation_plan = [
     "[ ] Document how process, JVM, WASM, UDS/HTTP, and Iroh adapters map into the envelope, using mct/call/0 as the remote peer mapping.",
 ]
 created_at = "1780068477"
-updated_at = "1780264533"
+updated_at = "1780264915"
 block_reason = "Epic remains open; completed child slices cover kernel records and pure mct/call/0 evaluation, but edge conversions and adapter mapping still require smaller slice Slates."
