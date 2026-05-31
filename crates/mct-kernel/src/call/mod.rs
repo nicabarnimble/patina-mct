@@ -1,6 +1,8 @@
 use crate::id::*;
 use serde::{Deserialize, Serialize};
 
+mod internal;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallerIdentity {
     pub node_id: MctNodeId,
@@ -211,9 +213,61 @@ pub struct MctCallProtocolReply {
     pub reply_observation_id: ObservationId,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallEvaluationIds {
+    pub decision_id: DecisionId,
+    pub observation_id: ObservationId,
+}
+
+pub fn evaluate_call_protocol(
+    request: &MctCallProtocolRequest,
+    hello: &crate::peer::MctHelloAdmissionEvaluation,
+    ids: CallEvaluationIds,
+) -> MctCallProtocolEvaluation {
+    internal::evaluate_call_protocol_internal(request, hello, ids)
+}
+
+impl MctCallProtocolEvaluation {
+    pub fn is_accepted_for_routing(&self) -> bool {
+        self.outcome == CallProtocolOutcome::AcceptedForRouting
+    }
+}
+
+pub fn call_reply_from_evaluation(
+    reply_id: ReplyId,
+    evaluation: &MctCallProtocolEvaluation,
+    result_ref: Option<ResultRef>,
+    reply_observation_id: ObservationId,
+) -> MctCallProtocolReply {
+    let reply_outcome = match evaluation.outcome {
+        CallProtocolOutcome::AcceptedForRouting | CallProtocolOutcome::Completed => {
+            CallProtocolReplyOutcome::Success
+        }
+        CallProtocolOutcome::Malformed => CallProtocolReplyOutcome::Malformed,
+        CallProtocolOutcome::Denied => CallProtocolReplyOutcome::Denied,
+        CallProtocolOutcome::Failed => CallProtocolReplyOutcome::Failed,
+        CallProtocolOutcome::TimedOut => CallProtocolReplyOutcome::TimedOut,
+    };
+
+    MctCallProtocolReply {
+        reply_id,
+        protocol_request_id: evaluation.protocol_request_id.clone(),
+        decision_id: evaluation.decision_id.clone(),
+        result_ref,
+        reply_outcome,
+        safe_message: evaluation.safe_message.clone(),
+        reply_observation_id,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::peer::{
+        ConnectionSide, HelloOutcome, HelloReason, IrohConnectionPresentation,
+        MctHelloAdmissionEvaluation, MctProtocolVersion, PathClass, SafeHelloReason,
+        MCT_CALL_ALPN, MCT_HELLO_ALPN,
+    };
 
     fn example_call() -> MctCall {
         MctCall {
@@ -248,6 +302,68 @@ mod tests {
         }
     }
 
+    fn admitted_hello() -> MctHelloAdmissionEvaluation {
+        MctHelloAdmissionEvaluation {
+            decision_id: DecisionId::from("hello-decision-1"),
+            request_id: "hello-1".into(),
+            peer_admission_decision_id: None,
+            selected_binding_id: Some(PeerBindingId::from("binding-1")),
+            negotiated_protocol: Some(MctProtocolVersion {
+                protocol_name: MCT_HELLO_ALPN.into(),
+                major: 0,
+                minor: 1,
+                compatibility_floor: Some(0),
+            }),
+            accepted_alpns: vec![MCT_CALL_ALPN.into()],
+            hello_outcome: HelloOutcome::Admitted,
+            reason: HelloReason::ActiveBinding,
+            safe_reason: SafeHelloReason::Admitted,
+            observation_id: ObservationId::from("obs-hello-decision"),
+        }
+    }
+
+    fn protocol_request() -> MctCallProtocolRequest {
+        MctCallProtocolRequest {
+            protocol_request_id: ProtocolRequestId::from("proto-request-1"),
+            authority: MctCallProtocolAuthority {
+                hello_decision_id: DecisionId::from("hello-decision-1"),
+                peer_binding_id: PeerBindingId::from("binding-1"),
+                vision_id: VisionId::from("vision-a"),
+                accepted_alpn: MCT_CALL_ALPN.into(),
+                endpoint_id: EndpointIdText::from("endpoint-a"),
+                policy_revision: 1,
+                grants_revision: 1,
+            },
+            received_over: IrohConnectionPresentation {
+                endpoint_id: EndpointIdText::from("endpoint-a"),
+                alpn: MCT_CALL_ALPN.into(),
+                connection_side: ConnectionSide::Incoming,
+                path_class: PathClass::Direct,
+                relay_url: None,
+                presented_capability_ref: None,
+            },
+            call: example_call(),
+            payload: MctCallPayloadHandle {
+                payload_kind: PayloadKind::InlinePayload,
+                content_type: Some("text/plain".into()),
+                approximate_size_bytes: 5,
+                digest: None,
+                blob_ref: None,
+                external_ref: None,
+                inline_payload_ref: Some("payload-1".into()),
+            },
+            idempotency_key: Some("idem-1".into()),
+            received_observation_id: ObservationId::from("obs-call-received"),
+        }
+    }
+
+    fn eval_ids() -> CallEvaluationIds {
+        CallEvaluationIds {
+            decision_id: DecisionId::from("call-decision-1"),
+            observation_id: ObservationId::from("obs-call-decision"),
+        }
+    }
+
     #[test]
     fn mct_call_roundtrips_as_json() {
         let call = example_call();
@@ -255,6 +371,55 @@ mod tests {
         assert!(json.contains("iroh"));
         let decoded: MctCall = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, call);
+    }
+
+    #[test]
+    fn admitted_hello_allows_call_for_routing() {
+        let evaluation = evaluate_call_protocol(&protocol_request(), &admitted_hello(), eval_ids());
+        assert!(evaluation.is_accepted_for_routing());
+        assert_eq!(evaluation.call_id, Some(CallId::from("call-1")));
+    }
+
+    #[test]
+    fn call_without_admitted_hello_is_denied() {
+        let mut hello = admitted_hello();
+        hello.hello_outcome = HelloOutcome::Denied;
+        let evaluation = evaluate_call_protocol(&protocol_request(), &hello, eval_ids());
+        assert_eq!(evaluation.outcome, CallProtocolOutcome::Denied);
+        assert_eq!(evaluation.reason, CallProtocolReason::HelloNotAdmitted);
+    }
+
+    #[test]
+    fn hello_without_call_alpn_does_not_authorize_call() {
+        let mut hello = admitted_hello();
+        hello.accepted_alpns.clear();
+        let evaluation = evaluate_call_protocol(&protocol_request(), &hello, eval_ids());
+        assert_eq!(evaluation.reason, CallProtocolReason::AlpnNotAdmitted);
+    }
+
+    #[test]
+    fn endpoint_mismatch_is_denied() {
+        let mut request = protocol_request();
+        request.received_over.endpoint_id = EndpointIdText::from("endpoint-b");
+        let evaluation = evaluate_call_protocol(&request, &admitted_hello(), eval_ids());
+        assert_eq!(evaluation.reason, CallProtocolReason::EndpointMismatch);
+        assert_eq!(evaluation.safe_message, "not authorized");
+    }
+
+    #[test]
+    fn payload_metadata_mismatch_is_malformed() {
+        let mut request = protocol_request();
+        request.payload.approximate_size_bytes = 99;
+        let evaluation = evaluate_call_protocol(&request, &admitted_hello(), eval_ids());
+        assert_eq!(evaluation.outcome, CallProtocolOutcome::Malformed);
+        assert_eq!(evaluation.reason, CallProtocolReason::PayloadMetadataMismatch);
+        let reply = call_reply_from_evaluation(
+            ReplyId::from("reply-1"),
+            &evaluation,
+            None,
+            ObservationId::from("obs-reply"),
+        );
+        assert_eq!(reply.reply_outcome, CallProtocolReplyOutcome::Malformed);
     }
 
     #[test]
