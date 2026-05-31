@@ -18,6 +18,32 @@ The build is split into small, reviewable Slate lanes that map to the user's goa
 - Concrete, narrow, performant core storage.
 - JVM bridge and launcher as first-class MCT surfaces, not kernel internals.
 
+## Runtime shape
+
+MCT is shaped as a modular local authority runtime:
+
+```text
+mct-daemon
+  owns process/control/endpoint/runtime lifecycle
+    ↓
+mct-kernel
+  decides over typed MCT domain facts
+    ↓
+mct-observation
+  records canonical runtime truth
+    ↓
+adapters
+  perform Iroh/storage/WASM/process/JVM/toy/observability effects
+```
+
+Design influences:
+
+- **Jon Gjengset-style Rust inside**: honest signatures, domain types at boundaries, private internals, explicit state machines, typed fail-closed outcomes, concrete implementations before speculative traits.
+- **Iroh-style composable protocols outside**: endpoint lifecycle owned by the application, ALPN as the protocol seam, explicit async connection/stream handling, and application authority above transport identity.
+- **Current Patina Mother as evidence, not ontology**: emulate Mother's role as local authority over children, toys, calls, and observations without copying its coupled runtime shape.
+
+Allium anchor: `MctRuntimeShape`.
+
 ## Current Mother daemon baseline
 
 Observed current runtime:
@@ -143,6 +169,7 @@ Completed implementation slice Slates now recorded:
 | `mct-slice-call-protocol-evaluation` | `103cfab feat(kernel): evaluate mct call protocol` |
 | `mct-slice-fake-daemon-echo` | `d826098 feat(daemon): add fake echo vertical slice` |
 | `mct-slice-local-iroh-roundtrip` | `a35b598 feat(iroh): prove local mct protocol roundtrip` |
+| `mct-slice-runtime-shape-anchors` | `5c88f8b spec: codify mct runtime shape` plus Slate tightening |
 
 A parent epic becomes complete only when its child `slice_refs` and `closure_evidence` cover every proof gate with committed code and passing validation.
 

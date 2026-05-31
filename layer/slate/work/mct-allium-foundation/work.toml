@@ -16,7 +16,7 @@ proof_plan = [
 ]
 closure_evidence = [
     "[x] `layer/allium/mct-product-map.allium` defines the MCT foundation scope and excludes deferred products.",
-    "[x] The Allium file references the MCT Slate lanes and anchors peer binding, hello, call, observation, and toy grant behavior.",
+    "[x] The Allium file references the MCT Slate lanes and anchors peer binding, hello, call, observation, toy grant behavior, and `MctRuntimeShape`.",
     "[x] `allium check layer/allium` passed repeatedly, including the final `./scripts/ci-tier0.sh` validation after commit `a35b598`.",
 ]
 blocked_by = []
@@ -27,5 +27,5 @@ implementation_plan = [
     "[x] Run `allium check layer/allium` if the CLI is available; otherwise record the unavailable-tool reason.",
 ]
 created_at = "1780068465"
-updated_at = "1780262310"
+updated_at = "1780264533"
 closed_at = "1780262310"

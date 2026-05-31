@@ -1,0 +1,39 @@
+id = "mct-slice-runtime-shape-anchors"
+title = "Codify MCT runtime shape in Allium and Slate"
+kind = "build"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Record the agreed shape: Jon-style Rust authority kernel inside, Iroh-style protocol adapters outside, current Mother as evidence not ontology."
+allium_anchors = ["MctRuntimeShape"]
+user_alignment = "User asked to ensure the described architecture is in Allium and Slate and to tighten Slate so future work is implementation-ready."
+belief_refs = ["mother-kernel-decides-adapters-perform", "iroh-provides-connectivity-not-authority", "iroh-endpointid-is-transport-identity", "mct-builds-on-iroh-substrate"]
+core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/adapter-pattern.md", "layer/core/dependable-rust.md", "layer/core/spec-driven-design.md", "layer/core/safety-boundaries.md"]
+parent_slates = ["mct-build-roadmap", "mct-kernel-crate", "mct-daemon-control-plane", "mct-iroh-substrate", "mct-observation-log", "mct-call-envelope", "mct-node-identity-security"]
+code_targets = ["layer/allium/mct-product-map.allium", "layer/slate/work/mct-build-roadmap/work.toml", "layer/slate/work/mct-build-roadmap/mct-build-roadmap.md", "layer/slate/work/mct-kernel-crate/work.toml", "layer/slate/work/mct-iroh-substrate/work.toml", "layer/slate/work/mct-daemon-control-plane/work.toml", "layer/slate/work/mct-observation-log/work.toml", "layer/slate/work/mct-call-envelope/work.toml", "layer/slate/work/mct-node-identity-security/work.toml"]
+non_goals = [
+    "No runtime code changes.",
+    "No new abstraction traits.",
+    "No production Iroh endpoint lifecycle work.",
+]
+implementation_plan = [
+    "[x] Add an Allium contract for the MCT runtime shape and modularity rules.",
+    "[x] Record that current Patina Mother is evidence and prior art, not clean MCT ontology.",
+    "[x] Record Jon-style Rust inside and Iroh-style composable protocol adapters outside.",
+    "[x] Tighten relevant parent Slates with shape anchors and implementation-ready slice rules.",
+]
+proof_plan = [
+    "[x] `MctRuntimeShape` exists in `layer/allium/mct-product-map.allium`.",
+    "[x] Roadmap Slate records the runtime shape and design influences.",
+    "[x] Key parent epic Slates reference the runtime shape anchor and design-style requirements.",
+    "[x] `allium check layer/allium` passes.",
+    "[x] Slate TOML parses for every `layer/slate/work/*/work.toml` file.",
+]
+closure_evidence = [
+    "[x] Commit `5c88f8b spec: codify mct runtime shape` added `MctRuntimeShape` to Allium.",
+    "[x] Follow-up Slate tightening records `MctRuntimeShape` and design-shape fields on parent epics.",
+]
+proof_commands = ["allium check layer/allium", "python3 - <<'PY'\nfrom pathlib import Path\nimport tomllib\nfor p in Path('layer/slate/work').glob('*/work.toml'):\n    tomllib.loads(p.read_text())\nPY"]
+blocked_by = []
+created_at = "1780264533"
+updated_at = "1780264533"
+closed_at = "1780264533"

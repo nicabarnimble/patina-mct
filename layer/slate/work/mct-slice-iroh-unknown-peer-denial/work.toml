@@ -4,12 +4,17 @@ kind = "build"
 status = "ready"
 execution_granularity = "slice"
 human_request = "Implement the next narrow Iroh authority slice: an EndpointId without active MctPeerBinding cannot execute mct/call/0."
-allium_anchors = ["MctPeerBinding", "MctHelloProtocol", "MctCallProtocol", "MctObservation"]
+allium_anchors = ["MctRuntimeShape", "MctPeerBinding", "MctHelloProtocol", "MctCallProtocol", "MctObservation"]
 user_alignment = "User wants Iroh to provide connectivity only; MCT authority requires explicit observed peer binding and hello admission before protected peer effects."
 belief_refs = ["iroh-endpointid-is-transport-identity", "iroh-provides-connectivity-not-authority", "mct-hello-precedes-protected-peer-effects", "mct-call-protocol-wraps-semantic-call"]
 core_refs = ["layer/core/safety-boundaries.md", "layer/core/adapter-pattern.md", "layer/core/spec-driven-design.md", "layer/core/mct-build-boundaries.md"]
 parent_slates = ["mct-iroh-substrate", "mct-node-identity-security", "mct-observation-log", "mct-call-envelope"]
 code_targets = ["crates/mct-iroh/src/lib.rs", "crates/mct-kernel/src/peer/mod.rs", "crates/mct-kernel/src/call/mod.rs", "crates/mct-observation/src/lib.rs"]
+implementation_ready = true
+runtime_shape_role = "First negative proof for the MCT-over-Iroh authority boundary: transport connectivity succeeds, but MCT authority denies protected call effects without an active peer binding."
+design_style = "Iroh-style local endpoint/ALPN roundtrip at the adapter edge; Jon-style typed kernel denial and observation-grade outcome inside."
+first_test_to_write = "unknown_peer_is_denied_before_call"
+exit_criteria = ["A local Iroh client can connect but receives a denied `mct/hello/0` response when no active `MctPeerBinding` exists.", "No `mct/call/0` request is accepted for routing after denied hello.", "The denial is visible as an explicit kernel evaluation or observation-grade fact.", "No raw Iroh authority leaks into `mct-kernel` public API."]
 non_goals = [
     "No production relay/discovery/address-book work.",
     "No persistent node identity store.",
@@ -33,4 +38,4 @@ proof_plan = [
 closure_evidence = []
 blocked_by = ["mct-slice-local-iroh-roundtrip", "mct-allium-foundation"]
 created_at = "1780262310"
-updated_at = "1780262310"
+updated_at = "1780264533"
