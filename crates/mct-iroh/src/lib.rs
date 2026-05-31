@@ -6,8 +6,8 @@
 
 #![forbid(unsafe_code)]
 
-use anyhow::{anyhow, Context, Result};
-use iroh::{endpoint::presets, Endpoint, RelayMode};
+use anyhow::{Context, Result, anyhow};
+use iroh::{Endpoint, RelayMode, endpoint::presets};
 use mct_kernel::*;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -15,6 +15,19 @@ use tokio::sync::Mutex;
 pub struct LocalIrohEchoReport {
     pub hello_response: MctHelloResponse,
     pub call_reply: MctCallProtocolReply,
+}
+
+pub struct LocalIrohDeniedPeerReport {
+    pub hello_response: MctHelloResponse,
+    pub hello_evaluation: MctHelloAdmissionEvaluation,
+    pub call_reply: MctCallProtocolReply,
+    pub call_evaluation: MctCallProtocolEvaluation,
+}
+
+#[derive(Clone, Debug, Default)]
+struct LocalProtocolState {
+    last_hello: Option<MctHelloAdmissionEvaluation>,
+    last_call: Option<MctCallProtocolEvaluation>,
 }
 
 /// Run a local, relay-disabled Iroh roundtrip for `mct/hello/0` then `mct/call/0`.
@@ -43,27 +56,32 @@ pub async fn run_local_iroh_echo_roundtrip() -> Result<LocalIrohEchoReport> {
         .context("bind client Iroh endpoint")?;
     let client_endpoint_id = EndpointIdText::from(client.id().to_string());
     let binding = local_binding_for(&client_endpoint_id);
-    let last_hello = Arc::new(Mutex::new(None::<MctHelloAdmissionEvaluation>));
+    let state = Arc::new(Mutex::new(LocalProtocolState::default()));
 
     let server_task = tokio::spawn(serve_two_local_connections(
         server.clone(),
-        binding,
-        last_hello.clone(),
+        vec![binding],
+        state.clone(),
     ));
 
     let trace_id = TraceId::from("trace-local-iroh-echo");
     let hello_request = local_hello_request(&client_endpoint_id, &trace_id);
-    let hello_response: MctHelloResponse = roundtrip_json(&client, server_addr.clone(), MCT_HELLO_ALPN, &hello_request)
-        .await
-        .context("complete mct/hello/0 roundtrip")?;
+    let hello_response: MctHelloResponse =
+        roundtrip_json(&client, server_addr.clone(), MCT_HELLO_ALPN, &hello_request)
+            .await
+            .context("complete mct/hello/0 roundtrip")?;
     if hello_response.hello_outcome != HelloOutcome::Admitted {
-        anyhow::bail!("local Iroh hello was denied: {}", hello_response.safe_message);
+        anyhow::bail!(
+            "local Iroh hello was denied: {}",
+            hello_response.safe_message
+        );
     }
 
     let call_request = local_call_request(&client_endpoint_id, &trace_id, &hello_response);
-    let call_reply: MctCallProtocolReply = roundtrip_json(&client, server_addr, MCT_CALL_ALPN, &call_request)
-        .await
-        .context("complete mct/call/0 roundtrip")?;
+    let call_reply: MctCallProtocolReply =
+        roundtrip_json(&client, server_addr, MCT_CALL_ALPN, &call_request)
+            .await
+            .context("complete mct/call/0 roundtrip")?;
 
     server.close().await;
     client.close().await;
@@ -75,35 +93,109 @@ pub async fn run_local_iroh_echo_roundtrip() -> Result<LocalIrohEchoReport> {
     })
 }
 
+/// Run a local Iroh roundtrip where transport connectivity succeeds but MCT
+/// authority denies the peer because no active `MctPeerBinding` exists.
+pub async fn run_unknown_peer_denial_roundtrip() -> Result<LocalIrohDeniedPeerReport> {
+    let server = Endpoint::builder(presets::N0)
+        .relay_mode(RelayMode::Disabled)
+        .alpns(vec![
+            MCT_HELLO_ALPN.as_bytes().to_vec(),
+            MCT_CALL_ALPN.as_bytes().to_vec(),
+        ])
+        .bind()
+        .await
+        .context("bind server Iroh endpoint")?;
+    let server_addr = server.addr();
+
+    let client = Endpoint::builder(presets::N0)
+        .relay_mode(RelayMode::Disabled)
+        .alpns(vec![
+            MCT_HELLO_ALPN.as_bytes().to_vec(),
+            MCT_CALL_ALPN.as_bytes().to_vec(),
+        ])
+        .bind()
+        .await
+        .context("bind client Iroh endpoint")?;
+    let client_endpoint_id = EndpointIdText::from(client.id().to_string());
+    let state = Arc::new(Mutex::new(LocalProtocolState::default()));
+
+    let server_task = tokio::spawn(serve_two_local_connections(
+        server.clone(),
+        Vec::new(),
+        state.clone(),
+    ));
+
+    let trace_id = TraceId::from("trace-local-iroh-unknown-peer");
+    let hello_request = local_hello_request(&client_endpoint_id, &trace_id);
+    let hello_response: MctHelloResponse =
+        roundtrip_json(&client, server_addr.clone(), MCT_HELLO_ALPN, &hello_request)
+            .await
+            .context("complete denied mct/hello/0 roundtrip")?;
+
+    let call_request = local_call_request(&client_endpoint_id, &trace_id, &hello_response);
+    let call_reply: MctCallProtocolReply =
+        roundtrip_json(&client, server_addr, MCT_CALL_ALPN, &call_request)
+            .await
+            .context("complete denied mct/call/0 roundtrip")?;
+
+    server.close().await;
+    client.close().await;
+    server_task.await.context("join local Iroh server task")??;
+
+    let state = state.lock().await;
+    Ok(LocalIrohDeniedPeerReport {
+        hello_response,
+        hello_evaluation: state
+            .last_hello
+            .clone()
+            .ok_or_else(|| anyhow!("missing server-side hello evaluation"))?,
+        call_reply,
+        call_evaluation: state
+            .last_call
+            .clone()
+            .ok_or_else(|| anyhow!("missing server-side call evaluation"))?,
+    })
+}
+
 async fn serve_two_local_connections(
     endpoint: Endpoint,
-    binding: MctPeerBinding,
-    last_hello: Arc<Mutex<Option<MctHelloAdmissionEvaluation>>>,
+    bindings: Vec<MctPeerBinding>,
+    state: Arc<Mutex<LocalProtocolState>>,
 ) -> Result<()> {
     for _ in 0..2 {
         let Some(incoming) = endpoint.accept().await else {
             return Ok(());
         };
-        let mut accepting = incoming.accept().context("accept incoming Iroh connection")?;
+        let mut accepting = incoming
+            .accept()
+            .context("accept incoming Iroh connection")?;
         let alpn = accepting.alpn().await.context("read incoming ALPN")?;
-        let connection = accepting.await.context("finish Iroh connection acceptance")?;
-        let (mut send, mut recv) = connection.accept_bi().await.context("accept bidirectional stream")?;
-        let request_bytes = recv.read_to_end(64 * 1024).await.context("read request stream")?;
+        let connection = accepting
+            .await
+            .context("finish Iroh connection acceptance")?;
+        let (mut send, mut recv) = connection
+            .accept_bi()
+            .await
+            .context("accept bidirectional stream")?;
+        let request_bytes = recv
+            .read_to_end(64 * 1024)
+            .await
+            .context("read request stream")?;
 
         let response_bytes = match alpn.as_slice() {
             bytes if bytes == MCT_HELLO_ALPN.as_bytes() => {
-                let request: MctHelloRequest = serde_json::from_slice(&request_bytes)
-                    .context("decode mct/hello/0 request")?;
+                let request: MctHelloRequest =
+                    serde_json::from_slice(&request_bytes).context("decode mct/hello/0 request")?;
                 let evaluation = evaluate_hello(
                     &request,
-                    std::slice::from_ref(&binding),
+                    &bindings,
                     &HelloPolicy::default(),
                     EvaluationIds {
                         decision_id: DecisionId::from("decision-iroh-hello"),
                         observation_id: ObservationId::from("obs-iroh-hello-decision"),
                     },
                 );
-                *last_hello.lock().await = Some(evaluation.clone());
+                state.lock().await.last_hello = Some(evaluation.clone());
                 serde_json::to_vec(&hello_response(
                     "reply-iroh-hello",
                     &evaluation,
@@ -112,11 +204,12 @@ async fn serve_two_local_connections(
                 .context("encode mct/hello/0 response")?
             }
             bytes if bytes == MCT_CALL_ALPN.as_bytes() => {
-                let request: MctCallProtocolRequest = serde_json::from_slice(&request_bytes)
-                    .context("decode mct/call/0 request")?;
-                let hello = last_hello
+                let request: MctCallProtocolRequest =
+                    serde_json::from_slice(&request_bytes).context("decode mct/call/0 request")?;
+                let hello = state
                     .lock()
                     .await
+                    .last_hello
                     .clone()
                     .ok_or_else(|| anyhow!("mct/call/0 received before admitted hello"))?;
                 let evaluation = evaluate_call_protocol(
@@ -127,6 +220,7 @@ async fn serve_two_local_connections(
                         observation_id: ObservationId::from("obs-iroh-call-decision"),
                     },
                 );
+                state.lock().await.last_call = Some(evaluation.clone());
                 let result_ref = evaluation
                     .is_accepted_for_routing()
                     .then(|| ResultRef::from("result-iroh-echo"));
@@ -138,7 +232,10 @@ async fn serve_two_local_connections(
                 ))
                 .context("encode mct/call/0 response")?
             }
-            other => anyhow::bail!("unsupported local Iroh ALPN: {}", String::from_utf8_lossy(other)),
+            other => anyhow::bail!(
+                "unsupported local Iroh ALPN: {}",
+                String::from_utf8_lossy(other)
+            ),
         };
 
         send.write_all(&response_bytes)
@@ -164,11 +261,19 @@ where
         .connect(server_addr, alpn.as_bytes())
         .await
         .with_context(|| format!("connect over {alpn}"))?;
-    let (mut send, mut recv) = connection.open_bi().await.context("open bidirectional stream")?;
+    let (mut send, mut recv) = connection
+        .open_bi()
+        .await
+        .context("open bidirectional stream")?;
     let bytes = serde_json::to_vec(request).context("encode request")?;
-    send.write_all(&bytes).await.context("write request stream")?;
+    send.write_all(&bytes)
+        .await
+        .context("write request stream")?;
     send.finish().context("finish request stream")?;
-    let response = recv.read_to_end(64 * 1024).await.context("read response stream")?;
+    let response = recv
+        .read_to_end(64 * 1024)
+        .await
+        .context("read response stream")?;
     connection.close(0u32.into(), b"mct client complete");
     serde_json::from_slice(&response).context("decode response")
 }
@@ -313,7 +418,43 @@ mod tests {
     async fn local_iroh_completes_mct_hello_then_call() {
         let report = run_local_iroh_echo_roundtrip().await.unwrap();
         assert_eq!(report.hello_response.hello_outcome, HelloOutcome::Admitted);
-        assert_eq!(report.call_reply.reply_outcome, CallProtocolReplyOutcome::Success);
-        assert_eq!(report.call_reply.result_ref, Some(ResultRef::from("result-iroh-echo")));
+        assert_eq!(
+            report.call_reply.reply_outcome,
+            CallProtocolReplyOutcome::Success
+        );
+        assert_eq!(
+            report.call_reply.result_ref,
+            Some(ResultRef::from("result-iroh-echo"))
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_peer_is_denied_before_call() {
+        let report = run_unknown_peer_denial_roundtrip().await.unwrap();
+
+        assert_eq!(report.hello_response.hello_outcome, HelloOutcome::Denied);
+        assert_eq!(report.hello_response.safe_message, "not authorized");
+        assert_eq!(report.hello_evaluation.reason, HelloReason::MissingBinding);
+        assert_eq!(report.hello_evaluation.selected_binding_id, None);
+        assert_eq!(
+            report.hello_evaluation.observation_id,
+            ObservationId::from("obs-iroh-hello-decision")
+        );
+
+        assert_eq!(
+            report.call_reply.reply_outcome,
+            CallProtocolReplyOutcome::Denied
+        );
+        assert_eq!(report.call_reply.result_ref, None);
+        assert_eq!(report.call_evaluation.outcome, CallProtocolOutcome::Denied);
+        assert_eq!(
+            report.call_evaluation.reason,
+            CallProtocolReason::HelloNotAdmitted
+        );
+        assert_eq!(report.call_evaluation.route_decision_id, None);
+        assert_eq!(
+            report.call_evaluation.observation_id,
+            ObservationId::from("obs-iroh-call-decision")
+        );
     }
 }
