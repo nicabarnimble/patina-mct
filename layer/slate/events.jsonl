@@ -233,3 +233,10 @@
 {"created_at":"1780070278","event_type":"completed","payload":{"force":false},"work_id":"mct-build-roadmap"}
 {"created_at":"1780071077","event_type":"activated","payload":{"force":true,"from":"ready","to":"active"},"work_id":"mct-allium-foundation"}
 {"created_at":"1780071246","event_type":"set","payload":{"field":"allium_anchor","value":"layer/allium/mct-product-map.allium"},"work_id":"mct-allium-foundation"}
+{"created_at":"1780262080","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-workspace-skeleton"}
+{"created_at":"1780262080","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-kernel-domain-records"}
+{"created_at":"1780262081","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-hello-admission"}
+{"created_at":"1780262082","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-jsonl-observation-ledger"}
+{"created_at":"1780262083","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-call-protocol-evaluation"}
+{"created_at":"1780262083","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-fake-daemon-echo"}
+{"created_at":"1780262084","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-local-iroh-roundtrip"}
