@@ -11,3 +11,6 @@ mct-kernel = { path = "../mct-kernel" }
 mct-observation = { path = "../mct-observation" }
 mct-iroh = { path = "../mct-iroh" }
 anyhow.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -195,6 +195,7 @@ dependencies = [
  "mct-iroh",
  "mct-kernel",
  "mct-observation",
+ "tempfile",
 ]
 
 [[package]]
