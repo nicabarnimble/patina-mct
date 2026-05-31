@@ -2,6 +2,9 @@ id = "mct-inspector-observability"
 title = "Build inspector and observability surfaces"
 kind = "build"
 status = "blocked"
+execution_granularity = "epic_container"
+direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
+completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
 human_request = "Expose useful MCT observability surfaces such as typed call history, health details, authority decisions, adapter diagnostics, and eventually view buffers."
 allium_anchors = []
 user_alignment = "Observability is mandatory, but view rendering and buffers should not bloat the first kernel/daemon slice."
@@ -24,5 +27,5 @@ implementation_plan = [
     "[ ] Compare current integrated typed-call history/view-buffer surfaces and split capture from display.",
 ]
 created_at = "1780068565"
-updated_at = "1780070143"
+updated_at = "1780262310"
 block_reason = "Blocked until mct-daemon-control-plane is completed or explicitly superseded in the roadmap."

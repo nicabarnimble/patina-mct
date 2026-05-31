@@ -240,3 +240,4 @@
 {"created_at":"1780262083","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-call-protocol-evaluation"}
 {"created_at":"1780262083","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-fake-daemon-echo"}
 {"created_at":"1780262084","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-local-iroh-roundtrip"}
+{"created_at":"1780262474","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-iroh-unknown-peer-denial"}

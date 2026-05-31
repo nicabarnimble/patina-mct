@@ -1,7 +1,7 @@
 # MCT Build Roadmap
 
 Slate: `mct-build-roadmap`  
-Status: active
+Status: complete
 
 ## Purpose
 
@@ -119,6 +119,33 @@ mct-build-roadmap
 
 This graph is intentionally conservative. Study/design can happen earlier, but implementation slates are blocked until their authority and envelope dependencies are settled.
 
+## Honest implementation tracking
+
+The broad build lanes above are epic containers, not proof that implementation is complete. They should not be implemented or closed in one large change.
+
+Implementation progress is tracked by smaller child slice Slates with:
+
+- one concrete behavior or artifact,
+- named code targets,
+- explicit non-goals,
+- binary proof gates,
+- commit evidence,
+- validation commands.
+
+Completed implementation slice Slates now recorded:
+
+| Slice Slate | Evidence |
+|---|---|
+| `mct-slice-workspace-skeleton` | `cd6244d build: add rust workspace skeleton` |
+| `mct-slice-kernel-domain-records` | `b3512ac feat(kernel): add mct domain records` |
+| `mct-slice-hello-admission` | `62a88a9 feat(kernel): evaluate hello peer admission` |
+| `mct-slice-jsonl-observation-ledger` | `b7f9246 feat(observation): add append-only jsonl ledger` |
+| `mct-slice-call-protocol-evaluation` | `103cfab feat(kernel): evaluate mct call protocol` |
+| `mct-slice-fake-daemon-echo` | `d826098 feat(daemon): add fake echo vertical slice` |
+| `mct-slice-local-iroh-roundtrip` | `a35b598 feat(iroh): prove local mct protocol roundtrip` |
+
+A parent epic becomes complete only when its child `slice_refs` and `closure_evidence` cover every proof gate with committed code and passing validation.
+
 ## Alignment judgement
 
 ### Strong alignment
@@ -131,15 +158,14 @@ This graph is intentionally conservative. Study/design can happen earlier, but i
 
 ### Known risks
 
-- Too many slates can become process overhead if not actively pruned.
+- Too many broad slates can become process theater if they are not split into concrete implementation slices.
 - `kernel` terminology may still be too heavy; revisit `mct-kernel` vs `mct-core` before crate creation.
 - Iroh scope needs one focused study pass against cached `n0-computer/iroh` and companion protocol repos.
-- Allium anchors are still missing; `mct-allium-foundation` should run before implementation accelerates.
+- Future Allium changes should use focused slice Slates rather than reopening broad foundation work by default.
 
 ## Immediate next actions
 
-1. Run Allium elicitation for the first MCT behavior spec.
-2. Finish `mother-kernel-design` proof closure or rename it if we want the public term `mct-kernel-design`.
-3. Resolve `mct-kernel` vs `mct-core` terminology.
-4. Lock concrete Rust types for `MctCallEnvelope v1`.
-5. Begin implementation only after the envelope and authority observations are settled.
+1. Pick the next child slice Slate rather than implementing a broad epic directly.
+2. Finish or retire `mother-kernel-design` as a design precursor now that concrete kernel slices exist.
+3. Create the next ready slice for daemon health/readiness, unknown Iroh peer denial, or call-envelope JSON edge conversion.
+4. Keep parent epic statuses honest: partial evidence belongs in `partial_evidence`; completion requires child slice proof.

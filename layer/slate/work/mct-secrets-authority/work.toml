@@ -2,6 +2,9 @@ id = "mct-secrets-authority"
 title = "Build MCT secrets authority"
 kind = "build"
 status = "blocked"
+execution_granularity = "epic_container"
+direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
+completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
 human_request = "Implement controlled secrets authority for children, bridges, launchers, and toys without exposing secrets ambiently."
 allium_anchors = []
 user_alignment = "Secrets are MCT control-plane infrastructure and must be explicit, authorized, and observable."
@@ -25,5 +28,5 @@ implementation_plan = [
     "[ ] Emit kernel observations for authorization decisions and adapter observations for backend failures.",
 ]
 created_at = "1780068545"
-updated_at = "1780070136"
+updated_at = "1780262310"
 block_reason = "Blocked until mct-toy-grants is completed or explicitly superseded in the roadmap."

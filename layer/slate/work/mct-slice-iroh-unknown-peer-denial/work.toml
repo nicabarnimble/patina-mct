@@ -1,0 +1,36 @@
+id = "mct-slice-iroh-unknown-peer-denial"
+title = "Deny unknown Iroh peer before protected MCT call"
+kind = "build"
+status = "ready"
+execution_granularity = "slice"
+human_request = "Implement the next narrow Iroh authority slice: an EndpointId without active MctPeerBinding cannot execute mct/call/0."
+allium_anchors = ["MctPeerBinding", "MctHelloProtocol", "MctCallProtocol", "MctObservation"]
+user_alignment = "User wants Iroh to provide connectivity only; MCT authority requires explicit observed peer binding and hello admission before protected peer effects."
+belief_refs = ["iroh-endpointid-is-transport-identity", "iroh-provides-connectivity-not-authority", "mct-hello-precedes-protected-peer-effects", "mct-call-protocol-wraps-semantic-call"]
+core_refs = ["layer/core/safety-boundaries.md", "layer/core/adapter-pattern.md", "layer/core/spec-driven-design.md", "layer/core/mct-build-boundaries.md"]
+parent_slates = ["mct-iroh-substrate", "mct-node-identity-security", "mct-observation-log", "mct-call-envelope"]
+code_targets = ["crates/mct-iroh/src/lib.rs", "crates/mct-kernel/src/peer/mod.rs", "crates/mct-kernel/src/call/mod.rs", "crates/mct-observation/src/lib.rs"]
+non_goals = [
+    "No production relay/discovery/address-book work.",
+    "No persistent node identity store.",
+    "No child/WASM runtime changes.",
+    "No ECH/OHTTP/privacy relay work.",
+]
+implementation_plan = [
+    "[ ] Add a local Iroh integration test for an unknown peer endpoint with no active `MctPeerBinding`.",
+    "[ ] Ensure `mct/hello/0` denies the peer with a caller-safe response.",
+    "[ ] Ensure `mct/call/0` cannot proceed to routing after denied hello.",
+    "[ ] Return or record an observation-grade denial fact for the attempted protected effect.",
+]
+proof_plan = [
+    "[ ] `cargo test -p mct-iroh unknown_peer_is_denied_before_call` passes.",
+    "[ ] Test proves Iroh EndpointId alone is insufficient authority.",
+    "[ ] Test proves denied hello prevents `mct/call/0` routing.",
+    "[ ] Test proves the denial is represented as an observation-grade fact or explicit kernel evaluation.",
+    "[ ] `cargo test --workspace` passes.",
+    "[ ] `allium check layer/allium` passes.",
+]
+closure_evidence = []
+blocked_by = ["mct-slice-local-iroh-roundtrip", "mct-allium-foundation"]
+created_at = "1780262310"
+updated_at = "1780262310"

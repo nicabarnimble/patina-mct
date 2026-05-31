@@ -1,25 +1,33 @@
 id = "mother-kernel-design"
 title = "Design Mother kernel under Rust systems lens"
 kind = "design"
-status = "ready"
+status = "complete"
+execution_granularity = "design_foundation"
+completion_rule = "Closed as a design foundation; subsequent implementation must happen through child slice Slates or concrete build-lane epics with binary proof gates."
 human_request = "Capture the agreed and proposed design for the clean Patina MCT Mother kernel under a Jon Gjengset-style Rust design lens: small typed core, explicit authority boundary, runtime adapters outside the kernel, and no Belief/product logic in the kernel."
 allium_anchors = []
-user_alignment = "User wants slow, explicit MCT design in the new patina-mct repo, with answers grounded in evidence and shared agreement rather than hand-wavey migration assumptions."
+user_alignment = "User wants slow, explicit MCT design in the new patina-mct repo, with answers grounded in evidence and shared agreement rather than hand-wavey migration assumptions. The design artifact now exists; implementation must be tracked by narrower slices."
 belief_refs = []
 core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/dependable-rust.md", "layer/core/adapter-pattern.md", "layer/core/spec-driven-design.md"]
 proof_plan = [
-    "[ ] Slate design artifact `layer/slate/work/mother-kernel-design/mother-kernel-design.md` explains the proposed Mother kernel shape under a Rust systems/Jon Gjengset lens.",
-    "[ ] Artifact states the kernel responsibilities, non-responsibilities, typed domain model, adapter boundaries, lifecycle state machine, grant engine, and error strategy.",
-    "[ ] Artifact links back to the MCT feature map `layer/surface/patina-mct.org` and the integrated Patina reference code where relevant.",
-    "[ ] Open questions remain explicit instead of hidden as implementation assumptions.",
+    "[x] Slate design artifact `layer/slate/work/mother-kernel-design/mother-kernel-design.md` explains the proposed Mother kernel shape under a Rust systems/Jon Gjengset lens.",
+    "[x] Artifact states the kernel responsibilities, non-responsibilities, typed domain model, adapter boundaries, lifecycle state machine, grant engine, and error strategy.",
+    "[x] Artifact links back to the MCT feature map `layer/surface/patina-mct.org` and the integrated Patina reference code where relevant.",
+    "[x] Open questions remain explicit instead of hidden as implementation assumptions.",
 ]
-closure_evidence = []
+closure_evidence = [
+    "[x] `layer/slate/work/mother-kernel-design/mother-kernel-design.md` exists and captures the Mother kernel design lens.",
+    "[x] The artifact names kernel responsibilities, adapter non-responsibilities, proposed module boundaries, lifecycle state machine, grant engine, and observation/error strategy.",
+    "[x] The artifact links `layer/surface/patina-mct.org` and integrated Patina reference paths as evidence, not ontology.",
+    "[x] The artifact keeps open questions explicit and has been superseded for implementation by completed slice Slates.",
+]
 blocked_by = []
 implementation_plan = [
-    "[ ] Capture the Mother kernel as a small typed authority core, separate from daemon transport and runtime adapters.",
-    "[ ] Define the kernel public API shape with typed IDs, lifecycle states, grant authorization, call routing, and observation/audit output.",
-    "[ ] Classify process/JVM/WASM, store, secrets, p2p, launcher, and Belief integration as adapters/products outside the kernel.",
-    "[ ] Record why each boundary exists, using honest signatures, minimal public interface, domain types, fail-closed errors, and adapter traits only where multiple real implementations exist.",
+    "[x] Capture the Mother kernel as a small typed authority core, separate from daemon transport and runtime adapters.",
+    "[x] Define the kernel public API shape with typed IDs, lifecycle states, grant authorization, call routing, and observation/audit output.",
+    "[x] Classify process/JVM/WASM, store, secrets, p2p, launcher, and Belief integration as adapters/products outside the kernel.",
+    "[x] Record why each boundary exists, using honest signatures, minimal public interface, domain types, fail-closed errors, and adapter traits only where multiple real implementations exist.",
 ]
 created_at = "1779978448"
-updated_at = "1780070180"
+updated_at = "1780262310"
+closed_at = "1780262310"

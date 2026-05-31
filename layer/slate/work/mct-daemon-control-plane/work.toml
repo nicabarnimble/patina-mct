@@ -2,11 +2,17 @@ id = "mct-daemon-control-plane"
 title = "Build MCT daemon local control plane"
 kind = "build"
 status = "blocked"
+execution_granularity = "epic_container"
+direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
+completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
 human_request = "Build the first clean MCT daemon shell with local control-plane transport, health/version/readiness, lifecycle wiring, and kernel integration."
 allium_anchors = []
 user_alignment = "MCT needs a daemon, but the clean repo should not inherit current Mother's broad ServerState/ApiRuntime coupling."
 belief_refs = []
 core_refs = ["layer/core/unix-philosophy.md", "layer/core/dependable-rust.md", "layer/core/safety-boundaries.md", "layer/core/mct-build-boundaries.md"]
+slice_refs = ["mct-slice-workspace-skeleton", "mct-slice-fake-daemon-echo"]
+partial_evidence = ["[x] Daemon crate exists.", "[x] Fake vertical slice composes kernel evaluation, echo result, and observation ledger.", "[ ] Local UDS/HTTP control plane, health/version/readiness, and authorization gates remain open."]
+next_slice_candidates = ["mct-slice-daemon-health-readiness", "mct-slice-daemon-local-control-api"]
 proof_plan = [
     "[ ] Daemon starts locally and reports health/version/readiness.",
     "[ ] Control-plane tests prove unauthenticated/unauthorized paths fail closed where applicable.",
@@ -25,5 +31,5 @@ implementation_plan = [
     "[ ] Add graceful start/stop, logging, and readiness tests.",
 ]
 created_at = "1780068498"
-updated_at = "1780070126"
-block_reason = "Blocked until mct-observation-log is completed or explicitly superseded in the roadmap."
+updated_at = "1780262310"
+block_reason = "Epic remains open; fake daemon vertical slice is complete, but real local control plane and readiness behavior still require smaller slice Slates."

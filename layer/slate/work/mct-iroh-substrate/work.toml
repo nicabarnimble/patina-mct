@@ -2,11 +2,17 @@ id = "mct-iroh-substrate"
 title = "Build production-shaped Iroh v0 substrate"
 kind = "build"
 status = "blocked"
+execution_granularity = "epic_container"
+direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
+completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
 human_request = "Implement Iroh as a real early Mother-to-Mother substrate: persistent node identity, endpoint lifecycle, relay/discovery, peer admission, ALPN protocol, direct streams, observations, and multi-node tests."
 allium_anchors = ["MctPeerBinding", "MctPeerAdmissionDecision", "MctIrohPeerBindingAuthority", "MctIrohProtocolPolicy", "MctIrohProtocolDeclaration", "MctIrohProtocolLayer", "MctHelloRequest", "MctHelloAdmissionEvaluation", "MctHelloResponse", "MctHelloProtocol", "MctCallProtocolRequest", "MctCallProtocolEvaluation", "MctCallProtocolReply", "MctCallProtocol"]
 user_alignment = "User rejected a skeleton Iroh path and pointed to the cached `n0-computer/iroh` repo as reference material. Later reframed MCT as a WASM/WASI/WIT app system over Iroh, with Iroh as the p2p substrate and MCT providing authority, observations, and thought-mesh semantics. User agreed that Iroh EndpointId is transport identity only; MCT requires explicit observed binding to Node/Vision/admission/policy authority. User-provided Iroh direction evidence reinforces that Iroh stops at connectivity and ALPN composition while MCT occupies the protocol/runtime/authority layer above."
 belief_refs = ["mct-builds-on-iroh-substrate", "iroh-noq-evidence-before-rules", "iroh-endpointid-is-transport-identity", "iroh-provides-connectivity-not-authority", "mct-hello-precedes-protected-peer-effects", "mct-call-protocol-wraps-semantic-call"]
 core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/adapter-pattern.md", "layer/core/safety-boundaries.md"]
+slice_refs = ["mct-slice-kernel-domain-records", "mct-slice-hello-admission", "mct-slice-call-protocol-evaluation", "mct-slice-local-iroh-roundtrip"]
+partial_evidence = ["[x] Iroh/noq evidence has been captured before rule finalization.", "[x] Local relay-disabled Iroh endpoints complete `mct/hello/0` then `mct/call/0`.", "[x] Adapter proof keeps MCT authority in explicit `MctPeerBinding` and kernel evaluation.", "[ ] Persistent endpoint lifecycle, relay/discovery/address book, unknown-peer integration denial, and adapter observations remain open."]
+next_slice_candidates = ["mct-slice-iroh-unknown-peer-denial", "mct-slice-iroh-mother-owned-endpoint-lifecycle", "mct-slice-iroh-adapter-observations"]
 proof_plan = [
     "[ ] Local multi-node integration test completes mct/hello/0 admission before sending an MCT call envelope over Iroh and receiving a reply.",
     "[ ] Peer admission denies unknown/untrusted peers and records a kernel observation.",
@@ -30,5 +36,5 @@ implementation_plan = [
     "[ ] Emit adapter observations for connect/accept/send/receive/relay fallback/stream reset/close.",
 ]
 created_at = "1780068505"
-updated_at = "1780070128"
-block_reason = "Blocked until mct-observation-log is completed or explicitly superseded in the roadmap."
+updated_at = "1780262310"
+block_reason = "Epic remains open; completed child slice proves local MCT-over-Iroh, but production endpoint lifecycle, discovery, unknown-peer integration denial, and adapter observations still require smaller slice Slates."

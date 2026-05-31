@@ -2,11 +2,17 @@ id = "mct-call-envelope"
 title = "Lock and implement MCT call envelope v1"
 kind = "build"
 status = "blocked"
+execution_granularity = "epic_container"
+direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
+completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
 human_request = "Define and implement the stable MCT semantic call envelope shared by process harnesses, JVM bridge, WASM components, local control, and Iroh peer calls."
 allium_anchors = ["MctCall", "MctCallProtocolAuthority", "MctCallPayloadHandle", "MctCallProtocolRequest", "MctCallProtocolEvaluation", "MctCallProtocolReply", "MctCallProtocol"]
 user_alignment = "User agreed we need one stable envelope and asked to lock the shape rather than leave it vague. The Iroh call protocol is now specified as mct/call/0: a transport envelope around the semantic MctCall, admitted only after mct/hello/0."
 belief_refs = ["mct-call-protocol-wraps-semantic-call"]
 core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/spec-driven-design.md", "layer/core/dependable-rust.md"]
+slice_refs = ["mct-slice-kernel-domain-records", "mct-slice-call-protocol-evaluation", "mct-slice-fake-daemon-echo", "mct-slice-local-iroh-roundtrip"]
+partial_evidence = ["[x] Semantic `MctCall`/`MctResult` records exist in `mct-kernel`.", "[x] `mct/call/0` protocol request/evaluation/reply records and pure evaluation exist.", "[ ] JSON/control-plane edge conversions and adapter mapping docs remain open."]
+next_slice_candidates = ["mct-slice-call-envelope-json-edge-roundtrip", "mct-slice-call-envelope-adapter-mapping-doc"]
 proof_plan = [
     "[ ] Roundtrip tests cover JSON edge encoding, mct/call/0 edge encoding, and typed kernel representation.",
     "[ ] Envelope supports caller/target/operation/payload/auth/deadline/idempotency/trace without transport-specific authority types.",
@@ -24,5 +30,5 @@ implementation_plan = [
     "[ ] Document how process, JVM, WASM, UDS/HTTP, and Iroh adapters map into the envelope, using mct/call/0 as the remote peer mapping.",
 ]
 created_at = "1780068477"
-updated_at = "1780070118"
-block_reason = "Blocked until mother-kernel-design is completed or explicitly superseded in the roadmap."
+updated_at = "1780262310"
+block_reason = "Epic remains open; completed child slices cover kernel records and pure mct/call/0 evaluation, but edge conversions and adapter mapping still require smaller slice Slates."

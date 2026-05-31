@@ -2,6 +2,9 @@ id = "mct-process-harness"
 title = "Build process child harness"
 kind = "build"
 status = "blocked"
+execution_granularity = "epic_container"
+direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
+completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
 human_request = "Implement the process/executable child runtime adapter to prove the child protocol before full JVM and WASM runtime depth."
 allium_anchors = []
 user_alignment = "Process harness is the simplest proof path for lifecycle, routing, envelope, observations, and adapter boundaries without over-engineering."
@@ -25,5 +28,5 @@ implementation_plan = [
     "[ ] Add an echo/test child fixture.",
 ]
 created_at = "1780068518"
-updated_at = "1780070132"
+updated_at = "1780262310"
 block_reason = "Blocked until mct-observation-log is completed or explicitly superseded in the roadmap."
