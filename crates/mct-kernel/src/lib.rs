@@ -5,6 +5,16 @@
 
 #![forbid(unsafe_code)]
 
+pub mod call;
+pub mod id;
+pub mod observation;
+pub mod peer;
+
+pub use call::*;
+pub use id::*;
+pub use observation::*;
+pub use peer::*;
+
 /// Returns the crate version for health and smoke tests.
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
