@@ -6,6 +6,7 @@ human_request = "Capture the agreed and proposed design for the clean Patina MCT
 allium_anchors = []
 user_alignment = "User wants slow, explicit MCT design in the new patina-mct repo, with answers grounded in evidence and shared agreement rather than hand-wavey migration assumptions."
 belief_refs = []
+core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/dependable-rust.md", "layer/core/adapter-pattern.md", "layer/core/spec-driven-design.md"]
 proof_plan = [
     "[ ] Slate design artifact `layer/slate/work/mother-kernel-design/mother-kernel-design.md` explains the proposed Mother kernel shape under a Rust systems/Jon Gjengset lens.",
     "[ ] Artifact states the kernel responsibilities, non-responsibilities, typed domain model, adapter boundaries, lifecycle state machine, grant engine, and error strategy.",

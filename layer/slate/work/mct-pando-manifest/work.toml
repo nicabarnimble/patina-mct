@@ -6,6 +6,7 @@ human_request = "Implement the MCT Pando manifest/app composition foundation, st
 allium_anchors = []
 user_alignment = "Pando belongs to MCT as app/composition concept, but full composition should not block the first daemon/child protocol."
 belief_refs = []
+core_refs = ["layer/core/spec-driven-design.md", "layer/core/mct-build-boundaries.md"]
 proof_plan = [
     "[ ] Valid manifest loads and produces an activation plan.",
     "[ ] Invalid/missing child or grant requirements fail closed with typed diagnostics.",

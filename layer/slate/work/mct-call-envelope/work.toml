@@ -6,6 +6,7 @@ human_request = "Define and implement the stable MCT semantic call envelope shar
 allium_anchors = ["MctCall", "MctCallProtocolAuthority", "MctCallPayloadHandle", "MctCallProtocolRequest", "MctCallProtocolEvaluation", "MctCallProtocolReply", "MctCallProtocol"]
 user_alignment = "User agreed we need one stable envelope and asked to lock the shape rather than leave it vague. The Iroh call protocol is now specified as mct/call/0: a transport envelope around the semantic MctCall, admitted only after mct/hello/0."
 belief_refs = ["mct-call-protocol-wraps-semantic-call"]
+core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/spec-driven-design.md", "layer/core/dependable-rust.md"]
 proof_plan = [
     "[ ] Roundtrip tests cover JSON edge encoding, mct/call/0 edge encoding, and typed kernel representation.",
     "[ ] Envelope supports caller/target/operation/payload/auth/deadline/idempotency/trace without transport-specific authority types.",

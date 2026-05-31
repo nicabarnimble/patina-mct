@@ -6,6 +6,7 @@ human_request = "Run Allium elicitation for the clean MCT product and create the
 allium_anchors = ["layer/allium/mct-product-map.allium"]
 user_alignment = "User asked whether Allium elicitation had happened; it has not, so the build needs explicit Allium anchors before implementation accelerates."
 belief_refs = []
+core_refs = ["layer/core/spec-driven-design.md", "layer/core/mct-build-boundaries.md", "layer/core/oxidized-knowledge.md"]
 proof_plan = [
     "[ ] `layer/allium/` contains at least one `.allium` file with explicit scope/includes/excludes.",
     "[ ] The Allium spec references the MCT Slate lanes it anchors.",

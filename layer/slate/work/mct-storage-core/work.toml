@@ -6,6 +6,7 @@ human_request = "Design and implement the first concrete private storage layer f
 allium_anchors = []
 user_alignment = "User wants to compare against current Mother without over-engineering; the answer is concrete, narrow, private, and performant storage rather than generic public storage abstractions."
 belief_refs = []
+core_refs = ["layer/core/adapter-pattern.md", "layer/core/dependable-rust.md", "layer/core/safety-boundaries.md"]
 proof_plan = [
     "[ ] Storage tests pass using temp directories/databases.",
     "[ ] Schema inventory documents what was intentionally not copied from current Mother.",

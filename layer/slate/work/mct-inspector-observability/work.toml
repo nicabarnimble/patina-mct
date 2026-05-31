@@ -6,6 +6,7 @@ human_request = "Expose useful MCT observability surfaces such as typed call his
 allium_anchors = []
 user_alignment = "Observability is mandatory, but view rendering and buffers should not bloat the first kernel/daemon slice."
 belief_refs = []
+core_refs = ["layer/core/oxidized-knowledge.md", "layer/core/safety-boundaries.md", "layer/core/mct-build-boundaries.md"]
 proof_plan = [
     "[ ] Inspector returns recent kernel and adapter observations by call_id/child/peer filters.",
     "[ ] Observation capture works without the view-buffer subsystem.",

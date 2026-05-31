@@ -6,6 +6,7 @@ human_request = "Add integration tests, performance checks, security review, pac
 allium_anchors = []
 user_alignment = "The clean MCT repo must be dependable, performant at the core, and built in reviewable slices before SDK/Belief follow-on work."
 belief_refs = []
+core_refs = ["layer/core/safety-boundaries.md", "layer/core/spec-driven-design.md", "layer/core/mct-build-boundaries.md"]
 proof_plan = [
     "[ ] End-to-end tests pass in CI/local harness.",
     "[ ] Performance baselines are recorded and protect kernel hot paths from obvious regressions.",

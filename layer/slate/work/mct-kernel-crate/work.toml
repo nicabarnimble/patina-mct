@@ -6,6 +6,7 @@ human_request = "Implement the `mct-kernel` crate as the small, typed, performan
 allium_anchors = []
 user_alignment = "User mostly agrees with `mct-kernel` but wants the build to stay clean, performant, and not over-engineered."
 belief_refs = []
+core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/dependable-rust.md", "layer/core/spec-driven-design.md", "layer/core/safety-boundaries.md"]
 proof_plan = [
     "[ ] `cargo test` passes for the kernel crate.",
     "[ ] Public API exposes typed domain concepts and not transport/runtime/storage implementation types.",

@@ -6,6 +6,7 @@ human_request = "Implement controlled secrets authority for children, bridges, l
 allium_anchors = []
 user_alignment = "Secrets are MCT control-plane infrastructure and must be explicit, authorized, and observable."
 belief_refs = []
+core_refs = ["layer/core/safety-boundaries.md", "layer/core/adapter-pattern.md", "layer/core/mct-build-boundaries.md"]
 proof_plan = [
     "[ ] Unauthorized secret requests are denied and observed without leaking secret material.",
     "[ ] Authorized secret use is scoped to child/bridge/toy identity.",

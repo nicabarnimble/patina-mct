@@ -6,6 +6,7 @@ human_request = "Rebuild the launcher behavior currently surfaced as `patina ai`
 allium_anchors = []
 user_alignment = "User explicitly said MCT will own the launcher behavior currently in `patina ai`."
 belief_refs = []
+core_refs = ["layer/core/safety-boundaries.md", "layer/core/adapter-pattern.md", "layer/core/mct-build-boundaries.md"]
 proof_plan = [
     "[ ] Launcher can start or attach to a supported interface and complete a control-plane handshake.",
     "[ ] Launcher records observations without requiring Belief scrape/session internals in the kernel.",

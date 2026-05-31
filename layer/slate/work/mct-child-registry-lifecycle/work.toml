@@ -6,6 +6,7 @@ human_request = "Implement child package/install registry, active child registry
 allium_anchors = []
 user_alignment = "MCT is Mother/Child/Toy infrastructure; child activation must be governed explicitly rather than ambient."
 belief_refs = []
+core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/safety-boundaries.md", "layer/core/dependable-rust.md"]
 proof_plan = [
     "[ ] Tests cover valid lifecycle transitions and reject illegal transitions.",
     "[ ] Unknown/not-ready/unassigned child calls fail closed.",

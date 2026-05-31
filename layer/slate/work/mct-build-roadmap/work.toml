@@ -6,6 +6,7 @@ human_request = "Create and maintain the top-level Slate roadmap for the clean P
 allium_anchors = []
 user_alignment = "User asked to create Slates for the entire MCT build ASAP so work is no longer collapsed into the mct-kernel design Slate."
 belief_refs = []
+core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/spec-driven-design.md", "layer/core/unix-philosophy.md"]
 proof_plan = [
     "[x] `patina slate next --json` and Slate work files show the MCT build split into kernel, daemon, Iroh, child runtime, toy, storage, observability, bridge, launcher, and hardening work items.",
     "[x] Each created Slate has a user-aligned human request, implementation plan, and proof plan.",

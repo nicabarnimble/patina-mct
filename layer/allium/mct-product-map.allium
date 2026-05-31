@@ -17,6 +17,19 @@
 --   - Clojure orchestration internals except as future interface layer above MCT
 --   - Exact HTTP, SQLite, Wasmtime, JVM, or Iroh implementation APIs unless they affect observable behaviour
 --   - UI rendering/view-buffer details beyond observability obligations
+-- Core build anchors:
+--   - layer/core/mct-build-boundaries.md
+--   - layer/core/spec-driven-design.md
+--   - layer/core/safety-boundaries.md
+--   - layer/core/adapter-pattern.md
+--   - layer/core/dependable-rust.md
+--   - layer/core/unix-philosophy.md
+--   - layer/core/oxidized-knowledge.md
+--
+-- Core build guidance is implementation governance, not runtime authority.
+-- Runtime authority comes from MCT domain facts such as MctPeerBinding,
+-- ToyGrant, policy snapshots, and the MctObservation ledger.
+--
 -- Slate anchors:
 --   - mct-build-roadmap
 --   - mother-kernel-design

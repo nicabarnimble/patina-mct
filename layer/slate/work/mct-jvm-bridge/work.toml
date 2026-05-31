@@ -6,6 +6,7 @@ human_request = "Build the JVM bridge/client path so existing banking JVM infras
 allium_anchors = []
 user_alignment = "User agreed JVM bridge is first-class but not kernel internals; it enables migration into the child/toy model over time."
 belief_refs = []
+core_refs = ["layer/core/adapter-pattern.md", "layer/core/safety-boundaries.md", "layer/core/mct-build-boundaries.md"]
 proof_plan = [
     "[ ] JVM/client fixture can submit a call envelope and receive a reply through MCT.",
     "[ ] Unauthorized JVM bridge requests are denied at the authority boundary.",

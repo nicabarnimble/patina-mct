@@ -6,6 +6,7 @@ human_request = "Implement the process/executable child runtime adapter to prove
 allium_anchors = []
 user_alignment = "Process harness is the simplest proof path for lifecycle, routing, envelope, observations, and adapter boundaries without over-engineering."
 belief_refs = []
+core_refs = ["layer/core/adapter-pattern.md", "layer/core/dependable-rust.md", "layer/core/safety-boundaries.md"]
 proof_plan = [
     "[ ] Echo process child can be installed/activated/called/stopped through the daemon.",
     "[ ] Timeout and crash cases return typed adapter diagnostics and kernel observations stay linked by call_id.",

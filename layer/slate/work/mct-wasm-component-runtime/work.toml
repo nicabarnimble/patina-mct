@@ -6,6 +6,7 @@ human_request = "Implement the WASM component runtime adapter for MCT children a
 allium_anchors = []
 user_alignment = "WASM/WIT/WASI is the design center, but runtime depth should attach to the kernel seam rather than distort it."
 belief_refs = []
+core_refs = ["layer/core/adapter-pattern.md", "layer/core/safety-boundaries.md", "layer/core/dependable-rust.md", "layer/core/mct-build-boundaries.md"]
 proof_plan = [
     "[ ] Minimal WASM child activates and handles a typed call through MCT.",
     "[ ] WASM traps and host-call failures are adapter observations linked to kernel call IDs.",

@@ -6,6 +6,7 @@ human_request = "Build the first clean MCT daemon shell with local control-plane
 allium_anchors = []
 user_alignment = "MCT needs a daemon, but the clean repo should not inherit current Mother's broad ServerState/ApiRuntime coupling."
 belief_refs = []
+core_refs = ["layer/core/unix-philosophy.md", "layer/core/dependable-rust.md", "layer/core/safety-boundaries.md", "layer/core/mct-build-boundaries.md"]
 proof_plan = [
     "[ ] Daemon starts locally and reports health/version/readiness.",
     "[ ] Control-plane tests prove unauthenticated/unauthorized paths fail closed where applicable.",

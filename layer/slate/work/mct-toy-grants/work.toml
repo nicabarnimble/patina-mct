@@ -6,6 +6,7 @@ human_request = "Implement the Toy capability/grant model so children can only p
 allium_anchors = []
 user_alignment = "The T in MCT is central; toy calls must not bypass Mother authority."
 belief_refs = []
+core_refs = ["layer/core/safety-boundaries.md", "layer/core/mct-build-boundaries.md", "layer/core/adapter-pattern.md"]
 proof_plan = [
     "[ ] Tests prove toy execution requires an AuthorizedToyCall produced by the kernel.",
     "[ ] Missing/expired/wrong-scope grants are denied with typed reasons.",

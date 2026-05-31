@@ -6,6 +6,7 @@ human_request = "Define and implement MCT node identity, peer admission, caller 
 allium_anchors = ["MctPeerBinding", "MctPeerAdmissionDecision", "MctIrohPeerBindingAuthority", "MctIrohProtocolPolicy", "MctIrohProtocolLayer", "MctHelloAdmissionEvaluation", "MctHelloProtocol"]
 user_alignment = "User wants a real Iroh substrate and explicit authority without over-engineering; node/security policy should be first-class rather than buried inside transport code. User agreed that Iroh EndpointId is transport identity only and MCT needs explicit observed binding to Node/Vision/admission/policy authority."
 belief_refs = ["iroh-endpointid-is-transport-identity", "iroh-provides-connectivity-not-authority", "mct-hello-precedes-protected-peer-effects"]
+core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/safety-boundaries.md", "layer/core/adapter-pattern.md"]
 proof_plan = [
     "[ ] Unknown or untrusted peer/caller requests are denied with typed reasons and kernel observations.",
     "[ ] Iroh EndpointId alone never authorizes an MCT peer action; an active MctPeerBinding is required for peer admission.",

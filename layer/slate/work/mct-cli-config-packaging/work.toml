@@ -6,6 +6,7 @@ human_request = "Create the user-facing MCT executable/config/install surface fo
 allium_anchors = []
 user_alignment = "Current Mother has useful CLI/launchd/local socket behavior; clean MCT needs the comparable operational surface without inheriting the integrated Patina command sprawl."
 belief_refs = []
+core_refs = ["layer/core/unix-philosophy.md", "layer/core/safety-boundaries.md", "layer/core/mct-build-boundaries.md"]
 proof_plan = [
     "[ ] CLI can start/status/stop the local MCT daemon and show socket/config paths.",
     "[ ] Config roundtrip tests cover default paths, Iroh settings, storage paths, and child/toy registry locations.",
