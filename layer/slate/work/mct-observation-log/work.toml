@@ -3,11 +3,12 @@ title = "Build MCT observation and audit log"
 kind = "build"
 status = "blocked"
 human_request = "Create the append-only observation model for kernel authority decisions and adapter effect diagnostics, aligned with Temporal/Terraform-style core-vs-adapter responsibilities."
-allium_anchors = []
-user_alignment = "User wants real-world grounding for kernel/adapters and agreed to align with Temporal and Terraform while keeping the core performant."
-belief_refs = []
+allium_anchors = ["MctObservation", "MctIrohPeerBindingAuthority"]
+user_alignment = "User wants real-world grounding for kernel/adapters and agreed to align with Temporal and Terraform while keeping the core performant. Peer binding/admission observations are part of the authority record above Iroh EndpointId."
+belief_refs = ["iroh-endpointid-is-transport-identity"]
 proof_plan = [
     "[ ] Unit tests prove every authority decision path emits or returns a kernel observation.",
+    "[ ] Peer binding creation, peer binding revocation, peer binding expiry, peer admission, and peer rejection are observable authority facts.",
     "[ ] Adapter observation schema can represent Iroh stream resets, WASM traps, process exits, JVM timeouts, and storage failures.",
     "[ ] Observation writes do not force a database write before every hot routing/grant decision unless policy explicitly requires fail-closed persistence.",
 ]
@@ -17,7 +18,7 @@ blocked_by = [
     "mct-kernel-crate",
 ]
 implementation_plan = [
-    "[ ] Define kernel-guaranteed observation events for install, activation, lifecycle, call routing, toy grants, peer admission, and deny reasons.",
+    "[ ] Define kernel-guaranteed observation events for install, activation, lifecycle, call routing, toy grants, peer binding, peer admission, and deny reasons.",
     "[ ] Define adapter observation events for Iroh, process, JVM, WASM, toy backends, and storage effects.",
     "[ ] Link kernel and adapter observations by call_id/trace ids.",
     "[ ] Implement a private append-only sink with batching/backpressure behavior appropriate for hot decisions.",
