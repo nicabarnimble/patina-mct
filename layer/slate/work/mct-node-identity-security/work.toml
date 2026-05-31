@@ -3,9 +3,9 @@ title = "Build node identity and security model"
 kind = "build"
 status = "blocked"
 human_request = "Define and implement MCT node identity, peer admission, caller authentication, child/component authorization, and WIT interface exposure policy across local and Iroh boundaries."
-allium_anchors = ["MctPeerBinding", "MctPeerAdmissionDecision", "MctIrohPeerBindingAuthority"]
+allium_anchors = ["MctPeerBinding", "MctPeerAdmissionDecision", "MctIrohPeerBindingAuthority", "MctIrohProtocolPolicy", "MctIrohProtocolLayer"]
 user_alignment = "User wants a real Iroh substrate and explicit authority without over-engineering; node/security policy should be first-class rather than buried inside transport code. User agreed that Iroh EndpointId is transport identity only and MCT needs explicit observed binding to Node/Vision/admission/policy authority."
-belief_refs = ["iroh-endpointid-is-transport-identity"]
+belief_refs = ["iroh-endpointid-is-transport-identity", "iroh-provides-connectivity-not-authority"]
 proof_plan = [
     "[ ] Unknown or untrusted peer/caller requests are denied with typed reasons and kernel observations.",
     "[ ] Iroh EndpointId alone never authorizes an MCT peer action; an active MctPeerBinding is required for peer admission.",

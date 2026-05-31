@@ -266,6 +266,32 @@ MCT implication:
 - MCT's privacy federation opportunity remains real, but v0 should start with self-hosted/dedicated relays, explicit privacy tiers, and observation.
 - ECH/OHTTP should remain a researched privacy-edge lane, not a foundational assumption for the first MCT-over-Iroh protocol.
 
+## External Direction Evidence: DevTools FM Iroh Interview
+
+Source: user-provided transcript from a DevTools FM interview with Brendan O'Brien/B5 of n0 about Iroh. The source URL was not captured in this repository, but the transcript is preserved in [[session-20260529-070316-510393000]].
+
+Relevant direction signals:
+
+- Iroh's thesis is "ship the whole app": put client and server-shaped capabilities in the same app/device boundary instead of shipping only a frontend that depends on a hidden backend.
+- Iroh intentionally avoids a "boil the ocean" stack. The core primitive is reliable, low-configuration, public-key-addressed connectivity: given a public key, dial the device.
+- Iroh expects authorization, synchronization, app semantics, and higher-level protocol behaviour to live above the connection layer.
+- Iroh's ALPN/protocol model is the intended composition seam. Apps create an endpoint, add protocols, and route protocol behaviour above QUIC.
+- Iroh keys are described as primitives for building authorization schemes, not as the entire authorization scheme.
+- Relays are pragmatic federation infrastructure: open-source, URL-addressed, self-hostable, and often run by production users after they graduate from public relays.
+- The relay path is both a fast initial/reliable path and a fallback path; Iroh dynamically shifts between relay and direct paths as connectivity changes.
+- Multipath is a strategic direction: relay, direct IPv4/IPv6, WebRTC, Wi-Fi-aware, or future paths can become paths under one logical connection.
+- Iroh's business/services layer is framed around managed relays, metrics, diagnostics, deployment support, and protocol-developer tooling, not closed protocol authority.
+- The intended ecosystem includes protocol/framework layers above Iroh so most application developers do not need to consume raw Rust networking primitives.
+
+MCT implication:
+
+- [[iroh-provides-connectivity-not-authority]]: MCT should occupy the protocol/runtime/authority layer above Iroh rather than embedding MCT authority into transport.
+- The Mother/Child/Toy model fits the "ship the whole app" thesis: a Mother is a server-capable local authority/runtime, children are app components, toys are host powers, and Iroh connects whole-app nodes.
+- MCT should define ALPN protocols such as `mct/hello/0`, `mct/call/0`, `mct/thought/0`, and `mct/observe/0` rather than treating Iroh as opaque HTTP replacement.
+- The video reinforces [[iroh-endpointid-is-transport-identity]]: endpoint keys can start authentication/authorization design, but MCT still needs explicit peer bindings, Vision scope, grants, and observations.
+- Content addressing via Iroh blobs is useful for immutable artifacts and bulk payloads, but live calls and streams remain distinct protocol flows.
+- Iroh should own path continuity and multipath adaptation; MCT should own privacy tier policy, admission, and observation of path facts.
+
 ## Reevaluation of Current MCT Design
 
 ### Current design that holds

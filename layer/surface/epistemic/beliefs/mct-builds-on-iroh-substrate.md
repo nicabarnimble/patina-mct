@@ -21,10 +21,12 @@ MCT should use Iroh as its peer-to-peer networking substrate while focusing MCT 
 ## Evidence
 
 - [[session-20260529-070316-510393000]] records the design reframing that MCT runs WASM/WASI/WIT applications over Iroh rather than reinventing networking. Iroh OSS evidence includes self-hostable relay, DNS/Pkarr discovery, custom relay maps, access controls, metrics, and diagnostics in the n0-computer repositories and docs.
+- [[session-20260529-070316-510393000]] also includes a user-provided DevTools FM Iroh interview transcript that frames Iroh as reliable public-key dialing plus ALPN protocol composition, with authorization and synchronization intentionally left to higher layers.
 
 ## Supports
 
 - [[iroh-noq-evidence-before-rules]] by turning the evidence pass into a bounded architectural dependency decision rather than new transport invention.
+- [[iroh-provides-connectivity-not-authority]] by grounding the substrate/application boundary in both OSS evidence and n0's stated direction.
 
 ## Attacks
 

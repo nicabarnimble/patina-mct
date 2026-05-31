@@ -40,6 +40,9 @@
 --   - mct-release-hardening
 
 open question "Confirm the one-sentence product statement for MCT."
+-- Decision: MCT is a whole-app, local-first Mother/Child/Toy runtime: a Mother carries local authority, observation ledger, child runtime, ToyGrant checks, and peer protocols in the same deployable node instead of treating a hidden SaaS backend as the source of truth.
+-- Decision: Iroh supplies the public-key-addressed connectivity substrate for whole-app nodes; MCT supplies the application/runtime/authority layer above that substrate.
+-- Decision: Managed or hosted infrastructure may improve relay, metrics, diagnostics, and support, but it must remain optional infrastructure rather than the MCT authority root.
 -- Decision: Multi-Mother exists primarily to share selected data and compute across nodes under explicit Mother authority.
 -- Decision: MCT should choose the fastest authorized execution path for a task, not always send compute to data or data to compute.
 -- Decision: Path choice is environment-aware: node capability, hardware class, locality, network conditions, data size, secret/data authority, and child/toy availability all matter.
@@ -289,6 +292,74 @@ contract MctIrohPeerBindingAuthority {
 
     @invariant CapabilityTokensDoNotReplaceToyGrants
         -- Signed tokens may prove delegated peer facts, but MCT ToyGrants and peer bindings remain the authority records used by the kernel.
+}
+
+-- Decision: Iroh intentionally stops at reliable public-key-addressed connectivity, endpoint discovery, relay/direct path continuity, and ALPN protocol composition. MCT should not push Vision membership, child authorization, thought acceptance, or ToyGrant authority into Iroh transport identity.
+-- Decision: MCT is the protocol/runtime/authority layer above Iroh. It defines MCT ALPN protocols, WIT-shaped calls, thought semantics, observation replication, admission, and grants.
+-- Decision: ALPN is the composition seam. Candidate MCT-over-Iroh ALPNs include `mct/hello/0` for admission/version/capability exchange, `mct/call/0` for WIT-shaped remote calls, `mct/thought/0` for immutable thought/fact exchange, `mct/observe/0` for selected observation replication, and `mct/federation/0` for federation control.
+-- Decision: MCT whole-app nodes may use public relays for development/bootstrap, managed relays for convenience, or self-hosted/federated relays for production boundaries. Relay choice changes reachability and metadata exposure, not MCT authority.
+-- Decision: noq/Iroh own direct-vs-relay switching, multipath continuity, address discovery, and future path types such as WebRTC or Wi-Fi-aware transport. MCT policy may constrain acceptable path classes and observe path facts, but it does not schedule packets.
+-- Decision: Iroh blobs/content addressing are optional payload and artifact tools. MCT may use them for immutable artifacts, bulk data, or thought payload material, but live calls, admission, and observation streams remain protocol flows with their own authority.
+-- Decision: MCT should become the framework/protocol layer that lets application developers consume Iroh through WIT/Toy capabilities and MCT protocols rather than raw Rust networking primitives.
+
+value MctIrohProtocolPolicy {
+    alpn: String
+    purpose: peer_admission | wit_call | thought_exchange | observation_replication | federation_control | blob_payload_adapter
+    requires_peer_binding: Boolean
+    requires_toy_grant: Boolean
+    exposes_raw_iroh_to_child: Boolean
+    authority_record: peer_binding | toy_grant | data_policy | observation_policy | adapter_policy
+}
+
+entity MctIrohProtocolDeclaration {
+    protocol_id: String
+    policy: MctIrohProtocolPolicy
+    version: String
+    safe_to_publish: Boolean
+}
+
+actor MctIrohProtocolReader {
+    within: MctIrohProtocolDeclaration
+    identified_by: protocol.protocol_id
+}
+
+surface MctIrohProtocolCatalog {
+    facing reader: MctIrohProtocolReader
+    context protocol: MctIrohProtocolDeclaration
+
+    exposes:
+        protocol.protocol_id
+        protocol.policy.alpn
+        protocol.policy.purpose
+        protocol.policy.requires_peer_binding
+        protocol.policy.requires_toy_grant
+        protocol.policy.exposes_raw_iroh_to_child
+        protocol.policy.authority_record
+        protocol.version
+        protocol.safe_to_publish
+}
+
+contract MctIrohProtocolLayer {
+    @invariant IrohProvidesConnectivityNotAuthority
+        -- Iroh provides reliable public-key-addressed connectivity and ALPN routing; MCT provides application authority, Vision policy, grants, and thought semantics above it.
+
+    @invariant WholeAppNodeOwnsLocalTruth
+        -- A Mother node carries local authority, ledger, runtime, children, toys, and peer protocols; external services are projections or convenience infrastructure, not the source of truth.
+
+    @invariant AlpnIsProtocolCompositionSeam
+        -- MCT-over-Iroh behaviour is declared through ALPN-specific protocols whose authority requirements are explicit.
+
+    @invariant ChildrenUseCapabilitiesNotTransport
+        -- Children consume peer networking through scoped WIT/Toy capabilities and MCT protocols, not through raw Iroh endpoint or socket handles.
+
+    @invariant RelayChoiceIsReachabilityNotAuthority
+        -- Public, managed, self-hosted, or federated relay choice affects reachability, reliability, cost, and metadata exposure, but it does not grant Vision membership or protocol rights.
+
+    @invariant MultipathIsSubstrateConcern
+        -- Direct-vs-relay switching, multipath scheduling, and future path types are Iroh/noq substrate concerns; MCT records and constrains path classes rather than reimplementing path selection.
+
+    @invariant ContentAddressingIsPayloadTool
+        -- Content-addressed blobs may carry immutable payloads or artifacts, but content addressing does not replace MCT call, thought, observation, or authority semantics.
 }
 
 -- Decision: `MctCall` is the atomic unit that Mother can authorize, route, execute, and observe.
