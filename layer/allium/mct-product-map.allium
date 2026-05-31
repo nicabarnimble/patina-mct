@@ -81,6 +81,41 @@ open question "What routing inputs are mandatory for fastest-path decisions vers
 -- Decision: MCT must add what current Mother lacks for multi-node routing: Iroh peer identity, node capability profile, data movement policy, compute placement policy, health/load telemetry, remote trust/admission, and approval scoped by Vision/Node/data class/toy grants/child version.
 -- Principle: Same bones, cleaner body.
 
+-- Architectural shape: MCT is a modular local authority runtime.
+-- Decision: The product is shaped as a small local Mother authority kernel wrapped by a daemon, with effectful adapters around it and Iroh as the first peer connectivity substrate.
+-- Decision: The Mother kernel decides using MCT domain facts: identities, peer bindings, child approvals, toy grants, policy snapshots, routing candidates, and observations.
+-- Decision: The daemon owns process lifetime, local control surfaces, endpoint/runtime lifecycle, and adapter wiring; it must not become the authority model itself.
+-- Decision: Adapters perform external effects such as Iroh streams, storage writes, process/JVM/WASM execution, toy backends, metrics, logs, and OpenTelemetry projection.
+-- Decision: Adapter facts enter the authority model only after translation into MCT domain records or `MctObservation` entries.
+-- Decision: Current Patina Mother is evidence and prior art for daemon, registry, call, storage, secrets, and control-plane concerns, but it is not the ontology for the clean MCT repo.
+-- Decision: MCT emulates Mother's role as local authority over children, toys, calls, and observations while rebuilding the internals as smaller domain seams.
+-- Decision: The Rust implementation should follow a Jon Gjengset-style systems shape: honest signatures, domain types at boundaries, private internals, explicit state machines, typed fail-closed outcomes, and concrete implementations before speculative traits.
+-- Decision: The peer adapter should follow Iroh's general design shape: composable endpoint/protocol primitives, ALPN as the protocol seam, explicit async connection/stream handling, and application authority above transport identity.
+-- Principle: Jon-style Rust inside; Iroh-style composable protocols outside.
+
+contract MctRuntimeShape {
+    @invariant KernelDecidesAdaptersPerform
+        -- Authority decisions are made by the Mother kernel over MCT domain facts; adapters perform effects and report observations.
+
+    @invariant DaemonOwnsLifecycleButNotAuthority
+        -- The daemon owns local process, endpoint, runtime, and control-surface lifecycle without becoming the source of authorization truth.
+
+    @invariant DomainFactsCrossBoundaries
+        -- External systems cross into MCT through typed domain records such as calls, peer bindings, grants, policy snapshots, and observations rather than raw transport or storage implementation types.
+
+    @invariant ObservationsAreCanonicalRuntimeTruth
+        -- `MctObservation` is the canonical runtime ledger; logs, metrics, qlog, audit exports, and OpenTelemetry are projections.
+
+    @invariant IrohConnectivityIsNotMctAuthority
+        -- Iroh provides endpoint connectivity and ALPN protocol composition; MCT grants authority only through explicit peer bindings, policy, and admission decisions.
+
+    @invariant CurrentMotherIsEvidenceNotOntology
+        -- Existing Patina Mother implementation informs the design but does not define the clean MCT domain model.
+
+    @invariant ConcreteBeforeSpeculativeTraits
+        -- New abstraction seams are introduced only after concrete implementations make the boundary real.
+}
+
 -- Decision: MCT routing is two-phase.
 --   Phase 1 is the Authority Filter: it removes routes that violate data policy, Vision policy, peer trust, child/component approval, toy grants, or secrets scope.
 --   Phase 2 is the Environment Planner: it ranks and chooses among the remaining authorized routes using node capability, current load, data size, network conditions, locality, and deadlines.
