@@ -375,6 +375,25 @@ After the evidence pass, MCT locked in a separate authority layer above Iroh tra
 
 Allium anchors: `MctPeerBinding`, `MctPeerAdmissionDecision`, `MctIrohPeerBindingAuthority`.
 
+## Locked Follow-Up: `mct/hello/0` Admission Gate
+
+MCT now defines `mct/hello/0` as the first MCT application protocol on a new Iroh peer path.
+
+Purpose:
+
+- consume authenticated Iroh connection facts without treating them as full authority;
+- verify the presented EndpointId against the transport-authenticated remote;
+- present and evaluate `MctPeerBinding`;
+- select Vision scope;
+- negotiate protocol version;
+- admit a bounded ALPN set;
+- return only safe denial/retry/version information to the peer;
+- record hello receipt, protocol negotiation, admission/denial, and response observations before protected peer effects proceed.
+
+Allium anchors: `MctHelloRequest`, `MctHelloAdmissionEvaluation`, `MctHelloResponse`, `MctHelloProtocol`.
+
+Belief: [[mct-hello-precedes-protected-peer-effects]].
+
 ## Recommended Next MCT Shape
 
 MCT should be stated as:

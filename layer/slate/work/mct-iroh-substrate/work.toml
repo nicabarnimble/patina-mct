@@ -3,11 +3,11 @@ title = "Build production-shaped Iroh v0 substrate"
 kind = "build"
 status = "blocked"
 human_request = "Implement Iroh as a real early Mother-to-Mother substrate: persistent node identity, endpoint lifecycle, relay/discovery, peer admission, ALPN protocol, direct streams, observations, and multi-node tests."
-allium_anchors = ["MctPeerBinding", "MctPeerAdmissionDecision", "MctIrohPeerBindingAuthority", "MctIrohProtocolPolicy", "MctIrohProtocolDeclaration", "MctIrohProtocolLayer"]
+allium_anchors = ["MctPeerBinding", "MctPeerAdmissionDecision", "MctIrohPeerBindingAuthority", "MctIrohProtocolPolicy", "MctIrohProtocolDeclaration", "MctIrohProtocolLayer", "MctHelloRequest", "MctHelloAdmissionEvaluation", "MctHelloResponse", "MctHelloProtocol"]
 user_alignment = "User rejected a skeleton Iroh path and pointed to the cached `n0-computer/iroh` repo as reference material. Later reframed MCT as a WASM/WASI/WIT app system over Iroh, with Iroh as the p2p substrate and MCT providing authority, observations, and thought-mesh semantics. User agreed that Iroh EndpointId is transport identity only; MCT requires explicit observed binding to Node/Vision/admission/policy authority. User-provided Iroh direction evidence reinforces that Iroh stops at connectivity and ALPN composition while MCT occupies the protocol/runtime/authority layer above."
-belief_refs = ["mct-builds-on-iroh-substrate", "iroh-noq-evidence-before-rules", "iroh-endpointid-is-transport-identity", "iroh-provides-connectivity-not-authority"]
+belief_refs = ["mct-builds-on-iroh-substrate", "iroh-noq-evidence-before-rules", "iroh-endpointid-is-transport-identity", "iroh-provides-connectivity-not-authority", "mct-hello-precedes-protected-peer-effects"]
 proof_plan = [
-    "[ ] Local multi-node integration test sends an MCT call envelope over Iroh and receives a reply.",
+    "[ ] Local multi-node integration test completes mct/hello/0 admission before sending an MCT call envelope over Iroh and receiving a reply.",
     "[ ] Peer admission denies unknown/untrusted peers and records a kernel observation.",
     "[ ] A successful Iroh handshake or discovered EndpointId is insufficient without an active MctPeerBinding for the requested MCT ALPN/Vision scope.",
     "[ ] Adapter observations capture endpoint and stream lifecycle without polluting kernel API with Iroh types.",
@@ -23,7 +23,8 @@ implementation_plan = [
     "[ ] Implement Mother-owned Iroh endpoint lifecycle rather than exposing raw Iroh handles to WASM/WASI/WIT children.",
     "[ ] Implement persistent node identity and typed NodeId mapping, including explicit binding from Iroh EndpointId to MCT Node/Vision/peer authority.",
     "[ ] Implement endpoint lifecycle, relay/discovery config, address book, peer admission, and MCT ALPN with Iroh endpoint hooks as early reject/observe gates, not as the MCT authority model.",
-    "[ ] Define initial MCT-over-Iroh ALPNs such as mct/hello/0 for admission/version/capability exchange and mct/call/0 for WIT-shaped remote calls, treating ALPN as the protocol composition seam above Iroh connectivity.",
+    "[x] Define mct/hello/0 as the first MCT-over-Iroh ALPN for admission/version/capability exchange, treating ALPN as the protocol composition seam above Iroh connectivity; see MctHelloProtocol in Allium.",
+    "[ ] Define mct/call/0 for WIT-shaped remote calls after mct/hello/0 admission is accepted.",
     "[ ] Implement direct bidirectional request/reply streams carrying the MCT call envelope.",
     "[ ] Emit adapter observations for connect/accept/send/receive/relay fallback/stream reset/close.",
 ]
