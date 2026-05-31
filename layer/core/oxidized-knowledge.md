@@ -1,136 +1,101 @@
 ---
 id: oxidized-knowledge
+layer: core
 status: active
-created: 2025-08-11
-updated: 2026-02-12
-references: [session-capture, adapter-pattern]
-tags: [architecture, metaphor, core]
+created: 2026-05-31
+revised: 2026-05-31
+tags: [knowledge, mct, layer, provenance, beliefs]
+references: [session-capture, spec-driven-design, mct-build-boundaries]
 ---
 
-# Patina MCT - Oxidized Knowledge
+# MCT Oxidized Knowledge
 
-**Purpose:** Knowledge accumulation through oxidation - how patterns form, evolve, and persist across projects and personas.
+**Purpose:** Explain how design knowledge hardens into MCT build law without confusing design-time Patina knowledge with runtime MCT authority.
 
 ---
 
-## Knowledge Separation
+## Core Separation
 
-Patina distinguishes two types of knowledge:
+Patina MCT has two different kinds of truth:
 
-| Type | Location | Shared? | Contains |
-|------|----------|---------|----------|
-| **Project** | `layer/` + `.patina/` | Yes (layer/ in git) | Facts, beliefs, and specs about this codebase |
-| **Persona** | `~/.patina/layer/` | No (personal) | Cross-project beliefs and preferences |
+| Truth | Location | Used for |
+|-------|----------|----------|
+| Design-time project knowledge | `layer/`, `.patina/` | guiding agents and humans building MCT |
+| Runtime MCT truth | `MctObservation` ledger and runtime stores | deciding/auditing Mother/Child/Toy behavior |
 
-**Project knowledge:** "Iroh EndpointId is transport identity only" - observation about MCT's peer substrate
-**Personal belief:** "I prefer Rust Result<T,E> over exceptions" - your opinion across all projects
+Do not mix them.
 
-Different developers working on the same project share project beliefs but keep separate persona beliefs. Project beliefs live in `layer/surface/epistemic/beliefs/` (git-tracked). Persona beliefs live in `~/.patina/layer/surface/beliefs/` (machine-local).
+Beliefs, sessions, scrape, scry, assay, and oxidize are design/build aids. The MCT runtime must not depend on them for authority.
 
-## Structure
+At runtime:
 
-### Project Layers (`layer/`)
-- **Core** - base metal, immutable and strong (proven patterns)
-- **Surface** - active oxidation (evolving work, evidence, beliefs)
-- **Dust** - patina that flaked off (archived wisdom)
-
-### Project Data (`.patina/`)
-- **data/** - materialized SQLite + vectors (local, rebuilt from git/sessions)
-- **oxidize.yaml** - recipe for local knowledge indexing/projections (git-tracked)
-
-### Personal (`~/.patina/`)
-- **layer/** - user-level beliefs and preferences (mirror of project layer structure)
-  - `layer/surface/beliefs/` - persona beliefs (machine-local, never shared)
-- **personas/** - legacy event log (being migrated to layer/beliefs)
-- **registry.yaml** - registered projects and repos on this machine
-- **cache/repos/** - cloned reference repositories
-
-## System
-
-- **User** - Oxidizer (adds the oxygen of creativity and vision)
-- **LLMs** - Smith (reads project + persona knowledge via Patina discovery tools when needed)
-- **Sessions** - Chemical Reactions (capture observations → events)
-- **Git** - Time (threads that weave together, syncs project knowledge)
-- **Containers** - Isolation (controlled storage to hold/test/replicate)
-
-## Data Flow
-
-```
-Sources                    Pipeline                      Storage
-─────────────────────────────────────────────────────────────────────
-.git/                  ┐
-layer/allium/*.allium  │
-layer/slate/work/*     ├→ scrape → patina.db (eventlog + views)
-layer/sessions/*.md    │
-layer/surface/**/*     │
-src/**/*               ┘              │
-                                      ↓
-                                   oxidize
-                                      │
-                                      ↓
-                       ┌────────── vectors
-                       │
-                       ↓
-~/.patina/layer/   ──→ discovery tools ←── .patina/data/
-                       │
-                       ↓
-              [PROJECT] + [PERSONA] results → LLM context
+```text
+MctObservation ledger wins.
+ToyGrant facts win.
+MctPeerBinding facts win.
+Policy snapshots win.
 ```
 
-## Layer Management
+## Project Layer Map
 
-### Promotion Path (Project Patterns)
-- Surface (new) → Core (proven via repeated success)
-- Surface (new) → Dust (failed or deprecated)
+```text
+layer/core/                    hardened build principles
+layer/allium/                  MCT product/domain behavior
+layer/slate/work/              build queue, dependencies, proof plans
+layer/surface/                 active evidence and product notes
+layer/surface/epistemic/       beliefs and rationale
+layer/sessions/                chronological work context
+layer/dust/                    archived or deprecated knowledge
+```
 
-### Storage
-- **Core**: `layer/core/*.md` - Version controlled, immutable patterns
-- **Surface**: `layer/surface/*.md` and `layer/surface/epistemic/beliefs/*.md` - Active evidence, beliefs, and product notes
-- **Dust**: `layer/dust/*.md` - Historical reference, searchable
+## Current MCT Belief Spine
 
-## Integration Points
+Key beliefs currently shaping the build:
 
-### Session → Events
-- Session markdown → scrape sessions → observations table
-- Git commits → scrape git → commits + co_changes tables
-- Code AST → scrape code → functions + call_graph tables
+- [[mct-builds-on-iroh-substrate]]
+- [[iroh-provides-connectivity-not-authority]]
+- [[iroh-endpointid-is-transport-identity]]
+- [[mct-hello-precedes-protected-peer-effects]]
+- [[mct-call-protocol-wraps-semantic-call]]
+- [[mother-kernel-decides-adapters-perform]]
 
-### Events → Vectors
-- oxidize.yaml recipe defines projections
-- SQLite tables provide training pairs
-- Each user builds vectors locally from shared recipe
+These beliefs guide implementation, but code still traces to Allium/Slate.
 
-### Discovery → LLM
-- Queries may search project vectors and persona beliefs when available
-- Results are treated as evidence with provenance, not as code authority
-- MCT runtime code must not depend on Belief/scry/assay/oxidize internals
+## Knowledge Flow
 
-### Persona (Personal Only)
-- `patina persona note "belief"` writes to `~/.patina/layer/surface/beliefs/` and legacy event log
-- `patina persona query "topic"` searches persona knowledge
-- `patina persona migrate` converts legacy events to belief files (idempotent)
-- Never synced via git - machine-local only
-- Cross-project: same belief applies to all your work
+```text
+session discussion
+  → evidence artifact or belief
+  → Allium/Slate update
+  → implementation
+  → observations/tests/commit
+  → session update
+```
 
-## Pattern Lifecycle
+`patina scrape` makes these relationships discoverable. It does not make a belief true by itself; truth comes from evidence, validation, and successful application.
 
-### Pattern Recognition (Project)
-- Git diff + Session context → scrape → Events → Pattern extraction
+## Promotion Model
 
-### Pattern Validation (Project)
-- Used in ≥3 successful contexts → Core candidate
-- Failed in any context → Dust candidate
-- Explicitly deprecated → Move to dust
+- **Surface → Core**: a pattern is repeatedly used and stable enough to guide future work.
+- **Surface → Dust**: a pattern failed, became obsolete, or was superseded.
+- **Session → Belief**: a repeated principle or strong decision becomes reusable rationale.
+- **Belief → Allium/Slate**: rationale becomes executable design scope.
 
-### Belief Evolution (Persona)
-- Personal beliefs accumulate over time
-- Not subject to project validation
-- Inform how you approach all projects
+The docs in `layer/core/` are build laws. They should be fewer, stronger, and more stable than session notes.
 
-## System Properties
+## MCT-Specific Warning
 
-- **Isolation**: Project knowledge stays in project, persona stays personal
-- **Reproducibility**: Same recipe + events = equivalent vectors
-- **Traceability**: Git history links to session context
-- **Discoverability**: Scry searches project + persona together
-- **Evolution**: Project patterns move between layers; persona beliefs persist
+MCT is itself an observability/authority system. That makes it easy to accidentally confuse Patina's design-time knowledge graph with MCT's runtime ledger.
+
+Do not do that.
+
+```text
+Patina layer helps us build MCT.
+MctObservation helps MCT explain itself at runtime.
+```
+
+## References
+
+- [Session Capture](./session-capture.md)
+- [Spec-Driven Design](./spec-driven-design.md)
+- [MCT Build Boundaries](./mct-build-boundaries.md)

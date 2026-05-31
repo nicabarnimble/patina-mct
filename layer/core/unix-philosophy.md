@@ -2,158 +2,166 @@
 id: unix-philosophy
 layer: core
 status: active
-created: 2025-08-02
-tags: [architecture, philosophy, decomposition, core-principle]
-references: [dependable-rust, adapter-pattern]
+created: 2026-05-31
+revised: 2026-05-31
+tags: [architecture, mct, decomposition, crates, core-principle]
+references: [dependable-rust, adapter-pattern, mct-build-boundaries]
 ---
 
-# Unix Philosophy
+# Unix Philosophy for MCT
 
-**Purpose:** Decompose complex systems into simple, single-purpose tools that do one thing well and compose cleanly.
+**Purpose:** Build Mother/Child/Toy as composed, single-purpose pieces instead of one magical Mother blob.
 
 ---
 
 ## Core Principle
 
-Patina MCT follows Unix philosophy: **one tool, one job, done well**. Each component has a single, clear responsibility. Complex functionality emerges from composition of simple tools, not from monolithic systems.
+MCT follows Unix philosophy:
 
-## When to Use
-
-Apply this principle when:
-- Designing new CLI commands
-- Extracting functionality from monolithic code
-- Planning module boundaries
-- Deciding what belongs in a component
-
-## How to Apply
-
-### 1. Single Responsibility Per Component
-
-Each MCT component has one clear job:
-
-```
-layer/allium/           → Product/domain specification
-layer/slate/work/       → Build work items and proof plans
-crates/mct-kernel/      → Domain records and authority decisions
-crates/mct-observation/ → Append-only observations and projections
-crates/mct-iroh/        → Iroh endpoint and ALPN protocol adapter
-crates/mct-daemon/      → Process orchestration and local control
+```text
+one piece, one job, explicit composition
 ```
 
-### 2. Decomposition Strategy
+The system is powerful because the pieces compose:
 
-When facing a complex system:
-
-1. **Identify core responsibilities** - What distinct jobs need doing?
-2. **Create focused modules** - One module per responsibility
-3. **Apply dependable-rust** - Black-box each module
-4. **Compose functionality** - Combine modules to create features
-
-**Example:** MCT vertical-slice decomposition
-
-```
-Monolithic Mother →  mct-kernel        (authority/domain decisions)
-                     mct-observation   (append-only evidence)
-                     mct-iroh          (Iroh endpoint/protocol effects)
-                     mct-daemon        (lifecycle/local control)
+```text
+peer facts → authority decision → observation → adapter effect → observation
 ```
 
-### 3. Tools vs Systems
+Do not hide multiple responsibilities behind names like "manager", "runtime", or "service" unless the module is explicit glue.
 
-**Tools (build these):**
-- Single primary operation
-- Transform input → output predictably
-- Don't maintain complex state
-- Context-independent behavior
+## MCT Decomposition
 
-**Systems (decompose into tools):**
-- Coordinate multiple operations
-- Maintain complex state
-- Depend on context/environment
-- Require cross-interaction mental model
+### Design-time layer
 
-### 4. Composition Over Monolith
+```text
+layer/core/              build laws and project patterns
+layer/allium/            product/domain behavior
+layer/slate/work/        executable work and proof plans
+layer/surface/           evidence, beliefs, product notes
+layer/sessions/          discussion and git-range context
+```
+
+### Runtime layer
+
+```text
+crates/mct-kernel/       authority records and decisions
+crates/mct-observation/  local-first append-only observation ledger
+crates/mct-iroh/         Iroh endpoint and ALPN protocol adapter
+crates/mct-daemon/       process lifecycle and composition
+```
+
+Later, if pressure proves the split:
+
+```text
+crates/mct-wasm/         WASM/WASI/WIT child runtime adapter
+crates/mct-toys/         toy backends and grant enforcement helpers
+crates/mct-cli/          user-facing commands
+```
+
+## Jobs That Must Stay Separate
+
+### Authority vs effect
+
+```text
+mct-kernel decides whether a peer/call/toy/child/data move is allowed.
+adapters perform the network/runtime/storage/secret effect.
+```
+
+### Observation vs logging
+
+```text
+MctObservation is durable truth.
+logs/metrics/qlog/OTel are projections or diagnostics.
+```
+
+### Connectivity vs authority
+
+```text
+Iroh connects endpoints.
+MCT admits peers and authorizes protocol effects.
+```
+
+### Child runtime vs Toy authority
+
+```text
+WASM/WIT child exports define callable shape.
+ToyGrant decides which host capabilities are available.
+```
+
+## Vertical Slice First
+
+The first build should prove this path:
+
+```text
+Mother starts
+  → local observation ledger opens
+  → peer binding exists
+  → Iroh endpoint receives mct/hello/0
+  → kernel admits or denies
+  → admitted peer sends mct/call/0
+  → kernel constructs MctCall
+  → fake local handler returns MctResult
+  → observations reconstruct the trace
+```
+
+That slice is enough to prove the architecture without prematurely building the whole Toy catalog, WASM runtime, thought mesh, or federation layer.
+
+## Good MCT Module Names
+
+Good names say the job:
+
+- `peer_binding`
+- `hello_protocol`
+- `call_protocol`
+- `observation_ledger`
+- `toy_grants`
+- `route_authority`
+- `child_assignment`
+
+Suspicious names hide scope:
+
+- `manager`
+- `runtime` with no qualifier
+- `service`
+- `engine`
+- `orchestrator`
+
+Glue may exist, but name it as glue: `daemon`, `app`, `command`, or `composition`.
+
+## Composition Example
+
+Bad:
 
 ```rust
-// ❌ Bad: monolithic command doing everything
-pub fn init_project(path: &Path) -> Result<()> {
-    // 500 lines: detect env, copy templates, init git,
-    // configure adapters, generate docs...
+pub fn handle_iroh_stream(stream: IrohStream) {
+    // parse hello
+    // check database
+    // update policy
+    // invoke child
+    // write logs
+    // return result
 }
+```
 
-// ✅ Good: composed from focused tools
-pub fn init_project(path: &Path) -> Result<()> {
-    let env = environment::detect()?;
-    let templates = templates::load(&env)?;
-    git::init(path)?;
-    adapters::configure(path, &env)?;
+Good:
+
+```rust
+pub fn handle_iroh_stream(stream: IrohStream) -> Result<()> {
+    let presentation = adapter.read_presentation(&stream)?;
+    let hello = adapter.read_hello(&stream)?;
+    let decision = kernel.evaluate_hello(presentation, hello, snapshots)?;
+    observations.append(decision.observation())?;
+    adapter.write_hello_response(&stream, decision.safe_response())?;
     Ok(())
 }
 ```
 
-Each function is a tool doing one thing. The command coordinates them.
-
-## Manifestation in MCT
-
-This philosophy should appear throughout:
-
-1. **Small kernel** - Authority/domain decisions stay focused and typed.
-2. **Adapters at edges** - Iroh, WASM, storage, secrets, and telemetry perform effects outside the kernel.
-3. **Typed records** - Calls, results, peer bindings, grants, and observations compose through explicit IDs.
-4. **No feature creep** - New peer behaviours become explicit ALPN protocols or toys, not hidden flags in one giant daemon.
-
-## Common Mistakes
-
-**1. Building systems when you need tools**
-```rust
-// ❌ Bad: "workspace manager" (what does it manage?)
-struct WorkspaceManager { /* everything */ }
-
-// ✅ Good: specific tools
-fn create_workspace(...) -> Result<Workspace>
-fn list_workspaces(...) -> Result<Vec<Workspace>>
-fn execute_in_workspace(...) -> Result<Output>
-```
-
-**2. Adding flags instead of commands**
-```bash
-# ❌ Bad: flag soup
-patina init --with-git --llm=claude --env=docker --copy-templates
-
-# ✅ Good: separate commands
-patina init              # minimal setup
-patina git init          # if you want git
-patina template apply    # if you want templates
-```
-
-**3. Tight coupling between components**
-```rust
-// ❌ Bad: Iroh adapter knows about ledger internals
-impl IrohAdapter {
-    fn record_peer_call(&self) {
-        self.ledger.internal.file.write_all(...);  // ❌
-    }
-}
-
-// ✅ Good: use public interface only
-impl IrohAdapter {
-    fn record_peer_call(&self, observation: MctObservation) {
-        self.observations.append(&observation)?;  // ✅
-    }
-}
-```
-
-## Benefits
-
-When you follow Unix philosophy:
-- ✅ Easy to test individual components
-- ✅ Clear mental model for users
-- ✅ Natural composition of functionality
-- ✅ Predictable behavior
-- ✅ Replace components without breaking others
+Each part has one job. The function composes them.
 
 ## References
 
-- [Dependable Rust](./dependable-rust.md) - How to structure each module as a black box
-- [Adapter Pattern](./adapter-pattern.md) - Tool pattern for external system bridges
-- [MCT product map](../allium/mct-product-map.allium) - Current decomposition and authority anchors
+- [Dependable Rust](./dependable-rust.md)
+- [Adapter Pattern](./adapter-pattern.md)
+- [MCT Build Boundaries](./mct-build-boundaries.md)
+- [MCT product map](../allium/mct-product-map.allium)

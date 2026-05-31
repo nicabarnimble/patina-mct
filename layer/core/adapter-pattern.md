@@ -2,181 +2,191 @@
 id: adapter-pattern
 layer: core
 status: active
-created: 2025-08-02
-revised: 2026-04-03
-tags: [architecture, patterns, traits, external-systems, mct]
-references: [dependable-rust, unix-philosophy, mother-kernel-decides-adapters-perform, iroh-provides-connectivity-not-authority]
+created: 2026-05-31
+revised: 2026-05-31
+tags: [architecture, mct, mother, adapters, authority, rust]
+references: [dependable-rust, unix-philosophy, mct-build-boundaries, mother-kernel-decides-adapters-perform, iroh-provides-connectivity-not-authority]
 ---
 
-# Adapter Pattern
+# MCT Adapter Pattern
 
-**Purpose:** Define trait boundaries at external system edges. Prove the boundary with real implementations — don't abstract speculatively.
+**Purpose:** Keep Mother authority in the kernel and push external effects to adapters. Adapters perform effects; they do not create authority.
 
 ---
 
 ## Core Principle
 
-When MCT touches an external system (Iroh endpoint, WASM/WASI runtime, storage engine, secret backend, telemetry exporter, CLI/control socket), put a narrow boundary in front of it. The boundary is the contract. Implementations are black boxes. Only introduce a Rust trait when you have 2+ real implementations or a proven test seam — a trait with one implementation is ceremony, not architecture.
+Patina MCT is built around one boundary:
 
-This is the Gjengset principle applied to system boundaries: honest signatures, type integrity at the seam, and proof before abstraction.
+```text
+Mother kernel decides.
+Adapters perform.
+MctObservation proves what happened.
+```
 
-## Adapter vs Strategy
+An adapter is code that crosses from MCT domain logic into an external system or runtime:
 
-Not every trait boundary is an adapter. The distinction matters:
+- Iroh/noq networking
+- WASM/WASI component runtime
+- process or JVM execution
+- filesystem/database persistence
+- secret storage
+- telemetry export
+- local CLI/control socket
 
-- **Adapter**: bridges an external system into MCT's domain. The implementation wraps external or runtime-specific code. Examples: an Iroh endpoint/protocol adapter, a Wasmtime component adapter, a storage sink, a secrets backend, or an OpenTelemetry exporter.
-- **Strategy**: selects among internal algorithms. No external system involved. Examples: route ranking among already-authorized candidates, safe projection filtering, retry budget selection, or thought acceptance ordering.
+Adapters translate between external details and MCT domain records. They must not invent permission, rewrite policy, or leak implementation types into the kernel.
 
-The distinction matters for MCT because Mother kernel authority must remain internal domain logic. Iroh, WASM, storage, and telemetry are adapters; ToyGrant evaluation and peer admission are not.
+## Adapter vs Kernel
 
-Use adapter when crossing a system boundary. Use strategy when choosing among internal approaches. Both use traits; only adapters isolate external dependencies.
+### Kernel/domain logic
 
-## When to Use
+These are **not** adapters:
 
-Apply this pattern when:
-- 2+ implementations exist today (not "might exist someday")
-- An external system may change independently of MCT (Iroh/noq versions, Wasmtime APIs, storage engines, metrics exporters)
-- You need to swap implementations without changing calling code
+- `MctCall`
+- `MctResult`
+- `MctObservation`
+- `MctPeerBinding`
+- `MctHelloAdmissionEvaluation`
+- `MctCallProtocolEvaluation`
+- `ToyGrant`
+- route authority filtering
+- child assignment approval
+- Vision/data policy checks
 
-**MCT adapter boundaries to apply deliberately:**
+They are MCT records and decisions. They belong in `mct-kernel` or closely allied domain crates.
 
-| Boundary | Why it is external | First implementation |
-|----------|--------------------|----------------------|
-| Iroh endpoint/protocols | Iroh/noq changes independently of MCT | Mother-owned Iroh adapter for `mct/hello/0` and `mct/call/0` |
-| WASM/WASI runtime | Wasmtime/component runtime changes independently | Wasmtime adapter after the peer spine works |
-| Observation sink | Storage durability/backpressure can vary | Append-only JSONL or SQLite sink first |
-| Secret backend | Secret storage is host-specific | Local development backend first |
-| Telemetry export | OTel/Prometheus/qlog are projections | Export adapter after local ledger truth exists |
+### Adapter logic
 
-Do not turn core concepts such as `MctCall`, `MctPeerBinding`, `ToyGrant`, or `MctObservation` into adapter traits. Those are domain records.
+These are adapters:
 
-## When NOT to Use
+| Adapter | External thing | MCT boundary |
+|---------|----------------|--------------|
+| Iroh adapter | Iroh endpoint, streams, hooks, relay/discovery, noq path facts | `mct/hello/0`, `mct/call/0`, peer observations |
+| WASM adapter | Wasmtime/WASI/component runtime | WIT-shaped child invocation + ToyGrant host calls |
+| Observation sink | JSONL/SQLite/fsync/backpressure | append `MctObservation` facts |
+| Toy backend | filesystem, git, messaging, state, network, secrets | authorized `ToyGrant` effect |
+| Telemetry exporter | OTel/Prometheus/qlog dashboards | projection from local ledger |
+| Control adapter | CLI/UDS/HTTP local control | local request translated to `MctCall` or operator action |
 
-- Only one implementation exists and no second is planned — use a module, not a trait
-- Internal code talking to internal code — modules and function calls, not trait objects
-- The "abstraction" just forwards calls — wrapper tax with no benefit
-- You're guessing where the seam is — wait until the second implementation proves it
+## The MCT Rules
 
-## How to Apply
+### 1. No adapter grants authority
 
-### 1. Honest Signatures
+An adapter can reject early for safety, but allow decisions come from the kernel.
 
-The trait should declare exactly what it needs. No smuggling dependencies through config bags.
+```text
+Iroh hook may reject unknown endpoint early.
+Kernel decides whether EndpointId + binding + Vision + ALPN is admitted.
+```
+
+### 2. No raw substrate types in kernel API
+
+The kernel should not expose Iroh streams, Wasmtime stores, SQLite connections, qlog structs, or OS handles. Use MCT domain records at the boundary.
 
 ```rust
-// ❌ Bad: hides what the function actually depends on
-pub fn admit_peer(config: &AppConfig, endpoint: EndpointId) -> Result<PeerAdmission> {
-    let store = config.peer_binding_store();  // hidden dependency
-    store.evaluate(endpoint, config.current_policy_revision())
-}
+// Bad: kernel API depends on Iroh details.
+pub fn admit(conn: &iroh::endpoint::ConnectionInfo) -> Result<Admission>;
 
-// ✅ Good: dependency is visible in the signature
-pub fn admit_peer(
-    bindings: &PeerBindings,
-    endpoint: EndpointId,
-    policy_revision: PolicyRevision,
-) -> Result<PeerAdmission> {
-    bindings.evaluate(endpoint, policy_revision)
-}
+// Good: adapter extracts facts; kernel evaluates domain record.
+pub fn admit(presentation: IrohConnectionPresentation) -> Result<PeerAdmission>;
 ```
 
-### 2. Prove the Boundary
+### 3. Traits wait for the second implementation
 
-A trait with one implementation is a hypothesis. Two implementations prove the seam is in the right place.
+Do not create traits for imagined future backends. Start concrete. Introduce traits when a second real implementation or a proven test seam exists.
 
-```rust
-// Proven boundary candidate: ObservationSink
-// - JSONL sink for the first local ledger
-// - SQLite sink only when a real second backend is implemented
+MCT v0 examples:
 
-// Unproven: don't create a trait
-// - If you only have one local JSONL observation sink,
-//   use it directly. Add the trait when the second backend arrives.
+- Start with one concrete append-only observation sink.
+- Start with one concrete Iroh adapter.
+- Start with one concrete in-process/fake child handler before WASM.
+- Add traits only after the seam is proven.
+
+### 4. Adapters emit observations
+
+Every adapter effect that matters must produce or return an observation fact:
+
+- Iroh connect/handshake/stream/reset/path fact
+- hello received/responded
+- peer call received/malformed/replied
+- WASM trap/timeout
+- process exit
+- storage append/backpressure
+- toy backend failure
+
+Adapter errors are not invisible logs; they become `MctObservation` facts or health degradation.
+
+### 5. Children use Toys, not adapter handles
+
+WASM/WASI/WIT children do not receive raw Iroh endpoints, raw database handles, unrestricted filesystem access, or host secrets. They receive scoped WIT/Toy capabilities backed by explicit `ToyGrant`s.
+
+## First Build Application
+
+For the first vertical slice:
+
+```text
+mct-kernel        → concrete domain records and evaluations
+mct-observation   → concrete append-only local ledger
+mct-iroh          → concrete Mother-owned Iroh endpoint adapter
+mct-daemon        → composition and local lifecycle
 ```
 
-### 3. Keep Traits Minimal
+No generalized plugin framework is needed yet. Build the vertical seam honestly first:
 
-3-7 methods is typical. If a trait grows beyond that, it's doing too much — split it or push methods into the implementation.
-
-```rust
-// ✅ Good: focused trait when the second sink exists
-pub trait ObservationSink: Send + Sync {
-    fn append(&self, observation: &MctObservation) -> Result<AppendAck>;
-    fn flush(&self) -> Result<()>;
-}
-// File formats, batching, fsync, and database details stay in the implementation.
+```text
+Endpoint facts → MctPeerBinding check → mct/hello/0 → mct/call/0 → MctObservation
 ```
-
-### 4. Domain Types at the Boundary
-
-The trait uses Patina's domain types. Implementation-specific types stay behind the boundary.
-
-```rust
-// ❌ Bad: leaks implementation type
-pub trait Backend {
-    fn query(&self) -> rusqlite::Rows;  // caller now depends on rusqlite
-}
-
-// ✅ Good: domain type at the boundary
-pub trait ObservationSink {
-    fn append(&self, observation: &MctObservation) -> Result<AppendAck>;  // MCT domain types
-}
-```
-
-### 5. Combine with Dependable-Rust
-
-Each adapter implementation is a black-box module:
-
-```
-crates/mct-iroh/src/
-├── lib.rs          # public adapter contract and curated exports
-└── internal/       # Iroh endpoint, stream, relay, and hook details
-```
-
-The trait lives in the parent module. Implementations live in their own subdirectories. Nothing in the implementation leaks into the trait.
-
-## Testing
-
-Prefer integration tests with real implementations. Adapter boundaries exist to isolate external systems, not to invite mocks. Test the real thing whenever possible — local Iroh endpoints, local observation files, local WASM fixtures, local relay processes when feasible.
-
-Mocks are a last resort for when the real system is genuinely unavailable in CI (external APIs requiring credentials, third-party services with rate limits). Even then, prefer a lightweight real implementation (in-memory database, local test server) over a mock that fakes behavior.
 
 ## Common Mistakes
 
-**1. Abstracting with one implementation**
-```rust
-// ❌ Bad: trait exists "just in case"
-trait CacheBackend { fn get(&self, key: &str) -> Option<String>; }
-struct RedisCacheBackend;  // the only implementation
-// Just use Redis directly. Add the trait when you need a second backend.
+### Treating Iroh EndpointId as MCT authority
+
+Wrong:
+
+```text
+EndpointId authenticated → allow call
 ```
 
-**2. Leaking implementation types**
-```rust
-// ❌ Bad: trait exposes vendor type
-trait Storage { fn connection(&self) -> &duckdb::Connection; }
-// ✅ Good: trait exposes domain operations
-trait Storage { fn store_fact(&self, fact: &Fact) -> Result<()>; }
+Right:
+
+```text
+EndpointId authenticated → find active MctPeerBinding → hello admission → call authority filter
 ```
 
-**3. Oversized traits**
+### Letting adapter convenience leak upward
+
+Wrong:
+
+```text
+Iroh stream handler directly invokes a child.
+```
+
+Right:
+
+```text
+Iroh stream handler constructs MctCallProtocolRequest.
+Kernel constructs/evaluates MctCall.
+Runtime adapter invokes child only after authorization.
+```
+
+### Abstracting before the seam exists
+
+Wrong:
+
 ```rust
-// ❌ Bad: 15 methods — some callers only need 2
-trait FullService {
-    fn query(&self, ...) -> Result<...>;
-    fn index(&self, ...) -> Result<()>;
-    fn delete(&self, ...) -> Result<()>;
-    fn migrate(&self, ...) -> Result<()>;
-    // ... 11 more
-}
-// ✅ Good: split into focused traits
-trait Queryable { fn query(&self, ...) -> Result<...>; }
-trait Indexable { fn index(&self, ...) -> Result<()>; }
+trait PeerTransport { ... } // only Iroh exists
+```
+
+Right:
+
+```rust
+mod iroh; // concrete adapter first
 ```
 
 ## References
 
-- [Dependable Rust](./dependable-rust.md) — How to structure each implementation as a black box
-- [Unix Philosophy](./unix-philosophy.md) — Each implementation does one thing
-- [mother-kernel-decides-adapters-perform](../surface/epistemic/beliefs/mother-kernel-decides-adapters-perform.md) — Kernel decides; adapters perform effects
-- [iroh-provides-connectivity-not-authority](../surface/epistemic/beliefs/iroh-provides-connectivity-not-authority.md) — Iroh is substrate, MCT owns authority
+- [Dependable Rust](./dependable-rust.md)
+- [Unix Philosophy](./unix-philosophy.md)
+- [MCT Build Boundaries](./mct-build-boundaries.md)
+- [mother-kernel-decides-adapters-perform](../surface/epistemic/beliefs/mother-kernel-decides-adapters-perform.md)
+- [iroh-provides-connectivity-not-authority](../surface/epistemic/beliefs/iroh-provides-connectivity-not-authority.md)

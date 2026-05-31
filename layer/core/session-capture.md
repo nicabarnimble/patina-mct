@@ -1,57 +1,91 @@
 ---
 id: session-capture
-status: verified
-verification_date: 2026-02-12
-oxidizer: nicabar
+layer: core
+status: active
+created: 2026-05-31
+revised: 2026-05-31
+tags: [sessions, mct, provenance, workflow]
 references: [spec-driven-design, oxidized-knowledge]
-tags: [sessions, capture, workflow]
 ---
 
-# Session Capture
+# MCT Session Capture
 
-Patina MCT captures development context through friction-free session tracking.
+**Purpose:** Preserve why MCT decisions were made, which git range they cover, and which Allium/Slate/belief artifacts changed.
 
-
-## The Pattern
-
-Capture development context with minimal friction:
-
-1. **Scripts handle mechanics** - Timestamps, git state, file tracking
-2. **Markdown for humans** - Readable session files
-3. **Progressive detail** - Start simple, enhance later
-4. **Time-based organization** - Natural chronological flow
-
-## Implementation
-
-Sessions are YAML-frontmatter markdown files in `layer/sessions/`, managed by the runtime-specific wrappers documented in `AGENTS.md` and by Patina session commands when available. In this Pi runtime, use `.pi/bin/session-update.sh` for durable progress updates:
-
-```yaml
----
-type: session
-id: 20260212-161126              # Timestamp-based ID
-title: "feature name"
-status: active                   # active → archived
-runtime: pi                       # Which interface/runtime
-created: 2026-02-12T21:11:26Z
-git:
-  branch: patina
-  starting_commit: e1a1736c...
-  start_tag: session-20260212-161126-claude-start
 ---
 
-## Previous Session Context
-## Goals
-## Activity Log
-## Beliefs Captured
-## Git Range
-## Handoff
+## Core Principle
+
+Sessions are the reaction chamber for MCT design and build work.
+
+They capture:
+
+- user intent;
+- questions and disagreements;
+- evidence reviewed;
+- Allium and Slate changes;
+- beliefs created or revised;
+- git range and commits;
+- handoff context for the next run.
+
+Sessions are evidence. They are not implementation authority by themselves. Non-trivial code still needs Allium/Slate scope.
+
+## Runtime-Specific Workflow
+
+This project uses runtime wrappers from `AGENTS.md`. In the current Pi runtime, use:
+
+```bash
+.pi/bin/session-update.sh
+.pi/bin/session-note.sh "note"
 ```
 
-Git tags bracket each session (`session-{id}-start` / `session-{id}-end`). Updates should name the active git range, e.g. `session-20260529-070316-510393000-pi-start..HEAD`, so commits can be traced back to session context.
+Session updates should mention:
 
-## Consequences
+- active git range;
+- files changed;
+- Allium anchors touched;
+- Slate work items touched;
+- beliefs created/used;
+- validation commands run;
+- recommended next step.
 
-- Natural documentation emerges
-- No friction during development
-- Context preserved for future
-- Patterns ready for promotion
+## Linking Convention
+
+Use wikilinks where possible so Patina scrape can trace the graph:
+
+```text
+[[mct-builds-on-iroh-substrate]]
+[[iroh-endpointid-is-transport-identity]]
+[[mct-hello-precedes-protected-peer-effects]]
+[[commit-f059507]]
+```
+
+Use code formatting for paths:
+
+```text
+`layer/allium/mct-product-map.allium`
+`layer/slate/work/mct-iroh-substrate/work.toml`
+```
+
+## What Good MCT Notes Capture
+
+Good:
+
+```text
+Defined mct/call/0 as a peer transport envelope around semantic MctCall.
+Updated Allium anchors MctCallProtocol* and Slate work mct-call-envelope.
+Ran allium check and patina scrape. Next: implement mct-kernel records.
+```
+
+Weak:
+
+```text
+Worked on networking.
+```
+
+The first note preserves decisions. The second forces future rediscovery.
+
+## References
+
+- [Spec-Driven Design](./spec-driven-design.md)
+- [Oxidized Knowledge](./oxidized-knowledge.md)

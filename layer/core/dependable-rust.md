@@ -2,176 +2,178 @@
 id: dependable-rust
 layer: core
 status: active
-created: 2025-08-11
-tags: [architecture, rust, black-box, module-pattern]
-references: [unix-philosophy, adapter-pattern, spec-driven-design]
+created: 2026-05-31
+revised: 2026-05-31
+tags: [architecture, rust, mct, modules, black-box]
+references: [unix-philosophy, adapter-pattern, spec-driven-design, mct-build-boundaries]
 ---
 
-# Dependable Rust
+# Dependable Rust for MCT
 
-**Purpose:** Keep a tiny, stable external interface and push changeable details behind a private internal implementation module. Easy to review, document, and evolve.
+**Purpose:** Build MCT as small Rust black boxes with stable public domain interfaces and private implementation detail.
 
 ---
 
 ## Core Principle
 
-Keep your public interface small and stable. Hide implementation details in `internal.rs` or `internal/` and never expose them in public signatures. This creates black-box modules that can be completely rewritten internally without breaking users. For MCT, public signatures use domain types such as `MctCall`, `MctObservation`, `MctPeerBinding`, and `ToyGrant`, not Iroh, Wasmtime, SQLite, or telemetry implementation types.
+MCT Rust code should make the authority boundary obvious in the type system:
 
-**Not a line count rule - a design principle.**
-
-## When to Use
-
-Apply this pattern when you need to isolate change or manage complexity:
-
-**Use internal.rs for:**
-- ✅ Adapters bridging external systems (hide vendor details)
-- ✅ Complex modules with many private helpers
-- ✅ Code you expect to rewrite often (isolate churn from interface)
-
-**Don't split when:**
-- ✅ Simple commands (sequential steps, no abstraction needed)
-- ✅ Naturally small modules (one file is clearer)
-- ✅ Procedural code with no hidden complexity
-
-## How to Apply
-
-### 1. Canonical Layout
-
+```text
+public API:  MCT domain records and decisions
+private API: implementation helpers, substrate/runtime details
 ```
+
+A caller should be able to understand what a module does by reading its public `mod.rs`/`lib.rs`. The module internals may change, but the public domain contract remains stable.
+
+For MCT, public signatures should use types such as:
+
+- `MctCall`
+- `MctResult`
+- `MctObservation`
+- `MctPeerBinding`
+- `MctHelloRequest`
+- `MctCallProtocolRequest`
+- `ToyGrant`
+- `RouteDecision`
+
+Public kernel APIs should not expose:
+
+- Iroh stream/connection types
+- Wasmtime store/linker/component internals
+- SQLite/rusqlite handles
+- filesystem writer internals
+- OTel/qlog exporter structs
+
+## Crate Shape
+
+The first build should be intentionally small:
+
+```text
+crates/mct-kernel/       domain records + authority evaluation
+crates/mct-observation/  append-only local observation ledger
+crates/mct-iroh/         Mother-owned Iroh endpoint + MCT ALPN protocols
+crates/mct-daemon/       process lifecycle and composition
+```
+
+Later crates may split out WASM, storage, CLI, or Toy backends when the seams are proven.
+
+## Module Shape
+
+Use black-box modules:
+
+```text
 module/
-├── mod.rs          # External interface: docs + curated exports
-└── internal.rs     # Internal implementation details (or `internal/` folder)
+├── mod.rs          # public interface: docs, domain types, curated exports
+└── internal.rs     # private implementation detail
+```
 
+Example:
+
+```text
 crates/mct-kernel/src/peer/
-├── mod.rs          # peer binding/admission API in MCT domain terms
-└── internal.rs     # lookup, validation, and helper details
+├── mod.rs          # MctPeerBinding, PeerAdmission, evaluate_peer_admission
+└── internal.rs     # matching, expiry checks, reason construction
 ```
 
-### 2. External Interface Rules (`mod.rs`)
+Example:
 
-- Keep interface small: module docs, type names, minimal constructors, `pub use` statements
-- No references to `internal::` in public signatures
-- Provide a single `Error` enum (`#[non_exhaustive]` if appropriate)
-- Add at least one runnable doctest showing usage
+```text
+crates/mct-iroh/src/hello/
+├── mod.rs          # run_hello_protocol in MCT terms
+└── internal.rs     # stream framing, Iroh read/write, timeout details
+```
 
-### 3. Internal Implementation Rules (`internal.rs` or `internal/`)
+## Public Interface Rules
 
-- Default to `pub(crate)`; only the external interface decides what becomes `pub`
-- Keep helpers and heavy logic here
-- Split into files when it grows: `internal/{mod,parse,exec,validate}.rs`
-- Use trait objects or sealed traits internally; export stable traits only when necessary
+1. Public functions should say what authority facts they need.
+2. Public functions should return typed decisions or observations, not strings.
+3. `internal` must not be public.
+4. `internal::` types must not appear in public signatures.
+5. Prefer one small `Error` enum per module boundary.
+6. Add doctests/examples only when they demonstrate stable usage, not incidental setup.
 
-### 4. Wiring Options
+## MCT Examples
 
-**A) Re-export items defined in `internal` (fast iteration)**
+### Good: explicit authority inputs
 
 ```rust
-// mod.rs
-mod internal; // private
-pub use internal::{Client, Config, Result, run};
+pub fn evaluate_call_submission(
+    call: &MctCall,
+    peer: Option<&MctPeerAdmission>,
+    grants: &GrantSnapshot,
+    children: &ChildAssignmentSnapshot,
+    policy: &PolicySnapshot,
+) -> CallAuthorization;
 ```
 
-**B) Define types in `mod.rs`, impls in `internal` (stable names)**
+### Bad: hidden authority through a context bag
 
 ```rust
-// mod.rs
-mod internal;
-pub struct Client { /* private fields */ }
-// heavy impls live in internal.rs
+pub fn evaluate_call_submission(ctx: &DaemonContext, call: &MctCall) -> bool;
 ```
 
-### 5. Visibility Pattern
+The second signature hides policy, grants, child assignment, and peer state. That makes review harder and authority easier to bypass.
+
+### Good: adapter extracts facts
 
 ```rust
-// External interface (mod.rs)
-mod internal;                 // not `pub`
-pub use internal::{Client};   // curate API
-
-// Internal implementation (internal.rs)
-pub(crate) struct Engine;     // crate-internal helper
+// mct-iroh
+let presentation = IrohConnectionPresentation::from_connection_info(info);
+let decision = kernel.evaluate_peer_presentation(presentation);
 ```
 
-## The "Do X" Test
+### Bad: kernel imports substrate
 
-Before creating a module, ensure you can clearly state what it does in one sentence:
-
-**Good "Do X" (Clear modules):**
-- ✅ "Parse TOML into data structure"
-- ✅ "Compress files using gzip"
-- ✅ "Calculate hash of data"
-
-**Bad "Do X" (Unclear scope):**
-- ❌ "Manage workspaces" (too vague - what does "manage" mean?)
-- ❌ "Handle project initialization" (multiple responsibilities)
-- ❌ "Integrate with build tools" (unbounded scope)
-
-**When "Do X" is unclear:**
-1. **Split it**: Break into multiple black boxes
-2. **Layer it**: Stable core + replaceable adapters
-3. **Accept it**: Some code is glue - optimize for clarity over permanence
+```rust
+// mct-kernel
+use iroh::endpoint::ConnectionInfo;
+```
 
 ## Testing Strategy
 
-- **Doctests** in `mod.rs` show intended usage
-- **Unit tests** colocated under `internal/*` for edge cases
-- **Integration tests** in `tests/` exercise only the external interface
+Test at three levels:
 
-## Enforcement
+1. **Kernel unit tests** — pure domain decisions:
+   - EndpointId alone is insufficient.
+   - hello without active binding is denied.
+   - hello admission does not pre-authorize calls.
+   - mct/call still runs authority checks.
 
-Check for pattern violations:
+2. **Adapter integration tests** — real local effects:
+   - local append-only ledger writes observations;
+   - local Iroh endpoints complete `mct/hello/0`;
+   - denied peer path records observations.
 
-**What to check:**
-- ✅ No `pub mod internal` (keeps internal private)
-- ✅ No `internal::` in public function signatures (prevents leakage)
-- ✅ Internal types not exposed in public API
+3. **Daemon smoke tests** — composed vertical slice:
+   - two local Mothers;
+   - bound peer admitted;
+   - remote echo call returns caller-safe result;
+   - trace can be reconstructed from observations.
 
-**When to check:**
-- During code review
-- When interface feels cluttered
-- When adding new public API
+## The "Do X" Test
 
-## Common Mistakes
+Every module should do one sentence-worthy job:
 
-**1. Exposing internal types in public API**
-```rust
-// ❌ Bad: leaks implementation
-pub fn get_engine(&self) -> &internal::Engine
+Good:
 
-// ✅ Good: opaque or re-exported type
-pub fn get_engine(&self) -> &Engine  // re-exported from internal
-```
+- "Evaluate peer binding admission."
+- "Append observations to the local ledger."
+- "Run `mct/hello/0` over an Iroh stream."
+- "Translate WIT child invocation into a runtime adapter call."
 
-**2. Making internal module public**
-```rust
-// ❌ Bad: users can bypass your API
-pub mod internal;
+Too vague:
 
-// ✅ Good: keep private
-mod internal;
-pub use internal::{SelectedTypes};
-```
+- "Manage peers."
+- "Handle networking."
+- "Run Mother."
+- "Do storage."
 
-**3. Splitting when unnecessary**
-```rust
-// ❌ Bad: artificial split for simple procedural code
-// mod.rs (30 lines of boilerplate)
-// internal.rs (40 lines of sequential steps)
-
-// ✅ Good: keep simple code simple
-// mod.rs (70 lines - clear, sequential, no abstraction needed)
-```
-
-## Cross-Language Quick Bridge
-
-For teammates familiar with other languages:
-
-- **C:** `module.h` (small) + `module.c` (guts) ≈ `mod.rs` + `internal.rs`
-- **TypeScript:** `index.ts` (exports) + `internal.ts` (not exported) ≈ `mod.rs` + `internal.rs`
-- **Go:** `api.go` in public package + `internal/` ≈ `mod.rs` + `internal.rs`
+If the sentence is vague, split the module or keep it as explicit glue rather than pretending it is a stable abstraction.
 
 ## References
 
-- [Unix Philosophy](./unix-philosophy.md) - Decomposition principle (systems → tools)
-- [Adapter Pattern](./adapter-pattern.md) - When building external bridges
-- [Spec-Driven Design](./spec-driven-design.md) - Keep implementation scoped to Allium/Slate authority
-- [MCT product map](../allium/mct-product-map.allium) - Current domain anchors and invariants
+- [Unix Philosophy](./unix-philosophy.md)
+- [Adapter Pattern](./adapter-pattern.md)
+- [Spec-Driven Design](./spec-driven-design.md)
+- [MCT Build Boundaries](./mct-build-boundaries.md)
+- [MCT product map](../allium/mct-product-map.allium)
