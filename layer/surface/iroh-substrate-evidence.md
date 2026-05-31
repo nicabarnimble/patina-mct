@@ -394,6 +394,26 @@ Allium anchors: `MctHelloRequest`, `MctHelloAdmissionEvaluation`, `MctHelloRespo
 
 Belief: [[mct-hello-precedes-protected-peer-effects]].
 
+## Locked Follow-Up: `mct/call/0` Remote WIT Call
+
+MCT now defines `mct/call/0` as the first useful protected peer behavior after hello admission.
+
+Purpose:
+
+- require a prior `mct/hello/0` admission that accepted `mct/call/0` for the same endpoint, binding, and Vision;
+- carry a transport envelope around the semantic `MctCall` without creating a second call model;
+- keep operation identity WIT-shaped as namespace/interface/function;
+- keep Iroh stream, relay/direct path, and EndpointId details as adapter evidence and authority context;
+- represent payloads as inline, content-addressed blob, external reference, or empty handles;
+- require payload metadata to match the payload handle before execution;
+- run the normal MCT authority filter, ToyGrant checks, child assignment checks, data policy, routing, and revalidation;
+- return caller-safe result information and opaque references only;
+- record peer call receipt, malformed rejection, call construction, authorization/denial, route/no-route, result recording, and peer reply observations.
+
+Allium anchors: `MctCallProtocolAuthority`, `MctCallPayloadHandle`, `MctCallProtocolRequest`, `MctCallProtocolEvaluation`, `MctCallProtocolReply`, `MctCallProtocol`.
+
+Belief: [[mct-call-protocol-wraps-semantic-call]].
+
 ## Recommended Next MCT Shape
 
 MCT should be stated as:

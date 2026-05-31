@@ -640,6 +640,166 @@ contract MctCallAtomicity {
         -- Routing can evaluate classification and movement cost from metadata without requiring business payload deserialization.
 }
 
+-- Decision: `mct/call/0` is the remote WIT-shaped call protocol. It may run only after an admitted `mct/hello/0` decision that accepted `mct/call/0` for the peer binding and Vision scope.
+-- Decision: `mct/call/0` is a transport envelope around the semantic `MctCall`; it does not create a second call model. The receiving Mother constructs or rejects one immutable `MctCall` before authority routing.
+-- Decision: Remote calls are WIT-shaped: namespace, interface, function. Iroh stream details, relay/direct path facts, and endpoint ids remain adapter evidence and authority context, not operation identity.
+-- Decision: Payload bytes may be inline, content-addressed, or referenced out of band. Payload metadata used by authority must match the payload handle before execution proceeds.
+-- Decision: A peer call reply carries a caller-safe `MctResult` reference or safe adapter error. Internal route decisions, candidate elimination, child details, and topology stay in observations.
+-- Decision: `mct/call/0` requires observations for peer call receipt, malformed rejection, constructed call, authorization/denial, route selection/no-route, result recording, and peer reply.
+-- Decision: A hello admission narrows but does not pre-authorize a call. Every `mct/call/0` request still passes the normal MCT authority filter, ToyGrant checks, child assignment checks, data policy, and execution-time revalidation.
+
+value MctCallProtocolAuthority {
+    hello_decision_id: String
+    peer_binding_id: String
+    vision_id: String
+    accepted_alpn: String
+    endpoint_id: String
+    policy_revision: Integer
+    grants_revision: Integer
+}
+
+value MctCallPayloadHandle {
+    payload_kind: inline_payload | content_addressed_blob | external_reference | empty
+    content_type: String?
+    approximate_size_bytes: Integer
+    digest: String?
+    blob_ref: String?
+    external_ref: String?
+    inline_payload_ref: String?
+}
+
+entity MctCallProtocolRequest {
+    protocol_request_id: String
+    authority: MctCallProtocolAuthority
+    received_over: IrohConnectionPresentation
+    call: MctCall
+    payload: MctCallPayloadHandle
+    idempotency_key: String?
+    received_observation_id: String
+}
+
+entity MctCallProtocolEvaluation {
+    decision_id: String
+    protocol_request_id: String
+    call_id: String?
+    route_decision_id: String?
+    result_ref: String?
+    outcome: accepted_for_routing | malformed | denied | failed | timed_out | completed
+    reason: hello_not_admitted | alpn_not_admitted | endpoint_mismatch | binding_revoked | binding_expired | policy_revision_stale | malformed_call | payload_metadata_mismatch | authority_denied | no_route | execution_failed | execution_timed_out | result_recorded
+    safe_message: String
+    observation_id: String
+}
+
+entity MctCallProtocolReply {
+    reply_id: String
+    protocol_request_id: String
+    decision_id: String
+    result_ref: String?
+    reply_outcome: success | denied | failed | timed_out | cancelled | malformed
+    safe_message: String
+    reply_observation_id: String
+}
+
+actor MctCallProtocolRequester {
+    within: MctCallProtocolRequest
+    identified_by: request.protocol_request_id
+}
+
+actor MctCallProtocolOperator {
+    within: MctCallProtocolEvaluation
+    identified_by: evaluation.decision_id
+}
+
+actor MctCallProtocolResponder {
+    within: MctCallProtocolReply
+    identified_by: reply.reply_id
+}
+
+surface MctCallProtocolRequestProjection {
+    facing requester: MctCallProtocolRequester
+    context request: MctCallProtocolRequest
+
+    exposes:
+        request.protocol_request_id
+        request.authority.hello_decision_id
+        request.authority.peer_binding_id
+        request.authority.vision_id
+        request.authority.accepted_alpn
+        request.authority.endpoint_id
+        request.authority.policy_revision
+        request.authority.grants_revision
+        request.received_over.endpoint_id
+        request.received_over.path_class
+        request.call.call_id
+        request.call.caller.node_id
+        request.call.caller.vision_id
+        request.call.target.namespace
+        request.call.target.interface_name
+        request.call.target.function_name
+        request.call.payload_metadata.data_classification
+        request.payload.payload_kind
+        request.payload.approximate_size_bytes
+        request.payload.digest
+        request.idempotency_key
+        request.received_observation_id
+}
+
+surface MctCallProtocolEvaluationProjection {
+    facing operator: MctCallProtocolOperator
+    context evaluation: MctCallProtocolEvaluation
+
+    exposes:
+        evaluation.decision_id
+        evaluation.protocol_request_id
+        evaluation.call_id
+        evaluation.route_decision_id
+        evaluation.result_ref
+        evaluation.outcome
+        evaluation.reason
+        evaluation.safe_message
+        evaluation.observation_id
+}
+
+surface MctCallProtocolReplyProjection {
+    facing responder: MctCallProtocolResponder
+    context reply: MctCallProtocolReply
+
+    exposes:
+        reply.reply_id
+        reply.protocol_request_id
+        reply.decision_id
+        reply.result_ref
+        reply.reply_outcome
+        reply.safe_message
+        reply.reply_observation_id
+}
+
+contract MctCallProtocol {
+    @invariant RequiresHelloAdmission
+        -- A peer call is accepted only when a prior hello decision admitted `mct/call/0` for the same endpoint, binding, and Vision scope.
+
+    @invariant OneWireRequestOneSemanticCall
+        -- Each valid `mct/call/0` request constructs exactly one immutable `MctCall` and all later decisions reference that call id.
+
+    @invariant WitShapeIsOperationIdentity
+        -- The operation identity comes from WIT namespace, interface, and function, not from Iroh stream, endpoint, relay, or runtime details.
+
+    @invariant HelloDoesNotPreAuthorizeCall
+        -- Hello admission permits the peer to submit a call envelope, but each call still passes authority, routing, ToyGrant, child assignment, data policy, and revalidation checks.
+
+    @invariant PayloadMetadataMatchesHandle
+        -- Payload metadata used for routing and authority is checked against the payload handle before execution proceeds.
+
+    @invariant IdempotencyIsRequestScoped
+        -- Idempotency keys deduplicate retry of the same protocol request; they do not authorize a different call or bypass revalidation.
+
+    @invariant CallerReceivesSafeResultOnly
+        -- Peer replies contain caller-safe result information and opaque references, not internal route reasoning or topology.
+
+    @invariant PeerCallObservationsCoverLifecycle
+        -- Receipt, malformed rejection, call construction, authorization, route/no-route, execution result, and reply are all observable facts.
+}
+
 -- Decision: The terminal return concept is `MctResult`, not `MctReply`, because denial, timeout, failure, and cancellation are outcomes even when no component replies.
 -- Decision: `MctResult` is the immutable output fact for an `MctCall`. It is created only after a valid `MctCall` enters the MCT domain.
 -- Decision: Adapter-level malformed requests that never become a valid `MctCall` return native adapter errors rather than fabricated `MctResult` values.
@@ -943,7 +1103,7 @@ value ObservationTraceRef {
 entity MctObservation {
     observation_id: String
     observed_at: Timestamp
-    kind: call_received | call_rejected | call_constructed | call_authorized | call_denied | candidate_considered | candidate_eliminated | route_selected | no_route_recorded | route_revalidated | result_recorded | artifact_verified | artifact_rejected | child_approved | child_revoked | child_assigned | child_assignment_revoked | child_instance_loading | child_instance_ready | child_instance_degraded | child_instance_draining | child_instance_stopped | child_instance_failed | child_invoked | toy_grant_allowed | toy_grant_denied | toy_grant_expired | toy_grant_revoked | toy_call_started | toy_call_completed | toy_call_failed | data_movement_allowed | data_movement_denied | secret_access_allowed | secret_access_denied | peer_connected | peer_hello_received | peer_protocol_negotiated | peer_hello_responded | peer_binding_recorded | peer_binding_revoked | peer_binding_expired | peer_admitted | peer_rejected | peer_call_sent | peer_call_received | peer_stream_opened | peer_stream_reset | iroh_path_observed | runtime_execution_started | runtime_execution_completed | runtime_execution_failed | runtime_execution_trapped | runtime_execution_timed_out | adapter_effect_started | adapter_effect_completed | adapter_effect_failed | storage_append_succeeded | storage_append_failed | observation_backpressure_applied | lifecycle_transition_recorded | node_health_reported | operator_action_recorded | telemetry_exported
+    kind: call_received | call_rejected | call_constructed | call_authorized | call_denied | candidate_considered | candidate_eliminated | route_selected | no_route_recorded | route_revalidated | result_recorded | artifact_verified | artifact_rejected | child_approved | child_revoked | child_assigned | child_assignment_revoked | child_instance_loading | child_instance_ready | child_instance_degraded | child_instance_draining | child_instance_stopped | child_instance_failed | child_invoked | toy_grant_allowed | toy_grant_denied | toy_grant_expired | toy_grant_revoked | toy_call_started | toy_call_completed | toy_call_failed | data_movement_allowed | data_movement_denied | secret_access_allowed | secret_access_denied | peer_connected | peer_hello_received | peer_protocol_negotiated | peer_hello_responded | peer_binding_recorded | peer_binding_revoked | peer_binding_expired | peer_admitted | peer_rejected | peer_call_sent | peer_call_received | peer_call_malformed | peer_call_replied | peer_stream_opened | peer_stream_reset | iroh_path_observed | runtime_execution_started | runtime_execution_completed | runtime_execution_failed | runtime_execution_trapped | runtime_execution_timed_out | adapter_effect_started | adapter_effect_completed | adapter_effect_failed | storage_append_succeeded | storage_append_failed | observation_backpressure_applied | lifecycle_transition_recorded | node_health_reported | operator_action_recorded | telemetry_exported
     source_plane: kernel | adapter | peer | child | toy | storage | operator
     trace: ObservationTraceRef
     call_id: String?
@@ -1019,7 +1179,7 @@ contract MctObservabilitySpine {
 -- Decision: Child registry and lifecycle observe artifact verification/rejection, approval/revocation, assignment/revocation, instance loading, ready, degraded, draining, stopped, and failed states.
 -- Decision: Toy authority observes grant allowed, denied, expired, and revoked; toy execution observes started, completed, and failed calls.
 -- Decision: Data movement and secret access observe allow and deny decisions separately from transport or backend errors.
--- Decision: Iroh and peer transport observe connection, hello negotiation, admission, rejection, direct-vs-relay path facts, stream open/reset, remote call send, and remote call receive.
+-- Decision: Iroh and peer transport observe connection, hello negotiation, admission, rejection, direct-vs-relay path facts, stream open/reset, remote call send, remote call receive, malformed peer calls, and peer call replies.
 -- Decision: Runtime adapters observe process, JVM, and WASM execution start/completion/failure/trap/timeout without turning runtime details into authority semantics.
 -- Decision: Storage observes append success/failure and observation backpressure. Observation sink failure must become visible through bounded backpressure, health, or fallback diagnostic evidence.
 -- Decision: Node health and telemetry exports are projections or reported conditions derived from observations and telemetry facts; they do not become the authority record.
@@ -1090,7 +1250,7 @@ contract MctObservationSubsystemCoverage {
         -- The toy contract separates grant authority observations from toy execution observations.
 
     @invariant PeerCoverage
-        -- The peer contract covers endpoint binding, connection, hello negotiation, admission, rejection, path quality, streams, and remote call send/receive facts.
+        -- The peer contract covers endpoint binding, connection, hello negotiation, admission, rejection, path quality, streams, remote call send/receive facts, malformed calls, and replies.
 
     @invariant RuntimeAdapterCoverage
         -- Runtime adapter observations cover process, JVM, and WASM effects while preserving WIT child authority semantics.
