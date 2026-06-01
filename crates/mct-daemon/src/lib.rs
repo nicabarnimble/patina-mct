@@ -66,7 +66,9 @@ mod tests {
     fn local_control_status_request_reports_daemon_status() {
         let response = handle_local_control_request(
             MctDaemonLocalControlRequest::Status,
-            MctDaemonLocalControlFacts::new(Some(iroh_snapshot(MotherIrohEndpointLifecycle::Bound))),
+            MctDaemonLocalControlFacts::new(Some(iroh_snapshot(
+                MotherIrohEndpointLifecycle::Bound,
+            ))),
         );
 
         let MctDaemonLocalControlResponse::Status(status) = response;

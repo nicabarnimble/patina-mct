@@ -462,14 +462,22 @@ mod tests {
             Some(ResultRef::from("result-call-1")),
             ObservationId::from("obs-reply-success"),
         );
-        let decoded_reply = decode_call_protocol_reply_json(
-            &encode_call_protocol_reply_json(&reply).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(decoded_reply.protocol_request_id, request.protocol_request_id);
+        let decoded_reply =
+            decode_call_protocol_reply_json(&encode_call_protocol_reply_json(&reply).unwrap())
+                .unwrap();
+        assert_eq!(
+            decoded_reply.protocol_request_id,
+            request.protocol_request_id
+        );
         assert_eq!(decoded_reply.decision_id, evaluation.decision_id);
-        assert_eq!(decoded_reply.reply_outcome, CallProtocolReplyOutcome::Success);
-        assert_eq!(decoded_reply.result_ref, Some(ResultRef::from("result-call-1")));
+        assert_eq!(
+            decoded_reply.reply_outcome,
+            CallProtocolReplyOutcome::Success
+        );
+        assert_eq!(
+            decoded_reply.result_ref,
+            Some(ResultRef::from("result-call-1"))
+        );
     }
 
     #[test]

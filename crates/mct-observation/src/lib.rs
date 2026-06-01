@@ -375,8 +375,14 @@ mod tests {
 
         let trace_entries = ledger.by_trace(&TraceId::from("trace-1")).unwrap();
         assert_eq!(trace_entries.len(), 2);
-        assert_eq!(trace_entries[0].observation.kind, ObservationKind::AdapterEffectStarted);
-        assert_eq!(trace_entries[1].observation.kind, ObservationKind::CallAuthorized);
+        assert_eq!(
+            trace_entries[0].observation.kind,
+            ObservationKind::AdapterEffectStarted
+        );
+        assert_eq!(
+            trace_entries[1].observation.kind,
+            ObservationKind::CallAuthorized
+        );
         assert_eq!(ledger.by_call(&CallId::from("call-1")).unwrap().len(), 2);
     }
 

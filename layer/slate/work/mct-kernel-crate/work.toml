@@ -1,7 +1,7 @@
 id = "mct-kernel-crate"
 title = "Build mct-kernel crate authority core"
 kind = "build"
-status = "blocked"
+status = "active"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -22,11 +22,7 @@ proof_plan = [
     "[ ] Denied/unknown/not-ready paths fail closed with typed errors and kernel observations.",
 ]
 closure_evidence = []
-blocked_by = [
-    "mother-kernel-design",
-    "mct-call-envelope",
-    "mct-allium-foundation",
-]
+blocked_by = []
 implementation_plan = [
     "[ ] Create the Rust crate/module boundary for `mct-kernel` with narrow public API and private internals.",
     "[ ] Implement typed IDs, lifecycle state machine, operation references, grant decisions, routing decisions, and typed errors.",
@@ -35,5 +31,5 @@ implementation_plan = [
     "[ ] Add focused unit tests for authority decisions and lifecycle transitions.",
 ]
 created_at = "1780068471"
-updated_at = "1780282621"
-block_reason = "Epic remains open; completed child slices cover crate skeleton, domain records, hello admission, and call protocol evaluation, but lifecycle/routing/grants/errors still require smaller slice Slates."
+updated_at = "1780282837"
+unblock_reason = "Design/call-envelope blockers are complete. Epic remains active as a container; child slices now cover crate skeleton, domain records, hello admission, call protocol evaluation, JSON edge helpers, denial observations, route decision records, and no-route denial facts. Child lifecycle, toy grants, and typed kernel errors remain future child slices."
