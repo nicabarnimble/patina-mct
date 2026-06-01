@@ -13,11 +13,11 @@ core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/spec-driven-desig
 runtime_shape_role = "Transport-independent semantic call shape shared by local control, process/JVM/WASM adapters, and Iroh peer calls."
 design_style = "Typed immutable domain envelope; adapters translate edge formats into MctCall rather than making wire formats kernel truth."
 implementation_ready_requirements = ["Every slice states which edge format maps into MctCall.", "Proof gates cover roundtrip/denial/malformed behavior.", "No adapter-specific authority field becomes the canonical call model."]
-slice_refs = ["mct-slice-kernel-domain-records", "mct-slice-call-protocol-evaluation", "mct-slice-fake-daemon-echo", "mct-slice-local-iroh-roundtrip", "mct-slice-runtime-shape-anchors", "mct-slice-iroh-unknown-peer-denial", "mct-slice-call-envelope-json-edge-roundtrip", "mct-slice-daemon-fake-end-to-end-status", "mct-slice-call-envelope-adapter-mapping-doc"]
-partial_evidence = ["[x] Semantic `MctCall`/`MctResult` records exist in `mct-kernel`.", "[x] `mct/call/0` protocol request/evaluation/reply records and pure evaluation exist.", "[x] `mct/call/0` reply path returns denied/no-result/no-route after denied hello.", "[x] JSON edge helpers roundtrip typed call protocol request/reply values and reject malformed JSON with typed errors.", "[x] Fake end-to-end status proves the typed call envelope produces result and reply facts visible through daemon status.", "[x] Adapter mapping doc records how Iroh, daemon control, CLI, process, JVM, and WASM/WIT edges translate into `MctCall`/`MctResult` without creating adapter-specific authority.", "[ ] Control-plane edge conversion remains open."]
+slice_refs = ["mct-slice-kernel-domain-records", "mct-slice-call-protocol-evaluation", "mct-slice-fake-daemon-echo", "mct-slice-local-iroh-roundtrip", "mct-slice-runtime-shape-anchors", "mct-slice-iroh-unknown-peer-denial", "mct-slice-call-envelope-json-edge-roundtrip", "mct-slice-daemon-fake-end-to-end-status", "mct-slice-call-envelope-adapter-mapping-doc", "mct-slice-call-envelope-roundtrip-proof-gate"]
+partial_evidence = ["[x] Semantic `MctCall`/`MctResult` records exist in `mct-kernel`.", "[x] `mct/call/0` protocol request/evaluation/reply records and pure evaluation exist.", "[x] `mct/call/0` reply path returns denied/no-result/no-route after denied hello.", "[x] JSON edge helpers roundtrip typed call protocol request/reply values and reject malformed JSON with typed errors.", "[x] Fake end-to-end status proves the typed call envelope produces result and reply facts visible through daemon status.", "[x] Adapter mapping doc records how Iroh, daemon control, CLI, process, JVM, and WASM/WIT edges translate into `MctCall`/`MctResult` without creating adapter-specific authority.", "[x] Roundtrip proof gate covers typed `MctCall`, JSON edge encoding, `mct/call/0` evaluation, and caller-safe reply linkage.", "[ ] Control-plane edge conversion remains open."]
 next_slice_candidates = ["mct-slice-daemon-local-control-status-api", "mct-slice-kernel-routing-decision-records"]
 proof_plan = [
-    "[ ] Roundtrip tests cover JSON edge encoding, mct/call/0 edge encoding, and typed kernel representation.",
+    "[x] Roundtrip tests cover JSON edge encoding, mct/call/0 edge encoding, and typed kernel representation.",
     "[x] Envelope supports caller/target/operation/payload/auth/deadline/idempotency/trace without transport-specific authority types.",
     "[x] Existing Mother `ChildCallRequest { operation_id, args, correlation }` is explicitly compared and narrowed/improved.",
 ]
@@ -30,5 +30,5 @@ implementation_plan = [
     "[x] Document how process, JVM, WASM, UDS/HTTP, CLI, and Iroh adapters map into the envelope, using mct/call/0 as the remote peer mapping.",
 ]
 created_at = "1780068477"
-updated_at = "1780281417"
+updated_at = "1780282352"
 unblock_reason = "Design blockers are complete. Epic remains active as a container; direct implementation still happens through child slices. Completed child slices now cover kernel records, pure mct/call/0 evaluation, JSON edge roundtrip, fake daemon usage, and adapter mapping docs. Control-plane edge conversion remains open."

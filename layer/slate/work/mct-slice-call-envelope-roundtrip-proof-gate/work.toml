@@ -1,0 +1,42 @@
+id = "mct-slice-call-envelope-roundtrip-proof-gate"
+title = "Prove call envelope roundtrip gate"
+kind = "refactor"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Finish the remaining call-envelope proof gate by testing typed MctCall, mct/call/0 request evaluation, JSON edge encoding, and reply semantics as one preserved semantic envelope."
+allium_anchors = ["MctCall", "MctCallProtocol"]
+user_alignment = "User asked to do all next slices and continue closing blocked Slate progress honestly through child proof gates."
+belief_refs = ["mct-call-protocol-wraps-semantic-call", "slate-epics-progress-through-child-slices"]
+core_refs = ["layer/core/dependable-rust.md", "layer/core/spec-driven-design.md"]
+parent_slates = ["mct-call-envelope"]
+code_targets = ["crates/mct-kernel/src/call/mod.rs", "layer/slate/work/mct-call-envelope/work.toml"]
+implementation_ready = true
+runtime_shape_role = "Completes the call-envelope proof gate tying typed kernel representation, JSON edge codec, mct/call/0 evaluation, and caller-safe reply linkage together."
+design_style = "Test-only proof slice; no new domain behavior or adapter-specific call model."
+first_test_to_write = "call_envelope_roundtrip_preserves_semantic_call_across_edges"
+exit_criteria = [
+    "Typed `MctCall` survives request JSON edge roundtrip inside `MctCallProtocolRequest`.",
+    "`mct/call/0` evaluation references the same semantic call id after decode.",
+    "Reply JSON edge roundtrip preserves the protocol request id, decision id, reply outcome, and result ref.",
+    "The remaining `mct-call-envelope` roundtrip proof gate is marked complete.",
+]
+non_goals = ["No control-plane API implementation.", "No new call fields.", "No transport-specific authority model."]
+implementation_plan = [
+    "[x] Add a focused kernel test that starts with a typed protocol request, JSON-roundtrips it, evaluates `mct/call/0`, and JSON-roundtrips the reply.",
+    "[x] Assert the decoded request preserves the same semantic `MctCall` target, payload metadata, and call id.",
+    "[x] Update `mct-call-envelope` proof evidence for the completed roundtrip gate.",
+]
+proof_plan = [
+    "[x] `cargo test -p mct-kernel call_envelope_roundtrip_preserves_semantic_call_across_edges` passes.",
+    "[x] `patina slate check mct-call-envelope --json` passes for the now-checked proof gates.",
+    "[x] `allium check layer/allium` passes.",
+]
+closure_evidence = [
+    "[x] `call_envelope_roundtrip_preserves_semantic_call_across_edges` proves JSON edge, typed `MctCall`, `mct/call/0` evaluation, and reply linkage preserve one semantic envelope.",
+    "[x] `layer/slate/work/mct-call-envelope/work.toml` records the roundtrip proof gate as complete while preserving the active epic container for remaining control-plane conversion work.",
+]
+blocked_by = []
+belief_harvest_decision = "No new durable belief required; this slice applies the existing call-protocol-wraps-semantic-call belief."
+created_at = "1780282340"
+updated_at = "1780282352"
+closed_at = "1780282352"
