@@ -253,3 +253,4 @@
 {"created_at":"1780278641","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-iroh-module-shape"}
 {"created_at":"1780279419","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-iroh-endpoint-config-typed-error"}
 {"created_at":"1780279589","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-daemon-module-shape"}
+{"created_at":"1780281462","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-call-envelope-adapter-mapping-doc"}
