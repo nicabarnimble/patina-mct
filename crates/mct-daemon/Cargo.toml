@@ -7,10 +7,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-mct-kernel = { path = "../mct-kernel" }
-mct-observation = { path = "../mct-observation" }
 mct-iroh = { path = "../mct-iroh" }
-anyhow.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
+mct-kernel = { path = "../mct-kernel" }
+mct-observation = { path = "../mct-observation" }
 tempfile.workspace = true

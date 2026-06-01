@@ -297,9 +297,9 @@ pub fn call_reply_from_evaluation(
 mod tests {
     use super::*;
     use crate::peer::{
-        ConnectionSide, HelloOutcome, HelloReason, IrohConnectionPresentation,
-        MctHelloAdmissionEvaluation, MctProtocolVersion, PathClass, SafeHelloReason,
-        MCT_CALL_ALPN, MCT_HELLO_ALPN,
+        ConnectionSide, HelloOutcome, HelloReason, IrohConnectionPresentation, MCT_CALL_ALPN,
+        MCT_HELLO_ALPN, MctHelloAdmissionEvaluation, MctProtocolVersion, PathClass,
+        SafeHelloReason,
     };
 
     fn example_call() -> MctCall {
@@ -425,7 +425,10 @@ mod tests {
         let encoded_reply = encode_call_protocol_reply_json(&reply).unwrap();
         let decoded_reply = decode_call_protocol_reply_json(&encoded_reply).unwrap();
         assert_eq!(decoded_reply, reply);
-        assert_eq!(decoded_reply.reply_outcome, CallProtocolReplyOutcome::Denied);
+        assert_eq!(
+            decoded_reply.reply_outcome,
+            CallProtocolReplyOutcome::Denied
+        );
 
         assert!(matches!(
             decode_call_protocol_request_json(b"not json"),
@@ -472,7 +475,10 @@ mod tests {
         request.payload.approximate_size_bytes = 99;
         let evaluation = evaluate_call_protocol(&request, &admitted_hello(), eval_ids());
         assert_eq!(evaluation.outcome, CallProtocolOutcome::Malformed);
-        assert_eq!(evaluation.reason, CallProtocolReason::PayloadMetadataMismatch);
+        assert_eq!(
+            evaluation.reason,
+            CallProtocolReason::PayloadMetadataMismatch
+        );
         let reply = call_reply_from_evaluation(
             ReplyId::from("reply-1"),
             &evaluation,

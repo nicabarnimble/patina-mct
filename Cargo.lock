@@ -1746,10 +1746,8 @@ dependencies = [
  "anyhow",
  "iroh",
  "mct-kernel",
- "mct-observation",
  "serde",
  "serde_json",
- "thiserror",
  "tokio",
 ]
 

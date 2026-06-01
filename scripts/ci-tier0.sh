@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-allium check layer/allium
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+allium check layer/allium
