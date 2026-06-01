@@ -1,0 +1,34 @@
+id = "mct-slice-call-envelope-json-edge-roundtrip"
+title = "Add call envelope JSON edge roundtrip"
+kind = "build"
+status = "active"
+execution_granularity = "slice"
+human_request = "Add explicit JSON edge encode/decode helpers for MCT call protocol values without making JSON the kernel truth."
+allium_anchors = ["MctCall", "MctCallProtocolRequest", "MctCallProtocolReply", "MctCallProtocol", "MctRuntimeShape"]
+user_alignment = "User wants one stable MCT call envelope and honest edge conversions, not transport-specific call models."
+belief_refs = ["mct-call-protocol-wraps-semantic-call"]
+core_refs = ["layer/core/spec-driven-design.md", "layer/core/dependable-rust.md", "layer/core/mct-build-boundaries.md"]
+parent_slates = ["mct-call-envelope", "mct-kernel-crate"]
+code_targets = ["crates/mct-kernel/Cargo.toml", "crates/mct-kernel/src/call/mod.rs"]
+implementation_ready = true
+runtime_shape_role = "Make JSON an explicit adapter/edge representation around the typed MCT call protocol values."
+design_style = "Typed domain values first; small concrete JSON helpers with typed errors second."
+first_test_to_write = "call_protocol_json_edge_roundtrips_and_rejects_malformed"
+exit_criteria = ["Call protocol request JSON roundtrips to the typed domain value.", "Call protocol reply JSON roundtrips to the typed domain value.", "Malformed JSON fails with a typed edge error."]
+non_goals = ["No HTTP/UDS control API.", "No alternate wire call model.", "No payload byte transport implementation."]
+implementation_plan = [
+    "[ ] Add JSON edge encode/decode helpers for call protocol request/reply.",
+    "[ ] Add typed edge codec errors for malformed JSON.",
+    "[ ] Add roundtrip and malformed tests.",
+]
+proof_plan = [
+    "[ ] `cargo test -p mct-kernel call_protocol_json_edge_roundtrips_and_rejects_malformed` passes.",
+    "[ ] Test proves request/reply roundtrip through JSON edge helpers.",
+    "[ ] Test proves malformed JSON is rejected with a typed error.",
+    "[ ] `cargo test --workspace` passes.",
+    "[ ] `allium check layer/allium` passes.",
+]
+closure_evidence = []
+blocked_by = ["mct-slice-call-protocol-evaluation"]
+created_at = "1780276300"
+updated_at = "1780276300"
