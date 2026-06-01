@@ -126,8 +126,48 @@ impl RouteDecision {
         }
     }
 
+    pub fn no_route(
+        call: &MctCall,
+        authority_evaluations: Vec<CandidateAuthorityEvaluation>,
+        no_route_reason: CandidateEliminationReason,
+        ids: RouteDecisionIds,
+    ) -> Self {
+        Self {
+            decision_id: ids.decision_id,
+            call_id: call.call_id.clone(),
+            authority_evaluations,
+            selected_route: None,
+            outcome: RouteDecisionOutcome::NoRoute,
+            no_route_reason: Some(no_route_reason),
+            safe_message: "not authorized".into(),
+            observation_id: ids.observation_id,
+        }
+    }
+
     pub fn is_no_route(&self) -> bool {
         self.outcome == RouteDecisionOutcome::NoRoute
+    }
+}
+
+pub fn no_route_denied_result(
+    call: &MctCall,
+    decision: &RouteDecision,
+    audit_ref: AuditRef,
+) -> MctResult {
+    MctResult {
+        call_id: call.call_id.clone(),
+        outcome: ResultOutcome::Denied,
+        route_taken: None,
+        authority_decision_ref: decision.decision_id.clone(),
+        execution_summary: ExecutionSummary {
+            wall_time_ms: 0,
+            execution_time_ms: None,
+            queue_wait_ms: None,
+            input_size_bytes: call.payload_metadata.approximate_size_bytes,
+            output_size_bytes: None,
+        },
+        requester_message: decision.safe_message.clone(),
+        audit_ref,
     }
 }
 
@@ -208,6 +248,35 @@ mod tests {
             decision.authority_evaluations[1].reason,
             Some(CandidateEliminationReason::PeerNotAdmitted)
         );
+    }
+
+    #[test]
+    fn no_route_decision_denies_by_default_without_route_taken() {
+        let call = call();
+        let eliminated = candidate("candidate-1", RuntimeKind::RemotePeer);
+        let decision = RouteDecision::no_route(
+            &call,
+            vec![CandidateAuthorityEvaluation::eliminated(
+                eliminated,
+                CandidateEliminationReason::PeerNotAdmitted,
+                1,
+                1,
+            )],
+            CandidateEliminationReason::PeerNotAdmitted,
+            RouteDecisionIds {
+                decision_id: DecisionId::from("route-decision-denied"),
+                observation_id: ObservationId::from("obs-route-denied"),
+            },
+        );
+        let result = no_route_denied_result(&call, &decision, AuditRef::from("audit-route-denied"));
+
+        assert!(decision.is_no_route());
+        assert_eq!(decision.selected_route, None);
+        assert_eq!(decision.safe_message, "not authorized");
+        assert_eq!(result.outcome, ResultOutcome::Denied);
+        assert_eq!(result.route_taken, None);
+        assert_eq!(result.authority_decision_ref, decision.decision_id);
+        assert_eq!(result.requester_message, "not authorized");
     }
 
     #[test]
