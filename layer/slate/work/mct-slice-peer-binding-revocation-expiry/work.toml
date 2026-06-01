@@ -1,7 +1,7 @@
 id = "mct-slice-peer-binding-revocation-expiry"
 title = "Lock peer binding revocation and expiry behavior"
 kind = "build"
-status = "active"
+status = "complete"
 execution_granularity = "slice"
 human_request = "Add tests and domain observation helpers for revoked and expired MctPeerBinding behavior."
 allium_anchors = ["MctPeerBinding", "MctHelloAdmissionEvaluation", "MctObservation", "MctRuntimeShape"]
@@ -17,19 +17,24 @@ first_test_to_write = "expired_binding_is_denied_with_safe_message"
 exit_criteria = ["Expired binding denies hello with safe message.", "Revoked binding denies hello with safe message.", "Revoked and expired binding states map to observation facts."]
 non_goals = ["No persistent key store.", "No administrative revocation command.", "No clock-based expiry evaluation beyond explicit binding state."]
 implementation_plan = [
-    "[ ] Add expired-binding denial test beside revoked-binding denial.",
-    "[ ] Add pure binding-state observation mapper.",
-    "[ ] Add tests for revoked and expired observation facts.",
+    "[x] Add expired-binding denial test beside revoked-binding denial.",
+    "[x] Add pure binding-state observation mapper.",
+    "[x] Add tests for revoked and expired observation facts.",
 ]
 proof_plan = [
-    "[ ] `cargo test -p mct-kernel expired_binding_is_denied_with_safe_message` passes.",
-    "[ ] `cargo test -p mct-kernel revoked_and_expired_bindings_become_observations` passes.",
-    "[ ] Test proves revoked/expired bindings deny with caller-safe messages.",
-    "[ ] Test proves revoked/expired bindings become `PeerBindingRevoked`/`PeerBindingExpired` observations.",
-    "[ ] `cargo test --workspace` passes.",
-    "[ ] `allium check layer/allium` passes.",
+    "[x] `cargo test -p mct-kernel expired_binding_is_denied_with_safe_message` passes.",
+    "[x] `cargo test -p mct-kernel revoked_and_expired_bindings_become_observations` passes.",
+    "[x] Test proves revoked/expired bindings deny with caller-safe messages.",
+    "[x] Test proves revoked/expired bindings become `PeerBindingRevoked`/`PeerBindingExpired` observations.",
+    "[x] `cargo test --workspace` passes.",
+    "[x] `allium check layer/allium` passes.",
 ]
-closure_evidence = []
+closure_evidence = [
+    "[x] Commit `4bbbeb6 feat(kernel): observe peer binding revocation expiry` adds expired-binding denial test and peer binding state observation mapping.",
+    "[x] Tests prove revoked/expired bindings deny safely and map to `PeerBindingRevoked`/`PeerBindingExpired` observations.",
+    "[x] Targeted kernel tests, workspace tests, and Allium validation passed before closure.",
+]
 blocked_by = ["mct-slice-hello-admission", "mct-slice-kernel-denial-observations"]
 created_at = "1780276500"
-updated_at = "1780276500"
+updated_at = "1780276554"
+closed_at = "1780276554"
