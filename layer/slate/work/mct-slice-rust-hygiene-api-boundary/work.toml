@@ -1,0 +1,52 @@
+id = "mct-slice-rust-hygiene-api-boundary"
+title = "Tighten Rust hygiene and API boundary"
+kind = "refactor"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Run the rust hygiene/API-boundary slice from the Jon-style review: fmt and clippy must pass, CI should enforce them, and dev proof harnesses should stop leaking into public APIs where possible."
+allium_anchors = ["MctRuntimeShape"]
+user_alignment = "User wants Jon Gjengset-style Rust alignment: honest signatures, small public APIs, private internals, typed fail-closed outcomes, and concrete implementations before speculative traits."
+belief_refs = ["mother-kernel-decides-adapters-perform", "iroh-provides-connectivity-not-authority"]
+core_refs = ["layer/core/dependable-rust.md", "layer/core/spec-driven-design.md", "layer/core/adapter-pattern.md", "layer/core/mct-build-boundaries.md"]
+parent_slates = ["mct-kernel-crate", "mct-iroh-substrate", "mct-daemon-control-plane", "mct-release-hardening"]
+code_targets = ["scripts/ci-tier0.sh", ".github/workflows/ci.yml", "crates/mct-kernel/src/peer/mod.rs", "crates/mct-iroh/src/lib.rs", "crates/mct-iroh/Cargo.toml", "crates/mct-daemon/src/lib.rs", "crates/mct-daemon/Cargo.toml"]
+implementation_ready = true
+runtime_shape_role = "Keep the MCT Rust surface disciplined: public APIs expose domain/lifecycle facts, while proof harnesses stay test-only and CI enforces fmt/clippy/test hygiene."
+design_style = "Jon-style Rust hygiene slice: concrete code only, no new traits; private test harnesses; fail-fast CI gates."
+first_test_to_write = "No new behavior test; this slice is proved by existing unit/integration tests plus fmt and clippy warning-deny gates."
+exit_criteria = [
+    "`cargo fmt --check` passes.",
+    "`cargo clippy --workspace --all-targets -- -D warnings` passes.",
+    "`cargo test --workspace` passes.",
+    "CI invokes rustfmt and clippy before workspace tests.",
+    "MCT Iroh and daemon proof harness helpers are no longer public production APIs where no external caller requires them.",
+]
+non_goals = ["No runtime behavior change.", "No new abstraction traits.", "No public control API.", "No new Allium behavior contract."]
+implementation_plan = [
+    "[x] Run rustfmt and keep formatting clean across the workspace.",
+    "[x] Fix clippy warning-deny failures without suppressing the boundary signal.",
+    "[x] Move local proof harness reports/functions behind `#[cfg(test)]` and make them private in `mct-iroh` and `mct-daemon`.",
+    "[x] Remove/move dependencies that only test harness code needs from production dependency sets.",
+    "[x] Make Tier 0 CI enforce fmt, clippy, tests, and Allium validation.",
+]
+proof_plan = [
+    "[x] `cargo fmt --check` passes.",
+    "[x] `cargo clippy --workspace --all-targets -- -D warnings` passes.",
+    "[x] `cargo test --workspace` passes.",
+    "[x] `allium check layer/allium` passes.",
+    "[x] `scripts/ci-tier0.sh` includes fmt, clippy, workspace tests, and Allium checks.",
+]
+closure_evidence = [
+    "[x] Commit `ab5f625 refactor: tighten rust hygiene boundaries` makes rustfmt output clean and fixes the `field_reassign_with_default` clippy failure.",
+    "[x] Commit `ab5f625` makes local Iroh roundtrip/denial reports and daemon fake slice reports/functions private `#[cfg(test)]` items instead of public production API.",
+    "[x] Commit `ab5f625` moves Iroh serde/serde_json use and daemon anyhow/kernel/observation use to dev-dependencies where they are only needed by tests.",
+    "[x] Commit `ab5f625` updates `scripts/ci-tier0.sh` and GitHub CI so rustfmt and clippy warning-deny are enforced before tests.",
+    "[x] `cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings` passed locally.",
+    "[x] `cargo test --workspace` passed locally.",
+    "[x] `allium check layer/allium` passed locally.",
+]
+blocked_by = []
+belief_harvest_decision = "No new durable belief required; this slice applies existing Dependable Rust and MCT runtime-shape guidance to code hygiene and public API boundaries."
+created_at = "1780277794"
+updated_at = "1780278020"
+closed_at = "1780278020"
