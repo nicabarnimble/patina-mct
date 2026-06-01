@@ -9,11 +9,13 @@ pub mod call;
 pub mod id;
 pub mod observation;
 pub mod peer;
+pub mod route;
 
 pub use call::*;
 pub use id::*;
 pub use observation::*;
 pub use peer::*;
+pub use route::*;
 
 /// Returns the crate version for health and smoke tests.
 pub fn version() -> &'static str {
