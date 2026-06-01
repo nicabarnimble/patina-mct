@@ -245,3 +245,4 @@
 {"created_at":"1780275403","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-iroh-mother-owned-endpoint-lifecycle"}
 {"created_at":"1780275957","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-iroh-adapter-observations"}
 {"created_at":"1780276139","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-daemon-health-readiness"}
+{"created_at":"1780276240","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-call-envelope-json-edge-roundtrip"}

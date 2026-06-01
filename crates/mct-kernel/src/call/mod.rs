@@ -1,5 +1,6 @@
 use crate::id::*;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 mod internal;
 
@@ -233,6 +234,38 @@ impl MctCallProtocolEvaluation {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum MctCallJsonEdgeError {
+    #[error("failed to encode MCT call protocol JSON edge value: {0}")]
+    Encode(#[source] serde_json::Error),
+    #[error("failed to decode MCT call protocol JSON edge value: {0}")]
+    Decode(#[source] serde_json::Error),
+}
+
+pub fn encode_call_protocol_request_json(
+    request: &MctCallProtocolRequest,
+) -> Result<Vec<u8>, MctCallJsonEdgeError> {
+    serde_json::to_vec(request).map_err(MctCallJsonEdgeError::Encode)
+}
+
+pub fn decode_call_protocol_request_json(
+    bytes: &[u8],
+) -> Result<MctCallProtocolRequest, MctCallJsonEdgeError> {
+    serde_json::from_slice(bytes).map_err(MctCallJsonEdgeError::Decode)
+}
+
+pub fn encode_call_protocol_reply_json(
+    reply: &MctCallProtocolReply,
+) -> Result<Vec<u8>, MctCallJsonEdgeError> {
+    serde_json::to_vec(reply).map_err(MctCallJsonEdgeError::Encode)
+}
+
+pub fn decode_call_protocol_reply_json(
+    bytes: &[u8],
+) -> Result<MctCallProtocolReply, MctCallJsonEdgeError> {
+    serde_json::from_slice(bytes).map_err(MctCallJsonEdgeError::Decode)
+}
+
 pub fn call_reply_from_evaluation(
     reply_id: ReplyId,
     evaluation: &MctCallProtocolEvaluation,
@@ -371,6 +404,33 @@ mod tests {
         assert!(json.contains("iroh"));
         let decoded: MctCall = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, call);
+    }
+
+    #[test]
+    fn call_protocol_json_edge_roundtrips_and_rejects_malformed() {
+        let request = protocol_request();
+        let encoded_request = encode_call_protocol_request_json(&request).unwrap();
+        let decoded_request = decode_call_protocol_request_json(&encoded_request).unwrap();
+        assert_eq!(decoded_request, request);
+
+        let mut hello = admitted_hello();
+        hello.hello_outcome = HelloOutcome::Denied;
+        let evaluation = evaluate_call_protocol(&request, &hello, eval_ids());
+        let reply = call_reply_from_evaluation(
+            ReplyId::from("reply-denied"),
+            &evaluation,
+            None,
+            ObservationId::from("obs-reply-denied"),
+        );
+        let encoded_reply = encode_call_protocol_reply_json(&reply).unwrap();
+        let decoded_reply = decode_call_protocol_reply_json(&encoded_reply).unwrap();
+        assert_eq!(decoded_reply, reply);
+        assert_eq!(decoded_reply.reply_outcome, CallProtocolReplyOutcome::Denied);
+
+        assert!(matches!(
+            decode_call_protocol_request_json(b"not json"),
+            Err(MctCallJsonEdgeError::Decode(_))
+        ));
     }
 
     #[test]
