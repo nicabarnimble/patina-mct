@@ -2,10 +2,20 @@ id = "mct-kernel-crate"
 title = "Build mct-kernel crate authority core"
 kind = "build"
 status = "blocked"
+execution_granularity = "epic_container"
+direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
+completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
 human_request = "Implement the `mct-kernel` crate as the small, typed, performance-sensitive authority core for child identity, lifecycle, routing, grants, errors, and kernel observations."
-allium_anchors = []
+allium_anchors = ["MctRuntimeShape"]
 user_alignment = "User mostly agrees with `mct-kernel` but wants the build to stay clean, performant, and not over-engineered."
 belief_refs = []
+core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/dependable-rust.md", "layer/core/spec-driven-design.md", "layer/core/safety-boundaries.md"]
+runtime_shape_role = "Pure authority/domain crate: decides over typed MCT facts and hides private internals from transport/runtime/storage implementation types."
+design_style = "Jon Gjengset-style Rust: honest signatures, typed IDs and states, private internal modules, fail-closed outcomes, concrete code before abstraction traits."
+implementation_ready_requirements = ["Every child slice names public API additions and private internals separately.", "No Iroh/Wasmtime/SQLite/HTTP/JVM concrete types in public kernel API.", "Proof gates include denied/fail-closed tests, not only success paths."]
+slice_refs = ["mct-slice-workspace-skeleton", "mct-slice-kernel-domain-records", "mct-slice-hello-admission", "mct-slice-call-protocol-evaluation", "mct-slice-fake-daemon-echo", "mct-slice-runtime-shape-anchors"]
+partial_evidence = ["[x] Kernel crate exists with typed IDs and domain records.", "[x] Pure hello and call protocol authority evaluations exist.", "[ ] Child lifecycle, toy grants, routing decisions, and typed kernel errors remain open."]
+next_slice_candidates = ["mct-slice-kernel-denial-observations", "mct-slice-kernel-routing-decision-records", "mct-slice-toy-grant-authorized-call"]
 proof_plan = [
     "[ ] `cargo test` passes for the kernel crate.",
     "[ ] Public API exposes typed domain concepts and not transport/runtime/storage implementation types.",
@@ -24,5 +34,5 @@ implementation_plan = [
     "[ ] Add focused unit tests for authority decisions and lifecycle transitions.",
 ]
 created_at = "1780068471"
-updated_at = "1780070120"
-block_reason = "Blocked until mct-call-envelope is completed or explicitly superseded in the roadmap."
+updated_at = "1780264533"
+block_reason = "Epic remains open; completed child slices cover crate skeleton, domain records, hello admission, and call protocol evaluation, but lifecycle/routing/grants/errors still require smaller slice Slates."

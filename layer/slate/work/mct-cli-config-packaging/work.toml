@@ -2,10 +2,14 @@ id = "mct-cli-config-packaging"
 title = "Build MCT CLI, config, and packaging surface"
 kind = "build"
 status = "blocked"
+execution_granularity = "epic_container"
+direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
+completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
 human_request = "Create the user-facing MCT executable/config/install surface for daemon lifecycle, local control, child/toy operations, Iroh peer operations, and release packaging."
 allium_anchors = []
 user_alignment = "Current Mother has useful CLI/launchd/local socket behavior; clean MCT needs the comparable operational surface without inheriting the integrated Patina command sprawl."
 belief_refs = []
+core_refs = ["layer/core/unix-philosophy.md", "layer/core/safety-boundaries.md", "layer/core/mct-build-boundaries.md"]
 proof_plan = [
     "[ ] CLI can start/status/stop the local MCT daemon and show socket/config paths.",
     "[ ] Config roundtrip tests cover default paths, Iroh settings, storage paths, and child/toy registry locations.",
@@ -24,5 +28,5 @@ implementation_plan = [
     "[ ] Prepare packaging/release artifacts and docs that make MCT runnable independent of Belief internals.",
 ]
 created_at = "1780070082"
-updated_at = "1780070147"
+updated_at = "1780262310"
 block_reason = "Blocked until mct-child-registry-lifecycle is completed or explicitly superseded in the roadmap."

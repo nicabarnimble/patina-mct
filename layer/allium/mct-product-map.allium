@@ -17,6 +17,19 @@
 --   - Clojure orchestration internals except as future interface layer above MCT
 --   - Exact HTTP, SQLite, Wasmtime, JVM, or Iroh implementation APIs unless they affect observable behaviour
 --   - UI rendering/view-buffer details beyond observability obligations
+-- Core build anchors:
+--   - layer/core/mct-build-boundaries.md
+--   - layer/core/spec-driven-design.md
+--   - layer/core/safety-boundaries.md
+--   - layer/core/adapter-pattern.md
+--   - layer/core/dependable-rust.md
+--   - layer/core/unix-philosophy.md
+--   - layer/core/oxidized-knowledge.md
+--
+-- Core build guidance is implementation governance, not runtime authority.
+-- Runtime authority comes from MCT domain facts such as MctPeerBinding,
+-- ToyGrant, policy snapshots, and the MctObservation ledger.
+--
 -- Slate anchors:
 --   - mct-build-roadmap
 --   - mother-kernel-design
@@ -40,6 +53,9 @@
 --   - mct-release-hardening
 
 open question "Confirm the one-sentence product statement for MCT."
+-- Decision: MCT is a whole-app, local-first Mother/Child/Toy runtime: a Mother carries local authority, observation ledger, child runtime, ToyGrant checks, and peer protocols in the same deployable node instead of treating a hidden SaaS backend as the source of truth.
+-- Decision: Iroh supplies the public-key-addressed connectivity substrate for whole-app nodes; MCT supplies the application/runtime/authority layer above that substrate.
+-- Decision: Managed or hosted infrastructure may improve relay, metrics, diagnostics, and support, but it must remain optional infrastructure rather than the MCT authority root.
 -- Decision: Multi-Mother exists primarily to share selected data and compute across nodes under explicit Mother authority.
 -- Decision: MCT should choose the fastest authorized execution path for a task, not always send compute to data or data to compute.
 -- Decision: Path choice is environment-aware: node capability, hardware class, locality, network conditions, data size, secret/data authority, and child/toy availability all matter.
@@ -64,6 +80,41 @@ open question "What routing inputs are mandatory for fastest-path decisions vers
 -- Decision: MCT should preserve the bones: User, Node, Vision, node membership, vision membership, node-vision binding, project/app identity binding, role guardrails, and approved child assignment.
 -- Decision: MCT must add what current Mother lacks for multi-node routing: Iroh peer identity, node capability profile, data movement policy, compute placement policy, health/load telemetry, remote trust/admission, and approval scoped by Vision/Node/data class/toy grants/child version.
 -- Principle: Same bones, cleaner body.
+
+-- Architectural shape: MCT is a modular local authority runtime.
+-- Decision: The product is shaped as a small local Mother authority kernel wrapped by a daemon, with effectful adapters around it and Iroh as the first peer connectivity substrate.
+-- Decision: The Mother kernel decides using MCT domain facts: identities, peer bindings, child approvals, toy grants, policy snapshots, routing candidates, and observations.
+-- Decision: The daemon owns process lifetime, local control surfaces, endpoint/runtime lifecycle, and adapter wiring; it must not become the authority model itself.
+-- Decision: Adapters perform external effects such as Iroh streams, storage writes, process/JVM/WASM execution, toy backends, metrics, logs, and OpenTelemetry projection.
+-- Decision: Adapter facts enter the authority model only after translation into MCT domain records or `MctObservation` entries.
+-- Decision: Current Patina Mother is evidence and prior art for daemon, registry, call, storage, secrets, and control-plane concerns, but it is not the ontology for the clean MCT repo.
+-- Decision: MCT emulates Mother's role as local authority over children, toys, calls, and observations while rebuilding the internals as smaller domain seams.
+-- Decision: The Rust implementation should follow a Jon Gjengset-style systems shape: honest signatures, domain types at boundaries, private internals, explicit state machines, typed fail-closed outcomes, and concrete implementations before speculative traits.
+-- Decision: The peer adapter should follow Iroh's general design shape: composable endpoint/protocol primitives, ALPN as the protocol seam, explicit async connection/stream handling, and application authority above transport identity.
+-- Principle: Jon-style Rust inside; Iroh-style composable protocols outside.
+
+contract MctRuntimeShape {
+    @invariant KernelDecidesAdaptersPerform
+        -- Authority decisions are made by the Mother kernel over MCT domain facts; adapters perform effects and report observations.
+
+    @invariant DaemonOwnsLifecycleButNotAuthority
+        -- The daemon owns local process, endpoint, runtime, and control-surface lifecycle without becoming the source of authorization truth.
+
+    @invariant DomainFactsCrossBoundaries
+        -- External systems cross into MCT through typed domain records such as calls, peer bindings, grants, policy snapshots, and observations rather than raw transport or storage implementation types.
+
+    @invariant ObservationsAreCanonicalRuntimeTruth
+        -- `MctObservation` is the canonical runtime ledger; logs, metrics, qlog, audit exports, and OpenTelemetry are projections.
+
+    @invariant IrohConnectivityIsNotMctAuthority
+        -- Iroh provides endpoint connectivity and ALPN protocol composition; MCT grants authority only through explicit peer bindings, policy, and admission decisions.
+
+    @invariant CurrentMotherIsEvidenceNotOntology
+        -- Existing Patina Mother implementation informs the design but does not define the clean MCT domain model.
+
+    @invariant ConcreteBeforeSpeculativeTraits
+        -- New abstraction seams are introduced only after concrete implementations make the boundary real.
+}
 
 -- Decision: MCT routing is two-phase.
 --   Phase 1 is the Authority Filter: it removes routes that violate data policy, Vision policy, peer trust, child/component approval, toy grants, or secrets scope.
@@ -168,6 +219,375 @@ contract NodeProfileAndTelemetry {
         -- JVM-backed child capabilities are discoverable only to approved Visions.
 }
 
+-- Decision: Iroh `EndpointId` is transport identity: it proves endpoint key possession for an Iroh connection, but it does not by itself grant MCT node identity, Vision membership, child access, toy access, observation access, or data movement authority.
+-- Decision: Mother owns the Iroh endpoint lifecycle. WASM/WASI/WIT children use peer networking only through explicit WIT/Toy capabilities; raw Iroh endpoints, sockets, and connection handles are not default child authority.
+-- Decision: MCT peer authority requires an explicit `MctPeerBinding` that binds an Iroh endpoint id to an MCT node, Vision scope, admitted ALPNs, issuer, policy revision, binding state, and time bounds.
+-- Decision: DNS, Pkarr, DHT, mDNS, relay reachability, and tickets are reachability evidence, not authority. They may help find an endpoint but cannot admit it to an MCT Vision or grant protocol rights.
+-- Decision: Iroh endpoint hooks and relay access control may reject unknown, banned, or malformed peers early, but the MCT authority decision remains a kernel peer-admission decision that records an observation.
+-- Decision: RCAN-style signed capability tokens are useful evidence and a design pattern for attenuation, but MCT peer bindings and ToyGrants remain the authority records for MCT calls, observations, thoughts, and child/toy access.
+-- Decision: Binding creation, admission, rejection, revocation, expiry, and stale-policy denial are observed facts before protected peer effects such as `mct/call/0`, `mct/thought/0`, or `mct/observe/0` proceed.
+
+value IrohConnectionPresentation {
+    endpoint_id: String
+    alpn: String
+    connection_side: incoming | outgoing
+    path_class: direct | relayed | relay_only | privacy_transport | unknown
+    relay_url: String?
+    presented_capability_ref: String?
+}
+
+value MctPeerBindingScope {
+    mct_node_id: String
+    vision_id: String
+    allowed_alpns: List<String>
+    data_scope: String?
+    observation_scope: String?
+}
+
+entity MctPeerBinding {
+    binding_id: String
+    iroh_endpoint_id: String
+    scope: MctPeerBindingScope
+    issuer_node_id: String
+    policy_revision: Integer
+    binding_state: pending | admitted | denied | expired | revoked
+    issued_at: Timestamp
+    expires_at: Timestamp?
+    created_by_observation_id: String
+    superseded_by_observation_id: String?
+}
+
+entity MctPeerAdmissionDecision {
+    decision_id: String
+    presentation: IrohConnectionPresentation
+    binding_id: String?
+    requested_vision_id: String?
+    policy_revision: Integer
+    outcome: admitted | denied
+    reason: active_binding | unknown_endpoint | missing_binding | binding_pending | binding_revoked | binding_expired | vision_not_allowed | alpn_not_allowed | policy_revision_stale | capability_invalid | relay_access_denied
+    observation_id: String
+}
+
+actor MctPeerBindingReader {
+    within: MctPeerBinding
+    identified_by: binding.binding_id
+}
+
+actor MctPeerAdmissionAuthority {
+    within: MctPeerAdmissionDecision
+    identified_by: decision.decision_id
+}
+
+surface MctPeerBindingProjection {
+    facing reader: MctPeerBindingReader
+    context binding: MctPeerBinding
+
+    exposes:
+        binding.binding_id
+        binding.iroh_endpoint_id
+        binding.scope.mct_node_id
+        binding.scope.vision_id
+        binding.scope.allowed_alpns
+        binding.scope.data_scope
+        binding.scope.observation_scope
+        binding.issuer_node_id
+        binding.policy_revision
+        binding.binding_state
+        binding.issued_at
+        binding.expires_at
+        binding.created_by_observation_id
+        binding.superseded_by_observation_id
+}
+
+surface MctPeerAdmissionProjection {
+    facing authority: MctPeerAdmissionAuthority
+    context decision: MctPeerAdmissionDecision
+
+    exposes:
+        decision.decision_id
+        decision.presentation.endpoint_id
+        decision.presentation.alpn
+        decision.presentation.connection_side
+        decision.presentation.path_class
+        decision.presentation.relay_url
+        decision.presentation.presented_capability_ref
+        decision.binding_id
+        decision.requested_vision_id
+        decision.policy_revision
+        decision.outcome
+        decision.reason
+        decision.observation_id
+}
+
+contract MctIrohPeerBindingAuthority {
+    @invariant EndpointIdIsTransportOnly
+        -- An Iroh endpoint id authenticates transport key possession and connection metadata, but it is never sufficient MCT authority on its own.
+
+    @invariant PeerBindingIsExplicit
+        -- MCT authority requires an explicit binding from endpoint id to MCT node, Vision scope, allowed ALPNs, issuer, policy revision, and time bounds.
+
+    @invariant ReachabilityDoesNotAdmitPeer
+        -- Discovery records, tickets, relay reachability, and successful handshakes do not grant Vision membership or protocol authority.
+
+    @invariant MotherOwnsEndpoint
+        -- Mother owns Iroh endpoint lifecycle and exposes only scoped WIT/Toy capabilities to children.
+
+    @invariant HooksAreEarlyGatesNotAuthorityModel
+        -- Iroh endpoint hooks and relay access control may reject early, but they call into or reflect MCT authority rather than replacing it.
+
+    @invariant AdmissionIsObservedBeforePeerEffect
+        -- Peer admission, rejection, binding creation, binding revocation, binding expiry, and stale-policy denial are recorded before protected peer effects proceed.
+
+    @invariant CapabilityTokensDoNotReplaceToyGrants
+        -- Signed tokens may prove delegated peer facts, but MCT ToyGrants and peer bindings remain the authority records used by the kernel.
+}
+
+-- Decision: Iroh intentionally stops at reliable public-key-addressed connectivity, endpoint discovery, relay/direct path continuity, and ALPN protocol composition. MCT should not push Vision membership, child authorization, thought acceptance, or ToyGrant authority into Iroh transport identity.
+-- Decision: MCT is the protocol/runtime/authority layer above Iroh. It defines MCT ALPN protocols, WIT-shaped calls, thought semantics, observation replication, admission, and grants.
+-- Decision: ALPN is the composition seam. Candidate MCT-over-Iroh ALPNs include `mct/hello/0` for admission/version/capability exchange, `mct/call/0` for WIT-shaped remote calls, `mct/thought/0` for immutable thought/fact exchange, `mct/observe/0` for selected observation replication, and `mct/federation/0` for federation control.
+-- Decision: MCT whole-app nodes may use public relays for development/bootstrap, managed relays for convenience, or self-hosted/federated relays for production boundaries. Relay choice changes reachability and metadata exposure, not MCT authority.
+-- Decision: noq/Iroh own direct-vs-relay switching, multipath continuity, address discovery, and future path types such as WebRTC or Wi-Fi-aware transport. MCT policy may constrain acceptable path classes and observe path facts, but it does not schedule packets.
+-- Decision: Iroh blobs/content addressing are optional payload and artifact tools. MCT may use them for immutable artifacts, bulk data, or thought payload material, but live calls, admission, and observation streams remain protocol flows with their own authority.
+-- Decision: MCT should become the framework/protocol layer that lets application developers consume Iroh through WIT/Toy capabilities and MCT protocols rather than raw Rust networking primitives.
+
+value MctIrohProtocolPolicy {
+    alpn: String
+    purpose: peer_admission | wit_call | thought_exchange | observation_replication | federation_control | blob_payload_adapter
+    requires_peer_binding: Boolean
+    requires_toy_grant: Boolean
+    exposes_raw_iroh_to_child: Boolean
+    authority_record: peer_binding | toy_grant | data_policy | observation_policy | adapter_policy
+}
+
+entity MctIrohProtocolDeclaration {
+    protocol_id: String
+    policy: MctIrohProtocolPolicy
+    version: String
+    safe_to_publish: Boolean
+}
+
+actor MctIrohProtocolReader {
+    within: MctIrohProtocolDeclaration
+    identified_by: protocol.protocol_id
+}
+
+surface MctIrohProtocolCatalog {
+    facing reader: MctIrohProtocolReader
+    context protocol: MctIrohProtocolDeclaration
+
+    exposes:
+        protocol.protocol_id
+        protocol.policy.alpn
+        protocol.policy.purpose
+        protocol.policy.requires_peer_binding
+        protocol.policy.requires_toy_grant
+        protocol.policy.exposes_raw_iroh_to_child
+        protocol.policy.authority_record
+        protocol.version
+        protocol.safe_to_publish
+}
+
+contract MctIrohProtocolLayer {
+    @invariant IrohProvidesConnectivityNotAuthority
+        -- Iroh provides reliable public-key-addressed connectivity and ALPN routing; MCT provides application authority, Vision policy, grants, and thought semantics above it.
+
+    @invariant WholeAppNodeOwnsLocalTruth
+        -- A Mother node carries local authority, ledger, runtime, children, toys, and peer protocols; external services are projections or convenience infrastructure, not the source of truth.
+
+    @invariant AlpnIsProtocolCompositionSeam
+        -- MCT-over-Iroh behaviour is declared through ALPN-specific protocols whose authority requirements are explicit.
+
+    @invariant ChildrenUseCapabilitiesNotTransport
+        -- Children consume peer networking through scoped WIT/Toy capabilities and MCT protocols, not through raw Iroh endpoint or socket handles.
+
+    @invariant RelayChoiceIsReachabilityNotAuthority
+        -- Public, managed, self-hosted, or federated relay choice affects reachability, reliability, cost, and metadata exposure, but it does not grant Vision membership or protocol rights.
+
+    @invariant MultipathIsSubstrateConcern
+        -- Direct-vs-relay switching, multipath scheduling, and future path types are Iroh/noq substrate concerns; MCT records and constrains path classes rather than reimplementing path selection.
+
+    @invariant ContentAddressingIsPayloadTool
+        -- Content-addressed blobs may carry immutable payloads or artifacts, but content addressing does not replace MCT call, thought, observation, or authority semantics.
+}
+
+-- Decision: `mct/hello/0` is the first MCT application protocol on a new peer path. It performs version negotiation, binding presentation, Vision scope selection, ALPN admission, safe denial, and observation before any protected `mct/call/0`, `mct/thought/0`, `mct/observe/0`, or `mct/federation/0` effect proceeds.
+-- Decision: `mct/hello/0` consumes Iroh connection facts but does not trust them as full authority. The presented endpoint id must match the authenticated Iroh remote endpoint, and the presented binding must be active for the requested Vision and ALPNs under the local policy revision.
+-- Decision: A successful hello admits only the negotiated protocol version, Vision scope, peer binding, and ALPN set recorded in its decision. Later peer messages must reference that admission decision or a derived session capability.
+-- Decision: A denied hello returns only a safe reason such as `not authorized`, `unsupported version`, or `retry later`; internal observations retain the precise reason.
+-- Decision: `mct/hello/0` may advertise a policy-filtered capability view, but capability advertisement is not a grant. Child access, toy use, thought acceptance, and observation replication still require their own authority checks.
+
+value MctProtocolVersion {
+    protocol_name: String
+    major: Integer
+    minor: Integer
+    compatibility_floor: Integer?
+}
+
+value MctPeerBindingPresentation {
+    binding_id: String?
+    endpoint_id: String
+    mct_node_id: String?
+    vision_id: String?
+    policy_revision: Integer?
+    allowed_alpns_claim: List<String>
+    signature_ref: String?
+    expires_at: Timestamp?
+}
+
+value MctHelloCapabilityView {
+    supported_alpns: List<String>
+    supported_wit_worlds: List<String>
+    supported_observation_modes: List<String>
+    capability_view_ref: String?
+}
+
+entity MctHelloRequest {
+    hello_id: String
+    received_over: IrohConnectionPresentation
+    requested_protocol: MctProtocolVersion
+    requested_vision_id: String?
+    requested_alpns: List<String>
+    presented_binding: MctPeerBindingPresentation
+    capability_view: MctHelloCapabilityView?
+    local_policy_revision_seen: Integer?
+    trace_id: String
+    received_observation_id: String
+}
+
+entity MctHelloAdmissionEvaluation {
+    decision_id: String
+    request_id: String
+    peer_admission_decision_id: String?
+    selected_binding_id: String?
+    negotiated_protocol: MctProtocolVersion?
+    accepted_alpns: List<String>
+    hello_outcome: admitted | denied | retry_later | upgrade_required
+    reason: active_binding | endpoint_mismatch | missing_binding | binding_pending | binding_revoked | binding_expired | vision_not_allowed | alpn_not_allowed | version_unsupported | policy_revision_stale | capability_invalid | relay_access_denied | temporary_unavailable
+    safe_reason: not_authorized | unsupported_version | retry_later | admitted
+    observation_id: String
+}
+
+entity MctHelloResponse {
+    response_id: String
+    request_id: String
+    decision_id: String
+    hello_outcome: admitted | denied | retry_later | upgrade_required
+    negotiated_protocol: MctProtocolVersion?
+    accepted_alpns: List<String>
+    safe_message: String
+    retry_after: Timestamp?
+    response_observation_id: String
+}
+
+actor MctHelloRequester {
+    within: MctHelloRequest
+    identified_by: request.hello_id
+}
+
+actor MctHelloAdmissionOperator {
+    within: MctHelloAdmissionEvaluation
+    identified_by: evaluation.decision_id
+}
+
+actor MctHelloResponder {
+    within: MctHelloResponse
+    identified_by: response.response_id
+}
+
+surface MctHelloRequestProjection {
+    facing requester: MctHelloRequester
+    context request: MctHelloRequest
+
+    exposes:
+        request.hello_id
+        request.received_over.endpoint_id
+        request.received_over.alpn
+        request.received_over.connection_side
+        request.received_over.path_class
+        request.requested_protocol.protocol_name
+        request.requested_protocol.major
+        request.requested_protocol.minor
+        request.requested_protocol.compatibility_floor
+        request.requested_vision_id
+        request.requested_alpns
+        request.presented_binding.binding_id
+        request.presented_binding.endpoint_id
+        request.presented_binding.mct_node_id
+        request.presented_binding.vision_id
+        request.presented_binding.policy_revision
+        request.presented_binding.allowed_alpns_claim
+        request.capability_view.capability_view_ref
+        request.local_policy_revision_seen
+        request.trace_id
+        request.received_observation_id
+}
+
+surface MctHelloAdmissionProjection {
+    facing operator: MctHelloAdmissionOperator
+    context evaluation: MctHelloAdmissionEvaluation
+
+    exposes:
+        evaluation.decision_id
+        evaluation.request_id
+        evaluation.peer_admission_decision_id
+        evaluation.selected_binding_id
+        evaluation.negotiated_protocol.protocol_name
+        evaluation.negotiated_protocol.major
+        evaluation.negotiated_protocol.minor
+        evaluation.accepted_alpns
+        evaluation.hello_outcome
+        evaluation.reason
+        evaluation.safe_reason
+        evaluation.observation_id
+}
+
+surface MctHelloResponseProjection {
+    facing responder: MctHelloResponder
+    context response: MctHelloResponse
+
+    exposes:
+        response.response_id
+        response.request_id
+        response.decision_id
+        response.hello_outcome
+        response.negotiated_protocol.protocol_name
+        response.negotiated_protocol.major
+        response.negotiated_protocol.minor
+        response.accepted_alpns
+        response.safe_message
+        response.retry_after
+        response.response_observation_id
+}
+
+contract MctHelloProtocol {
+    @invariant HelloPrecedesProtectedProtocols
+        -- Protected MCT peer protocols require an admitted hello decision or a derived session capability before app effects proceed.
+
+    @invariant EndpointMustMatchTransport
+        -- The endpoint id in the presented binding matches the authenticated Iroh remote endpoint observed on the connection.
+
+    @invariant VersionNegotiatesBeforeAdmission
+        -- Protocol version compatibility is decided before peer admission and before any requested ALPN is accepted.
+
+    @invariant BindingRequiredForAdmission
+        -- An admitted hello has an active peer binding for the requested Vision and for every accepted ALPN.
+
+    @invariant AcceptedAlpnsAreIntersection
+        -- Accepted ALPNs are limited to the intersection of requested ALPNs, local protocol policy, and active peer binding scope.
+
+    @invariant CapabilityViewIsNotGrant
+        -- Capability advertisements during hello do not grant child, toy, thought, observation, or data authority.
+
+    @invariant SafeDenialOnlyToPeer
+        -- The peer receives only safe denial or retry information while internal observations retain precise policy and topology reasons.
+
+    @invariant HelloObservationsBeforeEffects
+        -- Hello receipt, admission, denial, negotiated protocol, and response facts are observed before subsequent protected peer effects proceed.
+
+    @invariant AdmissionScopeIsNarrow
+        -- A hello admission authorizes only the negotiated protocol version, selected binding, Vision scope, and accepted ALPN set recorded in the decision.
+}
+
 -- Decision: `MctCall` is the atomic unit that Mother can authorize, route, execute, and observe.
 -- Decision: `MctCall` is designed before `WorkRequest`. `WorkRequest` is deferred until there is a real multi-call orchestration need such as fan-out, dependencies, partial failure, scheduling, or rollback.
 -- Decision: `MctCall` is the internal semantic representation, not a wire format. Iroh, JVM caller adapters, WASM host, process harness, and CLI adapters translate their own external formats into `MctCall`.
@@ -266,6 +686,166 @@ contract MctCallAtomicity {
 
     @invariant PayloadMetadataPrecedesPayloadInspection
         -- Routing can evaluate classification and movement cost from metadata without requiring business payload deserialization.
+}
+
+-- Decision: `mct/call/0` is the remote WIT-shaped call protocol. It may run only after an admitted `mct/hello/0` decision that accepted `mct/call/0` for the peer binding and Vision scope.
+-- Decision: `mct/call/0` is a transport envelope around the semantic `MctCall`; it does not create a second call model. The receiving Mother constructs or rejects one immutable `MctCall` before authority routing.
+-- Decision: Remote calls are WIT-shaped: namespace, interface, function. Iroh stream details, relay/direct path facts, and endpoint ids remain adapter evidence and authority context, not operation identity.
+-- Decision: Payload bytes may be inline, content-addressed, or referenced out of band. Payload metadata used by authority must match the payload handle before execution proceeds.
+-- Decision: A peer call reply carries a caller-safe `MctResult` reference or safe adapter error. Internal route decisions, candidate elimination, child details, and topology stay in observations.
+-- Decision: `mct/call/0` requires observations for peer call receipt, malformed rejection, constructed call, authorization/denial, route selection/no-route, result recording, and peer reply.
+-- Decision: A hello admission narrows but does not pre-authorize a call. Every `mct/call/0` request still passes the normal MCT authority filter, ToyGrant checks, child assignment checks, data policy, and execution-time revalidation.
+
+value MctCallProtocolAuthority {
+    hello_decision_id: String
+    peer_binding_id: String
+    vision_id: String
+    accepted_alpn: String
+    endpoint_id: String
+    policy_revision: Integer
+    grants_revision: Integer
+}
+
+value MctCallPayloadHandle {
+    payload_kind: inline_payload | content_addressed_blob | external_reference | empty
+    content_type: String?
+    approximate_size_bytes: Integer
+    digest: String?
+    blob_ref: String?
+    external_ref: String?
+    inline_payload_ref: String?
+}
+
+entity MctCallProtocolRequest {
+    protocol_request_id: String
+    authority: MctCallProtocolAuthority
+    received_over: IrohConnectionPresentation
+    call: MctCall
+    payload: MctCallPayloadHandle
+    idempotency_key: String?
+    received_observation_id: String
+}
+
+entity MctCallProtocolEvaluation {
+    decision_id: String
+    protocol_request_id: String
+    call_id: String?
+    route_decision_id: String?
+    result_ref: String?
+    outcome: accepted_for_routing | malformed | denied | failed | timed_out | completed
+    reason: hello_not_admitted | alpn_not_admitted | endpoint_mismatch | binding_revoked | binding_expired | policy_revision_stale | malformed_call | payload_metadata_mismatch | authority_denied | no_route | execution_failed | execution_timed_out | result_recorded
+    safe_message: String
+    observation_id: String
+}
+
+entity MctCallProtocolReply {
+    reply_id: String
+    protocol_request_id: String
+    decision_id: String
+    result_ref: String?
+    reply_outcome: success | denied | failed | timed_out | cancelled | malformed
+    safe_message: String
+    reply_observation_id: String
+}
+
+actor MctCallProtocolRequester {
+    within: MctCallProtocolRequest
+    identified_by: request.protocol_request_id
+}
+
+actor MctCallProtocolOperator {
+    within: MctCallProtocolEvaluation
+    identified_by: evaluation.decision_id
+}
+
+actor MctCallProtocolResponder {
+    within: MctCallProtocolReply
+    identified_by: reply.reply_id
+}
+
+surface MctCallProtocolRequestProjection {
+    facing requester: MctCallProtocolRequester
+    context request: MctCallProtocolRequest
+
+    exposes:
+        request.protocol_request_id
+        request.authority.hello_decision_id
+        request.authority.peer_binding_id
+        request.authority.vision_id
+        request.authority.accepted_alpn
+        request.authority.endpoint_id
+        request.authority.policy_revision
+        request.authority.grants_revision
+        request.received_over.endpoint_id
+        request.received_over.path_class
+        request.call.call_id
+        request.call.caller.node_id
+        request.call.caller.vision_id
+        request.call.target.namespace
+        request.call.target.interface_name
+        request.call.target.function_name
+        request.call.payload_metadata.data_classification
+        request.payload.payload_kind
+        request.payload.approximate_size_bytes
+        request.payload.digest
+        request.idempotency_key
+        request.received_observation_id
+}
+
+surface MctCallProtocolEvaluationProjection {
+    facing operator: MctCallProtocolOperator
+    context evaluation: MctCallProtocolEvaluation
+
+    exposes:
+        evaluation.decision_id
+        evaluation.protocol_request_id
+        evaluation.call_id
+        evaluation.route_decision_id
+        evaluation.result_ref
+        evaluation.outcome
+        evaluation.reason
+        evaluation.safe_message
+        evaluation.observation_id
+}
+
+surface MctCallProtocolReplyProjection {
+    facing responder: MctCallProtocolResponder
+    context reply: MctCallProtocolReply
+
+    exposes:
+        reply.reply_id
+        reply.protocol_request_id
+        reply.decision_id
+        reply.result_ref
+        reply.reply_outcome
+        reply.safe_message
+        reply.reply_observation_id
+}
+
+contract MctCallProtocol {
+    @invariant RequiresHelloAdmission
+        -- A peer call is accepted only when a prior hello decision admitted `mct/call/0` for the same endpoint, binding, and Vision scope.
+
+    @invariant OneWireRequestOneSemanticCall
+        -- Each valid `mct/call/0` request constructs exactly one immutable `MctCall` and all later decisions reference that call id.
+
+    @invariant WitShapeIsOperationIdentity
+        -- The operation identity comes from WIT namespace, interface, and function, not from Iroh stream, endpoint, relay, or runtime details.
+
+    @invariant HelloDoesNotPreAuthorizeCall
+        -- Hello admission permits the peer to submit a call envelope, but each call still passes authority, routing, ToyGrant, child assignment, data policy, and revalidation checks.
+
+    @invariant PayloadMetadataMatchesHandle
+        -- Payload metadata used for routing and authority is checked against the payload handle before execution proceeds.
+
+    @invariant IdempotencyIsRequestScoped
+        -- Idempotency keys deduplicate retry of the same protocol request; they do not authorize a different call or bypass revalidation.
+
+    @invariant CallerReceivesSafeResultOnly
+        -- Peer replies contain caller-safe result information and opaque references, not internal route reasoning or topology.
+
+    @invariant PeerCallObservationsCoverLifecycle
+        -- Receipt, malformed rejection, call construction, authorization, route/no-route, execution result, and reply are all observable facts.
 }
 
 -- Decision: The terminal return concept is `MctResult`, not `MctReply`, because denial, timeout, failure, and cancellation are outcomes even when no component replies.
@@ -571,7 +1151,7 @@ value ObservationTraceRef {
 entity MctObservation {
     observation_id: String
     observed_at: Timestamp
-    kind: call_received | call_rejected | call_constructed | call_authorized | call_denied | candidate_considered | candidate_eliminated | route_selected | no_route_recorded | route_revalidated | result_recorded | artifact_verified | artifact_rejected | child_approved | child_revoked | child_assigned | child_assignment_revoked | child_instance_loading | child_instance_ready | child_instance_degraded | child_instance_draining | child_instance_stopped | child_instance_failed | child_invoked | toy_grant_allowed | toy_grant_denied | toy_grant_expired | toy_grant_revoked | toy_call_started | toy_call_completed | toy_call_failed | data_movement_allowed | data_movement_denied | secret_access_allowed | secret_access_denied | peer_connected | peer_admitted | peer_rejected | peer_call_sent | peer_call_received | peer_stream_opened | peer_stream_reset | iroh_path_observed | runtime_execution_started | runtime_execution_completed | runtime_execution_failed | runtime_execution_trapped | runtime_execution_timed_out | adapter_effect_started | adapter_effect_completed | adapter_effect_failed | storage_append_succeeded | storage_append_failed | observation_backpressure_applied | lifecycle_transition_recorded | node_health_reported | operator_action_recorded | telemetry_exported
+    kind: call_received | call_rejected | call_constructed | call_authorized | call_denied | candidate_considered | candidate_eliminated | route_selected | no_route_recorded | route_revalidated | result_recorded | artifact_verified | artifact_rejected | child_approved | child_revoked | child_assigned | child_assignment_revoked | child_instance_loading | child_instance_ready | child_instance_degraded | child_instance_draining | child_instance_stopped | child_instance_failed | child_invoked | toy_grant_allowed | toy_grant_denied | toy_grant_expired | toy_grant_revoked | toy_call_started | toy_call_completed | toy_call_failed | data_movement_allowed | data_movement_denied | secret_access_allowed | secret_access_denied | peer_connected | peer_hello_received | peer_protocol_negotiated | peer_hello_responded | peer_binding_recorded | peer_binding_revoked | peer_binding_expired | peer_admitted | peer_rejected | peer_call_sent | peer_call_received | peer_call_malformed | peer_call_replied | peer_stream_opened | peer_stream_reset | iroh_path_observed | runtime_execution_started | runtime_execution_completed | runtime_execution_failed | runtime_execution_trapped | runtime_execution_timed_out | adapter_effect_started | adapter_effect_completed | adapter_effect_failed | storage_append_succeeded | storage_append_failed | observation_backpressure_applied | lifecycle_transition_recorded | node_health_reported | operator_action_recorded | telemetry_exported
     source_plane: kernel | adapter | peer | child | toy | storage | operator
     trace: ObservationTraceRef
     call_id: String?
@@ -647,7 +1227,7 @@ contract MctObservabilitySpine {
 -- Decision: Child registry and lifecycle observe artifact verification/rejection, approval/revocation, assignment/revocation, instance loading, ready, degraded, draining, stopped, and failed states.
 -- Decision: Toy authority observes grant allowed, denied, expired, and revoked; toy execution observes started, completed, and failed calls.
 -- Decision: Data movement and secret access observe allow and deny decisions separately from transport or backend errors.
--- Decision: Iroh and peer transport observe connection, admission, rejection, direct-vs-relay path facts, stream open/reset, remote call send, and remote call receive.
+-- Decision: Iroh and peer transport observe connection, hello negotiation, admission, rejection, direct-vs-relay path facts, stream open/reset, remote call send, remote call receive, malformed peer calls, and peer call replies.
 -- Decision: Runtime adapters observe process, JVM, and WASM execution start/completion/failure/trap/timeout without turning runtime details into authority semantics.
 -- Decision: Storage observes append success/failure and observation backpressure. Observation sink failure must become visible through bounded backpressure, health, or fallback diagnostic evidence.
 -- Decision: Node health and telemetry exports are projections or reported conditions derived from observations and telemetry facts; they do not become the authority record.
@@ -703,7 +1283,7 @@ contract MctObservationSubsystemCoverage {
         -- The call ingress contract covers request receipt, malformed/unauthorized adapter rejection, and successful construction of an immutable `MctCall`.
 
     @invariant AuthorityCoverage
-        -- The authority contract covers allow, deny, revalidation, peer admission, child approval, toy grant, data movement, and secret decisions.
+        -- The authority contract covers allow, deny, revalidation, peer binding, peer admission, child approval, toy grant, data movement, and secret decisions.
 
     @invariant RoutingCoverage
         -- The routing contract covers candidates considered, candidates eliminated with policy/planner reasons, selected routes, no-route outcomes, and revalidation chains.
@@ -718,7 +1298,7 @@ contract MctObservationSubsystemCoverage {
         -- The toy contract separates grant authority observations from toy execution observations.
 
     @invariant PeerCoverage
-        -- The peer contract covers connection, admission, rejection, path quality, streams, and remote call send/receive facts.
+        -- The peer contract covers endpoint binding, connection, hello negotiation, admission, rejection, path quality, streams, remote call send/receive facts, malformed calls, and replies.
 
     @invariant RuntimeAdapterCoverage
         -- Runtime adapter observations cover process, JVM, and WASM effects while preserving WIT child authority semantics.
@@ -1114,4 +1694,225 @@ contract MctChildComponentLifecycle {
 
     @invariant LifecycleTransitionsAreObserved
         -- Artifact verification, approval, assignment, loading, readiness, degradation, draining, stop, failure, and revocation emit observations.
+}
+
+-- Decision: `ToyGrant` is a first-class MCT authority record, not an implied consequence of manifest `needs`, imported WASI packages, or legacy capability names.
+-- Decision: MCT uses a closed canonical toy catalog. Unknown, legacy, experimental, or convenience capability names are denied by default until explicitly admitted as canonical toy contracts.
+-- Decision: A manifest `need` is a request for host authority. It can inform review, planning, and fixture compatibility, but it never grants execution authority by itself.
+-- Decision: A `ToyGrant` is scoped by subject, canonical toy contract, Vision, Node, project/app, data/resource/action, issuer, policy revision, and time bounds.
+-- Decision: Runtime toy execution requires an `AuthorizedToyCall` produced by grant evaluation for the current call, child assignment, artifact version, policy revision, and grant revision.
+-- Decision: Grant evaluation is part of Phase 1 authority. The route planner may consume grant snapshots for speed, but it cannot create or expand grants.
+-- Decision: Expiration, revocation, supersession, and correction of grants are represented as later immutable observations/facts. Prior grant facts remain audit evidence.
+-- Decision: Grant snapshots may be compiled for hot paths, but the source of truth remains structured `ToyGrant` facts plus the observation ledger.
+-- Decision: Toy backend/runtime failures are adapter-effect outcomes, not authority decisions. They emit toy execution observations and may result in failed or timed-out `MctResult` values.
+-- Decision: Required fixture children such as `slate-manager@0.2.0`, `folder-watch-actor@0.1.0`, and `watch-null-sink@0.1.0` must work through explicit canonical toy grants, not through broad legacy capability expansion.
+
+value ToyContractIdentity {
+    namespace: String
+    interface_name: String
+    version: String
+    function_name: String?
+    resource_name: String?
+}
+
+entity CanonicalToyContract {
+    toy_id: String
+    contract: ToyContractIdentity
+    authority_bearing: Boolean
+    catalog_revision: Integer
+    admitted_by_observation_id: String
+}
+
+value ToyGrantSubject {
+    child_name: String
+    artifact_id: String
+    artifact_version: String
+    assignment_id: String?
+    caller_node_id: String?
+}
+
+value ToyGrantScope {
+    vision_id: String
+    node_id: String?
+    project_id: String?
+    data_classification: String?
+    resource_id: String?
+    allowed_actions: List<String>
+}
+
+value ToyGrantConstraints {
+    starts_at: Timestamp?
+    expires_at: Timestamp?
+    max_uses: Integer?
+    max_duration_ms: Integer?
+    locality_required: Boolean
+}
+
+entity ToyGrant {
+    grant_id: String
+    toy_id: String
+    subject: ToyGrantSubject
+    scope: ToyGrantScope
+    constraints: ToyGrantConstraints
+    grant_state: requested | active | expired | revoked | superseded | denied
+    issuer_id: String
+    policy_revision: Integer
+    grants_revision: Integer
+    authority_observation_id: String
+}
+
+entity ToyGrantEvaluation {
+    evaluation_id: String
+    call_id: String
+    decision_id: String
+    grant_id: String?
+    toy_id: String
+    subject_child_name: String
+    verdict: allowed | denied
+    reason_code: active_grant | missing_grant | expired_grant | revoked_grant | wrong_scope | unknown_toy | policy_denied | stale_snapshot
+    policy_revision: Integer
+    grants_revision: Integer
+    observation_id: String
+}
+
+entity AuthorizedToyCall {
+    authorized_toy_call_id: String
+    call_id: String
+    evaluation_id: String
+    grant_id: String
+    toy_id: String
+    child_instance_id: String
+    authority_decision_id: String
+    expires_at: Timestamp
+}
+
+actor ToyCatalogReader {
+    within: CanonicalToyContract
+    identified_by: toy.toy_id
+}
+
+actor ToyGrantReader {
+    within: ToyGrant
+    identified_by: grant.grant_id
+}
+
+actor ToyGrantEvaluator {
+    within: ToyGrantEvaluation
+    identified_by: evaluation.evaluation_id
+}
+
+actor AuthorizedToyCaller {
+    within: AuthorizedToyCall
+    identified_by: authorized.authorized_toy_call_id
+}
+
+surface CanonicalToyCatalog {
+    facing reader: ToyCatalogReader
+    context toy: CanonicalToyContract
+
+    exposes:
+        toy.toy_id
+        toy.contract.namespace
+        toy.contract.interface_name
+        toy.contract.version
+        toy.contract.function_name
+        toy.contract.resource_name
+        toy.authority_bearing
+        toy.catalog_revision
+        toy.admitted_by_observation_id
+}
+
+surface ToyGrantProjection {
+    facing reader: ToyGrantReader
+    context grant: ToyGrant
+
+    exposes:
+        grant.grant_id
+        grant.toy_id
+        grant.subject.child_name
+        grant.subject.artifact_id
+        grant.subject.artifact_version
+        grant.subject.assignment_id
+        grant.subject.caller_node_id
+        grant.scope.vision_id
+        grant.scope.node_id
+        grant.scope.project_id
+        grant.scope.data_classification
+        grant.scope.resource_id
+        grant.scope.allowed_actions
+        grant.constraints.starts_at
+        grant.constraints.expires_at
+        grant.constraints.max_uses
+        grant.constraints.max_duration_ms
+        grant.constraints.locality_required
+        grant.grant_state
+        grant.issuer_id
+        grant.policy_revision
+        grant.grants_revision
+        grant.authority_observation_id
+}
+
+surface ToyGrantEvaluationProjection {
+    facing evaluator: ToyGrantEvaluator
+    context evaluation: ToyGrantEvaluation
+
+    exposes:
+        evaluation.evaluation_id
+        evaluation.call_id
+        evaluation.decision_id
+        evaluation.grant_id
+        evaluation.toy_id
+        evaluation.subject_child_name
+        evaluation.verdict
+        evaluation.reason_code
+        evaluation.policy_revision
+        evaluation.grants_revision
+        evaluation.observation_id
+}
+
+surface AuthorizedToyCallProjection {
+    facing caller: AuthorizedToyCaller
+    context authorized: AuthorizedToyCall
+
+    exposes:
+        authorized.authorized_toy_call_id
+        authorized.call_id
+        authorized.evaluation_id
+        authorized.grant_id
+        authorized.toy_id
+        authorized.child_instance_id
+        authorized.authority_decision_id
+        authorized.expires_at
+}
+
+contract MctToyGrantAuthority {
+    @invariant CanonicalCatalogIsClosed
+        -- Only explicitly admitted canonical toy contracts can be granted; unknown or legacy names deny by default.
+
+    @invariant NeedsAreRequestsNotGrants
+        -- Manifest needs and imported WASI support packages request host authority but never confer it.
+
+    @invariant GrantScopeIsExplicit
+        -- Grants name their subject, canonical toy, Vision/Node/project/data/resource/action scope, issuer, revision, and time bounds.
+
+    @invariant EvaluationProducesAuthorizationToken
+        -- Toy execution receives authority only through an `AuthorizedToyCall` produced by current grant evaluation.
+
+    @invariant RoutePlannerCannotGrantToys
+        -- The planner may rank routes that survived grant checks but cannot create, widen, or infer toy grants.
+
+    @invariant ExpiryAndRevocationAreFacts
+        -- Expired, revoked, superseded, denied, and corrected grants are represented by later immutable facts and observations.
+
+    @invariant GrantSnapshotsAreCacheNotTruth
+        -- Compiled grant snapshots accelerate hot checks but source truth remains structured grant facts plus the observation ledger.
+
+    @invariant ToyGrantDecisionsAreObserved
+        -- Grant allow, deny, expire, revoke, and stale-snapshot outcomes emit typed observations before protected toy effects proceed.
+
+    @invariant ToyBackendFailureIsAdapterEffect
+        -- A backend failure after authorization is an adapter/runtime observation and does not retroactively change the authority decision.
+
+    @invariant FixtureCompatibilityUsesExplicitGrants
+        -- Required fixture children continue to work through canonical toy grants without broad legacy capability expansion.
 }

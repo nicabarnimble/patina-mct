@@ -2,10 +2,14 @@ id = "mct-interface-launcher-control"
 title = "Build interface launcher and control API"
 kind = "build"
 status = "blocked"
+execution_granularity = "epic_container"
+direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
+completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
 human_request = "Rebuild the launcher behavior currently surfaced as `patina ai` as an MCT-owned interface/HITL launcher and control-plane handshake."
 allium_anchors = []
 user_alignment = "User explicitly said MCT will own the launcher behavior currently in `patina ai`."
 belief_refs = []
+core_refs = ["layer/core/safety-boundaries.md", "layer/core/adapter-pattern.md", "layer/core/mct-build-boundaries.md"]
 proof_plan = [
     "[ ] Launcher can start or attach to a supported interface and complete a control-plane handshake.",
     "[ ] Launcher records observations without requiring Belief scrape/session internals in the kernel.",
@@ -24,5 +28,5 @@ implementation_plan = [
     "[ ] Decide which skill projection/session artifact capture belongs in later slices.",
 ]
 created_at = "1780068558"
-updated_at = "1780070145"
+updated_at = "1780262310"
 block_reason = "Blocked until mct-secrets-authority is completed or explicitly superseded in the roadmap."

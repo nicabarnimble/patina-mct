@@ -1,0 +1,23 @@
+[workspace]
+members = [
+    "crates/mct-kernel",
+    "crates/mct-observation",
+    "crates/mct-iroh",
+    "crates/mct-daemon",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.91"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/nicabarnimble/patina-mct"
+
+[workspace.dependencies]
+anyhow = "1.0.100"
+blake3 = "1.8.3"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+thiserror = "2.0.17"
+tokio = { version = "1.48.0", features = ["io-util", "macros", "rt-multi-thread", "sync", "time"] }
+tempfile = "3.23.0"

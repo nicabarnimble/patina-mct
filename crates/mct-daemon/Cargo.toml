@@ -1,0 +1,16 @@
+[package]
+name = "mct-daemon"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mct-kernel = { path = "../mct-kernel" }
+mct-observation = { path = "../mct-observation" }
+mct-iroh = { path = "../mct-iroh" }
+anyhow.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

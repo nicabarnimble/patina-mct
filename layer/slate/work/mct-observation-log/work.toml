@@ -2,12 +2,23 @@ id = "mct-observation-log"
 title = "Build MCT observation and audit log"
 kind = "build"
 status = "blocked"
+execution_granularity = "epic_container"
+direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
+completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
 human_request = "Create the append-only observation model for kernel authority decisions and adapter effect diagnostics, aligned with Temporal/Terraform-style core-vs-adapter responsibilities."
-allium_anchors = []
-user_alignment = "User wants real-world grounding for kernel/adapters and agreed to align with Temporal and Terraform while keeping the core performant."
-belief_refs = []
+allium_anchors = ["MctObservation", "MctIrohPeerBindingAuthority", "MctHelloProtocol", "MctCallProtocol", "MctRuntimeShape"]
+user_alignment = "User wants real-world grounding for kernel/adapters and agreed to align with Temporal and Terraform while keeping the core performant. Peer binding/admission observations are part of the authority record above Iroh EndpointId."
+belief_refs = ["iroh-endpointid-is-transport-identity", "mct-hello-precedes-protected-peer-effects", "mct-call-protocol-wraps-semantic-call"]
+core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/safety-boundaries.md", "layer/core/oxidized-knowledge.md"]
+runtime_shape_role = "Canonical runtime truth ledger: records MCT observations before protected effects; external logs/metrics/traces are projections."
+design_style = "Concrete durable ledger first, projection/export abstractions only after concrete projection needs exist."
+implementation_ready_requirements = ["Every slice states which authority or adapter facts become observations.", "Proof gates query by trace/call/decision where applicable.", "Projection work must not replace the canonical MctObservation ledger."]
+slice_refs = ["mct-slice-kernel-domain-records", "mct-slice-jsonl-observation-ledger", "mct-slice-fake-daemon-echo", "mct-slice-runtime-shape-anchors", "mct-slice-iroh-unknown-peer-denial"]
+partial_evidence = ["[x] `MctObservation` domain record exists.", "[x] Append-only JSONL ledger with hash-chain validation exists.", "[x] Fake daemon slice records reconstructable trace/call observations.", "[x] Unknown-peer denial path exposes observation-grade hello and call decision ids in kernel evaluations.", "[ ] Full authority-decision coverage and adapter diagnostics remain open."]
+next_slice_candidates = ["mct-slice-authority-decision-observation-coverage", "mct-slice-iroh-adapter-observations"]
 proof_plan = [
     "[ ] Unit tests prove every authority decision path emits or returns a kernel observation.",
+    "[ ] Peer hello receipt, protocol negotiation, hello response, peer call receipt, malformed peer call rejection, peer call reply, peer binding creation, peer binding revocation, peer binding expiry, peer admission, and peer rejection are observable authority facts.",
     "[ ] Adapter observation schema can represent Iroh stream resets, WASM traps, process exits, JVM timeouts, and storage failures.",
     "[ ] Observation writes do not force a database write before every hot routing/grant decision unless policy explicitly requires fail-closed persistence.",
 ]
@@ -17,11 +28,11 @@ blocked_by = [
     "mct-kernel-crate",
 ]
 implementation_plan = [
-    "[ ] Define kernel-guaranteed observation events for install, activation, lifecycle, call routing, toy grants, peer admission, and deny reasons.",
+    "[ ] Define kernel-guaranteed observation events for install, activation, lifecycle, call routing, toy grants, peer hello, peer call, peer binding, peer admission, and deny reasons.",
     "[ ] Define adapter observation events for Iroh, process, JVM, WASM, toy backends, and storage effects.",
     "[ ] Link kernel and adapter observations by call_id/trace ids.",
     "[ ] Implement a private append-only sink with batching/backpressure behavior appropriate for hot decisions.",
 ]
 created_at = "1780068484"
-updated_at = "1780070121"
-block_reason = "Blocked until mct-kernel-crate is completed or explicitly superseded in the roadmap."
+updated_at = "1780264915"
+block_reason = "Epic remains open; completed child slices cover domain observations, JSONL ledger, and fake trace reconstruction, but full authority/adapter observation coverage still requires smaller slice Slates."
