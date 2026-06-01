@@ -1,4 +1,4 @@
-use crate::{call::*, id::*, peer::*};
+use crate::{call::*, id::*, peer::*, route::*};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -272,6 +272,56 @@ pub fn peer_binding_state_observation(
     }
 }
 
+pub fn route_decision_observation(
+    trace_id: TraceId,
+    decision: &RouteDecision,
+) -> MctObservation {
+    let (kind, outcome) = match decision.outcome {
+        RouteDecisionOutcome::RouteSelected => {
+            (ObservationKind::RouteSelected, ObservationOutcome::Allowed)
+        }
+        RouteDecisionOutcome::NoRoute => {
+            (ObservationKind::NoRouteRecorded, ObservationOutcome::Denied)
+        }
+    };
+
+    MctObservation {
+        observation_id: decision.observation_id.clone(),
+        observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        kind,
+        source_plane: SourcePlane::Kernel,
+        trace: ObservationTraceRef {
+            trace_id,
+            span_id: None,
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: Some(decision.call_id.clone()),
+        decision_id: Some(decision.decision_id.clone()),
+        subject_id: None,
+        resource_id: decision
+            .selected_route
+            .as_ref()
+            .map(|route| route.candidate_id.clone()),
+        policy_revision: decision
+            .authority_evaluations
+            .iter()
+            .map(|evaluation| evaluation.policy_revision)
+            .max(),
+        grants_revision: decision
+            .authority_evaluations
+            .iter()
+            .map(|evaluation| evaluation.grants_revision)
+            .max(),
+        outcome,
+        visibility: ObservationVisibility::InternalOnly,
+        safe_message: decision.safe_message.clone(),
+        detail_ref: decision
+            .no_route_reason
+            .map(|reason| format!("no_route_reason:{reason:?}")),
+    }
+}
+
 pub fn call_protocol_evaluation_observation(
     trace_id: TraceId,
     evaluation: &MctCallProtocolEvaluation,
@@ -389,6 +439,73 @@ mod tests {
             created_by_observation_id: ObservationId::from("obs-binding-created"),
             superseded_by_observation_id: Some(ObservationId::from("obs-binding-superseded")),
         }
+    }
+
+    #[test]
+    fn no_route_decision_becomes_observation() {
+        let call = MctCall {
+            call_id: CallId::from("call-no-route"),
+            caller: CallerIdentity {
+                node_id: MctNodeId::from("node-a"),
+                user_id: None,
+                vision_id: VisionId::from("vision-a"),
+                project_id: None,
+            },
+            target: OperationTarget {
+                namespace: "patina".into(),
+                interface_name: "echo".into(),
+                function_name: "echo".into(),
+            },
+            payload_metadata: PayloadMetadata {
+                data_classification: "public".into(),
+                approximate_size_bytes: 5,
+                contains_secret_scoped_material: false,
+            },
+            authority_context: AuthorityContextSnapshot {
+                policy_revision: 3,
+                grants_revision: 4,
+                vision_policy_revision: 5,
+            },
+            deadline: Timestamp::from("2026-05-31T00:01:00Z"),
+            trace_context: TraceContext {
+                trace_id: TraceId::from("trace-no-route"),
+                span_id: SpanId::from("span-no-route"),
+            },
+            origin: CallOrigin::Cli,
+        };
+        let candidate = CandidateRoute {
+            candidate_id: "candidate-denied".into(),
+            node_id: MctNodeId::from("node-b"),
+            child_id: None,
+            runtime_kind: RuntimeKind::RemotePeer,
+            network_path: NetworkPathClass::Relayed,
+        };
+        let decision = RouteDecision::no_route(
+            &call,
+            vec![CandidateAuthorityEvaluation::eliminated(
+                candidate,
+                CandidateEliminationReason::PeerNotAdmitted,
+                3,
+                4,
+            )],
+            CandidateEliminationReason::PeerNotAdmitted,
+            RouteDecisionIds {
+                decision_id: DecisionId::from("route-decision-no-route"),
+                observation_id: ObservationId::from("obs-route-no-route"),
+            },
+        );
+        let observation = route_decision_observation(TraceId::from("trace-no-route"), &decision);
+
+        assert_eq!(observation.kind, ObservationKind::NoRouteRecorded);
+        assert_eq!(observation.outcome, ObservationOutcome::Denied);
+        assert_eq!(observation.call_id, Some(CallId::from("call-no-route")));
+        assert_eq!(
+            observation.decision_id,
+            Some(DecisionId::from("route-decision-no-route"))
+        );
+        assert_eq!(observation.safe_message, "not authorized");
+        assert_eq!(observation.policy_revision, Some(3));
+        assert_eq!(observation.grants_revision, Some(4));
     }
 
     #[test]
