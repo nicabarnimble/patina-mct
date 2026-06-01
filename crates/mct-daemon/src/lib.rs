@@ -5,10 +5,15 @@
 
 #![forbid(unsafe_code)]
 
+mod control;
 #[cfg(test)]
 mod fake;
 mod status;
 
+pub use control::{
+    MctDaemonLocalControlFacts, MctDaemonLocalControlRequest, MctDaemonLocalControlResponse,
+    handle_local_control_request,
+};
 pub use status::{MctDaemonHealth, MctDaemonReadiness, MctDaemonStatus, daemon_status};
 
 /// Returns the crate version for health and smoke tests.
@@ -55,6 +60,18 @@ mod tests {
         let missing = daemon_status(None);
         assert_eq!(missing.readiness, MctDaemonReadiness::NotReady);
         assert!(missing.iroh_endpoint.is_none());
+    }
+
+    #[test]
+    fn local_control_status_request_reports_daemon_status() {
+        let response = handle_local_control_request(
+            MctDaemonLocalControlRequest::Status,
+            MctDaemonLocalControlFacts::new(Some(iroh_snapshot(MotherIrohEndpointLifecycle::Bound))),
+        );
+
+        let MctDaemonLocalControlResponse::Status(status) = response;
+        assert_eq!(status.readiness, MctDaemonReadiness::Ready);
+        assert_eq!(status.safe_message, "ready");
     }
 
     #[test]
