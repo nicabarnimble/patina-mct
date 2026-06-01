@@ -272,10 +272,7 @@ pub fn peer_binding_state_observation(
     }
 }
 
-pub fn route_decision_observation(
-    trace_id: TraceId,
-    decision: &RouteDecision,
-) -> MctObservation {
+pub fn route_decision_observation(trace_id: TraceId, decision: &RouteDecision) -> MctObservation {
     let (kind, outcome) = match decision.outcome {
         RouteDecisionOutcome::RouteSelected => {
             (ObservationKind::RouteSelected, ObservationOutcome::Allowed)
