@@ -437,6 +437,42 @@ mod tests {
     }
 
     #[test]
+    fn call_envelope_roundtrip_preserves_semantic_call_across_edges() {
+        let request = protocol_request();
+        let typed_call = request.call.clone();
+
+        let encoded_request = encode_call_protocol_request_json(&request).unwrap();
+        let decoded_request = decode_call_protocol_request_json(&encoded_request).unwrap();
+        assert_eq!(decoded_request.call, typed_call);
+        assert_eq!(decoded_request.call.target.namespace, "patina");
+        assert_eq!(decoded_request.call.target.interface_name, "echo");
+        assert_eq!(decoded_request.call.target.function_name, "echo");
+        assert_eq!(
+            decoded_request.payload.approximate_size_bytes,
+            decoded_request.call.payload_metadata.approximate_size_bytes
+        );
+
+        let evaluation = evaluate_call_protocol(&decoded_request, &admitted_hello(), eval_ids());
+        assert_eq!(evaluation.call_id, Some(typed_call.call_id.clone()));
+        assert_eq!(evaluation.outcome, CallProtocolOutcome::AcceptedForRouting);
+
+        let reply = call_reply_from_evaluation(
+            ReplyId::from("reply-success"),
+            &evaluation,
+            Some(ResultRef::from("result-call-1")),
+            ObservationId::from("obs-reply-success"),
+        );
+        let decoded_reply = decode_call_protocol_reply_json(
+            &encode_call_protocol_reply_json(&reply).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decoded_reply.protocol_request_id, request.protocol_request_id);
+        assert_eq!(decoded_reply.decision_id, evaluation.decision_id);
+        assert_eq!(decoded_reply.reply_outcome, CallProtocolReplyOutcome::Success);
+        assert_eq!(decoded_reply.result_ref, Some(ResultRef::from("result-call-1")));
+    }
+
+    #[test]
     fn admitted_hello_allows_call_for_routing() {
         let evaluation = evaluate_call_protocol(&protocol_request(), &admitted_hello(), eval_ids());
         assert!(evaluation.is_accepted_for_routing());
