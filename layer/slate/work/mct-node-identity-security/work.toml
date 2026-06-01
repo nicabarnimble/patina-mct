@@ -13,8 +13,8 @@ core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/safety-boundaries
 runtime_shape_role = "Identity/admission authority lane: binds transport identities and local identities to explicit MCT Node/Vision/policy facts."
 design_style = "Authority by explicit domain facts, not ambient transport/session identity."
 implementation_ready_requirements = ["Every slice states which identity fact grants or denies authority.", "Proof gates include revoked/expired/stale/unknown cases.", "Endpoint discovery/reachability remains evidence, not admission."]
-slice_refs = ["mct-slice-kernel-domain-records", "mct-slice-hello-admission", "mct-slice-local-iroh-roundtrip", "mct-slice-runtime-shape-anchors", "mct-slice-iroh-unknown-peer-denial", "mct-slice-iroh-mother-owned-endpoint-lifecycle"]
-partial_evidence = ["[x] `MctPeerBinding` and hello admission encode the EndpointId-to-MCT-authority boundary.", "[x] Tests deny unknown, mismatched, revoked, stale, and unsupported hello requests.", "[x] Unknown Iroh endpoint without active `MctPeerBinding` is denied before protected call effects.", "[x] Mother-owned endpoint snapshot exposes transport endpoint id separately from MCT authority/admission facts.", "[ ] Persistent identity, key material, revocation/expiry observations, and administrative binding lifecycle remain open."]
+slice_refs = ["mct-slice-kernel-domain-records", "mct-slice-hello-admission", "mct-slice-local-iroh-roundtrip", "mct-slice-runtime-shape-anchors", "mct-slice-iroh-unknown-peer-denial", "mct-slice-iroh-mother-owned-endpoint-lifecycle", "mct-slice-kernel-denial-observations"]
+partial_evidence = ["[x] `MctPeerBinding` and hello admission encode the EndpointId-to-MCT-authority boundary.", "[x] Tests deny unknown, mismatched, revoked, stale, and unsupported hello requests.", "[x] Unknown Iroh endpoint without active `MctPeerBinding` is denied before protected call effects.", "[x] Mother-owned endpoint snapshot exposes transport endpoint id separately from MCT authority/admission facts.", "[x] Peer admission denials can now be represented as kernel observation facts.", "[ ] Persistent identity, key material, revocation/expiry observations, and administrative binding lifecycle remain open."]
 next_slice_candidates = ["mct-slice-node-identity-persistence", "mct-slice-peer-binding-revocation-expiry"]
 proof_plan = [
     "[ ] Unknown or untrusted peer/caller requests are denied with typed reasons and kernel observations.",
@@ -38,5 +38,5 @@ implementation_plan = [
     "[ ] Ensure Iroh endpoint hooks and relay access control call into or mirror MCT peer binding decisions rather than becoming a separate authority model.",
 ]
 created_at = "1780070076"
-updated_at = "1780275603"
+updated_at = "1780276426"
 block_reason = "Epic remains open; hello admission covers first peer binding boundary, but persistent identity/security lifecycle still requires smaller slice Slates."
