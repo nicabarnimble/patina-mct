@@ -1,0 +1,47 @@
+id = "mct-slice-iroh-mother-owned-endpoint-lifecycle"
+title = "Implement Mother-owned Iroh endpoint lifecycle"
+kind = "build"
+status = "active"
+execution_granularity = "slice"
+human_request = "Add the first concrete Mother-owned Iroh endpoint owner: local relay-disabled MCT ALPN endpoint, safe transport snapshot, graceful close, and no raw Iroh handle exposure to kernel/children."
+allium_anchors = ["MctRuntimeShape", "MctIrohPeerBindingAuthority", "MctIrohProtocolLayer", "MctHelloProtocol", "MctCallProtocol"]
+user_alignment = "User wants Mother to own Iroh endpoint lifecycle while children use WIT/Toy capabilities and MCT authority remains above Iroh transport identity."
+belief_refs = ["mct-builds-on-iroh-substrate", "iroh-provides-connectivity-not-authority", "iroh-endpointid-is-transport-identity"]
+core_refs = ["layer/core/adapter-pattern.md", "layer/core/safety-boundaries.md", "layer/core/dependable-rust.md", "layer/core/mct-build-boundaries.md"]
+parent_slates = ["mct-iroh-substrate", "mct-daemon-control-plane", "mct-node-identity-security"]
+code_targets = ["crates/mct-iroh/src/lib.rs"]
+implementation_ready = true
+runtime_shape_role = "First concrete endpoint owner for the Iroh adapter lane: Mother owns lifecycle and exposes safe transport snapshots rather than raw Iroh handles."
+design_style = "Iroh-style endpoint composition with a Jon-style narrow Rust public API and private raw endpoint field."
+first_test_to_write = "mother_owned_endpoint_starts_and_closes"
+exit_criteria = [
+    "`MotherIrohEndpoint` binds a local relay-disabled endpoint with `mct/hello/0` and `mct/call/0` ALPNs.",
+    "Public snapshot exposes endpoint id and address/protocol facts as transport information only.",
+    "Endpoint closes gracefully and close is idempotent.",
+    "No public API returns raw `iroh::Endpoint`, `Connection`, or stream handles.",
+]
+non_goals = [
+    "No persistent node key store.",
+    "No relay/discovery/address-book configuration beyond local relay-disabled mode.",
+    "No endpoint accept loop or adapter observations yet.",
+    "No child/WASM/Toy networking capability implementation.",
+]
+implementation_plan = [
+    "[ ] Add `MotherIrohEndpoint` with private raw endpoint ownership.",
+    "[ ] Bind local relay-disabled endpoint accepting MCT hello/call ALPNs.",
+    "[ ] Expose a safe transport snapshot with endpoint id, accepted ALPNs, direct addresses, relay URLs, and lifecycle state.",
+    "[ ] Implement graceful idempotent close.",
+    "[ ] Add lifecycle tests and keep existing local Iroh protocol tests passing.",
+]
+proof_plan = [
+    "[ ] `cargo test -p mct-iroh mother_owned_endpoint_starts_and_closes` passes.",
+    "[ ] Test proves accepted ALPNs include `mct/hello/0` and `mct/call/0`.",
+    "[ ] Test proves endpoint id is exposed as transport identity only in a snapshot.",
+    "[ ] Test proves close transitions lifecycle state to closed and is idempotent.",
+    "[ ] `cargo test --workspace` passes.",
+    "[ ] `allium check layer/allium` passes.",
+]
+closure_evidence = []
+blocked_by = ["mct-slice-local-iroh-roundtrip", "mct-slice-iroh-unknown-peer-denial", "mct-allium-foundation"]
+created_at = "1780265200"
+updated_at = "1780265200"
