@@ -1,7 +1,7 @@
 id = "mct-slice-daemon-health-readiness"
 title = "Add daemon health and readiness status"
 kind = "build"
-status = "active"
+status = "complete"
 execution_granularity = "slice"
 human_request = "Add the first daemon status model: version, health, readiness, and adapter readiness without creating a broad control API."
 allium_anchors = ["MctRuntimeShape"]
@@ -17,17 +17,22 @@ first_test_to_write = "daemon_reports_health_and_readiness"
 exit_criteria = ["Daemon status includes version, health, readiness, and Iroh adapter readiness.", "Readiness distinguishes a bound Iroh endpoint from an unavailable/closed endpoint.", "No new control transport is introduced."]
 non_goals = ["No HTTP or UDS server.", "No auth layer.", "No daemon process supervisor integration."]
 implementation_plan = [
-    "[ ] Add small daemon health/readiness status types.",
-    "[ ] Include optional Iroh endpoint snapshot readiness.",
-    "[ ] Add tests for ready and not-ready statuses.",
+    "[x] Add small daemon health/readiness status types.",
+    "[x] Include optional Iroh endpoint snapshot readiness.",
+    "[x] Add tests for ready and not-ready statuses.",
 ]
 proof_plan = [
-    "[ ] `cargo test -p mct-daemon daemon_reports_health_and_readiness` passes.",
-    "[ ] Test proves bound Iroh endpoint means ready and closed/missing endpoint means not ready.",
-    "[ ] `cargo test --workspace` passes.",
-    "[ ] `allium check layer/allium` passes.",
+    "[x] `cargo test -p mct-daemon daemon_reports_health_and_readiness` passes.",
+    "[x] Test proves bound Iroh endpoint means ready and closed/missing endpoint means not ready.",
+    "[x] `cargo test --workspace` passes.",
+    "[x] `allium check layer/allium` passes.",
 ]
-closure_evidence = []
+closure_evidence = [
+    "[x] Commit `dfd6cba feat(daemon): add health readiness status` adds `MctDaemonStatus`, health/readiness enums, and `daemon_status`.",
+    "[x] `daemon_reports_health_and_readiness` proves bound Iroh endpoints are ready and closed/missing endpoints are not ready.",
+    "[x] Targeted daemon test, workspace tests, and Allium validation passed before closure.",
+]
 blocked_by = ["mct-slice-iroh-mother-owned-endpoint-lifecycle"]
 created_at = "1780276100"
-updated_at = "1780276100"
+updated_at = "1780276190"
+closed_at = "1780276190"
