@@ -250,3 +250,4 @@
 {"created_at":"1780276478","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-peer-binding-revocation-expiry"}
 {"created_at":"1780276601","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-daemon-fake-end-to-end-status"}
 {"created_at":"1780277794","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-rust-hygiene-api-boundary"}
+{"created_at":"1780278641","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-iroh-module-shape"}
