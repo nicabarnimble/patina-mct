@@ -1,0 +1,41 @@
+id = "mct-slice-observation-ledger-adapter-persistence"
+title = "Persist adapter observations to ledger"
+kind = "build"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Add a narrow observation-ledger persistence helper and proof that adapter/kernel observation batches append durably in order."
+allium_anchors = ["MctObservation", "MctRuntimeShape"]
+user_alignment = "User wants the observation ledger to remain canonical runtime truth while adapters remain effect performers."
+belief_refs = ["mother-kernel-decides-adapters-perform", "slate-epics-progress-through-child-slices"]
+core_refs = ["layer/core/oxidized-knowledge.md", "layer/core/adapter-pattern.md", "layer/core/safety-boundaries.md"]
+parent_slates = ["mct-observation-log"]
+code_targets = ["crates/mct-observation/src/lib.rs", "layer/slate/work/mct-observation-log/work.toml"]
+implementation_ready = true
+runtime_shape_role = "Adds durable before-effect batch persistence for canonical `MctObservation` facts emitted by adapters and kernel decisions."
+design_style = "Concrete JSONL helper first; no exporter/projection/backpressure abstraction yet."
+first_test_to_write = "batch_persists_adapter_and_kernel_observations_in_order"
+exit_criteria = [
+    "Ledger can append a batch of observations before effects.",
+    "Batch append preserves local sequence order and hash-chain linkage.",
+    "Test covers mixed adapter and kernel source planes queried by trace and call.",
+]
+non_goals = ["No OTel/qlog/log exporter.", "No backpressure queue.", "No SQLite/storage abstraction.", "No Iroh adapter runtime wiring yet."]
+implementation_plan = [
+    "[x] Add `append_batch_before_effect` to `JsonlObservationLedger`.",
+    "[x] Add a test with mixed adapter/kernel observations for one trace/call.",
+    "[x] Update `mct-observation-log` partial evidence.",
+]
+proof_plan = [
+    "[x] `cargo test -p mct-observation batch_persists_adapter_and_kernel_observations_in_order` passes.",
+    "[x] `allium check layer/allium` passes.",
+    "[x] `patina slate check mct-slice-observation-ledger-adapter-persistence --json` passes.",
+]
+closure_evidence = [
+    "[x] `append_batch_before_effect` appends multiple `MctObservation` facts with before-effect durability.",
+    "[x] `batch_persists_adapter_and_kernel_observations_in_order` proves adapter/kernel observations persist in sequence, maintain previous-entry hash linkage, and query by trace/call.",
+]
+blocked_by = ["mct-slice-jsonl-observation-ledger"]
+belief_harvest_decision = "No new durable belief required; this slice applies existing observation-ledger truth guidance."
+created_at = "1780282700"
+updated_at = "1780282744"
+closed_at = "1780282744"
