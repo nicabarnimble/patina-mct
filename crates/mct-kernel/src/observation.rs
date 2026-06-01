@@ -213,6 +213,62 @@ pub fn hello_evaluation_observation(
     }
 }
 
+pub fn peer_binding_state_observation(trace_id: TraceId, binding: &MctPeerBinding) -> MctObservation {
+    let (kind, outcome, safe_message) = match binding.binding_state {
+        BindingState::Admitted => (
+            ObservationKind::PeerBindingRecorded,
+            ObservationOutcome::Allowed,
+            "peer binding admitted",
+        ),
+        BindingState::Pending => (
+            ObservationKind::PeerBindingRecorded,
+            ObservationOutcome::Informational,
+            "peer binding pending",
+        ),
+        BindingState::Denied => (
+            ObservationKind::PeerRejected,
+            ObservationOutcome::Denied,
+            "not authorized",
+        ),
+        BindingState::Expired => (
+            ObservationKind::PeerBindingExpired,
+            ObservationOutcome::Denied,
+            "not authorized",
+        ),
+        BindingState::Revoked => (
+            ObservationKind::PeerBindingRevoked,
+            ObservationOutcome::Denied,
+            "not authorized",
+        ),
+    };
+
+    MctObservation {
+        observation_id: binding
+            .superseded_by_observation_id
+            .clone()
+            .unwrap_or_else(|| binding.created_by_observation_id.clone()),
+        observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        kind,
+        source_plane: SourcePlane::Kernel,
+        trace: ObservationTraceRef {
+            trace_id,
+            span_id: None,
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: None,
+        decision_id: None,
+        subject_id: Some(binding.binding_id.to_string()),
+        resource_id: Some(binding.iroh_endpoint_id.to_string()),
+        policy_revision: Some(binding.policy_revision),
+        grants_revision: None,
+        outcome,
+        visibility: ObservationVisibility::InternalOnly,
+        safe_message: safe_message.into(),
+        detail_ref: Some(format!("binding_state:{:?}", binding.binding_state)),
+    }
+}
+
 pub fn call_protocol_evaluation_observation(
     trace_id: TraceId,
     evaluation: &MctCallProtocolEvaluation,
@@ -293,6 +349,41 @@ mod tests {
         assert_eq!(call_observation.outcome, ObservationOutcome::Denied);
         assert_eq!(call_observation.call_id, Some(CallId::from("call-1")));
         assert_eq!(call_observation.decision_id, Some(DecisionId::from("decision-call")));
+    }
+
+    fn binding(state: BindingState) -> MctPeerBinding {
+        MctPeerBinding {
+            binding_id: PeerBindingId::from("binding-1"),
+            iroh_endpoint_id: EndpointIdText::from("endpoint-a"),
+            scope: MctPeerBindingScope {
+                mct_node_id: MctNodeId::from("node-b"),
+                vision_id: VisionId::from("vision-a"),
+                allowed_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
+                data_scope: None,
+                observation_scope: None,
+            },
+            issuer_node_id: MctNodeId::from("node-a"),
+            policy_revision: 7,
+            binding_state: state,
+            issued_at: Timestamp::from("2026-05-31T00:00:00Z"),
+            expires_at: None,
+            created_by_observation_id: ObservationId::from("obs-binding-created"),
+            superseded_by_observation_id: Some(ObservationId::from("obs-binding-superseded")),
+        }
+    }
+
+    #[test]
+    fn revoked_and_expired_bindings_become_observations() {
+        let revoked = peer_binding_state_observation(TraceId::from("trace-1"), &binding(BindingState::Revoked));
+        assert_eq!(revoked.kind, ObservationKind::PeerBindingRevoked);
+        assert_eq!(revoked.outcome, ObservationOutcome::Denied);
+        assert_eq!(revoked.safe_message, "not authorized");
+        assert_eq!(revoked.policy_revision, Some(7));
+
+        let expired = peer_binding_state_observation(TraceId::from("trace-1"), &binding(BindingState::Expired));
+        assert_eq!(expired.kind, ObservationKind::PeerBindingExpired);
+        assert_eq!(expired.outcome, ObservationOutcome::Denied);
+        assert_eq!(expired.resource_id, Some("endpoint-a".into()));
     }
 
     #[test]

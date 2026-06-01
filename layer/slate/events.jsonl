@@ -247,3 +247,4 @@
 {"created_at":"1780276139","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-daemon-health-readiness"}
 {"created_at":"1780276240","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-call-envelope-json-edge-roundtrip"}
 {"created_at":"1780276357","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-kernel-denial-observations"}
+{"created_at":"1780276478","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-peer-binding-revocation-expiry"}
