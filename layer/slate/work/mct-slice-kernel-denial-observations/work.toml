@@ -1,7 +1,7 @@
 id = "mct-slice-kernel-denial-observations"
 title = "Map kernel denial evaluations to observations"
 kind = "build"
-status = "active"
+status = "complete"
 execution_granularity = "slice"
 human_request = "Standardize how kernel hello/call denial evaluations become observation-grade MctObservation facts."
 allium_anchors = ["MctObservation", "MctHelloAdmissionEvaluation", "MctCallProtocolEvaluation", "MctRuntimeShape"]
@@ -17,18 +17,23 @@ first_test_to_write = "kernel_denial_evaluations_become_observations"
 exit_criteria = ["Denied hello evaluation maps to PeerRejected observation.", "Denied call protocol evaluation maps to CallDenied observation.", "Observations carry trace, decision, safe message, and denied outcome."]
 non_goals = ["No ledger writes.", "No adapter observations.", "No full coverage of every future authority decision."]
 implementation_plan = [
-    "[ ] Add pure observation builders for hello and call protocol evaluations.",
-    "[ ] Map denied outcomes to denied observation kinds and outcomes.",
-    "[ ] Add kernel tests for denial observation facts.",
+    "[x] Add pure observation builders for hello and call protocol evaluations.",
+    "[x] Map denied outcomes to denied observation kinds and outcomes.",
+    "[x] Add kernel tests for denial observation facts.",
 ]
 proof_plan = [
-    "[ ] `cargo test -p mct-kernel kernel_denial_evaluations_become_observations` passes.",
-    "[ ] Test proves denied hello maps to `PeerRejected`.",
-    "[ ] Test proves denied call maps to `CallDenied`.",
-    "[ ] `cargo test --workspace` passes.",
-    "[ ] `allium check layer/allium` passes.",
+    "[x] `cargo test -p mct-kernel kernel_denial_evaluations_become_observations` passes.",
+    "[x] Test proves denied hello maps to `PeerRejected`.",
+    "[x] Test proves denied call maps to `CallDenied`.",
+    "[x] `cargo test --workspace` passes.",
+    "[x] `allium check layer/allium` passes.",
 ]
-closure_evidence = []
+closure_evidence = [
+    "[x] Commit `aa3606f feat(kernel): map denials to observations` adds pure hello/call evaluation observation builders.",
+    "[x] `kernel_denial_evaluations_become_observations` proves denied hello maps to `PeerRejected` and denied call maps to `CallDenied`.",
+    "[x] Targeted kernel test, workspace tests, and Allium validation passed before closure.",
+]
 blocked_by = ["mct-slice-hello-admission", "mct-slice-call-protocol-evaluation"]
 created_at = "1780276400"
-updated_at = "1780276400"
+updated_at = "1780276426"
+closed_at = "1780276426"

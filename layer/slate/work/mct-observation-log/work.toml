@@ -13,9 +13,9 @@ core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/safety-boundaries
 runtime_shape_role = "Canonical runtime truth ledger: records MCT observations before protected effects; external logs/metrics/traces are projections."
 design_style = "Concrete durable ledger first, projection/export abstractions only after concrete projection needs exist."
 implementation_ready_requirements = ["Every slice states which authority or adapter facts become observations.", "Proof gates query by trace/call/decision where applicable.", "Projection work must not replace the canonical MctObservation ledger."]
-slice_refs = ["mct-slice-kernel-domain-records", "mct-slice-jsonl-observation-ledger", "mct-slice-fake-daemon-echo", "mct-slice-runtime-shape-anchors", "mct-slice-iroh-unknown-peer-denial", "mct-slice-iroh-adapter-observations"]
-partial_evidence = ["[x] `MctObservation` domain record exists.", "[x] Append-only JSONL ledger with hash-chain validation exists.", "[x] Fake daemon slice records reconstructable trace/call observations.", "[x] Unknown-peer denial path exposes observation-grade hello and call decision ids in kernel evaluations.", "[x] Iroh adapter observation projection covers endpoint bound/closed, hello, peer rejection, call receive, and call reply facts.", "[ ] Full authority-decision coverage and adapter diagnostics remain open."]
-next_slice_candidates = ["mct-slice-authority-decision-observation-coverage"]
+slice_refs = ["mct-slice-kernel-domain-records", "mct-slice-jsonl-observation-ledger", "mct-slice-fake-daemon-echo", "mct-slice-runtime-shape-anchors", "mct-slice-iroh-unknown-peer-denial", "mct-slice-iroh-adapter-observations", "mct-slice-kernel-denial-observations"]
+partial_evidence = ["[x] `MctObservation` domain record exists.", "[x] Append-only JSONL ledger with hash-chain validation exists.", "[x] Fake daemon slice records reconstructable trace/call observations.", "[x] Unknown-peer denial path exposes observation-grade hello and call decision ids in kernel evaluations.", "[x] Iroh adapter observation projection covers endpoint bound/closed, hello, peer rejection, call receive, and call reply facts.", "[x] Kernel hello/call denial evaluations map to `PeerRejected` and `CallDenied` observation facts.", "[ ] Full authority-decision coverage and adapter diagnostics remain open."]
+next_slice_candidates = []
 proof_plan = [
     "[ ] Unit tests prove every authority decision path emits or returns a kernel observation.",
     "[ ] Peer hello receipt, protocol negotiation, hello response, peer call receipt, malformed peer call rejection, peer call reply, peer binding creation, peer binding revocation, peer binding expiry, peer admission, and peer rejection are observable authority facts.",
@@ -34,5 +34,5 @@ implementation_plan = [
     "[ ] Implement a private append-only sink with batching/backpressure behavior appropriate for hot decisions.",
 ]
 created_at = "1780068484"
-updated_at = "1780276040"
+updated_at = "1780276426"
 block_reason = "Epic remains open; completed child slices cover domain observations, JSONL ledger, and fake trace reconstruction, but full authority/adapter observation coverage still requires smaller slice Slates."
