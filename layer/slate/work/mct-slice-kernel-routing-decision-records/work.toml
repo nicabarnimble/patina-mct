@@ -1,0 +1,43 @@
+id = "mct-slice-kernel-routing-decision-records"
+title = "Add kernel routing decision records"
+kind = "build"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Add typed RouteDecision records to mct-kernel without implementing a planner, so routing/no-route authority can be represented explicitly."
+allium_anchors = ["RouteDecision", "TwoPhaseRouting"]
+user_alignment = "User wants continued feature progress while keeping Jon-style typed kernel boundaries."
+belief_refs = ["slate-epics-progress-through-child-slices", "mother-kernel-decides-adapters-perform"]
+core_refs = ["layer/core/dependable-rust.md", "layer/core/spec-driven-design.md", "layer/core/safety-boundaries.md"]
+parent_slates = ["mct-kernel-crate"]
+code_targets = ["crates/mct-kernel/src/route.rs", "crates/mct-kernel/src/lib.rs", "layer/slate/work/mct-kernel-crate/work.toml"]
+implementation_ready = true
+runtime_shape_role = "Adds the first typed kernel route decision records so authority filtering and planner outcomes can be represented without embedding transport/runtime/storage implementation types."
+design_style = "Plain typed domain records first; no planner algorithm, no storage, no daemon or adapter dependency."
+first_test_to_write = "route_decision_records_selected_candidate_and_authority_evidence"
+exit_criteria = [
+    "Kernel exposes typed candidate route records with node/child/runtime/path facts.",
+    "Kernel exposes candidate authority evaluations with admissible/eliminated outcomes and safe messages.",
+    "Kernel exposes `RouteDecision` with selected/no-route outcome fields and decision/observation ids.",
+    "Tests prove selected route decisions preserve candidate and authority elimination evidence.",
+]
+non_goals = ["No planner ranking algorithm.", "No node telemetry model.", "No persistent route store.", "No child/toy authority implementation."]
+implementation_plan = [
+    "[x] Add `route.rs` to `mct-kernel` and re-export it from the crate root.",
+    "[x] Define `CandidateRoute`, `CandidateAuthorityEvaluation`, elimination reasons, and `RouteDecision`.",
+    "[x] Add a selected-route constructor and tests for candidate/evaluation evidence.",
+    "[x] Update `mct-kernel-crate` partial evidence.",
+]
+proof_plan = [
+    "[x] `cargo test -p mct-kernel route_decision` passes.",
+    "[x] Route records compile without Iroh/Wasmtime/SQLite/HTTP/JVM public API types.",
+    "[x] `allium check layer/allium` passes.",
+]
+closure_evidence = [
+    "[x] `crates/mct-kernel/src/route.rs` adds route candidate, authority evaluation, elimination reason, and decision records.",
+    "[x] `route_decision_records_selected_candidate_and_authority_evidence` proves selected route decisions retain admissible and eliminated candidate facts.",
+]
+blocked_by = []
+belief_harvest_decision = "No new durable belief required; this slice applies existing two-phase routing and kernel-decides guidance."
+created_at = "1780282400"
+updated_at = "1780282474"
+closed_at = "1780282474"
