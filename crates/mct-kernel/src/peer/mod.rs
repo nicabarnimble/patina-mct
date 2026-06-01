@@ -390,6 +390,14 @@ mod tests {
     }
 
     #[test]
+    fn expired_binding_is_denied_with_safe_message() {
+        let evaluation = evaluate_hello(&request("endpoint-a"), &[binding(BindingState::Expired)], &HelloPolicy::default(), ids());
+        assert_eq!(evaluation.reason, HelloReason::BindingExpired);
+        let response = hello_response("response-1", &evaluation, ObservationId::from("obs-response"));
+        assert_eq!(response.safe_message, "not authorized");
+    }
+
+    #[test]
     fn stale_policy_revision_is_denied() {
         let mut policy = HelloPolicy::default();
         policy.current_policy_revision = 2;
