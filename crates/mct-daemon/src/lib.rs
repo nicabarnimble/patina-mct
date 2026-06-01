@@ -6,9 +6,54 @@
 #![forbid(unsafe_code)]
 
 use anyhow::{Context, Result};
+use mct_iroh::{MotherIrohEndpointLifecycle, MotherIrohEndpointSnapshot};
 use mct_kernel::*;
 use mct_observation::JsonlObservationLedger;
 use std::path::Path;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MctDaemonHealth {
+    Healthy,
+    Degraded,
+    Unhealthy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MctDaemonReadiness {
+    Ready,
+    NotReady,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MctDaemonStatus {
+    pub version: String,
+    pub health: MctDaemonHealth,
+    pub readiness: MctDaemonReadiness,
+    pub iroh_endpoint: Option<MotherIrohEndpointSnapshot>,
+    pub safe_message: String,
+}
+
+pub fn daemon_status(iroh_endpoint: Option<MotherIrohEndpointSnapshot>) -> MctDaemonStatus {
+    let readiness = match iroh_endpoint.as_ref() {
+        Some(snapshot) if snapshot.lifecycle == MotherIrohEndpointLifecycle::Bound => {
+            MctDaemonReadiness::Ready
+        }
+        _ => MctDaemonReadiness::NotReady,
+    };
+
+    let safe_message = match readiness {
+        MctDaemonReadiness::Ready => "ready".into(),
+        MctDaemonReadiness::NotReady => "iroh endpoint not ready".into(),
+    };
+
+    MctDaemonStatus {
+        version: version().into(),
+        health: MctDaemonHealth::Healthy,
+        readiness,
+        iroh_endpoint,
+        safe_message,
+    }
+}
 
 pub struct FakeEchoReport {
     pub hello: MctHelloAdmissionEvaluation,
@@ -352,11 +397,40 @@ pub fn version() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mct_iroh::{MotherIrohRelayMode, MotherIrohEndpointLifecycle};
     use mct_observation::JsonlObservationLedger;
+
+    fn iroh_snapshot(lifecycle: MotherIrohEndpointLifecycle) -> MotherIrohEndpointSnapshot {
+        MotherIrohEndpointSnapshot {
+            endpoint_id: EndpointIdText::from("endpoint-daemon"),
+            lifecycle,
+            accepted_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
+            direct_addresses: vec!["127.0.0.1:0".into()],
+            relay_urls: Vec::new(),
+            relay_mode: MotherIrohRelayMode::Disabled,
+        }
+    }
 
     #[test]
     fn exposes_version() {
         assert_eq!(super::version(), "0.1.0");
+    }
+
+    #[test]
+    fn daemon_reports_health_and_readiness() {
+        let ready = daemon_status(Some(iroh_snapshot(MotherIrohEndpointLifecycle::Bound)));
+        assert_eq!(ready.version, "0.1.0");
+        assert_eq!(ready.health, MctDaemonHealth::Healthy);
+        assert_eq!(ready.readiness, MctDaemonReadiness::Ready);
+        assert_eq!(ready.safe_message, "ready");
+
+        let closed = daemon_status(Some(iroh_snapshot(MotherIrohEndpointLifecycle::Closed)));
+        assert_eq!(closed.readiness, MctDaemonReadiness::NotReady);
+        assert_eq!(closed.safe_message, "iroh endpoint not ready");
+
+        let missing = daemon_status(None);
+        assert_eq!(missing.readiness, MctDaemonReadiness::NotReady);
+        assert!(missing.iroh_endpoint.is_none());
     }
 
     #[test]

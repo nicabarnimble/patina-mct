@@ -1,0 +1,33 @@
+id = "mct-slice-daemon-health-readiness"
+title = "Add daemon health and readiness status"
+kind = "build"
+status = "active"
+execution_granularity = "slice"
+human_request = "Add the first daemon status model: version, health, readiness, and adapter readiness without creating a broad control API."
+allium_anchors = ["MctRuntimeShape"]
+user_alignment = "User wants a modular daemon wrapper that owns lifecycle/control without becoming the authority model."
+belief_refs = []
+core_refs = ["layer/core/unix-philosophy.md", "layer/core/dependable-rust.md", "layer/core/safety-boundaries.md", "layer/core/mct-build-boundaries.md"]
+parent_slates = ["mct-daemon-control-plane", "mct-iroh-substrate"]
+code_targets = ["crates/mct-daemon/src/lib.rs"]
+implementation_ready = true
+runtime_shape_role = "First daemon status surface: report process health and adapter readiness without reimplementing kernel authority."
+design_style = "Small concrete status value first; no HTTP/UDS/control-plane framework yet."
+first_test_to_write = "daemon_reports_health_and_readiness"
+exit_criteria = ["Daemon status includes version, health, readiness, and Iroh adapter readiness.", "Readiness distinguishes a bound Iroh endpoint from an unavailable/closed endpoint.", "No new control transport is introduced."]
+non_goals = ["No HTTP or UDS server.", "No auth layer.", "No daemon process supervisor integration."]
+implementation_plan = [
+    "[ ] Add small daemon health/readiness status types.",
+    "[ ] Include optional Iroh endpoint snapshot readiness.",
+    "[ ] Add tests for ready and not-ready statuses.",
+]
+proof_plan = [
+    "[ ] `cargo test -p mct-daemon daemon_reports_health_and_readiness` passes.",
+    "[ ] Test proves bound Iroh endpoint means ready and closed/missing endpoint means not ready.",
+    "[ ] `cargo test --workspace` passes.",
+    "[ ] `allium check layer/allium` passes.",
+]
+closure_evidence = []
+blocked_by = ["mct-slice-iroh-mother-owned-endpoint-lifecycle"]
+created_at = "1780276100"
+updated_at = "1780276100"
