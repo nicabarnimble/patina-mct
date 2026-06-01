@@ -13,7 +13,8 @@ mod observation;
 mod test_support;
 
 pub use endpoint::{
-    MotherIrohEndpoint, MotherIrohEndpointLifecycle, MotherIrohEndpointSnapshot,
+    MotherIrohEndpoint, MotherIrohEndpointConfig, MotherIrohEndpointError,
+    MotherIrohEndpointLifecycle, MotherIrohEndpointResult, MotherIrohEndpointSnapshot,
     MotherIrohRelayMode,
 };
 
@@ -33,6 +34,27 @@ mod tests {
     #[test]
     fn exposes_version() {
         assert_eq!(super::version(), "0.1.0");
+    }
+
+    #[test]
+    fn endpoint_config_defaults_to_local_mct_alpns() {
+        let config = MotherIrohEndpointConfig::local_mct();
+        assert_eq!(config.accepted_alpns, mct_alpns());
+        assert_eq!(config.relay_mode, MotherIrohRelayMode::Disabled);
+    }
+
+    #[tokio::test]
+    async fn endpoint_config_rejects_empty_alpns() {
+        let result = MotherIrohEndpoint::bind(MotherIrohEndpointConfig {
+            accepted_alpns: Vec::new(),
+            ..MotherIrohEndpointConfig::local_mct()
+        })
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(MotherIrohEndpointError::EmptyAcceptedAlpns)
+        ));
     }
 
     #[tokio::test]
