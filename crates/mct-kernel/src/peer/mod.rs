@@ -354,7 +354,8 @@ mod tests {
 
     #[test]
     fn unknown_endpoint_is_denied() {
-        let evaluation = evaluate_hello(&request("endpoint-a"), &[], &HelloPolicy::default(), ids());
+        let evaluation =
+            evaluate_hello(&request("endpoint-a"), &[], &HelloPolicy::default(), ids());
         assert_eq!(evaluation.hello_outcome, HelloOutcome::Denied);
         assert_eq!(evaluation.reason, HelloReason::MissingBinding);
         assert_eq!(evaluation.safe_reason, SafeHelloReason::NotAuthorized);
@@ -365,7 +366,12 @@ mod tests {
     fn endpoint_mismatch_is_denied_before_binding_lookup() {
         let mut request = request("endpoint-a");
         request.presented_binding.endpoint_id = EndpointIdText::from("endpoint-b");
-        let evaluation = evaluate_hello(&request, &[binding(BindingState::Admitted)], &HelloPolicy::default(), ids());
+        let evaluation = evaluate_hello(
+            &request,
+            &[binding(BindingState::Admitted)],
+            &HelloPolicy::default(),
+            ids(),
+        );
         assert_eq!(evaluation.reason, HelloReason::EndpointMismatch);
         assert_eq!(evaluation.safe_reason, SafeHelloReason::NotAuthorized);
     }
@@ -374,7 +380,12 @@ mod tests {
     fn active_binding_admits_intersection_of_requested_policy_and_binding_alpns() {
         let mut binding = binding(BindingState::Admitted);
         binding.scope.allowed_alpns = vec![MCT_CALL_ALPN.into()];
-        let evaluation = evaluate_hello(&request("endpoint-a"), &[binding], &HelloPolicy::default(), ids());
+        let evaluation = evaluate_hello(
+            &request("endpoint-a"),
+            &[binding],
+            &HelloPolicy::default(),
+            ids(),
+        );
         assert!(evaluation.is_admitted());
         assert_eq!(evaluation.accepted_alpns, vec![MCT_CALL_ALPN.to_string()]);
         assert!(evaluation.admits_alpn(MCT_CALL_ALPN));
@@ -383,25 +394,50 @@ mod tests {
 
     #[test]
     fn revoked_binding_is_denied_with_safe_message() {
-        let evaluation = evaluate_hello(&request("endpoint-a"), &[binding(BindingState::Revoked)], &HelloPolicy::default(), ids());
+        let evaluation = evaluate_hello(
+            &request("endpoint-a"),
+            &[binding(BindingState::Revoked)],
+            &HelloPolicy::default(),
+            ids(),
+        );
         assert_eq!(evaluation.reason, HelloReason::BindingRevoked);
-        let response = hello_response("response-1", &evaluation, ObservationId::from("obs-response"));
+        let response = hello_response(
+            "response-1",
+            &evaluation,
+            ObservationId::from("obs-response"),
+        );
         assert_eq!(response.safe_message, "not authorized");
     }
 
     #[test]
     fn expired_binding_is_denied_with_safe_message() {
-        let evaluation = evaluate_hello(&request("endpoint-a"), &[binding(BindingState::Expired)], &HelloPolicy::default(), ids());
+        let evaluation = evaluate_hello(
+            &request("endpoint-a"),
+            &[binding(BindingState::Expired)],
+            &HelloPolicy::default(),
+            ids(),
+        );
         assert_eq!(evaluation.reason, HelloReason::BindingExpired);
-        let response = hello_response("response-1", &evaluation, ObservationId::from("obs-response"));
+        let response = hello_response(
+            "response-1",
+            &evaluation,
+            ObservationId::from("obs-response"),
+        );
         assert_eq!(response.safe_message, "not authorized");
     }
 
     #[test]
     fn stale_policy_revision_is_denied() {
-        let mut policy = HelloPolicy::default();
-        policy.current_policy_revision = 2;
-        let evaluation = evaluate_hello(&request("endpoint-a"), &[binding(BindingState::Admitted)], &policy, ids());
+        let policy = HelloPolicy {
+            current_policy_revision: 2,
+            ..HelloPolicy::default()
+        };
+        let evaluation = evaluate_hello(
+            &request("endpoint-a"),
+            &[binding(BindingState::Admitted)],
+            &policy,
+            ids(),
+        );
         assert_eq!(evaluation.reason, HelloReason::PolicyRevisionStale);
         assert_eq!(evaluation.safe_reason, SafeHelloReason::NotAuthorized);
     }
@@ -410,7 +446,12 @@ mod tests {
     fn unsupported_major_version_requests_upgrade() {
         let mut request = request("endpoint-a");
         request.requested_protocol.major = 99;
-        let evaluation = evaluate_hello(&request, &[binding(BindingState::Admitted)], &HelloPolicy::default(), ids());
+        let evaluation = evaluate_hello(
+            &request,
+            &[binding(BindingState::Admitted)],
+            &HelloPolicy::default(),
+            ids(),
+        );
         assert_eq!(evaluation.hello_outcome, HelloOutcome::UpgradeRequired);
         assert_eq!(evaluation.safe_reason, SafeHelloReason::UnsupportedVersion);
     }

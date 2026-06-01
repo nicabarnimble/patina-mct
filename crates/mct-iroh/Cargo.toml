@@ -8,10 +8,10 @@ repository.workspace = true
 
 [dependencies]
 mct-kernel = { path = "../mct-kernel" }
-mct-observation = { path = "../mct-observation" }
 anyhow.workspace = true
 iroh = "1.0.0-rc.1"
+tokio.workspace = true
+
+[dev-dependencies]
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
-tokio.workspace = true

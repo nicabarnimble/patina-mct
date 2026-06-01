@@ -5,10 +5,14 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
 use anyhow::{Context, Result};
 use mct_iroh::{MotherIrohEndpointLifecycle, MotherIrohEndpointSnapshot};
+#[cfg(test)]
 use mct_kernel::*;
+#[cfg(test)]
 use mct_observation::JsonlObservationLedger;
+#[cfg(test)]
 use std::path::Path;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,21 +59,24 @@ pub fn daemon_status(iroh_endpoint: Option<MotherIrohEndpointSnapshot>) -> MctDa
     }
 }
 
-pub struct FakeEchoReport {
-    pub hello: MctHelloAdmissionEvaluation,
-    pub call: MctCallProtocolEvaluation,
-    pub result: MctResult,
-    pub reply: MctCallProtocolReply,
-    pub trace_observation_count: usize,
+#[cfg(test)]
+struct FakeEchoReport {
+    hello: MctHelloAdmissionEvaluation,
+    call: MctCallProtocolEvaluation,
+    result: MctResult,
+    reply: MctCallProtocolReply,
+    trace_observation_count: usize,
 }
 
-pub struct FakeEndToEndStatusReport {
-    pub daemon: MctDaemonStatus,
-    pub echo: FakeEchoReport,
-    pub call_observation_count: usize,
+#[cfg(test)]
+struct FakeEndToEndStatusReport {
+    daemon: MctDaemonStatus,
+    echo: FakeEchoReport,
+    call_observation_count: usize,
 }
 
-pub fn run_fake_end_to_end_status_slice(
+#[cfg(test)]
+fn run_fake_end_to_end_status_slice(
     ledger_path: impl AsRef<Path>,
     iroh_endpoint: MotherIrohEndpointSnapshot,
 ) -> Result<FakeEndToEndStatusReport> {
@@ -90,7 +97,8 @@ pub fn run_fake_end_to_end_status_slice(
 ///
 /// This proves composition before adding the Iroh adapter:
 /// peer binding → `mct/hello/0` → `mct/call/0` → fake echo handler → observations.
-pub fn run_fake_echo_slice(ledger_path: impl AsRef<Path>) -> Result<FakeEchoReport> {
+#[cfg(test)]
+fn run_fake_echo_slice(ledger_path: impl AsRef<Path>) -> Result<FakeEchoReport> {
     let mut ledger = JsonlObservationLedger::open(ledger_path, "ledger-dev", "mother-a")
         .context("open fake echo observation ledger")?;
 
@@ -239,6 +247,7 @@ pub fn run_fake_echo_slice(ledger_path: impl AsRef<Path>) -> Result<FakeEchoRepo
     })
 }
 
+#[cfg(test)]
 fn fake_binding() -> MctPeerBinding {
     MctPeerBinding {
         binding_id: PeerBindingId::from("binding-fake"),
@@ -260,6 +269,7 @@ fn fake_binding() -> MctPeerBinding {
     }
 }
 
+#[cfg(test)]
 fn fake_hello_request(trace_id: &TraceId) -> MctHelloRequest {
     MctHelloRequest {
         hello_id: "hello-fake".into(),
@@ -291,7 +301,11 @@ fn fake_hello_request(trace_id: &TraceId) -> MctHelloRequest {
     }
 }
 
-fn fake_call_request(trace_id: &TraceId, hello: &MctHelloAdmissionEvaluation) -> MctCallProtocolRequest {
+#[cfg(test)]
+fn fake_call_request(
+    trace_id: &TraceId,
+    hello: &MctHelloAdmissionEvaluation,
+) -> MctCallProtocolRequest {
     let call = MctCall {
         call_id: CallId::from("call-fake-echo"),
         caller: CallerIdentity {
@@ -357,6 +371,7 @@ fn fake_call_request(trace_id: &TraceId, hello: &MctHelloAdmissionEvaluation) ->
     }
 }
 
+#[cfg(test)]
 fn fake_echo_result(call: &MctCall) -> MctResult {
     MctResult {
         call_id: call.call_id.clone(),
@@ -379,6 +394,7 @@ fn fake_echo_result(call: &MctCall) -> MctResult {
     }
 }
 
+#[cfg(test)]
 fn observation(
     id: &str,
     kind: ObservationKind,
@@ -420,7 +436,7 @@ pub fn version() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mct_iroh::{MotherIrohRelayMode, MotherIrohEndpointLifecycle};
+    use mct_iroh::{MotherIrohEndpointLifecycle, MotherIrohRelayMode};
     use mct_observation::JsonlObservationLedger;
 
     fn iroh_snapshot(lifecycle: MotherIrohEndpointLifecycle) -> MotherIrohEndpointSnapshot {
@@ -480,7 +496,10 @@ mod tests {
         assert!(report.hello.is_admitted());
         assert!(report.call.is_accepted_for_routing());
         assert_eq!(report.result.outcome, ResultOutcome::Success);
-        assert_eq!(report.reply.reply_outcome, CallProtocolReplyOutcome::Success);
+        assert_eq!(
+            report.reply.reply_outcome,
+            CallProtocolReplyOutcome::Success
+        );
         assert_eq!(report.trace_observation_count, 6);
 
         let ledger = JsonlObservationLedger::open(&ledger_path, "ledger-dev", "mother-a").unwrap();

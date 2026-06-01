@@ -6,10 +6,14 @@
 
 #![forbid(unsafe_code)]
 
-use anyhow::{Context, Result, anyhow};
+#[cfg(test)]
+use anyhow::anyhow;
+use anyhow::{Context, Result};
 use iroh::{Endpoint, RelayMode, endpoint::presets};
 use mct_kernel::*;
+#[cfg(test)]
 use std::sync::Arc;
+#[cfg(test)]
 use tokio::sync::Mutex;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,137 +89,145 @@ impl MotherIrohEndpoint {
     }
 }
 
-pub struct LocalIrohEchoReport {
-    pub hello_response: MctHelloResponse,
-    pub call_reply: MctCallProtocolReply,
+#[cfg(test)]
+struct LocalIrohEchoReport {
+    hello_response: MctHelloResponse,
+    call_reply: MctCallProtocolReply,
 }
 
-pub struct LocalIrohDeniedPeerReport {
-    pub hello_response: MctHelloResponse,
-    pub hello_evaluation: MctHelloAdmissionEvaluation,
-    pub call_reply: MctCallProtocolReply,
-    pub call_evaluation: MctCallProtocolEvaluation,
+#[cfg(test)]
+struct LocalIrohDeniedPeerReport {
+    hello_response: MctHelloResponse,
+    hello_evaluation: MctHelloAdmissionEvaluation,
+    call_reply: MctCallProtocolReply,
+    call_evaluation: MctCallProtocolEvaluation,
 }
 
 /// Build canonical MCT observations for a local denied-peer adapter proof.
 ///
 /// This is a projection from safe adapter facts into `MctObservation`; logs,
 /// metrics, qlog, and OTel can later project from the same facts.
-pub fn local_denied_peer_adapter_observations(
+#[cfg(test)]
+fn local_denied_peer_adapter_observations(
     bound_endpoint: &MotherIrohEndpointSnapshot,
     closed_endpoint: &MotherIrohEndpointSnapshot,
     report: &LocalIrohDeniedPeerReport,
     trace_id: TraceId,
 ) -> Vec<MctObservation> {
     vec![
-        adapter_observation(
-            "obs-iroh-endpoint-bound",
-            ObservationKind::AdapterEffectStarted,
-            trace_id.clone(),
-            None,
-            None,
-            ObservationOutcome::Started,
-            "iroh endpoint bound",
-            Some(bound_endpoint.endpoint_id.as_str().to_string()),
-            Some("mct-iroh-endpoint".into()),
-        ),
-        adapter_observation(
-            "obs-iroh-hello-received",
-            ObservationKind::PeerHelloReceived,
-            trace_id.clone(),
-            None,
-            None,
-            ObservationOutcome::Started,
-            "peer hello received",
-            Some(bound_endpoint.endpoint_id.as_str().to_string()),
-            Some(MCT_HELLO_ALPN.into()),
-        ),
-        adapter_observation(
-            "obs-iroh-peer-rejected",
-            ObservationKind::PeerRejected,
-            trace_id.clone(),
-            None,
-            Some(report.hello_evaluation.decision_id.clone()),
-            ObservationOutcome::Denied,
-            report.hello_response.safe_message.clone(),
-            report
+        adapter_observation(AdapterObservationFacts {
+            observation_id: "obs-iroh-endpoint-bound",
+            kind: ObservationKind::AdapterEffectStarted,
+            trace_id: trace_id.clone(),
+            call_id: None,
+            decision_id: None,
+            outcome: ObservationOutcome::Started,
+            safe_message: "iroh endpoint bound".into(),
+            subject_id: Some(bound_endpoint.endpoint_id.as_str().to_string()),
+            resource_id: Some("mct-iroh-endpoint".into()),
+        }),
+        adapter_observation(AdapterObservationFacts {
+            observation_id: "obs-iroh-hello-received",
+            kind: ObservationKind::PeerHelloReceived,
+            trace_id: trace_id.clone(),
+            call_id: None,
+            decision_id: None,
+            outcome: ObservationOutcome::Started,
+            safe_message: "peer hello received".into(),
+            subject_id: Some(bound_endpoint.endpoint_id.as_str().to_string()),
+            resource_id: Some(MCT_HELLO_ALPN.into()),
+        }),
+        adapter_observation(AdapterObservationFacts {
+            observation_id: "obs-iroh-peer-rejected",
+            kind: ObservationKind::PeerRejected,
+            trace_id: trace_id.clone(),
+            call_id: None,
+            decision_id: Some(report.hello_evaluation.decision_id.clone()),
+            outcome: ObservationOutcome::Denied,
+            safe_message: report.hello_response.safe_message.clone(),
+            subject_id: report
                 .hello_evaluation
                 .selected_binding_id
                 .as_ref()
                 .map(ToString::to_string),
-            Some(MCT_HELLO_ALPN.into()),
-        ),
-        adapter_observation(
-            "obs-iroh-peer-call-received",
-            ObservationKind::PeerCallReceived,
-            trace_id.clone(),
-            report.call_evaluation.call_id.clone(),
-            None,
-            ObservationOutcome::Started,
-            "peer call received",
-            None,
-            Some(MCT_CALL_ALPN.into()),
-        ),
-        adapter_observation(
-            "obs-iroh-peer-call-replied",
-            ObservationKind::PeerCallReplied,
-            trace_id.clone(),
-            report.call_evaluation.call_id.clone(),
-            Some(report.call_evaluation.decision_id.clone()),
-            ObservationOutcome::Denied,
-            report.call_reply.safe_message.clone(),
-            None,
-            Some(MCT_CALL_ALPN.into()),
-        ),
-        adapter_observation(
-            "obs-iroh-endpoint-closed",
-            ObservationKind::AdapterEffectCompleted,
+            resource_id: Some(MCT_HELLO_ALPN.into()),
+        }),
+        adapter_observation(AdapterObservationFacts {
+            observation_id: "obs-iroh-peer-call-received",
+            kind: ObservationKind::PeerCallReceived,
+            trace_id: trace_id.clone(),
+            call_id: report.call_evaluation.call_id.clone(),
+            decision_id: None,
+            outcome: ObservationOutcome::Started,
+            safe_message: "peer call received".into(),
+            subject_id: None,
+            resource_id: Some(MCT_CALL_ALPN.into()),
+        }),
+        adapter_observation(AdapterObservationFacts {
+            observation_id: "obs-iroh-peer-call-replied",
+            kind: ObservationKind::PeerCallReplied,
+            trace_id: trace_id.clone(),
+            call_id: report.call_evaluation.call_id.clone(),
+            decision_id: Some(report.call_evaluation.decision_id.clone()),
+            outcome: ObservationOutcome::Denied,
+            safe_message: report.call_reply.safe_message.clone(),
+            subject_id: None,
+            resource_id: Some(MCT_CALL_ALPN.into()),
+        }),
+        adapter_observation(AdapterObservationFacts {
+            observation_id: "obs-iroh-endpoint-closed",
+            kind: ObservationKind::AdapterEffectCompleted,
             trace_id,
-            None,
-            None,
-            ObservationOutcome::Completed,
-            "iroh endpoint closed",
-            Some(closed_endpoint.endpoint_id.as_str().to_string()),
-            Some("mct-iroh-endpoint".into()),
-        ),
+            call_id: None,
+            decision_id: None,
+            outcome: ObservationOutcome::Completed,
+            safe_message: "iroh endpoint closed".into(),
+            subject_id: Some(closed_endpoint.endpoint_id.as_str().to_string()),
+            resource_id: Some("mct-iroh-endpoint".into()),
+        }),
     ]
 }
 
-fn adapter_observation(
-    observation_id: &str,
+#[cfg(test)]
+struct AdapterObservationFacts {
+    observation_id: &'static str,
     kind: ObservationKind,
     trace_id: TraceId,
     call_id: Option<CallId>,
     decision_id: Option<DecisionId>,
     outcome: ObservationOutcome,
-    safe_message: impl Into<String>,
+    safe_message: String,
     subject_id: Option<String>,
     resource_id: Option<String>,
-) -> MctObservation {
+}
+
+#[cfg(test)]
+fn adapter_observation(facts: AdapterObservationFacts) -> MctObservation {
     MctObservation {
-        observation_id: ObservationId::from(observation_id),
+        observation_id: ObservationId::from(facts.observation_id),
         observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
-        kind,
+        kind: facts.kind,
         source_plane: SourcePlane::Adapter,
         trace: ObservationTraceRef {
-            trace_id,
+            trace_id: facts.trace_id,
             span_id: None,
             parent_span_id: None,
             external_trace_id: None,
         },
-        call_id,
-        decision_id,
-        subject_id,
-        resource_id,
+        call_id: facts.call_id,
+        decision_id: facts.decision_id,
+        subject_id: facts.subject_id,
+        resource_id: facts.resource_id,
         policy_revision: Some(1),
         grants_revision: Some(1),
-        outcome,
+        outcome: facts.outcome,
         visibility: ObservationVisibility::InternalOnly,
-        safe_message: safe_message.into(),
+        safe_message: facts.safe_message,
         detail_ref: None,
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Default)]
 struct LocalProtocolState {
     last_hello: Option<MctHelloAdmissionEvaluation>,
@@ -225,7 +237,8 @@ struct LocalProtocolState {
 /// Run a local, relay-disabled Iroh roundtrip for `mct/hello/0` then `mct/call/0`.
 ///
 /// This is intentionally a tiny adapter proof, not the production daemon protocol loop.
-pub async fn run_local_iroh_echo_roundtrip() -> Result<LocalIrohEchoReport> {
+#[cfg(test)]
+async fn run_local_iroh_echo_roundtrip() -> Result<LocalIrohEchoReport> {
     let server = Endpoint::builder(presets::N0)
         .relay_mode(RelayMode::Disabled)
         .alpns(mct_alpn_bytes())
@@ -281,7 +294,8 @@ pub async fn run_local_iroh_echo_roundtrip() -> Result<LocalIrohEchoReport> {
 
 /// Run a local Iroh roundtrip where transport connectivity succeeds but MCT
 /// authority denies the peer because no active `MctPeerBinding` exists.
-pub async fn run_unknown_peer_denial_roundtrip() -> Result<LocalIrohDeniedPeerReport> {
+#[cfg(test)]
+async fn run_unknown_peer_denial_roundtrip() -> Result<LocalIrohDeniedPeerReport> {
     let server = Endpoint::builder(presets::N0)
         .relay_mode(RelayMode::Disabled)
         .alpns(mct_alpn_bytes())
@@ -337,6 +351,7 @@ pub async fn run_unknown_peer_denial_roundtrip() -> Result<LocalIrohDeniedPeerRe
     })
 }
 
+#[cfg(test)]
 async fn serve_two_local_connections(
     endpoint: Endpoint,
     bindings: Vec<MctPeerBinding>,
@@ -438,6 +453,7 @@ fn mct_alpn_bytes() -> Vec<Vec<u8>> {
     ]
 }
 
+#[cfg(test)]
 async fn roundtrip_json<Request, Response>(
     endpoint: &Endpoint,
     server_addr: iroh::EndpointAddr,
@@ -469,6 +485,7 @@ where
     serde_json::from_slice(&response).context("decode response")
 }
 
+#[cfg(test)]
 fn local_binding_for(endpoint_id: &EndpointIdText) -> MctPeerBinding {
     MctPeerBinding {
         binding_id: PeerBindingId::from("binding-local-iroh"),
@@ -490,6 +507,7 @@ fn local_binding_for(endpoint_id: &EndpointIdText) -> MctPeerBinding {
     }
 }
 
+#[cfg(test)]
 fn local_hello_request(endpoint_id: &EndpointIdText, trace_id: &TraceId) -> MctHelloRequest {
     MctHelloRequest {
         hello_id: "hello-local-iroh".into(),
@@ -521,6 +539,7 @@ fn local_hello_request(endpoint_id: &EndpointIdText, trace_id: &TraceId) -> MctH
     }
 }
 
+#[cfg(test)]
 fn local_call_request(
     endpoint_id: &EndpointIdText,
     trace_id: &TraceId,

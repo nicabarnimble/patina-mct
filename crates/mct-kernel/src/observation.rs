@@ -213,7 +213,10 @@ pub fn hello_evaluation_observation(
     }
 }
 
-pub fn peer_binding_state_observation(trace_id: TraceId, binding: &MctPeerBinding) -> MctObservation {
+pub fn peer_binding_state_observation(
+    trace_id: TraceId,
+    binding: &MctPeerBinding,
+) -> MctObservation {
     let (kind, outcome, safe_message) = match binding.binding_state {
         BindingState::Admitted => (
             ObservationKind::PeerBindingRecorded,
@@ -277,10 +280,19 @@ pub fn call_protocol_evaluation_observation(
         CallProtocolOutcome::AcceptedForRouting | CallProtocolOutcome::Completed => {
             (ObservationKind::CallAuthorized, ObservationOutcome::Allowed)
         }
-        CallProtocolOutcome::Malformed => (ObservationKind::PeerCallMalformed, ObservationOutcome::Denied),
+        CallProtocolOutcome::Malformed => (
+            ObservationKind::PeerCallMalformed,
+            ObservationOutcome::Denied,
+        ),
         CallProtocolOutcome::Denied => (ObservationKind::CallDenied, ObservationOutcome::Denied),
-        CallProtocolOutcome::Failed => (ObservationKind::AdapterEffectFailed, ObservationOutcome::Failed),
-        CallProtocolOutcome::TimedOut => (ObservationKind::AdapterEffectFailed, ObservationOutcome::TimedOut),
+        CallProtocolOutcome::Failed => (
+            ObservationKind::AdapterEffectFailed,
+            ObservationOutcome::Failed,
+        ),
+        CallProtocolOutcome::TimedOut => (
+            ObservationKind::AdapterEffectFailed,
+            ObservationOutcome::TimedOut,
+        ),
     };
 
     MctObservation {
@@ -329,7 +341,10 @@ mod tests {
         assert_eq!(hello_observation.kind, ObservationKind::PeerRejected);
         assert_eq!(hello_observation.source_plane, SourcePlane::Kernel);
         assert_eq!(hello_observation.outcome, ObservationOutcome::Denied);
-        assert_eq!(hello_observation.decision_id, Some(DecisionId::from("decision-hello")));
+        assert_eq!(
+            hello_observation.decision_id,
+            Some(DecisionId::from("decision-hello"))
+        );
         assert_eq!(hello_observation.safe_message, "not authorized");
 
         let call = MctCallProtocolEvaluation {
@@ -343,12 +358,16 @@ mod tests {
             safe_message: "not authorized".into(),
             observation_id: ObservationId::from("obs-call-denied"),
         };
-        let call_observation = call_protocol_evaluation_observation(TraceId::from("trace-1"), &call);
+        let call_observation =
+            call_protocol_evaluation_observation(TraceId::from("trace-1"), &call);
         assert_eq!(call_observation.kind, ObservationKind::CallDenied);
         assert_eq!(call_observation.source_plane, SourcePlane::Kernel);
         assert_eq!(call_observation.outcome, ObservationOutcome::Denied);
         assert_eq!(call_observation.call_id, Some(CallId::from("call-1")));
-        assert_eq!(call_observation.decision_id, Some(DecisionId::from("decision-call")));
+        assert_eq!(
+            call_observation.decision_id,
+            Some(DecisionId::from("decision-call"))
+        );
     }
 
     fn binding(state: BindingState) -> MctPeerBinding {
@@ -374,13 +393,19 @@ mod tests {
 
     #[test]
     fn revoked_and_expired_bindings_become_observations() {
-        let revoked = peer_binding_state_observation(TraceId::from("trace-1"), &binding(BindingState::Revoked));
+        let revoked = peer_binding_state_observation(
+            TraceId::from("trace-1"),
+            &binding(BindingState::Revoked),
+        );
         assert_eq!(revoked.kind, ObservationKind::PeerBindingRevoked);
         assert_eq!(revoked.outcome, ObservationOutcome::Denied);
         assert_eq!(revoked.safe_message, "not authorized");
         assert_eq!(revoked.policy_revision, Some(7));
 
-        let expired = peer_binding_state_observation(TraceId::from("trace-1"), &binding(BindingState::Expired));
+        let expired = peer_binding_state_observation(
+            TraceId::from("trace-1"),
+            &binding(BindingState::Expired),
+        );
         assert_eq!(expired.kind, ObservationKind::PeerBindingExpired);
         assert_eq!(expired.outcome, ObservationOutcome::Denied);
         assert_eq!(expired.resource_id, Some("endpoint-a".into()));

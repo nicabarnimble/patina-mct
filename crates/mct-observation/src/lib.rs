@@ -137,10 +137,11 @@ impl JsonlObservationLedger {
         };
         entry.entry_hash = entry_hash(&entry)?;
 
-        let line = serde_json::to_string(&entry).map_err(|source| ObservationLedgerError::Json {
-            path: self.path.clone(),
-            source,
-        })?;
+        let line =
+            serde_json::to_string(&entry).map_err(|source| ObservationLedgerError::Json {
+                path: self.path.clone(),
+                source,
+            })?;
         let mut file = OpenOptions::new()
             .append(true)
             .open(&self.path)
@@ -152,10 +153,11 @@ impl JsonlObservationLedger {
             path: self.path.clone(),
             source,
         })?;
-        file.sync_data().map_err(|source| ObservationLedgerError::Io {
-            path: self.path.clone(),
-            source,
-        })?;
+        file.sync_data()
+            .map_err(|source| ObservationLedgerError::Io {
+                path: self.path.clone(),
+                source,
+            })?;
 
         self.previous_hash = Some(entry.entry_hash.clone());
         self.next_sequence += 1;
@@ -218,9 +220,11 @@ fn read_entries(path: &Path) -> Result<Vec<MctObservationLedgerEntry>> {
         if line.trim().is_empty() {
             continue;
         }
-        entries.push(serde_json::from_str(&line).map_err(|source| ObservationLedgerError::Json {
-            path: path.to_path_buf(),
-            source,
+        entries.push(serde_json::from_str(&line).map_err(|source| {
+            ObservationLedgerError::Json {
+                path: path.to_path_buf(),
+                source,
+            }
         })?);
     }
     Ok(entries)
@@ -244,9 +248,7 @@ pub fn version() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mct_kernel::{
-        MctObservation, ObservationId, ObservationKind, Timestamp, TraceId,
-    };
+    use mct_kernel::{MctObservation, ObservationId, ObservationKind, Timestamp, TraceId};
 
     fn observation(id: &str, trace: &str, call: Option<&str>) -> MctObservation {
         let mut obs = MctObservation::informational(
@@ -271,7 +273,10 @@ mod tests {
         let path = dir.path().join("observations.jsonl");
         let mut ledger = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
         let entry = ledger
-            .append_before_effect(observation("obs-1", "trace-1", Some("call-1")), "2026-05-31T00:00:01Z")
+            .append_before_effect(
+                observation("obs-1", "trace-1", Some("call-1")),
+                "2026-05-31T00:00:01Z",
+            )
             .unwrap();
         assert_eq!(entry.local_sequence, 0);
         assert!(entry.previous_entry_hash.is_none());
@@ -287,16 +292,25 @@ mod tests {
         let path = dir.path().join("observations.jsonl");
         let mut ledger = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
         let first = ledger
-            .append_before_effect(observation("obs-1", "trace-1", None), "2026-05-31T00:00:01Z")
+            .append_before_effect(
+                observation("obs-1", "trace-1", None),
+                "2026-05-31T00:00:01Z",
+            )
             .unwrap();
         drop(ledger);
 
         let mut reopened = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
         let second = reopened
-            .append_before_effect(observation("obs-2", "trace-1", Some("call-1")), "2026-05-31T00:00:02Z")
+            .append_before_effect(
+                observation("obs-2", "trace-1", Some("call-1")),
+                "2026-05-31T00:00:02Z",
+            )
             .unwrap();
         assert_eq!(second.local_sequence, 1);
-        assert_eq!(second.previous_entry_hash.as_deref(), Some(first.entry_hash.as_str()));
+        assert_eq!(
+            second.previous_entry_hash.as_deref(),
+            Some(first.entry_hash.as_str())
+        );
     }
 
     #[test]
@@ -305,10 +319,16 @@ mod tests {
         let path = dir.path().join("observations.jsonl");
         let mut ledger = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
         ledger
-            .append_before_effect(observation("obs-1", "trace-1", Some("call-1")), "2026-05-31T00:00:01Z")
+            .append_before_effect(
+                observation("obs-1", "trace-1", Some("call-1")),
+                "2026-05-31T00:00:01Z",
+            )
             .unwrap();
         ledger
-            .append_before_effect(observation("obs-2", "trace-2", Some("call-2")), "2026-05-31T00:00:02Z")
+            .append_before_effect(
+                observation("obs-2", "trace-2", Some("call-2")),
+                "2026-05-31T00:00:02Z",
+            )
             .unwrap();
         assert_eq!(ledger.by_trace(&TraceId::from("trace-1")).unwrap().len(), 1);
         assert_eq!(ledger.by_call(&CallId::from("call-2")).unwrap().len(), 1);

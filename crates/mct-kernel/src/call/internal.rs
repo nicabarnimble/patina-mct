@@ -1,5 +1,5 @@
 use super::*;
-use crate::peer::{MctHelloAdmissionEvaluation, MCT_CALL_ALPN};
+use crate::peer::{MCT_CALL_ALPN, MctHelloAdmissionEvaluation};
 
 pub(super) fn evaluate_call_protocol_internal(
     request: &MctCallProtocolRequest,
@@ -44,7 +44,9 @@ pub(super) fn evaluate_call_protocol_internal(
         );
     }
 
-    if request.payload.approximate_size_bytes != request.call.payload_metadata.approximate_size_bytes {
+    if request.payload.approximate_size_bytes
+        != request.call.payload_metadata.approximate_size_bytes
+    {
         return denied(
             request,
             ids,
