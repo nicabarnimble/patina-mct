@@ -1,0 +1,38 @@
+id = "mct-slice-iroh-adapter-observations"
+title = "Emit Iroh adapter observation facts"
+kind = "build"
+status = "active"
+execution_granularity = "slice"
+human_request = "Record Iroh endpoint lifecycle, hello, and call adapter events as MctObservation facts without making logs/metrics/qlog the runtime truth."
+allium_anchors = ["MctRuntimeShape", "MctObservation", "MctIrohProtocolLayer", "MctHelloProtocol", "MctCallProtocol"]
+user_alignment = "User wants `MctObservation` to be canonical runtime truth; Iroh/qlog/logs/metrics are projections or adapter diagnostics."
+belief_refs = ["mct-builds-on-iroh-substrate", "iroh-provides-connectivity-not-authority", "mct-hello-precedes-protected-peer-effects", "mct-call-protocol-wraps-semantic-call"]
+core_refs = ["layer/core/adapter-pattern.md", "layer/core/oxidized-knowledge.md", "layer/core/safety-boundaries.md", "layer/core/mct-build-boundaries.md"]
+parent_slates = ["mct-iroh-substrate", "mct-observation-log"]
+code_targets = ["crates/mct-iroh/src/lib.rs"]
+implementation_ready = true
+runtime_shape_role = "Iroh adapter projects endpoint/protocol effects into canonical MCT observation facts."
+design_style = "Concrete pure observation builder first; no logging/qlog/exporter abstraction."
+first_test_to_write = "iroh_adapter_observations_cover_endpoint_and_protocol_events"
+exit_criteria = [
+    "Endpoint bound and closed states can be represented as adapter observations.",
+    "Hello receive/decision and call receive/reply can be represented as observations linked by trace/call/decision ids.",
+    "Observations use MCT domain records, not raw Iroh handles.",
+]
+non_goals = ["No qlog/OTel/exporter implementation.", "No persistent observation ledger writes in the Iroh adapter yet.", "No production accept-loop instrumentation."]
+implementation_plan = [
+    "[ ] Add a pure helper to build Iroh adapter observations from safe endpoint snapshots and local protocol reports.",
+    "[ ] Cover endpoint bind/close, hello received, peer rejected/admitted decision, call received, and call replied facts.",
+    "[ ] Add an adapter observation test for the unknown-peer denial path.",
+]
+proof_plan = [
+    "[ ] `cargo test -p mct-iroh iroh_adapter_observations_cover_endpoint_and_protocol_events` passes.",
+    "[ ] Test proves endpoint lifecycle and peer protocol events become `MctObservation` values.",
+    "[ ] Test proves observations link trace, call, and decision ids without raw Iroh handle exposure.",
+    "[ ] `cargo test --workspace` passes.",
+    "[ ] `allium check layer/allium` passes.",
+]
+closure_evidence = []
+blocked_by = ["mct-slice-iroh-mother-owned-endpoint-lifecycle", "mct-slice-iroh-unknown-peer-denial"]
+created_at = "1780276000"
+updated_at = "1780276000"
