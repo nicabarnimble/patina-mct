@@ -13,9 +13,9 @@ core_refs = ["layer/core/unix-philosophy.md", "layer/core/dependable-rust.md", "
 runtime_shape_role = "Lifecycle/control owner: owns daemon process, local control surface, endpoint/runtime wiring, and readiness without becoming the authorization truth."
 design_style = "Small orchestration layer over concrete crates; avoid one broad ServerState clone from current Mother."
 implementation_ready_requirements = ["Every slice names which lifecycle/control boundary it changes.", "Kernel decisions remain in mct-kernel and are not reimplemented in handlers.", "Readiness/health proof gates distinguish daemon availability from authority admission."]
-slice_refs = ["mct-slice-workspace-skeleton", "mct-slice-fake-daemon-echo", "mct-slice-runtime-shape-anchors", "mct-slice-iroh-mother-owned-endpoint-lifecycle", "mct-slice-daemon-health-readiness", "mct-slice-daemon-fake-end-to-end-status"]
-partial_evidence = ["[x] Daemon crate exists.", "[x] Fake vertical slice composes kernel evaluation, echo result, and observation ledger.", "[x] Iroh endpoint lifecycle now has a daemon-owned wrapper shape rather than raw endpoint ownership leaking outward.", "[x] Daemon health/readiness status distinguishes process health from Iroh adapter readiness.", "[x] Fake end-to-end status composes daemon readiness, fake echo result, and ledger observation counts without a broad control API.", "[ ] Local UDS/HTTP control plane, health/version/readiness, and authorization gates remain open."]
-next_slice_candidates = ["mct-slice-daemon-local-control-api"]
+slice_refs = ["mct-slice-workspace-skeleton", "mct-slice-fake-daemon-echo", "mct-slice-runtime-shape-anchors", "mct-slice-iroh-mother-owned-endpoint-lifecycle", "mct-slice-daemon-health-readiness", "mct-slice-daemon-fake-end-to-end-status", "mct-slice-daemon-module-shape", "mct-slice-daemon-local-control-status-api"]
+partial_evidence = ["[x] Daemon crate exists.", "[x] Fake vertical slice composes kernel evaluation, echo result, and observation ledger.", "[x] Iroh endpoint lifecycle now has a daemon-owned wrapper shape rather than raw endpoint ownership leaking outward.", "[x] Daemon health/readiness status distinguishes process health from Iroh adapter readiness.", "[x] Fake end-to-end status composes daemon readiness, fake echo result, and ledger observation counts without a broad control API.", "[x] Daemon module shape keeps production status API separate from test-only fake proof harness.", "[x] Typed in-process local control status handler returns daemon status without adding HTTP/UDS transport or daemon authority logic.", "[ ] Local UDS/HTTP transport, control authorization gates, and lifecycle start/stop remain open."]
+next_slice_candidates = ["mct-slice-daemon-local-control-transport", "mct-slice-daemon-control-auth-denial"]
 proof_plan = [
     "[ ] Daemon starts locally and reports health/version/readiness.",
     "[ ] Control-plane tests prove unauthenticated/unauthorized paths fail closed where applicable.",
@@ -29,10 +29,11 @@ blocked_by = [
 ]
 implementation_plan = [
     "[ ] Create daemon bootstrap with UDS/local control-plane first and optional HTTP placement documented.",
-    "[ ] Expose health, version, readiness, and basic status endpoints/commands.",
+    "[x] Expose health, version, readiness, and basic status through a typed in-process control handler.",
+    "[ ] Add UDS/HTTP transport around the typed control handler.",
     "[ ] Wire daemon state to `mct-kernel` without leaking transport concerns into the kernel.",
     "[ ] Add graceful start/stop, logging, and readiness tests.",
 ]
 created_at = "1780068498"
-updated_at = "1780276656"
+updated_at = "1780282837"
 block_reason = "Epic remains open; fake daemon vertical slice is complete, but real local control plane and readiness behavior still require smaller slice Slates."
