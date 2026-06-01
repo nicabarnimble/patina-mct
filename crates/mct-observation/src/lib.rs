@@ -117,6 +117,18 @@ impl JsonlObservationLedger {
         )
     }
 
+    pub fn append_batch_before_effect(
+        &mut self,
+        observations: impl IntoIterator<Item = MctObservation>,
+        appended_at: impl Into<String>,
+    ) -> Result<Vec<MctObservationLedgerEntry>> {
+        let appended_at = appended_at.into();
+        observations
+            .into_iter()
+            .map(|observation| self.append_before_effect(observation, appended_at.clone()))
+            .collect()
+    }
+
     pub fn append(
         &mut self,
         observation: MctObservation,
@@ -332,6 +344,40 @@ mod tests {
             .unwrap();
         assert_eq!(ledger.by_trace(&TraceId::from("trace-1")).unwrap().len(), 1);
         assert_eq!(ledger.by_call(&CallId::from("call-2")).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn batch_persists_adapter_and_kernel_observations_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let mut adapter_observation = observation("obs-adapter", "trace-1", Some("call-1"));
+        adapter_observation.source_plane = mct_kernel::SourcePlane::Adapter;
+        adapter_observation.kind = ObservationKind::AdapterEffectStarted;
+        let mut kernel_observation = observation("obs-kernel", "trace-1", Some("call-1"));
+        kernel_observation.source_plane = mct_kernel::SourcePlane::Kernel;
+        kernel_observation.kind = ObservationKind::CallAuthorized;
+
+        let mut ledger = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+        let entries = ledger
+            .append_batch_before_effect(
+                vec![adapter_observation, kernel_observation],
+                "2026-05-31T00:00:03Z",
+            )
+            .unwrap();
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].local_sequence, 0);
+        assert_eq!(entries[1].local_sequence, 1);
+        assert_eq!(
+            entries[1].previous_entry_hash.as_deref(),
+            Some(entries[0].entry_hash.as_str())
+        );
+
+        let trace_entries = ledger.by_trace(&TraceId::from("trace-1")).unwrap();
+        assert_eq!(trace_entries.len(), 2);
+        assert_eq!(trace_entries[0].observation.kind, ObservationKind::AdapterEffectStarted);
+        assert_eq!(trace_entries[1].observation.kind, ObservationKind::CallAuthorized);
+        assert_eq!(ledger.by_call(&CallId::from("call-1")).unwrap().len(), 2);
     }
 
     #[test]
