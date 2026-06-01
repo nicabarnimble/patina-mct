@@ -1,7 +1,7 @@
 id = "mct-call-envelope"
 title = "Lock and implement MCT call envelope v1"
 kind = "build"
-status = "blocked"
+status = "active"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -13,25 +13,22 @@ core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/spec-driven-desig
 runtime_shape_role = "Transport-independent semantic call shape shared by local control, process/JVM/WASM adapters, and Iroh peer calls."
 design_style = "Typed immutable domain envelope; adapters translate edge formats into MctCall rather than making wire formats kernel truth."
 implementation_ready_requirements = ["Every slice states which edge format maps into MctCall.", "Proof gates cover roundtrip/denial/malformed behavior.", "No adapter-specific authority field becomes the canonical call model."]
-slice_refs = ["mct-slice-kernel-domain-records", "mct-slice-call-protocol-evaluation", "mct-slice-fake-daemon-echo", "mct-slice-local-iroh-roundtrip", "mct-slice-runtime-shape-anchors", "mct-slice-iroh-unknown-peer-denial", "mct-slice-call-envelope-json-edge-roundtrip", "mct-slice-daemon-fake-end-to-end-status"]
-partial_evidence = ["[x] Semantic `MctCall`/`MctResult` records exist in `mct-kernel`.", "[x] `mct/call/0` protocol request/evaluation/reply records and pure evaluation exist.", "[x] `mct/call/0` reply path returns denied/no-result/no-route after denied hello.", "[x] JSON edge helpers roundtrip typed call protocol request/reply values and reject malformed JSON with typed errors.", "[x] Fake end-to-end status proves the typed call envelope produces result and reply facts visible through daemon status.", "[ ] JSON/control-plane edge conversions and adapter mapping docs remain open."]
-next_slice_candidates = ["mct-slice-call-envelope-adapter-mapping-doc"]
+slice_refs = ["mct-slice-kernel-domain-records", "mct-slice-call-protocol-evaluation", "mct-slice-fake-daemon-echo", "mct-slice-local-iroh-roundtrip", "mct-slice-runtime-shape-anchors", "mct-slice-iroh-unknown-peer-denial", "mct-slice-call-envelope-json-edge-roundtrip", "mct-slice-daemon-fake-end-to-end-status", "mct-slice-call-envelope-adapter-mapping-doc"]
+partial_evidence = ["[x] Semantic `MctCall`/`MctResult` records exist in `mct-kernel`.", "[x] `mct/call/0` protocol request/evaluation/reply records and pure evaluation exist.", "[x] `mct/call/0` reply path returns denied/no-result/no-route after denied hello.", "[x] JSON edge helpers roundtrip typed call protocol request/reply values and reject malformed JSON with typed errors.", "[x] Fake end-to-end status proves the typed call envelope produces result and reply facts visible through daemon status.", "[x] Adapter mapping doc records how Iroh, daemon control, CLI, process, JVM, and WASM/WIT edges translate into `MctCall`/`MctResult` without creating adapter-specific authority.", "[ ] Control-plane edge conversion remains open."]
+next_slice_candidates = ["mct-slice-daemon-local-control-status-api", "mct-slice-kernel-routing-decision-records"]
 proof_plan = [
     "[ ] Roundtrip tests cover JSON edge encoding, mct/call/0 edge encoding, and typed kernel representation.",
-    "[ ] Envelope supports caller/target/operation/payload/auth/deadline/idempotency/trace without transport-specific authority types.",
-    "[ ] Existing Mother `ChildCallRequest { operation_id, args, correlation }` is explicitly compared and narrowed/improved.",
+    "[x] Envelope supports caller/target/operation/payload/auth/deadline/idempotency/trace without transport-specific authority types.",
+    "[x] Existing Mother `ChildCallRequest { operation_id, args, correlation }` is explicitly compared and narrowed/improved.",
 ]
 closure_evidence = []
-blocked_by = [
-    "mct-allium-foundation",
-    "mother-kernel-design",
-]
+blocked_by = []
 implementation_plan = [
-    "[ ] Turn the `MctCallEnvelope v1` design shape into concrete typed Rust types.",
+    "[x] Turn the `MctCallEnvelope v1` design shape into concrete typed Rust types.",
     "[x] Define caller, target, operation, payload handle, presented peer authority, deadline, idempotency, and trace fields for mct/call/0 in Allium.",
-    "[ ] Add edge conversions from JSON/control-plane inputs without making JSON the kernel truth.",
-    "[ ] Document how process, JVM, WASM, UDS/HTTP, and Iroh adapters map into the envelope, using mct/call/0 as the remote peer mapping.",
+    "[ ] Add control-plane edge conversions without making JSON the kernel truth.",
+    "[x] Document how process, JVM, WASM, UDS/HTTP, CLI, and Iroh adapters map into the envelope, using mct/call/0 as the remote peer mapping.",
 ]
 created_at = "1780068477"
-updated_at = "1780276656"
-block_reason = "Epic remains open; completed child slices cover kernel records and pure mct/call/0 evaluation, but edge conversions and adapter mapping still require smaller slice Slates."
+updated_at = "1780281417"
+unblock_reason = "Design blockers are complete. Epic remains active as a container; direct implementation still happens through child slices. Completed child slices now cover kernel records, pure mct/call/0 evaluation, JSON edge roundtrip, fake daemon usage, and adapter mapping docs. Control-plane edge conversion remains open."
