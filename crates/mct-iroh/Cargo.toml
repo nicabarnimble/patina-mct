@@ -8,10 +8,11 @@ repository.workspace = true
 
 [dependencies]
 mct-kernel = { path = "../mct-kernel" }
-anyhow.workspace = true
 iroh = "1.0.0-rc.1"
+thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

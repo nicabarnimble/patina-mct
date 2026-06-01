@@ -1748,6 +1748,7 @@ dependencies = [
  "mct-kernel",
  "serde",
  "serde_json",
+ "thiserror",
  "tokio",
 ]
 
