@@ -97,6 +97,125 @@ pub struct LocalIrohDeniedPeerReport {
     pub call_evaluation: MctCallProtocolEvaluation,
 }
 
+/// Build canonical MCT observations for a local denied-peer adapter proof.
+///
+/// This is a projection from safe adapter facts into `MctObservation`; logs,
+/// metrics, qlog, and OTel can later project from the same facts.
+pub fn local_denied_peer_adapter_observations(
+    bound_endpoint: &MotherIrohEndpointSnapshot,
+    closed_endpoint: &MotherIrohEndpointSnapshot,
+    report: &LocalIrohDeniedPeerReport,
+    trace_id: TraceId,
+) -> Vec<MctObservation> {
+    vec![
+        adapter_observation(
+            "obs-iroh-endpoint-bound",
+            ObservationKind::AdapterEffectStarted,
+            trace_id.clone(),
+            None,
+            None,
+            ObservationOutcome::Started,
+            "iroh endpoint bound",
+            Some(bound_endpoint.endpoint_id.as_str().to_string()),
+            Some("mct-iroh-endpoint".into()),
+        ),
+        adapter_observation(
+            "obs-iroh-hello-received",
+            ObservationKind::PeerHelloReceived,
+            trace_id.clone(),
+            None,
+            None,
+            ObservationOutcome::Started,
+            "peer hello received",
+            Some(bound_endpoint.endpoint_id.as_str().to_string()),
+            Some(MCT_HELLO_ALPN.into()),
+        ),
+        adapter_observation(
+            "obs-iroh-peer-rejected",
+            ObservationKind::PeerRejected,
+            trace_id.clone(),
+            None,
+            Some(report.hello_evaluation.decision_id.clone()),
+            ObservationOutcome::Denied,
+            report.hello_response.safe_message.clone(),
+            report
+                .hello_evaluation
+                .selected_binding_id
+                .as_ref()
+                .map(ToString::to_string),
+            Some(MCT_HELLO_ALPN.into()),
+        ),
+        adapter_observation(
+            "obs-iroh-peer-call-received",
+            ObservationKind::PeerCallReceived,
+            trace_id.clone(),
+            report.call_evaluation.call_id.clone(),
+            None,
+            ObservationOutcome::Started,
+            "peer call received",
+            None,
+            Some(MCT_CALL_ALPN.into()),
+        ),
+        adapter_observation(
+            "obs-iroh-peer-call-replied",
+            ObservationKind::PeerCallReplied,
+            trace_id.clone(),
+            report.call_evaluation.call_id.clone(),
+            Some(report.call_evaluation.decision_id.clone()),
+            ObservationOutcome::Denied,
+            report.call_reply.safe_message.clone(),
+            None,
+            Some(MCT_CALL_ALPN.into()),
+        ),
+        adapter_observation(
+            "obs-iroh-endpoint-closed",
+            ObservationKind::AdapterEffectCompleted,
+            trace_id,
+            None,
+            None,
+            ObservationOutcome::Completed,
+            "iroh endpoint closed",
+            Some(closed_endpoint.endpoint_id.as_str().to_string()),
+            Some("mct-iroh-endpoint".into()),
+        ),
+    ]
+}
+
+fn adapter_observation(
+    observation_id: &str,
+    kind: ObservationKind,
+    trace_id: TraceId,
+    call_id: Option<CallId>,
+    decision_id: Option<DecisionId>,
+    outcome: ObservationOutcome,
+    safe_message: impl Into<String>,
+    subject_id: Option<String>,
+    resource_id: Option<String>,
+) -> MctObservation {
+    MctObservation {
+        observation_id: ObservationId::from(observation_id),
+        observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        kind,
+        source_plane: SourcePlane::Adapter,
+        trace: ObservationTraceRef {
+            trace_id,
+            span_id: None,
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id,
+        decision_id,
+        subject_id,
+        resource_id,
+        policy_revision: Some(1),
+        grants_revision: Some(1),
+        outcome,
+        visibility: ObservationVisibility::InternalOnly,
+        safe_message: safe_message.into(),
+        detail_ref: None,
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct LocalProtocolState {
     last_hello: Option<MctHelloAdmissionEvaluation>,
@@ -521,6 +640,61 @@ mod tests {
         assert_eq!(
             report.call_reply.result_ref,
             Some(ResultRef::from("result-iroh-echo"))
+        );
+    }
+
+    #[tokio::test]
+    async fn iroh_adapter_observations_cover_endpoint_and_protocol_events() {
+        let mut endpoint = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let bound = endpoint.snapshot();
+        endpoint.close().await;
+        let closed = endpoint.snapshot();
+        let report = run_unknown_peer_denial_roundtrip().await.unwrap();
+
+        let observations = local_denied_peer_adapter_observations(
+            &bound,
+            &closed,
+            &report,
+            TraceId::from("trace-obs"),
+        );
+
+        let kinds = observations
+            .iter()
+            .map(|observation| observation.kind)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            vec![
+                ObservationKind::AdapterEffectStarted,
+                ObservationKind::PeerHelloReceived,
+                ObservationKind::PeerRejected,
+                ObservationKind::PeerCallReceived,
+                ObservationKind::PeerCallReplied,
+                ObservationKind::AdapterEffectCompleted,
+            ]
+        );
+        assert!(
+            observations
+                .iter()
+                .all(|observation| observation.source_plane == SourcePlane::Adapter)
+        );
+        assert_eq!(
+            observations[2].decision_id,
+            Some(report.hello_evaluation.decision_id)
+        );
+        assert_eq!(observations[3].call_id, report.call_evaluation.call_id);
+        assert_eq!(
+            observations[4].decision_id,
+            Some(report.call_evaluation.decision_id)
+        );
+        assert_eq!(observations[4].outcome, ObservationOutcome::Denied);
+        assert_eq!(
+            observations[0].subject_id,
+            Some(bound.endpoint_id.to_string())
+        );
+        assert_eq!(
+            observations[5].subject_id,
+            Some(closed.endpoint_id.to_string())
         );
     }
 
