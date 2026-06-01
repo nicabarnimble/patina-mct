@@ -63,6 +63,29 @@ pub struct FakeEchoReport {
     pub trace_observation_count: usize,
 }
 
+pub struct FakeEndToEndStatusReport {
+    pub daemon: MctDaemonStatus,
+    pub echo: FakeEchoReport,
+    pub call_observation_count: usize,
+}
+
+pub fn run_fake_end_to_end_status_slice(
+    ledger_path: impl AsRef<Path>,
+    iroh_endpoint: MotherIrohEndpointSnapshot,
+) -> Result<FakeEndToEndStatusReport> {
+    let ledger_path = ledger_path.as_ref();
+    let echo = run_fake_echo_slice(ledger_path)?;
+    let ledger = JsonlObservationLedger::open(ledger_path, "ledger-dev", "mother-a")
+        .context("open fake end-to-end status ledger")?;
+    let call_observation_count = ledger.by_call(&CallId::from("call-fake-echo"))?.len();
+
+    Ok(FakeEndToEndStatusReport {
+        daemon: daemon_status(Some(iroh_endpoint)),
+        echo,
+        call_observation_count,
+    })
+}
+
 /// Run the first fake local vertical slice without real networking.
 ///
 /// This proves composition before adding the Iroh adapter:
@@ -431,6 +454,22 @@ mod tests {
         let missing = daemon_status(None);
         assert_eq!(missing.readiness, MctDaemonReadiness::NotReady);
         assert!(missing.iroh_endpoint.is_none());
+    }
+
+    #[test]
+    fn fake_end_to_end_status_reports_runtime_spine() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger_path = dir.path().join("observations.jsonl");
+        let report = run_fake_end_to_end_status_slice(
+            &ledger_path,
+            iroh_snapshot(MotherIrohEndpointLifecycle::Bound),
+        )
+        .unwrap();
+
+        assert_eq!(report.daemon.readiness, MctDaemonReadiness::Ready);
+        assert_eq!(report.echo.result.outcome, ResultOutcome::Success);
+        assert_eq!(report.echo.trace_observation_count, 6);
+        assert_eq!(report.call_observation_count, 4);
     }
 
     #[test]
