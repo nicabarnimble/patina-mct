@@ -1,11 +1,11 @@
 # Mother Kernel Design — Rust Systems Lens
 
 Slate: `mother-kernel-design`
-Status: draft
+Status: complete
 
 ## Context
 
-This note captures the current design answer for the clean `patina-mct` Mother kernel.
+This note captures the design foundation for the clean `patina-mct` Mother kernel. It is complete as a design artifact; implementation progress should be tracked by child slice Slates with binary proof gates, not by reopening this broad design Slate.
 
 It is grounded in the feature map:
 

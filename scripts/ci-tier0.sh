@@ -2,3 +2,4 @@
 set -euo pipefail
 
 allium check layer/allium
+cargo test --workspace

@@ -2,10 +2,16 @@ id = "mct-build-roadmap"
 title = "Plan MCT build slate roadmap"
 kind = "build"
 status = "complete"
+execution_granularity = "roadmap_container"
+slice_tracking_policy = "Implementation progress is tracked by child slice Slates with binary proof gates, commit evidence, and validation commands; broad roadmap lanes are not proof of product completion."
+runtime_shape = "Small local Mother authority kernel wrapped by daemon lifecycle/control, with effectful adapters around it and Iroh as the first peer connectivity substrate."
+design_influences = ["Jon Gjengset-style Rust systems design inside the authority/kernel crates", "Iroh-style composable endpoint/protocol design at peer adapter edges", "Current Patina Mother as evidence and prior art, not clean MCT ontology"]
+slice_refs = ["mct-slice-workspace-skeleton", "mct-slice-kernel-domain-records", "mct-slice-hello-admission", "mct-slice-jsonl-observation-ledger", "mct-slice-call-protocol-evaluation", "mct-slice-fake-daemon-echo", "mct-slice-local-iroh-roundtrip", "mct-slice-runtime-shape-anchors"]
 human_request = "Create and maintain the top-level Slate roadmap for the clean Patina MCT build, covering kernel, daemon, Iroh, child runtimes, toy grants, storage, observability, bridges, launcher, and hardening."
-allium_anchors = []
-user_alignment = "User asked to create Slates for the entire MCT build ASAP so work is no longer collapsed into the mct-kernel design Slate."
+allium_anchors = ["MctRuntimeShape"]
+user_alignment = "User asked to create Slates for the entire MCT build ASAP so work is no longer collapsed into the mct-kernel design Slate. User later identified the broad lanes as early theater unless completion is tracked by small implementation slices."
 belief_refs = []
+core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/spec-driven-design.md", "layer/core/unix-philosophy.md"]
 proof_plan = [
     "[x] `patina slate next --json` and Slate work files show the MCT build split into kernel, daemon, Iroh, child runtime, toy, storage, observability, bridge, launcher, and hardening work items.",
     "[x] Each created Slate has a user-aligned human request, implementation plan, and proof plan.",
@@ -15,6 +21,8 @@ closure_evidence = [
     "[x] Created 20 MCT build lane Slates plus existing `mother-kernel-design`; see `layer/slate/work/` and `layer/slate/work/mct-build-roadmap/mct-build-roadmap.md`.",
     "[x] Blocked downstream implementation Slates with explicit `blocked_by` dependencies so the backlog is ordered rather than flat.",
     "[x] Roadmap maps current integrated Mother daemon surfaces to clean MCT Slate lanes and records Belief/SDK/Clojure deferrals.",
+    "[x] Added child slice Slates for completed implementation commits so progress can be closed honestly rather than inferred from broad epics.",
+    "[x] Added `MctRuntimeShape` as the Allium anchor for the modular runtime shape and design influences.",
 ]
 blocked_by = []
 implementation_plan = [
@@ -25,5 +33,5 @@ implementation_plan = [
 ]
 belief_harvest_decision = "No new durable belief required; this Slate organizes existing agreed product boundaries into executable build lanes. Future belief extraction can happen after Allium elicitation and implementation evidence."
 created_at = "1780068325"
-updated_at = "1780070278"
+updated_at = "1780264533"
 closed_at = "1780070278"

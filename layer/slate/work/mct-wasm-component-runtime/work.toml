@@ -2,10 +2,14 @@ id = "mct-wasm-component-runtime"
 title = "Build WASM/WIT/WASI child runtime"
 kind = "build"
 status = "blocked"
+execution_granularity = "epic_container"
+direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
+completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
 human_request = "Implement the WASM component runtime adapter for MCT children and WIT/WASI toy contracts once kernel, envelope, grants, and process harness seams are clear."
 allium_anchors = []
 user_alignment = "WASM/WIT/WASI is the design center, but runtime depth should attach to the kernel seam rather than distort it."
 belief_refs = []
+core_refs = ["layer/core/adapter-pattern.md", "layer/core/safety-boundaries.md", "layer/core/dependable-rust.md", "layer/core/mct-build-boundaries.md"]
 proof_plan = [
     "[ ] Minimal WASM child activates and handles a typed call through MCT.",
     "[ ] WASM traps and host-call failures are adapter observations linked to kernel call IDs.",
@@ -24,5 +28,5 @@ implementation_plan = [
     "[ ] Add minimal WASM child fixture and WIT contract tests.",
 ]
 created_at = "1780068538"
-updated_at = "1780070140"
+updated_at = "1780262310"
 block_reason = "Blocked until mct-process-harness is completed or explicitly superseded in the roadmap."

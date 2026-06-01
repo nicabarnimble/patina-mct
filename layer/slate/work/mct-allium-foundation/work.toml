@@ -1,23 +1,31 @@
 id = "mct-allium-foundation"
 title = "Elicit MCT Allium foundation specs"
 kind = "build"
-status = "active"
+status = "complete"
+execution_granularity = "foundation_slice"
+completion_rule = "Closed because the first MCT Allium foundation exists, references Slate lanes, and validates; future spec changes need new slice Slates or explicit reopen."
 human_request = "Run Allium elicitation for the clean MCT product and create the first behavioral specs for the MCT authority core, call envelope, Iroh peer substrate, child lifecycle, toy grants, and observations."
 allium_anchors = ["layer/allium/mct-product-map.allium"]
-user_alignment = "User asked whether Allium elicitation had happened; it has not, so the build needs explicit Allium anchors before implementation accelerates."
+user_alignment = "User asked whether Allium elicitation had happened; the first foundation now exists and future spec expansion should happen through explicit follow-up slices."
 belief_refs = []
+core_refs = ["layer/core/spec-driven-design.md", "layer/core/mct-build-boundaries.md", "layer/core/oxidized-knowledge.md"]
 proof_plan = [
-    "[ ] `layer/allium/` contains at least one `.allium` file with explicit scope/includes/excludes.",
-    "[ ] The Allium spec references the MCT Slate lanes it anchors.",
-    "[ ] Allium validation passes or an explicit tool-unavailable note is captured with open questions.",
+    "[x] `layer/allium/` contains at least one `.allium` file with explicit scope/includes/excludes.",
+    "[x] The Allium spec references the MCT Slate lanes it anchors.",
+    "[x] Allium validation passes or an explicit tool-unavailable note is captured with open questions.",
 ]
-closure_evidence = []
+closure_evidence = [
+    "[x] `layer/allium/mct-product-map.allium` defines the MCT foundation scope and excludes deferred products.",
+    "[x] The Allium file references the MCT Slate lanes and anchors peer binding, hello, call, observation, toy grant behavior, and `MctRuntimeShape`.",
+    "[x] `allium check layer/allium` passed repeatedly, including the final `./scripts/ci-tier0.sh` validation after commit `a35b598`.",
+]
 blocked_by = []
 implementation_plan = [
-    "[ ] Establish the first Allium boundary: MCT kernel only vs broader MCT daemon behavior.",
-    "[ ] Create `layer/allium/` and write coarse specs for authority decisions, child calls, lifecycle, grants, peer calls, and observations.",
-    "[ ] Record deferred specs for SDK, Belief, Clojure interface, and product-specific apps.",
-    "[ ] Run `allium check layer/allium` if the CLI is available; otherwise record the unavailable-tool reason.",
+    "[x] Establish the first Allium boundary: MCT kernel only vs broader MCT daemon behavior.",
+    "[x] Create `layer/allium/` and write coarse specs for authority decisions, child calls, lifecycle, grants, peer calls, and observations.",
+    "[x] Record deferred specs for SDK, Belief, Clojure interface, and product-specific apps.",
+    "[x] Run `allium check layer/allium` if the CLI is available; otherwise record the unavailable-tool reason.",
 ]
 created_at = "1780068465"
-updated_at = "1780071246"
+updated_at = "1780264533"
+closed_at = "1780262310"

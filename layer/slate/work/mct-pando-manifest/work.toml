@@ -2,10 +2,14 @@ id = "mct-pando-manifest"
 title = "Build Pando manifest composition foundation"
 kind = "build"
 status = "blocked"
+execution_granularity = "epic_container"
+direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
+completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
 human_request = "Implement the MCT Pando manifest/app composition foundation, starting manifest-only before full component graph composition."
 allium_anchors = []
 user_alignment = "Pando belongs to MCT as app/composition concept, but full composition should not block the first daemon/child protocol."
 belief_refs = []
+core_refs = ["layer/core/spec-driven-design.md", "layer/core/mct-build-boundaries.md"]
 proof_plan = [
     "[ ] Valid manifest loads and produces an activation plan.",
     "[ ] Invalid/missing child or grant requirements fail closed with typed diagnostics.",
@@ -24,5 +28,5 @@ implementation_plan = [
     "[ ] Link manifest decisions to child lifecycle and grant observations.",
 ]
 created_at = "1780068551"
-updated_at = "1780070142"
+updated_at = "1780262310"
 block_reason = "Blocked until mct-storage-core is completed or explicitly superseded in the roadmap."

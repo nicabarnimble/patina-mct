@@ -11,16 +11,19 @@ permissions:
   contents: read
 
 jobs:
-  tier-1-specs:
-    name: Tier 1 — Allium specs
+  tier-1-specs-and-rust:
+    name: Tier 1 — Allium specs and Rust workspace
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install Allium
         run: scripts/install-allium-ci.sh
 
-      - name: Check Allium specs
+      - name: Check Allium specs and Rust tests
         run: scripts/ci-tier0.sh
