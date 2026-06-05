@@ -1,0 +1,1053 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Improvement plan: refactoring the MCT P0 hardening commits</title>
+  <style>
+    :root {
+      --ink: #211607;
+      --muted: #211607;
+      --line: rgba(33, 22, 7, 0.18);
+      --paper: #FFFFFF;
+      --panel: #FFFFFF;
+      --good: #106345;
+      --challenge: #870B0B;
+      --warning: #C7852E;
+      --highlight: #A6361B;
+      --accent: var(--good);
+      --accent-2: var(--warning);
+      --blue: var(--ink);
+      --violet: var(--highlight);
+      --danger: var(--challenge);
+      --shadow: 0 12px 30px rgba(33, 22, 7, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    header {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 48px 24px 24px;
+    }
+
+    header p {
+      max-width: 920px;
+      color: rgba(33, 22, 7, 0.76);
+      font-size: 1.05rem;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: clamp(2rem, 4vw, 4.2rem);
+      line-height: 1.02;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 0 0 16px;
+      font-size: 1.55rem;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 0 0 8px;
+      font-size: 1.08rem;
+      letter-spacing: 0;
+    }
+
+    a {
+      color: var(--ink);
+      text-decoration: none;
+      border-bottom: 2px solid rgba(166, 54, 27, 0.35);
+      box-shadow: inset 0 -0.16em rgba(166, 54, 27, 0.10);
+    }
+
+    code {
+      padding: 2px 5px;
+      border-radius: 0;
+      background: rgba(199, 133, 46, 0.16);
+      color: var(--ink);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      margin: 14px 0 0;
+      padding: 16px;
+      overflow-x: auto;
+      border: 1px solid #C7852E;
+      border-radius: 0;
+      background: #211607;
+      color: #FFFFFF;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.9rem;
+      line-height: 1.45;
+    }
+
+    pre code {
+      padding: 0;
+      border-radius: 0;
+      background: transparent;
+      color: inherit;
+      font-size: inherit;
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 0 24px 64px;
+    }
+
+    section {
+      margin: 28px 0;
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .spine {
+      border-top: 6px solid var(--good);
+    }
+
+    .challenge {
+      border-top: 6px solid var(--danger);
+    }
+
+    .plain {
+      box-shadow: none;
+      background: transparent;
+      border: 0;
+      padding: 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 16px;
+    }
+
+    .tile {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: #FFFFFF;
+    }
+
+    .tile strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--ink);
+    }
+
+    .diagram {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto 1fr;
+      gap: 12px;
+      align-items: center;
+      overflow-x: auto;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: rgba(199, 133, 46, 0.12);
+    }
+
+    .node {
+      min-width: 180px;
+      padding: 14px;
+      border: 1px solid #C7852E;
+      border-radius: 0;
+      background: #FFFFFF;
+    }
+
+    .arrow {
+      color: var(--accent);
+      font-weight: 700;
+      font-size: 1.3rem;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 4px 10px;
+      border-radius: 0;
+      border: 1px solid var(--line);
+      background: #FFFFFF;
+      color: var(--ink);
+      font-size: 0.9rem;
+      white-space: nowrap;
+    }
+
+    .used {
+      border-color: rgba(16, 99, 69, 0.55);
+      background: rgba(16, 99, 69, 0.12);
+    }
+
+    .partial {
+      border-color: rgba(199, 133, 46, 0.62);
+      background: rgba(199, 133, 46, 0.13);
+    }
+
+    .not-used {
+      border-color: rgba(33, 22, 7, 0.35);
+      background: rgba(33, 22, 7, 0.08);
+    }
+
+    .dissolve {
+      border-color: rgba(166, 54, 27, 0.50);
+      background: rgba(166, 54, 27, 0.10);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: #FFFFFF;
+    }
+
+    th,
+    td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: #211607;
+      background: rgba(199, 133, 46, 0.20);
+      font-weight: 700;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .callout {
+      border-left: 5px solid var(--accent);
+      padding: 14px 16px;
+      background: rgba(16, 99, 69, 0.12);
+      border-radius: 0;
+    }
+
+    .warning {
+      border-left-color: var(--danger);
+      background: rgba(199, 133, 46, 0.16);
+    }
+
+    .thesis {
+      border-left-color: var(--highlight);
+      background: rgba(166, 54, 27, 0.08);
+    }
+
+    .pattern-card {
+      border-top: 5px solid var(--accent);
+    }
+
+    .pattern-card.partial-card {
+      border-top-color: var(--accent-2);
+    }
+
+    .pattern-card.no-card {
+      border-top-color: var(--muted);
+    }
+
+    .pattern-card.warn-card {
+      border-top-color: var(--danger);
+    }
+
+    .small {
+      color: rgba(33, 22, 7, 0.76);
+      font-size: 0.93rem;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 18px;
+    }
+
+    @media (max-width: 760px) {
+      header,
+      main {
+        padding-left: 16px;
+        padding-right: 16px;
+      }
+
+      section {
+        padding: 20px;
+      }
+
+      .two-col {
+        grid-template-columns: 1fr;
+      }
+
+      .diagram {
+        grid-template-columns: 1fr;
+      }
+
+      .arrow {
+        transform: rotate(90deg);
+        justify-self: center;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <p class="small">Audience: engineering, CTO, onboarding, reality review - refactor plan - June 5, 2026</p>
+    <h1>Improvement plan: how I would refactor the P0 hardening</h1>
+    <p>
+      This fifth report explains how to improve on commits <code>d5479e9</code>
+      and <code>b911e80</code> without pretending those commits caused every
+      problem they exposed. The P0 work was a good local hardening pass. The next
+      pass should turn its checked facts into harder-to-forge types, repair root
+      assumptions that predate P0, and make the blast radius explicit before code
+      changes begin.
+    </p>
+    <div class="legend">
+      <span class="pill used">Audience: four-way read</span>
+      <span class="pill used">Concrete code changes</span>
+      <span class="pill partial">Blast radius</span>
+      <span class="pill dissolve">Root rot called out</span>
+      <span class="pill not-used">No edits to prior reports</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="spine">
+      <h2>One Sentence</h2>
+      <p>
+        Keep the P0 checks, but refactor the surrounding model so authority,
+        time, ledger entries, and public construction paths cannot be forged,
+        half-populated, or overinterpreted by callers.
+      </p>
+      <div class="callout thesis">
+        The root problem is older than the P0 commits: the crate began with broad
+        public records, stringly timestamps, inert signature metadata, and
+        wildcard exports. P0 added useful checks inside that shape; the next
+        refactor should change the shape.
+      </div>
+    </section>
+
+    <section>
+      <h2>Audience Map</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Audience</th>
+            <th>What They Need From This Report</th>
+            <th>Decision</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Engineering maintainers</td>
+            <td>Exact files, structs, tests, and dependency boundaries to change.</td>
+            <td>Refactor authority first, then ledger entry construction, then API curation.</td>
+          </tr>
+          <tr>
+            <td>CTO / technical leadership</td>
+            <td>Risk reduction, sequencing, and blast radius.</td>
+            <td>Approve a small foundation refactor before adding child runtime or toy-grant complexity.</td>
+          </tr>
+          <tr>
+            <td>New Rust developers</td>
+            <td>Why the current structs are convenient but too easy to misuse.</td>
+            <td>Learn the rule: if a value means "verified," callers should not be able to build it directly.</td>
+          </tr>
+          <tr>
+            <td>Reality-review readers</td>
+            <td>Where the overclaims become engineering tasks.</td>
+            <td>Turn "audit truth" and "authority token" language into explicit proof boundaries.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="challenge">
+      <h2>Ranked Refactor Plan</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Rank</th>
+            <th>Change</th>
+            <th>Files To Alter</th>
+            <th>Why</th>
+            <th>Blast Radius</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>P0</td>
+            <td>Make admitted authority unforgeable by construction.</td>
+            <td>
+              <a href="../../crates/mct-kernel/src/peer/mod.rs">peer/mod.rs</a>,
+              <a href="../../crates/mct-kernel/src/call/mod.rs">call/mod.rs</a>,
+              <a href="../../crates/mct-kernel/src/call/internal.rs">call/internal.rs</a>,
+              daemon and Iroh test support.
+            </td>
+            <td>P0 checks request fields against hello fields, but callers can still construct both sides as public structs.</td>
+            <td>High: public API, tests, fake daemon slice, Iroh roundtrip harness.</td>
+          </tr>
+          <tr>
+            <td>P0</td>
+            <td>Replace optional admitted fields with enum states.</td>
+            <td>
+              <a href="../../crates/mct-kernel/src/peer/mod.rs">peer/mod.rs</a>,
+              <a href="../../crates/mct-kernel/src/observation.rs">observation.rs</a>,
+              call tests and adapter observations.
+            </td>
+            <td>An admitted hello with <code>None</code> selected facts should be impossible, not merely denied later.</td>
+            <td>High: all code that reads <code>MctHelloAdmissionEvaluation</code>.</td>
+          </tr>
+          <tr>
+            <td>P0</td>
+            <td>Use parsed time instead of comparable strings.</td>
+            <td>
+              <a href="../../crates/mct-kernel/src/id.rs">id.rs</a>,
+              <a href="../../crates/mct-kernel/src/peer/internal.rs">peer/internal.rs</a>,
+              tests and fixtures.
+            </td>
+            <td>Expiry currently relies on lexicographic string comparison. That works only if every timestamp is canonical.</td>
+            <td>Medium: constructors, serde, all timestamp fixtures.</td>
+          </tr>
+          <tr>
+            <td>P1</td>
+            <td>Make ledger entries verified values, not public mutable records.</td>
+            <td>
+              <a href="../../crates/mct-observation/src/lib.rs">mct-observation/src/lib.rs</a>
+            </td>
+            <td>External callers can construct a <code>MctObservationLedgerEntry</code> with any hash or sequence.</td>
+            <td>Medium: observation tests and any future external consumers of entries.</td>
+          </tr>
+          <tr>
+            <td>P1</td>
+            <td>Harden the local writer contract and stale lock story.</td>
+            <td>
+              <a href="../../crates/mct-observation/src/lib.rs">mct-observation/src/lib.rs</a>
+            </td>
+            <td>The current lock is useful but not crash-aware and creates the ledger file before acquiring the writer lock.</td>
+            <td>Medium: ledger open behavior and error cases.</td>
+          </tr>
+          <tr>
+            <td>P1</td>
+            <td>Fix misleading call outcome reason names.</td>
+            <td>
+              <a href="../../crates/mct-kernel/src/call/mod.rs">call/mod.rs</a>,
+              <a href="../../crates/mct-kernel/src/call/internal.rs">call/internal.rs</a>
+            </td>
+            <td>Accepted-for-routing currently returns <code>CallProtocolReason::ResultRecorded</code>, which names a later lifecycle stage.</td>
+            <td>Low to medium: wire enum variant and assertions.</td>
+          </tr>
+          <tr>
+            <td>P2</td>
+            <td>Curate the public API instead of wildcard re-exporting everything.</td>
+            <td>
+              <a href="../../crates/mct-kernel/src/lib.rs">mct-kernel/src/lib.rs</a>
+            </td>
+            <td>Broad exports make convenience look like stability. They also make it harder to seal construction paths later.</td>
+            <td>Medium: imports throughout local crates and any external consumers.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="spine">
+      <h2>Refactor 1: Unforgeable Admitted Authority</h2>
+      <p>
+        The P0 call checks in <code>call/internal.rs</code> are good, but they are
+        still checking two caller-supplied public values against each other. The
+        next step is to stop accepting a raw <code>MctCallProtocolAuthority</code>
+        as if it were an authority token.
+      </p>
+      <div class="two-col">
+        <article class="tile">
+          <h3>Current Shape</h3>
+          <pre><code>pub struct MctCallProtocolAuthority {
+    pub hello_decision_id: DecisionId,
+    pub peer_binding_id: PeerBindingId,
+    pub vision_id: VisionId,
+    pub accepted_alpn: String,
+    pub endpoint_id: EndpointIdText,
+    pub policy_revision: u64,
+    pub grants_revision: u64,
+}
+
+pub struct MctCallProtocolRequest {
+    pub authority: MctCallProtocolAuthority,
+    pub received_over: IrohConnectionPresentation,
+    pub call: MctCall,
+    ...
+}</code></pre>
+        </article>
+        <article class="tile">
+          <h3>Target Shape</h3>
+          <pre><code>pub struct AdmittedCallAuthority {
+    hello_decision_id: DecisionId,
+    peer_binding_id: PeerBindingId,
+    node_id: MctNodeId,
+    vision_id: VisionId,
+    endpoint_id: EndpointIdText,
+    accepted_alpn: AcceptedCallAlpn,
+    policy_revision: PolicyRevision,
+    grants_revision: GrantsRevision,
+}
+
+impl AdmittedCallAuthority {
+    pub(crate) fn from_admitted_hello(hello: &AdmittedHello) -> Self { ... }
+}</code></pre>
+        </article>
+      </div>
+      <p>
+        Change <code>evaluate_call_protocol</code> to take an
+        <code>&amp;AdmittedCallAuthority</code> generated by hello evaluation,
+        not an arbitrary authority field embedded in the wire request. The wire
+        request can still carry authority claims, but the kernel should compare
+        them to a verified local authority value.
+      </p>
+      <div class="callout">
+        Why this is Jon-style: the type name says what has been verified, its
+        fields are private, and only the kernel can construct it from an admitted
+        hello. A caller cannot build a fake <code>AdmittedCallAuthority</code>.
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Root Rot?</th>
+            <th>Predates P0?</th>
+            <th>Evidence</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Yes. Public request and authority records were convenient scaffolding.</td>
+            <td>Yes. <code>MctCallProtocolAuthority</code> and <code>MctCallProtocolRequest</code> came from <code>b3512ac feat(kernel): add mct domain records</code>.</td>
+            <td>P0 <code>d5479e9</code> added checks at <code>call/internal.rs</code>, but the public construction shape already existed.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="challenge">
+      <h2>Refactor 2: Enum State For Hello Admission</h2>
+      <p>
+        <code>MctHelloAdmissionEvaluation</code> currently uses optional fields
+        for selected authority facts. That is understandable because denied
+        hellos have no selected binding, node, or Vision. But it also means the
+        type can represent an impossible admitted state.
+      </p>
+      <div class="two-col">
+        <article class="tile">
+          <h3>Current Shape</h3>
+          <pre><code>pub struct MctHelloAdmissionEvaluation {
+    pub selected_binding_id: Option&lt;PeerBindingId&gt;,
+    pub selected_node_id: Option&lt;MctNodeId&gt;,
+    pub selected_vision_id: Option&lt;VisionId&gt;,
+    pub hello_outcome: HelloOutcome,
+    ...
+}</code></pre>
+        </article>
+        <article class="tile">
+          <h3>Target Shape</h3>
+          <pre><code>pub enum HelloAdmissionEvaluation {
+    Admitted(AdmittedHello),
+    Denied(DeniedHello),
+    RetryLater(DeniedHello),
+    UpgradeRequired(DeniedHello),
+}
+
+pub struct AdmittedHello {
+    pub decision_id: DecisionId,
+    pub binding_id: PeerBindingId,
+    pub node_id: MctNodeId,
+    pub vision_id: VisionId,
+    pub accepted_alpns: NonEmptyAlpns,
+    ...
+}</code></pre>
+        </article>
+      </div>
+      <p>
+        The old <code>is_admitted()</code> helper can remain during migration, but
+        the call evaluator should pattern-match <code>Admitted</code>. That makes
+        missing authority facts impossible on the accepted path.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Files</th>
+            <th>Specific Edits</th>
+            <th>Blast Radius</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>peer/mod.rs</code>, <code>peer/internal.rs</code></td>
+            <td>Split evaluation result into admitted and non-admitted variants. Replace selected <code>Option</code> fields on the admitted path with required fields.</td>
+            <td>High. Every test helper that hand-builds <code>MctHelloAdmissionEvaluation</code> must change.</td>
+          </tr>
+          <tr>
+            <td><code>call/internal.rs</code></td>
+            <td>Pattern-match admitted hello and consume <code>AdmittedCallAuthority</code>.</td>
+            <td>Medium. Logic becomes smaller, but type changes affect tests.</td>
+          </tr>
+          <tr>
+            <td><code>observation.rs</code></td>
+            <td>Observation conversion should distinguish admitted and denied hello records without reading optional selected facts.</td>
+            <td>Medium. Observation serialization should stay stable if wire fields are preserved in the output record.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="spine">
+      <h2>Refactor 3: Parsed Time</h2>
+      <p>
+        P0 added an explicit <code>HelloEvaluationContext { now }</code>, which is
+        the right direction. The weak root is that <code>Timestamp</code> is still
+        a string wrapper and expiry compares strings.
+      </p>
+      <pre><code>pub struct Timestamp(String);
+
+if binding.expires_at.as_ref().is_some_and(|expires_at| expires_at &lt;= &amp;now) {
+    return denied(... BindingExpired ...);
+}</code></pre>
+      <p>
+        Change <code>Timestamp</code> to validate at construction and store a
+        parsed instant internally, while preserving serde as RFC3339 text at the
+        boundary. If dependency cost matters, keep a parsed internal newtype with
+        a strict constructor and use strings only at serialization.
+      </p>
+      <div class="callout warning">
+        This predates P0. The string timestamp shape came from
+        <code>b3512ac feat(kernel): add mct domain records</code>. P0 made time
+        explicit but did not repair the type.
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Code To Alter</th>
+            <th>Why</th>
+            <th>Tests To Add</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>crates/mct-kernel/src/id.rs</code></td>
+            <td>Make invalid timestamps unrepresentable or at least construction errors.</td>
+            <td>Reject malformed timestamps, compare equivalent canonical instants, serialize roundtrip.</td>
+          </tr>
+          <tr>
+            <td><code>crates/mct-kernel/src/peer/internal.rs</code></td>
+            <td>Expiry should compare instants, not strings.</td>
+            <td>Expired, exactly-at-expiry, future expiry, and non-canonical input cases.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="challenge">
+      <h2>Refactor 4: Ledger Entries As Verified Values</h2>
+      <p>
+        P0 improved validation, but the persisted entry type is still a public
+        struct with public fields including <code>entry_hash</code>. That invites
+        callers to treat arbitrary in-memory entries as verified ledger entries.
+      </p>
+      <div class="two-col">
+        <article class="tile">
+          <h3>Current Shape</h3>
+          <pre><code>pub struct MctObservationLedgerEntry {
+    pub ledger_id: String,
+    pub mother_node_id: String,
+    pub local_sequence: u64,
+    pub observation: MctObservation,
+    pub previous_entry_hash: Option&lt;String&gt;,
+    pub entry_hash: String,
+    ...
+}</code></pre>
+        </article>
+        <article class="tile">
+          <h3>Target Shape</h3>
+          <pre><code>pub struct VerifiedLedgerEntry {
+    inner: PersistedLedgerEntry,
+}
+
+impl VerifiedLedgerEntry {
+    pub fn sequence(&self) -> u64 { self.inner.local_sequence }
+    pub fn observation(&self) -> &MctObservation { &self.inner.observation }
+    pub fn entry_hash(&self) -> &LedgerEntryHash { &self.inner.entry_hash }
+}</code></pre>
+        </article>
+      </div>
+      <p>
+        Keep the serde shape private to <code>mct-observation</code>. Return
+        <code>VerifiedLedgerEntry</code> from append and read APIs. Use accessors
+        to avoid exposing mutable-by-construction persisted facts.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Root Rot?</th>
+            <th>Predates P0?</th>
+            <th>Blast Radius</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Yes. Public persisted entries were added as part of the first JSONL ledger shape.</td>
+            <td>Yes. <code>b7f9246 feat(observation): add append-only jsonl ledger</code>.</td>
+            <td>Medium. Tests and query callers change from field reads to accessors. Wire file format can remain stable.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="spine">
+      <h2>Refactor 5: Writer Lock And Durability Boundaries</h2>
+      <p>
+        The P0 ledger lock is good enough for a proof slice, but the next version
+        should make the lock contract explicit and test stale lock behavior. The
+        current code creates the file before acquiring the lock, removes the lock
+        file on drop, and does not encode who owns a lock.
+      </p>
+      <pre><code>if !path.exists() {
+    File::create(&path)?;
+}
+
+let lock_path = lock_path_for(&path);
+let lock_file = acquire_writer_lock(&lock_path)?;
+
+impl Drop for JsonlObservationLedger {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.lock_path);
+    }
+}</code></pre>
+      <p>
+        Change this to a named <code>LedgerWriterLock</code> type with explicit
+        owner metadata and policy. Acquire the lock before creating the ledger
+        file. Add a default fail-closed stale-lock policy; do not auto-delete
+        stale locks without a caller choosing recovery mode.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Code To Alter</th>
+            <th>Specific Change</th>
+            <th>Blast Radius</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>mct-observation/src/lib.rs</code></td>
+            <td>Add <code>JsonlObservationLedger::open_with_options</code>, <code>LedgerWriterLock</code>, and <code>LockPolicy</code>.</td>
+            <td>Low for default callers if <code>open</code> delegates to default options.</td>
+          </tr>
+          <tr>
+            <td>Tests</td>
+            <td>Add stale lock, lock owner mismatch, create-after-lock, externally appended valid entry, and corrupted trailing line cases.</td>
+            <td>Medium. Better tests may expose current behavior as intentionally unsupported.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="challenge">
+      <h2>Refactor 6: Fix Lifecycle Naming</h2>
+      <p>
+        <code>evaluate_call_protocol_internal</code> returns
+        <code>AcceptedForRouting</code> with reason <code>ResultRecorded</code>.
+        That is not a correctness bug today, but it is semantic rot. It makes the
+        call lifecycle sound further along than it is.
+      </p>
+      <pre><code>MctCallProtocolEvaluation {
+    outcome: CallProtocolOutcome::AcceptedForRouting,
+    reason: CallProtocolReason::ResultRecorded,
+    safe_message: "accepted for routing".into(),
+    ...
+}</code></pre>
+      <p>
+        Add <code>CallProtocolReason::AcceptedForRouting</code> or
+        <code>AuthorityAccepted</code>. Reserve <code>ResultRecorded</code> for
+        the point where an actual result is recorded.
+      </p>
+      <div class="callout warning">
+        This predates P0. The base call evaluator came from
+        <code>103cfab feat(kernel): evaluate mct call protocol</code>. P0 added
+        more denial checks, but it inherited this lifecycle naming problem.
+      </div>
+    </section>
+
+    <section class="spine">
+      <h2>Refactor 7: Curate The Public API</h2>
+      <p>
+        The kernel crate says it owns domain records and decisions, but it exports
+        every module with wildcard re-exports. That is useful while prototyping,
+        but it makes all public structs feel stable and encourages direct field
+        construction.
+      </p>
+      <pre><code>pub mod call;
+pub mod id;
+pub mod observation;
+pub mod peer;
+pub mod route;
+
+pub use call::*;
+pub use id::*;
+pub use observation::*;
+pub use peer::*;
+pub use route::*;</code></pre>
+      <p>
+        Move to curated exports and constructors. Keep modules public if needed,
+        but publish a deliberate surface: IDs, request wire types, evaluation
+        functions, verified authority types, and observation conversion functions.
+        Consider a <code>prelude</code> module for tests and examples rather than
+        making every type a top-level export.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Root Rot?</th>
+            <th>Predates P0?</th>
+            <th>Blast Radius</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Yes. The export shape is broad by default.</td>
+            <td>Yes. Most wildcard exports came from <code>b3512ac</code>; route export from <code>784d6f</code>.</td>
+            <td>Medium. Internal imports and tests update. External API compatibility should be treated carefully.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Blast Radius Summary</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Crate</th>
+            <th>Expected Changes</th>
+            <th>Risk</th>
+            <th>Containment Strategy</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>mct-kernel</code></td>
+            <td>Authority result enum, admitted authority newtype, parsed timestamp, reason rename, curated exports.</td>
+            <td>High</td>
+            <td>Do this in two commits: authority state first, API curation second.</td>
+          </tr>
+          <tr>
+            <td><code>mct-observation</code></td>
+            <td>Verified entry wrapper, lock options, stale-lock errors, doc wording.</td>
+            <td>Medium</td>
+            <td>Preserve JSONL file format while changing public return types carefully.</td>
+          </tr>
+          <tr>
+            <td><code>mct-iroh</code></td>
+            <td>Test harness must produce verified/admitted authority instead of raw request authority.</td>
+            <td>Medium</td>
+            <td>Keep the adapter as effect translator; do not move authority decisions into Iroh.</td>
+          </tr>
+          <tr>
+            <td><code>mct-daemon</code></td>
+            <td>Fake slice constructors and observation assertions update to new admitted/denied types.</td>
+            <td>Medium</td>
+            <td>Update fake path after kernel compiles; keep behavioral counts stable where possible.</td>
+          </tr>
+          <tr>
+            <td><code>layer/</code></td>
+            <td>Clarify "runtime truth" and ground Patina context inventory.</td>
+            <td>Low to medium</td>
+            <td>Docs-only wording first, then fix Patina grounding separately.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="challenge">
+      <h2>Do Not Blame P0 For All Of This</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Issue</th>
+            <th>Predating Commit</th>
+            <th>What P0 Did</th>
+            <th>What Still Needs Repair</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Wildcard API exports</td>
+            <td><code>b3512ac</code>, plus route export from <code>784d6f</code></td>
+            <td>No direct change.</td>
+            <td>Curate exports and construction paths.</td>
+          </tr>
+          <tr>
+            <td>String timestamps</td>
+            <td><code>b3512ac</code></td>
+            <td>Made <code>now</code> explicit in hello evaluation.</td>
+            <td>Parse and validate timestamp values.</td>
+          </tr>
+          <tr>
+            <td>Inert <code>signature_ref</code></td>
+            <td><code>62a88a9</code></td>
+            <td>Added more consistency checks around selected binding/node/Vision.</td>
+            <td>Verify signatures or document/remove inert signature metadata.</td>
+          </tr>
+          <tr>
+            <td>Public raw call authority</td>
+            <td><code>b3512ac</code></td>
+            <td>Denied mismatches against admitted hello facts.</td>
+            <td>Introduce verified/admitted authority values with private fields.</td>
+          </tr>
+          <tr>
+            <td>Public ledger entry hash fields</td>
+            <td><code>b7f9246</code></td>
+            <td>Validated identity, sequence, hash chain, and tip before append.</td>
+            <td>Return verified entries and hide persisted record construction.</td>
+          </tr>
+          <tr>
+            <td>Overstrong "runtime truth" wording</td>
+            <td><code>cd6244d</code></td>
+            <td>Made ledger checks more honest.</td>
+            <td>Change docs/comments to "audit evidence" unless proof model is implemented.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="spine">
+      <h2>Suggested Sequence</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Step</th>
+            <th>Commit Scope</th>
+            <th>Definition Of Done</th>
+            <th>Rough Effort</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td>Authority result enum and admitted authority newtype.</td>
+            <td>Call evaluator cannot accept a call without an <code>AdmittedHello</code>-derived authority value. Existing denial tests pass with new assertions.</td>
+            <td>1 to 2 days</td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td>Timestamp validation.</td>
+            <td>Malformed timestamps are rejected; expiry tests compare parsed instants.</td>
+            <td>0.5 to 1 day</td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td>Ledger verified entry wrapper.</td>
+            <td>External callers cannot construct a verified ledger entry with arbitrary hash or sequence; JSONL format remains readable.</td>
+            <td>1 day</td>
+          </tr>
+          <tr>
+            <td>4</td>
+            <td>Ledger lock options and stale lock tests.</td>
+            <td>Stale lock behavior is explicit, fail-closed by default, and tested.</td>
+            <td>1 to 2 days</td>
+          </tr>
+          <tr>
+            <td>5</td>
+            <td>API curation and documentation wording.</td>
+            <td>Top-level exports are deliberate; "runtime truth" wording is qualified; Patina context mismatch has a tracked repair item.</td>
+            <td>0.5 to 1.5 days</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="callout">
+        Do not start with API curation alone. It creates churn without reducing
+        the most important risk. Start with authority construction because it
+        changes what the system can represent.
+      </div>
+    </section>
+
+    <section>
+      <h2>Audience-Specific Why</h2>
+      <div class="grid">
+        <article class="tile pattern-card">
+          <h3>Engineering</h3>
+          <p>
+            This is not a rewrite. It is a targeted type refactor around existing
+            functions. The code to touch is mostly <code>peer</code>,
+            <code>call</code>, and <code>mct-observation</code>. Tests should move
+            with each behavioral boundary.
+          </p>
+        </article>
+        <article class="tile pattern-card">
+          <h3>CTO</h3>
+          <p>
+            The highest leverage next step is unforgeable authority. It reduces
+            security ambiguity before new runtime surfaces multiply the number of
+            call paths.
+          </p>
+        </article>
+        <article class="tile pattern-card partial-card">
+          <h3>Onboarding</h3>
+          <p>
+            The lesson is that public structs are easy to learn but easy to lie
+            with. A verified type should be something the system gives you after a
+            check, not something any caller can type into existence.
+          </p>
+        </article>
+        <article class="tile pattern-card warn-card">
+          <h3>Reality Review</h3>
+          <p>
+            This plan converts the fourth report's caveats into work. It does not
+            hide root rot: several weak assumptions came from the initial domain
+            record and ledger commits, not from the P0 hardening commits.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section class="challenge">
+      <h2>Final Position</h2>
+      <p>
+        I would keep the P0 commits. They made the system better. I would not
+        pile more features on top of them yet. The next slice should refactor the
+        authority and ledger shapes so the checks are backed by types, not just
+        comparisons between public records. If the roots are rotted, they are
+        rotted in the initial public domain model, string timestamp model,
+        signature placeholder, and public ledger entry shape. P0 exposed those
+        roots; it did not create them.
+      </p>
+      <div class="callout warning">
+        The crisp standard: after the refactor, an admitted authority value and a
+        verified ledger entry should be impossible for arbitrary callers to forge.
+        Until then, MCT has good local checks, not a finished authority substrate.
+      </div>
+    </section>
+  </main>
+</body>
+</html>
