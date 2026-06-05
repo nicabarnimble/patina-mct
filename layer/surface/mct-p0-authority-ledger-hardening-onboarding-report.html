@@ -1,0 +1,757 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Onboarding guide: MCT P0 authority and ledger hardening</title>
+  <style>
+    :root {
+      --ink: #211607;
+      --muted: #211607;
+      --line: rgba(33, 22, 7, 0.18);
+      --paper: #FFFFFF;
+      --panel: #FFFFFF;
+      --good: #106345;
+      --challenge: #870B0B;
+      --warning: #C7852E;
+      --highlight: #A6361B;
+      --accent: var(--good);
+      --accent-2: var(--warning);
+      --blue: var(--ink);
+      --violet: var(--highlight);
+      --danger: var(--challenge);
+      --shadow: 0 12px 30px rgba(33, 22, 7, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    header {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 48px 24px 24px;
+    }
+
+    header p {
+      max-width: 880px;
+      color: rgba(33, 22, 7, 0.76);
+      font-size: 1.05rem;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: clamp(2rem, 4vw, 4.2rem);
+      line-height: 1.02;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 0 0 16px;
+      font-size: 1.55rem;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 0 0 8px;
+      font-size: 1.08rem;
+      letter-spacing: 0;
+    }
+
+    a {
+      color: var(--ink);
+      text-decoration: none;
+      border-bottom: 2px solid rgba(166, 54, 27, 0.35);
+      box-shadow: inset 0 -0.16em rgba(166, 54, 27, 0.10);
+    }
+
+    code {
+      padding: 2px 5px;
+      border-radius: 0;
+      background: rgba(199, 133, 46, 0.16);
+      color: var(--ink);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      margin: 14px 0 0;
+      padding: 16px;
+      overflow-x: auto;
+      border: 1px solid #C7852E;
+      border-radius: 0;
+      background: #211607;
+      color: #FFFFFF;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.9rem;
+      line-height: 1.45;
+    }
+
+    pre code {
+      padding: 0;
+      border-radius: 0;
+      background: transparent;
+      color: inherit;
+      font-size: inherit;
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 0 24px 64px;
+    }
+
+    section {
+      margin: 28px 0;
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .spine {
+      border-top: 6px solid var(--good);
+    }
+
+    .challenge {
+      border-top: 6px solid var(--danger);
+    }
+
+    .plain {
+      box-shadow: none;
+      background: transparent;
+      border: 0;
+      padding: 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 16px;
+    }
+
+    .tile {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: #FFFFFF;
+    }
+
+    .tile strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--ink);
+    }
+
+    .diagram {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto 1fr;
+      gap: 12px;
+      align-items: center;
+      overflow-x: auto;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: rgba(199, 133, 46, 0.12);
+    }
+
+    .node {
+      min-width: 180px;
+      padding: 14px;
+      border: 1px solid #C7852E;
+      border-radius: 0;
+      background: #FFFFFF;
+    }
+
+    .arrow {
+      color: var(--accent);
+      font-weight: 700;
+      font-size: 1.3rem;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 4px 10px;
+      border-radius: 0;
+      border: 1px solid var(--line);
+      background: #FFFFFF;
+      color: var(--ink);
+      font-size: 0.9rem;
+      white-space: nowrap;
+    }
+
+    .used {
+      border-color: rgba(16, 99, 69, 0.55);
+      background: rgba(16, 99, 69, 0.12);
+    }
+
+    .partial {
+      border-color: rgba(199, 133, 46, 0.62);
+      background: rgba(199, 133, 46, 0.13);
+    }
+
+    .not-used {
+      border-color: rgba(33, 22, 7, 0.35);
+      background: rgba(33, 22, 7, 0.08);
+    }
+
+    .dissolve {
+      border-color: rgba(166, 54, 27, 0.50);
+      background: rgba(166, 54, 27, 0.10);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: #FFFFFF;
+    }
+
+    th,
+    td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: #211607;
+      background: rgba(199, 133, 46, 0.20);
+      font-weight: 700;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .callout {
+      border-left: 5px solid var(--accent);
+      padding: 14px 16px;
+      background: rgba(16, 99, 69, 0.12);
+      border-radius: 0;
+    }
+
+    .warning {
+      border-left-color: var(--danger);
+      background: rgba(199, 133, 46, 0.16);
+    }
+
+    .thesis {
+      border-left-color: var(--highlight);
+      background: rgba(166, 54, 27, 0.08);
+    }
+
+    .pattern-card {
+      border-top: 5px solid var(--accent);
+    }
+
+    .pattern-card.partial-card {
+      border-top-color: var(--accent-2);
+    }
+
+    .pattern-card.no-card {
+      border-top-color: var(--muted);
+    }
+
+    .small {
+      color: rgba(33, 22, 7, 0.76);
+      font-size: 0.93rem;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 18px;
+    }
+
+    @media (max-width: 760px) {
+      header,
+      main {
+        padding-left: 16px;
+        padding-right: 16px;
+      }
+
+      section {
+        padding: 20px;
+      }
+
+      .two-col {
+        grid-template-columns: 1fr;
+      }
+
+      .diagram {
+        grid-template-columns: 1fr;
+      }
+
+      .arrow {
+        transform: rotate(90deg);
+        justify-self: center;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <p class="small">Audience: new hires and junior Rust developers - learning guide - June 5, 2026</p>
+    <h1>Onboarding guide: MCT authority and ledger hardening</h1>
+    <p>
+      This is the educational version of the P0 hardening report. It explains
+      the two commits <code>d5479e9</code> and <code>b911e80</code> for someone
+      new to Rust, new to Patina MCT, or new to the way this project turns broad
+      product goals into small, reviewable slices.
+    </p>
+    <div class="legend">
+      <span class="pill used">Audience: onboarding</span>
+      <span class="pill partial">Rust vocabulary</span>
+      <span class="pill dissolve">Project method</span>
+      <span class="pill not-used">No unsafe code added</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="spine">
+      <h2>Start here</h2>
+      <p>
+        MCT is an authority system before it is a networking system. That means
+        the most important question is not "can two endpoints connect?" It is
+        "who is allowed to do what, under which Mother, Vision, binding, and
+        observation record?" The P0 work makes two of those answers explicit.
+      </p>
+      <div class="callout thesis">
+        The project rule to remember is: Mother kernel decides, adapters perform,
+        and <code>MctObservation</code> proves what happened. In Rust, we try to
+        encode that rule in types and tests before adding more runtime behavior.
+      </div>
+      <p class="small">
+        If you are new to Rust, read this as a guided tour of why we prefer
+        explicit structs, enums, typed errors, small commits, and tests that
+        prove denied paths, not just happy paths.
+      </p>
+    </section>
+
+    <section>
+      <h2>The Change In One Sentence</h2>
+      <p>
+        We made peer-call authority and ledger appends harder to misuse: a call
+        must match the exact authority admitted during hello, and a ledger append
+        must match the current ledger identity and writer tip.
+      </p>
+      <div class="diagram" aria-label="Learning flow diagram">
+        <div class="node">
+          <h3>Authority fact</h3>
+          Hello admits a binding,<br>
+          node, and Vision
+        </div>
+        <div class="arrow">-&gt;</div>
+        <div class="node">
+          <h3>Protected action</h3>
+          Call must match<br>
+          those facts
+        </div>
+        <div class="arrow">-&gt;</div>
+        <div class="node">
+          <h3>Runtime truth</h3>
+          Ledger appends only<br>
+          from the right writer
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Vocabulary First</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Term</th>
+            <th>Plain meaning</th>
+            <th>Why it matters here</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Mother</td>
+            <td>The local authority runtime.</td>
+            <td>It decides what is allowed. It does not blindly trust an adapter.</td>
+          </tr>
+          <tr>
+            <td>Adapter</td>
+            <td>Code that talks to the outside world, such as Iroh networking or storage.</td>
+            <td>Adapters perform effects. They do not create authority by themselves.</td>
+          </tr>
+          <tr>
+            <td>Vision</td>
+            <td>An authority and sharing boundary.</td>
+            <td>A peer admitted for one Vision cannot quietly act under another Vision.</td>
+          </tr>
+          <tr>
+            <td>Binding</td>
+            <td>A typed record connecting an Iroh endpoint to MCT authority facts.</td>
+            <td>Endpoint connectivity is not enough. The binding says what the endpoint is allowed to be.</td>
+          </tr>
+          <tr>
+            <td>Observation</td>
+            <td>A structured fact about something that happened or was decided.</td>
+            <td>The ledger is the runtime truth, so appends must be controlled.</td>
+          </tr>
+          <tr>
+            <td>Fail closed</td>
+            <td>If the system cannot prove a request is authorized, it denies.</td>
+            <td>This is the safe default for authority systems.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="spine">
+      <h2>How We Build Here</h2>
+      <p>
+        This repository uses small implementation slices. A slice should have one
+        concrete behavior, a small diff, tests, and a clear reason. The P0 work
+        followed that pattern with two commits:
+      </p>
+      <div class="grid">
+        <article class="tile pattern-card">
+          <h3><code>d5479e9</code></h3>
+          <p>
+            Tightened the kernel authority path. Calls now consume the exact
+            binding, node, and Vision selected by hello admission.
+          </p>
+        </article>
+        <article class="tile pattern-card">
+          <h3><code>b911e80</code></h3>
+          <p>
+            Tightened the ledger append path. The JSONL ledger now validates
+            identity, sequence, hash-chain, writer ownership, and stale writer
+            state.
+          </p>
+        </article>
+        <article class="tile pattern-card partial-card">
+          <h3>Why two commits?</h3>
+          <p>
+            Kernel authority and ledger durability are different concerns. Small
+            commits make review, rollback, and future debugging much easier.
+          </p>
+        </article>
+      </div>
+      <div class="callout">
+        This is the habit to copy: do not hide several architectural decisions in
+        one large change. Make the behavioral boundary obvious, test it, then
+        commit it.
+      </div>
+    </section>
+
+    <section>
+      <h2>Rust Idea 1: Make The Data Honest</h2>
+      <p>
+        Before the change, an admitted hello told us a peer was admitted, but it
+        did not carry enough selected authority facts for the call path to check
+        later. The fix was not a class hierarchy or a broad abstraction. It was
+        to put the missing facts in the typed value.
+      </p>
+      <div class="two-col">
+        <div class="tile">
+          <h3>Before</h3>
+          <pre><code>pub struct MctHelloAdmissionEvaluation {
+    pub decision_id: DecisionId,
+    pub request_id: String,
+    pub selected_binding_id: Option&lt;PeerBindingId&gt;,
+    pub hello_outcome: HelloOutcome,
+    pub reason: HelloReason,
+}</code></pre>
+        </div>
+        <div class="tile">
+          <h3>After</h3>
+          <pre><code>pub struct MctHelloAdmissionEvaluation {
+    pub decision_id: DecisionId,
+    pub request_id: String,
+    pub selected_binding_id: Option&lt;PeerBindingId&gt;,
+    pub selected_node_id: Option&lt;MctNodeId&gt;,
+    pub selected_vision_id: Option&lt;VisionId&gt;,
+    pub hello_outcome: HelloOutcome,
+    pub reason: HelloReason,
+}</code></pre>
+        </div>
+      </div>
+      <p class="small">
+        Rust lesson: if later code must rely on a fact, make that fact part of a
+        typed value. Do not make callers reconstruct it from memory, logs, or
+        loose strings.
+      </p>
+    </section>
+
+    <section class="spine">
+      <h2>Rust Idea 2: Pass Context Explicitly</h2>
+      <p>
+        Expiry checks need to know "what time is it?" Instead of reading the
+        clock inside the function, the new code passes time as part of
+        <code>HelloEvaluationContext</code>. This keeps the authority function
+        deterministic and easy to test.
+      </p>
+      <pre><code>pub struct HelloEvaluationContext {
+    pub ids: EvaluationIds,
+    pub now: Timestamp,
+}
+
+if binding.expires_at.as_ref().is_some_and(|expires_at| expires_at &lt;= &amp;now) {
+    return denied(
+        request,
+        ids,
+        HelloReason::BindingExpired,
+        SafeHelloReason::NotAuthorized,
+    );
+}</code></pre>
+      <div class="callout thesis">
+        Rust design habit: prefer honest function inputs over hidden global
+        state. That makes behavior easier to test and harder to misunderstand.
+      </div>
+    </section>
+
+    <section>
+      <h2>Rust Idea 3: Fail Before The Effect</h2>
+      <p>
+        The call protocol now checks binding, caller node, and Vision before the
+        call can move toward protected routing. That is the right order. You do
+        not want an adapter effect to happen and then later discover that the
+        caller was not actually authorized.
+      </p>
+      <pre><code>if hello.selected_binding_id.as_ref()
+    != Some(&amp;request.authority.peer_binding_id)
+{
+    return denied(... BindingMismatch ...);
+}
+
+if hello.selected_node_id.as_ref()
+    != Some(&amp;request.call.caller.node_id)
+{
+    return denied(... CallerMismatch ...);
+}
+
+if hello.selected_vision_id.as_ref()
+    != Some(&amp;request.authority.vision_id)
+    || request.authority.vision_id != request.call.caller.vision_id
+{
+    return denied(... VisionMismatch ...);
+}</code></pre>
+      <p class="small">
+        Project lesson: the kernel denies before the adapter performs. This is
+        why MCT separates authority decisions from external effects.
+      </p>
+    </section>
+
+    <section class="spine challenge">
+      <h2>Ledger Lesson: A File Is Not Enough</h2>
+      <p>
+        The observation ledger is append-only JSONL with a hash chain. That is
+        useful, but a hash chain alone does not prove the file belongs to the
+        current ledger or Mother node. The P0 ledger change validates identity
+        and protects the writer boundary.
+      </p>
+      <div class="two-col">
+        <div class="tile">
+          <h3>Before</h3>
+          <pre><code>let (next_sequence, previous_hash) = scan_existing(&amp;path)?;
+Ok(Self {
+    path,
+    ledger_id: ledger_id.into(),
+    mother_node_id: mother_node_id.into(),
+    next_sequence,
+    previous_hash,
+})</code></pre>
+        </div>
+        <div class="tile">
+          <h3>After</h3>
+          <pre><code>let ledger_id = ledger_id.into();
+let mother_node_id = mother_node_id.into();
+let lock_path = lock_path_for(&amp;path);
+let lock_file = acquire_writer_lock(&amp;lock_path)?;
+let (next_sequence, previous_hash) =
+    scan_existing(&amp;path, &amp;ledger_id, &amp;mother_node_id)?;</code></pre>
+        </div>
+      </div>
+      <p class="small">
+        Rust lesson: typed errors like <code>LedgerIdentityMismatch</code>,
+        <code>SequenceMismatch</code>, <code>WriterLock</code>, and
+        <code>LedgerChanged</code> tell callers what failed without parsing a
+        string.
+      </p>
+    </section>
+
+    <section>
+      <h2>Tests Are The Proof</h2>
+      <p>
+        We do not only test success. In this project, denied paths are often the
+        most important tests because they prove the system is safe by default.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Test</th>
+            <th>What a new developer should learn from it</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>active_binding_past_expiry_is_denied</code></td>
+            <td>Do not rely only on stored state labels when a timestamp also defines authority.</td>
+          </tr>
+          <tr>
+            <td><code>presented_node_claim_must_match_binding_scope</code></td>
+            <td>Transport presentation is a claim; the binding scope is the authority fact.</td>
+          </tr>
+          <tr>
+            <td><code>presented_vision_claim_must_match_binding_scope</code></td>
+            <td>Vision boundaries matter. Do not let a request drift across them.</td>
+          </tr>
+          <tr>
+            <td><code>call_authority_binding_must_match_admitted_hello</code></td>
+            <td>A valid admission cannot be reused for a different binding.</td>
+          </tr>
+          <tr>
+            <td><code>call_caller_must_match_admitted_hello_node</code></td>
+            <td>Caller identity must stay stable from admission to call evaluation.</td>
+          </tr>
+          <tr>
+            <td><code>reopening_with_wrong_ledger_identity_fails_closed</code></td>
+            <td>A valid-looking file is rejected if it is not this ledger for this Mother.</td>
+          </tr>
+          <tr>
+            <td><code>second_open_writer_is_rejected</code></td>
+            <td>Mutation boundaries should be named and protected.</td>
+          </tr>
+          <tr>
+            <td><code>append_fails_if_file_changes_behind_writer</code></td>
+            <td>Stale local state must be detected before writing a new runtime fact.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="spine">
+      <h2>How To Read The Diff</h2>
+      <p>
+        When you review a change like this, do not start by counting lines. Ask
+        what invariant became more explicit.
+      </p>
+      <div class="grid">
+        <article class="tile pattern-card">
+          <h3>Look for new facts</h3>
+          <p>
+            <code>selected_node_id</code>, <code>selected_vision_id</code>, and
+            <code>HelloEvaluationContext</code> are not random fields. They are
+            facts later code needs in order to be honest.
+          </p>
+        </article>
+        <article class="tile pattern-card">
+          <h3>Look for denied paths</h3>
+          <p>
+            New reason variants such as <code>BindingMismatch</code> and
+            <code>VisionMismatch</code> are signs that the system now names
+            specific failure modes instead of hiding them behind generic errors.
+          </p>
+        </article>
+        <article class="tile pattern-card">
+          <h3>Look for mutation boundaries</h3>
+          <p>
+            The ledger lock file and current-tip check define who may append.
+            That is more important than the exact storage format at this stage.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>Validation Commands</h2>
+      <div class="grid">
+        <article class="tile pattern-card">
+          <h3>Run tests</h3>
+          <pre><code>cargo test --all-targets</code></pre>
+          <p class="small">This passed after the P0 work.</p>
+        </article>
+        <article class="tile pattern-card">
+          <h3>Run clippy</h3>
+          <pre><code>cargo clippy --all-targets --all-features -- -D warnings</code></pre>
+          <p class="small">This also passed after the P0 work.</p>
+        </article>
+        <article class="tile pattern-card no-card">
+          <h3>Unsafe code</h3>
+          <p>
+            No unsafe code was introduced. The crates keep
+            <code>#![forbid(unsafe_code)]</code>.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section class="spine challenge">
+      <h2>What This Does Not Finish</h2>
+      <p>
+        This hardening pass does not make MCT production-complete. Persistent
+        node identity, production Iroh discovery, child lifecycle, toy grants,
+        and more durable storage are still future work. The point of this slice
+        is that future work now has sharper authority and ledger boundaries to
+        build on.
+      </p>
+      <div class="callout warning">
+        When you work on the next slice, keep the same discipline: make one
+        behavior explicit, write denied-path tests, avoid speculative
+        abstractions, run the checks, and commit the smallest coherent change.
+      </div>
+    </section>
+
+    <section>
+      <h2>New Developer Checklist</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Before you change code</th>
+            <th>What to ask</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Read the public structs and enums first.</td>
+            <td>What facts does the API make explicit, and what facts are still loose?</td>
+          </tr>
+          <tr>
+            <td>Find the denied path.</td>
+            <td>If authority is missing, stale, or mismatched, where does the system fail closed?</td>
+          </tr>
+          <tr>
+            <td>Keep adapters out of authority.</td>
+            <td>Is this code deciding, or only performing an effect and reporting facts?</td>
+          </tr>
+          <tr>
+            <td>Prefer typed errors.</td>
+            <td>Can a caller distinguish the failure without parsing a message string?</td>
+          </tr>
+          <tr>
+            <td>Commit in slices.</td>
+            <td>Could this change be reviewed, tested, and reverted as one coherent step?</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>
