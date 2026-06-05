@@ -1,0 +1,786 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CTO brief: MCT P0 authority and ledger hardening</title>
+  <style>
+    :root {
+      --ink: #211607;
+      --muted: #211607;
+      --line: rgba(33, 22, 7, 0.18);
+      --paper: #FFFFFF;
+      --panel: #FFFFFF;
+      --good: #106345;
+      --challenge: #870B0B;
+      --warning: #C7852E;
+      --highlight: #A6361B;
+      --accent: var(--good);
+      --accent-2: var(--warning);
+      --blue: var(--ink);
+      --violet: var(--highlight);
+      --danger: var(--challenge);
+      --shadow: 0 12px 30px rgba(33, 22, 7, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    header {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 48px 24px 24px;
+    }
+
+    header p {
+      max-width: 880px;
+      color: rgba(33, 22, 7, 0.76);
+      font-size: 1.05rem;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: clamp(2rem, 4vw, 4.2rem);
+      line-height: 1.02;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 0 0 16px;
+      font-size: 1.55rem;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 0 0 8px;
+      font-size: 1.08rem;
+      letter-spacing: 0;
+    }
+
+    a {
+      color: var(--ink);
+      text-decoration: none;
+      border-bottom: 2px solid rgba(166, 54, 27, 0.35);
+      box-shadow: inset 0 -0.16em rgba(166, 54, 27, 0.10);
+    }
+
+    code {
+      padding: 2px 5px;
+      border-radius: 0;
+      background: rgba(199, 133, 46, 0.16);
+      color: var(--ink);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      margin: 14px 0 0;
+      padding: 16px;
+      overflow-x: auto;
+      border: 1px solid #C7852E;
+      border-radius: 0;
+      background: #211607;
+      color: #FFFFFF;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.9rem;
+      line-height: 1.45;
+    }
+
+    pre code {
+      padding: 0;
+      border-radius: 0;
+      background: transparent;
+      color: inherit;
+      font-size: inherit;
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 0 24px 64px;
+    }
+
+    section {
+      margin: 28px 0;
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .spine {
+      border-top: 6px solid var(--good);
+    }
+
+    .challenge {
+      border-top: 6px solid var(--danger);
+    }
+
+    .plain {
+      box-shadow: none;
+      background: transparent;
+      border: 0;
+      padding: 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 16px;
+    }
+
+    .tile {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: #FFFFFF;
+    }
+
+    .tile strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--ink);
+    }
+
+    .diagram {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto 1fr;
+      gap: 12px;
+      align-items: center;
+      overflow-x: auto;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: rgba(199, 133, 46, 0.12);
+    }
+
+    .node {
+      min-width: 180px;
+      padding: 14px;
+      border: 1px solid #C7852E;
+      border-radius: 0;
+      background: #FFFFFF;
+    }
+
+    .arrow {
+      color: var(--accent);
+      font-weight: 700;
+      font-size: 1.3rem;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 4px 10px;
+      border-radius: 0;
+      border: 1px solid var(--line);
+      background: #FFFFFF;
+      color: var(--ink);
+      font-size: 0.9rem;
+      white-space: nowrap;
+    }
+
+    .used {
+      border-color: rgba(16, 99, 69, 0.55);
+      background: rgba(16, 99, 69, 0.12);
+    }
+
+    .partial {
+      border-color: rgba(199, 133, 46, 0.62);
+      background: rgba(199, 133, 46, 0.13);
+    }
+
+    .not-used {
+      border-color: rgba(33, 22, 7, 0.35);
+      background: rgba(33, 22, 7, 0.08);
+    }
+
+    .dissolve {
+      border-color: rgba(166, 54, 27, 0.50);
+      background: rgba(166, 54, 27, 0.10);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: #FFFFFF;
+    }
+
+    th,
+    td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: #211607;
+      background: rgba(199, 133, 46, 0.20);
+      font-weight: 700;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .callout {
+      border-left: 5px solid var(--accent);
+      padding: 14px 16px;
+      background: rgba(16, 99, 69, 0.12);
+      border-radius: 0;
+    }
+
+    .warning {
+      border-left-color: var(--danger);
+      background: rgba(199, 133, 46, 0.16);
+    }
+
+    .thesis {
+      border-left-color: var(--highlight);
+      background: rgba(166, 54, 27, 0.08);
+    }
+
+    .pattern-card {
+      border-top: 5px solid var(--accent);
+    }
+
+    .pattern-card.partial-card {
+      border-top-color: var(--accent-2);
+    }
+
+    .pattern-card.no-card {
+      border-top-color: var(--muted);
+    }
+
+    .small {
+      color: rgba(33, 22, 7, 0.76);
+      font-size: 0.93rem;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 18px;
+    }
+
+    @media (max-width: 760px) {
+      header,
+      main {
+        padding-left: 16px;
+        padding-right: 16px;
+      }
+
+      section {
+        padding: 20px;
+      }
+
+      .two-col {
+        grid-template-columns: 1fr;
+      }
+
+      .diagram {
+        grid-template-columns: 1fr;
+      }
+
+      .arrow {
+        transform: rotate(90deg);
+        justify-self: center;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <p class="small">CTO implementation brief - June 5, 2026</p>
+    <h1>MCT P0 authority and ledger hardening</h1>
+    <p>
+      This report covers two scalpel commits in <code>patina-mct</code>:
+      <code>d5479e9</code> and <code>b911e80</code>. The executive read is
+      straightforward: before expanding the runtime, the team closed two
+      foundation risks. A peer call can no longer drift away from the authority
+      granted during admission, and the observation ledger can no longer be
+      reopened or appended as the wrong ledger without failing closed.
+    </p>
+    <div class="legend">
+      <span class="pill used">Risk reduced</span>
+      <span class="pill partial">Architecture invariant</span>
+      <span class="pill dissolve">Operational guardrail</span>
+      <span class="pill not-used">No unsafe code added</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="spine">
+      <h2>Executive Summary</h2>
+      <p>
+        The core architecture rule remains intact: Mother kernel decides,
+        adapters perform, and <code>MctObservation</code> proves what happened.
+        This P0 batch reduces risk before the system grows more surface area.
+        A successful peer hello is no longer treated as a broad permission; the
+        call must match the exact binding, node, and Vision admitted by that
+        hello. The ledger is no longer just a JSONL file with a valid hash chain;
+        it must also match the intended ledger identity, Mother node, sequence,
+        and single-writer boundary.
+      </p>
+      <div class="callout thesis">
+        The management takeaway: this is not feature polish. It is risk
+        retirement in the authority and audit substrate. These checks make later
+        daemon, Iroh, child runtime, and toy-grant work safer to build because
+        two core trust boundaries now fail closed.
+      </div>
+    </section>
+
+    <section>
+      <h2>Decision In One Sentence</h2>
+      <p>
+        This P0 batch converts two implicit trust assumptions into explicit
+        typed checks: peer calls must match admitted authority, and ledger
+        appends must match the current ledger identity and writer tip.
+      </p>
+      <div class="diagram" aria-label="Authority and ledger flow diagram">
+        <div class="node">
+          <h3>Admission</h3>
+          <code>binding_id</code><br>
+          <code>node_id</code><br>
+          <code>vision_id</code>
+        </div>
+        <div class="arrow">-&gt;</div>
+        <div class="node">
+          <h3>Protected call</h3>
+          Exact authority match<br>
+          before routing
+        </div>
+        <div class="arrow">-&gt;</div>
+        <div class="node">
+          <h3>Runtime truth</h3>
+          Identity, sequence,<br>
+          hash chain, writer lock
+        </div>
+      </div>
+      <p class="small">
+        The important part is ordering. Authority checks happen before protected
+        routing. Ledger tip checks happen before append. Both paths fail closed,
+        which is the right default for an authority system.
+      </p>
+    </section>
+
+    <section class="spine">
+      <h2>Why It Matters</h2>
+      <div class="grid">
+        <article class="tile pattern-card">
+          <h3>Security posture</h3>
+          <p>
+            Calls cannot reuse a valid hello decision while changing binding,
+            node, or Vision facts. That closes an authority-confusion class
+            before multi-peer routing becomes more complex.
+          </p>
+        </article>
+        <article class="tile pattern-card">
+          <h3>Audit integrity</h3>
+          <p>
+            The ledger now validates identity, sequence, and current tip before
+            appending. A valid hash chain alone is no longer enough to accept a
+            file as the current Mother ledger.
+          </p>
+        </article>
+        <article class="tile pattern-card partial-card">
+          <h3>Delivery discipline</h3>
+          <p>
+            The work landed as two small commits with focused tests and clean
+            workspace validation. That keeps the build path reviewable and
+            reversible.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>Commit Map</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Commit</th>
+            <th>Business meaning</th>
+            <th>Files</th>
+            <th>Diff size</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>d5479e9</code></td>
+            <td>Prevents peer-call authority drift after admission.</td>
+            <td>
+              <a href="../../crates/mct-kernel/src/peer/mod.rs">peer/mod.rs</a>,
+              <a href="../../crates/mct-kernel/src/peer/internal.rs">peer/internal.rs</a>,
+              <a href="../../crates/mct-kernel/src/call/mod.rs">call/mod.rs</a>,
+              <a href="../../crates/mct-kernel/src/call/internal.rs">call/internal.rs</a>,
+              plus test callers in daemon and Iroh support.
+            </td>
+            <td><code>207 insertions</code>, <code>21 deletions</code></td>
+          </tr>
+          <tr>
+            <td><code>b911e80</code></td>
+            <td>Protects the audit ledger from wrong-identity reopen and stale append writes.</td>
+            <td><a href="../../crates/mct-observation/src/lib.rs">mct-observation/src/lib.rs</a></td>
+            <td><code>191 insertions</code>, <code>7 deletions</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Technical Source Map</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Role</th>
+            <th>File</th>
+            <th>CTO-level read</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Hello authority model</td>
+            <td><a href="../../crates/mct-kernel/src/peer/mod.rs">crates/mct-kernel/src/peer/mod.rs</a></td>
+            <td>The admitted authority token now contains enough facts to constrain later protected calls.</td>
+          </tr>
+          <tr>
+            <td>Hello evaluation internals</td>
+            <td><a href="../../crates/mct-kernel/src/peer/internal.rs">crates/mct-kernel/src/peer/internal.rs</a></td>
+            <td>Authority expiry and peer identity claims are enforced at evaluation time, not left to an external projection.</td>
+          </tr>
+          <tr>
+            <td>Call protocol authority</td>
+            <td><a href="../../crates/mct-kernel/src/call/internal.rs">crates/mct-kernel/src/call/internal.rs</a></td>
+            <td>The routing path now blocks authority-confusion before a call can proceed toward execution.</td>
+          </tr>
+          <tr>
+            <td>Ledger append boundary</td>
+            <td><a href="../../crates/mct-observation/src/lib.rs">crates/mct-observation/src/lib.rs</a></td>
+            <td>The audit substrate now has an explicit single-writer mutation boundary.</td>
+          </tr>
+          <tr>
+            <td>Adapter and daemon tests</td>
+            <td>
+              <a href="../../crates/mct-iroh/src/test_support.rs">crates/mct-iroh/src/test_support.rs</a>,
+              <a href="../../crates/mct-daemon/src/fake.rs">crates/mct-daemon/src/fake.rs</a>
+            </td>
+            <td>Testable evaluation context makes authority behavior deterministic and reviewable.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="spine">
+      <h2>Change 1: call authority is no longer loose</h2>
+      <p>
+        Before this change, the call protocol checked that the referenced hello
+        decision was admitted and that the endpoint and ALPN looked right. That
+        was necessary, but too weak for an authority system. It did not prove
+        that the call consumed the same peer binding, MCT node, and Vision that
+        hello admission selected. For a CTO, the risk class is authority
+        confusion: a real admission fact can be paired with different protected
+        call facts unless the type path says otherwise.
+      </p>
+      <div class="two-col">
+        <div class="tile">
+          <h3>Before</h3>
+          <p>
+            The call was attached to a hello decision, but the authority payload
+            could name a different binding or Vision and still reach later
+            checks. That is not a production-grade contract.
+          </p>
+          <pre><code>if !hello.is_admitted()
+    || request.authority.hello_decision_id != hello.decision_id
+{
+    return denied(... HelloNotAdmitted ...);
+}
+
+if request.authority.endpoint_id != request.received_over.endpoint_id {
+    return denied(... EndpointMismatch ...);
+}</code></pre>
+        </div>
+        <div class="tile">
+          <h3>After</h3>
+          <p>
+            The call must use the binding, node, and Vision from the admitted
+            hello evaluation. A mismatch is a caller-safe denial, not an
+            execution or adapter concern.
+          </p>
+          <pre><code>if hello.selected_binding_id.as_ref()
+    != Some(&amp;request.authority.peer_binding_id)
+{
+    return denied(... BindingMismatch ...);
+}
+
+if hello.selected_node_id.as_ref()
+    != Some(&amp;request.call.caller.node_id)
+{
+    return denied(... CallerMismatch ...);
+}
+
+if hello.selected_vision_id.as_ref()
+    != Some(&amp;request.authority.vision_id)
+    || request.authority.vision_id != request.call.caller.vision_id
+{
+    return denied(... VisionMismatch ...);
+}</code></pre>
+        </div>
+      </div>
+      <div class="callout">
+        The principle is that the hello evaluation now behaves like a bounded
+        authority token. The call protocol cannot widen it, reinterpret it, or
+        pair it with different caller facts. That is the architecture we want
+        before adding more adapter paths.
+      </div>
+    </section>
+
+    <section class="spine challenge">
+      <h2>Change 2: expiry became an evaluation fact</h2>
+      <p>
+        <code>MctPeerBinding</code> already had <code>expires_at</code>, but the
+        previous evaluation path only checked the explicit
+        <code>BindingState::Expired</code> value. That left a valid-looking
+        <code>Admitted</code> binding with a past timestamp dependent on some
+        external projection to flip state first. The new shape treats expiry as
+        an authority fact that the evaluation itself can decide.
+      </p>
+      <pre><code>pub struct HelloEvaluationContext {
+    pub ids: EvaluationIds,
+    pub now: Timestamp,
+}
+
+if binding.expires_at.as_ref().is_some_and(|expires_at| expires_at &lt;= &amp;now) {
+    return denied(
+        request,
+        ids,
+        HelloReason::BindingExpired,
+        SafeHelloReason::NotAuthorized,
+    );
+}</code></pre>
+      <p class="small">
+        The context keeps the function pure and testable. It does not read wall
+        clock time internally; callers provide the evaluation fact. That makes
+        this logic easier to audit and less dependent on environment timing.
+      </p>
+    </section>
+
+    <section class="spine">
+      <h2>Change 3: ledger identity is part of the chain</h2>
+      <p>
+        A valid hash chain is not enough if the caller can reopen that file as a
+        different ledger or Mother node. The scan path now validates
+        <code>ledger_id</code>, <code>mother_node_id</code>, local sequence, and
+        the hash chain together. The business value is audit integrity: the
+        system rejects an internally consistent ledger file if it is not the
+        right ledger for this Mother.
+      </p>
+      <div class="two-col">
+        <div class="tile">
+          <h3>Before</h3>
+          <pre><code>let (next_sequence, previous_hash) = scan_existing(&amp;path)?;
+Ok(Self {
+    path,
+    ledger_id: ledger_id.into(),
+    mother_node_id: mother_node_id.into(),
+    next_sequence,
+    previous_hash,
+})</code></pre>
+        </div>
+        <div class="tile">
+          <h3>After</h3>
+          <pre><code>let ledger_id = ledger_id.into();
+let mother_node_id = mother_node_id.into();
+let lock_path = lock_path_for(&amp;path);
+let lock_file = acquire_writer_lock(&amp;lock_path)?;
+let (next_sequence, previous_hash) =
+    scan_existing(&amp;path, &amp;ledger_id, &amp;mother_node_id)?;</code></pre>
+        </div>
+      </div>
+      <p>
+        The new error variants are typed, not stringly:
+        <code>LedgerIdentityMismatch</code>, <code>SequenceMismatch</code>,
+        <code>WriterLock</code>, and <code>LedgerChanged</code>. That means
+        operators and future control surfaces can distinguish wrong identity,
+        broken sequence, lock contention, and stale writer state without parsing
+        log prose.
+      </p>
+    </section>
+
+    <section class="spine">
+      <h2>Change 4: append is a named mutation boundary</h2>
+      <p>
+        The ledger now creates an exclusive sibling lock file such as
+        <code>observations.jsonl.lock</code>. The open handle owns that writer
+        boundary until drop. Before each append it scans the file tip again and
+        refuses to write if the file changed behind the writer. This is not a
+        distributed consensus mechanism; it is a deliberately narrow local
+        writer contract for the current implementation slice.
+      </p>
+      <pre><code>fn ensure_current_tip(&amp;self) -&gt; Result&lt;()&gt; {
+    let (actual_sequence, actual_hash) =
+        scan_existing(&amp;self.path, &amp;self.ledger_id, &amp;self.mother_node_id)?;
+
+    if actual_sequence != self.next_sequence || actual_hash != self.previous_hash {
+        return Err(ObservationLedgerError::LedgerChanged {
+            path: self.path.clone(),
+            expected_sequence: self.next_sequence,
+            actual_sequence,
+        });
+    }
+
+    Ok(())
+}</code></pre>
+      <div class="callout thesis">
+        This is intentionally simple. It does not introduce a storage engine,
+        background task, or speculative abstraction. It names the single-writer
+        boundary and makes stale mutation fail before producing a new observation
+        fact. That is the right risk-adjusted move before choosing heavier
+        storage machinery.
+      </div>
+    </section>
+
+    <section>
+      <h2>Proof Added</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Test</th>
+            <th>Risk it closes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>active_binding_past_expiry_is_denied</code></td>
+            <td>Prevents stale authority from surviving just because a projection has not yet marked the binding expired.</td>
+          </tr>
+          <tr>
+            <td><code>presented_node_claim_must_match_binding_scope</code></td>
+            <td>Prevents endpoint presentation from masquerading as a different MCT node.</td>
+          </tr>
+          <tr>
+            <td><code>presented_vision_claim_must_match_binding_scope</code></td>
+            <td>Protects Vision as the data-sharing and authority boundary.</td>
+          </tr>
+          <tr>
+            <td><code>call_authority_binding_must_match_admitted_hello</code></td>
+            <td>Prevents one admitted hello from authorizing a call under another binding.</td>
+          </tr>
+          <tr>
+            <td><code>call_caller_must_match_admitted_hello_node</code></td>
+            <td>Prevents caller identity drift between admission and protected call evaluation.</td>
+          </tr>
+          <tr>
+            <td><code>call_authority_vision_must_match_admitted_hello_and_call</code></td>
+            <td>Prevents call authority from widening or changing Vision scope after admission.</td>
+          </tr>
+          <tr>
+            <td><code>reopening_with_wrong_ledger_identity_fails_closed</code></td>
+            <td>Prevents a valid file from being reused as a different ledger or Mother audit stream.</td>
+          </tr>
+          <tr>
+            <td><code>second_open_writer_is_rejected</code></td>
+            <td>Prevents concurrent local writers from creating competing sequence views.</td>
+          </tr>
+          <tr>
+            <td><code>append_fails_if_file_changes_behind_writer</code></td>
+            <td>Prevents stale writer state from appending over an externally changed file tip.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Validation</h2>
+      <div class="grid">
+        <article class="tile pattern-card">
+          <h3>Workspace tests</h3>
+          <pre><code>cargo test --all-targets</code></pre>
+          <p class="small">Passed with 5 daemon tests, 7 Iroh tests, 32 kernel tests, and 9 observation tests.</p>
+        </article>
+        <article class="tile pattern-card">
+          <h3>Clippy</h3>
+          <pre><code>cargo clippy --all-targets --all-features -- -D warnings</code></pre>
+          <p class="small">Passed without warnings.</p>
+        </article>
+        <article class="tile pattern-card no-card">
+          <h3>Unsafe audit</h3>
+          <p>
+            No new unsafe was introduced. The crates still use
+            <code>#![forbid(unsafe_code)]</code>.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section class="spine challenge">
+      <h2>Residual Risk</h2>
+      <p>
+        This is a P0 hardening pass, not the full runtime. The next risks remain
+        persistent node identity and key lifecycle, production Iroh discovery
+        and relay behavior, child lifecycle, toy grants, and durable storage
+        beyond the JSONL proof ledger. The important progress is that the
+        authority and append boundaries are now sharper before those surfaces
+        expand.
+      </p>
+      <div class="callout warning">
+        The simplest next step is still to keep the system local, single-writer,
+        and deny-by-default while one concrete daemon path grows around these
+        invariants.
+      </div>
+    </section>
+
+    <section class="spine">
+      <h2>CTO Decision Points</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Decision</th>
+            <th>Recommendation</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Should the team add more runtime surfaces now?</td>
+            <td>Yes, but only around the hardened boundaries.</td>
+            <td>The authority token and ledger writer contract are now concrete enough to support the next daemon slice.</td>
+          </tr>
+          <tr>
+            <td>Should the JSONL ledger be replaced immediately?</td>
+            <td>No.</td>
+            <td>The current ledger is narrow, testable, and adequate for local-first proof work. Replace it when query, durability, or concurrency requirements demand it.</td>
+          </tr>
+          <tr>
+            <td>What should be de-risked next?</td>
+            <td>Persistent node identity and daemon lifecycle.</td>
+            <td>Those are the next authority-bearing surfaces. They should be built before child runtime or toy-grant complexity expands.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>
