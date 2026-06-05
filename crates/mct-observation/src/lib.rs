@@ -30,6 +30,32 @@ pub enum ObservationLedgerError {
     },
     #[error("observation ledger hash chain is broken at sequence {sequence}")]
     BrokenHashChain { sequence: u64 },
+    #[error(
+        "observation ledger identity mismatch at sequence {sequence}: expected {expected_ledger_id}/{expected_mother_node_id}, found {actual_ledger_id}/{actual_mother_node_id}"
+    )]
+    LedgerIdentityMismatch {
+        sequence: u64,
+        expected_ledger_id: String,
+        expected_mother_node_id: String,
+        actual_ledger_id: String,
+        actual_mother_node_id: String,
+    },
+    #[error("observation ledger sequence mismatch: expected {expected}, found {actual}")]
+    SequenceMismatch { expected: u64, actual: u64 },
+    #[error("observation ledger writer lock error at {path}: {source}")]
+    WriterLock {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "observation ledger changed behind writer at {path}: expected sequence {expected_sequence}, found {actual_sequence}"
+    )]
+    LedgerChanged {
+        path: PathBuf,
+        expected_sequence: u64,
+        actual_sequence: u64,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, ObservationLedgerError>;
@@ -67,6 +93,8 @@ pub enum ExportStatus {
 #[derive(Debug)]
 pub struct JsonlObservationLedger {
     path: PathBuf,
+    lock_path: PathBuf,
+    _lock_file: File,
     ledger_id: String,
     mother_node_id: String,
     next_sequence: u64,
@@ -80,6 +108,9 @@ impl JsonlObservationLedger {
         mother_node_id: impl Into<String>,
     ) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
+        let ledger_id = ledger_id.into();
+        let mother_node_id = mother_node_id.into();
+
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|source| ObservationLedgerError::Io {
                 path: parent.to_path_buf(),
@@ -94,11 +125,24 @@ impl JsonlObservationLedger {
             })?;
         }
 
-        let (next_sequence, previous_hash) = scan_existing(&path)?;
+        let lock_path = lock_path_for(&path);
+        let lock_file = acquire_writer_lock(&lock_path)?;
+        let scan_result = scan_existing(&path, &ledger_id, &mother_node_id);
+        let (next_sequence, previous_hash) = match scan_result {
+            Ok(state) => state,
+            Err(error) => {
+                drop(lock_file);
+                let _ = std::fs::remove_file(&lock_path);
+                return Err(error);
+            }
+        };
+
         Ok(Self {
             path,
-            ledger_id: ledger_id.into(),
-            mother_node_id: mother_node_id.into(),
+            lock_path,
+            _lock_file: lock_file,
+            ledger_id,
+            mother_node_id,
             next_sequence,
             previous_hash,
         })
@@ -136,6 +180,8 @@ impl JsonlObservationLedger {
         durability_class: DurabilityClass,
         export_status: ExportStatus,
     ) -> Result<MctObservationLedgerEntry> {
+        self.ensure_current_tip()?;
+
         let mut entry = MctObservationLedgerEntry {
             ledger_id: self.ledger_id.clone(),
             mother_node_id: self.mother_node_id.clone(),
@@ -177,7 +223,9 @@ impl JsonlObservationLedger {
     }
 
     pub fn entries(&self) -> Result<Vec<MctObservationLedgerEntry>> {
-        read_entries(&self.path)
+        let entries = read_entries(&self.path)?;
+        validate_entries(&entries, &self.ledger_id, &self.mother_node_id)?;
+        Ok(entries)
     }
 
     pub fn by_trace(&self, trace_id: &TraceId) -> Result<Vec<MctObservationLedgerEntry>> {
@@ -195,12 +243,62 @@ impl JsonlObservationLedger {
             .filter(|entry| entry.observation.call_id.as_ref() == Some(call_id))
             .collect())
     }
+
+    fn ensure_current_tip(&self) -> Result<()> {
+        let (actual_sequence, actual_hash) =
+            scan_existing(&self.path, &self.ledger_id, &self.mother_node_id)?;
+        if actual_sequence != self.next_sequence || actual_hash != self.previous_hash {
+            return Err(ObservationLedgerError::LedgerChanged {
+                path: self.path.clone(),
+                expected_sequence: self.next_sequence,
+                actual_sequence,
+            });
+        }
+
+        Ok(())
+    }
 }
 
-fn scan_existing(path: &Path) -> Result<(u64, Option<String>)> {
+impl Drop for JsonlObservationLedger {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.lock_path);
+    }
+}
+
+fn scan_existing(
+    path: &Path,
+    ledger_id: &str,
+    mother_node_id: &str,
+) -> Result<(u64, Option<String>)> {
     let entries = read_entries(path)?;
+    validate_entries(&entries, ledger_id, mother_node_id)
+}
+
+fn validate_entries(
+    entries: &[MctObservationLedgerEntry],
+    ledger_id: &str,
+    mother_node_id: &str,
+) -> Result<(u64, Option<String>)> {
     let mut previous_hash = None;
-    for entry in &entries {
+    let mut expected_sequence = 0;
+    for entry in entries {
+        if entry.local_sequence != expected_sequence {
+            return Err(ObservationLedgerError::SequenceMismatch {
+                expected: expected_sequence,
+                actual: entry.local_sequence,
+            });
+        }
+
+        if entry.ledger_id != ledger_id || entry.mother_node_id != mother_node_id {
+            return Err(ObservationLedgerError::LedgerIdentityMismatch {
+                sequence: entry.local_sequence,
+                expected_ledger_id: ledger_id.to_owned(),
+                expected_mother_node_id: mother_node_id.to_owned(),
+                actual_ledger_id: entry.ledger_id.clone(),
+                actual_mother_node_id: entry.mother_node_id.clone(),
+            });
+        }
+
         if entry.previous_entry_hash != previous_hash {
             return Err(ObservationLedgerError::BrokenHashChain {
                 sequence: entry.local_sequence,
@@ -213,8 +311,9 @@ fn scan_existing(path: &Path) -> Result<(u64, Option<String>)> {
             });
         }
         previous_hash = Some(entry.entry_hash.clone());
+        expected_sequence += 1;
     }
-    Ok((entries.len() as u64, previous_hash))
+    Ok((expected_sequence, previous_hash))
 }
 
 fn read_entries(path: &Path) -> Result<Vec<MctObservationLedgerEntry>> {
@@ -240,6 +339,28 @@ fn read_entries(path: &Path) -> Result<Vec<MctObservationLedgerEntry>> {
         })?);
     }
     Ok(entries)
+}
+
+fn lock_path_for(path: &Path) -> PathBuf {
+    match path.file_name() {
+        Some(file_name) => {
+            let mut lock_name = file_name.to_os_string();
+            lock_name.push(".lock");
+            path.with_file_name(lock_name)
+        }
+        None => path.with_extension("lock"),
+    }
+}
+
+fn acquire_writer_lock(lock_path: &Path) -> Result<File> {
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(lock_path)
+        .map_err(|source| ObservationLedgerError::WriterLock {
+            path: lock_path.to_path_buf(),
+            source,
+        })
 }
 
 fn entry_hash(entry: &MctObservationLedgerEntry) -> Result<String> {
@@ -323,6 +444,69 @@ mod tests {
             second.previous_entry_hash.as_deref(),
             Some(first.entry_hash.as_str())
         );
+    }
+
+    #[test]
+    fn reopening_with_wrong_ledger_identity_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let mut ledger = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+        ledger
+            .append_before_effect(
+                observation("obs-1", "trace-1", None),
+                "2026-05-31T00:00:01Z",
+            )
+            .unwrap();
+        drop(ledger);
+
+        let result = JsonlObservationLedger::open(&path, "ledger-b", "mother-a");
+
+        assert!(matches!(
+            result,
+            Err(ObservationLedgerError::LedgerIdentityMismatch { sequence: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn second_open_writer_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let _ledger = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+
+        let result = JsonlObservationLedger::open(&path, "ledger-a", "mother-a");
+
+        assert!(matches!(
+            result,
+            Err(ObservationLedgerError::WriterLock { .. })
+        ));
+    }
+
+    #[test]
+    fn append_fails_if_file_changes_behind_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let mut ledger = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+        ledger
+            .append_before_effect(
+                observation("obs-1", "trace-1", None),
+                "2026-05-31T00:00:01Z",
+            )
+            .unwrap();
+        std::fs::write(&path, "").unwrap();
+
+        let result = ledger.append_before_effect(
+            observation("obs-2", "trace-1", None),
+            "2026-05-31T00:00:02Z",
+        );
+
+        assert!(matches!(
+            result,
+            Err(ObservationLedgerError::LedgerChanged {
+                expected_sequence: 1,
+                actual_sequence: 0,
+                ..
+            })
+        ));
     }
 
     #[test]
