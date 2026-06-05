@@ -167,6 +167,9 @@ pub enum CallProtocolReason {
     HelloNotAdmitted,
     AlpnNotAdmitted,
     EndpointMismatch,
+    BindingMismatch,
+    CallerMismatch,
+    VisionMismatch,
     BindingRevoked,
     BindingExpired,
     PolicyRevisionStale,
@@ -341,6 +344,8 @@ mod tests {
             request_id: "hello-1".into(),
             peer_admission_decision_id: None,
             selected_binding_id: Some(PeerBindingId::from("binding-1")),
+            selected_node_id: Some(MctNodeId::from("node-a")),
+            selected_vision_id: Some(VisionId::from("vision-a")),
             negotiated_protocol: Some(MctProtocolVersion {
                 protocol_name: MCT_HELLO_ALPN.into(),
                 major: 0,
@@ -510,6 +515,42 @@ mod tests {
         request.received_over.endpoint_id = EndpointIdText::from("endpoint-b");
         let evaluation = evaluate_call_protocol(&request, &admitted_hello(), eval_ids());
         assert_eq!(evaluation.reason, CallProtocolReason::EndpointMismatch);
+        assert_eq!(evaluation.safe_message, "not authorized");
+    }
+
+    #[test]
+    fn call_authority_binding_must_match_admitted_hello() {
+        let mut request = protocol_request();
+        request.authority.peer_binding_id = PeerBindingId::from("binding-other");
+
+        let evaluation = evaluate_call_protocol(&request, &admitted_hello(), eval_ids());
+
+        assert_eq!(evaluation.outcome, CallProtocolOutcome::Denied);
+        assert_eq!(evaluation.reason, CallProtocolReason::BindingMismatch);
+        assert_eq!(evaluation.safe_message, "not authorized");
+    }
+
+    #[test]
+    fn call_caller_must_match_admitted_hello_node() {
+        let mut request = protocol_request();
+        request.call.caller.node_id = MctNodeId::from("node-other");
+
+        let evaluation = evaluate_call_protocol(&request, &admitted_hello(), eval_ids());
+
+        assert_eq!(evaluation.outcome, CallProtocolOutcome::Denied);
+        assert_eq!(evaluation.reason, CallProtocolReason::CallerMismatch);
+        assert_eq!(evaluation.safe_message, "not authorized");
+    }
+
+    #[test]
+    fn call_authority_vision_must_match_admitted_hello_and_call() {
+        let mut request = protocol_request();
+        request.authority.vision_id = VisionId::from("vision-other");
+
+        let evaluation = evaluate_call_protocol(&request, &admitted_hello(), eval_ids());
+
+        assert_eq!(evaluation.outcome, CallProtocolOutcome::Denied);
+        assert_eq!(evaluation.reason, CallProtocolReason::VisionMismatch);
         assert_eq!(evaluation.safe_message, "not authorized");
     }
 
