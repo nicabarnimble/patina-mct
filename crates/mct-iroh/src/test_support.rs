@@ -171,9 +171,12 @@ async fn serve_two_local_connections(
                     &request,
                     &bindings,
                     &HelloPolicy::default(),
-                    EvaluationIds {
-                        decision_id: DecisionId::from("decision-iroh-hello"),
-                        observation_id: ObservationId::from("obs-iroh-hello-decision"),
+                    HelloEvaluationContext {
+                        ids: EvaluationIds {
+                            decision_id: DecisionId::from("decision-iroh-hello"),
+                            observation_id: ObservationId::from("obs-iroh-hello-decision"),
+                        },
+                        now: Timestamp::from("2026-05-31T00:00:01Z"),
                     },
                 );
                 state.lock().await.last_hello = Some(evaluation.clone());

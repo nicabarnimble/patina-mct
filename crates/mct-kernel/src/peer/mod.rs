@@ -150,6 +150,8 @@ pub struct MctHelloAdmissionEvaluation {
     pub request_id: String,
     pub peer_admission_decision_id: Option<DecisionId>,
     pub selected_binding_id: Option<PeerBindingId>,
+    pub selected_node_id: Option<MctNodeId>,
+    pub selected_vision_id: Option<VisionId>,
     pub negotiated_protocol: Option<MctProtocolVersion>,
     pub accepted_alpns: Vec<String>,
     pub hello_outcome: HelloOutcome,
@@ -234,13 +236,19 @@ pub struct EvaluationIds {
     pub observation_id: ObservationId,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HelloEvaluationContext {
+    pub ids: EvaluationIds,
+    pub now: Timestamp,
+}
+
 pub fn evaluate_hello(
     request: &MctHelloRequest,
     bindings: &[MctPeerBinding],
     policy: &HelloPolicy,
-    ids: EvaluationIds,
+    context: HelloEvaluationContext,
 ) -> MctHelloAdmissionEvaluation {
-    internal::evaluate_hello_internal(request, bindings, policy, ids)
+    internal::evaluate_hello_internal(request, bindings, policy, context)
 }
 
 impl MctHelloAdmissionEvaluation {
@@ -338,10 +346,13 @@ mod tests {
         }
     }
 
-    fn ids() -> EvaluationIds {
-        EvaluationIds {
-            decision_id: DecisionId::from("decision-1"),
-            observation_id: ObservationId::from("obs-decision"),
+    fn context() -> HelloEvaluationContext {
+        HelloEvaluationContext {
+            ids: EvaluationIds {
+                decision_id: DecisionId::from("decision-1"),
+                observation_id: ObservationId::from("obs-decision"),
+            },
+            now: Timestamp::from("2026-05-31T00:00:30Z"),
         }
     }
 
@@ -354,8 +365,12 @@ mod tests {
 
     #[test]
     fn unknown_endpoint_is_denied() {
-        let evaluation =
-            evaluate_hello(&request("endpoint-a"), &[], &HelloPolicy::default(), ids());
+        let evaluation = evaluate_hello(
+            &request("endpoint-a"),
+            &[],
+            &HelloPolicy::default(),
+            context(),
+        );
         assert_eq!(evaluation.hello_outcome, HelloOutcome::Denied);
         assert_eq!(evaluation.reason, HelloReason::MissingBinding);
         assert_eq!(evaluation.safe_reason, SafeHelloReason::NotAuthorized);
@@ -370,7 +385,7 @@ mod tests {
             &request,
             &[binding(BindingState::Admitted)],
             &HelloPolicy::default(),
-            ids(),
+            context(),
         );
         assert_eq!(evaluation.reason, HelloReason::EndpointMismatch);
         assert_eq!(evaluation.safe_reason, SafeHelloReason::NotAuthorized);
@@ -384,7 +399,7 @@ mod tests {
             &request("endpoint-a"),
             &[binding],
             &HelloPolicy::default(),
-            ids(),
+            context(),
         );
         assert!(evaluation.is_admitted());
         assert_eq!(evaluation.accepted_alpns, vec![MCT_CALL_ALPN.to_string()]);
@@ -398,7 +413,7 @@ mod tests {
             &request("endpoint-a"),
             &[binding(BindingState::Revoked)],
             &HelloPolicy::default(),
-            ids(),
+            context(),
         );
         assert_eq!(evaluation.reason, HelloReason::BindingRevoked);
         let response = hello_response(
@@ -415,7 +430,7 @@ mod tests {
             &request("endpoint-a"),
             &[binding(BindingState::Expired)],
             &HelloPolicy::default(),
-            ids(),
+            context(),
         );
         assert_eq!(evaluation.reason, HelloReason::BindingExpired);
         let response = hello_response(
@@ -424,6 +439,52 @@ mod tests {
             ObservationId::from("obs-response"),
         );
         assert_eq!(response.safe_message, "not authorized");
+    }
+
+    #[test]
+    fn active_binding_past_expiry_is_denied() {
+        let mut binding = binding(BindingState::Admitted);
+        binding.expires_at = Some(Timestamp::from("2026-05-31T00:00:29Z"));
+        let evaluation = evaluate_hello(
+            &request("endpoint-a"),
+            &[binding],
+            &HelloPolicy::default(),
+            context(),
+        );
+
+        assert_eq!(evaluation.reason, HelloReason::BindingExpired);
+        assert_eq!(evaluation.safe_reason, SafeHelloReason::NotAuthorized);
+        assert!(!evaluation.is_admitted());
+    }
+
+    #[test]
+    fn presented_node_claim_must_match_binding_scope() {
+        let mut request = request("endpoint-a");
+        request.presented_binding.mct_node_id = Some(MctNodeId::from("node-c"));
+        let evaluation = evaluate_hello(
+            &request,
+            &[binding(BindingState::Admitted)],
+            &HelloPolicy::default(),
+            context(),
+        );
+
+        assert_eq!(evaluation.reason, HelloReason::CapabilityInvalid);
+        assert_eq!(evaluation.safe_reason, SafeHelloReason::NotAuthorized);
+    }
+
+    #[test]
+    fn presented_vision_claim_must_match_binding_scope() {
+        let mut request = request("endpoint-a");
+        request.presented_binding.vision_id = Some(VisionId::from("vision-b"));
+        let evaluation = evaluate_hello(
+            &request,
+            &[binding(BindingState::Admitted)],
+            &HelloPolicy::default(),
+            context(),
+        );
+
+        assert_eq!(evaluation.reason, HelloReason::VisionNotAllowed);
+        assert_eq!(evaluation.safe_reason, SafeHelloReason::NotAuthorized);
     }
 
     #[test]
@@ -436,7 +497,7 @@ mod tests {
             &request("endpoint-a"),
             &[binding(BindingState::Admitted)],
             &policy,
-            ids(),
+            context(),
         );
         assert_eq!(evaluation.reason, HelloReason::PolicyRevisionStale);
         assert_eq!(evaluation.safe_reason, SafeHelloReason::NotAuthorized);
@@ -450,7 +511,7 @@ mod tests {
             &request,
             &[binding(BindingState::Admitted)],
             &HelloPolicy::default(),
-            ids(),
+            context(),
         );
         assert_eq!(evaluation.hello_outcome, HelloOutcome::UpgradeRequired);
         assert_eq!(evaluation.safe_reason, SafeHelloReason::UnsupportedVersion);

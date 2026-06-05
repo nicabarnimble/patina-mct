@@ -67,9 +67,12 @@ pub(crate) fn run_fake_echo_slice(ledger_path: impl AsRef<Path>) -> Result<FakeE
         &hello_request,
         &[binding],
         &HelloPolicy::default(),
-        EvaluationIds {
-            decision_id: DecisionId::from("decision-hello"),
-            observation_id: ObservationId::from("obs-hello-decision"),
+        HelloEvaluationContext {
+            ids: EvaluationIds {
+                decision_id: DecisionId::from("decision-hello"),
+                observation_id: ObservationId::from("obs-hello-decision"),
+            },
+            now: Timestamp::from("2026-05-31T00:00:01Z"),
         },
     );
     ledger

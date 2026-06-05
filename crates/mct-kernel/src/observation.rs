@@ -377,6 +377,8 @@ mod tests {
             request_id: "hello-1".into(),
             peer_admission_decision_id: None,
             selected_binding_id: None,
+            selected_node_id: None,
+            selected_vision_id: None,
             negotiated_protocol: None,
             accepted_alpns: Vec::new(),
             hello_outcome: HelloOutcome::Denied,
