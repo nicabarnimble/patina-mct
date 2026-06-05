@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MCT P0 authority and ledger hardening report</title>
+  <title>Engineering report: MCT P0 authority and ledger hardening</title>
   <style>
     :root {
       --ink: #211607;
@@ -313,8 +313,8 @@
 </head>
 <body>
   <header>
-    <p class="small">P0 implementation report - June 5, 2026</p>
-    <h1>MCT authority and ledger hardening</h1>
+    <p class="small">Audience: Rust/kernel maintainers - P0 implementation report - June 5, 2026</p>
+    <h1>Engineering report: MCT authority and ledger hardening</h1>
     <p>
       This report covers two scalpel commits in <code>patina-mct</code>:
       <code>d5479e9</code> and <code>b911e80</code>. The change tightened the
@@ -323,6 +323,7 @@
       observation ledger now defends its identity and single-writer boundary.
     </p>
     <div class="legend">
+      <span class="pill used">Audience: engineering maintainers</span>
       <span class="pill used">Fail-closed behavior</span>
       <span class="pill partial">Authority invariant</span>
       <span class="pill dissolve">Typed Rust boundary</span>
