@@ -1,0 +1,827 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reality review: MCT P0 reports against code</title>
+  <style>
+    :root {
+      --ink: #211607;
+      --muted: #211607;
+      --line: rgba(33, 22, 7, 0.18);
+      --paper: #FFFFFF;
+      --panel: #FFFFFF;
+      --good: #106345;
+      --challenge: #870B0B;
+      --warning: #C7852E;
+      --highlight: #A6361B;
+      --accent: var(--good);
+      --accent-2: var(--warning);
+      --blue: var(--ink);
+      --violet: var(--highlight);
+      --danger: var(--challenge);
+      --shadow: 0 12px 30px rgba(33, 22, 7, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    header {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 48px 24px 24px;
+    }
+
+    header p {
+      max-width: 900px;
+      color: rgba(33, 22, 7, 0.76);
+      font-size: 1.05rem;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: clamp(2rem, 4vw, 4.2rem);
+      line-height: 1.02;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 0 0 16px;
+      font-size: 1.55rem;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 0 0 8px;
+      font-size: 1.08rem;
+      letter-spacing: 0;
+    }
+
+    a {
+      color: var(--ink);
+      text-decoration: none;
+      border-bottom: 2px solid rgba(166, 54, 27, 0.35);
+      box-shadow: inset 0 -0.16em rgba(166, 54, 27, 0.10);
+    }
+
+    code {
+      padding: 2px 5px;
+      border-radius: 0;
+      background: rgba(199, 133, 46, 0.16);
+      color: var(--ink);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      margin: 14px 0 0;
+      padding: 16px;
+      overflow-x: auto;
+      border: 1px solid #C7852E;
+      border-radius: 0;
+      background: #211607;
+      color: #FFFFFF;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.9rem;
+      line-height: 1.45;
+    }
+
+    pre code {
+      padding: 0;
+      border-radius: 0;
+      background: transparent;
+      color: inherit;
+      font-size: inherit;
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 0 24px 64px;
+    }
+
+    section {
+      margin: 28px 0;
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .spine {
+      border-top: 6px solid var(--good);
+    }
+
+    .challenge {
+      border-top: 6px solid var(--danger);
+    }
+
+    .plain {
+      box-shadow: none;
+      background: transparent;
+      border: 0;
+      padding: 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 16px;
+    }
+
+    .tile {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: #FFFFFF;
+    }
+
+    .tile strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--ink);
+    }
+
+    .diagram {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto 1fr;
+      gap: 12px;
+      align-items: center;
+      overflow-x: auto;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: rgba(199, 133, 46, 0.12);
+    }
+
+    .node {
+      min-width: 180px;
+      padding: 14px;
+      border: 1px solid #C7852E;
+      border-radius: 0;
+      background: #FFFFFF;
+    }
+
+    .arrow {
+      color: var(--accent);
+      font-weight: 700;
+      font-size: 1.3rem;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 4px 10px;
+      border-radius: 0;
+      border: 1px solid var(--line);
+      background: #FFFFFF;
+      color: var(--ink);
+      font-size: 0.9rem;
+      white-space: nowrap;
+    }
+
+    .used {
+      border-color: rgba(16, 99, 69, 0.55);
+      background: rgba(16, 99, 69, 0.12);
+    }
+
+    .partial {
+      border-color: rgba(199, 133, 46, 0.62);
+      background: rgba(199, 133, 46, 0.13);
+    }
+
+    .not-used {
+      border-color: rgba(33, 22, 7, 0.35);
+      background: rgba(33, 22, 7, 0.08);
+    }
+
+    .dissolve {
+      border-color: rgba(166, 54, 27, 0.50);
+      background: rgba(166, 54, 27, 0.10);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: #FFFFFF;
+    }
+
+    th,
+    td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: #211607;
+      background: rgba(199, 133, 46, 0.20);
+      font-weight: 700;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .callout {
+      border-left: 5px solid var(--accent);
+      padding: 14px 16px;
+      background: rgba(16, 99, 69, 0.12);
+      border-radius: 0;
+    }
+
+    .warning {
+      border-left-color: var(--danger);
+      background: rgba(199, 133, 46, 0.16);
+    }
+
+    .thesis {
+      border-left-color: var(--highlight);
+      background: rgba(166, 54, 27, 0.08);
+    }
+
+    .pattern-card {
+      border-top: 5px solid var(--accent);
+    }
+
+    .pattern-card.partial-card {
+      border-top-color: var(--accent-2);
+    }
+
+    .pattern-card.no-card {
+      border-top-color: var(--muted);
+    }
+
+    .pattern-card.warn-card {
+      border-top-color: var(--danger);
+    }
+
+    .small {
+      color: rgba(33, 22, 7, 0.76);
+      font-size: 0.93rem;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 18px;
+    }
+
+    @media (max-width: 760px) {
+      header,
+      main {
+        padding-left: 16px;
+        padding-right: 16px;
+      }
+
+      section {
+        padding: 20px;
+      }
+
+      .two-col {
+        grid-template-columns: 1fr;
+      }
+
+      .diagram {
+        grid-template-columns: 1fr;
+      }
+
+      .arrow {
+        transform: rotate(90deg);
+        justify-self: center;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <p class="small">Audience: maintainers, CTO, onboarding readers - reality audit - June 5, 2026</p>
+    <h1>Reality review: P0 reports against the code</h1>
+    <p>
+      This fourth report fact-checks the three P0 authority and ledger reports
+      against the actual commits, Rust sources, Patina context output, and current
+      validation commands. The short verdict: the reports are materially accurate
+      about the narrow P0 changes, but they sometimes compress local typed checks
+      into language that can be misread as production security, durable storage, or
+      cryptographic proof.
+    </p>
+    <div class="legend">
+      <span class="pill used">Audience: reality review</span>
+      <span class="pill used">Evidence checked</span>
+      <span class="pill partial">Overclaim boundary</span>
+      <span class="pill dissolve">Project knowledge drift</span>
+      <span class="pill not-used">Original docs untouched</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="spine">
+      <h2>Start Here</h2>
+      <p>
+        The first three reports are not fiction. The commits they describe exist,
+        the code paths are present, tests pass, clippy is clean, and the crates
+        forbid unsafe code. The lies live mostly in the edges of wording:
+        <code>proves</code>, <code>runtime truth</code>,
+        <code>foundation risks closed</code>, and
+        <code>single-writer boundary</code> can sound stronger than the current
+        Rust and storage mechanics justify.
+      </p>
+      <div class="callout thesis">
+        Honest version: P0 made two local invariants explicit. It did not finish
+        MCT identity, distributed trust, production durability, public API
+        tightening, or project-knowledge grounding.
+      </div>
+    </section>
+
+    <section>
+      <h2>Evidence Checked</h2>
+      <div class="grid">
+        <article class="tile pattern-card">
+          <h3>Commits</h3>
+          <p>
+            <code>d5479e9</code> changed kernel hello/call authority facts.
+            <code>b911e80</code> changed the JSONL observation ledger. The three
+            audience reports were later docs-only commits.
+          </p>
+        </article>
+        <article class="tile pattern-card">
+          <h3>Rust Validation</h3>
+          <p>
+            <code>cargo test --all-targets</code> passes with the claimed counts:
+            5 daemon, 7 Iroh, 32 kernel, and 9 observation tests.
+            <code>cargo clippy --all-targets --all-features -- -D warnings</code>
+            also passes.
+          </p>
+        </article>
+        <article class="tile pattern-card partial-card">
+          <h3>Patina Context</h3>
+          <p>
+            <code>patina context</code> reports zero grounded beliefs and zero
+            structure. <code>patina assay inventory --json</code> sees 18 Rust
+            files, 4,043 lines, and 134 functions. That mismatch is real project
+            knowledge drift.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section class="challenge">
+      <h2>Ranked Findings</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Rank</th>
+            <th>Where The Lie Lives</th>
+            <th>Claim</th>
+            <th>Reality</th>
+            <th>Risk</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>P0</td>
+            <td>Project knowledge surface</td>
+            <td><code>patina context</code> says structure is 0 modules, 0 public interfaces, 0 dependencies.</td>
+            <td>The Rust workspace has 18 source files, 4 crates, 134 functions, and workspace dependencies. <code>patina assay inventory</code> sees them.</td>
+            <td>Agents and humans can trust stale generated context over real code.</td>
+          </tr>
+          <tr>
+            <td>P0</td>
+            <td>All three docs, especially summary language</td>
+            <td><code>MctObservation</code> "proves what happened" and the ledger is "runtime truth."</td>
+            <td>The ledger stores structured, hash-chained records. It does not cryptographically prove who authored an observation, does not sign entries, and does not make an event true by itself.</td>
+            <td>Audit evidence can be mistaken for authority or provenance proof.</td>
+          </tr>
+          <tr>
+            <td>P0</td>
+            <td>CTO and engineering reports</td>
+            <td>Call authority cannot drift after hello admission.</td>
+            <td>The code checks binding, node, Vision, ALPN, endpoint, policy, grants, and payload metadata. It still trusts request fields and harness/adapters; <code>signature_ref</code> exists but is not verified here.</td>
+            <td>Readers may infer cryptographic peer authentication that does not exist yet.</td>
+          </tr>
+          <tr>
+            <td>P1</td>
+            <td>Ledger sections</td>
+            <td>The ledger defends a single-writer boundary.</td>
+            <td>It creates a sibling lock file with <code>create_new(true)</code>, rescans the tip, and deletes the lock on drop. This is a local writer convention, not crash-proof storage, consensus, or durable multi-process coordination.</td>
+            <td>The JSONL proof ledger can be overestimated as production storage.</td>
+          </tr>
+          <tr>
+            <td>P1</td>
+            <td>Jon-style framing</td>
+            <td>The implementation represents tight Jon-style Rust architecture.</td>
+            <td>The direction is right: typed errors, borrowed request inputs, explicit context, no unsafe. But the public API is still broad, with wildcard re-exports and many public mutable-by-construction records.</td>
+            <td>Architecture style gets declared complete before API boundaries are actually tightened.</td>
+          </tr>
+          <tr>
+            <td>P1</td>
+            <td>Test language</td>
+            <td>Tests are proof.</td>
+            <td>The tests prove specific examples and denied paths. There are no property tests, doc-tests, fuzz tests, crash tests, stale-lock recovery tests, or concurrent append stress tests.</td>
+            <td>Coverage can be confused with exhaustiveness.</td>
+          </tr>
+          <tr>
+            <td>P2</td>
+            <td>Commit framing</td>
+            <td>The feature commits "closed" foundation risks.</td>
+            <td>The commit messages are scoped and honest. The docs sometimes upgrade "reduced risk" into "closed risk." The residual-risk sections do correct some of that.</td>
+            <td>Management readers may think persistent identity and durability are done.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="spine">
+      <h2>What Is Actually True</h2>
+      <div class="diagram" aria-label="Fact checked P0 flow">
+        <div class="node">
+          <h3>Hello</h3>
+          Selected binding,<br>
+          node, Vision,<br>
+          explicit now
+        </div>
+        <div class="arrow">-&gt;</div>
+        <div class="node">
+          <h3>Call</h3>
+          Denies mismatched<br>
+          authority facts<br>
+          before routing
+        </div>
+        <div class="arrow">-&gt;</div>
+        <div class="node">
+          <h3>Ledger</h3>
+          Validates identity,<br>
+          sequence, hash,<br>
+          writer tip
+        </div>
+      </div>
+      <p class="small">
+        This diagram is the bounded truth. It says nothing about signatures,
+        distributed consensus, production durability, child runtime safety, or toy
+        grants.
+      </p>
+    </section>
+
+    <section>
+      <h2>Source Reality</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Area</th>
+            <th>Evidence</th>
+            <th>Verdict</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Unsafe</td>
+            <td>
+              <a href="../../crates/mct-kernel/src/lib.rs">mct-kernel/src/lib.rs</a>,
+              <a href="../../crates/mct-observation/src/lib.rs">mct-observation/src/lib.rs</a>,
+              <a href="../../crates/mct-iroh/src/lib.rs">mct-iroh/src/lib.rs</a>,
+              and <a href="../../crates/mct-daemon/src/lib.rs">mct-daemon/src/lib.rs</a>
+              use <code>#![forbid(unsafe_code)]</code>.
+            </td>
+            <td>True. The "no unsafe added" claim is accurate.</td>
+          </tr>
+          <tr>
+            <td>Typed errors</td>
+            <td>
+              <a href="../../crates/mct-observation/src/lib.rs">mct-observation/src/lib.rs</a>
+              defines <code>ObservationLedgerError</code> with
+              <code>LedgerIdentityMismatch</code>, <code>SequenceMismatch</code>,
+              <code>WriterLock</code>, and <code>LedgerChanged</code>.
+            </td>
+            <td>True. The ledger failure surface is materially better.</td>
+          </tr>
+          <tr>
+            <td>Borrowing</td>
+            <td>
+              <a href="../../crates/mct-kernel/src/call/internal.rs">call/internal.rs</a>
+              evaluates <code>&amp;MctCallProtocolRequest</code> and
+              <code>&amp;MctHelloAdmissionEvaluation</code>.
+            </td>
+            <td>True for evaluation inputs. Clones still exist for owned domain records and serialization boundaries.</td>
+          </tr>
+          <tr>
+            <td>Authority binding</td>
+            <td>
+              <a href="../../crates/mct-kernel/src/call/internal.rs">call/internal.rs</a>
+              checks <code>selected_binding_id</code>, <code>selected_node_id</code>,
+              <code>selected_vision_id</code>, ALPN, endpoint, revisions, and
+              payload size before accepting for routing.
+            </td>
+            <td>True as a local typed evaluation rule. Not a cryptographic proof.</td>
+          </tr>
+          <tr>
+            <td>Ledger writer</td>
+            <td>
+              <a href="../../crates/mct-observation/src/lib.rs">mct-observation/src/lib.rs</a>
+              creates a sibling lock file, scans entries, validates hash chain, and
+              rejects stale tip state before append.
+            </td>
+            <td>True as a local writer guard. Not production-grade durability.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="challenge">
+      <h2>Where Each Document Overstates</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Document</th>
+            <th>Strong Wording</th>
+            <th>More Honest Reading</th>
+            <th>Severity</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>
+              <a href="mct-p0-authority-ledger-hardening-report.html">Engineering report</a>
+            </td>
+            <td>
+              "MctObservation proves what happened"; "only one writer owns the append boundary";
+              "runtime fact."
+            </td>
+            <td>
+              Observations are structured audit records. The lock/tip check guards
+              one local append path. The report later admits this is not the full
+              runtime, which makes the overclaim manageable.
+            </td>
+            <td>Medium</td>
+          </tr>
+          <tr>
+            <td>
+              <a href="mct-p0-authority-ledger-hardening-cto-report.html">CTO brief</a>
+            </td>
+            <td>
+              "The team closed two foundation risks"; "runtime truth"; "core trust boundaries now fail closed."
+            </td>
+            <td>
+              The risk was reduced, not closed. The boundaries fail closed for the
+              tested local cases. A CTO could reasonably read this as more complete
+              than it is.
+            </td>
+            <td>High</td>
+          </tr>
+          <tr>
+            <td>
+              <a href="mct-p0-authority-ledger-hardening-onboarding-report.html">Onboarding guide</a>
+            </td>
+            <td>
+              "The ledger is the runtime truth"; "Tests are the proof"; "Caller identity must stay stable."
+            </td>
+            <td>
+              Useful teaching language, but new developers need the caveat: tests
+              prove examples, caller identity is a checked field, and the ledger is
+              evidence, not a complete truth oracle.
+            </td>
+            <td>Medium</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="spine">
+      <h2>Truth-Preserving Rewrites</h2>
+      <p>
+        These are suggested readings, not edits to the original reports.
+      </p>
+      <div class="two-col">
+        <article class="tile">
+          <h3>Before</h3>
+          <pre><code>MctObservation proves what happened.</code></pre>
+          <h3>More honest</h3>
+          <pre><code>MctObservation records the structured fact the system is willing to audit.</code></pre>
+        </article>
+        <article class="tile">
+          <h3>Before</h3>
+          <pre><code>A peer call can no longer drift away from the authority granted during admission.</code></pre>
+          <h3>More honest</h3>
+          <pre><code>The call evaluator denies requests whose typed authority fields diverge from the admitted hello facts.</code></pre>
+        </article>
+        <article class="tile">
+          <h3>Before</h3>
+          <pre><code>The observation ledger defends its single-writer boundary.</code></pre>
+          <h3>More honest</h3>
+          <pre><code>The JSONL ledger uses a local lock file and current-tip scan to reject competing or stale append attempts in this slice.</code></pre>
+        </article>
+        <article class="tile">
+          <h3>Before</h3>
+          <pre><code>Two core trust boundaries now fail closed.</code></pre>
+          <h3>More honest</h3>
+          <pre><code>Two local trust checks now fail closed for the covered hello/call and ledger append paths.</code></pre>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>Commit Reality</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Commit</th>
+            <th>Claim</th>
+            <th>Reality Check</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>d5479e9 feat(kernel): bind calls to admitted peer authority</code></td>
+            <td>Call authority is tied to admitted hello facts.</td>
+            <td>
+              Accurate. The commit adds selected node/Vision facts, explicit hello
+              time, and call denial paths. The title does not claim cryptographic
+              identity or production authN, so the commit itself is not lying.
+            </td>
+          </tr>
+          <tr>
+            <td><code>b911e80 feat(observation): guard ledger writer identity</code></td>
+            <td>Ledger writer identity is guarded.</td>
+            <td>
+              Mostly accurate. It guards ledger identity and local writer state,
+              but "writer identity" is not a signed actor identity. It is the open
+              handle plus lock file convention.
+            </td>
+          </tr>
+          <tr>
+            <td>Report commits</td>
+            <td>Three docs explain the P0 work for maintainers, CTO, and onboarding.</td>
+            <td>
+              Accurate as separate audience adaptations. The risk is repeated
+              language becoming accepted as stronger truth than the code supports.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="challenge">
+      <h2>MCT In General</h2>
+      <p>
+        The largest lie is not in any one report. It is the gap between the
+        design-time ambition of MCT and the amount of runtime that currently
+        exists. The project is building in the right direction, but the current
+        implementation is still a local proof spine.
+      </p>
+      <div class="grid">
+        <article class="tile pattern-card warn-card">
+          <h3>Identity</h3>
+          <p>
+            Endpoint and caller IDs are typed records. They are not yet backed by
+            persistent key lifecycle, signatures, revocation, or replay-resistant
+            admission tokens.
+          </p>
+        </article>
+        <article class="tile pattern-card warn-card">
+          <h3>Storage</h3>
+          <p>
+            The ledger is useful local JSONL evidence. It is not yet a database,
+            replicated log, crash recovery system, or tamper-evident signed audit
+            store.
+          </p>
+        </article>
+        <article class="tile pattern-card partial-card">
+          <h3>API Surface</h3>
+          <p>
+            Kernel records are mostly public structs with public fields, and
+            <code>mct-kernel</code> re-exports broad modules. That is convenient
+            now but not yet a tight stable API.
+          </p>
+        </article>
+        <article class="tile pattern-card partial-card">
+          <h3>Knowledge Layer</h3>
+          <p>
+            Beliefs and generated context are not grounded enough. When
+            <code>patina context</code> says there is no structure while assay sees
+            code, the knowledge layer must be treated as advisory and stale.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section class="spine">
+      <h2>Validation Log</h2>
+      <div class="grid">
+        <article class="tile pattern-card">
+          <h3>Tests</h3>
+          <pre><code>cargo test --all-targets
+
+5 daemon tests passed
+7 Iroh tests passed
+32 kernel tests passed
+9 observation tests passed</code></pre>
+        </article>
+        <article class="tile pattern-card">
+          <h3>Clippy</h3>
+          <pre><code>cargo clippy --all-targets --all-features -- -D warnings
+
+Finished without warnings</code></pre>
+        </article>
+        <article class="tile pattern-card partial-card">
+          <h3>Patina</h3>
+          <pre><code>patina context
+
+needs attention
+0/10 grounded beliefs
+0 modules reported
+
+patina assay inventory --json
+
+18 Rust files
+4,043 lines
+134 functions</code></pre>
+        </article>
+      </div>
+    </section>
+
+    <section class="challenge">
+      <h2>Repair The Lies</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Priority</th>
+            <th>Repair</th>
+            <th>Definition Of Done</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>P0</td>
+            <td>Ground or fix the Patina context/module inventory mismatch.</td>
+            <td><code>patina context</code> and <code>patina assay inventory</code> agree on crate/module existence, or context clearly labels structure as unavailable.</td>
+          </tr>
+          <tr>
+            <td>P0</td>
+            <td>Stop saying observations "prove" without qualifying the proof model.</td>
+            <td>Future docs use "record," "evidence," or "audit fact" unless signatures, provenance, and verification are implemented.</td>
+          </tr>
+          <tr>
+            <td>P0</td>
+            <td>Implement or explicitly defer signed peer/caller authority.</td>
+            <td><code>signature_ref</code> is either verified through a concrete signature/key API or documented as inert metadata.</td>
+          </tr>
+          <tr>
+            <td>P1</td>
+            <td>Add ledger durability and concurrency tests that try to break the local writer contract.</td>
+            <td>Tests cover stale lock, process crash simulation where practical, externally appended valid entry, corrupted trailing line, and concurrent open attempts.</td>
+          </tr>
+          <tr>
+            <td>P1</td>
+            <td>Tighten the public kernel API after the next slice proves which records must be stable.</td>
+            <td>Wildcard re-exports are revisited, constructors enforce required invariants, and impossible states move out of public construction paths where it matters.</td>
+          </tr>
+          <tr>
+            <td>P2</td>
+            <td>Add property or fuzz tests for ledger hash-chain validation and call authority mismatch combinations.</td>
+            <td>Randomized cases exercise sequence, hash, identity, binding, caller, Vision, ALPN, and payload mismatches without relying only on hand-picked examples.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="spine">
+      <h2>Final Verdict</h2>
+      <p>
+        The three documents are accurate as audience-shaped reports for a narrow
+        P0 slice. They become handwavy when their language is read outside that
+        slice. The code really did move toward dependable Rust: explicit context,
+        typed errors, fail-closed checks, and no unsafe. The current MCT runtime,
+        however, remains a local proof spine with ungrounded project knowledge,
+        unauthenticated identity metadata, a broad public API surface, and a JSONL
+        ledger that is useful but not yet production durability.
+      </p>
+      <div class="callout warning">
+        The lie to prevent next is simple: do not let "typed local checks passed"
+        become "authority system solved." The former is true and valuable. The
+        latter is not true yet.
+      </div>
+    </section>
+  </main>
+</body>
+</html>
