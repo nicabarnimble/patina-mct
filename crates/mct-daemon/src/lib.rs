@@ -9,6 +9,7 @@ mod children;
 mod composition;
 mod config;
 mod control;
+mod cycle;
 #[cfg(test)]
 mod fake;
 mod federation;
@@ -39,6 +40,9 @@ pub use control::{
     MctControlPlaneResponse, MctControlPlaneSnapshot, MctDaemonLocalControlFacts,
     MctDaemonLocalControlRequest, MctDaemonLocalControlResponse, handle_control_plane_path,
     handle_local_control_request, serve_http_control_once,
+};
+pub use cycle::{
+    MctChildTaskCycleReport, MctDrainedEvent, MctTaskCycleChild, run_child_task_cycle,
 };
 pub use federation::{
     MctFederationCapabilityView, MctFederationPeerView, build_federation_capability_view,
