@@ -20,11 +20,12 @@ mod wasm;
 pub use children::{
     MctChildFileDigest, MctChildIngressMode, MctChildInstanceState, MctChildIntegrityMode,
     MctChildLoadFailure, MctChildLoadOptions, MctChildLoadReport, MctChildRegistry, MctLoadedChild,
-    load_children_from_dir, operation_id_from_target,
+    component_artifact_from_loaded_child, load_children_from_dir, operation_id_from_target,
 };
 pub use config::{
-    MctDaemonConfig, MctDaemonConfigStore, MctOperatorChildScope, MctPeerAddressBookEntry,
-    MctStoredChildApproval, MctStoredChildAssignment, default_config_path, unix_timestamp_string,
+    MctConfigChildAuthorityProjection, MctDaemonConfig, MctDaemonConfigStore,
+    MctOperatorChildScope, MctPeerAddressBookEntry, MctStoredChildApproval,
+    MctStoredChildAssignment, default_config_path, unix_timestamp_string,
 };
 pub use control::{
     MctDaemonLocalControlFacts, MctDaemonLocalControlRequest, MctDaemonLocalControlResponse,
