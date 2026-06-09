@@ -1,10 +1,11 @@
 use anyhow::{Context, Result, bail};
 use mct_daemon::{
-    MctChildLoadOptions, MctConfigChildAuthorityProjection, MctDaemonConfigStore,
-    MctOperatorChildScope, MctPeerAddressBookEntry, MctProcessChildHarness,
+    MctChildLoadOptions, MctConfigChildAuthorityProjection, MctControlPlaneSnapshot,
+    MctDaemonConfigStore, MctOperatorChildScope, MctPeerAddressBookEntry, MctProcessChildHarness,
     MctProcessChildInvocationIds, MctRuntimeStateStore, MctWasmComponentInvocationIds,
-    MctWasmComponentRuntime, default_config_path, default_state_path, load_children_from_dir,
-    reload_configured_child, warmup_configured_child,
+    MctWasmComponentRuntime, daemon_status, default_config_path, default_state_path,
+    load_children_from_dir, reload_configured_child, serve_http_control_once,
+    warmup_configured_child,
 };
 use mct_iroh::{
     MctIrohCallHandlerResult, MctIrohServeState, MctIrohServedProtocol, MotherIrohEndpoint,
@@ -17,6 +18,10 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+use tokio::net::TcpListener;
+
+#[cfg(unix)]
+use tokio::net::UnixListener;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -33,6 +38,7 @@ async fn main() -> Result<()> {
             mct_daemon::version()
         ),
         "children" => run_children(args)?,
+        "control" => run_control(args).await?,
         "process" => run_process(args)?,
         "peers" => run_peers(args)?,
         "state" => run_state(args)?,
@@ -427,6 +433,68 @@ fn run_wasm(mut args: Vec<String>) -> Result<()> {
     state.complete_run(&run_id, &report.result, mct_daemon::unix_timestamp_string())?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
+}
+
+async fn run_control(mut args: Vec<String>) -> Result<()> {
+    if args.is_empty() {
+        bail!("expected control subcommand: serve-http | serve-uds");
+    }
+    match args.remove(0).as_str() {
+        "serve-http" => run_control_serve_http(args).await,
+        "serve-uds" => run_control_serve_uds(args).await,
+        other => bail!("unknown control subcommand '{other}'"),
+    }
+}
+
+async fn run_control_serve_http(mut args: Vec<String>) -> Result<()> {
+    let state_path = take_option(&mut args, "--state")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_state_path);
+    let addr = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "127.0.0.1:9173".into());
+    let listener = TcpListener::bind(&addr).await?;
+    println!("mct control http listening on {addr}");
+    loop {
+        serve_http_control_once(&listener, control_snapshot(&state_path)?).await?;
+    }
+}
+
+#[cfg(unix)]
+async fn run_control_serve_uds(mut args: Vec<String>) -> Result<()> {
+    let state_path = take_option(&mut args, "--state")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_state_path);
+    let socket_path = args
+        .first()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(".mct/control.sock"));
+    if let Some(parent) = socket_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let _ = std::fs::remove_file(&socket_path);
+    let listener = UnixListener::bind(&socket_path)?;
+    println!("mct control uds listening on {}", socket_path.display());
+    loop {
+        mct_daemon::serve_uds_control_once(&listener, control_snapshot(&state_path)?).await?;
+    }
+}
+
+#[cfg(not(unix))]
+async fn run_control_serve_uds(_args: Vec<String>) -> Result<()> {
+    bail!("UDS control plane is only available on Unix platforms")
+}
+
+fn control_snapshot(state_path: &Path) -> Result<MctControlPlaneSnapshot> {
+    let state = MctRuntimeStateStore::open(state_path)?;
+    let summary = state.summary().ok();
+    let runs = state.list_runs(20).unwrap_or_default();
+    Ok(MctControlPlaneSnapshot::new(
+        daemon_status(None),
+        summary,
+        runs,
+    ))
 }
 
 fn run_state(mut args: Vec<String>) -> Result<()> {
@@ -1313,7 +1381,7 @@ fn default_identity_path() -> PathBuf {
 
 fn print_help() {
     println!(
-        "mct-daemon {version}\n\nCommands:\n  status\n  children load [children-dir] [--strict-integrity] [--json]\n  process call <executable> [payload-json] [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  children approve <child-name> [children-dir] [--config path] [--strict-integrity]\n  children revoke <child-name> [--config path]\n  children approvals [--config path] [--json]\n  children warmup <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  children reload <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--config path]\n  peers list [--config path] [--json]\n  peers remove <peer-node-id> [--config path]\n  state summary [--state path] [--json]\n  runs list [--state path] [--json] [--limit n]\n  wasm call <component-file> <export-name> [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh identity [identity-file]\n  iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir]\n  iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable> --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function]\n  iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path]",
+        "mct-daemon {version}\n\nCommands:\n  status\n  control serve-http [addr] [--state path]\n  control serve-uds [socket-path] [--state path]\n  children load [children-dir] [--strict-integrity] [--json]\n  process call <executable> [payload-json] [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  children approve <child-name> [children-dir] [--config path] [--strict-integrity]\n  children revoke <child-name> [--config path]\n  children approvals [--config path] [--json]\n  children warmup <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  children reload <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--config path]\n  peers list [--config path] [--json]\n  peers remove <peer-node-id> [--config path]\n  state summary [--state path] [--json]\n  runs list [--state path] [--json] [--limit n]\n  wasm call <component-file> <export-name> [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh identity [identity-file]\n  iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir]\n  iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable> --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function]\n  iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path]",
         version = mct_daemon::version()
     );
 }
