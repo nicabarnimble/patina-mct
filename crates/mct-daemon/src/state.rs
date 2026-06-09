@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// Project-local durable runtime state for one standalone MCT node.
 ///
@@ -34,6 +34,9 @@ pub struct MctRuntimeStateSummary {
     pub completed_runs: u64,
     pub failed_runs: u64,
     pub metric_points: u64,
+    pub queued_tasks: u64,
+    pub child_state_keys: u64,
+    pub child_subscriptions: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +61,40 @@ impl MctRuntimeRunState {
             ResultOutcome::Cancelled => Self::Cancelled,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MctTaskStatus {
+    Queued,
+    Leased,
+    Running,
+    Succeeded,
+    Failed,
+    DeadLetter,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctTaskIntentRecord {
+    pub kind: String,
+    pub payload_json: String,
+    pub dedupe_key: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctQueuedTaskRecord {
+    pub task_id: String,
+    pub child_name: String,
+    pub kind: String,
+    pub payload_json: String,
+    pub dedupe_key: Option<String>,
+    pub status: MctTaskStatus,
+    pub lease_owner: Option<String>,
+    pub lease_until: Option<String>,
+    pub attempts: u64,
+    pub last_error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,6 +262,59 @@ impl MctRuntimeStateStore {
                 PRIMARY KEY (run_id, observation_id)
             );
 
+            CREATE TABLE IF NOT EXISTS child_state (
+                child_name TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (child_name, key)
+            );
+
+            CREATE TABLE IF NOT EXISTS child_checkpoints (
+                child_name TEXT NOT NULL,
+                stream TEXT NOT NULL,
+                checkpoint_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (child_name, stream)
+            );
+
+            CREATE TABLE IF NOT EXISTS child_subscriptions (
+                child_name TEXT NOT NULL,
+                stream TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (child_name, stream)
+            );
+
+            CREATE TABLE IF NOT EXISTS child_offsets (
+                child_name TEXT NOT NULL,
+                stream TEXT NOT NULL,
+                acked_offset INTEGER NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (child_name, stream)
+            );
+
+            CREATE TABLE IF NOT EXISTS runtime_tasks (
+                task_id TEXT PRIMARY KEY,
+                child_name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                dedupe_key TEXT,
+                status TEXT NOT NULL,
+                lease_owner TEXT,
+                lease_until TEXT,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_tasks_dedupe
+            ON runtime_tasks(child_name, dedupe_key)
+            WHERE dedupe_key IS NOT NULL;
+
+            CREATE INDEX IF NOT EXISTS idx_runtime_tasks_child_status
+            ON runtime_tasks(child_name, status, updated_at);
+
             CREATE TABLE IF NOT EXISTS metric_points (
                 metric_name TEXT NOT NULL,
                 metric_value INTEGER NOT NULL,
@@ -340,6 +430,12 @@ impl MctRuntimeStateStore {
                 Some("state IN ('failed', 'timed_out', 'cancelled', 'denied')"),
             )?,
             metric_points: self.count("metric_points", None)?,
+            queued_tasks: self.count(
+                "runtime_tasks",
+                Some("status IN ('queued', 'leased', 'running', 'failed')"),
+            )?,
+            child_state_keys: self.count("child_state", None)?,
+            child_subscriptions: self.count("child_subscriptions", None)?,
         })
     }
 
@@ -716,6 +812,267 @@ impl MctRuntimeStateStore {
             .context("list runtime runs")
     }
 
+    pub fn put_child_state(&self, child_name: &str, key: &str, value_json: &str) -> Result<()> {
+        self.conn.execute(
+            r#"
+            INSERT INTO child_state(child_name, key, value_json, updated_at)
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(child_name, key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            "#,
+            params![child_name, key, value_json, unix_timestamp_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_child_state(&self, child_name: &str, key: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT value_json FROM child_state WHERE child_name = ?1 AND key = ?2",
+                params![child_name, key],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("read child state")
+    }
+
+    pub fn delete_child_state(&self, child_name: &str, key: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM child_state WHERE child_name = ?1 AND key = ?2",
+            params![child_name, key],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_child_state_prefix(&self, child_name: &str, prefix: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT key FROM child_state WHERE child_name = ?1 AND key LIKE ?2 ORDER BY key",
+        )?;
+        let like = format!("{prefix}%");
+        stmt.query_map(params![child_name, like], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("list child state prefix")
+    }
+
+    pub fn put_child_checkpoint(
+        &self,
+        child_name: &str,
+        stream: &str,
+        checkpoint_json: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            r#"
+            INSERT INTO child_checkpoints(child_name, stream, checkpoint_json, updated_at)
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(child_name, stream) DO UPDATE SET
+                checkpoint_json = excluded.checkpoint_json,
+                updated_at = excluded.updated_at
+            "#,
+            params![child_name, stream, checkpoint_json, unix_timestamp_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_child_checkpoint(&self, child_name: &str, stream: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT checkpoint_json FROM child_checkpoints WHERE child_name = ?1 AND stream = ?2",
+                params![child_name, stream],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("read child checkpoint")
+    }
+
+    pub fn ensure_child_subscription(&self, child_name: &str, stream: &str) -> Result<()> {
+        self.conn.execute(
+            r#"
+            INSERT OR IGNORE INTO child_subscriptions(child_name, stream, created_at)
+            VALUES (?1, ?2, ?3)
+            "#,
+            params![child_name, stream, unix_timestamp_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_child_subscriptions(&self, child_name: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT stream FROM child_subscriptions WHERE child_name = ?1 ORDER BY stream",
+        )?;
+        stmt.query_map(params![child_name], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("list child subscriptions")
+    }
+
+    pub fn ack_child_offset(&self, child_name: &str, stream: &str, offset: u64) -> Result<()> {
+        self.conn.execute(
+            r#"
+            INSERT INTO child_offsets(child_name, stream, acked_offset, updated_at)
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(child_name, stream) DO UPDATE SET
+                acked_offset = MAX(child_offsets.acked_offset, excluded.acked_offset),
+                updated_at = excluded.updated_at
+            "#,
+            params![child_name, stream, offset as i64, unix_timestamp_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_child_offset(&self, child_name: &str, stream: &str) -> Result<Option<u64>> {
+        let value: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT acked_offset FROM child_offsets WHERE child_name = ?1 AND stream = ?2",
+                params![child_name, stream],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("read child offset")?;
+        Ok(value.map(|value| value.max(0) as u64))
+    }
+
+    pub fn enqueue_task(
+        &self,
+        child_name: &str,
+        intent: &MctTaskIntentRecord,
+    ) -> Result<MctQueuedTaskRecord> {
+        let task_id = intent
+            .dedupe_key
+            .as_ref()
+            .map(|dedupe| format!("task:{child_name}:{dedupe}"))
+            .unwrap_or_else(|| {
+                format!(
+                    "task:{}:{}:{}",
+                    child_name,
+                    intent.kind,
+                    unix_timestamp_string()
+                )
+            });
+        let now = unix_timestamp_string();
+        self.conn.execute(
+            r#"
+            INSERT OR IGNORE INTO runtime_tasks(
+                task_id, child_name, kind, payload_json, dedupe_key, status,
+                lease_owner, lease_until, attempts, last_error, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, 'queued', NULL, NULL, 0, NULL, ?6, ?6)
+            "#,
+            params![
+                task_id,
+                child_name,
+                intent.kind,
+                intent.payload_json,
+                intent.dedupe_key,
+                now,
+            ],
+        )?;
+        self.get_task(&task_id)?
+            .ok_or_else(|| anyhow::anyhow!("task disappeared after enqueue"))
+    }
+
+    pub fn lease_next_task(
+        &self,
+        child_name: &str,
+        lease_owner: &str,
+        lease_until: &str,
+    ) -> Result<Option<MctQueuedTaskRecord>> {
+        let task = self
+            .conn
+            .query_row(
+                r#"
+                SELECT task_id, child_name, kind, payload_json, dedupe_key, status,
+                       lease_owner, lease_until, attempts, last_error, created_at, updated_at
+                FROM runtime_tasks
+                WHERE child_name = ?1 AND status IN ('queued', 'failed')
+                ORDER BY created_at, task_id
+                LIMIT 1
+                "#,
+                params![child_name],
+                task_from_row,
+            )
+            .optional()
+            .context("lease next task")?;
+        let Some(task) = task else {
+            return Ok(None);
+        };
+        self.conn.execute(
+            r#"
+            UPDATE runtime_tasks
+            SET status = 'leased', lease_owner = ?1, lease_until = ?2,
+                attempts = attempts + 1, updated_at = ?3
+            WHERE task_id = ?4 AND status IN ('queued', 'failed')
+            "#,
+            params![
+                lease_owner,
+                lease_until,
+                unix_timestamp_string(),
+                task.task_id
+            ],
+        )?;
+        self.get_task(&task.task_id)
+    }
+
+    pub fn mark_task_running(&self, task_id: &str) -> Result<()> {
+        self.update_task_status(task_id, MctTaskStatus::Running, None)
+    }
+
+    pub fn mark_task_succeeded(&self, task_id: &str) -> Result<()> {
+        self.update_task_status(task_id, MctTaskStatus::Succeeded, None)
+    }
+
+    pub fn mark_task_failed(&self, task_id: &str, error: &str) -> Result<()> {
+        self.update_task_status(task_id, MctTaskStatus::Failed, Some(error))
+    }
+
+    pub fn mark_task_dead_letter(&self, task_id: &str, error: &str) -> Result<()> {
+        self.update_task_status(task_id, MctTaskStatus::DeadLetter, Some(error))
+    }
+
+    pub fn get_task(&self, task_id: &str) -> Result<Option<MctQueuedTaskRecord>> {
+        self.conn
+            .query_row(
+                r#"
+                SELECT task_id, child_name, kind, payload_json, dedupe_key, status,
+                       lease_owner, lease_until, attempts, last_error, created_at, updated_at
+                FROM runtime_tasks WHERE task_id = ?1
+                "#,
+                params![task_id],
+                task_from_row,
+            )
+            .optional()
+            .context("read task")
+    }
+
+    pub fn list_tasks(&self, child_name: &str, limit: u32) -> Result<Vec<MctQueuedTaskRecord>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT task_id, child_name, kind, payload_json, dedupe_key, status,
+                   lease_owner, lease_until, attempts, last_error, created_at, updated_at
+            FROM runtime_tasks WHERE child_name = ?1 ORDER BY created_at DESC, task_id DESC LIMIT ?2
+            "#,
+        )?;
+        stmt.query_map(params![child_name, limit], task_from_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("list tasks")
+    }
+
+    fn update_task_status(
+        &self,
+        task_id: &str,
+        status: MctTaskStatus,
+        error: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            r#"
+            UPDATE runtime_tasks
+            SET status = ?1, last_error = ?2, updated_at = ?3
+            WHERE task_id = ?4
+            "#,
+            params![json_atom(&status)?, error, unix_timestamp_string(), task_id],
+        )?;
+        Ok(())
+    }
+
     pub fn append_metric_point(&self, point: MctMetricPoint) -> Result<()> {
         self.conn.execute(
             r#"
@@ -817,6 +1174,9 @@ fn is_known_count_table(table: &str) -> bool {
             | "child_instances"
             | "peers"
             | "runtime_runs"
+            | "runtime_tasks"
+            | "child_state"
+            | "child_subscriptions"
             | "metric_points"
     )
 }
@@ -872,6 +1232,25 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MctRuntimeRunRecord
             .map(from_json_cell)
             .transpose()
             .map_err(to_sql_error)?,
+    })
+}
+
+fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MctQueuedTaskRecord> {
+    let status: String = row.get(5)?;
+    let attempts: i64 = row.get(8)?;
+    Ok(MctQueuedTaskRecord {
+        task_id: row.get(0)?,
+        child_name: row.get(1)?,
+        kind: row.get(2)?,
+        payload_json: row.get(3)?,
+        dedupe_key: row.get(4)?,
+        status: from_json_atom(&status).map_err(to_sql_error)?,
+        lease_owner: row.get(6)?,
+        lease_until: row.get(7)?,
+        attempts: attempts.max(0) as u64,
+        last_error: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
     })
 }
 
@@ -1177,5 +1556,98 @@ mod tests {
         assert_eq!(store.list_runs(10).unwrap().len(), 1);
         assert_eq!(store.metric_points().unwrap().len(), 1);
         assert_eq!(store.summary().unwrap().completed_runs, 1);
+    }
+
+    #[test]
+    fn state_store_persists_child_state_checkpoints_subscriptions_and_offsets() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MctRuntimeStateStore::open(dir.path().join("state.sqlite")).unwrap();
+
+        store
+            .put_child_state("child-a", "bucket:key", r#"{"ok":true}"#)
+            .unwrap();
+        store
+            .put_child_state("child-a", "bucket:other", "1")
+            .unwrap();
+        assert_eq!(
+            store.get_child_state("child-a", "bucket:key").unwrap(),
+            Some(r#"{"ok":true}"#.into())
+        );
+        assert_eq!(
+            store.list_child_state_prefix("child-a", "bucket:").unwrap(),
+            vec!["bucket:key".to_string(), "bucket:other".to_string()]
+        );
+        store.delete_child_state("child-a", "bucket:other").unwrap();
+        assert_eq!(
+            store
+                .list_child_state_prefix("child-a", "bucket:")
+                .unwrap()
+                .len(),
+            1
+        );
+
+        store
+            .put_child_checkpoint("child-a", "belief.changed", r#"{"offset":7}"#)
+            .unwrap();
+        assert_eq!(
+            store
+                .get_child_checkpoint("child-a", "belief.changed")
+                .unwrap(),
+            Some(r#"{"offset":7}"#.into())
+        );
+        store
+            .ensure_child_subscription("child-a", "belief.changed")
+            .unwrap();
+        assert_eq!(
+            store.list_child_subscriptions("child-a").unwrap(),
+            vec!["belief.changed".to_string()]
+        );
+        store
+            .ack_child_offset("child-a", "belief.changed", 7)
+            .unwrap();
+        store
+            .ack_child_offset("child-a", "belief.changed", 3)
+            .unwrap();
+        assert_eq!(
+            store.get_child_offset("child-a", "belief.changed").unwrap(),
+            Some(7)
+        );
+
+        let summary = store.summary().unwrap();
+        assert_eq!(summary.child_state_keys, 1);
+        assert_eq!(summary.child_subscriptions, 1);
+    }
+
+    #[test]
+    fn state_store_leases_and_completes_tasks_with_dedupe() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MctRuntimeStateStore::open(dir.path().join("state.sqlite")).unwrap();
+        let intent = MctTaskIntentRecord {
+            kind: "native-job".into(),
+            payload_json: r#"{"job":"sync"}"#.into(),
+            dedupe_key: Some("sync-once".into()),
+        };
+        let first = store.enqueue_task("child-a", &intent).unwrap();
+        let duplicate = store.enqueue_task("child-a", &intent).unwrap();
+        assert_eq!(first.task_id, duplicate.task_id);
+        assert_eq!(store.summary().unwrap().queued_tasks, 1);
+
+        let leased = store
+            .lease_next_task("child-a", "worker-a", "2026-05-31T00:01:00Z")
+            .unwrap()
+            .unwrap();
+        assert_eq!(leased.status, MctTaskStatus::Leased);
+        assert_eq!(leased.attempts, 1);
+        store.mark_task_running(&leased.task_id).unwrap();
+        assert_eq!(
+            store.get_task(&leased.task_id).unwrap().unwrap().status,
+            MctTaskStatus::Running
+        );
+        store.mark_task_succeeded(&leased.task_id).unwrap();
+        assert_eq!(
+            store.get_task(&leased.task_id).unwrap().unwrap().status,
+            MctTaskStatus::Succeeded
+        );
+        assert_eq!(store.summary().unwrap().queued_tasks, 0);
     }
 }

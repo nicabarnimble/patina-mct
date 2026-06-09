@@ -193,6 +193,9 @@ mod tests {
                 completed_runs: 1,
                 failed_runs: 0,
                 metric_points: 1,
+                queued_tasks: 0,
+                child_state_keys: 0,
+                child_subscriptions: 0,
             }),
             Vec::new(),
         )
