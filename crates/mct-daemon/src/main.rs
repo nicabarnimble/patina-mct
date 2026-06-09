@@ -1,11 +1,13 @@
 use anyhow::{Context, Result, bail};
 use mct_daemon::{
-    MctChildLoadOptions, MctConfigChildAuthorityProjection, MctControlPlaneSnapshot,
-    MctDaemonConfigStore, MctOperatorChildScope, MctPeerAddressBookEntry, MctProcessChildHarness,
+    MctChildIntegrityMode, MctChildLoadOptions, MctCompositionPlan, MctCompositionStep,
+    MctConfigChildAuthorityProjection, MctControlPlaneSnapshot, MctDaemonConfigStore,
+    MctOperatorChildScope, MctPeerAddressBookEntry, MctProcessChildHarness,
     MctProcessChildInvocationIds, MctRuntimeStateStore, MctWasmComponentInvocationIds,
-    MctWasmComponentRuntime, daemon_status, default_config_path, default_state_path,
-    load_children_from_dir, reload_configured_child, serve_http_control_once,
-    warmup_configured_child,
+    MctWasmComponentRuntime, build_federation_capability_view, build_metrics_snapshot,
+    daemon_status, default_config_path, default_state_path, load_children_from_dir,
+    record_composition_plan, reload_configured_child, serve_http_control_once,
+    sync_child_registry_source, warmup_configured_child,
 };
 use mct_iroh::{
     MctIrohCallHandlerResult, MctIrohServeState, MctIrohServedProtocol, MotherIrohEndpoint,
@@ -44,7 +46,11 @@ async fn main() -> Result<()> {
         "state" => run_state(args)?,
         "runs" => run_runs(args)?,
         "wasm" => run_wasm(args)?,
+        "federation" => run_federation(args)?,
         "iroh" => run_iroh(args).await?,
+        "metrics" => run_metrics(args)?,
+        "pando" => run_pando(args)?,
+        "registry" => run_registry(args)?,
         "help" | "--help" | "-h" => print_help(),
         other => bail!("unknown command '{other}'"),
     }
@@ -495,6 +501,180 @@ fn control_snapshot(state_path: &Path) -> Result<MctControlPlaneSnapshot> {
         summary,
         runs,
     ))
+}
+
+fn run_registry(mut args: Vec<String>) -> Result<()> {
+    if args.first().map(String::as_str) != Some("sync") {
+        bail!(
+            "expected: mct-daemon registry sync <source-id> [children-dir] [--state path] [--strict-integrity] [--json]"
+        );
+    }
+    args.remove(0);
+    let state_path = take_option(&mut args, "--state")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_state_path);
+    let strict = take_flag(&mut args, "--strict-integrity");
+    let as_json = take_flag(&mut args, "--json");
+    if args.is_empty() {
+        bail!("expected registry source id");
+    }
+    let source_id = args.remove(0);
+    let children_dir = args
+        .first()
+        .map(PathBuf::from)
+        .unwrap_or_else(default_children_dir);
+    let state = MctRuntimeStateStore::open(&state_path)?;
+    let report = sync_child_registry_source(
+        &state,
+        source_id,
+        children_dir,
+        if strict {
+            MctChildIntegrityMode::RequireSidecars
+        } else {
+            MctChildIntegrityMode::AuditOnly
+        },
+        MctOperatorChildScope::default(),
+    )?;
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!(
+            "registry source={} path={} loaded={} failed={}",
+            report.source_id,
+            report.source_path.display(),
+            report.loaded,
+            report.failed
+        );
+    }
+    Ok(())
+}
+
+fn run_federation(mut args: Vec<String>) -> Result<()> {
+    if args.first().map(String::as_str) != Some("view") {
+        bail!("expected: mct-daemon federation view [--config path] [--state path] [--json]");
+    }
+    args.remove(0);
+    let config_path = take_option(&mut args, "--config")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_config_path);
+    let state_path = take_option(&mut args, "--state")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_state_path);
+    let as_json = take_flag(&mut args, "--json");
+    let config = MctDaemonConfigStore::new(&config_path).load()?;
+    let summary = MctRuntimeStateStore::open(&state_path)?.summary()?;
+    let view = build_federation_capability_view(
+        &config,
+        &summary,
+        MctNodeId::from("local-mct"),
+        VisionId::from("vision-local"),
+    );
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&view)?);
+    } else {
+        println!(
+            "federation node={} vision={} approved={} ready={} peers={}",
+            view.node_id,
+            view.vision_id,
+            view.approved_children,
+            view.ready_instances,
+            view.peers.len()
+        );
+    }
+    Ok(())
+}
+
+fn run_metrics(mut args: Vec<String>) -> Result<()> {
+    if args.first().map(String::as_str) != Some("snapshot") {
+        bail!("expected: mct-daemon metrics snapshot [--state path] [--json]");
+    }
+    args.remove(0);
+    let state_path = take_option(&mut args, "--state")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_state_path);
+    let as_json = take_flag(&mut args, "--json");
+    let snapshot = build_metrics_snapshot(&MctRuntimeStateStore::open(&state_path)?)?;
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&snapshot)?);
+    } else {
+        println!(
+            "metrics runs={}/{} metric_points={}",
+            snapshot.run_success_numerator,
+            snapshot.run_success_denominator,
+            snapshot.recent_points.len()
+        );
+    }
+    Ok(())
+}
+
+fn run_pando(mut args: Vec<String>) -> Result<()> {
+    if args.first().map(String::as_str) != Some("record") {
+        bail!(
+            "expected: mct-daemon pando record <composition-id> [step-id,call-id,runtime,child,decision ...] [--state path] [--json]"
+        );
+    }
+    args.remove(0);
+    let state_path = take_option(&mut args, "--state")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_state_path);
+    let as_json = take_flag(&mut args, "--json");
+    if args.is_empty() {
+        bail!("expected composition id");
+    }
+    let composition_id = args.remove(0);
+    let steps = args
+        .iter()
+        .map(|raw| parse_composition_step(raw))
+        .collect::<Result<Vec<_>>>()?;
+    let state = MctRuntimeStateStore::open(&state_path)?;
+    let record = record_composition_plan(
+        &state,
+        MctCompositionPlan {
+            composition_id,
+            vision_id: VisionId::from("vision-local"),
+            steps,
+        },
+    )?;
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&record)?);
+    } else {
+        println!(
+            "pando composition={} state={}",
+            record.composition_id, record.state
+        );
+    }
+    Ok(())
+}
+
+fn parse_composition_step(raw: &str) -> Result<MctCompositionStep> {
+    let parts = raw.split(',').collect::<Vec<_>>();
+    if parts.len() < 3 {
+        bail!("composition step must be step-id,call-id,runtime[,child[,decision]]");
+    }
+    Ok(MctCompositionStep {
+        step_id: parts[0].into(),
+        call_id: CallId::from(parts[1]),
+        runtime_kind: parse_runtime_kind(parts[2])?,
+        child_name: parts
+            .get(3)
+            .filter(|value| !value.is_empty())
+            .map(|value| (*value).to_owned()),
+        authority_decision_id: parts
+            .get(4)
+            .filter(|value| !value.is_empty())
+            .map(|value| DecisionId::from(*value)),
+    })
+}
+
+fn parse_runtime_kind(value: &str) -> Result<RuntimeKind> {
+    match value {
+        "process" => Ok(RuntimeKind::Process),
+        "jvm_child" | "jvm" => Ok(RuntimeKind::JvmChild),
+        "wasm_component" | "wasm" => Ok(RuntimeKind::WasmComponent),
+        "remote_peer" | "remote" => Ok(RuntimeKind::RemotePeer),
+        "internal" => Ok(RuntimeKind::Internal),
+        other => bail!("unknown runtime kind '{other}'"),
+    }
 }
 
 fn run_state(mut args: Vec<String>) -> Result<()> {
@@ -1381,7 +1561,7 @@ fn default_identity_path() -> PathBuf {
 
 fn print_help() {
     println!(
-        "mct-daemon {version}\n\nCommands:\n  status\n  control serve-http [addr] [--state path]\n  control serve-uds [socket-path] [--state path]\n  children load [children-dir] [--strict-integrity] [--json]\n  process call <executable> [payload-json] [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  children approve <child-name> [children-dir] [--config path] [--strict-integrity]\n  children revoke <child-name> [--config path]\n  children approvals [--config path] [--json]\n  children warmup <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  children reload <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--config path]\n  peers list [--config path] [--json]\n  peers remove <peer-node-id> [--config path]\n  state summary [--state path] [--json]\n  runs list [--state path] [--json] [--limit n]\n  wasm call <component-file> <export-name> [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh identity [identity-file]\n  iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir]\n  iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable> --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function]\n  iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path]",
+        "mct-daemon {version}\n\nCommands:\n  status\n  control serve-http [addr] [--state path]\n  control serve-uds [socket-path] [--state path]\n  registry sync <source-id> [children-dir] [--state path] [--strict-integrity] [--json]\n  federation view [--config path] [--state path] [--json]\n  metrics snapshot [--state path] [--json]\n  pando record <composition-id> [step-id,call-id,runtime,child,decision ...] [--state path] [--json]\n  children load [children-dir] [--strict-integrity] [--json]\n  process call <executable> [payload-json] [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  children approve <child-name> [children-dir] [--config path] [--strict-integrity]\n  children revoke <child-name> [--config path]\n  children approvals [--config path] [--json]\n  children warmup <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  children reload <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--config path]\n  peers list [--config path] [--json]\n  peers remove <peer-node-id> [--config path]\n  state summary [--state path] [--json]\n  runs list [--state path] [--json] [--limit n]\n  wasm call <component-file> <export-name> [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh identity [identity-file]\n  iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir]\n  iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable> --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function]\n  iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path]",
         version = mct_daemon::version()
     );
 }
