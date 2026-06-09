@@ -53,8 +53,9 @@ pub use process::{
 };
 pub use registry::{MctRegistrySyncReport, sync_child_registry_source};
 pub use state::{
-    MctCompositionRunRecord, MctMetricPoint, MctRegistrySourceRecord, MctRuntimeRunRecord,
-    MctRuntimeRunState, MctRuntimeStateStore, MctRuntimeStateSummary, default_state_path,
+    MctCompositionRunRecord, MctMetricPoint, MctQueuedTaskRecord, MctRegistrySourceRecord,
+    MctRuntimeRunRecord, MctRuntimeRunState, MctRuntimeStateStore, MctRuntimeStateSummary,
+    MctTaskIntentRecord, MctTaskStatus, default_state_path,
 };
 pub use status::{MctDaemonHealth, MctDaemonReadiness, MctDaemonStatus, daemon_status};
 pub use supervisor::{
