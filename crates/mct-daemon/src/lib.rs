@@ -28,7 +28,13 @@ pub use children::{
     MctChildLoadFailure, MctChildLoadOptions, MctChildLoadReport, MctChildRegistry, MctLoadedChild,
     component_artifact_from_loaded_child, load_children_from_dir, operation_id_from_target,
 };
-pub use composition::{MctCompositionPlan, MctCompositionStep, record_composition_plan};
+pub use composition::{
+    MctCompositionPlan, MctCompositionStep, MctPandoChild, MctPandoCommand, MctPandoCommandArg,
+    MctPandoComposition, MctPandoLifecycleStatus, MctPandoManifest, MctPandoRegistry,
+    MctPandoRegistryEntry, MctPandoSection, MctPandoWiring, MctPandoWiringEndpoint,
+    build_pando_registry, parse_pando_manifest_path, parse_pando_manifest_str,
+    record_composition_plan,
+};
 pub use config::{
     MctConfigChildAuthorityProjection, MctDaemonConfig, MctDaemonConfigStore,
     MctOperatorChildScope, MctPeerAddressBookEntry, MctStoredChildApproval,
