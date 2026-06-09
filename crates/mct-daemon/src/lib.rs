@@ -6,12 +6,16 @@
 #![forbid(unsafe_code)]
 
 mod children;
+mod composition;
 mod config;
 mod control;
 #[cfg(test)]
 mod fake;
+mod federation;
 mod lifecycle;
+mod metrics;
 mod process;
+mod registry;
 mod state;
 mod status;
 mod supervisor;
@@ -23,6 +27,7 @@ pub use children::{
     MctChildLoadFailure, MctChildLoadOptions, MctChildLoadReport, MctChildRegistry, MctLoadedChild,
     component_artifact_from_loaded_child, load_children_from_dir, operation_id_from_target,
 };
+pub use composition::{MctCompositionPlan, MctCompositionStep, record_composition_plan};
 pub use config::{
     MctConfigChildAuthorityProjection, MctDaemonConfig, MctDaemonConfigStore,
     MctOperatorChildScope, MctPeerAddressBookEntry, MctStoredChildApproval,
@@ -35,13 +40,18 @@ pub use control::{
     MctDaemonLocalControlRequest, MctDaemonLocalControlResponse, handle_control_plane_path,
     handle_local_control_request, serve_http_control_once,
 };
+pub use federation::{
+    MctFederationCapabilityView, MctFederationPeerView, build_federation_capability_view,
+};
 pub use lifecycle::{
     MctChildReloadReport, MctChildWarmupReport, reload_configured_child, warmup_configured_child,
 };
+pub use metrics::{MctMetricsSnapshot, build_metrics_snapshot};
 pub use process::{
     MctProcessChildError, MctProcessChildHarness, MctProcessChildInvocationIds,
     MctProcessChildInvocationReport,
 };
+pub use registry::{MctRegistrySyncReport, sync_child_registry_source};
 pub use state::{
     MctCompositionRunRecord, MctMetricPoint, MctRegistrySourceRecord, MctRuntimeRunRecord,
     MctRuntimeRunState, MctRuntimeStateStore, MctRuntimeStateSummary, default_state_path,
