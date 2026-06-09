@@ -4,6 +4,7 @@ use mct_daemon::{
     MctOperatorChildScope, MctPeerAddressBookEntry, MctProcessChildHarness,
     MctProcessChildInvocationIds, MctRuntimeStateStore, MctWasmComponentInvocationIds,
     MctWasmComponentRuntime, default_config_path, default_state_path, load_children_from_dir,
+    reload_configured_child, warmup_configured_child,
 };
 use mct_iroh::{
     MctIrohCallHandlerResult, MctIrohServeState, MctIrohServedProtocol, MotherIrohEndpoint,
@@ -47,13 +48,17 @@ async fn main() -> Result<()> {
 
 fn run_children(mut args: Vec<String>) -> Result<()> {
     if args.is_empty() {
-        bail!("expected children subcommand: load | approve | revoke | approvals");
+        bail!(
+            "expected children subcommand: load | approve | revoke | approvals | warmup | reload"
+        );
     }
     match args.remove(0).as_str() {
         "load" => run_children_load(args),
         "approve" => run_children_approve(args),
         "revoke" => run_children_revoke(args),
         "approvals" => run_children_approvals(args),
+        "warmup" => run_children_warmup(args),
+        "reload" => run_children_reload(args),
         other => bail!("unknown children subcommand '{other}'"),
     }
 }
@@ -185,6 +190,90 @@ fn run_children_approvals(mut args: Vec<String>) -> Result<()> {
             assignment.vision_id,
             assignment.node_id
         );
+    }
+    Ok(())
+}
+
+fn run_children_warmup(args: Vec<String>) -> Result<()> {
+    run_child_lifecycle(args, "warmup")
+}
+
+fn run_children_reload(args: Vec<String>) -> Result<()> {
+    run_child_lifecycle(args, "reload")
+}
+
+fn run_child_lifecycle(mut args: Vec<String>, action: &str) -> Result<()> {
+    let config_path = take_option(&mut args, "--config")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_config_path);
+    let children_dir = take_option(&mut args, "--children-dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_children_dir);
+    let ledger_path = take_option(&mut args, "--ledger")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_observation_ledger_path);
+    let state_path = take_option(&mut args, "--state")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_state_path);
+    let as_json = take_flag(&mut args, "--json");
+    if args.is_empty() {
+        bail!(
+            "expected: mct-daemon children {action} <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]"
+        );
+    }
+    let child_name = args.remove(0);
+    let projection = load_configured_child_projection(&config_path, &children_dir)?;
+    let state = MctRuntimeStateStore::open(&state_path)?;
+    for artifact in &projection.artifacts {
+        state.upsert_artifact(artifact)?;
+    }
+    for approval in &projection.approvals {
+        state.upsert_child_approval(approval)?;
+    }
+    for assignment in &projection.assignments {
+        state.upsert_child_assignment(assignment)?;
+    }
+
+    match action {
+        "warmup" => {
+            let report = warmup_configured_child(
+                &projection,
+                &child_name,
+                TraceId::from(format!("trace-warmup:{child_name}")),
+            )?;
+            state.upsert_child_instance(&report.instance)?;
+            append_ledger_observations(&ledger_path, &report.observations)?;
+            if as_json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "warmup child={} instance={} state={:?}",
+                    child_name, report.instance.instance_id, report.instance.instance_state
+                );
+            }
+        }
+        "reload" => {
+            let report = reload_configured_child(
+                &projection,
+                &child_name,
+                TraceId::from(format!("trace-reload:{child_name}")),
+            )?;
+            state.upsert_child_instance(&report.previous_instance)?;
+            state.upsert_child_instance(&report.next_instance)?;
+            append_ledger_observations(&ledger_path, &report.observations)?;
+            if as_json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "reload child={} previous={} next={} state={:?}",
+                    child_name,
+                    report.previous_instance.instance_id,
+                    report.next_instance.instance_id,
+                    report.next_instance.instance_state
+                );
+            }
+        }
+        other => bail!("unsupported lifecycle action '{other}'"),
     }
     Ok(())
 }
@@ -1224,7 +1313,7 @@ fn default_identity_path() -> PathBuf {
 
 fn print_help() {
     println!(
-        "mct-daemon {version}\n\nCommands:\n  status\n  children load [children-dir] [--strict-integrity] [--json]\n  process call <executable> [payload-json] [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  children approve <child-name> [children-dir] [--config path] [--strict-integrity]\n  children revoke <child-name> [--config path]\n  children approvals [--config path] [--json]\n  peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--config path]\n  peers list [--config path] [--json]\n  peers remove <peer-node-id> [--config path]\n  state summary [--state path] [--json]\n  runs list [--state path] [--json] [--limit n]\n  wasm call <component-file> <export-name> [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh identity [identity-file]\n  iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir]\n  iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable> --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function]\n  iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path]",
+        "mct-daemon {version}\n\nCommands:\n  status\n  children load [children-dir] [--strict-integrity] [--json]\n  process call <executable> [payload-json] [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  children approve <child-name> [children-dir] [--config path] [--strict-integrity]\n  children revoke <child-name> [--config path]\n  children approvals [--config path] [--json]\n  children warmup <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  children reload <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--config path]\n  peers list [--config path] [--json]\n  peers remove <peer-node-id> [--config path]\n  state summary [--state path] [--json]\n  runs list [--state path] [--json] [--limit n]\n  wasm call <component-file> <export-name> [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh identity [identity-file]\n  iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir]\n  iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable> --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function]\n  iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path]",
         version = mct_daemon::version()
     );
 }
