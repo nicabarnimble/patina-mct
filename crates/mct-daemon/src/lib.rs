@@ -11,6 +11,7 @@ mod control;
 #[cfg(test)]
 mod fake;
 mod process;
+mod state;
 mod status;
 mod supervisor;
 mod toy;
@@ -32,6 +33,10 @@ pub use control::{
 pub use process::{
     MctProcessChildError, MctProcessChildHarness, MctProcessChildInvocationIds,
     MctProcessChildInvocationReport,
+};
+pub use state::{
+    MctCompositionRunRecord, MctMetricPoint, MctRegistrySourceRecord, MctRuntimeRunRecord,
+    MctRuntimeRunState, MctRuntimeStateStore, MctRuntimeStateSummary, default_state_path,
 };
 pub use status::{MctDaemonHealth, MctDaemonReadiness, MctDaemonStatus, daemon_status};
 pub use supervisor::{
