@@ -57,7 +57,7 @@ pub use toy::{
 };
 pub use wasm::{
     MctWasmComponentInvocationIds, MctWasmComponentInvocationReport, MctWasmComponentRuntime,
-    MctWasmComponentRuntimeError,
+    MctWasmComponentRuntimeError, MctWasmComponentToyInvocation, MctWasmToyHostImport,
 };
 
 /// Returns the crate version for health and smoke tests.
