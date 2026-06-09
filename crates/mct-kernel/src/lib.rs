@@ -6,16 +6,20 @@
 #![forbid(unsafe_code)]
 
 pub mod call;
+pub mod child;
 pub mod id;
 pub mod observation;
 pub mod peer;
 pub mod route;
+pub mod toy;
 
 pub use call::*;
+pub use child::*;
 pub use id::*;
 pub use observation::*;
 pub use peer::*;
 pub use route::*;
+pub use toy::*;
 
 /// Returns the crate version for health and smoke tests.
 pub fn version() -> &'static str {

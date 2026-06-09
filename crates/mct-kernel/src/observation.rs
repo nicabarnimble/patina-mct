@@ -1,4 +1,4 @@
-use crate::{call::*, id::*, peer::*, route::*};
+use crate::{call::*, child::*, id::*, peer::*, route::*, toy::*};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -366,6 +366,249 @@ pub fn call_protocol_evaluation_observation(
     }
 }
 
+pub fn child_approval_observation(trace_id: TraceId, approval: &ChildApproval) -> MctObservation {
+    let (kind, outcome, safe_message) = match approval.approval_state {
+        ChildApprovalState::Approved => (
+            ObservationKind::ChildApproved,
+            ObservationOutcome::Allowed,
+            "child approved",
+        ),
+        ChildApprovalState::Blocked | ChildApprovalState::Revoked => (
+            ObservationKind::ChildRevoked,
+            ObservationOutcome::Denied,
+            "not authorized",
+        ),
+        ChildApprovalState::Candidate | ChildApprovalState::Deprecated => (
+            ObservationKind::LifecycleTransitionRecorded,
+            ObservationOutcome::Informational,
+            "child approval state recorded",
+        ),
+    };
+
+    MctObservation {
+        observation_id: approval.authority_observation_id.clone(),
+        observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        kind,
+        source_plane: SourcePlane::Kernel,
+        trace: ObservationTraceRef {
+            trace_id,
+            span_id: None,
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: None,
+        decision_id: None,
+        subject_id: Some(approval.child_name.clone()),
+        resource_id: Some(approval.artifact_id.to_string()),
+        policy_revision: Some(approval.policy_revision),
+        grants_revision: None,
+        outcome,
+        visibility: ObservationVisibility::InternalOnly,
+        safe_message: safe_message.into(),
+        detail_ref: Some(format!(
+            "child_approval_state:{:?}",
+            approval.approval_state
+        )),
+    }
+}
+
+pub fn child_assignment_observation(
+    trace_id: TraceId,
+    assignment: &ChildAssignment,
+) -> MctObservation {
+    let (kind, outcome, safe_message) = match assignment.assignment_state {
+        ChildAssignmentState::Active => (
+            ObservationKind::ChildAssigned,
+            ObservationOutcome::Allowed,
+            "child assigned",
+        ),
+        ChildAssignmentState::Revoked => (
+            ObservationKind::ChildAssignmentRevoked,
+            ObservationOutcome::Denied,
+            "not authorized",
+        ),
+    };
+
+    MctObservation {
+        observation_id: assignment.assignment_observation_id.clone(),
+        observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        kind,
+        source_plane: SourcePlane::Kernel,
+        trace: ObservationTraceRef {
+            trace_id,
+            span_id: None,
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: None,
+        decision_id: None,
+        subject_id: Some(assignment.child_name.clone()),
+        resource_id: Some(assignment.assignment_id.to_string()),
+        policy_revision: None,
+        grants_revision: None,
+        outcome,
+        visibility: ObservationVisibility::InternalOnly,
+        safe_message: safe_message.into(),
+        detail_ref: Some(format!(
+            "child_assignment_state:{:?}",
+            assignment.assignment_state
+        )),
+    }
+}
+
+pub fn child_instance_observation(trace_id: TraceId, instance: &ChildInstance) -> MctObservation {
+    let (kind, outcome, safe_message) = match instance.instance_state {
+        ChildInstanceState::Loading => (
+            ObservationKind::ChildInstanceLoading,
+            ObservationOutcome::Started,
+            "child instance loading",
+        ),
+        ChildInstanceState::Ready => (
+            ObservationKind::ChildInstanceReady,
+            ObservationOutcome::Allowed,
+            "child instance ready",
+        ),
+        ChildInstanceState::Degraded => (
+            ObservationKind::ChildInstanceDegraded,
+            ObservationOutcome::Failed,
+            "child instance degraded",
+        ),
+        ChildInstanceState::Draining => (
+            ObservationKind::ChildInstanceDraining,
+            ObservationOutcome::Started,
+            "child instance draining",
+        ),
+        ChildInstanceState::Stopped => (
+            ObservationKind::ChildInstanceStopped,
+            ObservationOutcome::Completed,
+            "child instance stopped",
+        ),
+        ChildInstanceState::Failed => (
+            ObservationKind::ChildInstanceFailed,
+            ObservationOutcome::Failed,
+            "child instance failed",
+        ),
+    };
+
+    MctObservation {
+        observation_id: instance.last_lifecycle_observation_id.clone(),
+        observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        kind,
+        source_plane: SourcePlane::Kernel,
+        trace: ObservationTraceRef {
+            trace_id,
+            span_id: None,
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: None,
+        decision_id: None,
+        subject_id: Some(instance.child_name.clone()),
+        resource_id: Some(instance.instance_id.to_string()),
+        policy_revision: None,
+        grants_revision: None,
+        outcome,
+        visibility: ObservationVisibility::InternalOnly,
+        safe_message: safe_message.into(),
+        detail_ref: Some(format!(
+            "child_instance_state:{:?}",
+            instance.instance_state
+        )),
+    }
+}
+
+pub fn child_call_authority_observation(
+    trace_id: TraceId,
+    evaluation: &ChildCallAuthorityEvaluation,
+) -> MctObservation {
+    let allowed = evaluation.verdict == ChildCallVerdict::Allowed;
+    MctObservation {
+        observation_id: evaluation.observation_id.clone(),
+        observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        kind: if allowed {
+            ObservationKind::RouteRevalidated
+        } else {
+            ObservationKind::CallDenied
+        },
+        source_plane: SourcePlane::Kernel,
+        trace: ObservationTraceRef {
+            trace_id,
+            span_id: None,
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: Some(evaluation.call_id.clone()),
+        decision_id: Some(evaluation.decision_id.clone()),
+        subject_id: evaluation.child_name.clone(),
+        resource_id: evaluation
+            .instance_id
+            .as_ref()
+            .map(ToString::to_string)
+            .or_else(|| evaluation.artifact_id.as_ref().map(ToString::to_string)),
+        policy_revision: Some(evaluation.policy_revision),
+        grants_revision: None,
+        outcome: if allowed {
+            ObservationOutcome::Allowed
+        } else {
+            ObservationOutcome::Denied
+        },
+        visibility: ObservationVisibility::InternalOnly,
+        safe_message: if allowed {
+            "child call authorized"
+        } else {
+            "not authorized"
+        }
+        .into(),
+        detail_ref: Some(format!("child_call_reason:{:?}", evaluation.reason_code)),
+    }
+}
+
+pub fn toy_grant_evaluation_observation(
+    trace_id: TraceId,
+    evaluation: &ToyGrantEvaluation,
+) -> MctObservation {
+    let kind = match (evaluation.verdict, evaluation.reason_code) {
+        (ToyGrantVerdict::Allowed, _) => ObservationKind::ToyGrantAllowed,
+        (ToyGrantVerdict::Denied, ToyGrantReasonCode::ExpiredGrant) => {
+            ObservationKind::ToyGrantExpired
+        }
+        (ToyGrantVerdict::Denied, ToyGrantReasonCode::RevokedGrant) => {
+            ObservationKind::ToyGrantRevoked
+        }
+        (ToyGrantVerdict::Denied, _) => ObservationKind::ToyGrantDenied,
+    };
+
+    MctObservation {
+        observation_id: evaluation.observation_id.clone(),
+        observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        kind,
+        source_plane: SourcePlane::Kernel,
+        trace: ObservationTraceRef {
+            trace_id,
+            span_id: None,
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: Some(evaluation.call_id.clone()),
+        decision_id: Some(evaluation.decision_id.clone()),
+        subject_id: Some(evaluation.subject_child_name.clone()),
+        resource_id: Some(evaluation.toy_id.to_string()),
+        policy_revision: Some(evaluation.policy_revision),
+        grants_revision: Some(evaluation.grants_revision),
+        outcome: match evaluation.verdict {
+            ToyGrantVerdict::Allowed => ObservationOutcome::Allowed,
+            ToyGrantVerdict::Denied => ObservationOutcome::Denied,
+        },
+        visibility: ObservationVisibility::InternalOnly,
+        safe_message: match evaluation.verdict {
+            ToyGrantVerdict::Allowed => "toy grant allowed",
+            ToyGrantVerdict::Denied => "not authorized",
+        }
+        .into(),
+        detail_ref: Some(format!("toy_grant_reason:{:?}", evaluation.reason_code)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,6 +768,119 @@ mod tests {
         assert_eq!(expired.kind, ObservationKind::PeerBindingExpired);
         assert_eq!(expired.outcome, ObservationOutcome::Denied);
         assert_eq!(expired.resource_id, Some("endpoint-a".into()));
+    }
+
+    #[test]
+    fn toy_grant_evaluations_become_observations() {
+        let allowed = ToyGrantEvaluation {
+            evaluation_id: ToyGrantEvaluationId::from("toy-eval-1"),
+            call_id: CallId::from("call-toy"),
+            decision_id: DecisionId::from("decision-toy"),
+            grant_id: Some(ToyGrantId::from("grant-toy")),
+            toy_id: ToyId::from("toy-logging"),
+            subject_child_name: "slate-manager".into(),
+            verdict: ToyGrantVerdict::Allowed,
+            reason_code: ToyGrantReasonCode::ActiveGrant,
+            policy_revision: 3,
+            grants_revision: 7,
+            observation_id: ObservationId::from("obs-toy-allowed"),
+        };
+        let allowed_observation =
+            toy_grant_evaluation_observation(TraceId::from("trace-toy"), &allowed);
+        assert_eq!(allowed_observation.kind, ObservationKind::ToyGrantAllowed);
+        assert_eq!(allowed_observation.outcome, ObservationOutcome::Allowed);
+        assert_eq!(allowed_observation.call_id, Some(CallId::from("call-toy")));
+        assert_eq!(allowed_observation.resource_id, Some("toy-logging".into()));
+
+        let mut denied = allowed;
+        denied.verdict = ToyGrantVerdict::Denied;
+        denied.reason_code = ToyGrantReasonCode::MissingGrant;
+        denied.observation_id = ObservationId::from("obs-toy-denied");
+        let denied_observation =
+            toy_grant_evaluation_observation(TraceId::from("trace-toy"), &denied);
+        assert_eq!(denied_observation.kind, ObservationKind::ToyGrantDenied);
+        assert_eq!(denied_observation.outcome, ObservationOutcome::Denied);
+        assert_eq!(denied_observation.safe_message, "not authorized");
+    }
+
+    #[test]
+    fn child_lifecycle_and_call_authority_become_observations() {
+        let approval = ChildApproval {
+            approval_id: ChildApprovalId::from("approval-child"),
+            artifact_id: ComponentArtifactId::from("artifact-child"),
+            child_name: "slate-manager".into(),
+            artifact_version: "0.2.0".into(),
+            scope_vision_id: Some(VisionId::from("vision-a")),
+            scope_node_id: Some(MctNodeId::from("node-a")),
+            scope_project_id: None,
+            approval_state: ChildApprovalState::Approved,
+            policy_revision: 5,
+            authority_observation_id: ObservationId::from("obs-child-approved"),
+        };
+        let approval_observation =
+            child_approval_observation(TraceId::from("trace-child"), &approval);
+        assert_eq!(approval_observation.kind, ObservationKind::ChildApproved);
+        assert_eq!(approval_observation.outcome, ObservationOutcome::Allowed);
+        assert_eq!(
+            approval_observation.resource_id,
+            Some("artifact-child".into())
+        );
+
+        let assignment = ChildAssignment {
+            assignment_id: ChildAssignmentId::from("assignment-child"),
+            approval_id: ChildApprovalId::from("approval-child"),
+            artifact_id: ComponentArtifactId::from("artifact-child"),
+            child_name: "slate-manager".into(),
+            vision_id: VisionId::from("vision-a"),
+            node_id: Some(MctNodeId::from("node-a")),
+            project_id: None,
+            assignment_state: ChildAssignmentState::Active,
+            pinned_artifact_version: "0.2.0".into(),
+            assignment_observation_id: ObservationId::from("obs-child-assigned"),
+        };
+        let assignment_observation =
+            child_assignment_observation(TraceId::from("trace-child"), &assignment);
+        assert_eq!(assignment_observation.kind, ObservationKind::ChildAssigned);
+        assert_eq!(assignment_observation.outcome, ObservationOutcome::Allowed);
+
+        let instance = ChildInstance {
+            instance_id: ChildInstanceId::from("instance-child"),
+            assignment_id: ChildAssignmentId::from("assignment-child"),
+            artifact_id: ComponentArtifactId::from("artifact-child"),
+            child_name: "slate-manager".into(),
+            generation: 1,
+            node_id: MctNodeId::from("node-a"),
+            instance_state: ChildInstanceState::Ready,
+            readiness_observation_id: Some(ObservationId::from("obs-child-ready")),
+            last_lifecycle_observation_id: ObservationId::from("obs-child-ready"),
+        };
+        let instance_observation =
+            child_instance_observation(TraceId::from("trace-child"), &instance);
+        assert_eq!(
+            instance_observation.kind,
+            ObservationKind::ChildInstanceReady
+        );
+        assert_eq!(instance_observation.outcome, ObservationOutcome::Allowed);
+
+        let evaluation = ChildCallAuthorityEvaluation {
+            evaluation_id: ChildCallEvaluationId::from("child-eval"),
+            call_id: CallId::from("call-child"),
+            decision_id: DecisionId::from("decision-child"),
+            instance_id: Some(ChildInstanceId::from("instance-child")),
+            assignment_id: Some(ChildAssignmentId::from("assignment-child")),
+            approval_id: Some(ChildApprovalId::from("approval-child")),
+            artifact_id: Some(ComponentArtifactId::from("artifact-child")),
+            child_name: Some("slate-manager".into()),
+            verdict: ChildCallVerdict::Denied,
+            reason_code: ChildCallReasonCode::InstanceNotReady,
+            policy_revision: 5,
+            observation_id: ObservationId::from("obs-child-denied"),
+        };
+        let denial_observation =
+            child_call_authority_observation(TraceId::from("trace-child"), &evaluation);
+        assert_eq!(denial_observation.kind, ObservationKind::CallDenied);
+        assert_eq!(denial_observation.outcome, ObservationOutcome::Denied);
+        assert_eq!(denial_observation.safe_message, "not authorized");
     }
 
     #[test]

@@ -5,16 +5,46 @@
 
 #![forbid(unsafe_code)]
 
+mod children;
+mod config;
 mod control;
 #[cfg(test)]
 mod fake;
+mod process;
 mod status;
+mod supervisor;
+mod toy;
+mod wasm;
 
+pub use children::{
+    MctChildFileDigest, MctChildIngressMode, MctChildInstanceState, MctChildIntegrityMode,
+    MctChildLoadFailure, MctChildLoadOptions, MctChildLoadReport, MctChildRegistry, MctLoadedChild,
+    load_children_from_dir, operation_id_from_target,
+};
+pub use config::{
+    MctDaemonConfig, MctDaemonConfigStore, MctOperatorChildScope, MctPeerAddressBookEntry,
+    MctStoredChildApproval, MctStoredChildAssignment, default_config_path, unix_timestamp_string,
+};
 pub use control::{
     MctDaemonLocalControlFacts, MctDaemonLocalControlRequest, MctDaemonLocalControlResponse,
     handle_local_control_request,
 };
+pub use process::{
+    MctProcessChildError, MctProcessChildHarness, MctProcessChildInvocationIds,
+    MctProcessChildInvocationReport,
+};
 pub use status::{MctDaemonHealth, MctDaemonReadiness, MctDaemonStatus, daemon_status};
+pub use supervisor::{
+    MctProcessSpawnConfig, MctProcessSupervisor, MctProcessSupervisorError,
+    MctProcessSupervisorEvent, MctSupervisedProcessState, MctSupervisedProcessStatus,
+};
+pub use toy::{
+    MctToyAdapterOutcome, MctToyAdapterRegistry, MctToyBackend, MctToyCallIds, MctToyCallReport,
+};
+pub use wasm::{
+    MctWasmComponentInvocationIds, MctWasmComponentInvocationReport, MctWasmComponentRuntime,
+    MctWasmComponentRuntimeError,
+};
 
 /// Returns the crate version for health and smoke tests.
 pub fn version() -> &'static str {

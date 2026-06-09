@@ -53,6 +53,16 @@ string_id!(ProtocolRequestId);
 string_id!(ReplyId);
 string_id!(ResultRef);
 string_id!(AuditRef);
+string_id!(ToyId);
+string_id!(ToyGrantId);
+string_id!(ToyGrantEvaluationId);
+string_id!(AuthorizedToyCallId);
+string_id!(ChildInstanceId);
+string_id!(ChildAssignmentId);
+string_id!(ComponentArtifactId);
+string_id!(ChildApprovalId);
+string_id!(ChildCallEvaluationId);
+string_id!(AuthorizedChildInvocationId);
 
 /// Allium uses `Timestamp`; v0 keeps it as an RFC3339-ish string at the domain boundary.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
