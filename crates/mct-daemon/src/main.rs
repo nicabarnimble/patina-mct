@@ -1,8 +1,9 @@
 use anyhow::{Context, Result, bail};
 use mct_daemon::{
-    MctChildLoadOptions, MctDaemonConfigStore, MctOperatorChildScope, MctPeerAddressBookEntry,
-    MctProcessChildHarness, MctProcessChildInvocationIds, MctWasmComponentInvocationIds,
-    MctWasmComponentRuntime, default_config_path, load_children_from_dir,
+    MctChildLoadOptions, MctConfigChildAuthorityProjection, MctDaemonConfigStore,
+    MctOperatorChildScope, MctPeerAddressBookEntry, MctProcessChildHarness,
+    MctProcessChildInvocationIds, MctRuntimeStateStore, MctWasmComponentInvocationIds,
+    MctWasmComponentRuntime, default_config_path, default_state_path, load_children_from_dir,
 };
 use mct_iroh::{
     MctIrohCallHandlerResult, MctIrohServeState, MctIrohServedProtocol, MotherIrohEndpoint,
@@ -10,6 +11,7 @@ use mct_iroh::{
     endpoint_id_for_secret_key_hex, load_or_create_node_secret_key_hex,
 };
 use mct_kernel::*;
+use mct_observation::JsonlObservationLedger;
 use std::{
     path::{Path, PathBuf},
     time::Duration,
@@ -32,6 +34,8 @@ async fn main() -> Result<()> {
         "children" => run_children(args)?,
         "process" => run_process(args)?,
         "peers" => run_peers(args)?,
+        "state" => run_state(args)?,
+        "runs" => run_runs(args)?,
         "wasm" => run_wasm(args)?,
         "iroh" => run_iroh(args).await?,
         "help" | "--help" | "-h" => print_help(),
@@ -188,10 +192,24 @@ fn run_children_approvals(mut args: Vec<String>) -> Result<()> {
 fn run_process(mut args: Vec<String>) -> Result<()> {
     if args.first().map(String::as_str) != Some("call") || args.len() < 2 {
         bail!(
-            "expected: mct-daemon process call <executable> [payload-json] [namespace interface function]"
+            "expected: mct-daemon process call <executable> [payload-json] [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]"
         );
     }
     args.remove(0);
+    let child_name = take_option(&mut args, "--child")
+        .ok_or_else(|| anyhow::anyhow!("process call requires --child <approved-child-name>"))?;
+    let children_dir = take_option(&mut args, "--children-dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_children_dir);
+    let config_path = take_option(&mut args, "--config")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_config_path);
+    let ledger_path = take_option(&mut args, "--ledger")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_observation_ledger_path);
+    let state_path = take_option(&mut args, "--state")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_state_path);
     let executable = PathBuf::from(args.remove(0));
     let payload = args.first().cloned().unwrap_or_else(|| "{}".into());
     if !args.is_empty() {
@@ -203,7 +221,21 @@ fn run_process(mut args: Vec<String>) -> Result<()> {
         function_name: args.get(2).cloned().unwrap_or_else(|| "echo".into()),
     };
     let call = local_process_call(target, payload.len() as u64);
-    let authorized = local_process_authorized_invocation(&call)?;
+    let (authorized, authority_observation) =
+        authorize_configured_child_for_call(&config_path, &children_dir, &child_name, &call)?;
+    append_ledger_observations(&ledger_path, std::slice::from_ref(&authority_observation))?;
+
+    let state = MctRuntimeStateStore::open(&state_path)?;
+    let run_id = run_id_for_call("process", &call);
+    state.insert_run_started(
+        &run_id,
+        &call,
+        RuntimeKind::Process,
+        Some(&authorized),
+        mct_daemon::unix_timestamp_string(),
+    )?;
+    state.append_run_observations(&run_id, std::slice::from_ref(&authority_observation))?;
+
     let harness = MctProcessChildHarness {
         executable,
         args: Vec::new(),
@@ -215,14 +247,23 @@ fn run_process(mut args: Vec<String>) -> Result<()> {
         &call,
         &payload,
         MctProcessChildInvocationIds {
-            started_observation_id: ObservationId::from("obs-cli-process-started"),
-            completed_observation_id: ObservationId::from("obs-cli-process-completed"),
-            result_ref: ResultRef::from("result-cli-process"),
-            audit_ref: AuditRef::from("audit-cli-process"),
+            started_observation_id: ObservationId::from(format!(
+                "obs-cli-process-started:{}",
+                call.call_id
+            )),
+            completed_observation_id: ObservationId::from(format!(
+                "obs-cli-process-completed:{}",
+                call.call_id
+            )),
+            result_ref: ResultRef::from(format!("result-cli-process:{}", call.call_id)),
+            audit_ref: AuditRef::from(format!("audit-cli-process:{}", call.call_id)),
             started_at: Timestamp::from("2026-05-31T00:00:00Z"),
             completed_at: Timestamp::from("2026-05-31T00:00:01Z"),
         },
     )?;
+    append_ledger_observations(&ledger_path, &report.observations)?;
+    state.append_run_observations(&run_id, &report.observations)?;
+    state.complete_run(&run_id, &report.result, mct_daemon::unix_timestamp_string())?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
@@ -230,11 +271,26 @@ fn run_process(mut args: Vec<String>) -> Result<()> {
 fn run_wasm(mut args: Vec<String>) -> Result<()> {
     if args.first().map(String::as_str) != Some("call") || args.len() < 3 {
         bail!(
-            "expected: mct-daemon wasm call <component-file> <export-name> [namespace interface function]"
+            "expected: mct-daemon wasm call <component-file> <export-name> [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]"
         );
     }
     args.remove(0);
+    let child_name = take_option(&mut args, "--child")
+        .ok_or_else(|| anyhow::anyhow!("wasm call requires --child <approved-child-name>"))?;
+    let children_dir = take_option(&mut args, "--children-dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_children_dir);
+    let config_path = take_option(&mut args, "--config")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_config_path);
+    let ledger_path = take_option(&mut args, "--ledger")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_observation_ledger_path);
+    let state_path = take_option(&mut args, "--state")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_state_path);
     let component_path = PathBuf::from(args.remove(0));
+    ensure_wasm_component_matches_loaded_child(&children_dir, &child_name, &component_path)?;
     let export_name = args.remove(0);
     let target = OperationTarget {
         namespace: args.first().cloned().unwrap_or_else(|| "patina".into()),
@@ -242,7 +298,21 @@ fn run_wasm(mut args: Vec<String>) -> Result<()> {
         function_name: args.get(2).cloned().unwrap_or_else(|| export_name.clone()),
     };
     let call = local_wasm_call(target);
-    let authorized = local_wasm_authorized_invocation(&call)?;
+    let (authorized, authority_observation) =
+        authorize_configured_child_for_call(&config_path, &children_dir, &child_name, &call)?;
+    append_ledger_observations(&ledger_path, std::slice::from_ref(&authority_observation))?;
+
+    let state = MctRuntimeStateStore::open(&state_path)?;
+    let run_id = run_id_for_call("wasm", &call);
+    state.insert_run_started(
+        &run_id,
+        &call,
+        RuntimeKind::WasmComponent,
+        Some(&authorized),
+        mct_daemon::unix_timestamp_string(),
+    )?;
+    state.append_run_observations(&run_id, std::slice::from_ref(&authority_observation))?;
+
     let runtime = MctWasmComponentRuntime::new()?;
     let report = runtime.invoke_authorized_s32_export(
         &authorized,
@@ -250,14 +320,91 @@ fn run_wasm(mut args: Vec<String>) -> Result<()> {
         component_path,
         &export_name,
         MctWasmComponentInvocationIds {
-            started_observation_id: ObservationId::from("obs-cli-wasm-started"),
-            completed_observation_id: ObservationId::from("obs-cli-wasm-completed"),
-            audit_ref: AuditRef::from("audit-cli-wasm"),
+            started_observation_id: ObservationId::from(format!(
+                "obs-cli-wasm-started:{}",
+                call.call_id
+            )),
+            completed_observation_id: ObservationId::from(format!(
+                "obs-cli-wasm-completed:{}",
+                call.call_id
+            )),
+            audit_ref: AuditRef::from(format!("audit-cli-wasm:{}", call.call_id)),
             started_at: Timestamp::from("2026-05-31T00:00:00Z"),
             completed_at: Timestamp::from("2026-05-31T00:00:01Z"),
         },
     )?;
+    append_ledger_observations(&ledger_path, &report.observations)?;
+    state.append_run_observations(&run_id, &report.observations)?;
+    state.complete_run(&run_id, &report.result, mct_daemon::unix_timestamp_string())?;
     println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+fn run_state(mut args: Vec<String>) -> Result<()> {
+    if args.first().map(String::as_str) != Some("summary") {
+        bail!("expected: mct-daemon state summary [--state path] [--json]");
+    }
+    args.remove(0);
+    let state_path = take_option(&mut args, "--state")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_state_path);
+    let as_json = take_flag(&mut args, "--json");
+    let state = MctRuntimeStateStore::open(&state_path)?;
+    let summary = state.summary()?;
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+    } else {
+        println!(
+            "state={} schema={} artifacts={} approved={} assignments={} ready={} peers={} runs={} completed={} failed={} metrics={}",
+            state_path.display(),
+            summary.schema_version,
+            summary.artifacts,
+            summary.approved_children,
+            summary.active_assignments,
+            summary.ready_instances,
+            summary.peers,
+            summary.runs,
+            summary.completed_runs,
+            summary.failed_runs,
+            summary.metric_points
+        );
+    }
+    Ok(())
+}
+
+fn run_runs(mut args: Vec<String>) -> Result<()> {
+    if args.first().map(String::as_str) != Some("list") {
+        bail!("expected: mct-daemon runs list [--state path] [--json] [--limit n]");
+    }
+    args.remove(0);
+    let state_path = take_option(&mut args, "--state")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_state_path);
+    let limit = take_option(&mut args, "--limit")
+        .map(|value| value.parse::<u32>())
+        .transpose()
+        .context("parse --limit")?
+        .unwrap_or(20);
+    let as_json = take_flag(&mut args, "--json");
+    let state = MctRuntimeStateStore::open(&state_path)?;
+    let runs = state.list_runs(limit)?;
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&runs)?);
+    } else {
+        println!("state={} runs={}", state_path.display(), runs.len());
+        for run in runs {
+            println!(
+                "run id={} call={} state={:?} runtime={:?} child={} started={} completed={}",
+                run.run_id,
+                run.call_id,
+                run.state,
+                run.runtime_kind,
+                run.child_name.unwrap_or_else(|| "-".into()),
+                run.started_at,
+                run.completed_at.unwrap_or_else(|| "-".into())
+            );
+        }
+    }
     Ok(())
 }
 
@@ -381,92 +528,6 @@ fn local_wasm_call(target: OperationTarget) -> MctCall {
     }
 }
 
-fn local_wasm_authorized_invocation(call: &MctCall) -> Result<AuthorizedChildInvocation> {
-    let (interface_name, version) = call
-        .target
-        .interface_name
-        .split_once('@')
-        .unwrap_or((call.target.interface_name.as_str(), "0.0.0"));
-    let artifact = ComponentArtifact {
-        artifact_id: ComponentArtifactId::from("artifact-cli-wasm"),
-        child_name: "wasm-cli-child".into(),
-        artifact_version: "0.1.0".into(),
-        content_hash: "sha256:cli-wasm".into(),
-        manifest_hash: "sha256:cli-wasm-manifest".into(),
-        primary_export: ComponentWitExport {
-            namespace: call.target.namespace.clone(),
-            interface_name: interface_name.into(),
-            version: version.into(),
-            function_names: vec![call.target.function_name.clone()],
-        },
-        runtime_shape: ComponentRuntimeShape::WasmComponent,
-        ingress_mode: ChildIngressMode::WitOnly,
-        lifecycle_exports: LifecycleExports::AbsentAllowed,
-        verification_status: VerificationStatus::Verified,
-        created_by_observation_id: ObservationId::from("obs-cli-wasm-artifact"),
-    };
-    let approval = ChildApproval {
-        approval_id: ChildApprovalId::from("approval-cli-wasm"),
-        artifact_id: artifact.artifact_id.clone(),
-        child_name: artifact.child_name.clone(),
-        artifact_version: artifact.artifact_version.clone(),
-        scope_vision_id: Some(call.caller.vision_id.clone()),
-        scope_node_id: Some(MctNodeId::from("local-mct")),
-        scope_project_id: None,
-        approval_state: ChildApprovalState::Approved,
-        policy_revision: call.authority_context.policy_revision,
-        authority_observation_id: ObservationId::from("obs-cli-wasm-approval"),
-    };
-    let assignment = ChildAssignment {
-        assignment_id: ChildAssignmentId::from("assignment-cli-wasm"),
-        approval_id: approval.approval_id.clone(),
-        artifact_id: artifact.artifact_id.clone(),
-        child_name: artifact.child_name.clone(),
-        vision_id: call.caller.vision_id.clone(),
-        node_id: Some(MctNodeId::from("local-mct")),
-        project_id: None,
-        assignment_state: ChildAssignmentState::Active,
-        pinned_artifact_version: artifact.artifact_version.clone(),
-        assignment_observation_id: ObservationId::from("obs-cli-wasm-assignment"),
-    };
-    let instance = ChildInstance {
-        instance_id: ChildInstanceId::from("instance-cli-wasm"),
-        assignment_id: assignment.assignment_id.clone(),
-        artifact_id: artifact.artifact_id.clone(),
-        child_name: artifact.child_name.clone(),
-        generation: 1,
-        node_id: MctNodeId::from("local-mct"),
-        instance_state: ChildInstanceState::Ready,
-        readiness_observation_id: Some(ObservationId::from("obs-cli-wasm-ready")),
-        last_lifecycle_observation_id: ObservationId::from("obs-cli-wasm-ready"),
-    };
-    let evaluation = evaluate_child_call_authority(
-        call,
-        &ChildCallAuthorityRequest {
-            instance_id: instance.instance_id.clone(),
-            node_id: MctNodeId::from("local-mct"),
-            ids: ChildCallAuthorityIds {
-                evaluation_id: ChildCallEvaluationId::from("child-eval-cli-wasm"),
-                decision_id: DecisionId::from("decision-cli-wasm"),
-                observation_id: ObservationId::from("obs-cli-wasm-authority"),
-                authorized_child_invocation_id: AuthorizedChildInvocationId::from(
-                    "authorized-cli-wasm",
-                ),
-            },
-        },
-        &[artifact],
-        &[approval],
-        &[assignment],
-        &[instance],
-    );
-    evaluation.authorized.ok_or_else(|| {
-        anyhow::anyhow!(
-            "wasm child authority denied: {:?}",
-            evaluation.evaluation.reason_code
-        )
-    })
-}
-
 fn local_process_call(target: OperationTarget, payload_size_bytes: u64) -> MctCall {
     MctCall {
         call_id: CallId::from("call-cli-process"),
@@ -494,92 +555,6 @@ fn local_process_call(target: OperationTarget, payload_size_bytes: u64) -> MctCa
         },
         origin: CallOrigin::ProcessHarness,
     }
-}
-
-fn local_process_authorized_invocation(call: &MctCall) -> Result<AuthorizedChildInvocation> {
-    let (interface_name, version) = call
-        .target
-        .interface_name
-        .split_once('@')
-        .unwrap_or((call.target.interface_name.as_str(), "0.0.0"));
-    let artifact = ComponentArtifact {
-        artifact_id: ComponentArtifactId::from("artifact-cli-process"),
-        child_name: "process-cli-child".into(),
-        artifact_version: "0.1.0".into(),
-        content_hash: "sha256:cli-process".into(),
-        manifest_hash: "sha256:cli-process-manifest".into(),
-        primary_export: ComponentWitExport {
-            namespace: call.target.namespace.clone(),
-            interface_name: interface_name.into(),
-            version: version.into(),
-            function_names: vec![call.target.function_name.clone()],
-        },
-        runtime_shape: ComponentRuntimeShape::ProcessChild,
-        ingress_mode: ChildIngressMode::WitOnly,
-        lifecycle_exports: LifecycleExports::AbsentAllowed,
-        verification_status: VerificationStatus::Verified,
-        created_by_observation_id: ObservationId::from("obs-cli-process-artifact"),
-    };
-    let approval = ChildApproval {
-        approval_id: ChildApprovalId::from("approval-cli-process"),
-        artifact_id: artifact.artifact_id.clone(),
-        child_name: artifact.child_name.clone(),
-        artifact_version: artifact.artifact_version.clone(),
-        scope_vision_id: Some(call.caller.vision_id.clone()),
-        scope_node_id: Some(MctNodeId::from("local-mct")),
-        scope_project_id: None,
-        approval_state: ChildApprovalState::Approved,
-        policy_revision: call.authority_context.policy_revision,
-        authority_observation_id: ObservationId::from("obs-cli-process-approval"),
-    };
-    let assignment = ChildAssignment {
-        assignment_id: ChildAssignmentId::from("assignment-cli-process"),
-        approval_id: approval.approval_id.clone(),
-        artifact_id: artifact.artifact_id.clone(),
-        child_name: artifact.child_name.clone(),
-        vision_id: call.caller.vision_id.clone(),
-        node_id: Some(MctNodeId::from("local-mct")),
-        project_id: None,
-        assignment_state: ChildAssignmentState::Active,
-        pinned_artifact_version: artifact.artifact_version.clone(),
-        assignment_observation_id: ObservationId::from("obs-cli-process-assignment"),
-    };
-    let instance = ChildInstance {
-        instance_id: ChildInstanceId::from("instance-cli-process"),
-        assignment_id: assignment.assignment_id.clone(),
-        artifact_id: artifact.artifact_id.clone(),
-        child_name: artifact.child_name.clone(),
-        generation: 1,
-        node_id: MctNodeId::from("local-mct"),
-        instance_state: ChildInstanceState::Ready,
-        readiness_observation_id: Some(ObservationId::from("obs-cli-process-ready")),
-        last_lifecycle_observation_id: ObservationId::from("obs-cli-process-ready"),
-    };
-    let evaluation = evaluate_child_call_authority(
-        call,
-        &ChildCallAuthorityRequest {
-            instance_id: instance.instance_id.clone(),
-            node_id: MctNodeId::from("local-mct"),
-            ids: ChildCallAuthorityIds {
-                evaluation_id: ChildCallEvaluationId::from("child-eval-cli-process"),
-                decision_id: DecisionId::from("decision-cli-process"),
-                observation_id: ObservationId::from("obs-cli-process-authority"),
-                authorized_child_invocation_id: AuthorizedChildInvocationId::from(
-                    "authorized-cli-process",
-                ),
-            },
-        },
-        &[artifact],
-        &[approval],
-        &[assignment],
-        &[instance],
-    );
-    evaluation.authorized.ok_or_else(|| {
-        anyhow::anyhow!(
-            "process child authority denied: {:?}",
-            evaluation.evaluation.reason_code
-        )
-    })
 }
 
 async fn run_iroh(mut args: Vec<String>) -> Result<()> {
@@ -693,9 +668,24 @@ async fn serve_iroh(mut args: Vec<String>) -> Result<()> {
 
 async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
     let relay_default = take_flag(&mut args, "--relay-default");
+    let child_name = take_option(&mut args, "--child").ok_or_else(|| {
+        anyhow::anyhow!("iroh serve-process requires --child <approved-child-name>")
+    })?;
+    let children_dir = take_option(&mut args, "--children-dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_children_dir);
+    let config_path = take_option(&mut args, "--config")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_config_path);
+    let ledger_path = take_option(&mut args, "--ledger")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_observation_ledger_path);
+    let state_path = take_option(&mut args, "--state")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_state_path);
     if args.len() < 6 {
         bail!(
-            "expected: mct-daemon iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable>"
+            "expected: mct-daemon iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable> --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]"
         );
     }
     let identity_path = PathBuf::from(&args[0]);
@@ -736,23 +726,61 @@ async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
         timeout: Duration::from_secs(5),
         local_node_id: MctNodeId::from("local-mct"),
     };
+    let projection = load_configured_child_projection(&config_path, &children_dir)?;
     let mut state = MctIrohServeState::new();
 
     loop {
         let harness = harness.clone();
+        let projection = projection.clone();
+        let child_name = child_name.clone();
+        let ledger_path = ledger_path.clone();
+        let state_path = state_path.clone();
         match endpoint
             .serve_next_with_call_handler(
                 &mut state,
                 std::slice::from_ref(&binding),
                 move |request, _evaluation| {
-                    let authorized = match local_process_authorized_invocation(&request.call) {
-                        Ok(authorized) => authorized,
+                    let (authorized, authority_observation) =
+                        match authorize_configured_child_from_projection(
+                            &projection,
+                            &child_name,
+                            &request.call,
+                        ) {
+                            Ok(authorized) => authorized,
+                            Err(error) => {
+                                return MctIrohCallHandlerResult::failed(format!(
+                                    "process child authority denied: {error}"
+                                ));
+                            }
+                        };
+                    let _ = append_ledger_observations(
+                        &ledger_path,
+                        std::slice::from_ref(&authority_observation),
+                    );
+                    let runtime_state = match MctRuntimeStateStore::open(&state_path) {
+                        Ok(runtime_state) => runtime_state,
                         Err(error) => {
                             return MctIrohCallHandlerResult::failed(format!(
-                                "process child authority denied: {error}"
+                                "runtime state unavailable: {error}"
                             ));
                         }
                     };
+                    let run_id = run_id_for_call("iroh-process", &request.call);
+                    if let Err(error) = runtime_state.insert_run_started(
+                        &run_id,
+                        &request.call,
+                        RuntimeKind::Process,
+                        Some(&authorized),
+                        mct_daemon::unix_timestamp_string(),
+                    ) {
+                        return MctIrohCallHandlerResult::failed(format!(
+                            "runtime run could not start: {error}"
+                        ));
+                    }
+                    let _ = runtime_state.append_run_observations(
+                        &run_id,
+                        std::slice::from_ref(&authority_observation),
+                    );
                     let report = match harness.invoke_authorized_child(
                         &authorized,
                         &request.call,
@@ -785,6 +813,13 @@ async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
                             ));
                         }
                     };
+                    let _ = append_ledger_observations(&ledger_path, &report.observations);
+                    let _ = runtime_state.append_run_observations(&run_id, &report.observations);
+                    let _ = runtime_state.complete_run(
+                        &run_id,
+                        &report.result,
+                        mct_daemon::unix_timestamp_string(),
+                    );
                     match report.result.outcome {
                         ResultOutcome::Success => {
                             MctIrohCallHandlerResult::completed(ResultRef::from(format!(
@@ -1043,6 +1078,107 @@ fn cli_call_request(
     }
 }
 
+fn load_configured_child_projection(
+    config_path: &Path,
+    children_dir: &Path,
+) -> Result<MctConfigChildAuthorityProjection> {
+    let config = MctDaemonConfigStore::new(config_path).load()?;
+    let load_report = load_children_from_dir(MctChildLoadOptions::new(children_dir));
+    Ok(config.authority_projection_for_loaded_children(
+        load_report.children.iter(),
+        MctOperatorChildScope::default(),
+    ))
+}
+
+fn authorize_configured_child_for_call(
+    config_path: &Path,
+    children_dir: &Path,
+    child_name: &str,
+    call: &MctCall,
+) -> Result<(AuthorizedChildInvocation, MctObservation)> {
+    let projection = load_configured_child_projection(config_path, children_dir)?;
+    authorize_configured_child_from_projection(&projection, child_name, call)
+}
+
+fn authorize_configured_child_from_projection(
+    projection: &MctConfigChildAuthorityProjection,
+    child_name: &str,
+    call: &MctCall,
+) -> Result<(AuthorizedChildInvocation, MctObservation)> {
+    let result = projection.authorize_child_for_call(child_name, call);
+    let observation =
+        child_call_authority_observation(call.trace_context.trace_id.clone(), &result.evaluation);
+    let authorized = result.authorized.ok_or_else(|| {
+        anyhow::anyhow!(
+            "child '{child_name}' not authorized for {}.{}.{}: {:?}",
+            call.target.namespace,
+            call.target.interface_name,
+            call.target.function_name,
+            result.evaluation.reason_code
+        )
+    })?;
+    Ok((authorized, observation))
+}
+
+fn ensure_wasm_component_matches_loaded_child(
+    children_dir: &Path,
+    child_name: &str,
+    component_path: &Path,
+) -> Result<()> {
+    let load_report = load_children_from_dir(MctChildLoadOptions::new(children_dir));
+    let child = load_report
+        .children
+        .iter()
+        .find(|child| child.name == child_name)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "child '{child_name}' not found in {}",
+                children_dir.display()
+            )
+        })?;
+    let expected = child
+        .wasm_path
+        .canonicalize()
+        .unwrap_or_else(|_| child.wasm_path.clone());
+    let actual = component_path
+        .canonicalize()
+        .unwrap_or_else(|_| component_path.to_path_buf());
+    if expected != actual {
+        bail!(
+            "wasm component {} does not match approved child '{}' artifact {}",
+            component_path.display(),
+            child_name,
+            child.wasm_path.display()
+        );
+    }
+    Ok(())
+}
+
+fn append_ledger_observations(ledger_path: &Path, observations: &[MctObservation]) -> Result<()> {
+    if observations.is_empty() {
+        return Ok(());
+    }
+    let mut ledger = JsonlObservationLedger::open(ledger_path, "ledger-local", "local-mct")?;
+    ledger.append_batch_before_effect(
+        observations.iter().cloned(),
+        mct_daemon::unix_timestamp_string(),
+    )?;
+    Ok(())
+}
+
+fn run_id_for_call(prefix: &str, call: &MctCall) -> String {
+    format!(
+        "run:{}:{}:{}",
+        prefix,
+        call.call_id,
+        mct_daemon::unix_timestamp_string()
+    )
+}
+
+fn default_observation_ledger_path() -> PathBuf {
+    PathBuf::from(".mct").join("observations.jsonl")
+}
+
 fn iroh_config(secret_key_hex: String, relay_default: bool) -> MotherIrohEndpointConfig {
     let mut config = MotherIrohEndpointConfig::local_mct().with_secret_key_hex(secret_key_hex);
     if relay_default {
@@ -1088,7 +1224,7 @@ fn default_identity_path() -> PathBuf {
 
 fn print_help() {
     println!(
-        "mct-daemon {version}\n\nCommands:\n  status\n  children load [children-dir] [--strict-integrity] [--json]\n  process call <executable> [payload-json] [namespace interface function]\n  children approve <child-name> [children-dir] [--config path] [--strict-integrity]\n  children revoke <child-name> [--config path]\n  children approvals [--config path] [--json]\n  peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--config path]\n  peers list [--config path] [--json]\n  peers remove <peer-node-id> [--config path]\n  wasm call <component-file> <export-name> [namespace interface function]\n  iroh identity [identity-file]\n  iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir]\n  iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable>\n  iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function]\n  iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path]",
+        "mct-daemon {version}\n\nCommands:\n  status\n  children load [children-dir] [--strict-integrity] [--json]\n  process call <executable> [payload-json] [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  children approve <child-name> [children-dir] [--config path] [--strict-integrity]\n  children revoke <child-name> [--config path]\n  children approvals [--config path] [--json]\n  peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--config path]\n  peers list [--config path] [--json]\n  peers remove <peer-node-id> [--config path]\n  state summary [--state path] [--json]\n  runs list [--state path] [--json] [--limit n]\n  wasm call <component-file> <export-name> [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh identity [identity-file]\n  iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir]\n  iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable> --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function]\n  iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path]",
         version = mct_daemon::version()
     );
 }

@@ -446,7 +446,7 @@ pub fn operation_id_from_target(target: &OperationTarget) -> String {
     )
 }
 
-fn component_artifact_from_loaded_child(child: &MctLoadedChild) -> ComponentArtifact {
+pub fn component_artifact_from_loaded_child(child: &MctLoadedChild) -> ComponentArtifact {
     ComponentArtifact {
         artifact_id: ComponentArtifactId::from(child.artifact_id.clone()),
         child_name: child.name.clone(),
