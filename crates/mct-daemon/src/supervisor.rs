@@ -36,6 +36,12 @@ pub struct MctProcessSupervisorEvent {
     pub observation: MctObservation,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctProcessSupervisorRecoveryReport {
+    pub recovered: Vec<MctProcessSupervisorEvent>,
+    pub safe_message: String,
+}
+
 #[derive(Debug, Error)]
 pub enum MctProcessSupervisorError {
     #[error("process instance already running: {0}")]
@@ -162,6 +168,62 @@ impl MctProcessSupervisor {
             process.last_status.exit_code = exit_status.code();
         }
         Ok(Some(process.last_status.clone()))
+    }
+
+    pub fn recover_from_persisted_statuses(
+        &self,
+        statuses: &[MctSupervisedProcessStatus],
+        observed_at: Timestamp,
+    ) -> MctProcessSupervisorRecoveryReport {
+        let recovered = statuses
+            .iter()
+            .map(|status| {
+                let mut recovered_status = status.clone();
+                if recovered_status.state == MctSupervisedProcessState::Running {
+                    recovered_status.state = MctSupervisedProcessState::Stopped;
+                }
+                let observation = MctObservation {
+                    observation_id: ObservationId::from(format!(
+                        "obs:supervisor-recovery:{}",
+                        recovered_status.instance_id
+                    )),
+                    observed_at: observed_at.clone(),
+                    kind: ObservationKind::ChildInstanceDegraded,
+                    source_plane: SourcePlane::Adapter,
+                    trace: ObservationTraceRef {
+                        trace_id: TraceId::from(format!(
+                            "trace:supervisor-recovery:{}",
+                            recovered_status.instance_id
+                        )),
+                        span_id: None,
+                        parent_span_id: None,
+                        external_trace_id: None,
+                    },
+                    call_id: None,
+                    decision_id: None,
+                    subject_id: Some(recovered_status.child_name.clone()),
+                    resource_id: Some(recovered_status.instance_id.to_string()),
+                    policy_revision: None,
+                    grants_revision: None,
+                    outcome: ObservationOutcome::Informational,
+                    visibility: ObservationVisibility::NodeOperator,
+                    safe_message: "supervisor recovered persisted process status".into(),
+                    detail_ref: Some(format!(
+                        "previous_pid:{};node:{};previous_state:{:?};recovered_state:{:?}",
+                        status.pid, self.local_node_id, status.state, recovered_status.state
+                    )),
+                };
+                MctProcessSupervisorEvent {
+                    status: recovered_status,
+                    observation,
+                }
+            })
+            .collect();
+
+        MctProcessSupervisorRecoveryReport {
+            recovered,
+            safe_message: "supervisor recovery reconciled persisted statuses".into(),
+        }
     }
 
     pub fn stop(
@@ -373,6 +435,31 @@ mod tests {
                 .status(&ChildInstanceId::from("instance-supervisor"))
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn process_supervisor_recovers_persisted_running_status_as_stopped() {
+        let supervisor = MctProcessSupervisor::new(MctNodeId::from("mother-a"));
+        let report = supervisor.recover_from_persisted_statuses(
+            &[MctSupervisedProcessStatus {
+                instance_id: ChildInstanceId::from("instance-recover"),
+                child_name: "recover-child".into(),
+                pid: 123,
+                state: MctSupervisedProcessState::Running,
+                exit_code: None,
+            }],
+            Timestamp::from("2026-05-31T00:00:02Z"),
+        );
+
+        assert_eq!(report.recovered.len(), 1);
+        assert_eq!(
+            report.recovered[0].status.state,
+            MctSupervisedProcessState::Stopped
+        );
+        assert_eq!(
+            report.recovered[0].observation.kind,
+            ObservationKind::ChildInstanceDegraded
         );
     }
 

@@ -10,6 +10,7 @@ mod config;
 mod control;
 #[cfg(test)]
 mod fake;
+mod lifecycle;
 mod process;
 mod state;
 mod status;
@@ -31,6 +32,9 @@ pub use control::{
     MctDaemonLocalControlFacts, MctDaemonLocalControlRequest, MctDaemonLocalControlResponse,
     handle_local_control_request,
 };
+pub use lifecycle::{
+    MctChildReloadReport, MctChildWarmupReport, reload_configured_child, warmup_configured_child,
+};
 pub use process::{
     MctProcessChildError, MctProcessChildHarness, MctProcessChildInvocationIds,
     MctProcessChildInvocationReport,
@@ -42,7 +46,8 @@ pub use state::{
 pub use status::{MctDaemonHealth, MctDaemonReadiness, MctDaemonStatus, daemon_status};
 pub use supervisor::{
     MctProcessSpawnConfig, MctProcessSupervisor, MctProcessSupervisorError,
-    MctProcessSupervisorEvent, MctSupervisedProcessState, MctSupervisedProcessStatus,
+    MctProcessSupervisorEvent, MctProcessSupervisorRecoveryReport, MctSupervisedProcessState,
+    MctSupervisedProcessStatus,
 };
 pub use toy::{
     MctToyAdapterOutcome, MctToyAdapterRegistry, MctToyBackend, MctToyCallIds, MctToyCallReport,
