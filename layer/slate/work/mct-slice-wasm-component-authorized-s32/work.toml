@@ -1,0 +1,46 @@
+id = "mct-slice-wasm-component-authorized-s32"
+title = "Invoke an authorized WASM component export"
+kind = "build"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Continue until MCT has real WASM/WIT component execution, not just artifact loading."
+allium_anchors = ["AuthorizedChildInvocation", "WitOnlyChildrenAreValid", "RuntimeExecutionStarted", "RuntimeExecutionCompleted"]
+user_alignment = "WASM/WIT is the child design center; runtime execution must attach to kernel authority without leaking Wasmtime types into `mct-kernel`."
+belief_refs = ["mother-kernel-decides-adapters-perform", "typed-domain-records-before-algorithms"]
+core_refs = ["layer/core/adapter-pattern.md", "layer/core/safety-boundaries.md", "layer/core/dependable-rust.md"]
+parent_slates = ["mct-wasm-component-runtime", "mct-child-registry-lifecycle", "mct-observation-log"]
+code_targets = ["crates/mct-daemon/src/wasm.rs", "crates/mct-daemon/src/main.rs", "crates/mct-daemon/Cargo.toml", "Cargo.toml"]
+implementation_ready = true
+runtime_shape_role = "Daemon WASM component adapter executes a lifted component export only after kernel child authority has produced `AuthorizedChildInvocation`."
+design_style = "Minimal real Wasmtime component-model path first: no WASI imports or host toys yet; dynamic s32 export call proves component instantiation and execution."
+first_test_to_write = "wasm_component_runtime_invokes_authorized_s32_export"
+exit_criteria = [
+    "Runtime uses Wasmtime component model to instantiate a real WebAssembly component.",
+    "Runtime invokes a lifted component export returning `s32`.",
+    "Invocation API requires `AuthorizedChildInvocation`.",
+    "Result and runtime observations are linked to call id and authority decision id.",
+    "CLI exposes `mct-daemon wasm call <component-file> <export-name> ...` smoke path.",
+    "Wasmtime/WIT runtime types stay outside `mct-kernel`.",
+]
+non_goals = ["No WASI context yet.", "No WIT interface binding generation yet.", "No host toy imports yet.", "No streaming payload protocol yet."]
+implementation_plan = [
+    "[x] Add Wasmtime and WAT dev support to daemon runtime dependencies.",
+    "[x] Add `MctWasmComponentRuntime` outside the kernel.",
+    "[x] Instantiate and call a real component-model lifted `s32` export.",
+    "[x] Add CLI smoke path for component call.",
+]
+proof_plan = [
+    "[x] `cargo test -p mct-daemon wasm_component_runtime_invokes_authorized_s32_export` passes.",
+    "[x] `cargo clippy --workspace --all-targets -- -D warnings` passes.",
+    "[x] `cargo test --workspace` passes.",
+]
+closure_evidence = [
+    "[x] Test fixture builds a component WAT with a lifted export and executes it through Wasmtime, returning 42.",
+    "[x] `crates/mct-daemon/src/wasm.rs` returns `MctResult` and runtime observations from an authorized component invocation.",
+    "[x] `mct-kernel` remains free of Wasmtime types.",
+]
+blocked_by = []
+belief_harvest_decision = "No new durable belief required; this implements the adapter-boundary decision for WASM/WIT runtime."
+created_at = "1781008973"
+updated_at = "1781008973"
+closed_at = "1781008973"

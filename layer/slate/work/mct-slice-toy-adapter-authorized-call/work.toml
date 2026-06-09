@@ -1,0 +1,43 @@
+id = "mct-slice-toy-adapter-authorized-call"
+title = "Execute toy adapters only through AuthorizedToyCall"
+kind = "build"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Continue toward a full working MCT product by adding the first daemon-side toy adapter registry while keeping ToyGrant authority in the kernel."
+allium_anchors = ["AuthorizedToyCall", "ToyCallStarted", "ToyCallCompleted", "ToyCallFailed"]
+user_alignment = "Toy backend effects must not bypass Mother authority, and backend failures must be adapter observations rather than kernel denials."
+belief_refs = ["mother-kernel-decides-adapters-perform", "typed-domain-records-before-algorithms"]
+core_refs = ["layer/core/adapter-pattern.md", "layer/core/safety-boundaries.md", "layer/core/dependable-rust.md"]
+parent_slates = ["mct-toy-grants", "mct-observation-log", "mct-daemon-control-plane"]
+code_targets = ["crates/mct-daemon/src/toy.rs", "crates/mct-daemon/src/lib.rs"]
+implementation_ready = true
+runtime_shape_role = "Daemon toy adapter registry performs effects only after kernel ToyGrant evaluation has produced an `AuthorizedToyCall`."
+design_style = "Concrete in-memory registry with echo/failure backends first; no broad capability expansion and no raw host handles exposed to children."
+first_test_to_write = "toy_adapter_requires_authorized_toy_call_and_records_success"
+exit_criteria = [
+    "Toy adapter call API requires an `AuthorizedToyCall`.",
+    "Registered echo backend records `ToyCallStarted` and `ToyCallCompleted` observations linked to call id and authority decision id.",
+    "Missing/failing toy backend records `ToyCallFailed` adapter observation rather than changing kernel grant verdicts.",
+]
+non_goals = ["No durable toy backend config.", "No ToyGrant creation workflow.", "No child-facing WIT toy imports yet."]
+implementation_plan = [
+    "[x] Add `MctToyAdapterRegistry` outside the kernel.",
+    "[x] Require `AuthorizedToyCall` for toy adapter execution.",
+    "[x] Add echo and static-failure backend variants.",
+    "[x] Emit toy call started/completed/failed observations with source plane `toy`.",
+]
+proof_plan = [
+    "[x] `cargo test -p mct-daemon toy_adapter_requires_authorized_toy_call_and_records_success` passes.",
+    "[x] `cargo test -p mct-daemon toy_backend_failure_is_adapter_observation_not_kernel_denial` passes.",
+    "[x] `cargo test --workspace` passes.",
+]
+closure_evidence = [
+    "[x] `crates/mct-daemon/src/toy.rs` implements the first concrete toy adapter registry requiring authorized calls.",
+    "[x] Tests prove success and missing-backend failure produce toy adapter observations linked by call and decision ids.",
+    "[x] `mct-kernel` remains the grant authority and does not expose backend implementation types.",
+]
+blocked_by = []
+belief_harvest_decision = "No new durable belief required; this slice applies existing ToyGrant and adapter-boundary decisions."
+created_at = "1781004311"
+updated_at = "1781004311"
+closed_at = "1781004311"

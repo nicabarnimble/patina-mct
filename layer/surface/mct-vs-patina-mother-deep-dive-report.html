@@ -1,0 +1,957 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Engineering report: patina-mct versus existing Patina Mother</title>
+  <style>
+    :root {
+      --ink: #211607;
+      --muted: #211607;
+      --line: rgba(33, 22, 7, 0.18);
+      --paper: #FFFFFF;
+      --panel: #FFFFFF;
+      --good: #106345;
+      --challenge: #870B0B;
+      --warning: #C7852E;
+      --highlight: #A6361B;
+      --accent: var(--good);
+      --accent-2: var(--warning);
+      --blue: var(--ink);
+      --violet: var(--highlight);
+      --danger: var(--challenge);
+      --shadow: 0 12px 30px rgba(33, 22, 7, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    header {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 48px 24px 24px;
+    }
+
+    header p {
+      max-width: 900px;
+      color: rgba(33, 22, 7, 0.76);
+      font-size: 1.05rem;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: clamp(2rem, 4vw, 4.2rem);
+      line-height: 1.02;
+      letter-spacing: 0;
+    }
+
+    h2 { margin: 0 0 16px; font-size: 1.55rem; letter-spacing: 0; }
+    h3 { margin: 0 0 8px; font-size: 1.08rem; letter-spacing: 0; }
+
+    a {
+      color: var(--ink);
+      text-decoration: none;
+      border-bottom: 2px solid rgba(166, 54, 27, 0.35);
+      box-shadow: inset 0 -0.16em rgba(166, 54, 27, 0.10);
+    }
+
+    code {
+      padding: 2px 5px;
+      border-radius: 0;
+      background: rgba(199, 133, 46, 0.16);
+      color: var(--ink);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      margin: 14px 0 0;
+      padding: 16px;
+      overflow-x: auto;
+      border: 1px solid #C7852E;
+      border-radius: 0;
+      background: #211607;
+      color: #FFFFFF;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.9rem;
+      line-height: 1.45;
+    }
+
+    pre code { padding: 0; border-radius: 0; background: transparent; color: inherit; font-size: inherit; }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 0 24px 64px;
+    }
+
+    section {
+      margin: 28px 0;
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .spine { border-top: 6px solid var(--good); }
+    .challenge { border-top: 6px solid var(--danger); }
+    .warn-section { border-top: 6px solid var(--warning); }
+    .plain { box-shadow: none; background: transparent; border: 0; padding: 0; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 16px;
+    }
+
+    .tile {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: #FFFFFF;
+    }
+
+    .tile strong { display: block; margin-bottom: 8px; color: var(--ink); }
+
+    .diagram {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto 1fr;
+      gap: 12px;
+      align-items: center;
+      overflow-x: auto;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: rgba(199, 133, 46, 0.12);
+    }
+
+    .node {
+      min-width: 180px;
+      padding: 14px;
+      border: 1px solid #C7852E;
+      border-radius: 0;
+      background: #FFFFFF;
+    }
+
+    .arrow { color: var(--accent); font-weight: 700; font-size: 1.3rem; }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 4px 10px;
+      border-radius: 0;
+      border: 1px solid var(--line);
+      background: #FFFFFF;
+      color: var(--ink);
+      font-size: 0.9rem;
+      white-space: nowrap;
+    }
+
+    .used { border-color: rgba(16, 99, 69, 0.55); background: rgba(16, 99, 69, 0.12); }
+    .partial { border-color: rgba(199, 133, 46, 0.62); background: rgba(199, 133, 46, 0.13); }
+    .not-used { border-color: rgba(33, 22, 7, 0.35); background: rgba(33, 22, 7, 0.08); }
+    .dissolve { border-color: rgba(166, 54, 27, 0.50); background: rgba(166, 54, 27, 0.10); }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: #FFFFFF;
+    }
+
+    th, td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th { color: #211607; background: rgba(199, 133, 46, 0.20); font-weight: 700; }
+    tr:last-child td { border-bottom: 0; }
+
+    .callout {
+      border-left: 5px solid var(--accent);
+      padding: 14px 16px;
+      background: rgba(16, 99, 69, 0.12);
+      border-radius: 0;
+    }
+
+    .warning { border-left-color: var(--danger); background: rgba(199, 133, 46, 0.16); }
+    .thesis { border-left-color: var(--highlight); background: rgba(166, 54, 27, 0.08); }
+    .small { color: rgba(33, 22, 7, 0.76); font-size: 0.93rem; }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 18px;
+    }
+
+    .score {
+      font-weight: 800;
+      color: var(--good);
+    }
+
+    .risk {
+      font-weight: 800;
+      color: var(--challenge);
+    }
+
+    .medium {
+      font-weight: 800;
+      color: var(--warning);
+    }
+
+    @media (max-width: 760px) {
+      header, main { padding-left: 16px; padding-right: 16px; }
+      section { padding: 20px; }
+      .two-col { grid-template-columns: 1fr; }
+      .diagram { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); justify-self: center; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <p class="small">Audience: MCT and Patina Mother maintainers - Comparative engineering report - June 2026</p>
+    <h1>Deep dive: standalone MCT versus the existing Patina Mother</h1>
+    <p>
+      This report compares the current <code>patina-mct</code> standalone product
+      surface against the integrated Patina Mother implementation under
+      <code>/Users/nicabar/Projects/Sandbox/AI/RUST/patina</code>. It focuses on
+      authority, child lifecycle, toys, peer transport, runtime execution,
+      storage, observations, and operator workflows.
+    </p>
+    <div class="legend">
+      <span class="pill used">Standalone MCT</span>
+      <span class="pill partial">Existing Patina Mother</span>
+      <span class="pill dissolve">Authority boundary</span>
+      <span class="pill not-used">Runtime depth</span>
+      <span class="pill used">Code-read analysis</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="spine">
+      <h2>Start here</h2>
+      <p>
+        The new <code>patina-mct</code> product is now a credible standalone MVP
+        for the Mother/Child/Toy shape: it has a typed kernel, a project-local
+        child artifact loader, explicit child approval and assignment facts,
+        first-class <code>ToyGrant</code> authority, JSONL observations, Iroh
+        endpoint-ticket connectivity, a process harness, a long-lived process
+        supervisor, a minimal Wasmtime component runtime, durable project-local
+        config, peer address-book commands, and an Iroh serve path that can hand
+        accepted peer calls to runtime execution.
+      </p>
+      <div class="callout thesis">
+        Verdict: <code>patina-mct</code> is architecturally cleaner and much more
+        explicit about authority than the existing Mother, but the existing
+        Mother is still deeper operationally. The new product has the right
+        shape for a standalone MCT node; it now needs hardening, not a return to
+        the old broad <code>ServerState</code> model.
+      </div>
+    </section>
+
+    <section>
+      <h2>Method and evidence</h2>
+      <p>
+        I read the new MCT crates and the existing Patina Mother code paths that
+        correspond to child loading, child registry, daemon state, runtime host
+        bindings, storage, toy grants, and operator workflows. I also ran the
+        current workspace validation after the latest product work.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Evidence class</th>
+            <th>Standalone MCT files</th>
+            <th>Existing Mother files</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Kernel / authority records</td>
+            <td><code>crates/mct-kernel/src/child.rs</code>, <code>toy.rs</code>, <code>call/mod.rs</code>, <code>peer/mod.rs</code>, <code>route.rs</code>, <code>observation.rs</code></td>
+            <td><code>mother/src/runtime.rs</code>, <code>mother/src/toys.rs</code>, <code>mother/src/bridge.rs</code></td>
+          </tr>
+          <tr>
+            <td>Child lifecycle and registry</td>
+            <td><code>crates/mct-daemon/src/children.rs</code>, <code>config.rs</code>, <code>supervisor.rs</code></td>
+            <td><code>mother/src/registry.rs</code>, <code>mother/src/state/children_registry.rs</code>, <code>src/commands/mother/children.rs</code></td>
+          </tr>
+          <tr>
+            <td>Runtime execution</td>
+            <td><code>crates/mct-daemon/src/process.rs</code>, <code>wasm.rs</code>, <code>toy.rs</code></td>
+            <td><code>src/commands/mother/loader.rs</code>, <code>src/commands/mother/daemon.rs</code>, <code>src/child/internal/child.rs</code></td>
+          </tr>
+          <tr>
+            <td>Peer connectivity</td>
+            <td><code>crates/mct-iroh/src/endpoint.rs</code>, <code>crates/mct-daemon/src/main.rs</code></td>
+            <td>No comparable Iroh substrate found in the existing Mother tree.</td>
+          </tr>
+          <tr>
+            <td>Storage and observations</td>
+            <td><code>crates/mct-observation/src/lib.rs</code>, <code>crates/mct-daemon/src/config.rs</code></td>
+            <td><code>mother/src/state/mod.rs</code>, <code>mother/src/eventlog_schema.rs</code></td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="small">
+        Current MCT validation passed with <code>cargo clippy --workspace --all-targets -- -D warnings</code>,
+        <code>cargo test --workspace</code>, <code>./scripts/ci-tier0.sh</code>, Slate TOML parse for 58 work files,
+        and Slate checks for the new slices.
+      </p>
+    </section>
+
+    <section class="challenge">
+      <h2>Executive comparison</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Dimension</th>
+            <th>Standalone <code>patina-mct</code></th>
+            <th>Existing Patina Mother</th>
+            <th>Engineering read</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Authority model</td>
+            <td>Explicit kernel records: <code>MctPeerBinding</code>, <code>ChildApproval</code>, <code>ChildAssignment</code>, <code>ChildInstance</code>, <code>ToyGrant</code>, <code>AuthorizedChildInvocation</code>, <code>AuthorizedToyCall</code>.</td>
+            <td>Authority is spread across SQL registry state, manifest allowlists, runtime grant booleans, CLI commands, and host implementation checks.</td>
+            <td><span class="score">MCT wins shape.</span> The new kernel makes authorization inspectable and testable as domain data.</td>
+          </tr>
+          <tr>
+            <td>Operational depth</td>
+            <td>MVP depth. Has process, supervisor, minimal Wasmtime component call, Iroh, config store, and observations.</td>
+            <td>Much deeper. Has HTTP/UDS daemon, child warmup/reload, WIT/WASI host bindings, SQL state, tasks/runs, pando composition, metrics, federation, registry sync.</td>
+            <td><span class="medium">Mother wins depth.</span> Do not discard this as reference, but do not import its coupling wholesale.</td>
+          </tr>
+          <tr>
+            <td>Standalone defaults</td>
+            <td>Project-local <code>.mct/children</code>, <code>.mct/identity/iroh-secret.hex</code>, <code>.mct/config.json</code>.</td>
+            <td>Uses <code>~/.patina</code>, project <code>.patina</code>, and Mother runtime paths.</td>
+            <td><span class="score">MCT matches the product constraint.</span></td>
+          </tr>
+          <tr>
+            <td>Peer transport</td>
+            <td>Iroh endpoint lifecycle, endpoint tickets, hello/call ALPNs, unknown-peer denial, call handler routing, address book.</td>
+            <td>No Iroh substrate found in the inspected Mother code.</td>
+            <td><span class="score">MCT is ahead for multi-Mother p2p.</span></td>
+          </tr>
+          <tr>
+            <td>Storage</td>
+            <td>Append-only JSONL observation ledger and JSON config store. Narrow and local, but not yet a full state database.</td>
+            <td>Large SQLite runtime store with identity, registry, installs, assignments, child state, tasks, sessions, belief state, and guardrail triggers.</td>
+            <td><span class="medium">Split decision.</span> MCT wins boundary; Mother wins completeness and relational constraints.</td>
+          </tr>
+          <tr>
+            <td>Runtime</td>
+            <td>One-shot process, long-lived process supervisor, minimal Wasmtime component export call.</td>
+            <td>Real child engine, WIT/WASI host bindings, state/events/sql/git/measure toys, loader with hash verification and preopens.</td>
+            <td><span class="medium">MCT is now real, but shallow.</span> Next work should deepen MCT runtime, not re-couple it.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Product architecture: clean kernel versus broad daemon state</h2>
+      <div class="two-col">
+        <div class="tile">
+          <h3>Standalone MCT</h3>
+          <p>
+            MCT is split into narrow crates: <code>mct-kernel</code> for domain
+            facts and pure decisions, <code>mct-observation</code> for the JSONL
+            ledger, <code>mct-iroh</code> for endpoint/protocol effects, and
+            <code>mct-daemon</code> for CLI, config, child loading, process/WASM/toy
+            adapters, and orchestration.
+          </p>
+          <p>
+            The kernel does not expose Wasmtime, Iroh, SQLite, process, or HTTP
+            implementation types. That is the strongest architecture decision in
+            the new product.
+          </p>
+        </div>
+        <div class="tile">
+          <h3>Existing Mother</h3>
+          <p>
+            Existing Mother has a broad <code>ServerState</code> in
+            <code>src/commands/mother/daemon.rs</code> containing token, registry,
+            runtime stores, services, scry backend, federation runtime, pando
+            registry, native commands, aliases, refresh locks, warmup state, and
+            readiness.
+          </p>
+          <p>
+            This breadth makes it productive but hard to reason about. The
+            daemon state is simultaneously control plane, runtime registry,
+            service container, pando orchestrator, and authority-adjacent state.
+          </p>
+        </div>
+      </div>
+      <div class="diagram" aria-label="Architecture comparison diagram">
+        <div class="node">
+          <h3>MCT kernel</h3>
+          Typed facts<br>Pure decisions<br>No runtime handles
+        </div>
+        <div class="arrow">-&gt;</div>
+        <div class="node">
+          <h3>MCT adapters</h3>
+          Iroh<br>Process<br>Wasmtime<br>Config<br>Ledger
+        </div>
+        <div class="arrow">vs</div>
+        <div class="node">
+          <h3>Existing Mother</h3>
+          Broad daemon state<br>Runtime store<br>Registry<br>Services<br>Pando/Federation
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Authority deep dive</h2>
+      <p>
+        Existing Mother already has important authority bones: users, nodes,
+        visions, memberships, project identities, child registry entries, child
+        installs, and project child assignments. Its SQLite schema even contains
+        triggers that prevent active project assignments unless the registry
+        entry is approved. The new MCT product did not copy this schema; it
+        extracted the authority concepts into typed kernel records.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Authority fact</th>
+            <th>MCT implementation</th>
+            <th>Existing Mother analogue</th>
+            <th>Assessment</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Peer admission</td>
+            <td><code>MctPeerBinding</code>, hello evaluation, call authority binding checks, Iroh unknown-peer denial.</td>
+            <td>No Iroh peer authority found.</td>
+            <td>MCT adds a new authority plane Mother lacks.</td>
+          </tr>
+          <tr>
+            <td>Child approval</td>
+            <td><code>ChildApproval</code> in kernel; durable <code>MctStoredChildApproval</code> in <code>.mct/config.json</code>.</td>
+            <td><code>mother_child_registry_entries.state</code> with states <code>candidate</code>, <code>approved</code>, <code>blocked</code>, <code>deprecated</code>.</td>
+            <td>Mother has stronger relational durability; MCT has cleaner typed authority semantics.</td>
+          </tr>
+          <tr>
+            <td>Assignment</td>
+            <td><code>ChildAssignment</code>, active/revoked, scoped by Vision/Node/project.</td>
+            <td><code>mother_project_child_assignments</code> plus trigger requiring approved entry.</td>
+            <td>MCT should eventually add database-level constraints or immutable fact replay equivalent.</td>
+          </tr>
+          <tr>
+            <td>Runtime instance</td>
+            <td><code>ChildInstance</code> with loading/ready/degraded/draining/stopped/failed; <code>AuthorizedChildInvocation</code>.</td>
+            <td>Registry holds live <code>Box&lt;dyn Child&gt;</code> entries; readiness and warmup state are daemon projections.</td>
+            <td>MCT's separation is cleaner. Existing Mother has more live lifecycle behavior.</td>
+          </tr>
+          <tr>
+            <td>Toy authority</td>
+            <td><code>ToyGrant</code>, <code>ToyGrantEvaluation</code>, <code>AuthorizedToyCall</code>; manifest needs do not grant.</td>
+            <td><code>GrantedToys</code> boolean struct and host checks such as "sql toy not granted".</td>
+            <td>MCT has the stronger authority model; Mother has much deeper host implementations.</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="callout warning">
+        The most important difference is not syntax. Existing Mother often
+        proves authority at the point of effect with booleans and store state.
+        MCT proves authority by producing explicit, typed authorization records
+        before the adapter can perform the effect.
+      </div>
+    </section>
+
+    <section>
+      <h2>Child lifecycle and registry</h2>
+      <p>
+        Existing Mother's <code>ChildRegistry</code> is mature. It loads child
+        entries into <code>Arc&lt;RwLock&lt;Box&lt;dyn Child&gt;&gt;&gt;</code>, stores wasm and
+        manifest paths, maintains per-child reload locks, records typed call
+        history, enforces ingress policy from manifests, emits metrics, runs
+        drain/tick/task loops, and supports health checks, handle calls, typed
+        WIT-shaped calls, and child swapping.
+      </p>
+      <p>
+        The new MCT registry is smaller and more declarative. It loads
+        <code>.wasm</code> + <code>.toml</code> artifacts, computes SHA-256 digests,
+        audits sidecars, parses ingress/allowlist/toy requests, detects
+        duplicates, and can project loaded artifacts into kernel lifecycle
+        records. It then gates route candidates through
+        <code>evaluate_child_call_authority</code>.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Capability</th>
+            <th>MCT status</th>
+            <th>Existing Mother status</th>
+            <th>Next move</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Artifact loading</td>
+            <td><span class="score">Good MVP.</span> Digest and sidecar modes, manifest parse, duplicate denial.</td>
+            <td><span class="score">Mature.</span> Hash verification, manifest engine parse, Wasmtime child instantiate.</td>
+            <td>Keep MCT loader, add persistent artifact facts and install history.</td>
+          </tr>
+          <tr>
+            <td>Approval and assignment</td>
+            <td><span class="medium">MVP.</span> Durable JSON config and operator CLI.</td>
+            <td><span class="score">Mature SQL.</span> Registry entries, installs, project assignments, triggers, audit.</td>
+            <td>Promote MCT config to immutable facts or private SQLite with the same approved-entry invariant.</td>
+          </tr>
+          <tr>
+            <td>Ready instance</td>
+            <td><span class="score">Strong authority shape.</span> Calls require ready authorized instance.</td>
+            <td><span class="medium">Operational.</span> Registry stores live children and readiness projections.</td>
+            <td>Wire MCT ready instances to real process/WASM lifecycle and observation ledger persistence.</td>
+          </tr>
+          <tr>
+            <td>Reload and replacement</td>
+            <td><span class="risk">Not deep yet.</span> Kernel transition types exist; no replacement orchestration.</td>
+            <td><span class="medium">Partial/mature.</span> Reload locks and swap path exist.</td>
+            <td>Implement replacement-load-before-swap in MCT supervisor/runtime.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Runtime execution</h2>
+      <div class="grid">
+        <div class="tile">
+          <strong>Process runtime in MCT</strong>
+          <p>
+            <code>MctProcessChildHarness</code> performs one-shot process calls
+            only with <code>AuthorizedChildInvocation</code>. It writes JSON to
+            stdin, collects stdout/stderr, handles timeout, returns
+            <code>MctResult</code>, and emits runtime observations.
+          </p>
+        </div>
+        <div class="tile">
+          <strong>Long-lived supervisor in MCT</strong>
+          <p>
+            <code>MctProcessSupervisor</code> adds spawn/status/stop for long-lived
+            process children, tracks pid/state/exit code, and emits
+            runtime-started/completed observations.
+          </p>
+        </div>
+        <div class="tile">
+          <strong>WASM component runtime in MCT</strong>
+          <p>
+            <code>MctWasmComponentRuntime</code> uses Wasmtime component model to
+            instantiate a real component and invoke a lifted <code>s32</code> export
+            only after child authorization.
+          </p>
+        </div>
+        <div class="tile">
+          <strong>Existing Mother runtime</strong>
+          <p>
+            Existing Mother has deeper WIT/WASI host bindings, child engine
+            instantiation, state, events, SQL, git, measure, connect, and pando
+            composition. It is much more complete as a runtime adapter.
+          </p>
+        </div>
+      </div>
+      <div class="callout">
+        MCT has crossed the important threshold from "artifact loader" to "real
+        runtime execution". The remaining delta is WIT/WASI depth: payload
+        conversion, generated bindings, host toy imports, traps, and persistent
+        runtime observations.
+      </div>
+    </section>
+
+    <section>
+      <h2>Toys and host effects</h2>
+      <p>
+        Existing Mother's toy host is broad and practical. The inspected code
+        has host implementations that check <code>GrantedToys</code> booleans before
+        SQL, messaging, measure, git, and other effects. That gives concrete
+        host functionality, but authority is represented as a bundle of booleans
+        carried inside runtime host state.
+      </p>
+      <p>
+        MCT instead makes the grant itself a kernel object. A manifest
+        <code>needs</code> list is only a request. Runtime toy execution requires an
+        <code>AuthorizedToyCall</code> produced by pure grant evaluation. The daemon
+        toy adapter registry currently has echo and failure backends and records
+        <code>ToyCallStarted</code>, <code>ToyCallCompleted</code>, and <code>ToyCallFailed</code>.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Question</th>
+            <th>MCT answer</th>
+            <th>Mother answer</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Can manifest needs grant authority?</td>
+            <td>No. Tests prove missing grants deny.</td>
+            <td>Manifest capabilities feed runtime grant decisions and host setup.</td>
+          </tr>
+          <tr>
+            <td>Can unknown toys run?</td>
+            <td>No. Closed canonical toy catalog.</td>
+            <td>Legacy alias bridge maps known names and denies unknown names; host booleans gate effects.</td>
+          </tr>
+          <tr>
+            <td>Are backend failures authority denials?</td>
+            <td>No. They are toy adapter observations.</td>
+            <td>Host errors are generally returned as runtime errors/strings and metrics.</td>
+          </tr>
+          <tr>
+            <td>Which is better?</td>
+            <td>Better authority.</td>
+            <td>Better backend surface.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Iroh and peer routing</h2>
+      <p>
+        This is the clearest place where MCT is ahead of existing Mother. The
+        new product has Mother-owned Iroh endpoints, endpoint identity files,
+        endpoint tickets, MCT hello and call ALPNs, unknown-peer denial,
+        explicit <code>MctPeerBinding</code> authority, address-book persistence, and
+        a handler-based serve path that can route accepted calls into runtime
+        execution before replying.
+      </p>
+      <div class="diagram" aria-label="Iroh routing flow">
+        <div class="node">
+          <h3>Iroh connection</h3>
+          Endpoint proves key<br>not authority
+        </div>
+        <div class="arrow">-&gt;</div>
+        <div class="node">
+          <h3>mct/hello/0</h3>
+          Binding + Vision<br>admission
+        </div>
+        <div class="arrow">-&gt;</div>
+        <div class="node">
+          <h3>mct/call/0</h3>
+          Call authority<br>runtime handler<br>reply result</div>
+      </div>
+      <p>
+        Existing Mother has HTTP/UDS transport and token behavior, but no Iroh
+        substrate was found in the inspected tree. MCT therefore owns the v0
+        multi-Mother substrate direction.
+      </p>
+      <div class="callout warning">
+        Remaining risk: <code>iroh serve-process</code> currently uses synthetic local
+        process authorization facts for the CLI smoke path. The next hardening
+        pass should bind it to durable child approval/assignment records and the
+        supervisor/WASM runtime inventory.
+      </div>
+    </section>
+
+    <section>
+      <h2>Storage and observations</h2>
+      <p>
+        Existing Mother's <code>MotherRuntimeStore</code> is a powerful SQLite store.
+        It includes identity tables, guardrail triggers, child registry sources,
+        child registry entries, installs, project assignments, audit tables,
+        child state/checkpoints/subscriptions/offsets/tasks/runs, sessions,
+        belief state, project registry, and more. This gives durability and
+        relational invariants, but it also mixes MCT runtime state with Belief,
+        session, scrape, and view concerns.
+      </p>
+      <p>
+        MCT intentionally starts narrower. <code>JsonlObservationLedger</code> is an
+        append-only hash-chain ledger with identity and writer-lock checks.
+        <code>MctDaemonConfigStore</code> persists child approvals, assignments, and
+        peer address-book entries under <code>.mct/config.json</code>. This satisfies
+        the standalone MVP requirement but is not yet a full state store.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Storage concern</th>
+            <th>MCT</th>
+            <th>Mother</th>
+            <th>Risk / recommendation</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Observation truth</td>
+            <td>Typed <code>MctObservation</code> + JSONL hash chain.</td>
+            <td>Eventlog and metrics tables, plus runtime audit tables.</td>
+            <td>MCT should append every runtime adapter report to the ledger, not only return observations from APIs.</td>
+          </tr>
+          <tr>
+            <td>Approval state</td>
+            <td>JSON config store.</td>
+            <td>SQLite rows + triggers.</td>
+            <td>JSON is acceptable for MVP. Add revisions, immutable facts, or private SQLite before multi-operator use.</td>
+          </tr>
+          <tr>
+            <td>Peer config</td>
+            <td>Address book entries with endpoint ticket data.</td>
+            <td>No Iroh peer book found.</td>
+            <td>Add signed binding import/export and stale/expired binding handling in config.</td>
+          </tr>
+          <tr>
+            <td>Runtime state</td>
+            <td>Supervisor is in-memory; process/WASM results are returned.</td>
+            <td>Child state, tasks, runs, offsets, checkpoints.</td>
+            <td>MCT needs restart recovery and durable runtime lifecycle snapshots.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Operator and CLI surface</h2>
+      <p>
+        MCT now has an operator CLI for the product blockers the user named:
+        child loading, child approval, child revocation, approvals listing,
+        process calls, WASM component calls, peer address book, Iroh identity,
+        Iroh ticket calls, Iroh configured-peer calls, and Iroh serve-process.
+      </p>
+      <pre><code>mct-daemon children load [children-dir] [--strict-integrity] [--json]
+mct-daemon children approve &lt;child-name&gt; [children-dir] [--config path] [--strict-integrity]
+mct-daemon children revoke &lt;child-name&gt; [--config path]
+mct-daemon children approvals [--config path] [--json]
+mct-daemon peers add &lt;peer-node-id&gt; &lt;binding-id&gt; &lt;endpoint-id&gt; &lt;vision-id&gt; [ticket-file] [--config path]
+mct-daemon peers list [--config path] [--json]
+mct-daemon peers remove &lt;peer-node-id&gt; [--config path]
+mct-daemon process call &lt;executable&gt; [payload-json] [namespace interface function]
+mct-daemon wasm call &lt;component-file&gt; &lt;export-name&gt; [namespace interface function]
+mct-daemon iroh call-peer [--relay-default] &lt;identity-file&gt; &lt;peer-node-id&gt; [namespace interface function] [--config path]
+mct-daemon iroh serve-process [--relay-default] &lt;identity-file&gt; &lt;binding-id&gt; &lt;peer-endpoint-id&gt; &lt;peer-node-id&gt; &lt;vision-id&gt; &lt;executable&gt;</code></pre>
+      <p class="small">
+        Existing Mother has broader command coverage for registry sources,
+        install, assign, revoke, list, sync, daemon start, HTTP/UDS, lifecycle
+        warmup, toys, graph, pando, and more. MCT should copy command intent
+        where useful, but preserve its narrower authority model.
+      </p>
+    </section>
+
+    <section class="warn-section">
+      <h2>Important product gaps after the MVP blocker pass</h2>
+      <p>
+        The user-listed blockers now have MVP implementations, but the product
+        should not be called production-complete. These are the highest-value
+        hardening gaps found in the comparison.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Gap</th>
+            <th>Why it matters</th>
+            <th>Recommended fix</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>CLI synthetic local authority</td>
+            <td><code>process call</code>, <code>wasm call</code>, and <code>serve-process</code> construct local approval/assignment facts for smoke execution.</td>
+            <td>Route these commands through durable <code>.mct/config.json</code> approvals and child projections. Deny if not approved.</td>
+          </tr>
+          <tr>
+            <td>Observation persistence incomplete</td>
+            <td>Many adapters return observations but do not always append them to the JSONL ledger.</td>
+            <td>Make daemon runtime paths append before/after effect using <code>JsonlObservationLedger</code>.</td>
+          </tr>
+          <tr>
+            <td>WASM runtime is minimal</td>
+            <td>Only lifted <code>s32</code> export call is implemented; no WASI, WIT binding generation, host toys, payload conversion, or trap observations.</td>
+            <td>Port the useful parts of existing Mother's WIT/WASI host shape into MCT adapters, gated by <code>AuthorizedToyCall</code>.</td>
+          </tr>
+          <tr>
+            <td>Supervisor has no restart recovery</td>
+            <td>Long-lived process state is in memory. A daemon restart loses instance/supervisor state.</td>
+            <td>Persist lifecycle snapshots and reconcile pids on daemon startup.</td>
+          </tr>
+          <tr>
+            <td>JSON config lacks relational guardrails</td>
+            <td>Existing Mother has SQL triggers that prevent active assignments to non-approved registry entries.</td>
+            <td>Add invariant checks on load/save now; later move to private SQLite or immutable fact replay.</td>
+          </tr>
+          <tr>
+            <td>Peer address book lacks binding proof</td>
+            <td>Endpoint tickets are reachability. They do not prove authority.</td>
+            <td>Persist signed/issued <code>MctPeerBinding</code> facts with expiry/revocation and require them for call-peer.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Migration lessons from existing Mother</h2>
+      <div class="grid">
+        <div class="tile">
+          <strong>Keep</strong>
+          <p>
+            SQL guardrails for approved child assignment, child registry source
+            sync, install records, typed WIT allowlists, child warmup/reload,
+            health/readiness, WASI host implementations, event/task state, and
+            practical CLI ergonomics.
+          </p>
+        </div>
+        <div class="tile">
+          <strong>Do not copy wholesale</strong>
+          <p>
+            Broad <code>ServerState</code>, Belief/session/view tables in runtime
+            state, stringly authority outcomes, host-effect booleans as the
+            primary grant model, and ambient project/global path assumptions.
+          </p>
+        </div>
+        <div class="tile">
+          <strong>Translate</strong>
+          <p>
+            Translate Mother runtime concepts into MCT domain facts:
+            registry entry to <code>ComponentArtifact</code> + <code>ChildApproval</code>,
+            project assignment to <code>ChildAssignment</code>, host grant booleans
+            to <code>ToyGrant</code>, runtime child slot to <code>ChildInstance</code>.
+          </p>
+        </div>
+        <div class="tile">
+          <strong>New MCT-only direction</strong>
+          <p>
+            Iroh endpoint tickets, peer bindings, MCT hello/call ALPNs,
+            peer address book, runtime-routed Iroh replies, and observation-ledger
+            truth as the main runtime audit surface.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Recommended next build sequence</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Priority</th>
+            <th>Slice</th>
+            <th>Reason</th>
+            <th>Proof gate</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td>Config-backed runtime authorization</td>
+            <td>Remove synthetic local CLI authority and prove durable approvals govern process/WASM/Iroh serve paths.</td>
+            <td>Unapproved child fails; approved child executes; revocation stops or denies future execution.</td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td>Ledger persistence for runtime adapters</td>
+            <td>Returned observations are not enough for runtime truth.</td>
+            <td>Process, supervisor, WASM, toy, and Iroh serve paths append linked observations to ledger.</td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td>WIT/WASI host toy imports</td>
+            <td>Existing Mother's biggest practical advantage is WIT/WASI host depth.</td>
+            <td>WASM child can call one toy import only through <code>AuthorizedToyCall</code>.</td>
+          </tr>
+          <tr>
+            <td>4</td>
+            <td>Iroh end-to-end child route</td>
+            <td>Prove multi-Mother calls use durable peer binding + durable child assignment + runtime execution.</td>
+            <td>Two local endpoints: configured peer calls approved child and receives runtime result ref.</td>
+          </tr>
+          <tr>
+            <td>5</td>
+            <td>Private state store hardening</td>
+            <td>JSON config is MVP. Production needs revisions, constraints, and replay.</td>
+            <td>Invariant tests prevent active assignment without approved artifact; revocation has monotonic observation.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="spine">
+      <h2>Bottom line</h2>
+      <p>
+        The new product is not a clone of Patina Mother; it is a cleaner MCT
+        kernel and adapter architecture informed by Mother. That is the right
+        direction. Existing Mother should remain a reference for operational
+        depth, especially WIT/WASI host bindings, registry SQL constraints,
+        warmup/reload, and CLI workflows. The new MCT should keep its typed
+        authority-first spine and absorb only the pieces that can be translated
+        into explicit domain facts and adapter observations.
+      </p>
+      <div class="callout thesis">
+        The next inflection point is config-backed end-to-end execution:
+        durable approval + ready instance + peer binding + runtime adapter +
+        ledger append. Once that is wired, MCT will be a standalone product in
+        behavior, not only in crate structure.
+      </div>
+    </section>
+
+    <section>
+      <h2>Appendix: key code facts</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Fact</th>
+            <th>Source</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>MCT kernel exports typed child and toy authority records, including <code>AuthorizedChildInvocation</code> and <code>AuthorizedToyCall</code>.</td>
+            <td><code>crates/mct-kernel/src/child.rs</code>, <code>crates/mct-kernel/src/toy.rs</code></td>
+          </tr>
+          <tr>
+            <td>MCT daemon durable config stores approvals, assignments, and peer address-book entries under project-local config.</td>
+            <td><code>crates/mct-daemon/src/config.rs</code></td>
+          </tr>
+          <tr>
+            <td>MCT Iroh endpoint keeps raw endpoint private and exposes safe snapshots/tickets plus handler-based call serving.</td>
+            <td><code>crates/mct-iroh/src/endpoint.rs</code></td>
+          </tr>
+          <tr>
+            <td>Existing Mother registry enforces manifest ingress allowlist and records typed call observations and metrics.</td>
+            <td><code>mother/src/registry.rs</code></td>
+          </tr>
+          <tr>
+            <td>Existing Mother store includes SQL triggers requiring active child assignments to reference approved registry entries.</td>
+            <td><code>mother/src/state/mod.rs</code></td>
+          </tr>
+          <tr>
+            <td>Existing Mother WASI host checks toy booleans such as <code>sql</code>, <code>messaging</code>, <code>measure</code>, and <code>git</code> before effects.</td>
+            <td><code>src/child/internal/child.rs</code>, <code>mother/src/toys.rs</code></td>
+          </tr>
+          <tr>
+            <td>Existing Mother daemon state is broad and mixes registry, runtime stores, service container, pando, federation, native commands, aliases, and readiness.</td>
+            <td><code>src/commands/mother/daemon.rs</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>

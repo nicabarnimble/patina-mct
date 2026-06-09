@@ -6,7 +6,7 @@ execution_granularity = "roadmap_container"
 slice_tracking_policy = "Implementation progress is tracked by child slice Slates with binary proof gates, commit evidence, and validation commands; broad roadmap lanes are not proof of product completion."
 runtime_shape = "Small local Mother authority kernel wrapped by daemon lifecycle/control, with effectful adapters around it and Iroh as the first peer connectivity substrate."
 design_influences = ["Jon Gjengset-style Rust systems design inside the authority/kernel crates", "Iroh-style composable endpoint/protocol design at peer adapter edges", "Current Patina Mother as evidence and prior art, not clean MCT ontology"]
-slice_refs = ["mct-slice-workspace-skeleton", "mct-slice-kernel-domain-records", "mct-slice-hello-admission", "mct-slice-jsonl-observation-ledger", "mct-slice-call-protocol-evaluation", "mct-slice-fake-daemon-echo", "mct-slice-local-iroh-roundtrip", "mct-slice-runtime-shape-anchors"]
+slice_refs = ["mct-slice-workspace-skeleton", "mct-slice-kernel-domain-records", "mct-slice-hello-admission", "mct-slice-jsonl-observation-ledger", "mct-slice-call-protocol-evaluation", "mct-slice-fake-daemon-echo", "mct-slice-local-iroh-roundtrip", "mct-slice-runtime-shape-anchors", "mct-slice-daemon-child-directory-loader", "mct-slice-iroh-ticket-peer-connection", "mct-slice-toy-grant-authorized-call", "mct-slice-kernel-child-lifecycle-state-machine", "mct-slice-daemon-child-authority-projection", "mct-slice-process-child-authorized-echo", "mct-slice-toy-adapter-authorized-call", "mct-slice-daemon-durable-config-approval-store", "mct-slice-process-supervisor-lifecycle", "mct-slice-wasm-component-authorized-s32", "mct-slice-iroh-serve-process-runtime-routing"]
 human_request = "Create and maintain the top-level Slate roadmap for the clean Patina MCT build, covering kernel, daemon, Iroh, child runtimes, toy grants, storage, observability, bridges, launcher, and hardening."
 allium_anchors = ["MctRuntimeShape"]
 user_alignment = "User asked to create Slates for the entire MCT build ASAP so work is no longer collapsed into the mct-kernel design Slate. User later identified the broad lanes as early theater unless completion is tracked by small implementation slices."
@@ -33,5 +33,5 @@ implementation_plan = [
 ]
 belief_harvest_decision = "No new durable belief required; this Slate organizes existing agreed product boundaries into executable build lanes. Future belief extraction can happen after Allium elicitation and implementation evidence."
 created_at = "1780068325"
-updated_at = "1780264533"
+updated_at = "1781008973"
 closed_at = "1780070278"

@@ -1,0 +1,43 @@
+id = "mct-slice-iroh-serve-process-runtime-routing"
+title = "Route Iroh calls through runtime execution handler"
+kind = "build"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Continue until Iroh serve path can route accepted peer calls to real child runtime work instead of a static result ref."
+allium_anchors = ["MctCallProtocolRequest", "AuthorizedChildInvocation", "IrohConnectivityIsNotMctAuthority"]
+user_alignment = "Iroh is connectivity only; accepted calls must still pass MCT authority and then run through a daemon-owned runtime adapter."
+belief_refs = ["iroh-provides-connectivity-not-authority", "mother-kernel-decides-adapters-perform"]
+core_refs = ["layer/core/adapter-pattern.md", "layer/core/safety-boundaries.md", "layer/core/mct-build-boundaries.md"]
+parent_slates = ["mct-iroh-substrate", "mct-process-harness", "mct-daemon-control-plane"]
+code_targets = ["crates/mct-iroh/src/endpoint.rs", "crates/mct-iroh/src/lib.rs", "crates/mct-daemon/src/main.rs"]
+implementation_ready = true
+runtime_shape_role = "Iroh adapter can defer peer call reply outcome/result_ref to a daemon runtime handler without exposing raw Iroh handles to children."
+design_style = "Typed callback result object, not raw transport handles; CLI `serve-process` demonstrates process runtime routing after hello/call authority."
+first_test_to_write = "iroh_call_handler_can_complete_reply_after_runtime_execution"
+exit_criteria = [
+    "Iroh endpoint exposes `serve_next_with_call_handler` to let daemon runtime execution determine completed/failed/timed-out reply outcome.",
+    "Existing `serve_next` static-result behavior remains compatible.",
+    "Test proves call handler can convert accepted routing into a completed reply with runtime result ref.",
+    "CLI exposes `iroh serve-process ... <executable>` to execute a local process runtime for accepted peer calls.",
+    "Raw Iroh endpoint/connection handles remain private to `mct-iroh`.",
+]
+non_goals = ["No streaming payload body across Iroh yet.", "No multi-child planner in serve-process yet.", "No durable ledger append in the serve loop yet."]
+implementation_plan = [
+    "[x] Add `MctIrohCallHandlerResult` and handler-based serve API.",
+    "[x] Preserve existing static `serve_next` API by delegating to the handler path.",
+    "[x] Add test proving handler-completed replies.",
+    "[x] Add daemon `iroh serve-process` command that invokes process runtime after call authority.",
+]
+proof_plan = [
+    "[x] `cargo test -p mct-iroh iroh_call_handler_can_complete_reply_after_runtime_execution` passes.",
+    "[x] `cargo test --workspace` passes.",
+]
+closure_evidence = [
+    "[x] `mct-iroh` now supports runtime handler outcomes without exposing raw Iroh handles.",
+    "[x] `mct-daemon` serve-process path connects accepted peer calls to authorized process execution before reply.",
+]
+blocked_by = []
+belief_harvest_decision = "No new durable belief required; this reinforces existing Iroh connectivity-not-authority belief."
+created_at = "1781008973"
+updated_at = "1781008973"
+closed_at = "1781008973"

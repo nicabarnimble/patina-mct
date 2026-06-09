@@ -1,0 +1,51 @@
+id = "mct-slice-toy-grant-authorized-call"
+title = "Authorize toy calls with explicit ToyGrants"
+kind = "build"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Implement the next kernel authority slice so child/runtime host effects require an explicit ToyGrant and produce an AuthorizedToyCall token before execution."
+allium_anchors = ["ToyGrant", "ToyGrantEvaluation", "AuthorizedToyCall", "MctToyGrantAuthority", "MctObservation"]
+user_alignment = "User wants a working standalone MCT, but host power must stay governed by Mother/Toy authority rather than manifest needs or legacy capabilities."
+belief_refs = ["typed-domain-records-before-algorithms", "mother-kernel-decides-adapters-perform", "slate-epics-progress-through-child-slices"]
+core_refs = ["layer/core/safety-boundaries.md", "layer/core/mct-build-boundaries.md", "layer/core/dependable-rust.md", "layer/core/adapter-pattern.md"]
+parent_slates = ["mct-kernel-crate", "mct-toy-grants", "mct-observation-log"]
+code_targets = ["crates/mct-kernel/src/toy.rs", "crates/mct-kernel/src/id.rs", "crates/mct-kernel/src/lib.rs", "crates/mct-kernel/src/observation.rs"]
+implementation_ready = true
+runtime_shape_role = "Adds pure kernel toy authority records and evaluation before any process/WASM/JVM/toy backend effect can run."
+design_style = "Typed domain records and pure decision logic first; no toy backend adapter, no runtime execution, and no manifest-needs-as-grants shortcut."
+first_test_to_write = "active_grant_produces_authorized_toy_call"
+exit_criteria = [
+    "Kernel defines `ToyGrant`, `ToyGrantEvaluation`, and `AuthorizedToyCall` records without external runtime types.",
+    "Unknown toy names deny by default through the closed canonical catalog.",
+    "A manifest/request without a matching active grant denies as `missing_grant`.",
+    "Active matching grants produce an `AuthorizedToyCall` token linked to call, evaluation, grant, toy, instance, and decision ids.",
+    "Expired, revoked, wrong-scope, and stale-revision grants deny without authorization.",
+    "Toy grant evaluations map to canonical `MctObservation` facts.",
+]
+non_goals = ["No toy backend registry.", "No process/WASM runtime execution.", "No persistent grant store.", "No grant creation/escalation workflow."]
+implementation_plan = [
+    "[x] Add toy authority IDs to `mct-kernel`.",
+    "[x] Add `toy.rs` with canonical catalog, grant, evaluation, authorized-call, and pure evaluation logic.",
+    "[x] Add fail-closed tests for unknown/missing/revoked/expired/wrong-scope/stale grants.",
+    "[x] Add observation projection for toy grant evaluations.",
+]
+proof_plan = [
+    "[x] `cargo test -p mct-kernel active_grant_produces_authorized_toy_call` passes.",
+    "[x] `cargo test -p mct-kernel manifest_need_without_grant_denies_as_missing_grant` passes.",
+    "[x] `cargo test -p mct-kernel unknown_toy_denies_by_default` passes.",
+    "[x] `cargo test -p mct-kernel revoked_grant_denies_without_authorization` passes.",
+    "[x] `cargo test -p mct-kernel expired_time_window_denies_without_authorization` passes.",
+    "[x] `cargo test -p mct-kernel wrong_scope_denies_without_authorization` passes.",
+    "[x] `cargo test -p mct-kernel stale_grant_revision_denies_without_authorization` passes.",
+    "[x] `cargo test -p mct-kernel toy_grant_evaluations_become_observations` passes.",
+]
+closure_evidence = [
+    "[x] `crates/mct-kernel/src/toy.rs` implements closed catalog lookup, active grant matching, scope/revision/time/state checks, and `AuthorizedToyCall` creation.",
+    "[x] Denial tests prove legacy/unknown toy names, manifest needs without grant, revoked grants, expired windows, wrong actions/scopes, and stale grant revisions fail closed.",
+    "[x] `toy_grant_evaluation_observation` maps allowed/denied/expired/revoked toy grant outcomes to `MctObservation` facts.",
+]
+blocked_by = []
+belief_harvest_decision = "No new durable belief required; this slice directly applies existing ToyGrant Allium authority and adapter-boundary beliefs."
+created_at = "1780956968"
+updated_at = "1780956968"
+closed_at = "1780956968"
