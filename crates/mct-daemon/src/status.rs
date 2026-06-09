@@ -1,19 +1,22 @@
 use mct_iroh::{MotherIrohEndpointLifecycle, MotherIrohEndpointSnapshot};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MctDaemonHealth {
     Healthy,
     Degraded,
     Unhealthy,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MctDaemonReadiness {
     Ready,
     NotReady,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MctDaemonStatus {
     pub version: String,
     pub health: MctDaemonHealth,

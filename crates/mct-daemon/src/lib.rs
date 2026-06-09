@@ -28,9 +28,12 @@ pub use config::{
     MctOperatorChildScope, MctPeerAddressBookEntry, MctStoredChildApproval,
     MctStoredChildAssignment, default_config_path, unix_timestamp_string,
 };
+#[cfg(unix)]
+pub use control::serve_uds_control_once;
 pub use control::{
-    MctDaemonLocalControlFacts, MctDaemonLocalControlRequest, MctDaemonLocalControlResponse,
-    handle_local_control_request,
+    MctControlPlaneResponse, MctControlPlaneSnapshot, MctDaemonLocalControlFacts,
+    MctDaemonLocalControlRequest, MctDaemonLocalControlResponse, handle_control_plane_path,
+    handle_local_control_request, serve_http_control_once,
 };
 pub use lifecycle::{
     MctChildReloadReport, MctChildWarmupReport, reload_configured_child, warmup_configured_child,
