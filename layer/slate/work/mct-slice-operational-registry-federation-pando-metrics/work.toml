@@ -1,0 +1,48 @@
+id = "mct-slice-operational-registry-federation-pando-metrics"
+title = "Add registry sync federation pando and metrics projections"
+kind = "build"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Improve MCT operational depth toward equality with the existing Patina Mother without importing Mother coupling wholesale."
+allium_anchors = ["KernelDecidesAdaptersPerform", "ObservationsAreCanonicalRuntimeTruth", "DaemonOwnsLifecycleButNotAuthority"]
+user_alignment = "Operational parity should add Mother-like depth while preserving standalone `.mct/` state, explicit authority facts, and adapter-only effects."
+belief_refs = ["mother-kernel-decides-adapters-perform", "greenfield-products-reference-legacy", "typed-domain-records-before-algorithms"]
+core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/adapter-pattern.md", "layer/core/dependable-rust.md", "layer/core/unix-philosophy.md"]
+parent_slates = ["mct-daemon-control-plane", "mct-storage-core", "mct-iroh-substrate", "mct-pando-manifest"]
+code_targets = ["crates/mct-daemon/src/registry.rs", "crates/mct-daemon/src/federation.rs", "crates/mct-daemon/src/composition.rs", "crates/mct-daemon/src/metrics.rs", "crates/mct-daemon/src/main.rs"]
+implementation_ready = true
+runtime_shape_role = "Add v0 operational-depth parity surfaces for registry sync, Vision-scoped federation view, pando composition records, and metrics snapshots."
+design_style = "Translate existing Mother operational depth into explicit MCT domain facts, local stores, and adapter observations; do not copy broad ServerState coupling."
+first_test_to_write = "registry_sync_records_loaded_children_as_candidates"
+exit_criteria = [
+    "Capability is available through standalone mct-daemon or daemon library APIs.",
+    "Authority remains represented by kernel records before adapter effects.",
+    "Runtime facts persist under `.mct/` or are returned as MctObservation records.",
+    "Tests prove the new surface fail-closes or records the intended operational fact.",
+]
+non_goals = ["No integration with the existing Patina Mother runtime.", "No raw Iroh or Wasmtime handles exposed to children.", "No authority granted by transport, manifest needs, metrics, or registry sync alone."]
+implementation_plan = [
+    "[x] Read current MCT code and existing Mother operational-depth comparison.",
+    "[x] Implement the smallest standalone operational-depth surface for this slice.",
+    "[x] Keep kernel authority separate from adapter effects.",
+]
+proof_plan = [
+    "[x] `cargo test -p mct-daemon registry_sync_records_loaded_children_as_candidates` passes.",
+    "[x] `cargo test -p mct-daemon federation_view_is_vision_scoped` passes.",
+    "[x] `cargo test -p mct-daemon records_composition_plan_in_state` passes.",
+    "[x] `cargo test -p mct-daemon metrics_snapshot_projects_state_summary` passes.",
+    "[x] `cargo clippy --workspace --all-targets -- -D warnings` passes.",
+    "[x] `cargo test --workspace` passes.",
+]
+closure_evidence = [
+    "[x] `crates/mct-daemon/src/registry.rs` implements or exposes this slice.",
+    "[x] `crates/mct-daemon/src/federation.rs` implements or exposes this slice.",
+    "[x] `crates/mct-daemon/src/composition.rs` implements or exposes this slice.",
+    "[x] `crates/mct-daemon/src/metrics.rs` implements or exposes this slice.",
+    "[x] `crates/mct-daemon/src/main.rs` implements or exposes this slice.",
+]
+blocked_by = []
+belief_harvest_decision = "Potential belief: translate Mother operational behavior into MCT facts instead of copying coupled runtime containers."
+created_at = "1781019557"
+updated_at = "1781019557"
+closed_at = "1781019557"
