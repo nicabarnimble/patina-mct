@@ -1,0 +1,45 @@
+id = "mct-slice-daemon-child-authority-projection"
+title = "Project loaded children into explicit authority facts"
+kind = "build"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Continue toward a working standalone MCT product by connecting the daemon child loader to kernel child approval, assignment, instance, and invocation authority records."
+allium_anchors = ["ComponentArtifact", "ChildApproval", "ChildAssignment", "ChildInstance", "CallsRequireReadyAuthorizedInstance"]
+user_alignment = "Loaded standalone child artifacts should be callable only after explicit local approval/assignment projection, not merely because the manifest requested an operation."
+belief_refs = ["mother-kernel-decides-adapters-perform", "typed-domain-records-before-algorithms"]
+core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/safety-boundaries.md", "layer/core/dependable-rust.md"]
+parent_slates = ["mct-child-registry-lifecycle", "mct-daemon-control-plane", "mct-kernel-crate"]
+code_targets = ["crates/mct-daemon/src/children.rs", "crates/mct-kernel/src/child.rs"]
+implementation_ready = true
+runtime_shape_role = "Daemon projection from artifact loader facts into kernel authority records before local route candidates are exposed."
+design_style = "Local explicit activation mode; verified artifacts may become approved/assigned/ready, candidate-only and unverified artifacts remain fail-closed."
+first_test_to_write = "authority_projection_authorizes_only_explicit_local_approvals"
+exit_criteria = [
+    "Loaded child records can be projected into `ComponentArtifact`, `ChildApproval`, `ChildAssignment`, and `ChildInstance` kernel records.",
+    "Candidate-only projection creates no active assignments and returns no authorized candidates.",
+    "Explicit local approve-and-assign projection authorizes verified ready children for exported operations.",
+    "Unverified audit-only artifacts are rejected by the projection and produce no authorized candidates even under local activation mode.",
+    "Versioned WIT operation ids from manifests match kernel `OperationTarget` values with interface version preserved.",
+]
+non_goals = ["No durable approval store.", "No operator CLI for approval yet.", "No child runtime execution.", "No automatic ToyGrant creation from manifest needs."]
+implementation_plan = [
+    "[x] Add `MctChildAuthorityProjectionOptions`, local activation mode, and projection records in daemon child registry.",
+    "[x] Convert loaded child manifests/digests into kernel component artifacts and lifecycle records.",
+    "[x] Gate daemon local route candidates through `evaluate_child_call_authority` for explicit local projection.",
+    "[x] Keep unverified audit-only artifacts candidate-only/rejected rather than silently approved.",
+]
+proof_plan = [
+    "[x] `cargo test -p mct-daemon authority_projection_authorizes_only_explicit_local_approvals` passes.",
+    "[x] `cargo test -p mct-daemon authority_projection_rejects_unverified_artifacts` passes.",
+    "[x] `cargo test --workspace` passes.",
+]
+closure_evidence = [
+    "[x] `MctChildRegistry::authority_projection` creates kernel artifact/approval/assignment/instance facts from standalone loaded child records.",
+    "[x] `MctChildAuthorityProjection::authorized_local_candidates_for_call` evaluates kernel child call authority before exposing local candidates.",
+    "[x] Tests prove candidate-only/unverified artifacts fail closed and explicit verified local activation returns an authorized local route.",
+]
+blocked_by = []
+belief_harvest_decision = "No new durable belief required; this slice applies existing authority-before-execution and explicit lifecycle decisions."
+created_at = "1781003442"
+updated_at = "1781003442"
+closed_at = "1781003442"

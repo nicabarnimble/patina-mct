@@ -1,0 +1,50 @@
+id = "mct-slice-daemon-child-directory-loader"
+title = "Load standalone MCT child artifact directory"
+kind = "build"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Move MCT toward working state by loading standalone MCT children from a `.wasm` + `.toml` artifact directory. Existing Mother artifacts may be explicit compatibility fixtures, not the runtime store."
+allium_anchors = ["ComponentArtifact", "ChildInstance", "MctChildComponentLifecycle", "MctRuntimeShape"]
+user_alignment = "User explicitly asked that this project be able to load children just as Mother now does."
+belief_refs = ["typed-domain-records-before-algorithms", "slate-epics-progress-through-child-slices"]
+core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/dependable-rust.md", "layer/core/safety-boundaries.md", "layer/core/spec-driven-design.md"]
+parent_slates = ["mct-child-registry-lifecycle", "mct-daemon-control-plane"]
+code_targets = ["crates/mct-daemon/src/children.rs", "crates/mct-daemon/src/lib.rs", "crates/mct-daemon/src/main.rs", "crates/mct-daemon/Cargo.toml", "Cargo.toml", "Cargo.lock"]
+implementation_ready = true
+runtime_shape_role = "Adds concrete daemon-side child discovery/registry facts for standalone MCT child artifacts without exposing a WASM runtime handle or granting Toy authority."
+design_style = "Concrete directory loader first: parse manifests, compute/verify digests, register ready metadata, and route candidates from WIT allowlists; no full Wasmtime runtime yet."
+first_test_to_write = "loads_mother_style_wasm_children_from_directory"
+exit_criteria = [
+    "MCT discovers `.wasm` files and matching `.toml` manifests from a standalone child artifact directory.",
+    "Loaded child records expose name/version/kind/role/ingress/allowlist/toy requests/digests/paths/state.",
+    "Integrity sidecars can be audited by default and required in strict mode.",
+    "Duplicate child names fail closed.",
+    "WIT allowlists can produce local route candidates for ready children.",
+    "The `mct-daemon children load` CLI reports project-local children by default and can inspect an explicit fixture directory when provided.",
+]
+non_goals = ["No Wasmtime instantiation.", "No ToyGrant execution authority.", "No child package source sync/install control plane.", "No long-running daemon supervisor."]
+implementation_plan = [
+    "[x] Add `children.rs` with manifest parsing and standalone `.wasm`/`.toml` discovery.",
+    "[x] Add digest auditing with strict sidecar enforcement as an operator option.",
+    "[x] Add a small in-memory loaded-child registry and WIT operation allowlist route candidate helper.",
+    "[x] Add `mct-daemon children load` CLI output.",
+]
+proof_plan = [
+    "[x] `cargo test -p mct-daemon loads_standalone_wasm_children_from_directory` passes.",
+    "[x] `cargo test -p mct-daemon strict_integrity_requires_hash_sidecars` passes.",
+    "[x] `cargo test -p mct-daemon duplicate_child_names_are_failed_closed` passes.",
+    "[x] `cargo test -p mct-daemon registry_routes_only_allowlisted_ready_children` passes.",
+    "[x] `cargo run -q -p mct-daemon -- children load` uses standalone project-local `.mct/children` by default.",
+    "[x] `cargo run -q -p mct-daemon -- children load /Users/nicabar/.patina/children` can inspect existing artifacts as explicit compatibility fixtures only.",
+    "[x] `./scripts/ci-tier0.sh` passes.",
+]
+closure_evidence = [
+    "[x] `crates/mct-daemon/src/children.rs` implements standalone artifact directory discovery, manifest parsing, digest audit/strict modes, duplicate rejection, loaded child records, and route candidates.",
+    "[x] Explicit compatibility fixture check against `/Users/nicabar/.patina/children` reports 9 discovered, 9 loaded, 0 failed in audit mode, including `slate-manager`, `folder-watch-actor`, and `watch-null-sink` shapes, without making that directory the default runtime store.",
+    "[x] The CLI surface `mct-daemon children load [children-dir] [--strict-integrity] [--json]` provides an operator-visible working loader.",
+]
+blocked_by = []
+belief_harvest_decision = "No new durable belief required; this applies existing child lifecycle and typed-records-before-algorithms guidance."
+created_at = "1780952244"
+updated_at = "1780952244"
+closed_at = "1780952244"

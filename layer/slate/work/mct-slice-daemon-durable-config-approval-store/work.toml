@@ -1,0 +1,46 @@
+id = "mct-slice-daemon-durable-config-approval-store"
+title = "Persist child approvals and peer config under .mct"
+kind = "build"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Continue until the standalone MCT product has durable approval/config state and operator approval/revocation workflows."
+allium_anchors = ["ChildApproval", "ChildAssignment", "MctPeerBinding", "IrohConnectivityIsNotMctAuthority"]
+user_alignment = "Runtime defaults must be project-local under `.mct/`; operator decisions must persist instead of being ephemeral loader state."
+belief_refs = ["mother-kernel-decides-adapters-perform", "typed-domain-records-before-algorithms"]
+core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/safety-boundaries.md", "layer/core/dependable-rust.md"]
+parent_slates = ["mct-storage-core", "mct-child-registry-lifecycle", "mct-daemon-control-plane", "mct-iroh-substrate"]
+code_targets = ["crates/mct-daemon/src/config.rs", "crates/mct-daemon/src/main.rs", "crates/mct-daemon/src/lib.rs"]
+implementation_ready = true
+runtime_shape_role = "Project-local daemon config store for approvals, assignments, and peer address book entries without leaking storage into kernel APIs."
+design_style = "Narrow JSON config store under `.mct/config.json`; atomic replace; kernel IDs/states stored as data; no SQL abstraction yet."
+first_test_to_write = "config_store_persists_child_approval_assignment_and_revocation"
+exit_criteria = [
+    "Project-local default config path is `.mct/config.json`.",
+    "Config store persists child approval and assignment records and can revoke them durably.",
+    "Config store persists peer address book entries including endpoint ticket data.",
+    "CLI exposes child approve/revoke/list workflows using the durable store.",
+    "CLI exposes peer add/list/remove workflows using the durable store.",
+    "Iroh `call-peer` can use the address book rather than requiring every peer field at the command line.",
+]
+non_goals = ["No SQL migrations yet.", "No multi-operator ACL workflow yet.", "No hosted control plane."]
+implementation_plan = [
+    "[x] Add `MctDaemonConfigStore` and `MctDaemonConfig` with child approvals, assignments, and peers.",
+    "[x] Save config by atomic temp-write/rename under `.mct/config.json` by default.",
+    "[x] Add `children approve`, `children revoke`, `children approvals` CLI workflows.",
+    "[x] Add `peers add`, `peers list`, `peers remove`, and `iroh call-peer` CLI workflows.",
+]
+proof_plan = [
+    "[x] `cargo test -p mct-daemon config_store_persists_child_approval_assignment_and_revocation` passes.",
+    "[x] `cargo test -p mct-daemon config_store_persists_peer_address_book_entry` passes.",
+    "[x] `cargo test --workspace` passes.",
+]
+closure_evidence = [
+    "[x] `crates/mct-daemon/src/config.rs` persists durable child approval/assignment and peer address-book records.",
+    "[x] `crates/mct-daemon/src/main.rs` exposes operator approval/revocation and peer-address-book commands.",
+    "[x] Kernel public API remains storage-free; stored records use kernel domain IDs/states as data.",
+]
+blocked_by = []
+belief_harvest_decision = "No new durable belief required; this implements existing standalone `.mct/` and adapter-boundary decisions."
+created_at = "1781008973"
+updated_at = "1781008973"
+closed_at = "1781008973"
