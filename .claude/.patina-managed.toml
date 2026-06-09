@@ -1,0 +1,4 @@
+interface = "claude"
+bundle = "claude"
+version = "builtin"
+managed_by = "patina ai refresh"
