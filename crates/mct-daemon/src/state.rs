@@ -983,7 +983,7 @@ impl MctRuntimeStateStore {
                 SELECT task_id, child_name, kind, payload_json, dedupe_key, status,
                        lease_owner, lease_until, attempts, last_error, created_at, updated_at
                 FROM runtime_tasks
-                WHERE child_name = ?1 AND status IN ('queued', 'failed')
+                WHERE child_name = ?1 AND status = 'queued'
                 ORDER BY created_at, task_id
                 LIMIT 1
                 "#,
@@ -1000,7 +1000,7 @@ impl MctRuntimeStateStore {
             UPDATE runtime_tasks
             SET status = 'leased', lease_owner = ?1, lease_until = ?2,
                 attempts = attempts + 1, updated_at = ?3
-            WHERE task_id = ?4 AND status IN ('queued', 'failed')
+            WHERE task_id = ?4 AND status = 'queued'
             "#,
             params![
                 lease_owner,
