@@ -10,10 +10,12 @@ allium_anchors = []
 user_alignment = "WASM/WIT/WASI is the design center, but runtime depth should attach to the kernel seam rather than distort it."
 belief_refs = []
 core_refs = ["layer/core/adapter-pattern.md", "layer/core/safety-boundaries.md", "layer/core/dependable-rust.md", "layer/core/mct-build-boundaries.md"]
+slice_refs = ["mct-slice-wasm-component-authorized-s32"]
+partial_evidence = ["[x] Daemon Wasmtime component-model runtime instantiates and calls a lifted `s32` export only with `AuthorizedChildInvocation`, returning `MctResult` and runtime observations.", "[ ] WASI context, WIT interface binding generation, host toy imports, traps, and full child fixture integration remain future child slices."]
 proof_plan = [
-    "[ ] Minimal WASM child activates and handles a typed call through MCT.",
+    "[x] Minimal WASM component activates and handles a typed `s32` export call through MCT authority.",
     "[ ] WASM traps and host-call failures are adapter observations linked to kernel call IDs.",
-    "[ ] WIT/WASI runtime types stay outside the kernel public API.",
+    "[x] WIT/WASI runtime types stay outside the kernel public API.",
 ]
 closure_evidence = []
 blocked_by = [
@@ -23,10 +25,10 @@ blocked_by = [
 ]
 implementation_plan = [
     "[ ] Review current integrated WASM child runtime as reference, not source to copy wholesale.",
-    "[ ] Define component loading, WIT operation binding, WASI context, and toy host-call mapping.",
-    "[ ] Implement instantiate, health, call, trap handling, and stop semantics.",
-    "[ ] Add minimal WASM child fixture and WIT contract tests.",
+    "[x] Define first component loading and lifted-export dynamic call path; WASI context and toy host-call mapping remain future work.",
+    "[x] Implement instantiate and call for a minimal authorized component export; health/trap/stop semantics remain future work.",
+    "[x] Add minimal WASM component fixture test.",
 ]
 created_at = "1780068538"
-updated_at = "1780262310"
-block_reason = "Blocked until mct-process-harness is completed or explicitly superseded in the roadmap."
+updated_at = "1781008973"
+block_reason = "Epic remains open for WASI, traps, WIT binding generation, host toys, and full fixture integration; first authorized component execution slice is complete."

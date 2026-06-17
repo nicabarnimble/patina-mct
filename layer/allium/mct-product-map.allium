@@ -18,6 +18,7 @@
 --   - Exact HTTP, SQLite, Wasmtime, JVM, or Iroh implementation APIs unless they affect observable behaviour
 --   - UI rendering/view-buffer details beyond observability obligations
 -- Core build anchors:
+--   - layer/core/what-is-mct.md
 --   - layer/core/mct-build-boundaries.md
 --   - layer/core/spec-driven-design.md
 --   - layer/core/safety-boundaries.md

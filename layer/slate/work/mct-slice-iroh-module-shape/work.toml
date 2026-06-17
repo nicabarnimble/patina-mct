@@ -1,0 +1,50 @@
+id = "mct-slice-iroh-module-shape"
+title = "Split Iroh adapter module shape"
+kind = "refactor"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Structure the existing mct-iroh code like a cleaner adapter crate: keep public endpoint lifecycle/facts in lib-facing modules, move observation/test proof helpers out of lib.rs, and avoid adding new behavior or traits."
+allium_anchors = ["MctRuntimeShape"]
+user_alignment = "User asked whether the gap versus Iroh is feature absence or structure, then requested the structure cleanup: split mct-iroh without changing the product surface."
+belief_refs = ["iroh-provides-connectivity-not-authority", "iroh-endpointid-is-transport-identity", "mother-kernel-decides-adapters-perform"]
+core_refs = ["layer/core/dependable-rust.md", "layer/core/adapter-pattern.md", "layer/core/unix-philosophy.md", "layer/core/mct-build-boundaries.md"]
+parent_slates = ["mct-iroh-substrate", "mct-release-hardening"]
+code_targets = ["crates/mct-iroh/src/lib.rs", "crates/mct-iroh/src/endpoint.rs", "crates/mct-iroh/src/observation.rs", "crates/mct-iroh/src/test_support.rs"]
+implementation_ready = true
+runtime_shape_role = "Make the Iroh adapter crate easier to grow by separating public endpoint lifecycle facts from private observation projection and local proof harness code."
+design_style = "Structure-only refactor: no new features, no new traits, no behavior change; preserve the curated public lib.rs surface."
+first_test_to_write = "No new behavior test; existing Iroh endpoint, roundtrip, denial, and adapter-observation tests must keep passing after the split."
+exit_criteria = [
+    "`crates/mct-iroh/src/lib.rs` contains the curated public crate surface and tests rather than all implementation detail.",
+    "Endpoint lifecycle and ALPN helpers live in an endpoint module while raw Iroh handles remain private.",
+    "Observation projection proof helpers live outside `lib.rs` and remain test-only/private.",
+    "Local Iroh proof harness code lives outside `lib.rs` and remains test-only/private.",
+    "No new behavior, feature, or abstraction trait is introduced.",
+]
+non_goals = ["No persistent Iroh identity.", "No production accept loop.", "No relay/discovery configuration.", "No typed Iroh adapter error yet.", "No public test harness API."]
+implementation_plan = [
+    "[x] Move Mother-owned endpoint lifecycle records and wrapper into `endpoint.rs`.",
+    "[x] Move local adapter observation proof builder into test-only `observation.rs`.",
+    "[x] Move local roundtrip/denial protocol harness into test-only `test_support.rs`.",
+    "[x] Keep `lib.rs` as docs, module declarations, curated public re-exports, version, and tests.",
+    "[x] Verify the public production API still exposes endpoint facts and not proof harness helpers.",
+]
+proof_plan = [
+    "[x] `cargo fmt --check` passes.",
+    "[x] `cargo clippy --workspace --all-targets -- -D warnings` passes.",
+    "[x] `cargo test -p mct-iroh` passes.",
+    "[x] `allium check layer/allium` passes.",
+    "[x] `./scripts/ci-tier0.sh` passes.",
+]
+closure_evidence = [
+    "[x] Commit `7dbb6d9 refactor(iroh): split adapter module shape` splits `mct-iroh` into `endpoint.rs`, `observation.rs`, and `test_support.rs` while keeping curated public re-exports in `lib.rs`.",
+    "[x] Raw `iroh::Endpoint` remains private inside `MotherIrohEndpoint` in `endpoint.rs`.",
+    "[x] Local roundtrip/denial proof reports and helpers remain `pub(crate)` inside test-only modules rather than production public API.",
+    "[x] Existing tests continue to prove endpoint lifecycle, local hello/call roundtrip, unknown-peer denial, and adapter observation projection.",
+    "[x] Local validation passed: fmt, clippy warning-deny, targeted Iroh tests, Allium check, full Tier 0 CI script, Slate check, and Slate TOML parse.",
+]
+blocked_by = ["mct-slice-rust-hygiene-api-boundary"]
+belief_harvest_decision = "No new durable belief required; this slice applies existing Iroh connectivity-not-authority and dependable Rust module-shape guidance."
+created_at = "1780278457"
+updated_at = "1780278843"
+closed_at = "1780278843"

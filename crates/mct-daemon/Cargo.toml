@@ -7,10 +7,20 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+anyhow.workspace = true
+mct-iroh = { path = "../mct-iroh" }
 mct-kernel = { path = "../mct-kernel" }
 mct-observation = { path = "../mct-observation" }
-mct-iroh = { path = "../mct-iroh" }
-anyhow.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml.workspace = true
+wasmtime.workspace = true
 
 [dev-dependencies]
+mct-observation = { path = "../mct-observation" }
 tempfile.workspace = true
+wat.workspace = true

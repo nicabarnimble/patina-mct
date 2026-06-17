@@ -170,6 +170,17 @@ Completed implementation slice Slates now recorded:
 | `mct-slice-fake-daemon-echo` | `d826098 feat(daemon): add fake echo vertical slice` |
 | `mct-slice-local-iroh-roundtrip` | `a35b598 feat(iroh): prove local mct protocol roundtrip` |
 | `mct-slice-runtime-shape-anchors` | `5c88f8b spec: codify mct runtime shape` plus Slate tightening |
+| `mct-slice-daemon-child-directory-loader` | current session: `mct-daemon children load` loads standalone `.wasm` + `.toml` child artifact directories |
+| `mct-slice-iroh-ticket-peer-connection` | current session: endpoint-ticket Iroh serve/call connects two local MCT identities |
+| `mct-slice-toy-grant-authorized-call` | current session: kernel ToyGrant evaluation produces AuthorizedToyCall and fail-closed denial observations |
+| `mct-slice-kernel-child-lifecycle-state-machine` | current session: kernel child artifact/approval/assignment/instance lifecycle and authorized invocation revalidation |
+| `mct-slice-daemon-child-authority-projection` | current session: daemon projects loaded children into explicit local approvals/assignments before local candidates |
+| `mct-slice-process-child-authorized-echo` | current session: one-shot process child adapter requires AuthorizedChildInvocation and returns runtime observations |
+| `mct-slice-toy-adapter-authorized-call` | current session: daemon toy adapter registry requires AuthorizedToyCall and records toy success/failure observations |
+| `mct-slice-daemon-durable-config-approval-store` | current session: `.mct/config.json` persists child approvals/assignments and peer address book with operator CLI workflows |
+| `mct-slice-process-supervisor-lifecycle` | current session: long-lived process supervisor spawn/status/stop for authorized child instances |
+| `mct-slice-wasm-component-authorized-s32` | current session: real Wasmtime component-model execution of an authorized lifted `s32` export |
+| `mct-slice-iroh-serve-process-runtime-routing` | current session: Iroh serve call handler routes accepted peer calls through process runtime before reply |
 
 A parent epic becomes complete only when its child `slice_refs` and `closure_evidence` cover every proof gate with committed code and passing validation.
 

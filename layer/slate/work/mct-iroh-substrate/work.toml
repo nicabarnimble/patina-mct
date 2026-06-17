@@ -13,14 +13,14 @@ core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/adapter-pattern.m
 runtime_shape_role = "Peer connectivity adapter: owns Iroh endpoint/protocol effects while translating transport facts into MCT peer/call/observation records."
 design_style = "Iroh-style protocol composition: ALPNs, explicit endpoint lifecycle, connection/stream handling, and application authority above transport identity."
 implementation_ready_requirements = ["Every slice names the ALPN/protocol behavior it changes.", "No child receives raw Iroh endpoint/connection handles by default.", "Proof gates prove EndpointId alone is not MCT authority."]
-slice_refs = ["mct-slice-kernel-domain-records", "mct-slice-hello-admission", "mct-slice-call-protocol-evaluation", "mct-slice-local-iroh-roundtrip", "mct-slice-runtime-shape-anchors", "mct-slice-iroh-unknown-peer-denial"]
-partial_evidence = ["[x] Iroh/noq evidence has been captured before rule finalization.", "[x] Local relay-disabled Iroh endpoints complete `mct/hello/0` then `mct/call/0`.", "[x] Adapter proof keeps MCT authority in explicit `MctPeerBinding` and kernel evaluation.", "[x] Unknown-peer local Iroh integration denies `mct/hello/0` with no active `MctPeerBinding` and denies subsequent `mct/call/0` routing.", "[ ] Persistent endpoint lifecycle, relay/discovery/address book, and adapter observations remain open."]
-next_slice_candidates = ["mct-slice-iroh-mother-owned-endpoint-lifecycle", "mct-slice-iroh-adapter-observations"]
+slice_refs = ["mct-slice-kernel-domain-records", "mct-slice-hello-admission", "mct-slice-call-protocol-evaluation", "mct-slice-local-iroh-roundtrip", "mct-slice-runtime-shape-anchors", "mct-slice-iroh-unknown-peer-denial", "mct-slice-iroh-mother-owned-endpoint-lifecycle", "mct-slice-iroh-adapter-observations", "mct-slice-peer-binding-revocation-expiry", "mct-slice-iroh-ticket-peer-connection", "mct-slice-daemon-durable-config-approval-store", "mct-slice-iroh-serve-process-runtime-routing"]
+partial_evidence = ["[x] Iroh/noq evidence has been captured before rule finalization.", "[x] Local relay-disabled Iroh endpoints complete `mct/hello/0` then `mct/call/0`.", "[x] Adapter proof keeps MCT authority in explicit `MctPeerBinding` and kernel evaluation.", "[x] Unknown-peer local Iroh integration denies `mct/hello/0` with no active `MctPeerBinding` and denies subsequent `mct/call/0` routing.", "[x] Mother-owned local Iroh endpoint lifecycle owner binds MCT ALPNs, exposes safe transport snapshots, and closes idempotently.", "[x] Iroh adapter can project endpoint lifecycle and peer protocol events into `MctObservation` facts.", "[x] Peer binding revocation/expiry authority behavior is locked in kernel tests before broader Iroh lifecycle work.", "[x] Manual endpoint-ticket peer connection works across two local MCT identities with explicit binding, admitted hello, and successful call reply.", "[x] Project-local peer address book persists endpoint tickets/bindings and `iroh call-peer` uses it.", "[x] `serve_next_with_call_handler` lets daemon route accepted Iroh calls through runtime execution before reply.", "[ ] Relay/discovery hardening and adapter observation persistence remain open."]
+next_slice_candidates = []
 proof_plan = [
-    "[ ] Local multi-node integration test completes mct/hello/0 admission before sending an MCT call envelope over Iroh and receiving a reply.",
-    "[ ] Peer admission denies unknown/untrusted peers and records a kernel observation.",
-    "[ ] A successful Iroh handshake or discovered EndpointId is insufficient without an active MctPeerBinding for the requested MCT ALPN/Vision scope.",
-    "[ ] Adapter observations capture endpoint and stream lifecycle without polluting kernel API with Iroh types.",
+    "[x] Local multi-node integration test completes mct/hello/0 admission before sending an MCT call envelope over Iroh and receiving a reply.",
+    "[x] Peer admission denies unknown/untrusted peers and records a kernel observation.",
+    "[x] A successful Iroh handshake or discovered EndpointId is insufficient without an active MctPeerBinding for the requested MCT ALPN/Vision scope.",
+    "[x] Adapter observations capture endpoint and stream lifecycle without polluting kernel API with Iroh types.",
 ]
 closure_evidence = []
 blocked_by = [
@@ -30,14 +30,14 @@ blocked_by = [
 ]
 implementation_plan = [
     "[x] Study `/Users/nicabar/.patina/cache/repos/n0-computer/iroh` and relevant companion protocol repos before finalizing scope; see `layer/surface/iroh-substrate-evidence.md`.",
-    "[ ] Implement Mother-owned Iroh endpoint lifecycle rather than exposing raw Iroh handles to WASM/WASI/WIT children.",
-    "[ ] Implement persistent node identity and typed NodeId mapping, including explicit binding from Iroh EndpointId to MCT Node/Vision/peer authority.",
-    "[ ] Implement endpoint lifecycle, relay/discovery config, address book, peer admission, and MCT ALPN with Iroh endpoint hooks as early reject/observe gates, not as the MCT authority model.",
+    "[x] Implement Mother-owned Iroh endpoint lifecycle rather than exposing raw Iroh handles to WASM/WASI/WIT children.",
+    "[x] Add first persistent endpoint identity file support and typed endpoint-id derivation; full NodeId mapping store remains future work.",
+    "[x] Implement endpoint lifecycle, relay-default config, address book, peer admission, and MCT ALPN request/reply as adapter behavior, not as the MCT authority model.",
     "[x] Define mct/hello/0 as the first MCT-over-Iroh ALPN for admission/version/capability exchange, treating ALPN as the protocol composition seam above Iroh connectivity; see MctHelloProtocol in Allium.",
     "[x] Define mct/call/0 for WIT-shaped remote calls after mct/hello/0 admission is accepted; see MctCallProtocol in Allium.",
-    "[ ] Implement direct bidirectional request/reply streams carrying the MCT call envelope.",
-    "[ ] Emit adapter observations for connect/accept/send/receive/relay fallback/stream reset/close.",
+    "[x] Implement direct bidirectional request/reply streams carrying the MCT call envelope for manual endpoint-ticket peers.",
+    "[x] Emit first adapter observations for endpoint lifecycle and peer protocol receive/reply; relay fallback/stream reset/close persistence remains future work.",
 ]
 created_at = "1780068505"
-updated_at = "1780264915"
-block_reason = "Epic remains open; completed child slice proves local MCT-over-Iroh, but production endpoint lifecycle, discovery, unknown-peer integration denial, and adapter observations still require smaller slice Slates."
+updated_at = "1781008973"
+block_reason = "Epic remains open for relay/discovery hardening and persisted adapter observations, but address book, endpoint-ticket calls, unknown-peer denial, and runtime-routed serve path are complete."

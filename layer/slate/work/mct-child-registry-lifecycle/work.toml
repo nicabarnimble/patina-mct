@@ -10,10 +10,12 @@ allium_anchors = []
 user_alignment = "MCT is Mother/Child/Toy infrastructure; child activation must be governed explicitly rather than ambient."
 belief_refs = []
 core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/safety-boundaries.md", "layer/core/dependable-rust.md"]
+slice_refs = ["mct-slice-daemon-child-directory-loader", "mct-slice-kernel-child-lifecycle-state-machine", "mct-slice-daemon-child-authority-projection", "mct-slice-daemon-durable-config-approval-store", "mct-slice-process-supervisor-lifecycle"]
+partial_evidence = ["[x] MCT can now load standalone `.wasm` + `.toml` child directory entries into typed loaded-child records with digest audit, ingress mode, WIT allowlist, requested toys, and ready instance projection.", "[x] The loaded-child registry can produce local route candidates only for ready allowlisted WIT operations.", "[x] Kernel child lifecycle now separates immutable artifacts, approvals, scoped assignments, and live instances, with fail-closed call revalidation for unknown/not-ready/unassigned/revoked/non-approved children.", "[x] Daemon can project loaded verified children into explicit local approval/assignment/ready authority facts and gate local candidates through kernel child call evaluation.", "[x] Durable `.mct/config.json` approval/assignment records and child approve/revoke/list CLI workflows exist.", "[x] Long-lived process supervisor can spawn/status/stop authorized child instances.", "[ ] Reload orchestration and full WASM/WIT child lifecycle integration remain future child slices."]
 proof_plan = [
-    "[ ] Tests cover valid lifecycle transitions and reject illegal transitions.",
-    "[ ] Unknown/not-ready/unassigned child calls fail closed.",
-    "[ ] Registry design compares against current integrated `ChildRegistry` and removes accidental coupling.",
+    "[x] Tests cover valid lifecycle transitions and reject illegal transitions.",
+    "[x] Unknown/not-ready/unassigned child calls fail closed.",
+    "[x] Registry design compares against current integrated `ChildRegistry` and removes accidental coupling for the directory discovery slice.",
 ]
 closure_evidence = []
 blocked_by = [
@@ -22,11 +24,11 @@ blocked_by = [
     "mct-observation-log",
 ]
 implementation_plan = [
-    "[ ] Define child package, child ID, runtime kind, manifest claims, install record, and active instance record.",
-    "[ ] Implement install/validate/assign/activate/reload/stop lifecycle transitions.",
-    "[ ] Route calls only to ready authorized child instances.",
-    "[ ] Record kernel observations for accepted/denied lifecycle and routing decisions.",
+    "[x] Define first loaded-child record with child ID, runtime kind, manifest claims, digest/artifact facts, and active ready instance projection.",
+    "[x] Implement kernel-side approval/assignment/instance lifecycle transition records and pure transition validation.",
+    "[x] Route candidates only to ready allowlisted child records for the directory-loader slice; explicit daemon projection now gates local candidates through kernel assignment authorization.",
+    "[x] Record kernel observations for accepted/denied lifecycle and child call revalidation decisions.",
 ]
 created_at = "1780068512"
-updated_at = "1780262310"
+updated_at = "1781008973"
 block_reason = "Blocked until mct-observation-log is completed or explicitly superseded in the roadmap."

@@ -1,0 +1,50 @@
+id = "mct-slice-iroh-endpoint-config-typed-error"
+title = "Add Iroh endpoint config and typed errors"
+kind = "refactor"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Tighten the Iroh adapter toward mature Iroh-style library design: expose an explicit Mother endpoint config and typed adapter errors instead of anyhow in the production endpoint API, without adding new runtime behavior."
+allium_anchors = ["MctRuntimeShape"]
+user_alignment = "User wants the code to keep tightening until it is structurally comparable to Iroh design while progressing Slates with small finished slices."
+belief_refs = ["iroh-provides-connectivity-not-authority", "iroh-endpointid-is-transport-identity", "mother-kernel-decides-adapters-perform"]
+core_refs = ["layer/core/dependable-rust.md", "layer/core/adapter-pattern.md", "layer/core/mct-build-boundaries.md"]
+parent_slates = ["mct-iroh-substrate", "mct-release-hardening"]
+code_targets = ["crates/mct-iroh/src/endpoint.rs", "crates/mct-iroh/src/lib.rs", "crates/mct-iroh/Cargo.toml"]
+implementation_ready = true
+runtime_shape_role = "Make the Iroh adapter endpoint boundary more library-shaped: explicit configuration in, typed adapter errors out, raw Iroh handles still private."
+design_style = "Iroh-style explicit endpoint configuration and Rust-library typed errors; no new runtime behavior, production accept loop, relay configuration, or traits."
+first_test_to_write = "endpoint_config_rejects_empty_alpns"
+exit_criteria = [
+    "Production `MotherIrohEndpoint::bind_local_mct` no longer exposes `anyhow::Result`.",
+    "A public `MotherIrohEndpointConfig` records accepted ALPNs and relay mode explicitly.",
+    "A public typed `MotherIrohEndpointError` reports config validation and bind failures.",
+    "Empty accepted ALPN config fails before binding an Iroh endpoint.",
+    "Raw `iroh::Endpoint` remains private and children still receive no raw handle.",
+]
+non_goals = ["No relay/discovery feature expansion.", "No persistent endpoint identity.", "No production accept loop.", "No new abstraction trait."]
+implementation_plan = [
+    "[x] Add `MotherIrohEndpointConfig` with `local_mct` defaults for MCT ALPNs and disabled relay mode.",
+    "[x] Add typed `MotherIrohEndpointError` and `MotherIrohEndpointResult` for the production endpoint API.",
+    "[x] Add `MotherIrohEndpoint::bind(config)` and keep `bind_local_mct` as the local MCT convenience constructor.",
+    "[x] Move `anyhow` to dev-dependencies for test harness usage only.",
+    "[x] Add tests for default config and empty-ALPN fail-closed validation.",
+]
+proof_plan = [
+    "[x] `cargo fmt --check` passes.",
+    "[x] `cargo clippy --workspace --all-targets -- -D warnings` passes.",
+    "[x] `cargo test -p mct-iroh` passes.",
+    "[x] `./scripts/ci-tier0.sh` passes.",
+    "[x] `allium check layer/allium` passes.",
+]
+closure_evidence = [
+    "[x] Commit `092e0f4 refactor(iroh): add endpoint config typed errors` adds `MotherIrohEndpointConfig`, `MotherIrohEndpointError`, and `MotherIrohEndpointResult`.",
+    "[x] `MotherIrohEndpoint::bind` accepts explicit adapter config and validates non-empty ALPNs before binding.",
+    "[x] Production `mct-iroh` moved off `anyhow` while test-only Iroh roundtrip harness keeps `anyhow` as a dev-dependency.",
+    "[x] `endpoint_config_defaults_to_local_mct_alpns` and `endpoint_config_rejects_empty_alpns` cover the new boundary.",
+    "[x] Local validation passed: fmt, clippy warning-deny, targeted Iroh tests, full Tier 0 CI script, Allium check, Slate check, and Slate TOML parse.",
+]
+blocked_by = ["mct-slice-iroh-module-shape"]
+belief_harvest_decision = "No new durable belief required; this slice applies existing Iroh substrate and dependable Rust boundary guidance."
+created_at = "1780279366"
+updated_at = "1780279516"
+closed_at = "1780279516"

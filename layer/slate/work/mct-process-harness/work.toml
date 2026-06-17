@@ -10,10 +10,12 @@ allium_anchors = []
 user_alignment = "Process harness is the simplest proof path for lifecycle, routing, envelope, observations, and adapter boundaries without over-engineering."
 belief_refs = []
 core_refs = ["layer/core/adapter-pattern.md", "layer/core/dependable-rust.md", "layer/core/safety-boundaries.md"]
+slice_refs = ["mct-slice-process-child-authorized-echo", "mct-slice-process-supervisor-lifecycle", "mct-slice-iroh-serve-process-runtime-routing"]
+partial_evidence = ["[x] Daemon process harness can invoke a one-shot executable only with an `AuthorizedChildInvocation` and returns `MctResult` plus linked runtime observations.", "[x] Timeout path returns a typed timed-out result and `RuntimeExecutionTimedOut` adapter observation.", "[x] CLI exposes a one-shot `process call` smoke path with explicit local kernel authority facts before execution.", "[x] Long-lived process supervisor supports spawn/status/stop for authorized process child instances.", "[x] Iroh serve-process path can route accepted peer calls through the process runtime handler before reply.", "[ ] Persistent install/activate/stop CLI and stdout/stderr streaming protocol remain future child slices."]
 proof_plan = [
-    "[ ] Echo process child can be installed/activated/called/stopped through the daemon.",
-    "[ ] Timeout and crash cases return typed adapter diagnostics and kernel observations stay linked by call_id.",
-    "[ ] Process runtime remains an adapter outside `mct-kernel`.",
+    "[x] Echo process child can be called through the daemon and long-lived process children can be spawned/stopped by the supervisor.",
+    "[x] Timeout and crash cases return typed adapter diagnostics and kernel observations stay linked by call_id.",
+    "[x] Process runtime remains an adapter outside `mct-kernel`.",
 ]
 closure_evidence = []
 blocked_by = [
@@ -23,10 +25,10 @@ blocked_by = [
 ]
 implementation_plan = [
     "[ ] Define process child manifest shape and stdin/stdout or socket protocol mapping to MCT call envelope.",
-    "[ ] Implement spawn, health, call, timeout, stop, and exit handling.",
-    "[ ] Emit adapter observations for spawn/exit/stdout/stderr/timeout/failure.",
-    "[ ] Add an echo/test child fixture.",
+    "[x] Implement one-shot spawn, call, timeout, and exit handling for the first proof harness.",
+    "[x] Emit adapter observations for runtime start/completion/timeout/failure.",
+    "[x] Add an echo/test child fixture.",
 ]
 created_at = "1780068518"
-updated_at = "1780262310"
-block_reason = "Blocked until mct-observation-log is completed or explicitly superseded in the roadmap."
+updated_at = "1781008973"
+block_reason = "Epic remains partially blocked for durable install/activate/stop CLI, but the first authorized process execution slice is complete."

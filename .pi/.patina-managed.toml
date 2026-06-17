@@ -1,4 +1,4 @@
 interface = "pi"
 bundle = "pi"
-version = "builtin"
+version = "builtin-pi-prompts"
 managed_by = "patina ai refresh"

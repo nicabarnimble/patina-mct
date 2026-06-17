@@ -1,0 +1,47 @@
+id = "mct-slice-iroh-ticket-peer-connection"
+title = "Connect MCT setups with Iroh endpoint tickets"
+kind = "build"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Move MCT toward working state by giving it Iroh identity, endpoint tickets, and a manual peer serve/call path so separate MCT setups can connect."
+allium_anchors = ["MctPeerBinding", "MctHelloProtocol", "MctCallProtocol", "MctIrohProtocolLayer", "MctRuntimeShape"]
+user_alignment = "User explicitly said MCT must have Iroh and be able to connect with other MCT setups."
+belief_refs = ["mct-builds-on-iroh-substrate", "iroh-provides-connectivity-not-authority", "iroh-endpointid-is-transport-identity", "mct-hello-precedes-protected-peer-effects", "mct-call-protocol-wraps-semantic-call"]
+core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/adapter-pattern.md", "layer/core/safety-boundaries.md", "layer/core/dependable-rust.md"]
+parent_slates = ["mct-iroh-substrate", "mct-daemon-control-plane", "mct-node-identity-security"]
+code_targets = ["crates/mct-iroh/src/endpoint.rs", "crates/mct-iroh/src/lib.rs", "crates/mct-daemon/src/main.rs", "crates/mct-iroh/Cargo.toml", "crates/mct-daemon/Cargo.toml"]
+implementation_ready = true
+runtime_shape_role = "Adds the first operator-usable MCT-over-Iroh connection surface: persistent identity files, safe endpoint tickets, manual peer binding, hello admission, and call request/reply."
+design_style = "Concrete manual peer path first; Iroh types stay inside the adapter while public surfaces use endpoint tickets and MCT hello/call records."
+first_test_to_write = "mother_endpoint_ticket_connects_hello_then_call"
+exit_criteria = [
+    "Mother-owned Iroh endpoints can use a persistent secret key hex identity file.",
+    "A safe endpoint ticket exposes endpoint id and address facts without exposing raw Iroh handles.",
+    "Operators can select relay-disabled local mode or default Iroh relay mode for cross-network attempts.",
+    "A client can send `mct/hello/0` and `mct/call/0` to a peer ticket.",
+    "A server can accept MCT ALPNs, verify the transport-authenticated remote endpoint against explicit peer bindings, and reply.",
+    "The CLI can print identity, serve a bound peer, and call a peer ticket.",
+]
+non_goals = ["No relay/discovery/address-book persistence.", "No automated trust-on-first-use.", "No raw Iroh endpoint handles exposed to children.", "No production supervisor or auth server."]
+implementation_plan = [
+    "[x] Add persistent secret-key hex helpers and endpoint-id derivation in `mct-iroh`.",
+    "[x] Add `MotherIrohEndpointTicket` and ticket JSON helpers.",
+    "[x] Add `send_hello`, `send_call`, and `serve_next` MCT protocol methods over Iroh.",
+    "[x] Add a CLI `iroh identity`, `iroh serve`, and `iroh call` manual peer path with optional `--relay-default` mode.",
+]
+proof_plan = [
+    "[x] `cargo test -p mct-iroh mother_endpoint_ticket_connects_hello_then_call` passes.",
+    "[x] Manual CLI smoke connects two local MCT endpoint identities and returns admitted hello plus successful call reply.",
+    "[x] `cargo clippy --workspace --all-targets -- -D warnings` passes.",
+    "[x] `./scripts/ci-tier0.sh` passes.",
+]
+closure_evidence = [
+    "[x] `mother_endpoint_ticket_connects_hello_then_call` proves the public endpoint ticket/send/serve API completes hello and call over local Iroh endpoints with explicit peer binding.",
+    "[x] CLI smoke command returned `hello_outcome=admitted` and `reply_outcome=success` between two generated local endpoint identities.",
+    "[x] Raw Iroh endpoint/connection/stream handles remain private to `mct-iroh`; public surfaces use tickets, snapshots, and MCT protocol records.",
+]
+blocked_by = []
+belief_harvest_decision = "No new durable belief required; this applies the existing Iroh substrate and EndpointId-not-authority beliefs."
+created_at = "1780952244"
+updated_at = "1780952244"
+closed_at = "1780952244"

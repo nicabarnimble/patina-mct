@@ -1,0 +1,49 @@
+id = "mct-slice-process-child-authorized-echo"
+title = "Invoke authorized process child echo adapter"
+kind = "build"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Continue toward a full working MCT product by proving a real child execution adapter path before full WASM/JVM runtime depth."
+allium_anchors = ["AuthorizedChildInvocation", "RuntimeExecutionStarted", "RuntimeExecutionCompleted", "RuntimeExecutionTimedOut"]
+user_alignment = "Process harness is the smallest concrete execution proof, but it must require kernel child authority and remain outside `mct-kernel`."
+belief_refs = ["mother-kernel-decides-adapters-perform", "typed-domain-records-before-algorithms"]
+core_refs = ["layer/core/adapter-pattern.md", "layer/core/dependable-rust.md", "layer/core/safety-boundaries.md"]
+parent_slates = ["mct-process-harness", "mct-child-registry-lifecycle", "mct-observation-log"]
+code_targets = ["crates/mct-daemon/src/process.rs", "crates/mct-daemon/src/lib.rs"]
+implementation_ready = true
+runtime_shape_role = "Adapter execution proof: daemon process harness performs effects only after receiving an `AuthorizedChildInvocation` from kernel child authority."
+design_style = "Concrete one-shot process adapter first; no kernel runtime types, no generic trait abstraction, observations returned as domain facts."
+first_test_to_write = "process_harness_invokes_only_with_authorized_child_invocation"
+exit_criteria = [
+    "Process harness public API requires an `AuthorizedChildInvocation` to invoke a child process.",
+    "Successful process execution returns an `MctResult` with route, authority decision ref, stdout, and runtime execution observations linked by call id.",
+    "Timeout execution returns a typed timed-out result and `RuntimeExecutionTimedOut` adapter observation.",
+    "Process runtime adapter lives in `mct-daemon`, not `mct-kernel`.",
+    "CLI exposes `mct-daemon process call <executable> ...` smoke path that builds explicit local kernel authority facts before invoking the adapter.",
+]
+non_goals = ["No long-lived child supervisor.", "No install/stop CLI yet beyond the one-shot process call smoke command.", "No WASM/JVM runtime.", "No stdout protocol beyond the current proof payload."]
+implementation_plan = [
+    "[x] Add `MctProcessChildHarness` outside the kernel.",
+    "[x] Require `AuthorizedChildInvocation` in the invocation API.",
+    "[x] Spawn a one-shot child process, write JSON stdin, collect stdout/stderr, and return `MctResult`.",
+    "[x] Return adapter observations for started/completed/failed/timed-out runtime execution.",
+    "[x] Add echo and timeout fixture tests.",
+    "[x] Add one-shot process call CLI smoke path.",
+]
+proof_plan = [
+    "[x] `cargo test -p mct-daemon process_harness_invokes_only_with_authorized_child_invocation` passes.",
+    "[x] `cargo test -p mct-daemon process_harness_timeout_returns_typed_result_and_observation` passes.",
+    "[x] `cargo test --workspace` passes.",
+    "[x] CLI smoke: `cargo run -q -p mct-daemon -- process call <echo-script> '{\"input\":\"hi\"}' patina echo echo` returns success and runtime observations.",
+]
+closure_evidence = [
+    "[x] `crates/mct-daemon/src/process.rs` implements one-shot authorized process execution with stdin/stdout and timeout handling.",
+    "[x] Tests prove success and timeout paths produce typed results and linked runtime observations.",
+    "[x] `mct-kernel` remains free of process/runtime implementation types.",
+    "[x] `crates/mct-daemon/src/main.rs` exposes a one-shot process call command using local kernel child authority facts before adapter invocation.",
+]
+blocked_by = []
+belief_harvest_decision = "No new durable belief required; this slice implements the existing adapter-pattern boundary."
+created_at = "1781003806"
+updated_at = "1781003806"
+closed_at = "1781003806"

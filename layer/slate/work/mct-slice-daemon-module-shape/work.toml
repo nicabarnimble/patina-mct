@@ -1,0 +1,48 @@
+id = "mct-slice-daemon-module-shape"
+title = "Split daemon module shape"
+kind = "refactor"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Tighten mct-daemon like the Iroh adapter cleanup: keep production status API in a small module, move fake vertical-slice proof harness out of lib.rs as test-only code, and avoid adding behavior."
+allium_anchors = ["MctRuntimeShape"]
+user_alignment = "User wants continued code tightening and more finished Slates; daemon should stay a composition layer, not an authority blob."
+belief_refs = ["mother-kernel-decides-adapters-perform"]
+core_refs = ["layer/core/dependable-rust.md", "layer/core/adapter-pattern.md", "layer/core/unix-philosophy.md", "layer/core/mct-build-boundaries.md"]
+parent_slates = ["mct-daemon-control-plane", "mct-release-hardening"]
+code_targets = ["crates/mct-daemon/src/lib.rs", "crates/mct-daemon/src/status.rs", "crates/mct-daemon/src/fake.rs"]
+implementation_ready = true
+runtime_shape_role = "Keep the daemon as a small composition/status surface while isolating fake vertical-slice proof code from the production library surface."
+design_style = "Structure-only refactor: curated lib.rs, concrete status module, test-only fake harness module; no new behavior or traits."
+first_test_to_write = "No new behavior test; existing daemon status and fake spine tests must keep passing after the split."
+exit_criteria = [
+    "`crates/mct-daemon/src/lib.rs` contains crate docs, module declarations, curated re-exports, version, and tests rather than all implementation detail.",
+    "Daemon health/readiness status lives in a production `status.rs` module.",
+    "Fake echo/end-to-end proof harness lives in a test-only `fake.rs` module.",
+    "Daemon remains a composition/status layer and does not gain authority logic.",
+    "No new runtime behavior or abstraction trait is introduced.",
+]
+non_goals = ["No HTTP/UDS control API.", "No daemon supervisor.", "No new authority model.", "No production fake API."]
+implementation_plan = [
+    "[x] Move daemon health/readiness records and `daemon_status` into `status.rs`.",
+    "[x] Move fake echo and fake end-to-end status proof code into test-only `fake.rs`.",
+    "[x] Keep `lib.rs` as the curated public daemon surface plus tests.",
+    "[x] Preserve existing daemon status and fake spine tests without adding behavior.",
+]
+proof_plan = [
+    "[x] `cargo fmt --check` passes.",
+    "[x] `cargo clippy --workspace --all-targets -- -D warnings` passes.",
+    "[x] `cargo test -p mct-daemon` passes.",
+    "[x] `./scripts/ci-tier0.sh` passes.",
+    "[x] `allium check layer/allium` passes.",
+]
+closure_evidence = [
+    "[x] Commit `5dd7c93 refactor(daemon): split status and fake harness` moves daemon status into `status.rs` and fake proof harness code into test-only `fake.rs`.",
+    "[x] `lib.rs` now exposes only the curated daemon status API, version function, and tests.",
+    "[x] Existing tests continue to prove daemon health/readiness and fake runtime spine status.",
+    "[x] Local validation passed: fmt, clippy warning-deny, targeted daemon tests, full Tier 0 CI script, Allium check, Slate check, and Slate TOML parse.",
+]
+blocked_by = ["mct-slice-rust-hygiene-api-boundary"]
+belief_harvest_decision = "No new durable belief required; this slice applies existing daemon lifecycle-not-authority and dependable Rust module-shape guidance."
+created_at = "1780279600"
+updated_at = "1780279727"
+closed_at = "1780279727"

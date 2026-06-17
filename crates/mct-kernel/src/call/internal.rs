@@ -1,5 +1,5 @@
 use super::*;
-use crate::peer::{MctHelloAdmissionEvaluation, MCT_CALL_ALPN};
+use crate::peer::{MCT_CALL_ALPN, MctHelloAdmissionEvaluation};
 
 pub(super) fn evaluate_call_protocol_internal(
     request: &MctCallProtocolRequest,
@@ -11,6 +11,35 @@ pub(super) fn evaluate_call_protocol_internal(
             request,
             ids,
             CallProtocolReason::HelloNotAdmitted,
+            "not authorized",
+        );
+    }
+
+    if hello.selected_binding_id.as_ref() != Some(&request.authority.peer_binding_id) {
+        return denied(
+            request,
+            ids,
+            CallProtocolReason::BindingMismatch,
+            "not authorized",
+        );
+    }
+
+    if hello.selected_node_id.as_ref() != Some(&request.call.caller.node_id) {
+        return denied(
+            request,
+            ids,
+            CallProtocolReason::CallerMismatch,
+            "not authorized",
+        );
+    }
+
+    if hello.selected_vision_id.as_ref() != Some(&request.authority.vision_id)
+        || request.authority.vision_id != request.call.caller.vision_id
+    {
+        return denied(
+            request,
+            ids,
+            CallProtocolReason::VisionMismatch,
             "not authorized",
         );
     }
@@ -44,7 +73,9 @@ pub(super) fn evaluate_call_protocol_internal(
         );
     }
 
-    if request.payload.approximate_size_bytes != request.call.payload_metadata.approximate_size_bytes {
+    if request.payload.approximate_size_bytes
+        != request.call.payload_metadata.approximate_size_bytes
+    {
         return denied(
             request,
             ids,
