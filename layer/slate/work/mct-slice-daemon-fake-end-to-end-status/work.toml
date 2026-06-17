@@ -1,0 +1,39 @@
+id = "mct-slice-daemon-fake-end-to-end-status"
+title = "Compose fake daemon end-to-end status"
+kind = "build"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Compose fake echo execution, observation ledger counts, and Iroh endpoint readiness into one daemon status report."
+allium_anchors = ["MctRuntimeShape", "MctObservation", "MctCall", "MctResult"]
+user_alignment = "User wants a thin vertical spine and useful status before broad daemon/control-plane work."
+belief_refs = ["mct-hello-precedes-protected-peer-effects", "mct-call-protocol-wraps-semantic-call"]
+core_refs = ["layer/core/unix-philosophy.md", "layer/core/adapter-pattern.md", "layer/core/oxidized-knowledge.md", "layer/core/mct-build-boundaries.md"]
+parent_slates = ["mct-daemon-control-plane", "mct-observation-log", "mct-call-envelope"]
+code_targets = ["crates/mct-daemon/src/lib.rs"]
+implementation_ready = true
+runtime_shape_role = "First useful composed status over daemon, kernel, ledger, and Iroh endpoint snapshot facts."
+design_style = "Concrete fake vertical status report; no HTTP/UDS server or broad ServerState."
+first_test_to_write = "fake_end_to_end_status_reports_runtime_spine"
+exit_criteria = ["Report includes daemon readiness from Iroh snapshot.", "Report includes fake echo result and trace observation count.", "Report can verify call observation count from the ledger."]
+non_goals = ["No network control API.", "No persistent daemon config.", "No real child runtime."]
+implementation_plan = [
+    "[x] Add fake end-to-end daemon status report type.",
+    "[x] Compose daemon status, fake echo result, and ledger call observation count.",
+    "[x] Add a test proving status across the current runtime spine.",
+]
+proof_plan = [
+    "[x] `cargo test -p mct-daemon fake_end_to_end_status_reports_runtime_spine` passes.",
+    "[x] Test proves status is ready when Iroh snapshot is bound.",
+    "[x] Test proves fake echo succeeds and trace/call observations are counted.",
+    "[x] `cargo test --workspace` passes.",
+    "[x] `allium check layer/allium` passes.",
+]
+closure_evidence = [
+    "[x] Commit `e1f7b79 feat(daemon): report fake runtime spine status` adds `FakeEndToEndStatusReport` and `run_fake_end_to_end_status_slice`.",
+    "[x] `fake_end_to_end_status_reports_runtime_spine` proves ready daemon status, successful fake echo, six trace observations, and four call observations.",
+    "[x] Targeted daemon test, workspace tests, and Allium validation passed before closure.",
+]
+blocked_by = ["mct-slice-daemon-health-readiness", "mct-slice-fake-daemon-echo", "mct-slice-iroh-mother-owned-endpoint-lifecycle"]
+created_at = "1780276600"
+updated_at = "1780276656"
+closed_at = "1780276656"

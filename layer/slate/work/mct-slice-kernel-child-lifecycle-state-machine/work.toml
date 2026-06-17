@@ -1,0 +1,53 @@
+id = "mct-slice-kernel-child-lifecycle-state-machine"
+title = "Add kernel child lifecycle and invocation authority"
+kind = "build"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Continue toward a working standalone MCT product by adding kernel authority for approved, assigned, ready child instances before runtime execution."
+allium_anchors = ["ComponentArtifact", "ChildApproval", "ChildAssignment", "ChildInstance", "MctChildComponentLifecycle", "MctObservation"]
+user_alignment = "Child artifacts can be loaded, but calls must fail closed unless the artifact is approved, assigned, and represented by a ready live instance."
+belief_refs = ["typed-domain-records-before-algorithms", "mother-kernel-decides-adapters-perform", "slate-epics-progress-through-child-slices"]
+core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/safety-boundaries.md", "layer/core/dependable-rust.md", "layer/core/adapter-pattern.md"]
+parent_slates = ["mct-kernel-crate", "mct-child-registry-lifecycle", "mct-observation-log"]
+code_targets = ["crates/mct-kernel/src/child.rs", "crates/mct-kernel/src/id.rs", "crates/mct-kernel/src/lib.rs", "crates/mct-kernel/src/observation.rs"]
+implementation_ready = true
+runtime_shape_role = "Pure kernel lifecycle records and revalidation before child runtime adapters may invoke loaded artifacts."
+design_style = "Separate immutable artifact facts, authority approvals, scoped assignments, and live instance generations; adapters remain outside the kernel."
+first_test_to_write = "ready_approved_assigned_instance_produces_authorized_child_invocation"
+exit_criteria = [
+    "Kernel defines `ComponentArtifact`, `ChildApproval`, `ChildAssignment`, `ChildInstance`, lifecycle state enums, and `AuthorizedChildInvocation`.",
+    "Lifecycle transition helper accepts valid loading/ready/draining/stopped paths and rejects illegal state jumps.",
+    "Unknown child instance, missing assignment, revoked assignment, non-approved approval, stale policy, wrong scope, unexported operation, and not-ready instance all deny fail-closed without authorization.",
+    "Ready approved assigned instance with a verified artifact exporting the target operation produces an `AuthorizedChildInvocation` linked to call, evaluation, approval, assignment, artifact, instance, and decision ids.",
+    "Child approval, assignment, instance lifecycle, and child call authority evaluations map to canonical `MctObservation` facts.",
+]
+non_goals = ["No process/WASM/JVM runtime invocation.", "No persistent child registry store.", "No operator approval workflow CLI.", "No environment planner or route ranking."]
+implementation_plan = [
+    "[x] Add child lifecycle IDs to `mct-kernel`.",
+    "[x] Add `child.rs` with artifact, approval, assignment, instance, transition, evaluation, and authorization records.",
+    "[x] Add fail-closed child call authority tests for unknown/missing/revoked/not-ready/scope/stale/unexported cases.",
+    "[x] Add observation projection for child lifecycle and child call authority facts.",
+]
+proof_plan = [
+    "[x] `cargo test -p mct-kernel ready_approved_assigned_instance_produces_authorized_child_invocation` passes.",
+    "[x] `cargo test -p mct-kernel unknown_instance_denies_by_default` passes.",
+    "[x] `cargo test -p mct-kernel ready_instance_without_assignment_denies_fail_closed` passes.",
+    "[x] `cargo test -p mct-kernel not_ready_instance_denies_without_authorization` passes.",
+    "[x] `cargo test -p mct-kernel revoked_assignment_denies_without_authorization` passes.",
+    "[x] `cargo test -p mct-kernel approval_must_be_approved` passes.",
+    "[x] `cargo test -p mct-kernel approval_scope_must_match_call` passes.",
+    "[x] `cargo test -p mct-kernel artifact_must_export_operation` passes.",
+    "[x] `cargo test -p mct-kernel stale_policy_revision_denies_child_call` passes.",
+    "[x] `cargo test -p mct-kernel lifecycle_transitions_allow_ready_path_and_reject_illegal_restart` passes.",
+    "[x] `cargo test -p mct-kernel child_lifecycle_and_call_authority_become_observations` passes.",
+]
+closure_evidence = [
+    "[x] `crates/mct-kernel/src/child.rs` implements separated artifact/approval/assignment/instance facts plus pure child-call authority evaluation.",
+    "[x] Denial tests prove unknown, unassigned, not-ready, revoked, non-approved, wrong-scope, stale-policy, and unexported-operation paths fail closed.",
+    "[x] `child_approval_observation`, `child_assignment_observation`, `child_instance_observation`, and `child_call_authority_observation` map lifecycle authority facts to `MctObservation`.",
+]
+blocked_by = []
+belief_harvest_decision = "No new durable belief required; this slice directly applies existing kernel authority and child lifecycle Allium decisions."
+created_at = "1781002958"
+updated_at = "1781002958"
+closed_at = "1781002958"

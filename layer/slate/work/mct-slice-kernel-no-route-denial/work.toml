@@ -1,0 +1,42 @@
+id = "mct-slice-kernel-no-route-denial"
+title = "Add kernel no-route denial helper"
+kind = "build"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Add the pure kernel no-route denial path: if no authorized route remains, produce a denied MctResult and observation-grade route/no-route facts."
+allium_anchors = ["NoRouteDecision", "RouteDecision"]
+user_alignment = "User wants feature progress through narrow slices while preserving deny-by-default authority semantics."
+belief_refs = ["slate-epics-progress-through-child-slices", "mother-kernel-decides-adapters-perform"]
+core_refs = ["layer/core/safety-boundaries.md", "layer/core/dependable-rust.md", "layer/core/spec-driven-design.md"]
+parent_slates = ["mct-kernel-crate"]
+code_targets = ["crates/mct-kernel/src/route.rs", "crates/mct-kernel/src/observation.rs", "layer/slate/work/mct-kernel-crate/work.toml"]
+implementation_ready = true
+runtime_shape_role = "Adds the explicit no-route denial path in the kernel: no selected route, caller-safe denial result, and no-route observation fact."
+design_style = "Pure domain helper and observation mapping; no planner, daemon, storage, or adapter side effects."
+first_test_to_write = "no_route_decision_denies_by_default_without_route_taken"
+exit_criteria = [
+    "Kernel can construct a `RouteDecision` with `NoRoute` outcome and no selected route.",
+    "No-route helper creates a denied `MctResult` with no route taken and caller-safe message.",
+    "No-route route decision maps to `ObservationKind::NoRouteRecorded` with denied outcome.",
+]
+non_goals = ["No route planner algorithm.", "No grant request/retry/escalation implementation.", "No storage persistence."]
+implementation_plan = [
+    "[x] Add `RouteDecision::no_route` constructor with explicit no-route reason and safe message.",
+    "[x] Add `no_route_denied_result` to produce the terminal caller-safe denied result for a valid call.",
+    "[x] Add `route_decision_observation` mapping for selected and no-route route decisions.",
+    "[x] Add tests for deny-by-default result and no-route observation.",
+]
+proof_plan = [
+    "[x] `cargo test -p mct-kernel no_route` passes.",
+    "[x] `allium check layer/allium` passes.",
+    "[x] `patina slate check mct-slice-kernel-no-route-denial --json` passes.",
+]
+closure_evidence = [
+    "[x] `no_route_decision_denies_by_default_without_route_taken` proves no authorized route produces denied result with no route taken.",
+    "[x] `no_route_decision_becomes_observation` proves the no-route decision becomes a denied `NoRouteRecorded` observation with policy/grants revisions.",
+]
+blocked_by = ["mct-slice-kernel-routing-decision-records"]
+belief_harvest_decision = "No new durable belief required; deny-by-default is already captured in safety and no-route Allium guidance."
+created_at = "1780282550"
+updated_at = "1780282621"
+closed_at = "1780282621"

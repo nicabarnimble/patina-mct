@@ -1,6 +1,6 @@
 id = "mother-kernel-design"
 title = "Design Mother kernel under Rust systems lens"
-kind = "design"
+kind = "build"
 status = "complete"
 execution_granularity = "design_foundation"
 completion_rule = "Closed as a design foundation; subsequent implementation must happen through child slice Slates or concrete build-lane epics with binary proof gates."

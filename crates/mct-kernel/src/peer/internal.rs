@@ -5,8 +5,10 @@ pub(super) fn evaluate_hello_internal(
     request: &MctHelloRequest,
     bindings: &[MctPeerBinding],
     policy: &HelloPolicy,
-    ids: EvaluationIds,
+    context: HelloEvaluationContext,
 ) -> MctHelloAdmissionEvaluation {
+    let HelloEvaluationContext { ids, now } = context;
+
     if request.requested_protocol.protocol_name != policy.protocol.protocol_name
         || request.requested_protocol.major != policy.protocol.major
     {
@@ -72,6 +74,47 @@ pub(super) fn evaluate_hello_internal(
         }
     }
 
+    if request
+        .presented_binding
+        .mct_node_id
+        .as_ref()
+        .is_some_and(|node_id| node_id != &binding.scope.mct_node_id)
+    {
+        return denied(
+            request,
+            ids,
+            HelloReason::CapabilityInvalid,
+            SafeHelloReason::NotAuthorized,
+        );
+    }
+
+    if request
+        .presented_binding
+        .vision_id
+        .as_ref()
+        .is_some_and(|vision_id| vision_id != &binding.scope.vision_id)
+    {
+        return denied(
+            request,
+            ids,
+            HelloReason::VisionNotAllowed,
+            SafeHelloReason::NotAuthorized,
+        );
+    }
+
+    if binding
+        .expires_at
+        .as_ref()
+        .is_some_and(|expires_at| expires_at <= &now)
+    {
+        return denied(
+            request,
+            ids,
+            HelloReason::BindingExpired,
+            SafeHelloReason::NotAuthorized,
+        );
+    }
+
     if binding.policy_revision < policy.current_policy_revision
         || request
             .presented_binding
@@ -114,6 +157,8 @@ pub(super) fn evaluate_hello_internal(
         request_id: request.hello_id.clone(),
         peer_admission_decision_id: None,
         selected_binding_id: Some(binding.binding_id.clone()),
+        selected_node_id: Some(binding.scope.mct_node_id.clone()),
+        selected_vision_id: Some(binding.scope.vision_id.clone()),
         negotiated_protocol: Some(policy.protocol.clone()),
         accepted_alpns,
         hello_outcome: HelloOutcome::Admitted,
@@ -172,6 +217,8 @@ fn denied(
         request_id: request.hello_id.clone(),
         peer_admission_decision_id: None,
         selected_binding_id: None,
+        selected_node_id: None,
+        selected_vision_id: None,
         negotiated_protocol: None,
         accepted_alpns: Vec::new(),
         hello_outcome: match safe_reason {

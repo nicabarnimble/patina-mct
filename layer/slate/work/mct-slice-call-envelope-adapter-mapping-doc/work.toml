@@ -1,0 +1,47 @@
+id = "mct-slice-call-envelope-adapter-mapping-doc"
+title = "Document call envelope adapter mapping"
+kind = "refactor"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Document how Iroh, daemon control, CLI, process, JVM, and WASM/WIT adapter inputs map into the single MctCall/MctResult envelope, including comparison to legacy ChildCallRequest."
+allium_anchors = ["MctCall", "MctCallProtocol", "MctRuntimeShape"]
+user_alignment = "User wants blocked Slates unstuck by finishing narrow child slices while keeping one stable call envelope shared by adapters."
+belief_refs = ["mct-call-protocol-wraps-semantic-call", "mother-kernel-decides-adapters-perform", "iroh-provides-connectivity-not-authority"]
+core_refs = ["layer/core/spec-driven-design.md", "layer/core/dependable-rust.md", "layer/core/adapter-pattern.md", "layer/core/mct-build-boundaries.md"]
+parent_slates = ["mct-call-envelope"]
+code_targets = ["layer/slate/work/mct-call-envelope/adapter-mapping.md", "layer/slate/work/mct-call-envelope/work.toml"]
+implementation_ready = true
+runtime_shape_role = "Clarify how edge adapters translate into the single semantic `MctCall`/`MctResult` pipeline without making adapter wire formats or transport facts kernel truth."
+design_style = "Documentation-only mapping slice; no new runtime behavior, no new traits, no adapter-specific call model."
+first_test_to_write = "No code test; proof is the mapping document plus existing call envelope tests and Slate validation."
+exit_criteria = [
+    "Document maps Iroh `mct/call/0`, daemon control, CLI, process, JVM, and WASM/WIT edges into `MctCall` and `MctResult`.",
+    "Document states malformed adapter input returns native adapter errors before `MctCall` construction.",
+    "Document compares legacy Mother `ChildCallRequest { operation_id, args, correlation }` to the MCT envelope and names what is narrowed/improved.",
+    "`mct-call-envelope` epic is unblocked because its design blockers are complete and this child slice supplies adapter mapping evidence.",
+]
+non_goals = ["No control-plane API implementation.", "No process/JVM/WASM runtime implementation.", "No new call envelope fields.", "No JSON/control-plane codec change."]
+implementation_plan = [
+    "[x] Add `adapter-mapping.md` under the `mct-call-envelope` Slate directory.",
+    "[x] Map each edge adapter to `MctCall` construction, authority notes, and result path.",
+    "[x] Record boundary rules for malformed adapter inputs, origin, payload metadata, and caller-safe results.",
+    "[x] Compare legacy Mother `ChildCallRequest` to the clean MCT envelope.",
+    "[x] Update `mct-call-envelope` from stale blocked state to active epic-container state with current evidence.",
+]
+proof_plan = [
+    "[x] `python3` TOML parse validates all Slate work files.",
+    "[x] `patina slate check mct-slice-call-envelope-adapter-mapping-doc --json` passes.",
+    "[x] `patina slate check mct-call-envelope --json` reflects only remaining unchecked epic gates.",
+    "[x] `allium check layer/allium` passes.",
+]
+closure_evidence = [
+    "[x] `layer/slate/work/mct-call-envelope/adapter-mapping.md` documents adapter-to-envelope mapping for Iroh, daemon control, CLI, process, JVM, and WASM/WIT edges.",
+    "[x] The mapping document states that malformed adapter input returns native adapter errors before constructing an `MctCall`.",
+    "[x] The mapping document compares legacy Mother `ChildCallRequest { operation_id, args, correlation }` to `OperationTarget`, payload metadata/handles, trace context, and explicit caller/policy snapshots.",
+    "[x] `layer/slate/work/mct-call-envelope/work.toml` is unblocked and updated with this slice as partial evidence.",
+]
+blocked_by = []
+belief_harvest_decision = "No new durable belief required; this slice applies existing call-protocol and adapter-boundary beliefs to documentation evidence."
+created_at = "1780281417"
+updated_at = "1780281417"
+closed_at = "1780281417"

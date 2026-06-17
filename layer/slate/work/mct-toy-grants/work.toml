@@ -10,10 +10,12 @@ allium_anchors = []
 user_alignment = "The T in MCT is central; toy calls must not bypass Mother authority."
 belief_refs = []
 core_refs = ["layer/core/safety-boundaries.md", "layer/core/mct-build-boundaries.md", "layer/core/adapter-pattern.md"]
+slice_refs = ["mct-slice-toy-grant-authorized-call", "mct-slice-toy-adapter-authorized-call"]
+partial_evidence = ["[x] Kernel defines ToyGrant, ToyGrantEvaluation, AuthorizedToyCall, closed catalog lookup, and fail-closed grant evaluation.", "[x] Missing/expired/revoked/wrong-scope/stale/unknown toy paths deny without authorization and map to observations.", "[x] Daemon toy adapter registry requires `AuthorizedToyCall` and records success/failure toy observations without changing kernel grant verdicts.", "[ ] Durable toy backend config and child-facing WIT toy imports remain future child slices."]
 proof_plan = [
-    "[ ] Tests prove toy execution requires an AuthorizedToyCall produced by the kernel.",
-    "[ ] Missing/expired/wrong-scope grants are denied with typed reasons.",
-    "[ ] Toy backend failures are adapter observations, not kernel authority decisions.",
+    "[x] Tests prove toy execution requires an AuthorizedToyCall produced by the kernel.",
+    "[x] Missing/expired/wrong-scope grants are denied with typed reasons.",
+    "[x] Toy backend failures are adapter observations, not kernel authority decisions.",
 ]
 closure_evidence = []
 blocked_by = [
@@ -22,11 +24,11 @@ blocked_by = [
     "mct-observation-log",
 ]
 implementation_plan = [
-    "[ ] Define ToyId, capability IDs, grant policy, toy request/reply, and AuthorizedToyCall token.",
-    "[ ] Implement grant evaluation as pure kernel decision logic with fail-closed errors.",
-    "[ ] Implement a minimal toy adapter registry outside the kernel.",
-    "[ ] Record authorized/denied toy call observations.",
+    "[x] Define ToyId, capability IDs, grant policy, toy request/reply, and AuthorizedToyCall token.",
+    "[x] Implement grant evaluation as pure kernel decision logic with fail-closed errors.",
+    "[x] Implement a minimal toy adapter registry outside the kernel.",
+    "[x] Record authorized/denied toy call observations.",
 ]
 created_at = "1780068525"
-updated_at = "1780262310"
+updated_at = "1781004311"
 block_reason = "Blocked until mct-observation-log is completed or explicitly superseded in the roadmap."

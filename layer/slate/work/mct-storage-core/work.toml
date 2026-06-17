@@ -10,10 +10,12 @@ allium_anchors = []
 user_alignment = "User wants to compare against current Mother without over-engineering; the answer is concrete, narrow, private, and performant storage rather than generic public storage abstractions."
 belief_refs = []
 core_refs = ["layer/core/adapter-pattern.md", "layer/core/dependable-rust.md", "layer/core/safety-boundaries.md"]
+slice_refs = ["mct-slice-daemon-durable-config-approval-store"]
+partial_evidence = ["[x] Project-local `.mct/config.json` store persists child approvals, assignments, and peer address-book entries using kernel domain IDs/states without leaking storage into `mct-kernel`.", "[ ] SQL/private schema, grant snapshots, migrations, and replay remain future child slices."]
 proof_plan = [
-    "[ ] Storage tests pass using temp directories/databases.",
+    "[x] Storage tests pass using temp directories/databases.",
     "[ ] Schema inventory documents what was intentionally not copied from current Mother.",
-    "[ ] Kernel public API is not generic over storage and does not leak SQL row structs.",
+    "[x] Kernel public API is not generic over storage and does not leak SQL row structs.",
 ]
 closure_evidence = []
 blocked_by = [
@@ -22,10 +24,10 @@ blocked_by = [
 ]
 implementation_plan = [
     "[ ] Compare current integrated `MotherRuntimeStore` tables with MCT-core storage needs.",
-    "[ ] Define a narrow private schema for node identity, peers, child installs, grants, lifecycle snapshots, and observations.",
+    "[x] Define a first narrow private file layout for child approvals, child assignments, and peer address book entries.",
     "[ ] Keep Belief, session markdown, scrape/index, and view rendering tables outside MCT kernel storage.",
     "[ ] Add migrations/replay/snapshot tests and keep SQL/file layout private.",
 ]
 created_at = "1780068491"
-updated_at = "1780262310"
-block_reason = "Blocked until mct-observation-log is completed or explicitly superseded in the roadmap."
+updated_at = "1781008973"
+block_reason = "Epic remains open for SQL/private schema, grant snapshots, migrations, and replay; first project-local config store slice is complete."

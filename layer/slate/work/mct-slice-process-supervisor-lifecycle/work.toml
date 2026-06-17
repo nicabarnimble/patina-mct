@@ -1,0 +1,43 @@
+id = "mct-slice-process-supervisor-lifecycle"
+title = "Supervise long-lived authorized process children"
+kind = "build"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Continue until MCT has a long-lived child supervisor, not only one-shot process calls."
+allium_anchors = ["AuthorizedChildInvocation", "ChildInstance", "RuntimeExecutionStarted", "RuntimeExecutionCompleted"]
+user_alignment = "Process harness is the simplest real child runtime path, but a product needs spawn/status/stop lifecycle for long-lived children."
+belief_refs = ["mother-kernel-decides-adapters-perform", "typed-domain-records-before-algorithms"]
+core_refs = ["layer/core/adapter-pattern.md", "layer/core/dependable-rust.md", "layer/core/safety-boundaries.md"]
+parent_slates = ["mct-process-harness", "mct-child-registry-lifecycle", "mct-observation-log"]
+code_targets = ["crates/mct-daemon/src/supervisor.rs", "crates/mct-daemon/src/lib.rs"]
+implementation_ready = true
+runtime_shape_role = "Daemon-owned process supervisor for long-lived adapter effects, gated by kernel `AuthorizedChildInvocation`."
+design_style = "Concrete in-memory supervisor first: spawn/status/stop with process runtime details outside the kernel."
+first_test_to_write = "process_supervisor_spawns_statuses_and_stops_long_lived_child"
+exit_criteria = [
+    "Supervisor spawn API requires `AuthorizedChildInvocation`.",
+    "Long-lived process spawn returns running status and runtime-start observation.",
+    "Supervisor status observes exited children and exit codes.",
+    "Supervisor stop terminates running children and returns stopped status plus runtime-completed observation.",
+]
+non_goals = ["No restart policy.", "No persistent supervisor state after daemon restart.", "No streaming stdout/stderr protocol yet."]
+implementation_plan = [
+    "[x] Add `MctProcessSupervisor` with spawn/status/stop operations.",
+    "[x] Track process pid, state, and exit code by `ChildInstanceId`.",
+    "[x] Emit runtime started/completed observations linked by call id and authority decision id.",
+    "[x] Add long-lived and exited-child tests.",
+]
+proof_plan = [
+    "[x] `cargo test -p mct-daemon process_supervisor_spawns_statuses_and_stops_long_lived_child` passes.",
+    "[x] `cargo test -p mct-daemon process_supervisor_observes_exited_child_status` passes.",
+    "[x] `cargo test --workspace` passes.",
+]
+closure_evidence = [
+    "[x] `crates/mct-daemon/src/supervisor.rs` implements long-lived process spawn/status/stop outside the kernel.",
+    "[x] Tests prove running, exited, and stopped lifecycle states for supervised process children.",
+]
+blocked_by = []
+belief_harvest_decision = "No new durable belief required; this applies the adapter-pattern and child lifecycle decisions."
+created_at = "1781008973"
+updated_at = "1781008973"
+closed_at = "1781008973"

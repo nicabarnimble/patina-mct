@@ -1,0 +1,42 @@
+id = "mct-slice-daemon-local-control-status-api"
+title = "Add daemon local control status API"
+kind = "build"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Add the smallest daemon local control API as a typed in-process status handler, not HTTP/UDS yet, so status has a control surface without broad daemon authority."
+allium_anchors = ["MctRuntimeShape"]
+user_alignment = "User wants more finished feature slices without overbuilding the daemon control plane."
+belief_refs = ["mother-kernel-decides-adapters-perform", "slate-epics-progress-through-child-slices"]
+core_refs = ["layer/core/unix-philosophy.md", "layer/core/dependable-rust.md", "layer/core/mct-build-boundaries.md"]
+parent_slates = ["mct-daemon-control-plane"]
+code_targets = ["crates/mct-daemon/src/control.rs", "crates/mct-daemon/src/lib.rs", "layer/slate/work/mct-daemon-control-plane/work.toml"]
+implementation_ready = true
+runtime_shape_role = "Adds the first local control surface as a typed in-process status handler over daemon facts without introducing HTTP/UDS transport or authorization semantics yet."
+design_style = "Small concrete command handler first; no server, auth framework, or broad daemon state bag."
+first_test_to_write = "local_control_status_request_reports_daemon_status"
+exit_criteria = [
+    "Daemon exposes typed local control request and response records for status.",
+    "Status request returns the same health/readiness semantics as `daemon_status`.",
+    "No HTTP/UDS transport or authorization layer is introduced in this slice.",
+]
+non_goals = ["No HTTP server.", "No UDS transport.", "No auth model.", "No start/stop lifecycle command.", "No kernel authority reimplementation."]
+implementation_plan = [
+    "[x] Add `control.rs` with typed local control facts, request, response, and handler.",
+    "[x] Re-export the typed control API from `mct-daemon`.",
+    "[x] Add a status handler test for bound Iroh readiness.",
+    "[x] Update `mct-daemon-control-plane` partial evidence.",
+]
+proof_plan = [
+    "[x] `cargo test -p mct-daemon local_control_status_request_reports_daemon_status` passes.",
+    "[x] `allium check layer/allium` passes.",
+    "[x] `patina slate check mct-slice-daemon-local-control-status-api --json` passes.",
+]
+closure_evidence = [
+    "[x] `MctDaemonLocalControlRequest::Status` and `handle_local_control_request` provide a typed status control surface.",
+    "[x] `local_control_status_request_reports_daemon_status` proves the handler reports ready daemon status from bound Iroh endpoint facts.",
+]
+blocked_by = ["mct-slice-daemon-health-readiness"]
+belief_harvest_decision = "No new durable belief required; this slice applies existing daemon-lifecycle-not-authority guidance."
+created_at = "1780282800"
+updated_at = "1780282837"
+closed_at = "1780282837"
