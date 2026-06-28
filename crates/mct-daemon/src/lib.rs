@@ -13,6 +13,7 @@ mod cycle;
 #[cfg(test)]
 mod fake;
 mod federation;
+mod inspector;
 mod lifecycle;
 mod metrics;
 mod process;
@@ -56,6 +57,9 @@ pub use cycle::{
 };
 pub use federation::{
     MctFederationCapabilityView, MctFederationPeerView, build_federation_capability_view,
+};
+pub use inspector::{
+    MctInspectorObservationQuery, MctInspectorObservationView, inspect_observation_entries,
 };
 pub use lifecycle::{
     MctChildReloadReport, MctChildWarmupReport, reload_configured_child, warmup_configured_child,
