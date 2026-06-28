@@ -1,0 +1,41 @@
+id = "mct-slice-node-identity-persistence"
+title = "Persist local node identity and peer binding authority projection"
+kind = "build"
+status = "active"
+execution_granularity = "slice"
+human_request = "Progress node identity/security parity without making Iroh EndpointId an authority source."
+allium_anchors = ["MctPeerBinding", "MctPeerAdmissionDecision", "MctIrohPeerBindingAuthority", "MctRuntimeShape"]
+user_alignment = "User wants explicit authority facts, strong invariants, and no transport/session identity treated as authorization."
+belief_refs = ["iroh-endpointid-is-transport-identity", "iroh-provides-connectivity-not-authority", "mct-hello-precedes-protected-peer-effects"]
+core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/safety-boundaries.md", "layer/core/adapter-pattern.md"]
+parent_slates = ["mct-node-identity-security"]
+code_targets = ["crates/mct-daemon/src/config.rs", "crates/mct-daemon/src/main.rs"]
+implementation_ready = true
+runtime_shape_role = "Persist local MCT node identity metadata and derive peer admission bindings from explicit config records."
+design_style = "Private daemon config projection; kernel remains the authority evaluator and Iroh EndpointId remains transport identity only."
+first_test_to_write = "config_store_persists_local_identity_without_storing_secret"
+exit_criteria = [
+    "Config store can create/load a local Iroh key file while persisting only non-secret local node identity metadata.",
+    "Peer address-book entries project into kernel MctPeerBinding records only when a local node identity exists.",
+    "Peer revocation persists as an explicit BindingState instead of deleting the authority fact.",
+    "Tests prove projection, revocation, and missing-local-identity fail closed.",
+]
+non_goals = ["No certificate authority or distributed key exchange.", "No secret material in config.json.", "No change to kernel peer admission algorithm."]
+implementation_plan = [
+    "[ ] Add MctLocalNodeIdentity and peer authority projection to daemon config.",
+    "[ ] Add config-store helpers for ensuring local identity and revoking peer bindings.",
+    "[ ] Wire iroh identity CLI to persist local identity metadata.",
+    "[ ] Add focused config tests and run daemon/kernel/iroh checks.",
+]
+proof_plan = [
+    "[ ] `cargo test -p mct-daemon config_store_persists_local_identity_without_storing_secret` passes.",
+    "[ ] `cargo test -p mct-daemon config_projects_peer_bindings_from_local_identity` passes.",
+    "[ ] `cargo test -p mct-daemon peer_authority_projection_requires_local_identity` passes.",
+    "[ ] `./scripts/ci-tier0.sh` passes.",
+]
+closure_evidence = []
+blocked_by = []
+blocks = ["mct-secrets-authority", "mct-release-hardening"]
+belief_harvest_decision = "No new belief expected; reinforces existing EndpointId-is-transport-identity belief."
+created_at = "1782644100"
+updated_at = "1782644100"

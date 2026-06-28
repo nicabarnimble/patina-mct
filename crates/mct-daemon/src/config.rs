@@ -1,6 +1,8 @@
 use crate::children::{MctLoadedChild, component_artifact_from_loaded_child};
-use anyhow::{Context, Result};
-use mct_iroh::MotherIrohEndpointTicket;
+use anyhow::{Context, Result, bail};
+use mct_iroh::{
+    MotherIrohEndpointTicket, endpoint_id_for_secret_key_hex, load_or_create_node_secret_key_hex,
+};
 use mct_kernel::*;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -12,6 +14,8 @@ use std::{
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MctDaemonConfig {
+    #[serde(default)]
+    pub local_identity: Option<MctLocalNodeIdentity>,
     #[serde(default)]
     pub child_approvals: BTreeMap<String, MctStoredChildApproval>,
     #[serde(default)]
@@ -58,12 +62,46 @@ pub struct MctPeerAddressBookEntry {
     pub updated_at: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctLocalNodeIdentity {
+    pub node_id: MctNodeId,
+    pub vision_id: VisionId,
+    pub endpoint_id: EndpointIdText,
+    pub identity_path: PathBuf,
+    pub policy_revision: u64,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MctPeerAuthorityProjection {
+    pub issuer_node_id: MctNodeId,
+    pub local_endpoint_id: EndpointIdText,
+    pub policy_revision: u64,
+    pub bindings: Vec<MctPeerBinding>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MctDaemonConfigStore {
     path: PathBuf,
 }
 
 impl MctDaemonConfig {
+    pub fn peer_authority_projection(&self) -> Result<MctPeerAuthorityProjection> {
+        let Some(identity) = self.local_identity.as_ref() else {
+            bail!("local MCT node identity is not configured");
+        };
+        Ok(MctPeerAuthorityProjection {
+            issuer_node_id: identity.node_id.clone(),
+            local_endpoint_id: identity.endpoint_id.clone(),
+            policy_revision: identity.policy_revision,
+            bindings: self
+                .peers
+                .values()
+                .map(|peer| peer.to_peer_binding(identity))
+                .collect(),
+        })
+    }
+
     pub fn authority_projection_for_loaded_children<'a>(
         &self,
         children: impl IntoIterator<Item = &'a MctLoadedChild>,
@@ -156,6 +194,40 @@ impl MctDaemonConfig {
             approvals,
             assignments,
             instances,
+        }
+    }
+}
+
+impl MctPeerAddressBookEntry {
+    pub fn to_peer_binding(&self, local_identity: &MctLocalNodeIdentity) -> MctPeerBinding {
+        MctPeerBinding {
+            binding_id: self.binding_id.clone(),
+            iroh_endpoint_id: self.endpoint_id.clone(),
+            scope: MctPeerBindingScope {
+                mct_node_id: self.peer_node_id.clone(),
+                vision_id: self.vision_id.clone(),
+                allowed_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
+                data_scope: None,
+                observation_scope: None,
+            },
+            issuer_node_id: local_identity.node_id.clone(),
+            policy_revision: self.policy_revision,
+            binding_state: self.binding_state,
+            issued_at: Timestamp::from(self.updated_at.clone()),
+            expires_at: None,
+            created_by_observation_id: ObservationId::from(format!(
+                "obs:peer-binding:{}",
+                self.binding_id
+            )),
+            superseded_by_observation_id: match self.binding_state {
+                BindingState::Revoked | BindingState::Expired => {
+                    Some(ObservationId::from(format!(
+                        "obs:peer-binding:{}:{:?}",
+                        self.binding_id, self.binding_state
+                    )))
+                }
+                BindingState::Pending | BindingState::Admitted | BindingState::Denied => None,
+            },
         }
     }
 }
@@ -264,6 +336,30 @@ impl MctDaemonConfigStore {
         Ok(())
     }
 
+    pub fn ensure_local_identity(
+        &self,
+        scope: MctOperatorNodeScope,
+        identity_path: impl Into<PathBuf>,
+    ) -> Result<MctLocalNodeIdentity> {
+        let identity_path = identity_path.into();
+        let secret_key_hex = load_or_create_node_secret_key_hex(&identity_path)
+            .with_context(|| format!("load local Iroh identity {}", identity_path.display()))?;
+        let endpoint_id = endpoint_id_for_secret_key_hex(&secret_key_hex)
+            .context("derive local Iroh endpoint id")?;
+        let identity = MctLocalNodeIdentity {
+            node_id: scope.node_id,
+            vision_id: scope.vision_id,
+            endpoint_id,
+            identity_path,
+            policy_revision: scope.policy_revision,
+            updated_at: unix_timestamp_string(),
+        };
+        let mut config = self.load()?;
+        config.local_identity = Some(identity.clone());
+        self.save(&config)?;
+        Ok(identity)
+    }
+
     pub fn approve_and_assign_loaded_child(
         &self,
         child: &MctLoadedChild,
@@ -325,11 +421,47 @@ impl MctDaemonConfigStore {
         Ok(config)
     }
 
+    pub fn set_peer_state(
+        &self,
+        peer_node_id: &MctNodeId,
+        binding_state: BindingState,
+    ) -> Result<MctDaemonConfig> {
+        let mut config = self.load()?;
+        let Some(peer) = config.peers.get_mut(peer_node_id.as_str()) else {
+            bail!("peer '{peer_node_id}' not found in config");
+        };
+        peer.binding_state = binding_state;
+        peer.updated_at = unix_timestamp_string();
+        self.save(&config)?;
+        Ok(config)
+    }
+
+    pub fn revoke_peer(&self, peer_node_id: &MctNodeId) -> Result<MctDaemonConfig> {
+        self.set_peer_state(peer_node_id, BindingState::Revoked)
+    }
+
     pub fn remove_peer(&self, peer_node_id: &MctNodeId) -> Result<MctDaemonConfig> {
         let mut config = self.load()?;
         config.peers.remove(peer_node_id.as_str());
         self.save(&config)?;
         Ok(config)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MctOperatorNodeScope {
+    pub node_id: MctNodeId,
+    pub vision_id: VisionId,
+    pub policy_revision: u64,
+}
+
+impl Default for MctOperatorNodeScope {
+    fn default() -> Self {
+        Self {
+            node_id: MctNodeId::from("local-mct"),
+            vision_id: VisionId::from("vision-local"),
+            policy_revision: 1,
+        }
     }
 }
 
@@ -507,11 +639,8 @@ mod tests {
         assert!(!denied.is_allowed());
     }
 
-    #[test]
-    fn config_store_persists_peer_address_book_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = MctDaemonConfigStore::new(dir.path().join("config.json"));
-        let entry = MctPeerAddressBookEntry {
+    fn peer_entry(state: BindingState) -> MctPeerAddressBookEntry {
+        MctPeerAddressBookEntry {
             peer_node_id: MctNodeId::from("peer-a"),
             binding_id: PeerBindingId::from("binding-peer-a"),
             endpoint_id: EndpointIdText::from("endpoint-a"),
@@ -521,10 +650,89 @@ mod tests {
                 direct_addresses: vec!["127.0.0.1:12345".into()],
                 relay_urls: Vec::new(),
             }),
-            binding_state: BindingState::Admitted,
+            binding_state: state,
             policy_revision: 1,
             updated_at: "1".into(),
-        };
+        }
+    }
+
+    #[test]
+    fn config_store_persists_local_identity_without_storing_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let identity_path = dir.path().join("identity").join("iroh-secret.hex");
+        let store = MctDaemonConfigStore::new(&config_path);
+
+        let identity = store
+            .ensure_local_identity(MctOperatorNodeScope::default(), &identity_path)
+            .unwrap();
+
+        assert_eq!(identity.node_id, MctNodeId::from("local-mct"));
+        assert_eq!(identity.vision_id, VisionId::from("vision-local"));
+        assert_eq!(identity.identity_path, identity_path);
+        assert!(identity_path.exists());
+        assert_eq!(store.load().unwrap().local_identity, Some(identity));
+        let secret_key_hex = fs::read_to_string(&identity_path).unwrap();
+        let config_json = fs::read_to_string(&config_path).unwrap();
+        assert!(!config_json.contains(secret_key_hex.trim()));
+    }
+
+    #[test]
+    fn peer_authority_projection_requires_local_identity() {
+        let mut config = MctDaemonConfig::default();
+        config
+            .peers
+            .insert("peer-a".into(), peer_entry(BindingState::Admitted));
+
+        let result = config.peer_authority_projection();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn config_projects_peer_bindings_from_local_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MctDaemonConfigStore::new(dir.path().join("config.json"));
+        let identity = store
+            .ensure_local_identity(
+                MctOperatorNodeScope {
+                    node_id: MctNodeId::from("node-local"),
+                    vision_id: VisionId::from("vision-local"),
+                    policy_revision: 7,
+                },
+                dir.path().join("iroh-secret.hex"),
+            )
+            .unwrap();
+        store
+            .upsert_peer(peer_entry(BindingState::Admitted))
+            .unwrap();
+        store.revoke_peer(&MctNodeId::from("peer-a")).unwrap();
+
+        let projection = store.load().unwrap().peer_authority_projection().unwrap();
+
+        assert_eq!(projection.issuer_node_id, identity.node_id);
+        assert_eq!(projection.local_endpoint_id, identity.endpoint_id);
+        assert_eq!(projection.policy_revision, 7);
+        assert_eq!(projection.bindings.len(), 1);
+        let binding = &projection.bindings[0];
+        assert_eq!(binding.binding_id, PeerBindingId::from("binding-peer-a"));
+        assert_eq!(binding.iroh_endpoint_id, EndpointIdText::from("endpoint-a"));
+        assert_eq!(binding.scope.mct_node_id, MctNodeId::from("peer-a"));
+        assert_eq!(binding.scope.vision_id, VisionId::from("vision-a"));
+        assert_eq!(binding.issuer_node_id, MctNodeId::from("node-local"));
+        assert_eq!(binding.binding_state, BindingState::Revoked);
+        assert_eq!(
+            binding.scope.allowed_alpns,
+            vec![MCT_HELLO_ALPN.to_string(), MCT_CALL_ALPN.to_string()]
+        );
+        assert!(binding.superseded_by_observation_id.is_some());
+    }
+
+    #[test]
+    fn config_store_persists_peer_address_book_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MctDaemonConfigStore::new(dir.path().join("config.json"));
+        let entry = peer_entry(BindingState::Admitted);
 
         store.upsert_peer(entry.clone()).unwrap();
         let reloaded = store.load().unwrap();

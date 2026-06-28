@@ -2,17 +2,17 @@ use anyhow::{Context, Result, bail};
 use mct_daemon::{
     MctChildIntegrityMode, MctChildLoadOptions, MctCompositionPlan, MctCompositionStep,
     MctConfigChildAuthorityProjection, MctControlPlaneSnapshot, MctDaemonConfigStore,
-    MctOperatorChildScope, MctPeerAddressBookEntry, MctProcessChildHarness,
-    MctProcessChildInvocationIds, MctRuntimeStateStore, MctWasmComponentInvocationIds,
-    MctWasmComponentRuntime, build_federation_capability_view, build_metrics_snapshot,
-    daemon_status, default_config_path, default_state_path, load_children_from_dir,
-    record_composition_plan, reload_configured_child, serve_http_control_once,
-    sync_child_registry_source, warmup_configured_child,
+    MctLocalNodeIdentity, MctOperatorChildScope, MctOperatorNodeScope, MctPeerAddressBookEntry,
+    MctProcessChildHarness, MctProcessChildInvocationIds, MctRuntimeStateStore,
+    MctWasmComponentInvocationIds, MctWasmComponentRuntime, build_federation_capability_view,
+    build_metrics_snapshot, daemon_status, default_config_path, default_state_path,
+    load_children_from_dir, record_composition_plan, reload_configured_child,
+    serve_http_control_once, sync_child_registry_source, warmup_configured_child,
 };
 use mct_iroh::{
     MctIrohCallHandlerResult, MctIrohServeState, MctIrohServedProtocol, MotherIrohEndpoint,
     MotherIrohEndpointConfig, MotherIrohEndpointTicket, MotherIrohRelayMode,
-    endpoint_id_for_secret_key_hex, load_or_create_node_secret_key_hex,
+    load_or_create_node_secret_key_hex,
 };
 use mct_kernel::*;
 use mct_observation::JsonlObservationLedger;
@@ -747,11 +747,12 @@ fn run_runs(mut args: Vec<String>) -> Result<()> {
 
 fn run_peers(mut args: Vec<String>) -> Result<()> {
     if args.is_empty() {
-        bail!("expected peers subcommand: add | list | remove");
+        bail!("expected peers subcommand: add | list | revoke | remove");
     }
     match args.remove(0).as_str() {
         "add" => run_peers_add(args),
         "list" => run_peers_list(args),
+        "revoke" => run_peers_revoke(args),
         "remove" => run_peers_remove(args),
         other => bail!("unknown peers subcommand '{other}'"),
     }
@@ -815,6 +816,29 @@ fn run_peers_list(mut args: Vec<String>) -> Result<()> {
             peer.ticket.is_some()
         );
     }
+    Ok(())
+}
+
+fn run_peers_revoke(mut args: Vec<String>) -> Result<()> {
+    let config_path = take_option(&mut args, "--config")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_config_path);
+    if args.is_empty() {
+        bail!("expected: mct-daemon peers revoke <peer-node-id> [--config path]");
+    }
+    let peer_node_id = MctNodeId::from(args.remove(0));
+    let config = MctDaemonConfigStore::new(&config_path).revoke_peer(&peer_node_id)?;
+    let peer = config
+        .peers
+        .get(peer_node_id.as_str())
+        .expect("revoked peer remains in config");
+    println!(
+        "peer revoked={} state={:?} config={} peers={}",
+        peer_node_id,
+        peer.binding_state,
+        config_path.display(),
+        config.peers.len()
+    );
     Ok(())
 }
 
@@ -900,14 +924,20 @@ async fn run_iroh(mut args: Vec<String>) -> Result<()> {
     }
     match args.remove(0).as_str() {
         "identity" => {
+            let config_path = take_option(&mut args, "--config")
+                .map(PathBuf::from)
+                .unwrap_or_else(default_config_path);
             let identity_path = args
                 .first()
                 .map(PathBuf::from)
                 .unwrap_or_else(default_identity_path);
-            let secret_key_hex = load_or_create_node_secret_key_hex(&identity_path)?;
-            let endpoint_id = endpoint_id_for_secret_key_hex(&secret_key_hex)?;
-            println!("endpoint_id={endpoint_id}");
-            println!("identity={}", identity_path.display());
+            let identity = MctDaemonConfigStore::new(&config_path)
+                .ensure_local_identity(MctOperatorNodeScope::default(), &identity_path)?;
+            println!("node_id={}", identity.node_id);
+            println!("vision_id={}", identity.vision_id);
+            println!("endpoint_id={}", identity.endpoint_id);
+            println!("identity={}", identity.identity_path.display());
+            println!("config={}", config_path.display());
         }
         "serve" => serve_iroh(args).await?,
         "serve-process" => serve_iroh_process(args).await?,
@@ -948,24 +978,14 @@ async fn serve_iroh(mut args: Vec<String>) -> Result<()> {
         load_report.loaded, load_report.failed
     );
 
-    let binding = MctPeerBinding {
+    let binding = cli_peer_binding(
         binding_id,
-        iroh_endpoint_id: peer_endpoint_id,
-        scope: MctPeerBindingScope {
-            mct_node_id: peer_node_id,
-            vision_id,
-            allowed_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
-            data_scope: None,
-            observation_scope: None,
-        },
-        issuer_node_id: MctNodeId::from("local-mct"),
-        policy_revision: 1,
-        binding_state: BindingState::Admitted,
-        issued_at: Timestamp::from("2026-05-31T00:00:00Z"),
-        expires_at: None,
-        created_by_observation_id: ObservationId::from("obs-cli-peer-binding"),
-        superseded_by_observation_id: None,
-    };
+        peer_endpoint_id,
+        peer_node_id,
+        vision_id,
+        identity_path,
+        local_endpoint_id.clone(),
+    );
     let mut state = MctIrohServeState::new();
 
     loop {
@@ -1039,24 +1059,14 @@ async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
     println!("mct iroh process serving endpoint_id={local_endpoint_id}");
     println!("ticket={}", ticket.to_json()?.replace('\n', ""));
 
-    let binding = MctPeerBinding {
+    let binding = cli_peer_binding(
         binding_id,
-        iroh_endpoint_id: peer_endpoint_id,
-        scope: MctPeerBindingScope {
-            mct_node_id: peer_node_id,
-            vision_id,
-            allowed_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
-            data_scope: None,
-            observation_scope: None,
-        },
-        issuer_node_id: MctNodeId::from("local-mct"),
-        policy_revision: 1,
-        binding_state: BindingState::Admitted,
-        issued_at: Timestamp::from("2026-05-31T00:00:00Z"),
-        expires_at: None,
-        created_by_observation_id: ObservationId::from("obs-cli-peer-binding"),
-        superseded_by_observation_id: None,
-    };
+        peer_endpoint_id,
+        peer_node_id,
+        vision_id,
+        identity_path,
+        local_endpoint_id.clone(),
+    );
     let harness = MctProcessChildHarness {
         executable,
         args: Vec::new(),
@@ -1524,6 +1534,35 @@ fn iroh_config(secret_key_hex: String, relay_default: bool) -> MotherIrohEndpoin
     config
 }
 
+fn cli_peer_binding(
+    binding_id: PeerBindingId,
+    endpoint_id: EndpointIdText,
+    peer_node_id: MctNodeId,
+    vision_id: VisionId,
+    identity_path: PathBuf,
+    local_endpoint_id: EndpointIdText,
+) -> MctPeerBinding {
+    let local_identity = MctLocalNodeIdentity {
+        node_id: MctNodeId::from("local-mct"),
+        vision_id: VisionId::from("vision-local"),
+        endpoint_id: local_endpoint_id,
+        identity_path,
+        policy_revision: 1,
+        updated_at: mct_daemon::unix_timestamp_string(),
+    };
+    MctPeerAddressBookEntry {
+        peer_node_id,
+        binding_id,
+        endpoint_id,
+        vision_id,
+        ticket: None,
+        binding_state: BindingState::Admitted,
+        policy_revision: 1,
+        updated_at: local_identity.updated_at.clone(),
+    }
+    .to_peer_binding(&local_identity)
+}
+
 fn read_ticket(path: &Path) -> Result<MotherIrohEndpointTicket> {
     let json = std::fs::read_to_string(path)
         .with_context(|| format!("reading peer ticket {}", path.display()))?;
@@ -1561,7 +1600,7 @@ fn default_identity_path() -> PathBuf {
 
 fn print_help() {
     println!(
-        "mct-daemon {version}\n\nCommands:\n  status\n  control serve-http [addr] [--state path]\n  control serve-uds [socket-path] [--state path]\n  registry sync <source-id> [children-dir] [--state path] [--strict-integrity] [--json]\n  federation view [--config path] [--state path] [--json]\n  metrics snapshot [--state path] [--json]\n  pando record <composition-id> [step-id,call-id,runtime,child,decision ...] [--state path] [--json]\n  children load [children-dir] [--strict-integrity] [--json]\n  process call <executable> [payload-json] [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  children approve <child-name> [children-dir] [--config path] [--strict-integrity]\n  children revoke <child-name> [--config path]\n  children approvals [--config path] [--json]\n  children warmup <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  children reload <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--config path]\n  peers list [--config path] [--json]\n  peers remove <peer-node-id> [--config path]\n  state summary [--state path] [--json]\n  runs list [--state path] [--json] [--limit n]\n  wasm call <component-file> <export-name> [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh identity [identity-file]\n  iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir]\n  iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable> --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function]\n  iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path]",
+        "mct-daemon {version}\n\nCommands:\n  status\n  control serve-http [addr] [--state path]\n  control serve-uds [socket-path] [--state path]\n  registry sync <source-id> [children-dir] [--state path] [--strict-integrity] [--json]\n  federation view [--config path] [--state path] [--json]\n  metrics snapshot [--state path] [--json]\n  pando record <composition-id> [step-id,call-id,runtime,child,decision ...] [--state path] [--json]\n  children load [children-dir] [--strict-integrity] [--json]\n  process call <executable> [payload-json] [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  children approve <child-name> [children-dir] [--config path] [--strict-integrity]\n  children revoke <child-name> [--config path]\n  children approvals [--config path] [--json]\n  children warmup <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  children reload <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--config path]\n  peers list [--config path] [--json]\n  peers revoke <peer-node-id> [--config path]\n  peers remove <peer-node-id> [--config path]\n  state summary [--state path] [--json]\n  runs list [--state path] [--json] [--limit n]\n  wasm call <component-file> <export-name> [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh identity [identity-file] [--config path]\n  iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir]\n  iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable> --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function]\n  iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path]",
         version = mct_daemon::version()
     );
 }

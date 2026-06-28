@@ -36,9 +36,10 @@ pub use composition::{
     record_composition_plan,
 };
 pub use config::{
-    MctConfigChildAuthorityProjection, MctDaemonConfig, MctDaemonConfigStore,
-    MctOperatorChildScope, MctPeerAddressBookEntry, MctStoredChildApproval,
-    MctStoredChildAssignment, default_config_path, unix_timestamp_string,
+    MctConfigChildAuthorityProjection, MctDaemonConfig, MctDaemonConfigStore, MctLocalNodeIdentity,
+    MctOperatorChildScope, MctOperatorNodeScope, MctPeerAddressBookEntry,
+    MctPeerAuthorityProjection, MctStoredChildApproval, MctStoredChildAssignment,
+    default_config_path, unix_timestamp_string,
 };
 #[cfg(unix)]
 pub use control::serve_uds_control_once;
