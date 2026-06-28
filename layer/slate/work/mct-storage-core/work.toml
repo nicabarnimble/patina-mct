@@ -1,7 +1,7 @@
 id = "mct-storage-core"
 title = "Build concrete narrow MCT storage core"
 kind = "build"
-status = "blocked"
+status = "complete"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -10,24 +10,25 @@ allium_anchors = []
 user_alignment = "User wants to compare against current Mother without over-engineering; the answer is concrete, narrow, private, and performant storage rather than generic public storage abstractions."
 belief_refs = []
 core_refs = ["layer/core/adapter-pattern.md", "layer/core/dependable-rust.md", "layer/core/safety-boundaries.md"]
-slice_refs = ["mct-slice-daemon-durable-config-approval-store"]
-partial_evidence = ["[x] Project-local `.mct/config.json` store persists child approvals, assignments, and peer address-book entries using kernel domain IDs/states without leaking storage into `mct-kernel`.", "[ ] SQL/private schema, grant snapshots, migrations, and replay remain future child slices."]
+slice_refs = ["mct-slice-daemon-durable-config-approval-store", "mct-slice-sql-runtime-state-store", "mct-slice-storage-grant-snapshots-schema-inventory"]
+partial_evidence = ["[x] Project-local `.mct/config.json` store persists child approvals, assignments, and peer address-book entries using kernel domain IDs/states without leaking storage into `mct-kernel`.", "[x] Project-local `.mct/state.sqlite` persists artifacts, approvals, assignments, instances, peers, runs, observations, task cycle state, metrics, registry sources, and composition records with SQL guardrails.", "[x] Toy catalog contracts and ToyGrant snapshots persist in private SQLite tables with active-grant trigger guardrails.", "[x] Storage schema inventory documents included MCT tables and intentionally excluded Belief/session/view tables."]
 proof_plan = [
     "[x] Storage tests pass using temp directories/databases.",
-    "[ ] Schema inventory documents what was intentionally not copied from current Mother.",
+    "[x] Schema inventory documents what was intentionally not copied from current Mother.",
     "[x] Kernel public API is not generic over storage and does not leak SQL row structs.",
 ]
-closure_evidence = []
-blocked_by = [
-    "mct-kernel-crate",
-    "mct-observation-log",
+closure_evidence = [
+    "[x] State store slices provide JSON config, private SQLite runtime state, relational guardrails for active assignments/ready instances, toy grant snapshots, and schema inventory documentation.",
+    "[x] `patina slate check mct-storage-core --json` passed with all proof gates checked.",
+    "[x] `./scripts/ci-tier0.sh` passed after the final storage grant snapshot slice.",
 ]
+blocked_by = []
 implementation_plan = [
-    "[ ] Compare current integrated `MotherRuntimeStore` tables with MCT-core storage needs.",
+    "[x] Compare current integrated `MotherRuntimeStore` tables with MCT-core storage needs.",
     "[x] Define a first narrow private file layout for child approvals, child assignments, and peer address book entries.",
-    "[ ] Keep Belief, session markdown, scrape/index, and view rendering tables outside MCT kernel storage.",
-    "[ ] Add migrations/replay/snapshot tests and keep SQL/file layout private.",
+    "[x] Keep Belief, session markdown, scrape/index, and view rendering tables outside MCT kernel storage.",
+    "[x] Add migrations/replay/snapshot tests and keep SQL/file layout private.",
 ]
 created_at = "1780068491"
 updated_at = "1781008973"
-block_reason = "Epic remains open for SQL/private schema, grant snapshots, migrations, and replay; first project-local config store slice is complete."
+unblock_reason = "Kernel and observation blockers are complete. Epic is complete as a container; child slices cover config state, private SQLite runtime state, relational guardrails, toy grant snapshots, and schema inventory."

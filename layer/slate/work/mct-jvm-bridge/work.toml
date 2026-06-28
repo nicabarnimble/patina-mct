@@ -1,7 +1,7 @@
 id = "mct-jvm-bridge"
 title = "Build JVM bridge ingress"
 kind = "build"
-status = "blocked"
+status = "active"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -16,11 +16,7 @@ proof_plan = [
     "[ ] JVM bridge code does not enter `mct-kernel` internals.",
 ]
 closure_evidence = []
-blocked_by = [
-    "mct-daemon-control-plane",
-    "mct-call-envelope",
-    "mct-node-identity-security",
-]
+blocked_by = []
 implementation_plan = [
     "[ ] Define JVM bridge transport/protocol boundary and map requests into MCT call envelopes.",
     "[ ] Implement bridge authentication/admission and timeout/error mapping.",
@@ -29,4 +25,4 @@ implementation_plan = [
 ]
 created_at = "1780068531"
 updated_at = "1780262310"
-block_reason = "Blocked until mct-node-identity-security is completed or explicitly superseded in the roadmap."
+unblock_reason = "Daemon control plane, call envelope, and node identity/security are complete. Epic is ready for JVM bridge slices."

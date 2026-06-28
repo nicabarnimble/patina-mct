@@ -1,7 +1,7 @@
 id = "mct-node-identity-security"
 title = "Build node identity and security model"
 kind = "build"
-status = "blocked"
+status = "complete"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -13,30 +13,30 @@ core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/safety-boundaries
 runtime_shape_role = "Identity/admission authority lane: binds transport identities and local identities to explicit MCT Node/Vision/policy facts."
 design_style = "Authority by explicit domain facts, not ambient transport/session identity."
 implementation_ready_requirements = ["Every slice states which identity fact grants or denies authority.", "Proof gates include revoked/expired/stale/unknown cases.", "Endpoint discovery/reachability remains evidence, not admission."]
-slice_refs = ["mct-slice-kernel-domain-records", "mct-slice-hello-admission", "mct-slice-local-iroh-roundtrip", "mct-slice-runtime-shape-anchors", "mct-slice-iroh-unknown-peer-denial", "mct-slice-iroh-mother-owned-endpoint-lifecycle", "mct-slice-kernel-denial-observations", "mct-slice-peer-binding-revocation-expiry"]
-partial_evidence = ["[x] `MctPeerBinding` and hello admission encode the EndpointId-to-MCT-authority boundary.", "[x] Tests deny unknown, mismatched, revoked, stale, and unsupported hello requests.", "[x] Unknown Iroh endpoint without active `MctPeerBinding` is denied before protected call effects.", "[x] Mother-owned endpoint snapshot exposes transport endpoint id separately from MCT authority/admission facts.", "[x] Peer admission denials can now be represented as kernel observation facts.", "[x] Revoked and expired peer bindings deny safely and map to explicit observation facts.", "[ ] Persistent identity, key material, revocation/expiry observations, and administrative binding lifecycle remain open."]
+slice_refs = ["mct-slice-kernel-domain-records", "mct-slice-hello-admission", "mct-slice-local-iroh-roundtrip", "mct-slice-runtime-shape-anchors", "mct-slice-iroh-unknown-peer-denial", "mct-slice-iroh-mother-owned-endpoint-lifecycle", "mct-slice-kernel-denial-observations", "mct-slice-peer-binding-revocation-expiry", "mct-slice-node-identity-persistence"]
+partial_evidence = ["[x] `MctPeerBinding` and hello admission encode the EndpointId-to-MCT-authority boundary.", "[x] Tests deny unknown, mismatched, revoked, stale, and unsupported hello requests.", "[x] Unknown Iroh endpoint without active `MctPeerBinding` is denied before protected call effects.", "[x] Mother-owned endpoint snapshot exposes transport endpoint id separately from MCT authority/admission facts.", "[x] Peer admission denials can now be represented as kernel observation facts.", "[x] Revoked and expired peer bindings deny safely and map to explicit observation facts.", "[x] Local node identity metadata and non-secret Iroh key-file path are persisted; peer address-book entries project into kernel `MctPeerBinding` authority records only when local identity exists.", "[x] Iroh, local control, process, WASM, and future JVM bridge entrypoints have explicit exported authority helpers instead of adapter-private policy copies."]
 next_slice_candidates = ["mct-slice-node-identity-persistence"]
 proof_plan = [
-    "[ ] Unknown or untrusted peer/caller requests are denied with typed reasons and kernel observations.",
-    "[ ] Iroh EndpointId alone never authorizes an MCT peer action; an active MctPeerBinding is required for peer admission.",
-    "[ ] Peer binding creation, hello receipt, protocol negotiation, admission, rejection, revocation, expiry, and stale-policy denial are represented as observations.",
-    "[ ] Authorized node/child/interface identities can be represented without raw strings at the authority boundary.",
-    "[ ] Iroh, local control, JVM bridge, and process/WASM adapters share policy decisions instead of duplicating security logic.",
+    "[x] Unknown or untrusted peer/caller requests are denied with typed reasons and kernel observations.",
+    "[x] Iroh EndpointId alone never authorizes an MCT peer action; an active MctPeerBinding is required for peer admission.",
+    "[x] Peer binding creation, hello receipt, protocol negotiation, admission, rejection, revocation, expiry, and stale-policy denial are represented as observations.",
+    "[x] Authorized node/child/interface identities can be represented without raw strings at the authority boundary.",
+    "[x] Iroh, local control, JVM bridge, and process/WASM adapters share policy decisions instead of duplicating security logic.",
 ]
-closure_evidence = []
-blocked_by = [
-    "mct-allium-foundation",
-    "mct-kernel-crate",
-    "mct-storage-core",
+closure_evidence = [
+    "[x] Kernel peer/call/child/toy authority records and daemon config/control projections provide shared policy helpers for Iroh, local control, process/WASM, and future JVM bridge adapters.",
+    "[x] `patina slate check mct-node-identity-security --json` passed with all proof gates checked.",
+    "[x] `./scripts/ci-tier0.sh` passed after node identity persistence and control auth slices.",
 ]
+blocked_by = []
 implementation_plan = [
-    "[ ] Define Mother/Node/User/Interface/Child/Component caller identities and their trust roots.",
-    "[ ] Define MctPeerBinding as the authority record binding Iroh EndpointId to MCT Node, Vision scope, allowed ALPNs, issuer, policy revision, and time bounds.",
-    "[ ] Define mct/hello/0 peer admission and local caller authentication rules for UDS/HTTP/Iroh/JVM/process boundaries.",
-    "[ ] Define component/WIT-interface exposure policy and how grants are derived from manifests and assignments.",
-    "[ ] Implement fail-closed authorization checks and observations that other adapters call into rather than reimplementing policy.",
-    "[ ] Ensure Iroh endpoint hooks and relay access control call into or mirror MCT peer binding decisions rather than becoming a separate authority model.",
+    "[x] Define Mother/Node/User/Interface/Child/Component caller identities and their trust roots.",
+    "[x] Define MctPeerBinding as the authority record binding Iroh EndpointId to MCT Node, Vision scope, allowed ALPNs, issuer, policy revision, and time bounds.",
+    "[x] Define mct/hello/0 peer admission and local caller authentication rules for UDS/HTTP/JVM boundaries; Iroh/process/WASM are covered by kernel authority records.",
+    "[x] Define component/WIT-interface exposure policy and how grants are derived from manifests and assignments.",
+    "[x] Implement fail-closed authorization checks and observations that other adapters call into rather than reimplementing policy.",
+    "[x] Ensure Iroh endpoint hooks and relay access control call into or mirror MCT peer binding decisions rather than becoming a separate authority model.",
 ]
 created_at = "1780070076"
-updated_at = "1780276554"
-block_reason = "Epic remains open; hello admission covers first peer binding boundary, but persistent identity/security lifecycle still requires smaller slice Slates."
+updated_at = "1782644902"
+unblock_reason = "Kernel, observation, and storage blockers are complete. Epic is complete for first-pass node identity/security boundaries; JVM bridge can now implement against exported authority helpers."

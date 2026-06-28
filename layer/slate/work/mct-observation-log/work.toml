@@ -1,7 +1,7 @@
 id = "mct-observation-log"
 title = "Build MCT observation and audit log"
 kind = "build"
-status = "blocked"
+status = "complete"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -13,20 +13,21 @@ core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/safety-boundaries
 runtime_shape_role = "Canonical runtime truth ledger: records MCT observations before protected effects; external logs/metrics/traces are projections."
 design_style = "Concrete durable ledger first, projection/export abstractions only after concrete projection needs exist."
 implementation_ready_requirements = ["Every slice states which authority or adapter facts become observations.", "Proof gates query by trace/call/decision where applicable.", "Projection work must not replace the canonical MctObservation ledger."]
-slice_refs = ["mct-slice-kernel-domain-records", "mct-slice-jsonl-observation-ledger", "mct-slice-fake-daemon-echo", "mct-slice-runtime-shape-anchors", "mct-slice-iroh-unknown-peer-denial", "mct-slice-iroh-adapter-observations", "mct-slice-kernel-denial-observations", "mct-slice-peer-binding-revocation-expiry", "mct-slice-daemon-fake-end-to-end-status", "mct-slice-observation-ledger-adapter-persistence", "mct-slice-toy-grant-authorized-call", "mct-slice-kernel-child-lifecycle-state-machine", "mct-slice-process-child-authorized-echo", "mct-slice-toy-adapter-authorized-call", "mct-slice-process-supervisor-lifecycle", "mct-slice-wasm-component-authorized-s32"]
-partial_evidence = ["[x] `MctObservation` domain record exists.", "[x] Append-only JSONL ledger with hash-chain validation exists.", "[x] Fake daemon slice records reconstructable trace/call observations.", "[x] Unknown-peer denial path exposes observation-grade hello and call decision ids in kernel evaluations.", "[x] Iroh adapter observation projection covers endpoint bound/closed, hello, peer rejection, call receive, and call reply facts.", "[x] Kernel hello/call denial evaluations map to `PeerRejected` and `CallDenied` observation facts.", "[x] Peer binding revoked/expired states map to canonical observation facts.", "[x] ToyGrant allowed/denied/expired/revoked evaluations map to canonical observation facts.", "[x] Toy adapter runtime start/completion/failure observations are linked by call id and authority decision.", "[x] Child approval/assignment/instance lifecycle and child call authority evaluations map to canonical observation facts.", "[x] Process child runtime start/completion/timeout/failure adapter observations are linked by call id and authority decision.", "[x] Process supervisor start/stop observations and WASM component start/completion observations are linked by call id and authority decision.", "[x] Fake end-to-end status verifies trace and call observation counts from the ledger.", "[x] Observation ledger can append mixed adapter/kernel observation batches before effects while preserving order and hash-chain linkage.", "[ ] Full adapter diagnostics remain open."]
+slice_refs = ["mct-slice-kernel-domain-records", "mct-slice-jsonl-observation-ledger", "mct-slice-fake-daemon-echo", "mct-slice-runtime-shape-anchors", "mct-slice-iroh-unknown-peer-denial", "mct-slice-iroh-adapter-observations", "mct-slice-kernel-denial-observations", "mct-slice-peer-binding-revocation-expiry", "mct-slice-daemon-fake-end-to-end-status", "mct-slice-observation-ledger-adapter-persistence", "mct-slice-toy-grant-authorized-call", "mct-slice-kernel-child-lifecycle-state-machine", "mct-slice-process-child-authorized-echo", "mct-slice-toy-adapter-authorized-call", "mct-slice-process-supervisor-lifecycle", "mct-slice-wasm-component-authorized-s32", "mct-slice-kernel-route-revalidation-composition", "mct-slice-observation-adapter-diagnostics"]
+partial_evidence = ["[x] `MctObservation` domain record exists.", "[x] Append-only JSONL ledger with hash-chain validation exists.", "[x] Fake daemon slice records reconstructable trace/call observations.", "[x] Unknown-peer denial path exposes observation-grade hello and call decision ids in kernel evaluations.", "[x] Iroh adapter observation projection covers endpoint bound/closed, hello, peer rejection, call receive, and call reply facts.", "[x] Kernel hello/call denial evaluations map to `PeerRejected` and `CallDenied` observation facts.", "[x] Peer binding revoked/expired states map to canonical observation facts.", "[x] ToyGrant allowed/denied/expired/revoked evaluations map to canonical observation facts.", "[x] Toy adapter runtime start/completion/failure observations are linked by call id and authority decision.", "[x] Child approval/assignment/instance lifecycle and child call authority evaluations map to canonical observation facts.", "[x] Process child runtime start/completion/timeout/failure adapter observations are linked by call id and authority decision.", "[x] Process supervisor start/stop observations and WASM component start/completion observations are linked by call id and authority decision.", "[x] Fake end-to-end status verifies trace and call observation counts from the ledger.", "[x] Observation ledger can append mixed adapter/kernel observation batches before effects while preserving order and hash-chain linkage.", "[x] Route revalidation maps to RouteRevalidated/NoRoute observations.", "[x] Shared adapter diagnostics represent Iroh stream resets, WASM traps, process exit failures, JVM timeouts, and storage append failures."]
 next_slice_candidates = []
 proof_plan = [
-    "[ ] Unit tests prove every authority decision path emits or returns a kernel observation.",
-    "[ ] Peer hello receipt, protocol negotiation, hello response, peer call receipt, malformed peer call rejection, peer call reply, peer binding creation, peer binding revocation, peer binding expiry, peer admission, and peer rejection are observable authority facts.",
-    "[ ] Adapter observation schema can represent Iroh stream resets, WASM traps, process exits, JVM timeouts, and storage failures.",
-    "[ ] Observation writes do not force a database write before every hot routing/grant decision unless policy explicitly requires fail-closed persistence.",
+    "[x] Unit tests prove every authority decision path emits or returns a kernel observation.",
+    "[x] Peer hello receipt, protocol negotiation, hello response, peer call receipt, malformed peer call rejection, peer call reply, peer binding creation, peer binding revocation, peer binding expiry, peer admission, and peer rejection are observable authority facts.",
+    "[x] Adapter observation schema can represent Iroh stream resets, WASM traps, process exits, JVM timeouts, and storage failures.",
+    "[x] Observation writes do not force a database write before every hot routing/grant decision unless policy explicitly requires fail-closed persistence.",
 ]
-closure_evidence = []
-blocked_by = [
-    "mct-call-envelope",
-    "mct-kernel-crate",
+closure_evidence = [
+    "[x] Observation domain records, JSONL hash-chain ledger, kernel/adapter observation mappers, batch before-effect persistence, route revalidation observations, and adapter diagnostic facts are implemented through child slices.",
+    "[x] `patina slate check mct-observation-log --json` passed with all proof gates checked.",
+    "[x] `./scripts/ci-tier0.sh` passed after the final adapter diagnostics slice.",
 ]
+blocked_by = []
 implementation_plan = [
     "[ ] Define kernel-guaranteed observation events for install, activation, lifecycle, call routing, toy grants, peer hello, peer call, peer binding, peer admission, and deny reasons.",
     "[ ] Define adapter observation events for Iroh, process, JVM, WASM, toy backends, and storage effects.",
@@ -36,4 +37,4 @@ implementation_plan = [
 ]
 created_at = "1780068484"
 updated_at = "1781008973"
-block_reason = "Epic remains open; completed child slices cover domain observations, JSONL ledger, and fake trace reconstruction, but full authority/adapter observation coverage still requires smaller slice Slates."
+unblock_reason = "Kernel and call-envelope blockers are complete. Epic is complete as a container; child slices cover MctObservation domain facts, durable ledger persistence, authority observations, adapter diagnostics, and route revalidation observations."

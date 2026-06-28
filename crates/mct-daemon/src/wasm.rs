@@ -37,6 +37,12 @@ pub struct MctWasmComponentToyInvocation {
     pub ids: MctWasmComponentInvocationIds,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctWasmComponentDiagnosticIds {
+    pub observation_id: ObservationId,
+    pub observed_at: Timestamp,
+}
+
 #[derive(Clone, Debug)]
 struct MctWasmHostState {
     toy_registry: MctToyAdapterRegistry,
@@ -62,6 +68,43 @@ pub enum MctWasmComponentRuntimeError {
     },
     #[error("wasm component export '{export_name}' returned unexpected value")]
     UnexpectedResult { export_name: String },
+}
+
+pub fn wasm_component_runtime_error_observation(
+    error: &MctWasmComponentRuntimeError,
+    call: &MctCall,
+    authorized: &AuthorizedChildInvocation,
+    ids: MctWasmComponentDiagnosticIds,
+) -> Option<MctObservation> {
+    let MctWasmComponentRuntimeError::Call {
+        path, export_name, ..
+    } = error
+    else {
+        return None;
+    };
+    Some(adapter_diagnostic_observation(
+        AdapterDiagnosticObservationInput {
+            observation_id: ids.observation_id,
+            observed_at: ids.observed_at,
+            diagnostic_kind: AdapterDiagnosticKind::WasmTrap,
+            trace: ObservationTraceRef {
+                trace_id: call.trace_context.trace_id.clone(),
+                span_id: Some(call.trace_context.span_id.clone()),
+                parent_span_id: None,
+                external_trace_id: None,
+            },
+            call_id: Some(call.call_id.clone()),
+            decision_id: Some(authorized.authority_decision_id.clone()),
+            subject_id: Some(authorized.child_name.clone()),
+            resource_id: Some(path.display().to_string()),
+            policy_revision: Some(call.authority_context.policy_revision),
+            grants_revision: Some(call.authority_context.grants_revision),
+            detail_ref: Some(format!(
+                "authorized_child_invocation:{}:export:{export_name}",
+                authorized.authorized_child_invocation_id
+            )),
+        },
+    ))
 }
 
 #[derive(Debug)]
@@ -409,6 +452,108 @@ mod tests {
             started_at: Timestamp::from("2026-05-31T00:00:00Z"),
             completed_at: Timestamp::from("2026-05-31T00:00:01Z"),
         }
+    }
+
+    fn diagnostic_ids() -> MctWasmComponentDiagnosticIds {
+        MctWasmComponentDiagnosticIds {
+            observation_id: ObservationId::from("obs-wasm-trap"),
+            observed_at: Timestamp::from("2026-05-31T00:00:02Z"),
+        }
+    }
+
+    #[test]
+    fn wasm_component_runtime_trap_maps_to_adapter_observation() {
+        let component_wat = r#"
+(component
+  (core module $m
+    (func $trap (export "trap") (result i32)
+      unreachable))
+  (core instance $i (instantiate $m))
+  (func $trap (result s32) (canon lift (core func $i "trap")))
+  (export "trap" (func $trap)))
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let component_path = dir.path().join("trap.component.wasm");
+        fs::write(&component_path, wat::parse_str(component_wat).unwrap()).unwrap();
+        let runtime = MctWasmComponentRuntime::new().unwrap();
+
+        let error = runtime
+            .invoke_authorized_s32_export(&authorized(), &call(), &component_path, "trap", ids())
+            .unwrap_err();
+        let observation = wasm_component_runtime_error_observation(
+            &error,
+            &call(),
+            &authorized(),
+            diagnostic_ids(),
+        )
+        .unwrap();
+
+        assert!(matches!(error, MctWasmComponentRuntimeError::Call { .. }));
+        assert_eq!(observation.kind, ObservationKind::RuntimeExecutionTrapped);
+        assert_eq!(observation.source_plane, SourcePlane::Adapter);
+        assert_eq!(observation.outcome, ObservationOutcome::Failed);
+        assert_eq!(
+            observation.call_id,
+            Some(CallId::from("call-wasm-component"))
+        );
+        assert_eq!(
+            observation.decision_id,
+            Some(DecisionId::from("decision-wasm"))
+        );
+    }
+
+    #[test]
+    fn wasm_component_runtime_records_failed_toy_host_import() {
+        let component_wat = r#"
+(component
+  (import "mct-toy-call" (func $toy (result s32)))
+  (core func $toy-core (canon lower (func $toy)))
+  (core module $m
+    (import "" "toy" (func $toy-import (result i32)))
+    (func $run (export "run") (result i32)
+      call $toy-import))
+  (core instance $imports (export "toy" (func $toy-core)))
+  (core instance $i (instantiate $m (with "" (instance $imports))))
+  (func $run (result s32) (canon lift (core func $i "run")))
+  (export "run" (func $run)))
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let component_path = dir.path().join("failed-toy.component.wasm");
+        fs::write(&component_path, wat::parse_str(component_wat).unwrap()).unwrap();
+        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let mut toy_registry = MctToyAdapterRegistry::new();
+        toy_registry.register(
+            ToyId::from("toy-echo"),
+            crate::MctToyBackend::StaticFailure {
+                safe_message: "toy unavailable".into(),
+            },
+        );
+
+        let report = runtime
+            .invoke_authorized_s32_export_with_toy_imports(
+                &authorized(),
+                &call(),
+                MctWasmComponentToyInvocation {
+                    component_path: component_path.clone(),
+                    export_name: "run".into(),
+                    toy_registry,
+                    toy_imports: vec![MctWasmToyHostImport {
+                        import_name: "mct-toy-call".into(),
+                        authorized_toy_call: toy_authorized(),
+                        ids: toy_ids(),
+                    }],
+                    ids: ids(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(report.returned_s32, -1);
+        assert_eq!(report.observations[2].kind, ObservationKind::ToyCallFailed);
+        assert_eq!(
+            report.observations[2].call_id,
+            Some(CallId::from("call-wasm-component"))
+        );
+        assert_eq!(report.observations[2].outcome, ObservationOutcome::Failed);
     }
 
     #[test]

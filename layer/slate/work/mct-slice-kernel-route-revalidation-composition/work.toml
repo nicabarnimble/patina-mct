@@ -1,0 +1,48 @@
+id = "mct-slice-kernel-route-revalidation-composition"
+title = "Compose kernel route revalidation"
+kind = "refactor"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Add a pure kernel revalidation decision that links an initial RouteDecision to execution-time child/toy authority evidence and denies stale or inconsistent routes before adapter effects."
+allium_anchors = ["MctRuntimeShape", "RouteDecision", "MctObservation"]
+user_alignment = "User wants parity with Mother while improving the design: strong invariants, no defensive fallbacks, simple explicit contracts, shared logic, and Jon Gjengset-style Rust."
+belief_refs = ["typed-domain-records-before-algorithms", "mother-kernel-decides-adapters-perform"]
+core_refs = ["layer/core/dependable-rust.md", "layer/core/safety-boundaries.md", "layer/core/adapter-pattern.md"]
+parent_slates = ["mct-kernel-crate", "mct-observation-log"]
+code_targets = ["crates/mct-kernel/src/route.rs", "crates/mct-kernel/src/observation.rs", "crates/mct-kernel/src/id.rs"]
+implementation_ready = true
+runtime_shape_role = "Record execution-time revalidation as a separate route decision linked to the initial route and child/toy authority evaluations."
+design_style = "Pure data composition in the kernel; selected-route invariants are explicit, denials are records, and adapters receive no permission without a successful revalidation."
+first_test_to_write = "route_revalidation_denies_stale_policy_before_execution"
+exit_criteria = [
+    "A revalidation decision links to the initial RouteDecision without mutating it.",
+    "Selected route, call id, child evidence, toy evidence, and snapshot revisions must agree or revalidation denies.",
+    "Allowed revalidation records the selected route and authority evidence before adapter execution.",
+    "Revalidation maps to MctObservation::RouteRevalidated when allowed and NoRouteRecorded when denied.",
+]
+non_goals = ["No planner/load ranking implementation.", "No daemon runtime rewiring in this slice.", "No storage or adapter types in mct-kernel."]
+implementation_plan = [
+    "[x] Add route revalidation domain records and reasons in mct-kernel.",
+    "[x] Compose child/toy authority evaluations into a pure revalidation decision.",
+    "[x] Map route revalidation decisions into kernel observations.",
+    "[x] Add tests for allowed, stale policy, mismatched route, and failed child/toy evidence.",
+]
+proof_plan = [
+    "[x] `cargo test -p mct-kernel route_revalidation_denies_stale_policy_before_execution` passes.",
+    "[x] `cargo test -p mct-kernel route_revalidation_observation_records_allowed_and_denied_outcomes` passes.",
+    "[x] `cargo test -p mct-kernel` passes.",
+    "[x] `./scripts/ci-tier0.sh` passes.",
+    "[x] `patina slate check mct-slice-kernel-route-revalidation-composition --json` passes.",
+]
+closure_evidence = [
+    "[x] Commit `5b08c3b feat(kernel): add route revalidation token` adds RouteDecisionKind::Revalidation, RouteRevalidationResult, AuthorizedRouteExecution, and revalidate_route_for_execution.",
+    "[x] Revalidation denies stale policy, selected-route child mismatch, failed toy evidence, and non-admissible initial route before adapter effects.",
+    "[x] Route revalidation observations produce RouteRevalidated for allowed outcomes and NoRouteRecorded/Denied for rejected outcomes.",
+    "[x] `./scripts/ci-tier0.sh` passed after implementation.",
+]
+blocked_by = ["mct-slice-kernel-typed-errors"]
+blocks = ["mct-storage-core", "mct-observation-log", "mct-child-registry-lifecycle"]
+belief_harvest_decision = "No new belief required; this applies the existing safety and adapter-boundary beliefs."
+created_at = "1782642600"
+updated_at = "1782643000"
+closed_at = "1782643000"

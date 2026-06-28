@@ -106,6 +106,8 @@ mod tests {
                 queued_tasks: 0,
                 child_state_keys: 0,
                 child_subscriptions: 0,
+                toy_catalog_contracts: 0,
+                toy_grant_snapshots: 0,
             },
             MctNodeId::from("node-a"),
             VisionId::from("vision-a"),

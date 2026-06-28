@@ -1,7 +1,7 @@
 id = "mct-cli-config-packaging"
 title = "Build MCT CLI, config, and packaging surface"
 kind = "build"
-status = "blocked"
+status = "active"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -16,11 +16,7 @@ proof_plan = [
     "[ ] Packaging docs explain how MCT runs without scry/assay/oxidize/Belief internals.",
 ]
 closure_evidence = []
-blocked_by = [
-    "mct-daemon-control-plane",
-    "mct-iroh-substrate",
-    "mct-child-registry-lifecycle",
-]
+blocked_by = []
 implementation_plan = [
     "[ ] Decide executable naming and command groups for daemon, child, toy, peer, launch, inspect, and config surfaces.",
     "[ ] Define config file layout for local control, storage paths, Iroh relay/discovery, secrets, and installed children.",
@@ -29,4 +25,4 @@ implementation_plan = [
 ]
 created_at = "1780070082"
 updated_at = "1780262310"
-block_reason = "Blocked until mct-child-registry-lifecycle is completed or explicitly superseded in the roadmap."
+unblock_reason = "Daemon control plane, Iroh substrate, and child lifecycle are complete. Epic is ready for CLI/config/packaging slices."

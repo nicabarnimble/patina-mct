@@ -29,24 +29,28 @@ pub use children::{
     component_artifact_from_loaded_child, load_children_from_dir, operation_id_from_target,
 };
 pub use composition::{
-    MctCompositionPlan, MctCompositionStep, MctPandoChild, MctPandoCommand, MctPandoCommandArg,
-    MctPandoComposition, MctPandoLifecycleStatus, MctPandoManifest, MctPandoRegistry,
-    MctPandoRegistryEntry, MctPandoSection, MctPandoWiring, MctPandoWiringEndpoint,
+    MctCompositionPlan, MctCompositionStep, MctPandoActivationCommand,
+    MctPandoActivationEvaluation, MctPandoActivationPlan, MctPandoChild, MctPandoCommand,
+    MctPandoCommandArg, MctPandoComposition, MctPandoDiagnostic, MctPandoDiagnosticKind,
+    MctPandoLifecycleStatus, MctPandoManifest, MctPandoRegistry, MctPandoRegistryEntry,
+    MctPandoSection, MctPandoWiring, MctPandoWiringEndpoint, build_pando_activation_plan,
     build_pando_registry, parse_pando_manifest_path, parse_pando_manifest_str,
     record_composition_plan,
 };
 pub use config::{
-    MctConfigChildAuthorityProjection, MctDaemonConfig, MctDaemonConfigStore,
-    MctOperatorChildScope, MctPeerAddressBookEntry, MctStoredChildApproval,
-    MctStoredChildAssignment, default_config_path, unix_timestamp_string,
+    MctConfigChildAuthorityProjection, MctDaemonConfig, MctDaemonConfigStore, MctLocalNodeIdentity,
+    MctOperatorChildScope, MctOperatorNodeScope, MctPeerAddressBookEntry,
+    MctPeerAuthorityProjection, MctStoredChildApproval, MctStoredChildAssignment,
+    default_config_path, unix_timestamp_string,
+};
+pub use control::{
+    MctControlPlaneAuthPolicy, MctControlPlaneResponse, MctControlPlaneSnapshot,
+    MctDaemonLocalControlFacts, MctDaemonLocalControlRequest, MctDaemonLocalControlResponse,
+    handle_control_plane_path, handle_control_plane_path_with_auth, handle_local_control_request,
+    serve_http_control_once, serve_http_control_once_with_auth,
 };
 #[cfg(unix)]
-pub use control::serve_uds_control_once;
-pub use control::{
-    MctControlPlaneResponse, MctControlPlaneSnapshot, MctDaemonLocalControlFacts,
-    MctDaemonLocalControlRequest, MctDaemonLocalControlResponse, handle_control_plane_path,
-    handle_local_control_request, serve_http_control_once,
-};
+pub use control::{serve_uds_control_once, serve_uds_control_once_with_auth};
 pub use cycle::{
     MctChildTaskCycleReport, MctDrainedEvent, MctTaskCycleChild, run_child_task_cycle,
 };
@@ -77,8 +81,9 @@ pub use toy::{
     MctToyAdapterOutcome, MctToyAdapterRegistry, MctToyBackend, MctToyCallIds, MctToyCallReport,
 };
 pub use wasm::{
-    MctWasmComponentInvocationIds, MctWasmComponentInvocationReport, MctWasmComponentRuntime,
-    MctWasmComponentRuntimeError, MctWasmComponentToyInvocation, MctWasmToyHostImport,
+    MctWasmComponentDiagnosticIds, MctWasmComponentInvocationIds, MctWasmComponentInvocationReport,
+    MctWasmComponentRuntime, MctWasmComponentRuntimeError, MctWasmComponentToyInvocation,
+    MctWasmToyHostImport, wasm_component_runtime_error_observation,
 };
 
 /// Returns the crate version for health and smoke tests.

@@ -1,0 +1,48 @@
+id = "mct-slice-kernel-typed-errors"
+title = "Add typed kernel errors"
+kind = "refactor"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Add typed kernel errors and validation contracts at mct-kernel boundaries without leaking adapter/runtime types."
+allium_anchors = ["MctRuntimeShape", "MctCallProtocol", "MctCall"]
+user_alignment = "User wants strong invariants over defensive fallbacks, simple explicit contracts, shared logic, and Jon Gjengset-style Rust."
+belief_refs = ["typed-domain-records-before-algorithms", "mother-kernel-decides-adapters-perform"]
+core_refs = ["layer/core/dependable-rust.md", "layer/core/safety-boundaries.md", "layer/core/adapter-pattern.md"]
+parent_slates = ["mct-kernel-crate"]
+code_targets = ["crates/mct-kernel/src/error.rs", "crates/mct-kernel/src/call/mod.rs", "crates/mct-kernel/src/peer/mod.rs", "crates/mct-kernel/src/lib.rs", "crates/mct-iroh/src/endpoint.rs"]
+implementation_ready = true
+runtime_shape_role = "Expose a narrow typed kernel error boundary for invalid domain construction/JSON edges while keeping authority denials as typed decisions."
+design_style = "Small concrete error enum and validation helpers; no adapter/runtime/storage types, no catch-all context object, no speculative trait."
+first_test_to_write = "call_protocol_json_edge_rejects_invalid_domain_values_with_typed_kernel_error"
+exit_criteria = [
+    "mct-kernel exposes a public typed error/result boundary for invalid domain values and call protocol JSON edges.",
+    "MctCall and MctCallProtocolRequest validation rejects blank WIT targets and inconsistent payload handles before authority evaluation.",
+    "Authority denials remain decision records, not errors.",
+    "Existing kernel public API still exposes domain records, not adapter/runtime/storage implementation types.",
+]
+non_goals = ["No storage/runtime/Iroh/Wasmtime/HTTP error variants in mct-kernel.", "No private-field migration for every domain record in this slice.", "No broad validation framework or new trait abstraction."]
+implementation_plan = [
+    "[x] Add a public mct-kernel error module with MctKernelError and MctKernelResult.",
+    "[x] Add shared non-blank field validation for domain boundary values.",
+    "[x] Make call protocol JSON helpers validate semantic call/payload invariants with typed errors.",
+    "[x] Add tests proving malformed domain data fails before authorization evaluation while normal denial paths remain decisions.",
+]
+proof_plan = [
+    "[x] `cargo test -p mct-kernel call_protocol_json_edge_rejects_invalid_domain_values_with_typed_kernel_error` passes.",
+    "[x] `cargo test -p mct-kernel` passes.",
+    "[x] `cargo clippy --workspace --all-targets -- -D warnings` passes.",
+    "[x] `./scripts/ci-tier0.sh` passes.",
+    "[x] `patina slate check mct-slice-kernel-typed-errors --json` passes.",
+]
+closure_evidence = [
+    "[x] Commit `7e69a23 refactor(kernel): add typed boundary errors` adds `MctKernelError`, `MctKernelResult`, shared non-blank validation, call/payload validation methods, and JSON edge validation.",
+    "[x] Commit `7ca7de0 refactor(iroh): validate call protocol kernel values` routes Iroh mct/call request/reply edges through kernel validation instead of local ad hoc checks.",
+    "[x] `call_protocol_json_edge_rejects_invalid_domain_values_with_typed_kernel_error` proves blank WIT targets and invalid empty payload handles fail with typed kernel errors before authority evaluation.",
+    "[x] `./scripts/ci-tier0.sh` passed after implementation.",
+]
+blocked_by = []
+blocks = ["mct-slice-kernel-route-revalidation-composition"]
+belief_harvest_decision = "No new durable belief required; this slice applies existing typed-domain-records and kernel/adapters separation beliefs."
+created_at = "1782641875"
+updated_at = "1782642315"
+closed_at = "1782642315"

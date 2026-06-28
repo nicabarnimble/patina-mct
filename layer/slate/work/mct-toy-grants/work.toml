@@ -1,7 +1,7 @@
 id = "mct-toy-grants"
 title = "Build toy grant authority model"
 kind = "build"
-status = "blocked"
+status = "complete"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -10,19 +10,19 @@ allium_anchors = []
 user_alignment = "The T in MCT is central; toy calls must not bypass Mother authority."
 belief_refs = []
 core_refs = ["layer/core/safety-boundaries.md", "layer/core/mct-build-boundaries.md", "layer/core/adapter-pattern.md"]
-slice_refs = ["mct-slice-toy-grant-authorized-call", "mct-slice-toy-adapter-authorized-call"]
-partial_evidence = ["[x] Kernel defines ToyGrant, ToyGrantEvaluation, AuthorizedToyCall, closed catalog lookup, and fail-closed grant evaluation.", "[x] Missing/expired/revoked/wrong-scope/stale/unknown toy paths deny without authorization and map to observations.", "[x] Daemon toy adapter registry requires `AuthorizedToyCall` and records success/failure toy observations without changing kernel grant verdicts.", "[ ] Durable toy backend config and child-facing WIT toy imports remain future child slices."]
+slice_refs = ["mct-slice-toy-grant-authorized-call", "mct-slice-toy-adapter-authorized-call", "mct-slice-wasm-toy-host-imports", "mct-slice-storage-grant-snapshots-schema-inventory"]
+partial_evidence = ["[x] Kernel defines ToyGrant, ToyGrantEvaluation, AuthorizedToyCall, closed catalog lookup, and fail-closed grant evaluation.", "[x] Missing/expired/revoked/wrong-scope/stale/unknown toy paths deny without authorization and map to observations.", "[x] Daemon toy adapter registry requires `AuthorizedToyCall` and records success/failure toy observations without changing kernel grant verdicts.", "[x] Wasmtime components can call authorized toy host imports and collect toy observations.", "[x] Private state store persists canonical toy catalog contracts and ToyGrant snapshots with SQL trigger guardrails."]
 proof_plan = [
     "[x] Tests prove toy execution requires an AuthorizedToyCall produced by the kernel.",
     "[x] Missing/expired/wrong-scope grants are denied with typed reasons.",
     "[x] Toy backend failures are adapter observations, not kernel authority decisions.",
 ]
-closure_evidence = []
-blocked_by = [
-    "mct-kernel-crate",
-    "mct-call-envelope",
-    "mct-observation-log",
+closure_evidence = [
+    "[x] ToyGrant authority, AuthorizedToyCall token issuance, daemon toy adapter execution, WASM toy host imports, observation mappings, and durable toy grant snapshots are complete through child slices.",
+    "[x] `patina slate check mct-toy-grants --json` passed with all proof gates checked.",
+    "[x] `./scripts/ci-tier0.sh` passed after the final storage grant snapshot slice.",
 ]
+blocked_by = []
 implementation_plan = [
     "[x] Define ToyId, capability IDs, grant policy, toy request/reply, and AuthorizedToyCall token.",
     "[x] Implement grant evaluation as pure kernel decision logic with fail-closed errors.",
@@ -31,4 +31,4 @@ implementation_plan = [
 ]
 created_at = "1780068525"
 updated_at = "1781004311"
-block_reason = "Blocked until mct-observation-log is completed or explicitly superseded in the roadmap."
+unblock_reason = "Kernel, call envelope, observation, and storage blockers are complete. Epic is complete as a container for ToyGrant authority, adapter execution, WASM toy imports, observations, and durable snapshots."

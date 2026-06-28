@@ -260,3 +260,50 @@
 {"created_at":"1780282313","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-observation-ledger-adapter-persistence"}
 {"created_at":"1780282314","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-daemon-local-control-status-api"}
 {"created_at":"1780282956","event_type":"completed","payload":{"force":false},"work_id":"mct-call-envelope"}
+{"created_at":"1782641875","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-kernel-typed-errors"}
+{"created_at":"1782642315","event_type":"completed","payload":{"force":false},"work_id":"mct-slice-kernel-typed-errors"}
+{"created_at":"1782642568","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-kernel-route-revalidation-composition"}
+{"created_at":"1782643000","event_type":"completed","payload":{"force":false},"work_id":"mct-slice-kernel-route-revalidation-composition"}
+{"created_at":"1782643010","event_type":"completed","payload":{"force":false},"work_id":"mct-kernel-crate"}
+{"created_at":"1782643010","event_type":"dependencies-reconciled","payload":{"blocked_by":[],"cause":"kernel-complete","unblocked":true},"work_id":"mct-observation-log"}
+{"created_at":"1782643010","event_type":"dependencies-reconciled","payload":{"removed_blocker":"mct-kernel-crate","cause":"kernel-complete","unblocked":false},"work_id":"mct-storage-core"}
+{"created_at":"1782643010","event_type":"dependencies-reconciled","payload":{"removed_blocker":"mct-kernel-crate","cause":"kernel-complete","unblocked":false},"work_id":"mct-child-registry-lifecycle"}
+{"created_at":"1782643010","event_type":"dependencies-reconciled","payload":{"removed_blocker":"mct-kernel-crate","cause":"kernel-complete","unblocked":false},"work_id":"mct-daemon-control-plane"}
+{"created_at":"1782643010","event_type":"dependencies-reconciled","payload":{"removed_blockers":["mct-kernel-crate","mct-call-envelope"],"cause":"kernel-complete","unblocked":false},"work_id":"mct-toy-grants"}
+{"created_at":"1782643010","event_type":"dependencies-reconciled","payload":{"removed_blockers":["mct-allium-foundation","mct-kernel-crate"],"cause":"kernel-complete","unblocked":false},"work_id":"mct-node-identity-security"}
+{"created_at":"1782643028","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-observation-adapter-diagnostics"}
+{"created_at":"1782643500","event_type":"completed","payload":{"force":false},"work_id":"mct-slice-observation-adapter-diagnostics"}
+{"created_at":"1782643510","event_type":"completed","payload":{"force":false},"work_id":"mct-observation-log"}
+{"created_at":"1782643510","event_type":"dependencies-reconciled","payload":{"blocked_by":[],"cause":"observation-log-complete","unblocked":true},"work_id":"mct-storage-core"}
+{"created_at":"1782643510","event_type":"dependencies-reconciled","payload":{"removed_blocker":"mct-observation-log","cause":"observation-log-complete","unblocked":false},"work_id":"mct-child-registry-lifecycle"}
+{"created_at":"1782643510","event_type":"dependencies-reconciled","payload":{"removed_blocker":"mct-observation-log","cause":"observation-log-complete","unblocked":false},"work_id":"mct-daemon-control-plane"}
+{"created_at":"1782643510","event_type":"dependencies-reconciled","payload":{"blocked_by":["mct-storage-core"],"cause":"observation-log-complete","unblocked":false},"work_id":"mct-toy-grants"}
+{"created_at":"1782643510","event_type":"dependencies-reconciled","payload":{"removed_blocker":"mct-observation-log","cause":"observation-log-complete","unblocked":false},"work_id":"mct-inspector-observability"}
+{"created_at":"1782643510","event_type":"dependencies-reconciled","payload":{"removed_blocker":"mct-observation-log","cause":"observation-log-complete","unblocked":false},"work_id":"mct-interface-launcher-control"}
+{"created_at":"1782643510","event_type":"dependencies-reconciled","payload":{"removed_blockers":["mct-call-envelope","mct-observation-log"],"cause":"observation-log-complete","unblocked":false},"work_id":"mct-iroh-substrate"}
+{"created_at":"1782643510","event_type":"dependencies-reconciled","payload":{"removed_blockers":["mct-call-envelope","mct-observation-log"],"cause":"observation-log-complete","unblocked":false},"work_id":"mct-process-harness"}
+{"created_at":"1782643304","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-storage-grant-snapshots-schema-inventory"}
+{"created_at":"1782644000","event_type":"completed","payload":{"force":false},"work_id":"mct-slice-storage-grant-snapshots-schema-inventory"}
+{"created_at":"1782644001","event_type":"completed","payload":{"force":false},"work_id":"mct-storage-core"}
+{"created_at":"1782644002","event_type":"unblocked","payload":{"reason":"Kernel, observation, and storage blockers are complete."},"work_id":"mct-toy-grants"}
+{"created_at":"1782644003","event_type":"completed","payload":{"force":false},"work_id":"mct-toy-grants"}
+{"created_at":"1782644004","event_type":"unblocked","payload":{"reason":"Kernel, observation, and storage blockers are complete."},"work_id":"mct-child-registry-lifecycle"}
+{"created_at":"1782644005","event_type":"completed","payload":{"force":false},"work_id":"mct-child-registry-lifecycle"}
+{"created_at":"1782644006","event_type":"unblocked","payload":{"reason":"Child lifecycle blockers are complete."},"work_id":"mct-process-harness"}
+{"created_at":"1782644007","event_type":"completed","payload":{"force":false},"work_id":"mct-process-harness"}
+{"created_at":"1782644008","event_type":"unblocked","payload":{"reason":"Child lifecycle, toy grant, and storage blockers are complete."},"work_id":"mct-pando-manifest"}
+{"created_at":"1782644009","event_type":"unblocked","payload":{"reason":"Child lifecycle, toy grant, and process harness blockers are complete."},"work_id":"mct-wasm-component-runtime"}
+{"created_at":"1782644300","event_type":"completed","payload":{"force":false},"work_id":"mct-slice-node-identity-persistence"}
+{"created_at":"1782644500","event_type":"completed","payload":{"force":false},"work_id":"mct-slice-daemon-control-auth-denial"}
+{"created_at":"1782644501","event_type":"completed","payload":{"force":false},"work_id":"mct-daemon-control-plane"}
+{"created_at":"1782644700","event_type":"completed","payload":{"force":false},"work_id":"mct-slice-wasm-trap-host-diagnostics"}
+{"created_at":"1782644701","event_type":"completed","payload":{"force":false},"work_id":"mct-wasm-component-runtime"}
+{"created_at":"1782644900","event_type":"completed","payload":{"force":false},"work_id":"mct-slice-pando-activation-diagnostics"}
+{"created_at":"1782644901","event_type":"completed","payload":{"force":false},"work_id":"mct-pando-manifest"}
+{"created_at":"1782644902","event_type":"completed","payload":{"force":false},"work_id":"mct-node-identity-security"}
+{"created_at":"1782644903","event_type":"unblocked","payload":{"reason":"Node identity/security is complete."},"work_id":"mct-iroh-substrate"}
+{"created_at":"1782644904","event_type":"completed","payload":{"force":false},"work_id":"mct-iroh-substrate"}
+{"created_at":"1782644905","event_type":"unblocked","payload":{"reason":"Node identity/security is complete."},"work_id":"mct-secrets-authority"}
+{"created_at":"1782644906","event_type":"unblocked","payload":{"reason":"Daemon control plane, call envelope, and node identity/security are complete."},"work_id":"mct-jvm-bridge"}
+{"created_at":"1782644907","event_type":"unblocked","payload":{"reason":"Daemon control plane is complete."},"work_id":"mct-inspector-observability"}
+{"created_at":"1782644908","event_type":"unblocked","payload":{"reason":"Daemon control plane, Iroh substrate, and child lifecycle are complete."},"work_id":"mct-cli-config-packaging"}
