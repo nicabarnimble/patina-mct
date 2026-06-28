@@ -19,7 +19,7 @@ proof_plan = [
 ]
 closure_evidence = []
 blocked_by = [
-    "mct-observation-log",
+    "mct-storage-core",
 ]
 implementation_plan = [
     "[x] Define ToyId, capability IDs, grant policy, toy request/reply, and AuthorizedToyCall token.",
@@ -29,4 +29,4 @@ implementation_plan = [
 ]
 created_at = "1780068525"
 updated_at = "1781004311"
-block_reason = "Blocked until mct-observation-log is completed or explicitly superseded in the roadmap."
+block_reason = "Blocked until mct-storage-core can persist durable toy backend configuration and grant snapshots."

@@ -1,7 +1,7 @@
 id = "mct-storage-core"
 title = "Build concrete narrow MCT storage core"
 kind = "build"
-status = "blocked"
+status = "active"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -18,9 +18,7 @@ proof_plan = [
     "[x] Kernel public API is not generic over storage and does not leak SQL row structs.",
 ]
 closure_evidence = []
-blocked_by = [
-    "mct-observation-log",
-]
+blocked_by = []
 implementation_plan = [
     "[ ] Compare current integrated `MotherRuntimeStore` tables with MCT-core storage needs.",
     "[x] Define a first narrow private file layout for child approvals, child assignments, and peer address book entries.",
@@ -29,4 +27,4 @@ implementation_plan = [
 ]
 created_at = "1780068491"
 updated_at = "1781008973"
-block_reason = "Epic remains open for SQL/private schema, grant snapshots, migrations, and replay; first project-local config store slice is complete."
+unblock_reason = "Kernel and observation blockers are complete. Epic is active for SQL/private schema, grant snapshots, migrations, and replay slices."

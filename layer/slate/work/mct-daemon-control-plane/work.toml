@@ -24,7 +24,6 @@ proof_plan = [
 closure_evidence = []
 blocked_by = [
     "mct-storage-core",
-    "mct-observation-log",
 ]
 implementation_plan = [
     "[ ] Create daemon bootstrap with UDS/local control-plane first and optional HTTP placement documented.",

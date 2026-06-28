@@ -24,9 +24,7 @@ proof_plan = [
 ]
 closure_evidence = []
 blocked_by = [
-    "mct-call-envelope",
     "mct-node-identity-security",
-    "mct-observation-log",
 ]
 implementation_plan = [
     "[x] Study `/Users/nicabar/.patina/cache/repos/n0-computer/iroh` and relevant companion protocol repos before finalizing scope; see `layer/surface/iroh-substrate-evidence.md`.",
