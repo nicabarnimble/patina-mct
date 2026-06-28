@@ -300,3 +300,10 @@
 {"created_at":"1782644701","event_type":"completed","payload":{"force":false},"work_id":"mct-wasm-component-runtime"}
 {"created_at":"1782644900","event_type":"completed","payload":{"force":false},"work_id":"mct-slice-pando-activation-diagnostics"}
 {"created_at":"1782644901","event_type":"completed","payload":{"force":false},"work_id":"mct-pando-manifest"}
+{"created_at":"1782644902","event_type":"completed","payload":{"force":false},"work_id":"mct-node-identity-security"}
+{"created_at":"1782644903","event_type":"unblocked","payload":{"reason":"Node identity/security is complete."},"work_id":"mct-iroh-substrate"}
+{"created_at":"1782644904","event_type":"completed","payload":{"force":false},"work_id":"mct-iroh-substrate"}
+{"created_at":"1782644905","event_type":"unblocked","payload":{"reason":"Node identity/security is complete."},"work_id":"mct-secrets-authority"}
+{"created_at":"1782644906","event_type":"unblocked","payload":{"reason":"Daemon control plane, call envelope, and node identity/security are complete."},"work_id":"mct-jvm-bridge"}
+{"created_at":"1782644907","event_type":"unblocked","payload":{"reason":"Daemon control plane is complete."},"work_id":"mct-inspector-observability"}
+{"created_at":"1782644908","event_type":"unblocked","payload":{"reason":"Daemon control plane, Iroh substrate, and child lifecycle are complete."},"work_id":"mct-cli-config-packaging"}
