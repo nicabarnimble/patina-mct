@@ -1,0 +1,38 @@
+id = "mct-slice-inspector-observation-filters"
+title = "Add inspector observation filters"
+kind = "build"
+status = "active"
+execution_granularity = "slice"
+human_request = "Expose useful MCT observability without bringing view buffers into the first kernel/daemon surface."
+allium_anchors = ["MctRuntimeShape"]
+user_alignment = "Observability is mandatory, but capture/query must stay separate from rich presentation/view-buffer state."
+belief_refs = ["observations-are-canonical-runtime-truth"]
+core_refs = ["layer/core/safety-boundaries.md", "layer/core/mct-build-boundaries.md"]
+parent_slates = ["mct-inspector-observability"]
+code_targets = ["crates/mct-daemon/src/inspector.rs", "crates/mct-daemon/src/lib.rs"]
+implementation_ready = true
+runtime_shape_role = "Project observation ledger entries into simple recent observation views by call/child/peer/resource filters."
+design_style = "Pure filtering over ledger entries; no view-buffer persistence and no UI rendering model."
+first_test_to_write = "inspector_filters_observations_by_call_child_and_peer"
+exit_criteria = [
+    "Inspector can filter recent observation entries by call_id, subject/child, and resource/peer.",
+    "Inspector returns bounded recent entries without mutating observation capture.",
+    "Tests prove no view-buffer subsystem is required.",
+]
+non_goals = ["No rich TUI/view-buffer renderer.", "No observation retention policy.", "No new storage backend."]
+implementation_plan = [
+    "[ ] Add query/view structs and pure entry filtering helper.",
+    "[ ] Export inspector API from mct-daemon.",
+    "[ ] Add tests for call/child/peer filters and limit behavior.",
+]
+proof_plan = [
+    "[ ] `cargo test -p mct-daemon inspector_filters_observations_by_call_child_and_peer` passes.",
+    "[ ] `cargo test -p mct-daemon inspector_limits_recent_observations_without_view_buffers` passes.",
+    "[ ] `./scripts/ci-tier0.sh` passes.",
+]
+closure_evidence = []
+blocked_by = []
+blocks = ["mct-inspector-observability"]
+belief_harvest_decision = "No new belief required; applies observations-as-runtime-truth."
+created_at = "1782645000"
+updated_at = "1782645000"
