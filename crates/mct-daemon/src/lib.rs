@@ -41,13 +41,14 @@ pub use config::{
     MctPeerAuthorityProjection, MctStoredChildApproval, MctStoredChildAssignment,
     default_config_path, unix_timestamp_string,
 };
-#[cfg(unix)]
-pub use control::serve_uds_control_once;
 pub use control::{
-    MctControlPlaneResponse, MctControlPlaneSnapshot, MctDaemonLocalControlFacts,
-    MctDaemonLocalControlRequest, MctDaemonLocalControlResponse, handle_control_plane_path,
-    handle_local_control_request, serve_http_control_once,
+    MctControlPlaneAuthPolicy, MctControlPlaneResponse, MctControlPlaneSnapshot,
+    MctDaemonLocalControlFacts, MctDaemonLocalControlRequest, MctDaemonLocalControlResponse,
+    handle_control_plane_path, handle_control_plane_path_with_auth, handle_local_control_request,
+    serve_http_control_once, serve_http_control_once_with_auth,
 };
+#[cfg(unix)]
+pub use control::{serve_uds_control_once, serve_uds_control_once_with_auth};
 pub use cycle::{
     MctChildTaskCycleReport, MctDrainedEvent, MctTaskCycleChild, run_child_task_cycle,
 };
