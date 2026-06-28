@@ -1,0 +1,38 @@
+id = "mct-slice-wasm-trap-host-diagnostics"
+title = "Map WASM traps and host-call failures to observations"
+kind = "build"
+status = "active"
+execution_granularity = "slice"
+human_request = "Close WASM runtime diagnostics proof without leaking Wasmtime errors into the kernel."
+allium_anchors = ["MctRuntimeShape"]
+user_alignment = "User wants adapter failures observable and authority decisions separated from runtime effects."
+belief_refs = ["mother-kernel-decides-adapters-perform"]
+core_refs = ["layer/core/adapter-pattern.md", "layer/core/safety-boundaries.md", "layer/core/dependable-rust.md"]
+parent_slates = ["mct-wasm-component-runtime", "mct-observation-log"]
+code_targets = ["crates/mct-daemon/src/wasm.rs"]
+implementation_ready = true
+runtime_shape_role = "Attach WASM adapter diagnostics to call/decision IDs while keeping Wasmtime details outside mct-kernel."
+design_style = "Small adapter-side mapping to canonical kernel observation facts; no new runtime abstraction."
+first_test_to_write = "wasm_component_runtime_trap_maps_to_adapter_observation"
+exit_criteria = [
+    "WASM export trap errors can be mapped to canonical RuntimeExecutionTrapped observations linked to call and decision IDs.",
+    "WASM toy host-call backend failures remain adapter/toy observations linked to the original call.",
+    "No Wasmtime concrete error type is added to mct-kernel.",
+]
+non_goals = ["No async WASI runtime.", "No WIT binding generator.", "No broad runtime supervisor rewrite."]
+implementation_plan = [
+    "[ ] Add an adapter-side trap observation mapper for MctWasmComponentRuntimeError::Call.",
+    "[ ] Add trap and host-call failure tests.",
+    "[ ] Run daemon and tier0 validation.",
+]
+proof_plan = [
+    "[ ] `cargo test -p mct-daemon wasm_component_runtime_trap_maps_to_adapter_observation` passes.",
+    "[ ] `cargo test -p mct-daemon wasm_component_runtime_records_failed_toy_host_import` passes.",
+    "[ ] `./scripts/ci-tier0.sh` passes.",
+]
+closure_evidence = []
+blocked_by = []
+blocks = ["mct-wasm-component-runtime"]
+belief_harvest_decision = "No new belief required; reinforces adapter diagnostics as canonical runtime truth."
+created_at = "1782644600"
+updated_at = "1782644600"
