@@ -273,11 +273,15 @@ pub fn peer_binding_state_observation(
 }
 
 pub fn route_decision_observation(trace_id: TraceId, decision: &RouteDecision) -> MctObservation {
-    let (kind, outcome) = match decision.outcome {
-        RouteDecisionOutcome::RouteSelected => {
+    let (kind, outcome) = match (decision.decision_kind, decision.outcome) {
+        (RouteDecisionKind::Initial, RouteDecisionOutcome::RouteSelected) => {
             (ObservationKind::RouteSelected, ObservationOutcome::Allowed)
         }
-        RouteDecisionOutcome::NoRoute => {
+        (RouteDecisionKind::Revalidation, RouteDecisionOutcome::RouteSelected) => (
+            ObservationKind::RouteRevalidated,
+            ObservationOutcome::Allowed,
+        ),
+        (_, RouteDecisionOutcome::NoRoute) => {
             (ObservationKind::NoRouteRecorded, ObservationOutcome::Denied)
         }
     };
@@ -313,9 +317,30 @@ pub fn route_decision_observation(trace_id: TraceId, decision: &RouteDecision) -
         outcome,
         visibility: ObservationVisibility::InternalOnly,
         safe_message: decision.safe_message.clone(),
-        detail_ref: decision
-            .no_route_reason
-            .map(|reason| format!("no_route_reason:{reason:?}")),
+        detail_ref: route_decision_detail_ref(decision),
+    }
+}
+
+fn route_decision_detail_ref(decision: &RouteDecision) -> Option<String> {
+    match (decision.decision_kind, decision.no_route_reason) {
+        (RouteDecisionKind::Initial, Some(reason)) => Some(format!("no_route_reason:{reason:?}")),
+        (RouteDecisionKind::Initial, None) => None,
+        (RouteDecisionKind::Revalidation, Some(reason)) => Some(format!(
+            "initial_decision:{};revalidation_no_route_reason:{reason:?}",
+            decision
+                .initial_decision_id
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "missing".into())
+        )),
+        (RouteDecisionKind::Revalidation, None) => Some(format!(
+            "initial_decision:{};revalidated",
+            decision
+                .initial_decision_id
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "missing".into())
+        )),
     }
 }
 
@@ -748,6 +773,72 @@ mod tests {
         assert_eq!(observation.safe_message, "not authorized");
         assert_eq!(observation.policy_revision, Some(3));
         assert_eq!(observation.grants_revision, Some(4));
+    }
+
+    #[test]
+    fn route_revalidation_observation_records_allowed_and_denied_outcomes() {
+        let trace_id = TraceId::from("trace-revalidation");
+        let candidate = CandidateRoute {
+            candidate_id: "candidate-revalidated".into(),
+            node_id: MctNodeId::from("node-b"),
+            child_id: Some(ChildId::from("child-echo")),
+            runtime_kind: RuntimeKind::Process,
+            network_path: NetworkPathClass::Local,
+        };
+        let allowed = RouteDecision {
+            decision_id: DecisionId::from("route-revalidation-allowed"),
+            call_id: CallId::from("call-revalidation"),
+            decision_kind: RouteDecisionKind::Revalidation,
+            initial_decision_id: Some(DecisionId::from("route-initial")),
+            authority_evaluations: vec![CandidateAuthorityEvaluation::admissible(
+                candidate.clone(),
+                3,
+                4,
+            )],
+            selected_route: Some(candidate.clone()),
+            outcome: RouteDecisionOutcome::RouteSelected,
+            no_route_reason: None,
+            safe_message: "route revalidated".into(),
+            observation_id: ObservationId::from("obs-route-revalidated"),
+        };
+        let allowed_observation = route_decision_observation(trace_id.clone(), &allowed);
+        assert_eq!(allowed_observation.kind, ObservationKind::RouteRevalidated);
+        assert_eq!(allowed_observation.outcome, ObservationOutcome::Allowed);
+        assert_eq!(allowed_observation.policy_revision, Some(3));
+        assert_eq!(allowed_observation.grants_revision, Some(4));
+        assert_eq!(
+            allowed_observation.detail_ref,
+            Some("initial_decision:route-initial;revalidated".into())
+        );
+
+        let denied = RouteDecision {
+            decision_id: DecisionId::from("route-revalidation-denied"),
+            call_id: CallId::from("call-revalidation"),
+            decision_kind: RouteDecisionKind::Revalidation,
+            initial_decision_id: Some(DecisionId::from("route-initial")),
+            authority_evaluations: vec![CandidateAuthorityEvaluation::eliminated(
+                candidate,
+                CandidateEliminationReason::PolicyRevisionStale,
+                3,
+                4,
+            )],
+            selected_route: None,
+            outcome: RouteDecisionOutcome::NoRoute,
+            no_route_reason: Some(CandidateEliminationReason::PolicyRevisionStale),
+            safe_message: "not authorized".into(),
+            observation_id: ObservationId::from("obs-route-revalidation-denied"),
+        };
+        let denied_observation = route_decision_observation(trace_id, &denied);
+        assert_eq!(denied_observation.kind, ObservationKind::NoRouteRecorded);
+        assert_eq!(denied_observation.outcome, ObservationOutcome::Denied);
+        assert_eq!(denied_observation.safe_message, "not authorized");
+        assert_eq!(
+            denied_observation.detail_ref,
+            Some(
+                "initial_decision:route-initial;revalidation_no_route_reason:PolicyRevisionStale"
+                    .into()
+            )
+        );
     }
 
     #[test]
