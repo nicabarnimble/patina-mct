@@ -1,6 +1,8 @@
-use crate::id::*;
+use crate::{
+    error::{MctKernelError, MctKernelResult, ensure_non_blank},
+    id::*,
+};
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 mod internal;
 
@@ -19,11 +21,44 @@ pub struct OperationTarget {
     pub function_name: String,
 }
 
+impl OperationTarget {
+    pub fn new(
+        namespace: impl Into<String>,
+        interface_name: impl Into<String>,
+        function_name: impl Into<String>,
+    ) -> MctKernelResult<Self> {
+        let target = Self {
+            namespace: namespace.into(),
+            interface_name: interface_name.into(),
+            function_name: function_name.into(),
+        };
+        target.validate()?;
+        Ok(target)
+    }
+
+    pub fn validate(&self) -> MctKernelResult<()> {
+        ensure_non_blank("OperationTarget", "namespace", &self.namespace)?;
+        ensure_non_blank("OperationTarget", "interface_name", &self.interface_name)?;
+        ensure_non_blank("OperationTarget", "function_name", &self.function_name)?;
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PayloadMetadata {
     pub data_classification: String,
     pub approximate_size_bytes: u64,
     pub contains_secret_scoped_material: bool,
+}
+
+impl PayloadMetadata {
+    pub fn validate(&self) -> MctKernelResult<()> {
+        ensure_non_blank(
+            "PayloadMetadata",
+            "data_classification",
+            &self.data_classification,
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +94,40 @@ pub struct MctCall {
     pub deadline: Timestamp,
     pub trace_context: TraceContext,
     pub origin: CallOrigin,
+}
+
+impl CallerIdentity {
+    pub fn validate(&self) -> MctKernelResult<()> {
+        ensure_non_blank("CallerIdentity", "node_id", self.node_id.as_str())?;
+        if let Some(user_id) = &self.user_id {
+            ensure_non_blank("CallerIdentity", "user_id", user_id.as_str())?;
+        }
+        ensure_non_blank("CallerIdentity", "vision_id", self.vision_id.as_str())?;
+        if let Some(project_id) = &self.project_id {
+            ensure_non_blank("CallerIdentity", "project_id", project_id.as_str())?;
+        }
+        Ok(())
+    }
+}
+
+impl TraceContext {
+    pub fn validate(&self) -> MctKernelResult<()> {
+        ensure_non_blank("TraceContext", "trace_id", self.trace_id.as_str())?;
+        ensure_non_blank("TraceContext", "span_id", self.span_id.as_str())?;
+        Ok(())
+    }
+}
+
+impl MctCall {
+    pub fn validate(&self) -> MctKernelResult<()> {
+        ensure_non_blank("MctCall", "call_id", self.call_id.as_str())?;
+        self.caller.validate()?;
+        self.target.validate()?;
+        self.payload_metadata.validate()?;
+        ensure_non_blank("MctCall", "deadline", self.deadline.as_str())?;
+        self.trace_context.validate()?;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +188,37 @@ pub struct MctCallProtocolAuthority {
     pub grants_revision: u64,
 }
 
+impl MctCallProtocolAuthority {
+    pub fn validate(&self) -> MctKernelResult<()> {
+        ensure_non_blank(
+            "MctCallProtocolAuthority",
+            "hello_decision_id",
+            self.hello_decision_id.as_str(),
+        )?;
+        ensure_non_blank(
+            "MctCallProtocolAuthority",
+            "peer_binding_id",
+            self.peer_binding_id.as_str(),
+        )?;
+        ensure_non_blank(
+            "MctCallProtocolAuthority",
+            "vision_id",
+            self.vision_id.as_str(),
+        )?;
+        ensure_non_blank(
+            "MctCallProtocolAuthority",
+            "accepted_alpn",
+            &self.accepted_alpn,
+        )?;
+        ensure_non_blank(
+            "MctCallProtocolAuthority",
+            "endpoint_id",
+            self.endpoint_id.as_str(),
+        )?;
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PayloadKind {
@@ -139,6 +239,66 @@ pub struct MctCallPayloadHandle {
     pub inline_payload_ref: Option<String>,
 }
 
+impl MctCallPayloadHandle {
+    pub fn validate(&self) -> MctKernelResult<()> {
+        validate_optional_string_field("MctCallPayloadHandle", "content_type", &self.content_type)?;
+        validate_optional_string_field("MctCallPayloadHandle", "digest", &self.digest)?;
+        validate_optional_string_field("MctCallPayloadHandle", "blob_ref", &self.blob_ref)?;
+        validate_optional_string_field("MctCallPayloadHandle", "external_ref", &self.external_ref)?;
+        validate_optional_string_field(
+            "MctCallPayloadHandle",
+            "inline_payload_ref",
+            &self.inline_payload_ref,
+        )?;
+
+        match self.payload_kind {
+            PayloadKind::InlinePayload => {
+                require_payload_field(
+                    "inline_payload",
+                    "inline_payload_ref",
+                    &self.inline_payload_ref,
+                )?;
+                reject_payload_field("inline_payload", "digest", &self.digest)?;
+                reject_payload_field("inline_payload", "blob_ref", &self.blob_ref)?;
+                reject_payload_field("inline_payload", "external_ref", &self.external_ref)?;
+            }
+            PayloadKind::ContentAddressedBlob => {
+                require_payload_field("content_addressed_blob", "digest", &self.digest)?;
+                require_payload_field("content_addressed_blob", "blob_ref", &self.blob_ref)?;
+                reject_payload_field(
+                    "content_addressed_blob",
+                    "inline_payload_ref",
+                    &self.inline_payload_ref,
+                )?;
+                reject_payload_field("content_addressed_blob", "external_ref", &self.external_ref)?;
+            }
+            PayloadKind::ExternalReference => {
+                require_payload_field("external_reference", "external_ref", &self.external_ref)?;
+                reject_payload_field(
+                    "external_reference",
+                    "inline_payload_ref",
+                    &self.inline_payload_ref,
+                )?;
+                reject_payload_field("external_reference", "blob_ref", &self.blob_ref)?;
+            }
+            PayloadKind::Empty => {
+                if self.approximate_size_bytes != 0 {
+                    return Err(MctKernelError::EmptyPayloadHasNonZeroSize {
+                        size_bytes: self.approximate_size_bytes,
+                    });
+                }
+                reject_payload_field("empty", "content_type", &self.content_type)?;
+                reject_payload_field("empty", "digest", &self.digest)?;
+                reject_payload_field("empty", "blob_ref", &self.blob_ref)?;
+                reject_payload_field("empty", "external_ref", &self.external_ref)?;
+                reject_payload_field("empty", "inline_payload_ref", &self.inline_payload_ref)?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MctCallProtocolRequest {
     pub protocol_request_id: ProtocolRequestId,
@@ -148,6 +308,40 @@ pub struct MctCallProtocolRequest {
     pub payload: MctCallPayloadHandle,
     pub idempotency_key: Option<String>,
     pub received_observation_id: ObservationId,
+}
+
+impl MctCallProtocolRequest {
+    pub fn validate(&self) -> MctKernelResult<()> {
+        ensure_non_blank(
+            "MctCallProtocolRequest",
+            "protocol_request_id",
+            self.protocol_request_id.as_str(),
+        )?;
+        self.authority.validate()?;
+        self.received_over.validate()?;
+        self.call.validate()?;
+        self.payload.validate()?;
+        validate_optional_string_field(
+            "MctCallProtocolRequest",
+            "idempotency_key",
+            &self.idempotency_key,
+        )?;
+        ensure_non_blank(
+            "MctCallProtocolRequest",
+            "received_observation_id",
+            self.received_observation_id.as_str(),
+        )?;
+
+        if self.payload.approximate_size_bytes != self.call.payload_metadata.approximate_size_bytes
+        {
+            return Err(MctKernelError::PayloadSizeMismatch {
+                call_size_bytes: self.call.payload_metadata.approximate_size_bytes,
+                handle_size_bytes: self.payload.approximate_size_bytes,
+            });
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -217,6 +411,32 @@ pub struct MctCallProtocolReply {
     pub reply_observation_id: ObservationId,
 }
 
+impl MctCallProtocolReply {
+    pub fn validate(&self) -> MctKernelResult<()> {
+        ensure_non_blank("MctCallProtocolReply", "reply_id", self.reply_id.as_str())?;
+        ensure_non_blank(
+            "MctCallProtocolReply",
+            "protocol_request_id",
+            self.protocol_request_id.as_str(),
+        )?;
+        ensure_non_blank(
+            "MctCallProtocolReply",
+            "decision_id",
+            self.decision_id.as_str(),
+        )?;
+        if let Some(result_ref) = &self.result_ref {
+            ensure_non_blank("MctCallProtocolReply", "result_ref", result_ref.as_str())?;
+        }
+        ensure_non_blank("MctCallProtocolReply", "safe_message", &self.safe_message)?;
+        ensure_non_blank(
+            "MctCallProtocolReply",
+            "reply_observation_id",
+            self.reply_observation_id.as_str(),
+        )?;
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CallEvaluationIds {
     pub decision_id: DecisionId,
@@ -237,36 +457,71 @@ impl MctCallProtocolEvaluation {
     }
 }
 
-#[derive(Debug, Error)]
-pub enum MctCallJsonEdgeError {
-    #[error("failed to encode MCT call protocol JSON edge value: {0}")]
-    Encode(#[source] serde_json::Error),
-    #[error("failed to decode MCT call protocol JSON edge value: {0}")]
-    Decode(#[source] serde_json::Error),
-}
-
 pub fn encode_call_protocol_request_json(
     request: &MctCallProtocolRequest,
-) -> Result<Vec<u8>, MctCallJsonEdgeError> {
-    serde_json::to_vec(request).map_err(MctCallJsonEdgeError::Encode)
+) -> MctKernelResult<Vec<u8>> {
+    request.validate()?;
+    serde_json::to_vec(request).map_err(|source| MctKernelError::EncodeCallProtocolJson { source })
 }
 
-pub fn decode_call_protocol_request_json(
-    bytes: &[u8],
-) -> Result<MctCallProtocolRequest, MctCallJsonEdgeError> {
-    serde_json::from_slice(bytes).map_err(MctCallJsonEdgeError::Decode)
+pub fn decode_call_protocol_request_json(bytes: &[u8]) -> MctKernelResult<MctCallProtocolRequest> {
+    let request: MctCallProtocolRequest = serde_json::from_slice(bytes)
+        .map_err(|source| MctKernelError::DecodeCallProtocolJson { source })?;
+    request.validate()?;
+    Ok(request)
 }
 
-pub fn encode_call_protocol_reply_json(
-    reply: &MctCallProtocolReply,
-) -> Result<Vec<u8>, MctCallJsonEdgeError> {
-    serde_json::to_vec(reply).map_err(MctCallJsonEdgeError::Encode)
+pub fn encode_call_protocol_reply_json(reply: &MctCallProtocolReply) -> MctKernelResult<Vec<u8>> {
+    reply.validate()?;
+    serde_json::to_vec(reply).map_err(|source| MctKernelError::EncodeCallProtocolJson { source })
 }
 
-pub fn decode_call_protocol_reply_json(
-    bytes: &[u8],
-) -> Result<MctCallProtocolReply, MctCallJsonEdgeError> {
-    serde_json::from_slice(bytes).map_err(MctCallJsonEdgeError::Decode)
+pub fn decode_call_protocol_reply_json(bytes: &[u8]) -> MctKernelResult<MctCallProtocolReply> {
+    let reply: MctCallProtocolReply = serde_json::from_slice(bytes)
+        .map_err(|source| MctKernelError::DecodeCallProtocolJson { source })?;
+    reply.validate()?;
+    Ok(reply)
+}
+
+fn validate_optional_string_field(
+    record: &'static str,
+    field: &'static str,
+    value: &Option<String>,
+) -> MctKernelResult<()> {
+    if let Some(value) = value {
+        ensure_non_blank(record, field, value)?;
+    }
+    Ok(())
+}
+
+fn require_payload_field(
+    payload_kind: &'static str,
+    field: &'static str,
+    value: &Option<String>,
+) -> MctKernelResult<()> {
+    if value.is_some() {
+        Ok(())
+    } else {
+        Err(MctKernelError::PayloadHandleMissingField {
+            payload_kind,
+            field,
+        })
+    }
+}
+
+fn reject_payload_field(
+    payload_kind: &'static str,
+    field: &'static str,
+    value: &Option<String>,
+) -> MctKernelResult<()> {
+    if value.is_none() {
+        Ok(())
+    } else {
+        Err(MctKernelError::PayloadHandleUnexpectedField {
+            payload_kind,
+            field,
+        })
+    }
 }
 
 pub fn call_reply_from_evaluation(
@@ -437,7 +692,40 @@ mod tests {
 
         assert!(matches!(
             decode_call_protocol_request_json(b"not json"),
-            Err(MctCallJsonEdgeError::Decode(_))
+            Err(MctKernelError::DecodeCallProtocolJson { .. })
+        ));
+    }
+
+    #[test]
+    fn call_protocol_json_edge_rejects_invalid_domain_values_with_typed_kernel_error() {
+        let mut request = protocol_request();
+        request.call.target.namespace.clear();
+
+        assert!(matches!(
+            encode_call_protocol_request_json(&request),
+            Err(MctKernelError::InvalidField {
+                record: "OperationTarget",
+                field: "namespace",
+                reason: crate::InvalidFieldReason::Empty,
+            })
+        ));
+
+        let invalid_json = serde_json::to_vec(&request).unwrap();
+        assert!(matches!(
+            decode_call_protocol_request_json(&invalid_json),
+            Err(MctKernelError::InvalidField {
+                record: "OperationTarget",
+                field: "namespace",
+                reason: crate::InvalidFieldReason::Empty,
+            })
+        ));
+
+        let mut request = protocol_request();
+        request.payload.payload_kind = PayloadKind::Empty;
+        request.payload.inline_payload_ref = None;
+        assert!(matches!(
+            encode_call_protocol_request_json(&request),
+            Err(MctKernelError::EmptyPayloadHasNonZeroSize { size_bytes: 5 })
         ));
     }
 

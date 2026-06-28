@@ -1,7 +1,7 @@
 id = "mct-pando-manifest"
 title = "Build Pando manifest composition foundation"
 kind = "build"
-status = "blocked"
+status = "complete"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -10,23 +10,25 @@ allium_anchors = []
 user_alignment = "Pando belongs to MCT as app/composition concept, but full composition should not block the first daemon/child protocol."
 belief_refs = []
 core_refs = ["layer/core/spec-driven-design.md", "layer/core/mct-build-boundaries.md"]
+slice_refs = ["mct-slice-operational-registry-federation-pando-metrics", "mct-slice-pando-activation-diagnostics"]
+partial_evidence = ["[x] Pando manifest parser covers children, commands, composition entry/wiring, and registry status.", "[x] Valid manifests produce activation plans with required children, required toys, and command activation records.", "[x] Missing child and missing toy grant requirements produce typed diagnostics and no plan.", "[x] Loader does not hardcode legacy Belief/spec/lake/doctor builtins; native conflicts are explicit inputs."]
 proof_plan = [
-    "[ ] Valid manifest loads and produces an activation plan.",
-    "[ ] Invalid/missing child or grant requirements fail closed with typed diagnostics.",
-    "[ ] Manifest loader does not hardcode Belief/spec/lake/doctor builtins.",
+    "[x] Valid manifest loads and produces an activation plan.",
+    "[x] Invalid/missing child or grant requirements fail closed with typed diagnostics.",
+    "[x] Manifest loader does not hardcode Belief/spec/lake/doctor builtins.",
 ]
-closure_evidence = []
-blocked_by = [
-    "mct-child-registry-lifecycle",
-    "mct-toy-grants",
-    "mct-storage-core",
+closure_evidence = [
+    "[x] Pando slices cover manifest parse/registry status, activation plans, typed diagnostics, and no hardcoded legacy builtins.",
+    "[x] `patina slate check mct-pando-manifest --json` passed with all proof gates checked.",
+    "[x] `./scripts/ci-tier0.sh` passed after final activation diagnostics slice.",
 ]
+blocked_by = []
 implementation_plan = [
-    "[ ] Define Pando manifest schema for child assignments, required toys, runtime kinds, and bridge needs.",
-    "[ ] Load/validate manifests and produce child activation plans.",
-    "[ ] Keep full component composition deferred until manifest semantics are proven.",
-    "[ ] Link manifest decisions to child lifecycle and grant observations.",
+    "[x] Define Pando manifest schema for child assignments, required toys, runtime kinds, and bridge needs.",
+    "[x] Load/validate manifests and produce child activation plans.",
+    "[x] Keep full component composition deferred until manifest semantics are proven.",
+    "[x] Link manifest decisions to child lifecycle and grant observations through typed child/toy requirement diagnostics.",
 ]
 created_at = "1780068551"
-updated_at = "1780262310"
-block_reason = "Blocked until mct-storage-core is completed or explicitly superseded in the roadmap."
+updated_at = "1782644900"
+unblock_reason = "Child lifecycle, toy grant, and storage blockers are complete. Epic is complete for manifest-only Pando foundation; full graph scheduling remains future work."

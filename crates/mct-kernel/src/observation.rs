@@ -134,6 +134,31 @@ pub struct MctObservation {
     pub detail_ref: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdapterDiagnosticKind {
+    IrohStreamReset,
+    WasmTrap,
+    ProcessExitFailure,
+    JvmTimeout,
+    StorageAppendFailure,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdapterDiagnosticObservationInput {
+    pub observation_id: ObservationId,
+    pub observed_at: Timestamp,
+    pub diagnostic_kind: AdapterDiagnosticKind,
+    pub trace: ObservationTraceRef,
+    pub call_id: Option<CallId>,
+    pub decision_id: Option<DecisionId>,
+    pub subject_id: Option<String>,
+    pub resource_id: Option<String>,
+    pub policy_revision: Option<u64>,
+    pub grants_revision: Option<u64>,
+    pub detail_ref: Option<String>,
+}
+
 impl MctObservation {
     pub fn informational(
         observation_id: ObservationId,
@@ -164,6 +189,59 @@ impl MctObservation {
             safe_message: safe_message.into(),
             detail_ref: None,
         }
+    }
+}
+
+pub fn adapter_diagnostic_observation(input: AdapterDiagnosticObservationInput) -> MctObservation {
+    let (kind, source_plane, outcome, safe_message) = match input.diagnostic_kind {
+        AdapterDiagnosticKind::IrohStreamReset => (
+            ObservationKind::PeerStreamReset,
+            SourcePlane::Adapter,
+            ObservationOutcome::Failed,
+            "peer stream reset",
+        ),
+        AdapterDiagnosticKind::WasmTrap => (
+            ObservationKind::RuntimeExecutionTrapped,
+            SourcePlane::Adapter,
+            ObservationOutcome::Failed,
+            "wasm execution trapped",
+        ),
+        AdapterDiagnosticKind::ProcessExitFailure => (
+            ObservationKind::RuntimeExecutionFailed,
+            SourcePlane::Adapter,
+            ObservationOutcome::Failed,
+            "process execution failed",
+        ),
+        AdapterDiagnosticKind::JvmTimeout => (
+            ObservationKind::RuntimeExecutionTimedOut,
+            SourcePlane::Adapter,
+            ObservationOutcome::TimedOut,
+            "jvm execution timed out",
+        ),
+        AdapterDiagnosticKind::StorageAppendFailure => (
+            ObservationKind::StorageAppendFailed,
+            SourcePlane::Storage,
+            ObservationOutcome::Failed,
+            "storage append failed",
+        ),
+    };
+
+    MctObservation {
+        observation_id: input.observation_id,
+        observed_at: input.observed_at,
+        kind,
+        source_plane,
+        trace: input.trace,
+        call_id: input.call_id,
+        decision_id: input.decision_id,
+        subject_id: input.subject_id,
+        resource_id: input.resource_id,
+        policy_revision: input.policy_revision,
+        grants_revision: input.grants_revision,
+        outcome,
+        visibility: ObservationVisibility::InternalOnly,
+        safe_message: safe_message.into(),
+        detail_ref: input.detail_ref,
     }
 }
 
@@ -273,11 +351,15 @@ pub fn peer_binding_state_observation(
 }
 
 pub fn route_decision_observation(trace_id: TraceId, decision: &RouteDecision) -> MctObservation {
-    let (kind, outcome) = match decision.outcome {
-        RouteDecisionOutcome::RouteSelected => {
+    let (kind, outcome) = match (decision.decision_kind, decision.outcome) {
+        (RouteDecisionKind::Initial, RouteDecisionOutcome::RouteSelected) => {
             (ObservationKind::RouteSelected, ObservationOutcome::Allowed)
         }
-        RouteDecisionOutcome::NoRoute => {
+        (RouteDecisionKind::Revalidation, RouteDecisionOutcome::RouteSelected) => (
+            ObservationKind::RouteRevalidated,
+            ObservationOutcome::Allowed,
+        ),
+        (_, RouteDecisionOutcome::NoRoute) => {
             (ObservationKind::NoRouteRecorded, ObservationOutcome::Denied)
         }
     };
@@ -313,9 +395,30 @@ pub fn route_decision_observation(trace_id: TraceId, decision: &RouteDecision) -
         outcome,
         visibility: ObservationVisibility::InternalOnly,
         safe_message: decision.safe_message.clone(),
-        detail_ref: decision
-            .no_route_reason
-            .map(|reason| format!("no_route_reason:{reason:?}")),
+        detail_ref: route_decision_detail_ref(decision),
+    }
+}
+
+fn route_decision_detail_ref(decision: &RouteDecision) -> Option<String> {
+    match (decision.decision_kind, decision.no_route_reason) {
+        (RouteDecisionKind::Initial, Some(reason)) => Some(format!("no_route_reason:{reason:?}")),
+        (RouteDecisionKind::Initial, None) => None,
+        (RouteDecisionKind::Revalidation, Some(reason)) => Some(format!(
+            "initial_decision:{};revalidation_no_route_reason:{reason:?}",
+            decision
+                .initial_decision_id
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "missing".into())
+        )),
+        (RouteDecisionKind::Revalidation, None) => Some(format!(
+            "initial_decision:{};revalidated",
+            decision
+                .initial_decision_id
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "missing".into())
+        )),
     }
 }
 
@@ -613,6 +716,89 @@ pub fn toy_grant_evaluation_observation(
 mod tests {
     use super::*;
 
+    fn diagnostic_input(
+        kind: AdapterDiagnosticKind,
+        id: &str,
+    ) -> AdapterDiagnosticObservationInput {
+        AdapterDiagnosticObservationInput {
+            observation_id: ObservationId::from(id),
+            observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+            diagnostic_kind: kind,
+            trace: ObservationTraceRef {
+                trace_id: TraceId::from("trace-diagnostic"),
+                span_id: Some(SpanId::from("span-diagnostic")),
+                parent_span_id: None,
+                external_trace_id: None,
+            },
+            call_id: Some(CallId::from("call-diagnostic")),
+            decision_id: Some(DecisionId::from("decision-diagnostic")),
+            subject_id: Some("adapter-subject".into()),
+            resource_id: Some("adapter-resource".into()),
+            policy_revision: Some(3),
+            grants_revision: Some(4),
+            detail_ref: Some("detail:opaque".into()),
+        }
+    }
+
+    #[test]
+    fn adapter_diagnostic_observation_covers_failure_kinds() {
+        let cases = [
+            (
+                AdapterDiagnosticKind::IrohStreamReset,
+                ObservationKind::PeerStreamReset,
+                SourcePlane::Adapter,
+                ObservationOutcome::Failed,
+                "peer stream reset",
+            ),
+            (
+                AdapterDiagnosticKind::WasmTrap,
+                ObservationKind::RuntimeExecutionTrapped,
+                SourcePlane::Adapter,
+                ObservationOutcome::Failed,
+                "wasm execution trapped",
+            ),
+            (
+                AdapterDiagnosticKind::ProcessExitFailure,
+                ObservationKind::RuntimeExecutionFailed,
+                SourcePlane::Adapter,
+                ObservationOutcome::Failed,
+                "process execution failed",
+            ),
+            (
+                AdapterDiagnosticKind::JvmTimeout,
+                ObservationKind::RuntimeExecutionTimedOut,
+                SourcePlane::Adapter,
+                ObservationOutcome::TimedOut,
+                "jvm execution timed out",
+            ),
+            (
+                AdapterDiagnosticKind::StorageAppendFailure,
+                ObservationKind::StorageAppendFailed,
+                SourcePlane::Storage,
+                ObservationOutcome::Failed,
+                "storage append failed",
+            ),
+        ];
+
+        for (index, (diagnostic, kind, source_plane, outcome, safe_message)) in
+            cases.into_iter().enumerate()
+        {
+            let observation = adapter_diagnostic_observation(diagnostic_input(
+                diagnostic,
+                &format!("obs-diagnostic-{index}"),
+            ));
+            assert_eq!(observation.kind, kind);
+            assert_eq!(observation.source_plane, source_plane);
+            assert_eq!(observation.outcome, outcome);
+            assert_eq!(observation.safe_message, safe_message);
+            assert_eq!(observation.visibility, ObservationVisibility::InternalOnly);
+            assert_eq!(observation.detail_ref, Some("detail:opaque".into()));
+            assert_eq!(observation.call_id, Some(CallId::from("call-diagnostic")));
+            assert_eq!(observation.policy_revision, Some(3));
+            assert_eq!(observation.grants_revision, Some(4));
+        }
+    }
+
     #[test]
     fn kernel_denial_evaluations_become_observations() {
         let hello = MctHelloAdmissionEvaluation {
@@ -748,6 +934,72 @@ mod tests {
         assert_eq!(observation.safe_message, "not authorized");
         assert_eq!(observation.policy_revision, Some(3));
         assert_eq!(observation.grants_revision, Some(4));
+    }
+
+    #[test]
+    fn route_revalidation_observation_records_allowed_and_denied_outcomes() {
+        let trace_id = TraceId::from("trace-revalidation");
+        let candidate = CandidateRoute {
+            candidate_id: "candidate-revalidated".into(),
+            node_id: MctNodeId::from("node-b"),
+            child_id: Some(ChildId::from("child-echo")),
+            runtime_kind: RuntimeKind::Process,
+            network_path: NetworkPathClass::Local,
+        };
+        let allowed = RouteDecision {
+            decision_id: DecisionId::from("route-revalidation-allowed"),
+            call_id: CallId::from("call-revalidation"),
+            decision_kind: RouteDecisionKind::Revalidation,
+            initial_decision_id: Some(DecisionId::from("route-initial")),
+            authority_evaluations: vec![CandidateAuthorityEvaluation::admissible(
+                candidate.clone(),
+                3,
+                4,
+            )],
+            selected_route: Some(candidate.clone()),
+            outcome: RouteDecisionOutcome::RouteSelected,
+            no_route_reason: None,
+            safe_message: "route revalidated".into(),
+            observation_id: ObservationId::from("obs-route-revalidated"),
+        };
+        let allowed_observation = route_decision_observation(trace_id.clone(), &allowed);
+        assert_eq!(allowed_observation.kind, ObservationKind::RouteRevalidated);
+        assert_eq!(allowed_observation.outcome, ObservationOutcome::Allowed);
+        assert_eq!(allowed_observation.policy_revision, Some(3));
+        assert_eq!(allowed_observation.grants_revision, Some(4));
+        assert_eq!(
+            allowed_observation.detail_ref,
+            Some("initial_decision:route-initial;revalidated".into())
+        );
+
+        let denied = RouteDecision {
+            decision_id: DecisionId::from("route-revalidation-denied"),
+            call_id: CallId::from("call-revalidation"),
+            decision_kind: RouteDecisionKind::Revalidation,
+            initial_decision_id: Some(DecisionId::from("route-initial")),
+            authority_evaluations: vec![CandidateAuthorityEvaluation::eliminated(
+                candidate,
+                CandidateEliminationReason::PolicyRevisionStale,
+                3,
+                4,
+            )],
+            selected_route: None,
+            outcome: RouteDecisionOutcome::NoRoute,
+            no_route_reason: Some(CandidateEliminationReason::PolicyRevisionStale),
+            safe_message: "not authorized".into(),
+            observation_id: ObservationId::from("obs-route-revalidation-denied"),
+        };
+        let denied_observation = route_decision_observation(trace_id, &denied);
+        assert_eq!(denied_observation.kind, ObservationKind::NoRouteRecorded);
+        assert_eq!(denied_observation.outcome, ObservationOutcome::Denied);
+        assert_eq!(denied_observation.safe_message, "not authorized");
+        assert_eq!(
+            denied_observation.detail_ref,
+            Some(
+                "initial_decision:route-initial;revalidation_no_route_reason:PolicyRevisionStale"
+                    .into()
+            )
+        );
     }
 
     #[test]

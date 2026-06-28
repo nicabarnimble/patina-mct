@@ -1,7 +1,7 @@
 id = "mct-child-registry-lifecycle"
 title = "Build child registry and lifecycle"
 kind = "build"
-status = "blocked"
+status = "complete"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -10,19 +10,19 @@ allium_anchors = []
 user_alignment = "MCT is Mother/Child/Toy infrastructure; child activation must be governed explicitly rather than ambient."
 belief_refs = []
 core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/safety-boundaries.md", "layer/core/dependable-rust.md"]
-slice_refs = ["mct-slice-daemon-child-directory-loader", "mct-slice-kernel-child-lifecycle-state-machine", "mct-slice-daemon-child-authority-projection", "mct-slice-daemon-durable-config-approval-store", "mct-slice-process-supervisor-lifecycle"]
-partial_evidence = ["[x] MCT can now load standalone `.wasm` + `.toml` child directory entries into typed loaded-child records with digest audit, ingress mode, WIT allowlist, requested toys, and ready instance projection.", "[x] The loaded-child registry can produce local route candidates only for ready allowlisted WIT operations.", "[x] Kernel child lifecycle now separates immutable artifacts, approvals, scoped assignments, and live instances, with fail-closed call revalidation for unknown/not-ready/unassigned/revoked/non-approved children.", "[x] Daemon can project loaded verified children into explicit local approval/assignment/ready authority facts and gate local candidates through kernel child call evaluation.", "[x] Durable `.mct/config.json` approval/assignment records and child approve/revoke/list CLI workflows exist.", "[x] Long-lived process supervisor can spawn/status/stop authorized child instances.", "[ ] Reload orchestration and full WASM/WIT child lifecycle integration remain future child slices."]
+slice_refs = ["mct-slice-daemon-child-directory-loader", "mct-slice-kernel-child-lifecycle-state-machine", "mct-slice-daemon-child-authority-projection", "mct-slice-daemon-durable-config-approval-store", "mct-slice-process-supervisor-lifecycle", "mct-slice-child-warmup-reload-supervisor-recovery"]
+partial_evidence = ["[x] MCT can now load standalone `.wasm` + `.toml` child directory entries into typed loaded-child records with digest audit, ingress mode, WIT allowlist, requested toys, and ready instance projection.", "[x] The loaded-child registry can produce local route candidates only for ready allowlisted WIT operations.", "[x] Kernel child lifecycle now separates immutable artifacts, approvals, scoped assignments, and live instances, with fail-closed call revalidation for unknown/not-ready/unassigned/revoked/non-approved children.", "[x] Daemon can project loaded verified children into explicit local approval/assignment/ready authority facts and gate local candidates through kernel child call evaluation.", "[x] Durable `.mct/config.json` approval/assignment records and child approve/revoke/list CLI workflows exist.", "[x] Long-lived process supervisor can spawn/status/stop authorized child instances.", "[x] Child warmup, reload drain/stop/replace, and supervisor status recovery are implemented with observations.", "[ ] Full WASM/WIT fixture integration remains in `mct-wasm-component-runtime`."]
 proof_plan = [
     "[x] Tests cover valid lifecycle transitions and reject illegal transitions.",
     "[x] Unknown/not-ready/unassigned child calls fail closed.",
     "[x] Registry design compares against current integrated `ChildRegistry` and removes accidental coupling for the directory discovery slice.",
 ]
-closure_evidence = []
-blocked_by = [
-    "mct-kernel-crate",
-    "mct-storage-core",
-    "mct-observation-log",
+closure_evidence = [
+    "[x] Child registry/lifecycle slices cover directory loading, allowlisted route candidates, kernel approval/assignment/instance lifecycle, durable approval/assignment config, process supervisor lifecycle, warmup, reload, and recovery.",
+    "[x] `patina slate check mct-child-registry-lifecycle --json` passed with all proof gates checked.",
+    "[x] `./scripts/ci-tier0.sh` passed after storage and lifecycle closure review.",
 ]
+blocked_by = []
 implementation_plan = [
     "[x] Define first loaded-child record with child ID, runtime kind, manifest claims, digest/artifact facts, and active ready instance projection.",
     "[x] Implement kernel-side approval/assignment/instance lifecycle transition records and pure transition validation.",
@@ -31,4 +31,4 @@ implementation_plan = [
 ]
 created_at = "1780068512"
 updated_at = "1781008973"
-block_reason = "Blocked until mct-observation-log is completed or explicitly superseded in the roadmap."
+unblock_reason = "Kernel, observation, and storage blockers are complete. Epic is complete as a container for child registry/lifecycle parity; full WASM/WIT fixture work remains in the runtime epic."

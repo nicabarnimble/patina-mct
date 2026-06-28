@@ -1,7 +1,7 @@
 id = "mct-daemon-control-plane"
 title = "Build MCT daemon local control plane"
 kind = "build"
-status = "blocked"
+status = "complete"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -13,27 +13,27 @@ core_refs = ["layer/core/unix-philosophy.md", "layer/core/dependable-rust.md", "
 runtime_shape_role = "Lifecycle/control owner: owns daemon process, local control surface, endpoint/runtime wiring, and readiness without becoming the authorization truth."
 design_style = "Small orchestration layer over concrete crates; avoid one broad ServerState clone from current Mother."
 implementation_ready_requirements = ["Every slice names which lifecycle/control boundary it changes.", "Kernel decisions remain in mct-kernel and are not reimplemented in handlers.", "Readiness/health proof gates distinguish daemon availability from authority admission."]
-slice_refs = ["mct-slice-workspace-skeleton", "mct-slice-fake-daemon-echo", "mct-slice-runtime-shape-anchors", "mct-slice-iroh-mother-owned-endpoint-lifecycle", "mct-slice-daemon-health-readiness", "mct-slice-daemon-fake-end-to-end-status", "mct-slice-daemon-module-shape", "mct-slice-daemon-local-control-status-api", "mct-slice-daemon-child-directory-loader", "mct-slice-iroh-ticket-peer-connection", "mct-slice-daemon-child-authority-projection", "mct-slice-daemon-durable-config-approval-store", "mct-slice-process-child-authorized-echo", "mct-slice-process-supervisor-lifecycle", "mct-slice-wasm-component-authorized-s32", "mct-slice-iroh-serve-process-runtime-routing"]
-partial_evidence = ["[x] Daemon crate exists.", "[x] Fake vertical slice composes kernel evaluation, echo result, and observation ledger.", "[x] Iroh endpoint lifecycle now has a daemon-owned wrapper shape rather than raw endpoint ownership leaking outward.", "[x] Daemon health/readiness status distinguishes process health from Iroh adapter readiness.", "[x] Fake end-to-end status composes daemon readiness, fake echo result, and ledger observation counts without a broad control API.", "[x] Daemon module shape keeps production status API separate from test-only fake proof harness.", "[x] Typed in-process local control status handler returns daemon status without adding HTTP/UDS transport or daemon authority logic.", "[x] CLI can load standalone child artifacts from project-local `.mct/children` by default and inspect explicit fixture directories when provided.", "[x] Daemon can project loaded children into kernel authority records and expose local candidates only after explicit verified local activation.", "[x] CLI can persist child approval/revocation and peer address-book config under `.mct/config.json`.", "[x] CLI can invoke authorized one-shot process children and minimal authorized WASM components.", "[x] CLI can create Iroh identities, serve an explicit peer binding, serve-process through runtime execution, call a peer endpoint ticket, and call a configured peer.", "[ ] Local UDS/HTTP transport and multi-operator control authorization gates remain open."]
+slice_refs = ["mct-slice-workspace-skeleton", "mct-slice-fake-daemon-echo", "mct-slice-runtime-shape-anchors", "mct-slice-iroh-mother-owned-endpoint-lifecycle", "mct-slice-daemon-health-readiness", "mct-slice-daemon-fake-end-to-end-status", "mct-slice-daemon-module-shape", "mct-slice-daemon-local-control-status-api", "mct-slice-control-plane-http-uds", "mct-slice-daemon-control-auth-denial", "mct-slice-daemon-child-directory-loader", "mct-slice-iroh-ticket-peer-connection", "mct-slice-daemon-child-authority-projection", "mct-slice-daemon-durable-config-approval-store", "mct-slice-sql-runtime-state-store", "mct-slice-storage-grant-snapshots-schema-inventory", "mct-slice-process-child-authorized-echo", "mct-slice-process-supervisor-lifecycle", "mct-slice-wasm-component-authorized-s32", "mct-slice-iroh-serve-process-runtime-routing"]
+partial_evidence = ["[x] Daemon crate exists.", "[x] Fake vertical slice composes kernel evaluation, echo result, and observation ledger.", "[x] Iroh endpoint lifecycle now has a daemon-owned wrapper shape rather than raw endpoint ownership leaking outward.", "[x] Daemon health/readiness status distinguishes process health from Iroh adapter readiness.", "[x] Fake end-to-end status composes daemon readiness, fake echo result, and ledger observation counts without a broad control API.", "[x] Daemon module shape keeps production status API separate from test-only fake proof harness.", "[x] Typed in-process local control status handler returns daemon status without adding HTTP/UDS transport or daemon authority logic.", "[x] Local HTTP/UDS one-shot control transports expose status/state/runs/snapshot through the typed control handler.", "[x] Optional bearer-token local-control policy fails closed with safe 401/403 responses before path dispatch.", "[x] CLI can load standalone child artifacts from project-local `.mct/children` by default and inspect explicit fixture directories when provided.", "[x] Daemon can project loaded children into kernel authority records and expose local candidates only after explicit verified local activation.", "[x] CLI can persist child approval/revocation, peer address-book config, local node identity, and private runtime state under `.mct/`.", "[x] CLI can invoke authorized one-shot process children and minimal authorized WASM components.", "[x] CLI can create Iroh identities, serve an explicit peer binding, serve-process through runtime execution, call a peer endpoint ticket, and call a configured peer."]
 next_slice_candidates = ["mct-slice-daemon-local-control-transport", "mct-slice-daemon-control-auth-denial"]
 proof_plan = [
-    "[ ] Daemon starts locally and reports health/version/readiness.",
-    "[ ] Control-plane tests prove unauthenticated/unauthorized paths fail closed where applicable.",
-    "[ ] Daemon state is smaller and more domain-split than current integrated `ServerState`.",
+    "[x] Daemon starts locally and reports health/version/readiness.",
+    "[x] Control-plane tests prove unauthenticated/unauthorized paths fail closed where applicable.",
+    "[x] Daemon state is smaller and more domain-split than current integrated `ServerState`.",
 ]
-closure_evidence = []
-blocked_by = [
-    "mct-kernel-crate",
-    "mct-storage-core",
-    "mct-observation-log",
+closure_evidence = [
+    "[x] Daemon control-plane slices cover status/readiness, module shape, local HTTP/UDS transport, control auth denials, child/config/state wiring, runtime invocation, and Iroh serve/call paths without copying broad Mother ServerState.",
+    "[x] `patina slate check mct-daemon-control-plane --json` passed with all proof gates checked.",
+    "[x] `./scripts/ci-tier0.sh` passed after final control auth slice.",
 ]
+blocked_by = []
 implementation_plan = [
-    "[ ] Create daemon bootstrap with UDS/local control-plane first and optional HTTP placement documented.",
+    "[x] Create daemon bootstrap with UDS/local control-plane first and optional HTTP placement documented.",
     "[x] Expose health, version, readiness, and basic status through a typed in-process control handler.",
-    "[ ] Add UDS/HTTP transport around the typed control handler.",
-    "[ ] Wire daemon state to `mct-kernel` without leaking transport concerns into the kernel.",
-    "[ ] Add graceful start/stop, logging, and readiness tests.",
+    "[x] Add UDS/HTTP transport around the typed control handler.",
+    "[x] Wire daemon state to `mct-kernel` without leaking transport concerns into the kernel.",
+    "[x] Add graceful start/stop, logging, and readiness tests.",
 ]
 created_at = "1780068498"
-updated_at = "1781008973"
-block_reason = "Epic remains open; fake daemon vertical slice is complete, but real local control plane and readiness behavior still require smaller slice Slates."
+updated_at = "1782644500"
+unblock_reason = "Kernel, observation, and storage blockers are complete. Epic is complete as a container for the first daemon local control-plane parity."

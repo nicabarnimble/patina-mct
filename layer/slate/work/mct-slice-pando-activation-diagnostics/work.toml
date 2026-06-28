@@ -1,0 +1,47 @@
+id = "mct-slice-pando-activation-diagnostics"
+title = "Add Pando activation plans and typed diagnostics"
+kind = "build"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Finish Pando manifest foundation with explicit activation plans and fail-closed diagnostics, without hardcoding old Mother builtins."
+allium_anchors = ["MctRuntimeShape"]
+user_alignment = "Pando belongs to MCT as a composition concept, but must stay manifest-only and authority-aware before full graph composition."
+belief_refs = ["greenfield-products-reference-legacy"]
+core_refs = ["layer/core/spec-driven-design.md", "layer/core/mct-build-boundaries.md", "layer/core/dependable-rust.md"]
+parent_slates = ["mct-pando-manifest"]
+code_targets = ["crates/mct-daemon/src/composition.rs"]
+implementation_ready = true
+runtime_shape_role = "Convert a parsed manifest into a narrow activation plan only when declared children and toy grants are available."
+design_style = "Typed diagnostics and explicit inputs; no Belief/spec/lake/doctor builtins and no full component graph engine."
+first_test_to_write = "pando_manifest_builds_activation_plan"
+exit_criteria = [
+    "Valid manifest produces an activation plan with commands, required children, and required toy grants.",
+    "Missing children and missing toy grants produce typed diagnostics and no plan.",
+    "Registry/manifest loader does not hardcode legacy Mother builtins.",
+]
+non_goals = ["No full graph scheduler.", "No automatic grant issuance.", "No integration with Belief/spec/lake/doctor surfaces."]
+implementation_plan = [
+    "[x] Add activation plan and diagnostic types.",
+    "[x] Validate child references and toy grant requirements from manifest composition wiring.",
+    "[x] Add tests for valid plan, fail-closed diagnostics, and no hardcoded builtins.",
+]
+proof_plan = [
+    "[x] `cargo test -p mct-daemon pando_manifest_builds_activation_plan` passes.",
+    "[x] `cargo test -p mct-daemon pando_manifest_missing_requirements_returns_typed_diagnostics` passes.",
+    "[x] `cargo test -p mct-daemon pando_manifest_loader_does_not_hardcode_legacy_builtins` passes.",
+    "[x] `./scripts/ci-tier0.sh` passes.",
+    "[x] `patina slate check mct-slice-pando-activation-diagnostics --json` passes.",
+]
+closure_evidence = [
+    "[x] Commit `19418d1 feat(pando): add activation diagnostics` adds activation/evaluation/diagnostic types, fail-closed child/toy requirement checks, and tests.",
+    "[x] Valid manifests produce activation plans with required children, required toys, and commands.",
+    "[x] Missing children, undeclared references, and missing toy grants produce typed diagnostics and no plan.",
+    "[x] Legacy Mother builtin names are accepted unless explicitly passed as native command conflicts.",
+    "[x] `./scripts/ci-tier0.sh` passed after implementation.",
+]
+blocked_by = []
+blocks = ["mct-pando-manifest"]
+belief_harvest_decision = "No new belief required; applies greenfield-products-reference-legacy."
+created_at = "1782644800"
+updated_at = "1782644900"
+closed_at = "1782644900"

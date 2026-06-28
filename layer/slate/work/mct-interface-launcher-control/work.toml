@@ -17,8 +17,6 @@ proof_plan = [
 ]
 closure_evidence = []
 blocked_by = [
-    "mct-daemon-control-plane",
-    "mct-observation-log",
     "mct-secrets-authority",
 ]
 implementation_plan = [

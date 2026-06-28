@@ -1,0 +1,46 @@
+id = "mct-slice-daemon-control-auth-denial"
+title = "Fail closed local control authorization"
+kind = "build"
+status = "complete"
+execution_granularity = "slice"
+human_request = "Finish daemon control-plane proof that unauthenticated or unauthorized control requests fail closed where authorization is configured."
+allium_anchors = ["MctRuntimeShape"]
+user_alignment = "User wants explicit authority boundaries and no broad Mother ServerState clone. Local control transport must not become implicit authority."
+belief_refs = ["mother-kernel-decides-adapters-perform"]
+core_refs = ["layer/core/safety-boundaries.md", "layer/core/dependable-rust.md", "layer/core/mct-build-boundaries.md"]
+parent_slates = ["mct-daemon-control-plane", "mct-node-identity-security"]
+code_targets = ["crates/mct-daemon/src/control.rs", "crates/mct-daemon/src/lib.rs"]
+implementation_ready = true
+runtime_shape_role = "Add a small control-plane authorization gate around status/state/runs/snapshot without making control transport kernel authority."
+design_style = "Pure policy object, explicit denial response, no session store or ambient user auth model."
+first_test_to_write = "control_plane_auth_policy_fails_closed_when_token_required"
+exit_criteria = [
+    "Bearer-token policy can require explicit local-control credentials.",
+    "Missing and wrong credentials return non-2xx safe JSON responses before path dispatch.",
+    "Open local policy preserves existing status/state/runs behavior.",
+    "HTTP/UDS one-shot serving can use the same policy helper.",
+]
+non_goals = ["No OAuth/session login/user database.", "No kernel grant from local control transport.", "No change to Iroh peer admission semantics."]
+implementation_plan = [
+    "[x] Add MctControlPlaneAuthPolicy and authorization decision helper.",
+    "[x] Add path handler variant and transport helpers that apply the policy before routing.",
+    "[x] Add tests for missing/wrong/right credentials and open-local compatibility.",
+]
+proof_plan = [
+    "[x] `cargo test -p mct-daemon control_plane_auth_policy_fails_closed_when_token_required` passes.",
+    "[x] `cargo test -p mct-daemon control_plane_open_policy_preserves_existing_routes` passes.",
+    "[x] `./scripts/ci-tier0.sh` passes.",
+    "[x] `patina slate check mct-slice-daemon-control-auth-denial --json` passes.",
+]
+closure_evidence = [
+    "[x] Commit `38aab92 feat(daemon): add control-plane auth gate` adds bearer-token auth policy, fail-closed 401/403 JSON responses, HTTP/UDS policy helpers, and tests.",
+    "[x] Authorization is applied before method/path dispatch when a policy requires credentials.",
+    "[x] Open local policy preserves existing status/state/runs/snapshot behavior.",
+    "[x] `./scripts/ci-tier0.sh` passed after implementation.",
+]
+blocked_by = []
+blocks = ["mct-daemon-control-plane", "mct-node-identity-security"]
+belief_harvest_decision = "No new belief required; applies kernel-decides/adapters-perform to control-plane transport."
+created_at = "1782644400"
+updated_at = "1782644500"
+closed_at = "1782644500"

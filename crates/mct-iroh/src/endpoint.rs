@@ -52,6 +52,13 @@ pub enum MotherIrohEndpointError {
         source: serde_json::Error,
     },
 
+    #[error("Mother Iroh protocol {action} kernel validation failed: {source}")]
+    ProtocolKernel {
+        action: &'static str,
+        #[source]
+        source: MctKernelError,
+    },
+
     #[error("unsupported MCT ALPN '{alpn}'")]
     UnsupportedAlpn { alpn: String },
 }
@@ -325,7 +332,20 @@ impl MotherIrohEndpoint {
         peer: &MotherIrohEndpointTicket,
         request: &MctCallProtocolRequest,
     ) -> MotherIrohEndpointResult<MctCallProtocolReply> {
-        self.roundtrip_json(peer, MCT_CALL_ALPN, request).await
+        request
+            .validate()
+            .map_err(|source| MotherIrohEndpointError::ProtocolKernel {
+                action: "validate outbound mct/call/0 request",
+                source,
+            })?;
+        let reply: MctCallProtocolReply = self.roundtrip_json(peer, MCT_CALL_ALPN, request).await?;
+        reply
+            .validate()
+            .map_err(|source| MotherIrohEndpointError::ProtocolKernel {
+                action: "validate inbound mct/call/0 reply",
+                source,
+            })?;
+        Ok(reply)
     }
 
     pub async fn send_hello_then_call(
@@ -463,6 +483,12 @@ impl MotherIrohEndpoint {
                 request.received_over.endpoint_id = remote_endpoint_id;
                 request.received_over.alpn = MCT_CALL_ALPN.into();
                 request.received_over.connection_side = ConnectionSide::Incoming;
+                request
+                    .validate()
+                    .map_err(|source| MotherIrohEndpointError::ProtocolKernel {
+                        action: "validate inbound mct/call/0 request",
+                        source,
+                    })?;
 
                 let hello = state.last_hello.clone().unwrap_or_else(|| {
                     denied_missing_hello(request.protocol_request_id.as_str(), state)
@@ -489,8 +515,8 @@ impl MotherIrohEndpoint {
                     reply_result_ref,
                     state.next_observation_id("call-reply"),
                 );
-                let response_bytes = serde_json::to_vec(&reply).map_err(|source| {
-                    MotherIrohEndpointError::ProtocolJson {
+                let response_bytes = encode_call_protocol_reply_json(&reply).map_err(|source| {
+                    MotherIrohEndpointError::ProtocolKernel {
                         action: "encode mct/call/0 response",
                         source,
                     }

@@ -71,11 +71,81 @@ pub struct MctControlPlaneResponse {
     pub body: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MctControlPlaneAuthPolicy {
+    required_bearer_token: Option<String>,
+}
+
+impl MctControlPlaneAuthPolicy {
+    pub fn open_local() -> Self {
+        Self::default()
+    }
+
+    pub fn require_bearer_token(token: impl Into<String>) -> Result<Self> {
+        let token = token.into();
+        if token.trim().is_empty() {
+            bail!("control-plane bearer token must not be blank");
+        }
+        Ok(Self {
+            required_bearer_token: Some(token),
+        })
+    }
+
+    fn authorize(&self, authorization_header: Option<&str>) -> MctControlPlaneAuthDecision {
+        let Some(required) = self.required_bearer_token.as_ref() else {
+            return MctControlPlaneAuthDecision::Allowed;
+        };
+        let Some(header) = authorization_header else {
+            return MctControlPlaneAuthDecision::MissingCredential;
+        };
+        let Some(token) = header.trim().strip_prefix("Bearer ") else {
+            return MctControlPlaneAuthDecision::InvalidCredential;
+        };
+        if token == required {
+            MctControlPlaneAuthDecision::Allowed
+        } else {
+            MctControlPlaneAuthDecision::InvalidCredential
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MctControlPlaneAuthDecision {
+    Allowed,
+    MissingCredential,
+    InvalidCredential,
+}
+
 pub fn handle_control_plane_path(
     method: &str,
     path: &str,
     snapshot: &MctControlPlaneSnapshot,
 ) -> MctControlPlaneResponse {
+    handle_control_plane_path_with_auth(
+        method,
+        path,
+        snapshot,
+        &MctControlPlaneAuthPolicy::open_local(),
+        None,
+    )
+}
+
+pub fn handle_control_plane_path_with_auth(
+    method: &str,
+    path: &str,
+    snapshot: &MctControlPlaneSnapshot,
+    policy: &MctControlPlaneAuthPolicy,
+    authorization_header: Option<&str>,
+) -> MctControlPlaneResponse {
+    match policy.authorize(authorization_header) {
+        MctControlPlaneAuthDecision::Allowed => {}
+        MctControlPlaneAuthDecision::MissingCredential => {
+            return json_response(401, serde_json::json!({"error": "missing credential"}));
+        }
+        MctControlPlaneAuthDecision::InvalidCredential => {
+            return json_response(403, serde_json::json!({"error": "invalid credential"}));
+        }
+    }
     if method != "GET" {
         return json_response(405, serde_json::json!({"error": "method not allowed"}));
     }
@@ -92,6 +162,15 @@ pub async fn serve_http_control_once(
     listener: &TcpListener,
     snapshot: MctControlPlaneSnapshot,
 ) -> Result<()> {
+    serve_http_control_once_with_auth(listener, snapshot, MctControlPlaneAuthPolicy::open_local())
+        .await
+}
+
+pub async fn serve_http_control_once_with_auth(
+    listener: &TcpListener,
+    snapshot: MctControlPlaneSnapshot,
+    policy: MctControlPlaneAuthPolicy,
+) -> Result<()> {
     let (mut stream, _) = listener.accept().await.context("accept http control")?;
     let mut buffer = [0_u8; 4096];
     let read = stream
@@ -100,7 +179,9 @@ pub async fn serve_http_control_once(
         .context("read http control request")?;
     let request = String::from_utf8_lossy(&buffer[..read]);
     let (method, path) = parse_http_request_line(&request)?;
-    let response = handle_control_plane_path(method, path, &snapshot);
+    let authorization_header = parse_authorization_header(&request);
+    let response =
+        handle_control_plane_path_with_auth(method, path, &snapshot, &policy, authorization_header);
     stream
         .write_all(http_response_bytes(&response).as_bytes())
         .await
@@ -113,6 +194,16 @@ pub async fn serve_uds_control_once(
     listener: &UnixListener,
     snapshot: MctControlPlaneSnapshot,
 ) -> Result<()> {
+    serve_uds_control_once_with_auth(listener, snapshot, MctControlPlaneAuthPolicy::open_local())
+        .await
+}
+
+#[cfg(unix)]
+pub async fn serve_uds_control_once_with_auth(
+    listener: &UnixListener,
+    snapshot: MctControlPlaneSnapshot,
+    policy: MctControlPlaneAuthPolicy,
+) -> Result<()> {
     let (mut stream, _) = listener.accept().await.context("accept uds control")?;
     let mut buffer = [0_u8; 4096];
     let read = stream
@@ -121,7 +212,9 @@ pub async fn serve_uds_control_once(
         .context("read uds control request")?;
     let request = String::from_utf8_lossy(&buffer[..read]);
     let (method, path) = parse_http_request_line(&request)?;
-    let response = handle_control_plane_path(method, path, &snapshot);
+    let authorization_header = parse_authorization_header(&request);
+    let response =
+        handle_control_plane_path_with_auth(method, path, &snapshot, &policy, authorization_header);
     stream
         .write_all(http_response_bytes(&response).as_bytes())
         .await
@@ -143,9 +236,19 @@ fn parse_http_request_line(request: &str) -> Result<(&str, &str)> {
     Ok((method, path))
 }
 
+fn parse_authorization_header(request: &str) -> Option<&str> {
+    request.lines().skip(1).find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("authorization")
+            .then(|| value.trim())
+    })
+}
+
 fn http_response_bytes(response: &MctControlPlaneResponse) -> String {
     let reason = match response.status_code {
         200 => "OK",
+        401 => "Unauthorized",
+        403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
         _ => "OK",
@@ -196,6 +299,8 @@ mod tests {
                 queued_tasks: 0,
                 child_state_keys: 0,
                 child_subscriptions: 0,
+                toy_catalog_contracts: 0,
+                toy_grant_snapshots: 0,
             }),
             Vec::new(),
         )
@@ -224,5 +329,58 @@ mod tests {
             handle_control_plane_path("POST", "/status", &snapshot()).status_code,
             405
         );
+    }
+
+    #[test]
+    fn control_plane_auth_policy_fails_closed_when_token_required() {
+        let policy = MctControlPlaneAuthPolicy::require_bearer_token("secret").unwrap();
+
+        let missing =
+            handle_control_plane_path_with_auth("GET", "/status", &snapshot(), &policy, None);
+        assert_eq!(missing.status_code, 401);
+        assert!(!missing.body.contains("ready"));
+
+        let wrong = handle_control_plane_path_with_auth(
+            "GET",
+            "/status",
+            &snapshot(),
+            &policy,
+            Some("Bearer wrong"),
+        );
+        assert_eq!(wrong.status_code, 403);
+        assert!(!wrong.body.contains("ready"));
+
+        let allowed = handle_control_plane_path_with_auth(
+            "GET",
+            "/status",
+            &snapshot(),
+            &policy,
+            Some("Bearer secret"),
+        );
+        assert_eq!(allowed.status_code, 200);
+        assert!(allowed.body.contains("ready"));
+    }
+
+    #[test]
+    fn control_plane_open_policy_preserves_existing_routes() {
+        let policy = MctControlPlaneAuthPolicy::open_local();
+
+        let status =
+            handle_control_plane_path_with_auth("GET", "/status", &snapshot(), &policy, None);
+        let missing =
+            handle_control_plane_path_with_auth("GET", "/missing", &snapshot(), &policy, None);
+        let method =
+            handle_control_plane_path_with_auth("POST", "/status", &snapshot(), &policy, None);
+
+        assert_eq!(status.status_code, 200);
+        assert_eq!(missing.status_code, 404);
+        assert_eq!(method.status_code, 405);
+    }
+
+    #[test]
+    fn control_plane_authorization_header_is_case_insensitive() {
+        let request =
+            "GET /status HTTP/1.1\r\nhost: localhost\r\nAUTHORIZATION: Bearer secret\r\n\r\n";
+        assert_eq!(parse_authorization_header(request), Some("Bearer secret"));
     }
 }

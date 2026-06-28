@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// Project-local durable runtime state for one standalone MCT node.
 ///
@@ -37,6 +37,8 @@ pub struct MctRuntimeStateSummary {
     pub queued_tasks: u64,
     pub child_state_keys: u64,
     pub child_subscriptions: u64,
+    pub toy_catalog_contracts: u64,
+    pub toy_grant_snapshots: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -339,6 +341,71 @@ impl MctRuntimeStateStore {
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS toy_catalog_contracts (
+                toy_id TEXT PRIMARY KEY,
+                contract_json TEXT NOT NULL,
+                authority_bearing INTEGER NOT NULL CHECK(authority_bearing IN (0, 1)),
+                catalog_revision INTEGER NOT NULL,
+                admitted_by_observation_id TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS toy_grant_snapshots (
+                grant_id TEXT PRIMARY KEY,
+                toy_id TEXT NOT NULL REFERENCES toy_catalog_contracts(toy_id),
+                subject_json TEXT NOT NULL,
+                scope_json TEXT NOT NULL,
+                constraints_json TEXT NOT NULL,
+                grant_state TEXT NOT NULL,
+                issuer_id TEXT NOT NULL,
+                policy_revision INTEGER NOT NULL,
+                grants_revision INTEGER NOT NULL,
+                authority_observation_id TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_toy_grants_toy_state
+            ON toy_grant_snapshots(toy_id, grant_state, grants_revision);
+
+            CREATE TRIGGER IF NOT EXISTS active_toy_grant_requires_authority_bearing_toy_insert
+            BEFORE INSERT ON toy_grant_snapshots
+            WHEN NEW.grant_state = 'active'
+            BEGIN
+                SELECT RAISE(ABORT, 'active toy grant requires authority-bearing catalog contract')
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM toy_catalog_contracts catalog
+                    WHERE catalog.toy_id = NEW.toy_id
+                      AND catalog.authority_bearing = 1
+                );
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS active_toy_grant_requires_authority_bearing_toy_update
+            BEFORE UPDATE OF toy_id, grant_state ON toy_grant_snapshots
+            WHEN NEW.grant_state = 'active'
+            BEGIN
+                SELECT RAISE(ABORT, 'active toy grant requires authority-bearing catalog contract')
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM toy_catalog_contracts catalog
+                    WHERE catalog.toy_id = NEW.toy_id
+                      AND catalog.authority_bearing = 1
+                );
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS authority_bearing_toy_cannot_be_disabled_with_active_grants
+            BEFORE UPDATE OF authority_bearing ON toy_catalog_contracts
+            WHEN NEW.authority_bearing = 0
+            BEGIN
+                SELECT RAISE(ABORT, 'authority-bearing toy has active grants')
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM toy_grant_snapshots grants
+                    WHERE grants.toy_id = NEW.toy_id
+                      AND grants.grant_state = 'active'
+                );
+            END;
+
             CREATE TRIGGER IF NOT EXISTS active_assignment_requires_approved_child_insert
             BEFORE INSERT ON child_assignments
             WHEN NEW.assignment_state = 'active'
@@ -436,6 +503,8 @@ impl MctRuntimeStateStore {
             )?,
             child_state_keys: self.count("child_state", None)?,
             child_subscriptions: self.count("child_subscriptions", None)?,
+            toy_catalog_contracts: self.count("toy_catalog_contracts", None)?,
+            toy_grant_snapshots: self.count("toy_grant_snapshots", None)?,
         })
     }
 
@@ -1151,6 +1220,100 @@ impl MctRuntimeStateStore {
         Ok(())
     }
 
+    pub fn upsert_toy_contract(&self, contract: &CanonicalToyContract) -> Result<()> {
+        self.conn.execute(
+            r#"
+            INSERT INTO toy_catalog_contracts(
+                toy_id, contract_json, authority_bearing, catalog_revision,
+                admitted_by_observation_id, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            ON CONFLICT(toy_id) DO UPDATE SET
+                contract_json = excluded.contract_json,
+                authority_bearing = excluded.authority_bearing,
+                catalog_revision = excluded.catalog_revision,
+                admitted_by_observation_id = excluded.admitted_by_observation_id,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                contract.toy_id.as_str(),
+                json_string(&contract.contract)?,
+                if contract.authority_bearing {
+                    1_i64
+                } else {
+                    0_i64
+                },
+                contract.catalog_revision,
+                contract.admitted_by_observation_id.as_str(),
+                unix_timestamp_string(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn toy_contracts(&self) -> Result<Vec<CanonicalToyContract>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT toy_id, contract_json, authority_bearing, catalog_revision, admitted_by_observation_id
+            FROM toy_catalog_contracts
+            ORDER BY toy_id
+            "#,
+        )?;
+        stmt.query_map([], toy_contract_from_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("read toy catalog contracts")
+    }
+
+    pub fn upsert_toy_grant_snapshot(&self, grant: &ToyGrant) -> Result<()> {
+        self.conn.execute(
+            r#"
+            INSERT INTO toy_grant_snapshots(
+                grant_id, toy_id, subject_json, scope_json, constraints_json,
+                grant_state, issuer_id, policy_revision, grants_revision,
+                authority_observation_id, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            ON CONFLICT(grant_id) DO UPDATE SET
+                toy_id = excluded.toy_id,
+                subject_json = excluded.subject_json,
+                scope_json = excluded.scope_json,
+                constraints_json = excluded.constraints_json,
+                grant_state = excluded.grant_state,
+                issuer_id = excluded.issuer_id,
+                policy_revision = excluded.policy_revision,
+                grants_revision = excluded.grants_revision,
+                authority_observation_id = excluded.authority_observation_id,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                grant.grant_id.as_str(),
+                grant.toy_id.as_str(),
+                json_string(&grant.subject)?,
+                json_string(&grant.scope)?,
+                json_string(&grant.constraints)?,
+                json_atom(&grant.grant_state)?,
+                grant.issuer_id,
+                grant.policy_revision,
+                grant.grants_revision,
+                grant.authority_observation_id.as_str(),
+                unix_timestamp_string(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn toy_grant_snapshots(&self) -> Result<Vec<ToyGrant>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT grant_id, toy_id, subject_json, scope_json, constraints_json,
+                   grant_state, issuer_id, policy_revision, grants_revision, authority_observation_id
+            FROM toy_grant_snapshots
+            ORDER BY grant_id
+            "#,
+        )?;
+        stmt.query_map([], toy_grant_from_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("read toy grant snapshots")
+    }
+
     fn count(&self, table: &str, where_clause: Option<&str>) -> Result<u64> {
         if !is_known_count_table(table) {
             bail!("unknown count table '{table}'");
@@ -1178,6 +1341,8 @@ fn is_known_count_table(table: &str) -> bool {
             | "child_state"
             | "child_subscriptions"
             | "metric_points"
+            | "toy_catalog_contracts"
+            | "toy_grant_snapshots"
     )
 }
 
@@ -1251,6 +1416,37 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MctQueuedTaskRecor
         last_error: row.get(9)?,
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
+    })
+}
+
+fn toy_contract_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CanonicalToyContract> {
+    let contract_json: String = row.get(1)?;
+    let authority_bearing: i64 = row.get(2)?;
+    Ok(CanonicalToyContract {
+        toy_id: ToyId::from(row.get::<_, String>(0)?),
+        contract: from_json_cell(&contract_json).map_err(to_sql_error)?,
+        authority_bearing: authority_bearing != 0,
+        catalog_revision: row.get::<_, i64>(3)?.max(0) as u64,
+        admitted_by_observation_id: ObservationId::from(row.get::<_, String>(4)?),
+    })
+}
+
+fn toy_grant_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToyGrant> {
+    let subject_json: String = row.get(2)?;
+    let scope_json: String = row.get(3)?;
+    let constraints_json: String = row.get(4)?;
+    let grant_state: String = row.get(5)?;
+    Ok(ToyGrant {
+        grant_id: ToyGrantId::from(row.get::<_, String>(0)?),
+        toy_id: ToyId::from(row.get::<_, String>(1)?),
+        subject: from_json_cell(&subject_json).map_err(to_sql_error)?,
+        scope: from_json_cell(&scope_json).map_err(to_sql_error)?,
+        constraints: from_json_cell(&constraints_json).map_err(to_sql_error)?,
+        grant_state: from_json_atom(&grant_state).map_err(to_sql_error)?,
+        issuer_id: row.get(6)?,
+        policy_revision: row.get::<_, i64>(7)?.max(0) as u64,
+        grants_revision: row.get::<_, i64>(8)?.max(0) as u64,
+        authority_observation_id: ObservationId::from(row.get::<_, String>(9)?),
     })
 }
 
@@ -1449,6 +1645,56 @@ mod tests {
         }
     }
 
+    fn toy_contract(authority_bearing: bool) -> CanonicalToyContract {
+        CanonicalToyContract {
+            toy_id: ToyId::from("toy-state"),
+            contract: ToyContractIdentity {
+                namespace: "patina".into(),
+                interface_name: "state".into(),
+                version: "0.1.0".into(),
+                function_name: Some("put".into()),
+                resource_name: None,
+            },
+            authority_bearing,
+            catalog_revision: 3,
+            admitted_by_observation_id: ObservationId::from("obs-toy-catalog"),
+        }
+    }
+
+    fn toy_grant(state: ToyGrantState) -> ToyGrant {
+        ToyGrant {
+            grant_id: ToyGrantId::from("grant-state"),
+            toy_id: ToyId::from("toy-state"),
+            subject: ToyGrantSubject {
+                child_name: "child-a".into(),
+                artifact_id: "artifact-a".into(),
+                artifact_version: "0.1.0".into(),
+                assignment_id: Some(ChildAssignmentId::from("assignment-a")),
+                caller_node_id: Some(MctNodeId::from("node-a")),
+            },
+            scope: ToyGrantScope {
+                vision_id: VisionId::from("vision-a"),
+                node_id: Some(MctNodeId::from("node-a")),
+                project_id: None,
+                data_classification: Some("public".into()),
+                resource_id: Some("bucket-a".into()),
+                allowed_actions: vec!["put".into()],
+            },
+            constraints: ToyGrantConstraints {
+                starts_at: None,
+                expires_at: Some(Timestamp::from("2026-05-31T00:10:00Z")),
+                max_uses: None,
+                max_duration_ms: Some(1000),
+                locality_required: true,
+            },
+            grant_state: state,
+            issuer_id: "issuer-a".into(),
+            policy_revision: 1,
+            grants_revision: 2,
+            authority_observation_id: ObservationId::from("obs-toy-grant"),
+        }
+    }
+
     #[test]
     fn state_store_enforces_active_assignment_requires_approved_artifact() {
         let dir = tempfile::tempdir().unwrap();
@@ -1493,6 +1739,53 @@ mod tests {
         assert_eq!(summary.approved_children, 1);
         assert_eq!(summary.active_assignments, 1);
         assert_eq!(summary.ready_instances, 1);
+    }
+
+    #[test]
+    fn state_store_persists_toy_grant_snapshots() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.sqlite");
+        let store = MctRuntimeStateStore::open(&path).unwrap();
+        store.upsert_toy_contract(&toy_contract(true)).unwrap();
+        store
+            .upsert_toy_grant_snapshot(&toy_grant(ToyGrantState::Active))
+            .unwrap();
+        drop(store);
+
+        let reopened = MctRuntimeStateStore::open(path).unwrap();
+        assert_eq!(reopened.schema_version().unwrap(), SCHEMA_VERSION);
+        let contracts = reopened.toy_contracts().unwrap();
+        assert_eq!(contracts, vec![toy_contract(true)]);
+        let grants = reopened.toy_grant_snapshots().unwrap();
+        assert_eq!(grants, vec![toy_grant(ToyGrantState::Active)]);
+        let summary = reopened.summary().unwrap();
+        assert_eq!(summary.toy_catalog_contracts, 1);
+        assert_eq!(summary.toy_grant_snapshots, 1);
+    }
+
+    #[test]
+    fn state_store_rejects_active_grant_for_non_authority_toy() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MctRuntimeStateStore::open(dir.path().join("state.sqlite")).unwrap();
+        store.upsert_toy_contract(&toy_contract(false)).unwrap();
+
+        let result = store.upsert_toy_grant_snapshot(&toy_grant(ToyGrantState::Active));
+
+        assert!(result.is_err());
+        store
+            .upsert_toy_grant_snapshot(&toy_grant(ToyGrantState::Requested))
+            .unwrap();
+    }
+
+    #[test]
+    fn state_store_schema_inventory_stays_private_to_daemon() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MctRuntimeStateStore::open(dir.path().join("state.sqlite")).unwrap();
+
+        assert_eq!(store.count("toy_grant_snapshots", None).unwrap(), 0);
+        assert!(store.count("beliefs", None).is_err());
+        assert!(store.count("sessions", None).is_err());
+        assert!(store.count("view_buffers", None).is_err());
     }
 
     #[test]
