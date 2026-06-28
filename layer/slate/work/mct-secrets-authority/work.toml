@@ -17,9 +17,7 @@ proof_plan = [
 ]
 closure_evidence = []
 blocked_by = [
-    "mct-storage-core",
     "mct-node-identity-security",
-    "mct-toy-grants",
 ]
 implementation_plan = [
     "[ ] Define secret identity, scope, grant requirements, and redaction rules.",
@@ -29,4 +27,4 @@ implementation_plan = [
 ]
 created_at = "1780068545"
 updated_at = "1780262310"
-block_reason = "Blocked until mct-toy-grants is completed or explicitly superseded in the roadmap."
+block_reason = "Blocked until mct-node-identity-security closure provides persistent node identity and scope material for secret authority."

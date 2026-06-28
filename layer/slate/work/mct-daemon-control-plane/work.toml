@@ -1,7 +1,7 @@
 id = "mct-daemon-control-plane"
 title = "Build MCT daemon local control plane"
 kind = "build"
-status = "blocked"
+status = "active"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -22,9 +22,7 @@ proof_plan = [
     "[ ] Daemon state is smaller and more domain-split than current integrated `ServerState`.",
 ]
 closure_evidence = []
-blocked_by = [
-    "mct-storage-core",
-]
+blocked_by = []
 implementation_plan = [
     "[ ] Create daemon bootstrap with UDS/local control-plane first and optional HTTP placement documented.",
     "[x] Expose health, version, readiness, and basic status through a typed in-process control handler.",
@@ -34,4 +32,4 @@ implementation_plan = [
 ]
 created_at = "1780068498"
 updated_at = "1781008973"
-block_reason = "Epic remains open; fake daemon vertical slice is complete, but real local control plane and readiness behavior still require smaller slice Slates."
+unblock_reason = "Kernel, observation, and storage blockers are complete. Epic is active for local control transport/auth closure."

@@ -283,3 +283,13 @@
 {"created_at":"1782643510","event_type":"dependencies-reconciled","payload":{"removed_blockers":["mct-call-envelope","mct-observation-log"],"cause":"observation-log-complete","unblocked":false},"work_id":"mct-iroh-substrate"}
 {"created_at":"1782643510","event_type":"dependencies-reconciled","payload":{"removed_blockers":["mct-call-envelope","mct-observation-log"],"cause":"observation-log-complete","unblocked":false},"work_id":"mct-process-harness"}
 {"created_at":"1782643304","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-storage-grant-snapshots-schema-inventory"}
+{"created_at":"1782644000","event_type":"completed","payload":{"force":false},"work_id":"mct-slice-storage-grant-snapshots-schema-inventory"}
+{"created_at":"1782644001","event_type":"completed","payload":{"force":false},"work_id":"mct-storage-core"}
+{"created_at":"1782644002","event_type":"unblocked","payload":{"reason":"Kernel, observation, and storage blockers are complete."},"work_id":"mct-toy-grants"}
+{"created_at":"1782644003","event_type":"completed","payload":{"force":false},"work_id":"mct-toy-grants"}
+{"created_at":"1782644004","event_type":"unblocked","payload":{"reason":"Kernel, observation, and storage blockers are complete."},"work_id":"mct-child-registry-lifecycle"}
+{"created_at":"1782644005","event_type":"completed","payload":{"force":false},"work_id":"mct-child-registry-lifecycle"}
+{"created_at":"1782644006","event_type":"unblocked","payload":{"reason":"Child lifecycle blockers are complete."},"work_id":"mct-process-harness"}
+{"created_at":"1782644007","event_type":"completed","payload":{"force":false},"work_id":"mct-process-harness"}
+{"created_at":"1782644008","event_type":"unblocked","payload":{"reason":"Child lifecycle, toy grant, and storage blockers are complete."},"work_id":"mct-pando-manifest"}
+{"created_at":"1782644009","event_type":"unblocked","payload":{"reason":"Child lifecycle, toy grant, and process harness blockers are complete."},"work_id":"mct-wasm-component-runtime"}
