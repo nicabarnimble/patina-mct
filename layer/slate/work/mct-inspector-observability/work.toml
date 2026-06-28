@@ -1,7 +1,7 @@
 id = "mct-inspector-observability"
 title = "Build inspector and observability surfaces"
 kind = "build"
-status = "active"
+status = "complete"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -10,19 +10,25 @@ allium_anchors = []
 user_alignment = "Observability is mandatory, but view rendering and buffers should not bloat the first kernel/daemon slice."
 belief_refs = []
 core_refs = ["layer/core/oxidized-knowledge.md", "layer/core/safety-boundaries.md", "layer/core/mct-build-boundaries.md"]
+slice_refs = ["mct-slice-observation-adapter-diagnostics", "mct-slice-inspector-observation-filters"]
+partial_evidence = ["[x] Kernel and adapter observations cover authority decisions, adapter diagnostics, routes, peer bindings, toy calls, and runtime facts.", "[x] Inspector can filter recent ledger entries by call_id, subject/child, resource/peer, and limits without mutating capture.", "[x] View-buffer and rich rendering remain deferred outside the first inspector API."]
 proof_plan = [
-    "[ ] Inspector returns recent kernel and adapter observations by call_id/child/peer filters.",
-    "[ ] Observation capture works without the view-buffer subsystem.",
-    "[ ] View-buffer follow-up is explicitly deferred or scoped.",
+    "[x] Inspector returns recent kernel and adapter observations by call_id/child/peer filters.",
+    "[x] Observation capture works without the view-buffer subsystem.",
+    "[x] View-buffer follow-up is explicitly deferred or scoped.",
 ]
-closure_evidence = []
+closure_evidence = [
+    "[x] Inspector slices provide pure observation filtering over ledger entries and canonical adapter diagnostics without introducing view-buffer storage.",
+    "[x] `patina slate check mct-inspector-observability --json` passed with all proof gates checked.",
+    "[x] `./scripts/ci-tier0.sh` passed after inspector filter slice.",
+]
 blocked_by = []
 implementation_plan = [
-    "[ ] Expose small inspector APIs for recent calls, denials, lifecycle transitions, peer state, and adapter diagnostics.",
-    "[ ] Keep observation capture separate from retention and presentation policy.",
-    "[ ] Defer rich view-buffer rendering until the basic observation stream is trustworthy.",
-    "[ ] Compare current integrated typed-call history/view-buffer surfaces and split capture from display.",
+    "[x] Expose small inspector APIs for recent calls, denials, lifecycle transitions, peer state, and adapter diagnostics.",
+    "[x] Keep observation capture separate from retention and presentation policy.",
+    "[x] Defer rich view-buffer rendering until the basic observation stream is trustworthy.",
+    "[x] Compare current integrated typed-call history/view-buffer surfaces and split capture from display.",
 ]
 created_at = "1780068565"
-updated_at = "1780262310"
-unblock_reason = "Daemon control plane is complete. Epic is ready for inspector/observability slices."
+updated_at = "1782645100"
+unblock_reason = "Daemon control plane is complete. Epic is complete for first inspector/observability API; rich view buffers remain future presentation work."

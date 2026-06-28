@@ -20,7 +20,6 @@ blocked_by = [
     "mct-cli-config-packaging",
     "mct-jvm-bridge",
     "mct-interface-launcher-control",
-    "mct-inspector-observability",
 ]
 implementation_plan = [
     "[ ] Define end-to-end scenarios covering local daemon, Iroh peer call, process child, toy grant, observation log, and bridge basics.",
