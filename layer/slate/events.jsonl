@@ -282,3 +282,4 @@
 {"created_at":"1782643510","event_type":"dependencies-reconciled","payload":{"removed_blocker":"mct-observation-log","cause":"observation-log-complete","unblocked":false},"work_id":"mct-interface-launcher-control"}
 {"created_at":"1782643510","event_type":"dependencies-reconciled","payload":{"removed_blockers":["mct-call-envelope","mct-observation-log"],"cause":"observation-log-complete","unblocked":false},"work_id":"mct-iroh-substrate"}
 {"created_at":"1782643510","event_type":"dependencies-reconciled","payload":{"removed_blockers":["mct-call-envelope","mct-observation-log"],"cause":"observation-log-complete","unblocked":false},"work_id":"mct-process-harness"}
+{"created_at":"1782643304","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-storage-grant-snapshots-schema-inventory"}

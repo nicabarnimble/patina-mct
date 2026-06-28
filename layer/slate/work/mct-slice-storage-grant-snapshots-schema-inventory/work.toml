@@ -1,0 +1,42 @@
+id = "mct-slice-storage-grant-snapshots-schema-inventory"
+title = "Persist toy grant snapshots and storage inventory"
+kind = "build"
+status = "active"
+execution_granularity = "slice"
+human_request = "Harden MCT storage toward Mother parity by adding private toy grant/catalog snapshot tables and documenting the narrow schema inventory instead of copying broad Mother runtime tables."
+allium_anchors = ["MctRuntimeShape"]
+user_alignment = "User wants full parity improved by clearer boundaries: concrete private storage, strong invariants, no Belief/session/view tables in MCT core."
+belief_refs = ["greenfield-products-reference-legacy", "mother-kernel-decides-adapters-perform"]
+core_refs = ["layer/core/adapter-pattern.md", "layer/core/dependable-rust.md", "layer/core/safety-boundaries.md"]
+parent_slates = ["mct-storage-core", "mct-toy-grants"]
+code_targets = ["crates/mct-daemon/src/state.rs", "layer/surface/mct-storage-schema-inventory.md"]
+implementation_ready = true
+runtime_shape_role = "Persist canonical toy catalog and ToyGrant snapshots in the private state store while documenting which Mother tables are intentionally excluded from MCT core."
+design_style = "Concrete SQLite tables and simple upsert/list methods; no generic repository abstraction and no Belief/session/view storage imports."
+first_test_to_write = "state_store_persists_toy_grant_snapshots"
+exit_criteria = [
+    "State schema includes private canonical toy catalog and toy grant snapshot tables.",
+    "Tests prove ToyGrant snapshots round-trip and schema version advances.",
+    "Storage schema inventory documents MCT tables and intentionally excluded existing-Mother tables.",
+    "mct-kernel public API remains free of SQL/storage row types.",
+]
+non_goals = ["No public storage abstraction.", "No migration framework beyond current idempotent v0 migrations.", "No Belief/session/view tables in MCT state."]
+implementation_plan = [
+    "[ ] Add toy_catalog_contracts and toy_grant_snapshots tables to MctRuntimeStateStore.",
+    "[ ] Add upsert/list methods for CanonicalToyContract and ToyGrant.",
+    "[ ] Add tests for schema version and ToyGrant snapshot roundtrip.",
+    "[ ] Add storage schema inventory narrative under layer/surface.",
+]
+proof_plan = [
+    "[ ] `cargo test -p mct-daemon state_store_persists_toy_grant_snapshots` passes.",
+    "[ ] `cargo test -p mct-daemon state_store_schema_inventory_stays_private_to_daemon` passes.",
+    "[ ] `cargo test -p mct-daemon` passes.",
+    "[ ] `./scripts/ci-tier0.sh` passes.",
+    "[ ] `patina slate check mct-slice-storage-grant-snapshots-schema-inventory --json` passes.",
+]
+closure_evidence = []
+blocked_by = []
+blocks = ["mct-toy-grants", "mct-node-identity-security", "mct-child-registry-lifecycle"]
+belief_harvest_decision = "No new belief required; applies greenfield-products-reference-legacy."
+created_at = "1782643700"
+updated_at = "1782643700"
