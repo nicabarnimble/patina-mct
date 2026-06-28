@@ -307,3 +307,5 @@
 {"created_at":"1782644906","event_type":"unblocked","payload":{"reason":"Daemon control plane, call envelope, and node identity/security are complete."},"work_id":"mct-jvm-bridge"}
 {"created_at":"1782644907","event_type":"unblocked","payload":{"reason":"Daemon control plane is complete."},"work_id":"mct-inspector-observability"}
 {"created_at":"1782644908","event_type":"unblocked","payload":{"reason":"Daemon control plane, Iroh substrate, and child lifecycle are complete."},"work_id":"mct-cli-config-packaging"}
+{"created_at":"1782645100","event_type":"completed","payload":{"force":false},"work_id":"mct-slice-inspector-observation-filters"}
+{"created_at":"1782645101","event_type":"completed","payload":{"force":false},"work_id":"mct-inspector-observability"}
