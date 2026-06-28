@@ -1,0 +1,39 @@
+id = "mct-slice-observation-adapter-diagnostics"
+title = "Add adapter diagnostic observation helpers"
+kind = "refactor"
+status = "active"
+execution_granularity = "slice"
+human_request = "Add shared observation constructors for adapter diagnostics so Iroh resets, WASM traps, process exits, JVM timeouts, and storage append failures are represented as canonical MctObservation facts."
+allium_anchors = ["MctObservation", "MctRuntimeShape"]
+user_alignment = "Parity with existing Mother should improve the design by making adapter failures structured observations, not local log strings or duplicated helper code."
+belief_refs = ["mother-kernel-decides-adapters-perform", "typed-domain-records-before-algorithms"]
+core_refs = ["layer/core/adapter-pattern.md", "layer/core/safety-boundaries.md", "layer/core/oxidized-knowledge.md"]
+parent_slates = ["mct-observation-log"]
+code_targets = ["crates/mct-kernel/src/observation.rs"]
+implementation_ready = true
+runtime_shape_role = "Provide shared kernel-domain observation constructors for adapter diagnostics while keeping adapter effects outside the kernel."
+design_style = "One explicit data struct and constructor; no exporter abstraction, no logging facade, no adapter-specific hidden fallbacks."
+first_test_to_write = "adapter_diagnostic_observation_covers_failure_kinds"
+exit_criteria = [
+    "A shared AdapterDiagnosticObservation input type can construct canonical MctObservation facts.",
+    "Iroh stream reset, WASM trap, process exit, JVM timeout, and storage append failure are representable with correct source planes/kinds/outcomes.",
+    "Diagnostics remain caller-safe by safe_message and keep detailed payload behind detail_ref.",
+]
+non_goals = ["No telemetry exporter.", "No qlog/OTel projection.", "No runtime adapter rewiring in this slice."]
+implementation_plan = [
+    "[ ] Add AdapterDiagnosticObservation and adapter_diagnostic_observation in mct-kernel.",
+    "[ ] Add ergonomic constructors for common adapter failure classes.",
+    "[ ] Add tests covering Iroh reset, WASM trap, process failure, JVM timeout, and storage append failure observations.",
+]
+proof_plan = [
+    "[ ] `cargo test -p mct-kernel adapter_diagnostic_observation_covers_failure_kinds` passes.",
+    "[ ] `cargo test -p mct-kernel` passes.",
+    "[ ] `./scripts/ci-tier0.sh` passes.",
+    "[ ] `patina slate check mct-slice-observation-adapter-diagnostics --json` passes.",
+]
+closure_evidence = []
+blocked_by = []
+blocks = ["mct-storage-core", "mct-daemon-control-plane", "mct-inspector-observability"]
+belief_harvest_decision = "No new belief required; this applies adapter errors become observations."
+created_at = "1782643300"
+updated_at = "1782643300"

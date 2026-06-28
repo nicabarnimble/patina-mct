@@ -271,3 +271,4 @@
 {"created_at":"1782643010","event_type":"dependencies-reconciled","payload":{"removed_blocker":"mct-kernel-crate","cause":"kernel-complete","unblocked":false},"work_id":"mct-daemon-control-plane"}
 {"created_at":"1782643010","event_type":"dependencies-reconciled","payload":{"removed_blockers":["mct-kernel-crate","mct-call-envelope"],"cause":"kernel-complete","unblocked":false},"work_id":"mct-toy-grants"}
 {"created_at":"1782643010","event_type":"dependencies-reconciled","payload":{"removed_blockers":["mct-allium-foundation","mct-kernel-crate"],"cause":"kernel-complete","unblocked":false},"work_id":"mct-node-identity-security"}
+{"created_at":"1782643028","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-observation-adapter-diagnostics"}
