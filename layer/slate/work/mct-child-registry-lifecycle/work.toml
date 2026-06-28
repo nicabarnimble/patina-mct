@@ -19,7 +19,6 @@ proof_plan = [
 ]
 closure_evidence = []
 blocked_by = [
-    "mct-kernel-crate",
     "mct-storage-core",
     "mct-observation-log",
 ]

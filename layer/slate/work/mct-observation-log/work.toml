@@ -1,7 +1,7 @@
 id = "mct-observation-log"
 title = "Build MCT observation and audit log"
 kind = "build"
-status = "blocked"
+status = "active"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -23,10 +23,7 @@ proof_plan = [
     "[ ] Observation writes do not force a database write before every hot routing/grant decision unless policy explicitly requires fail-closed persistence.",
 ]
 closure_evidence = []
-blocked_by = [
-    "mct-call-envelope",
-    "mct-kernel-crate",
-]
+blocked_by = []
 implementation_plan = [
     "[ ] Define kernel-guaranteed observation events for install, activation, lifecycle, call routing, toy grants, peer hello, peer call, peer binding, peer admission, and deny reasons.",
     "[ ] Define adapter observation events for Iroh, process, JVM, WASM, toy backends, and storage effects.",
@@ -36,4 +33,4 @@ implementation_plan = [
 ]
 created_at = "1780068484"
 updated_at = "1781008973"
-block_reason = "Epic remains open; completed child slices cover domain observations, JSONL ledger, and fake trace reconstruction, but full authority/adapter observation coverage still requires smaller slice Slates."
+unblock_reason = "Kernel and call-envelope blockers are complete. Epic is active for full authority/adapter observation coverage slices."

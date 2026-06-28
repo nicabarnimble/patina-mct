@@ -25,8 +25,6 @@ proof_plan = [
 ]
 closure_evidence = []
 blocked_by = [
-    "mct-allium-foundation",
-    "mct-kernel-crate",
     "mct-storage-core",
 ]
 implementation_plan = [
