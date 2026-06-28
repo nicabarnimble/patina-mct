@@ -294,3 +294,5 @@
 {"created_at":"1782644008","event_type":"unblocked","payload":{"reason":"Child lifecycle, toy grant, and storage blockers are complete."},"work_id":"mct-pando-manifest"}
 {"created_at":"1782644009","event_type":"unblocked","payload":{"reason":"Child lifecycle, toy grant, and process harness blockers are complete."},"work_id":"mct-wasm-component-runtime"}
 {"created_at":"1782644300","event_type":"completed","payload":{"force":false},"work_id":"mct-slice-node-identity-persistence"}
+{"created_at":"1782644500","event_type":"completed","payload":{"force":false},"work_id":"mct-slice-daemon-control-auth-denial"}
+{"created_at":"1782644501","event_type":"completed","payload":{"force":false},"work_id":"mct-daemon-control-plane"}

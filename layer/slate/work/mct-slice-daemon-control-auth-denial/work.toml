@@ -1,7 +1,7 @@
 id = "mct-slice-daemon-control-auth-denial"
 title = "Fail closed local control authorization"
 kind = "build"
-status = "active"
+status = "complete"
 execution_granularity = "slice"
 human_request = "Finish daemon control-plane proof that unauthenticated or unauthorized control requests fail closed where authorization is configured."
 allium_anchors = ["MctRuntimeShape"]
@@ -22,18 +22,25 @@ exit_criteria = [
 ]
 non_goals = ["No OAuth/session login/user database.", "No kernel grant from local control transport.", "No change to Iroh peer admission semantics."]
 implementation_plan = [
-    "[ ] Add MctControlPlaneAuthPolicy and authorization decision helper.",
-    "[ ] Add path handler variant and transport helpers that apply the policy before routing.",
-    "[ ] Add tests for missing/wrong/right credentials and open-local compatibility.",
+    "[x] Add MctControlPlaneAuthPolicy and authorization decision helper.",
+    "[x] Add path handler variant and transport helpers that apply the policy before routing.",
+    "[x] Add tests for missing/wrong/right credentials and open-local compatibility.",
 ]
 proof_plan = [
-    "[ ] `cargo test -p mct-daemon control_plane_auth_policy_fails_closed_when_token_required` passes.",
-    "[ ] `cargo test -p mct-daemon control_plane_open_policy_preserves_existing_routes` passes.",
-    "[ ] `./scripts/ci-tier0.sh` passes.",
+    "[x] `cargo test -p mct-daemon control_plane_auth_policy_fails_closed_when_token_required` passes.",
+    "[x] `cargo test -p mct-daemon control_plane_open_policy_preserves_existing_routes` passes.",
+    "[x] `./scripts/ci-tier0.sh` passes.",
+    "[x] `patina slate check mct-slice-daemon-control-auth-denial --json` passes.",
 ]
-closure_evidence = []
+closure_evidence = [
+    "[x] Commit `38aab92 feat(daemon): add control-plane auth gate` adds bearer-token auth policy, fail-closed 401/403 JSON responses, HTTP/UDS policy helpers, and tests.",
+    "[x] Authorization is applied before method/path dispatch when a policy requires credentials.",
+    "[x] Open local policy preserves existing status/state/runs/snapshot behavior.",
+    "[x] `./scripts/ci-tier0.sh` passed after implementation.",
+]
 blocked_by = []
 blocks = ["mct-daemon-control-plane", "mct-node-identity-security"]
 belief_harvest_decision = "No new belief required; applies kernel-decides/adapters-perform to control-plane transport."
 created_at = "1782644400"
-updated_at = "1782644400"
+updated_at = "1782644500"
+closed_at = "1782644500"
