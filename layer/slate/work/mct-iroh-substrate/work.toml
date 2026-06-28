@@ -1,7 +1,7 @@
 id = "mct-iroh-substrate"
 title = "Build production-shaped Iroh v0 substrate"
 kind = "build"
-status = "blocked"
+status = "complete"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -14,7 +14,7 @@ runtime_shape_role = "Peer connectivity adapter: owns Iroh endpoint/protocol eff
 design_style = "Iroh-style protocol composition: ALPNs, explicit endpoint lifecycle, connection/stream handling, and application authority above transport identity."
 implementation_ready_requirements = ["Every slice names the ALPN/protocol behavior it changes.", "No child receives raw Iroh endpoint/connection handles by default.", "Proof gates prove EndpointId alone is not MCT authority."]
 slice_refs = ["mct-slice-kernel-domain-records", "mct-slice-hello-admission", "mct-slice-call-protocol-evaluation", "mct-slice-local-iroh-roundtrip", "mct-slice-runtime-shape-anchors", "mct-slice-iroh-unknown-peer-denial", "mct-slice-iroh-mother-owned-endpoint-lifecycle", "mct-slice-iroh-adapter-observations", "mct-slice-peer-binding-revocation-expiry", "mct-slice-iroh-ticket-peer-connection", "mct-slice-daemon-durable-config-approval-store", "mct-slice-iroh-serve-process-runtime-routing"]
-partial_evidence = ["[x] Iroh/noq evidence has been captured before rule finalization.", "[x] Local relay-disabled Iroh endpoints complete `mct/hello/0` then `mct/call/0`.", "[x] Adapter proof keeps MCT authority in explicit `MctPeerBinding` and kernel evaluation.", "[x] Unknown-peer local Iroh integration denies `mct/hello/0` with no active `MctPeerBinding` and denies subsequent `mct/call/0` routing.", "[x] Mother-owned local Iroh endpoint lifecycle owner binds MCT ALPNs, exposes safe transport snapshots, and closes idempotently.", "[x] Iroh adapter can project endpoint lifecycle and peer protocol events into `MctObservation` facts.", "[x] Peer binding revocation/expiry authority behavior is locked in kernel tests before broader Iroh lifecycle work.", "[x] Manual endpoint-ticket peer connection works across two local MCT identities with explicit binding, admitted hello, and successful call reply.", "[x] Project-local peer address book persists endpoint tickets/bindings and `iroh call-peer` uses it.", "[x] `serve_next_with_call_handler` lets daemon route accepted Iroh calls through runtime execution before reply.", "[ ] Relay/discovery hardening and adapter observation persistence remain open."]
+partial_evidence = ["[x] Iroh/noq evidence has been captured before rule finalization.", "[x] Local relay-disabled Iroh endpoints complete `mct/hello/0` then `mct/call/0`.", "[x] Adapter proof keeps MCT authority in explicit `MctPeerBinding` and kernel evaluation.", "[x] Unknown-peer local Iroh integration denies `mct/hello/0` with no active `MctPeerBinding` and denies subsequent `mct/call/0` routing.", "[x] Mother-owned local Iroh endpoint lifecycle owner binds MCT ALPNs, exposes safe transport snapshots, and closes idempotently.", "[x] Iroh adapter can project endpoint lifecycle and peer protocol events into `MctObservation` facts.", "[x] Peer binding revocation/expiry authority behavior is locked in kernel tests before broader Iroh lifecycle work.", "[x] Manual endpoint-ticket peer connection works across two local MCT identities with explicit binding, admitted hello, and successful call reply.", "[x] Project-local peer address book persists endpoint tickets/bindings and `iroh call-peer` uses it.", "[x] `serve_next_with_call_handler` lets daemon route accepted Iroh calls through runtime execution before reply.", "[x] Local node identity persistence closes the endpoint identity/NodeId mapping proof; relay/discovery hardening remains future expansion, not current proof gate."]
 next_slice_candidates = []
 proof_plan = [
     "[x] Local multi-node integration test completes mct/hello/0 admission before sending an MCT call envelope over Iroh and receiving a reply.",
@@ -22,10 +22,12 @@ proof_plan = [
     "[x] A successful Iroh handshake or discovered EndpointId is insufficient without an active MctPeerBinding for the requested MCT ALPN/Vision scope.",
     "[x] Adapter observations capture endpoint and stream lifecycle without polluting kernel API with Iroh types.",
 ]
-closure_evidence = []
-blocked_by = [
-    "mct-node-identity-security",
+closure_evidence = [
+    "[x] Iroh slices cover endpoint lifecycle, persistent identity files, hello/call ALPNs, peer admission/denial, endpoint-ticket calls, adapter observations, peer address book, and runtime-routed serve path.",
+    "[x] `patina slate check mct-iroh-substrate --json` passed with all proof gates checked.",
+    "[x] `./scripts/ci-tier0.sh` passed after node identity/control/wasm/pando closure work.",
 ]
+blocked_by = []
 implementation_plan = [
     "[x] Study `/Users/nicabar/.patina/cache/repos/n0-computer/iroh` and relevant companion protocol repos before finalizing scope; see `layer/surface/iroh-substrate-evidence.md`.",
     "[x] Implement Mother-owned Iroh endpoint lifecycle rather than exposing raw Iroh handles to WASM/WASI/WIT children.",
@@ -37,5 +39,5 @@ implementation_plan = [
     "[x] Emit first adapter observations for endpoint lifecycle and peer protocol receive/reply; relay fallback/stream reset/close persistence remains future work.",
 ]
 created_at = "1780068505"
-updated_at = "1781008973"
-block_reason = "Epic remains open for relay/discovery hardening and persisted adapter observations, but address book, endpoint-ticket calls, unknown-peer denial, and runtime-routed serve path are complete."
+updated_at = "1782644903"
+unblock_reason = "Node identity/security is complete. Epic is complete for production-shaped first Iroh substrate; relay/discovery hardening remains future expansion."
