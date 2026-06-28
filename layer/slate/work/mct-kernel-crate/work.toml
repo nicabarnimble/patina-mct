@@ -1,7 +1,7 @@
 id = "mct-kernel-crate"
 title = "Build mct-kernel crate authority core"
 kind = "build"
-status = "active"
+status = "complete"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -21,7 +21,11 @@ proof_plan = [
     "[x] Public API exposes typed domain concepts and not transport/runtime/storage implementation types.",
     "[x] Denied/unknown/not-ready paths fail closed with typed reasons and kernel observations.",
 ]
-closure_evidence = []
+closure_evidence = [
+    "[x] Child slices cover kernel crate/module boundary, typed IDs, hello/call authority, route/no-route records, denial observations, ToyGrant authority, child lifecycle authority, typed boundary errors, and route revalidation composition.",
+    "[x] `patina slate check mct-kernel-crate --json` passed with all proof gates checked.",
+    "[x] `./scripts/ci-tier0.sh` passed after the final route revalidation slice.",
+]
 blocked_by = []
 implementation_plan = [
     "[x] Create the Rust crate/module boundary for `mct-kernel` with narrow public API and private internals.",
@@ -34,4 +38,4 @@ implementation_plan = [
 ]
 created_at = "1780068471"
 updated_at = "1781003806"
-unblock_reason = "Design/call-envelope blockers are complete. Epic remains active as a container; child slices now cover crate skeleton, domain records, hello admission, call protocol evaluation, JSON edge helpers, denial observations, route decision records, no-route denial facts, ToyGrant authority, child lifecycle authority, typed kernel errors, and route revalidation composition."
+unblock_reason = "Design/call-envelope blockers are complete. Epic is complete as a container; child slices cover crate skeleton, domain records, hello admission, call protocol evaluation, JSON edge helpers, denial observations, route decision records, no-route denial facts, ToyGrant authority, child lifecycle authority, typed kernel errors, and route revalidation composition."
