@@ -20,7 +20,6 @@ proof_plan = [
 closure_evidence = []
 blocked_by = [
     "mct-storage-core",
-    "mct-observation-log",
 ]
 implementation_plan = [
     "[x] Define first loaded-child record with child ID, runtime kind, manifest claims, digest/artifact facts, and active ready instance projection.",

@@ -272,3 +272,13 @@
 {"created_at":"1782643010","event_type":"dependencies-reconciled","payload":{"removed_blockers":["mct-kernel-crate","mct-call-envelope"],"cause":"kernel-complete","unblocked":false},"work_id":"mct-toy-grants"}
 {"created_at":"1782643010","event_type":"dependencies-reconciled","payload":{"removed_blockers":["mct-allium-foundation","mct-kernel-crate"],"cause":"kernel-complete","unblocked":false},"work_id":"mct-node-identity-security"}
 {"created_at":"1782643028","event_type":"created","payload":{"status":"draft"},"work_id":"mct-slice-observation-adapter-diagnostics"}
+{"created_at":"1782643500","event_type":"completed","payload":{"force":false},"work_id":"mct-slice-observation-adapter-diagnostics"}
+{"created_at":"1782643510","event_type":"completed","payload":{"force":false},"work_id":"mct-observation-log"}
+{"created_at":"1782643510","event_type":"dependencies-reconciled","payload":{"blocked_by":[],"cause":"observation-log-complete","unblocked":true},"work_id":"mct-storage-core"}
+{"created_at":"1782643510","event_type":"dependencies-reconciled","payload":{"removed_blocker":"mct-observation-log","cause":"observation-log-complete","unblocked":false},"work_id":"mct-child-registry-lifecycle"}
+{"created_at":"1782643510","event_type":"dependencies-reconciled","payload":{"removed_blocker":"mct-observation-log","cause":"observation-log-complete","unblocked":false},"work_id":"mct-daemon-control-plane"}
+{"created_at":"1782643510","event_type":"dependencies-reconciled","payload":{"blocked_by":["mct-storage-core"],"cause":"observation-log-complete","unblocked":false},"work_id":"mct-toy-grants"}
+{"created_at":"1782643510","event_type":"dependencies-reconciled","payload":{"removed_blocker":"mct-observation-log","cause":"observation-log-complete","unblocked":false},"work_id":"mct-inspector-observability"}
+{"created_at":"1782643510","event_type":"dependencies-reconciled","payload":{"removed_blocker":"mct-observation-log","cause":"observation-log-complete","unblocked":false},"work_id":"mct-interface-launcher-control"}
+{"created_at":"1782643510","event_type":"dependencies-reconciled","payload":{"removed_blockers":["mct-call-envelope","mct-observation-log"],"cause":"observation-log-complete","unblocked":false},"work_id":"mct-iroh-substrate"}
+{"created_at":"1782643510","event_type":"dependencies-reconciled","payload":{"removed_blockers":["mct-call-envelope","mct-observation-log"],"cause":"observation-log-complete","unblocked":false},"work_id":"mct-process-harness"}

@@ -1,7 +1,7 @@
 id = "mct-slice-observation-adapter-diagnostics"
 title = "Add adapter diagnostic observation helpers"
 kind = "refactor"
-status = "active"
+status = "complete"
 execution_granularity = "slice"
 human_request = "Add shared observation constructors for adapter diagnostics so Iroh resets, WASM traps, process exits, JVM timeouts, and storage append failures are represented as canonical MctObservation facts."
 allium_anchors = ["MctObservation", "MctRuntimeShape"]
@@ -21,19 +21,24 @@ exit_criteria = [
 ]
 non_goals = ["No telemetry exporter.", "No qlog/OTel projection.", "No runtime adapter rewiring in this slice."]
 implementation_plan = [
-    "[ ] Add AdapterDiagnosticObservation and adapter_diagnostic_observation in mct-kernel.",
-    "[ ] Add ergonomic constructors for common adapter failure classes.",
-    "[ ] Add tests covering Iroh reset, WASM trap, process failure, JVM timeout, and storage append failure observations.",
+    "[x] Add AdapterDiagnosticObservation and adapter_diagnostic_observation in mct-kernel.",
+    "[x] Add ergonomic constructors for common adapter failure classes.",
+    "[x] Add tests covering Iroh reset, WASM trap, process failure, JVM timeout, and storage append failure observations.",
 ]
 proof_plan = [
-    "[ ] `cargo test -p mct-kernel adapter_diagnostic_observation_covers_failure_kinds` passes.",
-    "[ ] `cargo test -p mct-kernel` passes.",
-    "[ ] `./scripts/ci-tier0.sh` passes.",
-    "[ ] `patina slate check mct-slice-observation-adapter-diagnostics --json` passes.",
+    "[x] `cargo test -p mct-kernel adapter_diagnostic_observation_covers_failure_kinds` passes.",
+    "[x] `cargo test -p mct-kernel` passes.",
+    "[x] `./scripts/ci-tier0.sh` passes.",
+    "[x] `patina slate check mct-slice-observation-adapter-diagnostics --json` passes.",
 ]
-closure_evidence = []
+closure_evidence = [
+    "[x] Commit `a9c3c13 feat(observation): add adapter diagnostic facts` adds AdapterDiagnosticKind, AdapterDiagnosticObservationInput, adapter_diagnostic_observation, and coverage tests.",
+    "[x] The helper maps Iroh stream reset, WASM trap, process exit failure, JVM timeout, and storage append failure to canonical ObservationKind/SourcePlane/Outcome values.",
+    "[x] `./scripts/ci-tier0.sh` passed after implementation.",
+]
 blocked_by = []
 blocks = ["mct-storage-core", "mct-daemon-control-plane", "mct-inspector-observability"]
 belief_harvest_decision = "No new belief required; this applies adapter errors become observations."
 created_at = "1782643300"
-updated_at = "1782643300"
+updated_at = "1782643500"
+closed_at = "1782643500"

@@ -20,8 +20,6 @@ proof_plan = [
 closure_evidence = []
 blocked_by = [
     "mct-child-registry-lifecycle",
-    "mct-call-envelope",
-    "mct-observation-log",
 ]
 implementation_plan = [
     "[ ] Define process child manifest shape and stdin/stdout or socket protocol mapping to MCT call envelope.",
