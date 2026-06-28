@@ -1,7 +1,7 @@
 id = "mct-slice-inspector-observation-filters"
 title = "Add inspector observation filters"
 kind = "build"
-status = "active"
+status = "complete"
 execution_granularity = "slice"
 human_request = "Expose useful MCT observability without bringing view buffers into the first kernel/daemon surface."
 allium_anchors = ["MctRuntimeShape"]
@@ -21,18 +21,24 @@ exit_criteria = [
 ]
 non_goals = ["No rich TUI/view-buffer renderer.", "No observation retention policy.", "No new storage backend."]
 implementation_plan = [
-    "[ ] Add query/view structs and pure entry filtering helper.",
-    "[ ] Export inspector API from mct-daemon.",
-    "[ ] Add tests for call/child/peer filters and limit behavior.",
+    "[x] Add query/view structs and pure entry filtering helper.",
+    "[x] Export inspector API from mct-daemon.",
+    "[x] Add tests for call/child/peer filters and limit behavior.",
 ]
 proof_plan = [
-    "[ ] `cargo test -p mct-daemon inspector_filters_observations_by_call_child_and_peer` passes.",
-    "[ ] `cargo test -p mct-daemon inspector_limits_recent_observations_without_view_buffers` passes.",
-    "[ ] `./scripts/ci-tier0.sh` passes.",
+    "[x] `cargo test -p mct-daemon inspector_filters_observations_by_call_child_and_peer` passes.",
+    "[x] `cargo test -p mct-daemon inspector_limits_recent_observations_without_view_buffers` passes.",
+    "[x] `./scripts/ci-tier0.sh` passes.",
+    "[x] `patina slate check mct-slice-inspector-observation-filters --json` passes.",
 ]
-closure_evidence = []
+closure_evidence = [
+    "[x] Commit `610f746 feat(inspector): add observation filters` adds pure inspector query/view structs and filtering over observation ledger entries.",
+    "[x] Filters cover call_id, subject/child, resource/peer, newest-first ordering, and limits without view buffers.",
+    "[x] `./scripts/ci-tier0.sh` passed after implementation.",
+]
 blocked_by = []
 blocks = ["mct-inspector-observability"]
 belief_harvest_decision = "No new belief required; applies observations-as-runtime-truth."
 created_at = "1782645000"
-updated_at = "1782645000"
+updated_at = "1782645100"
+closed_at = "1782645100"
