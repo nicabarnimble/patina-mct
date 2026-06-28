@@ -1,7 +1,7 @@
 id = "mct-slice-wasm-trap-host-diagnostics"
 title = "Map WASM traps and host-call failures to observations"
 kind = "build"
-status = "active"
+status = "complete"
 execution_granularity = "slice"
 human_request = "Close WASM runtime diagnostics proof without leaking Wasmtime errors into the kernel."
 allium_anchors = ["MctRuntimeShape"]
@@ -21,18 +21,25 @@ exit_criteria = [
 ]
 non_goals = ["No async WASI runtime.", "No WIT binding generator.", "No broad runtime supervisor rewrite."]
 implementation_plan = [
-    "[ ] Add an adapter-side trap observation mapper for MctWasmComponentRuntimeError::Call.",
-    "[ ] Add trap and host-call failure tests.",
-    "[ ] Run daemon and tier0 validation.",
+    "[x] Add an adapter-side trap observation mapper for MctWasmComponentRuntimeError::Call.",
+    "[x] Add trap and host-call failure tests.",
+    "[x] Run daemon and tier0 validation.",
 ]
 proof_plan = [
-    "[ ] `cargo test -p mct-daemon wasm_component_runtime_trap_maps_to_adapter_observation` passes.",
-    "[ ] `cargo test -p mct-daemon wasm_component_runtime_records_failed_toy_host_import` passes.",
-    "[ ] `./scripts/ci-tier0.sh` passes.",
+    "[x] `cargo test -p mct-daemon wasm_component_runtime_trap_maps_to_adapter_observation` passes.",
+    "[x] `cargo test -p mct-daemon wasm_component_runtime_records_failed_toy_host_import` passes.",
+    "[x] `./scripts/ci-tier0.sh` passes.",
+    "[x] `patina slate check mct-slice-wasm-trap-host-diagnostics --json` passes.",
 ]
-closure_evidence = []
+closure_evidence = [
+    "[x] Commit `2ea0bbe feat(wasm): record trap and host-call diagnostics` adds WASM trap-to-observation mapping, failed toy host import test coverage, and public daemon exports for diagnostic IDs/helpers.",
+    "[x] Trapped exports map to canonical `RuntimeExecutionTrapped` adapter observations with call and authority decision IDs.",
+    "[x] Failed toy host imports return failure codes and preserve ToyCallFailed observations linked to the original call.",
+    "[x] `./scripts/ci-tier0.sh` passed after implementation.",
+]
 blocked_by = []
 blocks = ["mct-wasm-component-runtime"]
 belief_harvest_decision = "No new belief required; reinforces adapter diagnostics as canonical runtime truth."
 created_at = "1782644600"
-updated_at = "1782644600"
+updated_at = "1782644700"
+closed_at = "1782644700"
