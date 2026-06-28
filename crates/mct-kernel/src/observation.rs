@@ -134,6 +134,31 @@ pub struct MctObservation {
     pub detail_ref: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdapterDiagnosticKind {
+    IrohStreamReset,
+    WasmTrap,
+    ProcessExitFailure,
+    JvmTimeout,
+    StorageAppendFailure,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdapterDiagnosticObservationInput {
+    pub observation_id: ObservationId,
+    pub observed_at: Timestamp,
+    pub diagnostic_kind: AdapterDiagnosticKind,
+    pub trace: ObservationTraceRef,
+    pub call_id: Option<CallId>,
+    pub decision_id: Option<DecisionId>,
+    pub subject_id: Option<String>,
+    pub resource_id: Option<String>,
+    pub policy_revision: Option<u64>,
+    pub grants_revision: Option<u64>,
+    pub detail_ref: Option<String>,
+}
+
 impl MctObservation {
     pub fn informational(
         observation_id: ObservationId,
@@ -164,6 +189,59 @@ impl MctObservation {
             safe_message: safe_message.into(),
             detail_ref: None,
         }
+    }
+}
+
+pub fn adapter_diagnostic_observation(input: AdapterDiagnosticObservationInput) -> MctObservation {
+    let (kind, source_plane, outcome, safe_message) = match input.diagnostic_kind {
+        AdapterDiagnosticKind::IrohStreamReset => (
+            ObservationKind::PeerStreamReset,
+            SourcePlane::Adapter,
+            ObservationOutcome::Failed,
+            "peer stream reset",
+        ),
+        AdapterDiagnosticKind::WasmTrap => (
+            ObservationKind::RuntimeExecutionTrapped,
+            SourcePlane::Adapter,
+            ObservationOutcome::Failed,
+            "wasm execution trapped",
+        ),
+        AdapterDiagnosticKind::ProcessExitFailure => (
+            ObservationKind::RuntimeExecutionFailed,
+            SourcePlane::Adapter,
+            ObservationOutcome::Failed,
+            "process execution failed",
+        ),
+        AdapterDiagnosticKind::JvmTimeout => (
+            ObservationKind::RuntimeExecutionTimedOut,
+            SourcePlane::Adapter,
+            ObservationOutcome::TimedOut,
+            "jvm execution timed out",
+        ),
+        AdapterDiagnosticKind::StorageAppendFailure => (
+            ObservationKind::StorageAppendFailed,
+            SourcePlane::Storage,
+            ObservationOutcome::Failed,
+            "storage append failed",
+        ),
+    };
+
+    MctObservation {
+        observation_id: input.observation_id,
+        observed_at: input.observed_at,
+        kind,
+        source_plane,
+        trace: input.trace,
+        call_id: input.call_id,
+        decision_id: input.decision_id,
+        subject_id: input.subject_id,
+        resource_id: input.resource_id,
+        policy_revision: input.policy_revision,
+        grants_revision: input.grants_revision,
+        outcome,
+        visibility: ObservationVisibility::InternalOnly,
+        safe_message: safe_message.into(),
+        detail_ref: input.detail_ref,
     }
 }
 
@@ -637,6 +715,89 @@ pub fn toy_grant_evaluation_observation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn diagnostic_input(
+        kind: AdapterDiagnosticKind,
+        id: &str,
+    ) -> AdapterDiagnosticObservationInput {
+        AdapterDiagnosticObservationInput {
+            observation_id: ObservationId::from(id),
+            observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+            diagnostic_kind: kind,
+            trace: ObservationTraceRef {
+                trace_id: TraceId::from("trace-diagnostic"),
+                span_id: Some(SpanId::from("span-diagnostic")),
+                parent_span_id: None,
+                external_trace_id: None,
+            },
+            call_id: Some(CallId::from("call-diagnostic")),
+            decision_id: Some(DecisionId::from("decision-diagnostic")),
+            subject_id: Some("adapter-subject".into()),
+            resource_id: Some("adapter-resource".into()),
+            policy_revision: Some(3),
+            grants_revision: Some(4),
+            detail_ref: Some("detail:opaque".into()),
+        }
+    }
+
+    #[test]
+    fn adapter_diagnostic_observation_covers_failure_kinds() {
+        let cases = [
+            (
+                AdapterDiagnosticKind::IrohStreamReset,
+                ObservationKind::PeerStreamReset,
+                SourcePlane::Adapter,
+                ObservationOutcome::Failed,
+                "peer stream reset",
+            ),
+            (
+                AdapterDiagnosticKind::WasmTrap,
+                ObservationKind::RuntimeExecutionTrapped,
+                SourcePlane::Adapter,
+                ObservationOutcome::Failed,
+                "wasm execution trapped",
+            ),
+            (
+                AdapterDiagnosticKind::ProcessExitFailure,
+                ObservationKind::RuntimeExecutionFailed,
+                SourcePlane::Adapter,
+                ObservationOutcome::Failed,
+                "process execution failed",
+            ),
+            (
+                AdapterDiagnosticKind::JvmTimeout,
+                ObservationKind::RuntimeExecutionTimedOut,
+                SourcePlane::Adapter,
+                ObservationOutcome::TimedOut,
+                "jvm execution timed out",
+            ),
+            (
+                AdapterDiagnosticKind::StorageAppendFailure,
+                ObservationKind::StorageAppendFailed,
+                SourcePlane::Storage,
+                ObservationOutcome::Failed,
+                "storage append failed",
+            ),
+        ];
+
+        for (index, (diagnostic, kind, source_plane, outcome, safe_message)) in
+            cases.into_iter().enumerate()
+        {
+            let observation = adapter_diagnostic_observation(diagnostic_input(
+                diagnostic,
+                &format!("obs-diagnostic-{index}"),
+            ));
+            assert_eq!(observation.kind, kind);
+            assert_eq!(observation.source_plane, source_plane);
+            assert_eq!(observation.outcome, outcome);
+            assert_eq!(observation.safe_message, safe_message);
+            assert_eq!(observation.visibility, ObservationVisibility::InternalOnly);
+            assert_eq!(observation.detail_ref, Some("detail:opaque".into()));
+            assert_eq!(observation.call_id, Some(CallId::from("call-diagnostic")));
+            assert_eq!(observation.policy_revision, Some(3));
+            assert_eq!(observation.grants_revision, Some(4));
+        }
+    }
 
     #[test]
     fn kernel_denial_evaluations_become_observations() {
