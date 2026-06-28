@@ -29,9 +29,11 @@ pub use children::{
     component_artifact_from_loaded_child, load_children_from_dir, operation_id_from_target,
 };
 pub use composition::{
-    MctCompositionPlan, MctCompositionStep, MctPandoChild, MctPandoCommand, MctPandoCommandArg,
-    MctPandoComposition, MctPandoLifecycleStatus, MctPandoManifest, MctPandoRegistry,
-    MctPandoRegistryEntry, MctPandoSection, MctPandoWiring, MctPandoWiringEndpoint,
+    MctCompositionPlan, MctCompositionStep, MctPandoActivationCommand,
+    MctPandoActivationEvaluation, MctPandoActivationPlan, MctPandoChild, MctPandoCommand,
+    MctPandoCommandArg, MctPandoComposition, MctPandoDiagnostic, MctPandoDiagnosticKind,
+    MctPandoLifecycleStatus, MctPandoManifest, MctPandoRegistry, MctPandoRegistryEntry,
+    MctPandoSection, MctPandoWiring, MctPandoWiringEndpoint, build_pando_activation_plan,
     build_pando_registry, parse_pando_manifest_path, parse_pando_manifest_str,
     record_composition_plan,
 };
