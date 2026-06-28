@@ -1,7 +1,7 @@
 id = "mct-pando-manifest"
 title = "Build Pando manifest composition foundation"
 kind = "build"
-status = "blocked"
+status = "active"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -16,11 +16,7 @@ proof_plan = [
     "[ ] Manifest loader does not hardcode Belief/spec/lake/doctor builtins.",
 ]
 closure_evidence = []
-blocked_by = [
-    "mct-child-registry-lifecycle",
-    "mct-toy-grants",
-    "mct-storage-core",
-]
+blocked_by = []
 implementation_plan = [
     "[ ] Define Pando manifest schema for child assignments, required toys, runtime kinds, and bridge needs.",
     "[ ] Load/validate manifests and produce child activation plans.",
@@ -29,4 +25,4 @@ implementation_plan = [
 ]
 created_at = "1780068551"
 updated_at = "1780262310"
-block_reason = "Blocked until mct-storage-core is completed or explicitly superseded in the roadmap."
+unblock_reason = "Child lifecycle, toy grant, and storage blockers are complete. Epic is ready for manifest activation slices."

@@ -1,7 +1,7 @@
 id = "mct-wasm-component-runtime"
 title = "Build WASM/WIT/WASI child runtime"
 kind = "build"
-status = "blocked"
+status = "active"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -10,19 +10,15 @@ allium_anchors = []
 user_alignment = "WASM/WIT/WASI is the design center, but runtime depth should attach to the kernel seam rather than distort it."
 belief_refs = []
 core_refs = ["layer/core/adapter-pattern.md", "layer/core/safety-boundaries.md", "layer/core/dependable-rust.md", "layer/core/mct-build-boundaries.md"]
-slice_refs = ["mct-slice-wasm-component-authorized-s32"]
-partial_evidence = ["[x] Daemon Wasmtime component-model runtime instantiates and calls a lifted `s32` export only with `AuthorizedChildInvocation`, returning `MctResult` and runtime observations.", "[ ] WASI context, WIT interface binding generation, host toy imports, traps, and full child fixture integration remain future child slices."]
+slice_refs = ["mct-slice-wasm-component-authorized-s32", "mct-slice-wasm-toy-host-imports", "mct-slice-observation-adapter-diagnostics"]
+partial_evidence = ["[x] Daemon Wasmtime component-model runtime instantiates and calls a lifted `s32` export only with `AuthorizedChildInvocation`, returning `MctResult` and runtime observations.", "[x] WASM host toy imports require `AuthorizedToyCall` tokens and collect toy observations.", "[x] Kernel has canonical adapter diagnostic observation facts for WASM traps and host-call failures.", "[ ] WASI context, WIT interface binding generation, trap wiring in the runtime adapter, and full child fixture integration remain future child slices."]
 proof_plan = [
     "[x] Minimal WASM component activates and handles a typed `s32` export call through MCT authority.",
     "[ ] WASM traps and host-call failures are adapter observations linked to kernel call IDs.",
     "[x] WIT/WASI runtime types stay outside the kernel public API.",
 ]
 closure_evidence = []
-blocked_by = [
-    "mct-child-registry-lifecycle",
-    "mct-toy-grants",
-    "mct-process-harness",
-]
+blocked_by = []
 implementation_plan = [
     "[ ] Review current integrated WASM child runtime as reference, not source to copy wholesale.",
     "[x] Define first component loading and lifted-export dynamic call path; WASI context and toy host-call mapping remain future work.",
@@ -31,4 +27,4 @@ implementation_plan = [
 ]
 created_at = "1780068538"
 updated_at = "1781008973"
-block_reason = "Epic remains open for WASI, traps, WIT binding generation, host toys, and full fixture integration; first authorized component execution slice is complete."
+unblock_reason = "Child lifecycle, toy grant, and process harness blockers are complete. Epic is active for WASI/trap/runtime fixture closure."

@@ -1,7 +1,7 @@
 id = "mct-node-identity-security"
 title = "Build node identity and security model"
 kind = "build"
-status = "blocked"
+status = "active"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -24,9 +24,7 @@ proof_plan = [
     "[ ] Iroh, local control, JVM bridge, and process/WASM adapters share policy decisions instead of duplicating security logic.",
 ]
 closure_evidence = []
-blocked_by = [
-    "mct-storage-core",
-]
+blocked_by = []
 implementation_plan = [
     "[ ] Define Mother/Node/User/Interface/Child/Component caller identities and their trust roots.",
     "[ ] Define MctPeerBinding as the authority record binding Iroh EndpointId to MCT Node, Vision scope, allowed ALPNs, issuer, policy revision, and time bounds.",
@@ -37,4 +35,4 @@ implementation_plan = [
 ]
 created_at = "1780070076"
 updated_at = "1780276554"
-block_reason = "Epic remains open; hello admission covers first peer binding boundary, but persistent identity/security lifecycle still requires smaller slice Slates."
+unblock_reason = "Kernel, observation, and storage blockers are complete. Epic is active for persistent identity/security lifecycle closure."

@@ -19,8 +19,6 @@ closure_evidence = []
 blocked_by = [
     "mct-cli-config-packaging",
     "mct-iroh-substrate",
-    "mct-process-harness",
-    "mct-toy-grants",
     "mct-jvm-bridge",
     "mct-wasm-component-runtime",
     "mct-interface-launcher-control",
