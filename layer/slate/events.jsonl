@@ -298,3 +298,5 @@
 {"created_at":"1782644501","event_type":"completed","payload":{"force":false},"work_id":"mct-daemon-control-plane"}
 {"created_at":"1782644700","event_type":"completed","payload":{"force":false},"work_id":"mct-slice-wasm-trap-host-diagnostics"}
 {"created_at":"1782644701","event_type":"completed","payload":{"force":false},"work_id":"mct-wasm-component-runtime"}
+{"created_at":"1782644900","event_type":"completed","payload":{"force":false},"work_id":"mct-slice-pando-activation-diagnostics"}
+{"created_at":"1782644901","event_type":"completed","payload":{"force":false},"work_id":"mct-pando-manifest"}
