@@ -1,4 +1,7 @@
-use crate::id::*;
+use crate::{
+    error::{MctKernelResult, ensure_non_blank},
+    id::*,
+};
 use serde::{Deserialize, Serialize};
 
 mod internal;
@@ -31,6 +34,28 @@ pub struct IrohConnectionPresentation {
     pub path_class: PathClass,
     pub relay_url: Option<String>,
     pub presented_capability_ref: Option<String>,
+}
+
+impl IrohConnectionPresentation {
+    pub fn validate(&self) -> MctKernelResult<()> {
+        ensure_non_blank(
+            "IrohConnectionPresentation",
+            "endpoint_id",
+            self.endpoint_id.as_str(),
+        )?;
+        ensure_non_blank("IrohConnectionPresentation", "alpn", &self.alpn)?;
+        if let Some(relay_url) = &self.relay_url {
+            ensure_non_blank("IrohConnectionPresentation", "relay_url", relay_url)?;
+        }
+        if let Some(capability_ref) = &self.presented_capability_ref {
+            ensure_non_blank(
+                "IrohConnectionPresentation",
+                "presented_capability_ref",
+                capability_ref,
+            )?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

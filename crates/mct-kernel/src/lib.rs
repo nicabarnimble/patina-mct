@@ -7,6 +7,7 @@
 
 pub mod call;
 pub mod child;
+pub mod error;
 pub mod id;
 pub mod observation;
 pub mod peer;
@@ -15,6 +16,7 @@ pub mod toy;
 
 pub use call::*;
 pub use child::*;
+pub use error::*;
 pub use id::*;
 pub use observation::*;
 pub use peer::*;
