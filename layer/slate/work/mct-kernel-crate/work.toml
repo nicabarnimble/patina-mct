@@ -13,9 +13,9 @@ core_refs = ["layer/core/mct-build-boundaries.md", "layer/core/dependable-rust.m
 runtime_shape_role = "Pure authority/domain crate: decides over typed MCT facts and hides private internals from transport/runtime/storage implementation types."
 design_style = "Jon Gjengset-style Rust: honest signatures, typed IDs and states, private internal modules, fail-closed outcomes, concrete code before abstraction traits."
 implementation_ready_requirements = ["Every child slice names public API additions and private internals separately.", "No Iroh/Wasmtime/SQLite/HTTP/JVM concrete types in public kernel API.", "Proof gates include denied/fail-closed tests, not only success paths."]
-slice_refs = ["mct-slice-workspace-skeleton", "mct-slice-kernel-domain-records", "mct-slice-hello-admission", "mct-slice-call-protocol-evaluation", "mct-slice-fake-daemon-echo", "mct-slice-runtime-shape-anchors", "mct-slice-call-envelope-json-edge-roundtrip", "mct-slice-kernel-denial-observations", "mct-slice-kernel-routing-decision-records", "mct-slice-kernel-no-route-denial", "mct-slice-toy-grant-authorized-call", "mct-slice-kernel-child-lifecycle-state-machine"]
-partial_evidence = ["[x] Kernel crate exists with typed IDs and domain records.", "[x] Pure hello and call protocol authority evaluations exist.", "[x] Kernel exposes explicit JSON edge codec helpers while keeping the semantic call envelope typed.", "[x] Kernel denial evaluations can be projected into observation-grade facts without storage side effects.", "[x] Kernel has typed route decision records for candidates, authority eliminations, selected route, and no-route outcome representation.", "[x] Kernel no-route helper denies by default with no route taken and maps the no-route decision to an observation fact.", "[x] Kernel now has ToyGrant, ToyGrantEvaluation, and AuthorizedToyCall records with fail-closed grant evaluation and observation mapping.", "[x] Kernel now has child artifact, approval, assignment, instance, lifecycle transition, and authorized invocation records with fail-closed child call revalidation.", "[ ] Typed kernel errors remain open."]
-next_slice_candidates = ["mct-slice-kernel-typed-errors", "mct-slice-kernel-route-revalidation-composition"]
+slice_refs = ["mct-slice-workspace-skeleton", "mct-slice-kernel-domain-records", "mct-slice-hello-admission", "mct-slice-call-protocol-evaluation", "mct-slice-fake-daemon-echo", "mct-slice-runtime-shape-anchors", "mct-slice-call-envelope-json-edge-roundtrip", "mct-slice-kernel-denial-observations", "mct-slice-kernel-routing-decision-records", "mct-slice-kernel-no-route-denial", "mct-slice-toy-grant-authorized-call", "mct-slice-kernel-child-lifecycle-state-machine", "mct-slice-kernel-typed-errors"]
+partial_evidence = ["[x] Kernel crate exists with typed IDs and domain records.", "[x] Pure hello and call protocol authority evaluations exist.", "[x] Kernel exposes explicit JSON edge codec helpers while keeping the semantic call envelope typed.", "[x] Kernel denial evaluations can be projected into observation-grade facts without storage side effects.", "[x] Kernel has typed route decision records for candidates, authority eliminations, selected route, and no-route outcome representation.", "[x] Kernel no-route helper denies by default with no route taken and maps the no-route decision to an observation fact.", "[x] Kernel now has ToyGrant, ToyGrantEvaluation, and AuthorizedToyCall records with fail-closed grant evaluation and observation mapping.", "[x] Kernel now has child artifact, approval, assignment, instance, lifecycle transition, and authorized invocation records with fail-closed child call revalidation.", "[x] Kernel now exposes MctKernelError/MctKernelResult and validates malformed call protocol domain values before authority evaluation."]
+next_slice_candidates = ["mct-slice-kernel-route-revalidation-composition"]
 proof_plan = [
     "[x] `cargo test` passes for the kernel crate.",
     "[x] Public API exposes typed domain concepts and not transport/runtime/storage implementation types.",
@@ -24,8 +24,8 @@ proof_plan = [
 closure_evidence = []
 blocked_by = []
 implementation_plan = [
-    "[ ] Create the Rust crate/module boundary for `mct-kernel` with narrow public API and private internals.",
-    "[ ] Implement typed IDs, lifecycle state machine, operation references, grant decisions, routing decisions, and typed errors.",
+    "[x] Create the Rust crate/module boundary for `mct-kernel` with narrow public API and private internals.",
+    "[x] Implement typed IDs, lifecycle state machine, operation references, grant decisions, routing decisions, and typed errors.",
     "[x] Add pure child lifecycle records and authorization-token evaluation for ready approved assigned child instances.",
     "[x] Add pure ToyGrant decision records and authorization-token evaluation for protected toy effects.",
     "[x] Add initial typed route decision records without a planner implementation.",
@@ -34,4 +34,4 @@ implementation_plan = [
 ]
 created_at = "1780068471"
 updated_at = "1781003806"
-unblock_reason = "Design/call-envelope blockers are complete. Epic remains active as a container; child slices now cover crate skeleton, domain records, hello admission, call protocol evaluation, JSON edge helpers, denial observations, route decision records, no-route denial facts, ToyGrant authority, and child lifecycle authority. Typed kernel errors remain future child slices."
+unblock_reason = "Design/call-envelope blockers are complete. Epic remains active as a container; child slices now cover crate skeleton, domain records, hello admission, call protocol evaluation, JSON edge helpers, denial observations, route decision records, no-route denial facts, ToyGrant authority, child lifecycle authority, and typed kernel errors. Route revalidation/composition remains a future child slice."
