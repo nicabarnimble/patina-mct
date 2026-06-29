@@ -37,6 +37,11 @@ pub struct MctWitComponentInvocationReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctWitHostImportGrant {
+    pub import_name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MctWasmToyHostImport {
     pub import_name: String,
     pub authorized_toy_call: AuthorizedToyCall,
@@ -92,6 +97,8 @@ pub enum MctWasmComponentRuntimeError {
         child_name: String,
         operation_id: String,
     },
+    #[error("missing WIT host import grant '{import_name}' for {path}")]
+    MissingWitHostImportGrant { path: PathBuf, import_name: String },
     #[error("missing WIT component operation '{operation_id}' in {path}")]
     MissingWitOperation { path: PathBuf, operation_id: String },
     #[error("convert WIT component values for '{operation_id}' in {path}: {message}")]
@@ -140,6 +147,14 @@ pub fn wasm_component_runtime_error_observation(
             path.display().to_string(),
             format!(
                 "authorized_child_invocation:{}:missing_wit_operation:{operation_id}",
+                authorized.authorized_child_invocation_id
+            ),
+        ),
+        MctWasmComponentRuntimeError::MissingWitHostImportGrant { path, import_name } => (
+            AdapterDiagnosticKind::WasmMissingHostImport,
+            path.display().to_string(),
+            format!(
+                "authorized_child_invocation:{}:missing_wit_host_import:{import_name}",
                 authorized.authorized_child_invocation_id
             ),
         ),
@@ -350,6 +365,21 @@ impl MctWasmComponentRuntime {
         Ok(discover_wit_component_operations(&self.engine, &component))
     }
 
+    pub fn discover_wit_imports(
+        &self,
+        component_path: impl AsRef<Path>,
+    ) -> Result<BTreeSet<String>, MctWasmComponentRuntimeError> {
+        let component_path = component_path.as_ref().to_path_buf();
+        let component =
+            component::Component::from_file(&self.engine, &component_path).map_err(|error| {
+                MctWasmComponentRuntimeError::Load {
+                    path: component_path.clone(),
+                    message: error.to_string(),
+                }
+            })?;
+        Ok(discover_wit_component_imports(&self.engine, &component))
+    }
+
     pub fn invoke_authorized_child_wit_export(
         &self,
         authorized: &AuthorizedChildInvocation,
@@ -377,6 +407,7 @@ impl MctWasmComponentRuntime {
             &child.wasm_path,
             args_json,
             ids,
+            &[],
         )
     }
 
@@ -387,6 +418,7 @@ impl MctWasmComponentRuntime {
         component_path: impl AsRef<Path>,
         args_json: &Value,
         ids: MctWasmComponentInvocationIds,
+        host_import_grants: &[MctWitHostImportGrant],
     ) -> Result<MctWitComponentInvocationReport, MctWasmComponentRuntimeError> {
         let component_path = component_path.as_ref().to_path_buf();
         let operation = resolve_wit_operation_target(&call.target)?;
@@ -406,6 +438,12 @@ impl MctWasmComponentRuntime {
                     message: error.to_string(),
                 }
             })?;
+        validate_wit_host_import_grants(
+            &self.engine,
+            &component,
+            &component_path,
+            host_import_grants,
+        )?;
         let linker = component::Linker::<()>::new(&self.engine);
         let mut store = Store::new(&self.engine, ());
         let instance = linker
@@ -717,6 +755,38 @@ fn discover_wit_component_operations(
     operations
 }
 
+fn discover_wit_component_imports(
+    engine: &Engine,
+    component: &component::Component,
+) -> BTreeSet<String> {
+    component
+        .component_type()
+        .imports(engine)
+        .map(|(import_name, _item)| import_name.to_string())
+        .collect()
+}
+
+fn validate_wit_host_import_grants(
+    engine: &Engine,
+    component: &component::Component,
+    component_path: &Path,
+    host_import_grants: &[MctWitHostImportGrant],
+) -> Result<(), MctWasmComponentRuntimeError> {
+    let granted = host_import_grants
+        .iter()
+        .map(|grant| grant.import_name.as_str())
+        .collect::<BTreeSet<_>>();
+    for import_name in discover_wit_component_imports(engine, component) {
+        if !granted.contains(import_name.as_str()) {
+            return Err(MctWasmComponentRuntimeError::MissingWitHostImportGrant {
+                path: component_path.to_path_buf(),
+                import_name,
+            });
+        }
+    }
+    Ok(())
+}
+
 fn lookup_wit_component_func(
     store: &mut Store<()>,
     instance: &component::Instance,
@@ -887,6 +957,26 @@ mod tests {
         component_path
     }
 
+    fn typed_importing_component_path(dir: &tempfile::TempDir) -> PathBuf {
+        let component_wat = r#"
+(component
+  (import "patina:measure/measure@0.1.0" (instance $measure
+    (export "counter" (func (param "name" string) (param "delta" float64)))))
+  (core module $m
+    (func $double (export "double") (param i32) (result i32)
+      local.get 0
+      i32.const 2
+      i32.mul))
+  (core instance $i (instantiate $m))
+  (func $double (param "value" s32) (result s32) (canon lift (core func $i "double")))
+  (instance $control (export "double" (func $double)))
+  (export "patina:demo/control@0.1.0" (instance $control)))
+"#;
+        let component_path = dir.path().join("typed-importing.component.wasm");
+        fs::write(&component_path, wat::parse_str(component_wat).unwrap()).unwrap();
+        component_path
+    }
+
     fn typed_record_component_path(dir: &tempfile::TempDir) -> PathBuf {
         let component_wat = r#"
 (component
@@ -957,6 +1047,34 @@ mod tests {
         assert_eq!(operation.interface, "patina:demo/control@0.1.0");
         assert_eq!(operation.function, "double");
         assert!(exported.contains(&operation.operation_id));
+    }
+
+    #[test]
+    fn mct_wit_runtime_denies_missing_host_import_grant() {
+        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let component_path = typed_importing_component_path(&dir);
+        let imports = runtime.discover_wit_imports(&component_path).unwrap();
+        let child = loaded_typed_child(
+            component_path,
+            vec!["patina:demo/control@0.1.0.double".into()],
+        );
+
+        assert!(imports.contains("patina:measure/measure@0.1.0"));
+        let error = runtime
+            .invoke_authorized_child_wit_export(
+                &authorized(),
+                &child,
+                &typed_call("double"),
+                &serde_json::json!([7]),
+                ids(),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            MctWasmComponentRuntimeError::MissingWitHostImportGrant { .. }
+        ));
     }
 
     #[test]

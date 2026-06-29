@@ -40,7 +40,7 @@ exit_criteria:
     verify: cargo test -p mct-daemon mct_wit_runtime_rejects_unexported_operation
   - id: wasi-toy-host-imports
     text: Required WASI/toy host imports for Slate-like children are explicit MCT adapter capabilities, with missing grants denied before ambient access.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon mct_wit_runtime_denies_missing_host_import_grant
   - id: slate-fixture
     text: A Slate-like WIT component fixture executes list-work through the MCT runtime path using the Slate WIT contract shape.
