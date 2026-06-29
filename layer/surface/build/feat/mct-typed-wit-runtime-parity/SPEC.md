@@ -39,9 +39,9 @@ exit_criteria:
     checked: true
     verify: cargo test -p mct-daemon mct_wit_runtime_rejects_unexported_operation
   - id: wasi-toy-host-imports
-    text: Required WASI/toy host imports for Slate-like children are explicit MCT adapter capabilities, with missing grants denied before ambient access.
+    text: WIT host imports for Slate-like children fail closed unless MCT has a concrete adapter; generic granted-import stubs are not permitted.
     checked: true
-    verify: cargo test -p mct-daemon mct_wit_runtime_denies_missing_host_import_grant
+    verify: cargo test -p mct-daemon mct_wit_runtime_rejects_unimplemented_host_import
   - id: slate-fixture
     text: A Slate-like WIT component fixture executes list-work through the MCT runtime path using the Slate WIT contract shape.
     checked: false
@@ -130,7 +130,7 @@ Translate the design into MCT as narrower adapter modules:
 - component export discovery;
 - JSON/WIT value conversion;
 - authorized typed component invocation;
-- host import linker construction from explicit toy/grant facts;
+- host import linker construction from explicit concrete toy/grant adapter facts;
 - adapter diagnostic observations.
 
 ## Implementation Order
@@ -141,7 +141,7 @@ Translate the design into MCT as narrower adapter modules:
 4. Add authorized typed component invocation API in `mct-daemon`.
 5. Add focused WIT component fixtures proving scalar, record, option/list, result, and trap paths.
 6. Add first Slate-like fixture using `patina:slate/control@0.1.0.list-work`.
-7. Add explicit host import grant handling for logging, measure, git, and filesystem-like toys.
+7. Add explicit concrete host import adapters for logging, measure, git, and filesystem-like toys; until then imported capabilities fail closed.
 
 ## Resolved Decisions
 
