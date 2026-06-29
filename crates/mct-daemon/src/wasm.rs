@@ -37,11 +37,6 @@ pub struct MctWitComponentInvocationReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MctWitHostImportGrant {
-    pub import_name: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MctWasmToyHostImport {
     pub import_name: String,
     pub authorized_toy_call: AuthorizedToyCall,
@@ -97,8 +92,6 @@ pub enum MctWasmComponentRuntimeError {
         child_name: String,
         operation_id: String,
     },
-    #[error("missing WIT host import grant '{import_name}' for {path}")]
-    MissingWitHostImportGrant { path: PathBuf, import_name: String },
     #[error("unsupported WIT host import '{import_name}.{item_name}' for {path}: {message}")]
     UnsupportedWitHostImport {
         path: PathBuf,
@@ -154,14 +147,6 @@ pub fn wasm_component_runtime_error_observation(
             path.display().to_string(),
             format!(
                 "authorized_child_invocation:{}:missing_wit_operation:{operation_id}",
-                authorized.authorized_child_invocation_id
-            ),
-        ),
-        MctWasmComponentRuntimeError::MissingWitHostImportGrant { path, import_name } => (
-            AdapterDiagnosticKind::WasmMissingHostImport,
-            path.display().to_string(),
-            format!(
-                "authorized_child_invocation:{}:missing_wit_host_import:{import_name}",
                 authorized.authorized_child_invocation_id
             ),
         ),
@@ -408,25 +393,6 @@ impl MctWasmComponentRuntime {
         args_json: &Value,
         ids: MctWasmComponentInvocationIds,
     ) -> Result<MctWitComponentInvocationReport, MctWasmComponentRuntimeError> {
-        self.invoke_authorized_child_wit_export_with_host_import_grants(
-            authorized,
-            child,
-            call,
-            args_json,
-            ids,
-            &[],
-        )
-    }
-
-    pub fn invoke_authorized_child_wit_export_with_host_import_grants(
-        &self,
-        authorized: &AuthorizedChildInvocation,
-        child: &MctLoadedChild,
-        call: &MctCall,
-        args_json: &Value,
-        ids: MctWasmComponentInvocationIds,
-        host_import_grants: &[MctWitHostImportGrant],
-    ) -> Result<MctWitComponentInvocationReport, MctWasmComponentRuntimeError> {
         if authorized.child_name != child.name {
             return Err(MctWasmComponentRuntimeError::AuthorizedChildMismatch {
                 authorized_child_name: authorized.child_name.clone(),
@@ -446,7 +412,6 @@ impl MctWasmComponentRuntime {
             &child.wasm_path,
             args_json,
             ids,
-            host_import_grants,
         )
     }
 
@@ -457,7 +422,6 @@ impl MctWasmComponentRuntime {
         component_path: impl AsRef<Path>,
         args_json: &Value,
         ids: MctWasmComponentInvocationIds,
-        host_import_grants: &[MctWitHostImportGrant],
     ) -> Result<MctWitComponentInvocationReport, MctWasmComponentRuntimeError> {
         let component_path = component_path.as_ref().to_path_buf();
         let operation = resolve_wit_operation_target(&call.target)?;
@@ -477,20 +441,8 @@ impl MctWasmComponentRuntime {
                     message: error.to_string(),
                 }
             })?;
-        validate_wit_host_import_grants(
-            &self.engine,
-            &component,
-            &component_path,
-            host_import_grants,
-        )?;
-        let mut linker = component::Linker::<()>::new(&self.engine);
-        define_granted_wit_host_imports(
-            &self.engine,
-            &component,
-            &component_path,
-            &mut linker,
-            host_import_grants,
-        )?;
+        reject_wit_host_imports_without_adapter(&self.engine, &component, &component_path)?;
+        let linker = component::Linker::<()>::new(&self.engine);
         let mut store = Store::new(&self.engine, ());
         let instance = linker
             .instantiate(&mut store, &component)
@@ -812,196 +764,25 @@ fn discover_wit_component_imports(
         .collect()
 }
 
-fn validate_wit_host_import_grants(
+fn reject_wit_host_imports_without_adapter(
     engine: &Engine,
     component: &component::Component,
     component_path: &Path,
-    host_import_grants: &[MctWitHostImportGrant],
 ) -> Result<(), MctWasmComponentRuntimeError> {
-    let granted = host_import_grants
-        .iter()
-        .map(|grant| grant.import_name.as_str())
-        .collect::<BTreeSet<_>>();
-    for import_name in discover_wit_component_imports(engine, component) {
-        if !granted.contains(import_name.as_str()) {
-            return Err(MctWasmComponentRuntimeError::MissingWitHostImportGrant {
-                path: component_path.to_path_buf(),
-                import_name,
-            });
-        }
+    if let Some(import_name) = discover_wit_component_imports(engine, component)
+        .into_iter()
+        .next()
+    {
+        return Err(MctWasmComponentRuntimeError::UnsupportedWitHostImport {
+            path: component_path.to_path_buf(),
+            import_name: import_name.clone(),
+            item_name: import_name,
+            message:
+                "WIT host imports require a concrete MCT adapter; generic stubs are not permitted"
+                    .into(),
+        });
     }
     Ok(())
-}
-
-fn define_granted_wit_host_imports(
-    engine: &Engine,
-    component: &component::Component,
-    component_path: &Path,
-    linker: &mut component::Linker<()>,
-    host_import_grants: &[MctWitHostImportGrant],
-) -> Result<(), MctWasmComponentRuntimeError> {
-    let granted = host_import_grants
-        .iter()
-        .map(|grant| grant.import_name.as_str())
-        .collect::<BTreeSet<_>>();
-    for (import_name, item) in component.component_type().imports(engine) {
-        if !granted.contains(import_name) {
-            continue;
-        }
-        match item {
-            component::types::ComponentItem::ComponentFunc(_) => {
-                let mut root = linker.root();
-                define_dynamic_wit_host_func(&mut root, import_name, import_name, component_path)?;
-            }
-            component::types::ComponentItem::ComponentInstance(instance) => {
-                let mut linker_instance = linker
-                    .instance(import_name)
-                    .map_err(|error| MctWasmComponentRuntimeError::Configure(error.to_string()))?;
-                for (function_name, function_item) in instance.exports(engine) {
-                    match function_item {
-                        component::types::ComponentItem::ComponentFunc(_) => {
-                            define_dynamic_wit_host_func(
-                                &mut linker_instance,
-                                import_name,
-                                function_name,
-                                component_path,
-                            )?;
-                        }
-                        component::types::ComponentItem::Type(_)
-                        | component::types::ComponentItem::Resource(_) => {}
-                        _ => {
-                            return Err(MctWasmComponentRuntimeError::UnsupportedWitHostImport {
-                                path: component_path.to_path_buf(),
-                                import_name: import_name.into(),
-                                item_name: function_name.into(),
-                                message: "only component functions, types, and resources are supported in granted host import instances".into(),
-                            });
-                        }
-                    }
-                }
-            }
-            _ => {
-                return Err(MctWasmComponentRuntimeError::UnsupportedWitHostImport {
-                    path: component_path.to_path_buf(),
-                    import_name: import_name.into(),
-                    item_name: import_name.into(),
-                    message: "only component functions and component instances are supported as granted host imports".into(),
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
-fn define_dynamic_wit_host_func(
-    linker_instance: &mut component::LinkerInstance<'_, ()>,
-    import_name: &str,
-    function_name: &str,
-    component_path: &Path,
-) -> Result<(), MctWasmComponentRuntimeError> {
-    let import_name = import_name.to_string();
-    let function_name = function_name.to_string();
-    let closure_import_name = import_name.clone();
-    let closure_function_name = function_name.clone();
-    let component_path = component_path.to_path_buf();
-    linker_instance
-        .func_new(&function_name, move |_store, ty, _params, results| {
-            fill_default_wit_host_results(
-                &closure_import_name,
-                &closure_function_name,
-                &ty,
-                results,
-            )
-        })
-        .map_err(
-            |error| MctWasmComponentRuntimeError::UnsupportedWitHostImport {
-                path: component_path,
-                import_name,
-                item_name: function_name,
-                message: error.to_string(),
-            },
-        )
-}
-
-fn fill_default_wit_host_results(
-    import_name: &str,
-    function_name: &str,
-    ty: &component::types::ComponentFunc,
-    results: &mut [component::Val],
-) -> std::result::Result<(), wasmtime::Error> {
-    let result_types = ty.results().collect::<Vec<_>>();
-    if results.len() != result_types.len() {
-        return Err(wasmtime::Error::msg(format!(
-            "host import {import_name}.{function_name} result arity mismatch: expected {}, got {}",
-            result_types.len(),
-            results.len()
-        )));
-    }
-    for (slot, result_ty) in results.iter_mut().zip(result_types.iter()) {
-        *slot = default_wit_host_result_value(result_ty)?;
-    }
-    Ok(())
-}
-
-fn default_wit_host_result_value(
-    ty: &component::types::Type,
-) -> std::result::Result<component::Val, wasmtime::Error> {
-    Ok(match ty {
-        component::types::Type::Bool => component::Val::Bool(false),
-        component::types::Type::S8 => component::Val::S8(0),
-        component::types::Type::U8 => component::Val::U8(0),
-        component::types::Type::S16 => component::Val::S16(0),
-        component::types::Type::U16 => component::Val::U16(0),
-        component::types::Type::S32 => component::Val::S32(0),
-        component::types::Type::U32 => component::Val::U32(0),
-        component::types::Type::S64 => component::Val::S64(0),
-        component::types::Type::U64 => component::Val::U64(0),
-        component::types::Type::Float32 => component::Val::Float32(0.0),
-        component::types::Type::Float64 => component::Val::Float64(0.0),
-        component::types::Type::Char => component::Val::Char('\0'),
-        component::types::Type::String => component::Val::String(String::new()),
-        component::types::Type::List(_) => component::Val::List(Vec::new()),
-        component::types::Type::Record(record_ty) => component::Val::Record(
-            record_ty
-                .fields()
-                .map(|field| {
-                    Ok((
-                        field.name.to_string(),
-                        default_wit_host_result_value(&field.ty)?,
-                    ))
-                })
-                .collect::<std::result::Result<Vec<_>, wasmtime::Error>>()?,
-        ),
-        component::types::Type::Tuple(tuple_ty) => component::Val::Tuple(
-            tuple_ty
-                .types()
-                .map(|item_ty| default_wit_host_result_value(&item_ty))
-                .collect::<std::result::Result<Vec<_>, wasmtime::Error>>()?,
-        ),
-        component::types::Type::Option(_) => component::Val::Option(None),
-        component::types::Type::Result(result_ty) => component::Val::Result(Ok(result_ty
-            .ok()
-            .map(|ok_ty| default_wit_host_result_value(&ok_ty).map(Box::new))
-            .transpose()?)),
-        component::types::Type::Enum(enum_ty) => {
-            let Some(first) = enum_ty.names().next() else {
-                return Err(wasmtime::Error::msg("host import enum result has no cases"));
-            };
-            component::Val::Enum(first.to_string())
-        }
-        component::types::Type::Flags(_) => component::Val::Flags(Vec::new()),
-        component::types::Type::Variant(_)
-        | component::types::Type::Map(_)
-        | component::types::Type::Own(_)
-        | component::types::Type::Borrow(_)
-        | component::types::Type::Future(_)
-        | component::types::Type::Stream(_)
-        | component::types::Type::ErrorContext => {
-            return Err(wasmtime::Error::msg(format!(
-                "unsupported host import result type: {ty:?}"
-            )));
-        }
-    })
 }
 
 fn lookup_wit_component_func(
@@ -1267,7 +1048,7 @@ mod tests {
     }
 
     #[test]
-    fn mct_wit_runtime_denies_missing_host_import_grant() {
+    fn mct_wit_runtime_rejects_unimplemented_host_import() {
         let runtime = MctWasmComponentRuntime::new().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let component_path = typed_importing_component_path(&dir);
@@ -1290,34 +1071,8 @@ mod tests {
 
         assert!(matches!(
             error,
-            MctWasmComponentRuntimeError::MissingWitHostImportGrant { .. }
+            MctWasmComponentRuntimeError::UnsupportedWitHostImport { .. }
         ));
-    }
-
-    #[test]
-    fn mct_wit_runtime_invokes_component_with_granted_host_import_stub() {
-        let runtime = MctWasmComponentRuntime::new().unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let component_path = typed_importing_component_path(&dir);
-        let child = loaded_typed_child(
-            component_path,
-            vec!["patina:demo/control@0.1.0.double".into()],
-        );
-
-        let report = runtime
-            .invoke_authorized_child_wit_export_with_host_import_grants(
-                &authorized(),
-                &child,
-                &typed_call("double"),
-                &serde_json::json!([9]),
-                ids(),
-                &[MctWitHostImportGrant {
-                    import_name: "patina:measure/measure@0.1.0".into(),
-                }],
-            )
-            .unwrap();
-
-        assert_eq!(report.output_json, serde_json::json!({"results": [18]}));
     }
 
     #[test]
