@@ -1,9 +1,17 @@
-use crate::toy::{MctToyAdapterOutcome, MctToyAdapterRegistry, MctToyCallIds};
+use crate::{
+    children::{MctLoadedChild, operation_id_from_target},
+    toy::{MctToyAdapterOutcome, MctToyAdapterRegistry, MctToyCallIds},
+    wit_values::{lift_component_results_to_json, lower_typed_args_for_component},
+};
 use mct_kernel::*;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use serde_json::Value;
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 use thiserror::Error;
-use wasmtime::{Config, Engine, Store, StoreContextMut, component};
+use wasmtime::{AsContext, AsContextMut, Config, Engine, Store, StoreContextMut, component};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MctWasmComponentInvocationIds {
@@ -18,6 +26,13 @@ pub struct MctWasmComponentInvocationIds {
 pub struct MctWasmComponentInvocationReport {
     pub result: MctResult,
     pub returned_s32: i32,
+    pub observations: Vec<MctObservation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctWitComponentInvocationReport {
+    pub result: MctResult,
+    pub output_json: Value,
     pub observations: Vec<MctObservation>,
 }
 
@@ -60,6 +75,31 @@ pub enum MctWasmComponentRuntimeError {
     Instantiate { path: PathBuf, message: String },
     #[error("missing wasm component export '{export_name}' in {path}")]
     MissingExport { path: PathBuf, export_name: String },
+    #[error("invalid WIT operation '{operation_id}': {message}")]
+    InvalidWitOperation {
+        operation_id: String,
+        message: String,
+    },
+    #[error(
+        "authorized child '{authorized_child_name}' does not match loaded child '{loaded_child_name}'"
+    )]
+    AuthorizedChildMismatch {
+        authorized_child_name: String,
+        loaded_child_name: String,
+    },
+    #[error("child '{child_name}' contract does not allow WIT operation '{operation_id}'")]
+    WitOperationNotAllowed {
+        child_name: String,
+        operation_id: String,
+    },
+    #[error("missing WIT component operation '{operation_id}' in {path}")]
+    MissingWitOperation { path: PathBuf, operation_id: String },
+    #[error("convert WIT component values for '{operation_id}' in {path}: {message}")]
+    WitValueConversion {
+        path: PathBuf,
+        operation_id: String,
+        message: String,
+    },
     #[error("call wasm component export '{export_name}' in {path}: {message}")]
     Call {
         path: PathBuf,
@@ -76,17 +116,50 @@ pub fn wasm_component_runtime_error_observation(
     authorized: &AuthorizedChildInvocation,
     ids: MctWasmComponentDiagnosticIds,
 ) -> Option<MctObservation> {
-    let MctWasmComponentRuntimeError::Call {
-        path, export_name, ..
-    } = error
-    else {
-        return None;
+    let (diagnostic_kind, resource_id, detail_ref) = match error {
+        MctWasmComponentRuntimeError::Call {
+            path, export_name, ..
+        } => (
+            AdapterDiagnosticKind::WasmTrap,
+            path.display().to_string(),
+            format!(
+                "authorized_child_invocation:{}:export:{export_name}",
+                authorized.authorized_child_invocation_id
+            ),
+        ),
+        MctWasmComponentRuntimeError::MissingExport { path, export_name } => (
+            AdapterDiagnosticKind::WasmMissingExport,
+            path.display().to_string(),
+            format!(
+                "authorized_child_invocation:{}:missing_export:{export_name}",
+                authorized.authorized_child_invocation_id
+            ),
+        ),
+        MctWasmComponentRuntimeError::MissingWitOperation { path, operation_id } => (
+            AdapterDiagnosticKind::WasmMissingExport,
+            path.display().to_string(),
+            format!(
+                "authorized_child_invocation:{}:missing_wit_operation:{operation_id}",
+                authorized.authorized_child_invocation_id
+            ),
+        ),
+        MctWasmComponentRuntimeError::WitValueConversion {
+            path, operation_id, ..
+        } => (
+            AdapterDiagnosticKind::WasmValueConversionFailure,
+            path.display().to_string(),
+            format!(
+                "authorized_child_invocation:{}:wit_value_conversion:{operation_id}",
+                authorized.authorized_child_invocation_id
+            ),
+        ),
+        _ => return None,
     };
     Some(adapter_diagnostic_observation(
         AdapterDiagnosticObservationInput {
             observation_id: ids.observation_id,
             observed_at: ids.observed_at,
-            diagnostic_kind: AdapterDiagnosticKind::WasmTrap,
+            diagnostic_kind,
             trace: ObservationTraceRef {
                 trace_id: call.trace_context.trace_id.clone(),
                 span_id: Some(call.trace_context.span_id.clone()),
@@ -96,15 +169,156 @@ pub fn wasm_component_runtime_error_observation(
             call_id: Some(call.call_id.clone()),
             decision_id: Some(authorized.authority_decision_id.clone()),
             subject_id: Some(authorized.child_name.clone()),
-            resource_id: Some(path.display().to_string()),
+            resource_id: Some(resource_id),
             policy_revision: Some(call.authority_context.policy_revision),
             grants_revision: Some(call.authority_context.grants_revision),
-            detail_ref: Some(format!(
-                "authorized_child_invocation:{}:export:{export_name}",
-                authorized.authorized_child_invocation_id
-            )),
+            detail_ref: Some(detail_ref),
         },
     ))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctWitResolvedOperation {
+    pub operation_id: String,
+    pub interface: String,
+    pub function: String,
+}
+
+pub fn wit_operation_id_from_target(target: &OperationTarget) -> String {
+    operation_id_from_target(target)
+}
+
+pub fn resolve_wit_operation_target(
+    target: &OperationTarget,
+) -> Result<MctWitResolvedOperation, MctWasmComponentRuntimeError> {
+    resolve_wit_operation_id(&wit_operation_id_from_target(target))
+}
+
+const WIT_OPERATION_ID_SHAPE: &str = "<package>:<interface-path>.<function>";
+
+fn is_valid_wit_symbol_token(token: &str) -> bool {
+    !token.is_empty()
+        && token
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn is_valid_wit_interface_version(version: &str) -> bool {
+    let mut parts = version.split('.');
+    let (Some(major), Some(minor), Some(patch)) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    parts.next().is_none()
+        && [major, minor, patch]
+            .iter()
+            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+}
+
+fn invalid_wit_operation(
+    operation_id: impl Into<String>,
+    message: impl Into<String>,
+) -> MctWasmComponentRuntimeError {
+    MctWasmComponentRuntimeError::InvalidWitOperation {
+        operation_id: operation_id.into(),
+        message: format!("{}; expected {WIT_OPERATION_ID_SHAPE}", message.into()),
+    }
+}
+
+fn validate_wit_interface_identity(
+    interface: &str,
+    operation_id: &str,
+) -> Result<(), MctWasmComponentRuntimeError> {
+    let Some((package, interface_path)) = interface.split_once(':') else {
+        return Err(invalid_wit_operation(
+            operation_id,
+            "operation id must include '<package>:<interface-path>' before function token",
+        ));
+    };
+    if package.is_empty()
+        || interface_path.is_empty()
+        || package.contains(':')
+        || interface_path.contains(':')
+    {
+        return Err(invalid_wit_operation(
+            operation_id,
+            "operation id has malformed package/interface section",
+        ));
+    }
+    if !is_valid_wit_symbol_token(package) {
+        return Err(invalid_wit_operation(
+            operation_id,
+            "operation package token contains unsupported characters",
+        ));
+    }
+
+    let segments = interface_path.split('/').collect::<Vec<_>>();
+    if segments.is_empty() || segments.iter().any(|segment| segment.is_empty()) {
+        return Err(invalid_wit_operation(
+            operation_id,
+            "operation interface path must contain non-empty '/' segments",
+        ));
+    }
+    for (index, segment) in segments.iter().enumerate() {
+        let is_last = index + 1 == segments.len();
+        if segment.contains('@') {
+            if !is_last || segment.matches('@').count() != 1 {
+                return Err(invalid_wit_operation(
+                    operation_id,
+                    "versioned interface token is only allowed at the final path segment",
+                ));
+            }
+            let Some((name, version)) = segment.split_once('@') else {
+                return Err(invalid_wit_operation(
+                    operation_id,
+                    "versioned interface token is malformed",
+                ));
+            };
+            if !is_valid_wit_symbol_token(name) || !is_valid_wit_interface_version(version) {
+                return Err(invalid_wit_operation(
+                    operation_id,
+                    "interface version token must be '<name>@<semver-major.minor.patch>'",
+                ));
+            }
+        } else if !is_valid_wit_symbol_token(segment) {
+            return Err(invalid_wit_operation(
+                operation_id,
+                "operation interface segment contains unsupported characters",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_valid_wit_function_token(function: &str) -> bool {
+    let mut chars = function.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    first.is_ascii_alphabetic() && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn resolve_wit_operation_id(
+    operation_id: &str,
+) -> Result<MctWitResolvedOperation, MctWasmComponentRuntimeError> {
+    let operation_id = operation_id.trim();
+    let Some((interface, function)) = operation_id.rsplit_once('.') else {
+        return Err(invalid_wit_operation(
+            operation_id,
+            "operation id is malformed",
+        ));
+    };
+    validate_wit_interface_identity(interface, operation_id)?;
+    if !is_valid_wit_function_token(function) {
+        return Err(invalid_wit_operation(
+            operation_id,
+            "operation function token must start with a letter and only contain [A-Za-z0-9_-]",
+        ));
+    }
+    Ok(MctWitResolvedOperation {
+        operation_id: operation_id.into(),
+        interface: interface.into(),
+        function: function.into(),
+    })
 }
 
 #[derive(Debug)]
@@ -119,6 +333,153 @@ impl MctWasmComponentRuntime {
         let engine = Engine::new(&config)
             .map_err(|error| MctWasmComponentRuntimeError::Configure(error.to_string()))?;
         Ok(Self { engine })
+    }
+
+    pub fn discover_wit_operations(
+        &self,
+        component_path: impl AsRef<Path>,
+    ) -> Result<BTreeSet<String>, MctWasmComponentRuntimeError> {
+        let component_path = component_path.as_ref().to_path_buf();
+        let component =
+            component::Component::from_file(&self.engine, &component_path).map_err(|error| {
+                MctWasmComponentRuntimeError::Load {
+                    path: component_path.clone(),
+                    message: error.to_string(),
+                }
+            })?;
+        Ok(discover_wit_component_operations(&self.engine, &component))
+    }
+
+    pub fn invoke_authorized_child_wit_export(
+        &self,
+        authorized: &AuthorizedChildInvocation,
+        child: &MctLoadedChild,
+        call: &MctCall,
+        args_json: &Value,
+        ids: MctWasmComponentInvocationIds,
+    ) -> Result<MctWitComponentInvocationReport, MctWasmComponentRuntimeError> {
+        if authorized.child_name != child.name {
+            return Err(MctWasmComponentRuntimeError::AuthorizedChildMismatch {
+                authorized_child_name: authorized.child_name.clone(),
+                loaded_child_name: child.name.clone(),
+            });
+        }
+        let operation_id = operation_id_from_target(&call.target);
+        if !child.allows_operation_target(&call.target) {
+            return Err(MctWasmComponentRuntimeError::WitOperationNotAllowed {
+                child_name: child.name.clone(),
+                operation_id,
+            });
+        }
+        self.invoke_wit_export_after_contract_check(
+            authorized,
+            call,
+            &child.wasm_path,
+            args_json,
+            ids,
+        )
+    }
+
+    fn invoke_wit_export_after_contract_check(
+        &self,
+        authorized: &AuthorizedChildInvocation,
+        call: &MctCall,
+        component_path: impl AsRef<Path>,
+        args_json: &Value,
+        ids: MctWasmComponentInvocationIds,
+    ) -> Result<MctWitComponentInvocationReport, MctWasmComponentRuntimeError> {
+        let component_path = component_path.as_ref().to_path_buf();
+        let operation = resolve_wit_operation_target(&call.target)?;
+        let started = wasm_observation(
+            ids.started_observation_id.clone(),
+            ids.started_at.clone(),
+            ObservationKind::RuntimeExecutionStarted,
+            ObservationOutcome::Started,
+            call,
+            authorized,
+            "wasm component execution started",
+        );
+        let component =
+            component::Component::from_file(&self.engine, &component_path).map_err(|error| {
+                MctWasmComponentRuntimeError::Load {
+                    path: component_path.clone(),
+                    message: error.to_string(),
+                }
+            })?;
+        let linker = component::Linker::<()>::new(&self.engine);
+        let mut store = Store::new(&self.engine, ());
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+                path: component_path.clone(),
+                message: error.to_string(),
+            })?;
+        let func =
+            lookup_wit_component_func(&mut store, &instance, &operation).ok_or_else(|| {
+                MctWasmComponentRuntimeError::MissingWitOperation {
+                    path: component_path.clone(),
+                    operation_id: operation.operation_id.clone(),
+                }
+            })?;
+        let func_ty = func.ty(store.as_context());
+        let lowered_args =
+            lower_typed_args_for_component(args_json, &func_ty).map_err(|error| {
+                MctWasmComponentRuntimeError::WitValueConversion {
+                    path: component_path.clone(),
+                    operation_id: operation.operation_id.clone(),
+                    message: error.to_string(),
+                }
+            })?;
+        let mut results = vec![component::Val::Bool(false); func_ty.results().len()];
+        func.call(store.as_context_mut(), &lowered_args, &mut results)
+            .map_err(|error| MctWasmComponentRuntimeError::Call {
+                path: component_path.clone(),
+                export_name: operation.operation_id.clone(),
+                message: error.to_string(),
+            })?;
+        let output_json = lift_component_results_to_json(&results, &func_ty).map_err(|error| {
+            MctWasmComponentRuntimeError::WitValueConversion {
+                path: component_path.clone(),
+                operation_id: operation.operation_id.clone(),
+                message: error.to_string(),
+            }
+        })?;
+        let completed = wasm_observation(
+            ids.completed_observation_id,
+            ids.completed_at,
+            ObservationKind::RuntimeExecutionCompleted,
+            ObservationOutcome::Completed,
+            call,
+            authorized,
+            "wasm component execution completed",
+        );
+        let output_size_bytes = serde_json::to_vec(&output_json)
+            .map(|bytes| bytes.len() as u64)
+            .ok();
+        let result = MctResult {
+            call_id: call.call_id.clone(),
+            outcome: ResultOutcome::Success,
+            route_taken: Some(RouteTaken {
+                node_id: MctNodeId::from("local-mct"),
+                child_id: Some(ChildId::from(authorized.child_name.clone())),
+                runtime_kind: RuntimeKind::WasmComponent,
+            }),
+            authority_decision_ref: authorized.authority_decision_id.clone(),
+            execution_summary: ExecutionSummary {
+                wall_time_ms: 0,
+                execution_time_ms: None,
+                queue_wait_ms: None,
+                input_size_bytes: call.payload_metadata.approximate_size_bytes,
+                output_size_bytes,
+            },
+            requester_message: "wasm component completed".into(),
+            audit_ref: ids.audit_ref,
+        };
+        Ok(MctWitComponentInvocationReport {
+            result,
+            output_json,
+            observations: vec![started, completed],
+        })
     }
 
     pub fn invoke_authorized_s32_export(
@@ -334,6 +695,43 @@ impl MctWasmComponentRuntime {
     }
 }
 
+fn discover_wit_component_operations(
+    engine: &Engine,
+    component: &component::Component,
+) -> BTreeSet<String> {
+    let mut operations = BTreeSet::new();
+    let component_type = component.component_type();
+    for (interface_name, item) in component_type.exports(engine) {
+        let component::types::ComponentItem::ComponentInstance(instance) = item else {
+            continue;
+        };
+        for (function_name, function_item) in instance.exports(engine) {
+            if matches!(
+                function_item,
+                component::types::ComponentItem::ComponentFunc(_)
+            ) {
+                operations.insert(format!("{interface_name}.{function_name}"));
+            }
+        }
+    }
+    operations
+}
+
+fn lookup_wit_component_func(
+    store: &mut Store<()>,
+    instance: &component::Instance,
+    operation: &MctWitResolvedOperation,
+) -> Option<component::Func> {
+    let interface_idx =
+        instance.get_export_index(store.as_context_mut(), None, &operation.interface)?;
+    let function_idx = instance.get_export_index(
+        store.as_context_mut(),
+        Some(&interface_idx),
+        &operation.function,
+    )?;
+    instance.get_func(store.as_context_mut(), function_idx)
+}
+
 fn wasm_observation(
     observation_id: ObservationId,
     observed_at: Timestamp,
@@ -459,6 +857,254 @@ mod tests {
             observation_id: ObservationId::from("obs-wasm-trap"),
             observed_at: Timestamp::from("2026-05-31T00:00:02Z"),
         }
+    }
+
+    fn typed_call(function_name: &str) -> MctCall {
+        let mut call = call();
+        call.target = OperationTarget {
+            namespace: "patina:demo".into(),
+            interface_name: "control@0.1.0".into(),
+            function_name: function_name.into(),
+        };
+        call
+    }
+
+    fn typed_component_path(dir: &tempfile::TempDir) -> PathBuf {
+        let component_wat = r#"
+(component
+  (core module $m
+    (func $double (export "double") (param i32) (result i32)
+      local.get 0
+      i32.const 2
+      i32.mul))
+  (core instance $i (instantiate $m))
+  (func $double (param "value" s32) (result s32) (canon lift (core func $i "double")))
+  (instance $control (export "double" (func $double)))
+  (export "patina:demo/control@0.1.0" (instance $control)))
+"#;
+        let component_path = dir.path().join("typed.component.wasm");
+        fs::write(&component_path, wat::parse_str(component_wat).unwrap()).unwrap();
+        component_path
+    }
+
+    fn typed_record_component_path(dir: &tempfile::TempDir) -> PathBuf {
+        let component_wat = r#"
+(component
+  (core module $m
+    (func $summarize (export "summarize") (param i32 i32) (result i32)
+      local.get 0
+      local.get 1
+      i32.add))
+  (core instance $i (instantiate $m))
+  (type $pair (record (field "left" s32) (field "right" s32)))
+  (type $summary (record (field "total" s32)))
+  (func $summarize (param "pair" $pair) (result $summary) (canon lift (core func $i "summarize")))
+  (instance $control
+    (export "pair" (type $pair))
+    (export "summary" (type $summary))
+    (export "summarize" (func $summarize) (func (param "pair" $pair) (result $summary))))
+  (export "patina:demo/control@0.1.0" (instance $control)))
+"#;
+        let component_path = dir.path().join("typed-record.component.wasm");
+        fs::write(&component_path, wat::parse_str(component_wat).unwrap()).unwrap();
+        component_path
+    }
+
+    fn loaded_typed_child(
+        component_path: PathBuf,
+        allowed_operations: Vec<String>,
+    ) -> MctLoadedChild {
+        MctLoadedChild {
+            child_id: ChildId::from("child:wasm-answer"),
+            name: "wasm-answer".into(),
+            version: "0.1.0".into(),
+            description: None,
+            kind: "test".into(),
+            role: None,
+            wasm_path: component_path.clone(),
+            manifest_path: component_path.with_extension("toml"),
+            wasm_digest: crate::children::MctChildFileDigest {
+                sha256: "wasm-digest".into(),
+                sidecar_present: true,
+                verified: true,
+            },
+            manifest_digest: crate::children::MctChildFileDigest {
+                sha256: "manifest-digest".into(),
+                sidecar_present: true,
+                verified: true,
+            },
+            artifact_id: "artifact-wasm".into(),
+            ingress_mode: crate::children::MctChildIngressMode::WitOnly,
+            allowed_operations,
+            requested_toys: Vec::new(),
+            subscribed_streams: Vec::new(),
+            relationship_listens: Vec::new(),
+            wasm_size_bytes: 0,
+            instance_state: crate::children::MctChildInstanceState::Ready,
+        }
+    }
+
+    #[test]
+    fn mct_wit_runtime_resolves_versioned_component_export() {
+        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let component_path = typed_component_path(&dir);
+
+        let operation = resolve_wit_operation_target(&typed_call("double").target).unwrap();
+        let exported = runtime.discover_wit_operations(&component_path).unwrap();
+
+        assert_eq!(operation.operation_id, "patina:demo/control@0.1.0.double");
+        assert_eq!(operation.interface, "patina:demo/control@0.1.0");
+        assert_eq!(operation.function, "double");
+        assert!(exported.contains(&operation.operation_id));
+    }
+
+    #[test]
+    fn mct_wit_runtime_invokes_typed_component_export() {
+        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let component_path = typed_component_path(&dir);
+
+        let child = loaded_typed_child(
+            component_path,
+            vec!["patina:demo/control@0.1.0.double".into()],
+        );
+
+        let report = runtime
+            .invoke_authorized_child_wit_export(
+                &authorized(),
+                &child,
+                &typed_call("double"),
+                &serde_json::json!([7]),
+                ids(),
+            )
+            .unwrap();
+
+        assert_eq!(report.output_json, serde_json::json!({"results": [14]}));
+        assert_eq!(report.result.outcome, ResultOutcome::Success);
+        assert_eq!(
+            report.observations[0].kind,
+            ObservationKind::RuntimeExecutionStarted
+        );
+        assert_eq!(
+            report.observations[1].kind,
+            ObservationKind::RuntimeExecutionCompleted
+        );
+    }
+
+    #[test]
+    fn mct_wit_runtime_lowers_record_args_and_lifts_record_result() {
+        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let component_path = typed_record_component_path(&dir);
+        let child = loaded_typed_child(
+            component_path,
+            vec!["patina:demo/control@0.1.0.summarize".into()],
+        );
+
+        let report = runtime
+            .invoke_authorized_child_wit_export(
+                &authorized(),
+                &child,
+                &typed_call("summarize"),
+                &serde_json::json!([{ "left": 4, "right": 5 }]),
+                ids(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            report.output_json,
+            serde_json::json!({"results": [{"total": 9}]})
+        );
+    }
+
+    #[test]
+    fn mct_wit_runtime_rejects_unexported_operation() {
+        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let component_path = typed_component_path(&dir);
+
+        let child = loaded_typed_child(
+            component_path,
+            vec!["patina:demo/control@0.1.0.missing".into()],
+        );
+
+        let error = runtime
+            .invoke_authorized_child_wit_export(
+                &authorized(),
+                &child,
+                &typed_call("missing"),
+                &serde_json::json!([]),
+                ids(),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            MctWasmComponentRuntimeError::MissingWitOperation { .. }
+        ));
+    }
+
+    #[test]
+    fn mct_wit_runtime_maps_missing_export_to_adapter_observation() {
+        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let component_path = typed_component_path(&dir);
+        let child = loaded_typed_child(
+            component_path,
+            vec!["patina:demo/control@0.1.0.missing".into()],
+        );
+        let call = typed_call("missing");
+        let authorized = authorized();
+
+        let error = runtime
+            .invoke_authorized_child_wit_export(
+                &authorized,
+                &child,
+                &call,
+                &serde_json::json!([]),
+                ids(),
+            )
+            .unwrap_err();
+        let observation =
+            wasm_component_runtime_error_observation(&error, &call, &authorized, diagnostic_ids())
+                .unwrap();
+
+        assert_eq!(observation.kind, ObservationKind::RuntimeExecutionFailed);
+        assert_eq!(observation.safe_message, "wasm export missing");
+        assert!(
+            observation
+                .detail_ref
+                .as_deref()
+                .unwrap()
+                .contains("missing_wit_operation:patina:demo/control@0.1.0.missing")
+        );
+    }
+
+    #[test]
+    fn mct_wit_runtime_rejects_non_allowlisted_operation() {
+        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let component_path = typed_component_path(&dir);
+        let child = loaded_typed_child(
+            component_path,
+            vec!["patina:demo/control@0.1.0.other".into()],
+        );
+
+        let error = runtime
+            .invoke_authorized_child_wit_export(
+                &authorized(),
+                &child,
+                &typed_call("double"),
+                &serde_json::json!([7]),
+                ids(),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            MctWasmComponentRuntimeError::WitOperationNotAllowed { .. }
+        ));
     }
 
     #[test]
