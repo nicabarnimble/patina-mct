@@ -23,6 +23,7 @@ mod status;
 mod supervisor;
 mod toy;
 mod wasm;
+mod wit_values;
 
 pub use children::{
     MctChildFileDigest, MctChildIngressMode, MctChildInstanceState, MctChildIntegrityMode,
@@ -87,7 +88,9 @@ pub use toy::{
 pub use wasm::{
     MctWasmComponentDiagnosticIds, MctWasmComponentInvocationIds, MctWasmComponentInvocationReport,
     MctWasmComponentRuntime, MctWasmComponentRuntimeError, MctWasmComponentToyInvocation,
-    MctWasmToyHostImport, wasm_component_runtime_error_observation,
+    MctWasmToyHostImport, MctWitComponentInvocationReport, MctWitResolvedOperation,
+    resolve_wit_operation_target, wasm_component_runtime_error_observation,
+    wit_operation_id_from_target,
 };
 
 /// Returns the crate version for health and smoke tests.

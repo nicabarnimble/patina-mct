@@ -24,19 +24,19 @@ references:
 exit_criteria:
   - id: typed-export-resolution
     text: MCT resolves MctCall OperationTarget values to versioned WIT component exports such as patina:slate/control@0.1.0.list-work.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon mct_wit_runtime_resolves_versioned_component_export
   - id: json-wit-lowering-lifting
     text: MCT lowers JSON call inputs into WIT values and lifts WIT results back into JSON-backed MctResult data for scalar, list, option, record, and result-shaped values needed by Slate.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon mct_wit_runtime_lowers_record_args_and_lifts_record_result
   - id: authority-before-execution
     text: MCT invokes typed WIT exports only after AuthorizedChildInvocation and child contract allowlist validation.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon mct_wit_runtime_rejects_non_allowlisted_operation
   - id: fail-closed-missing-export
     text: Missing or mismatched WIT exports fail closed with typed adapter errors and observations, not fallback handle dispatch.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon mct_wit_runtime_rejects_unexported_operation
   - id: wasi-toy-host-imports
     text: Required WASI/toy host imports for Slate-like children are explicit MCT adapter capabilities, with missing grants denied before ambient access.

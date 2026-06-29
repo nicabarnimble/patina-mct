@@ -139,6 +139,8 @@ pub struct MctObservation {
 pub enum AdapterDiagnosticKind {
     IrohStreamReset,
     WasmTrap,
+    WasmMissingExport,
+    WasmValueConversionFailure,
     ProcessExitFailure,
     JvmTimeout,
     StorageAppendFailure,
@@ -205,6 +207,18 @@ pub fn adapter_diagnostic_observation(input: AdapterDiagnosticObservationInput) 
             SourcePlane::Adapter,
             ObservationOutcome::Failed,
             "wasm execution trapped",
+        ),
+        AdapterDiagnosticKind::WasmMissingExport => (
+            ObservationKind::RuntimeExecutionFailed,
+            SourcePlane::Adapter,
+            ObservationOutcome::Failed,
+            "wasm export missing",
+        ),
+        AdapterDiagnosticKind::WasmValueConversionFailure => (
+            ObservationKind::RuntimeExecutionFailed,
+            SourcePlane::Adapter,
+            ObservationOutcome::Failed,
+            "wasm value conversion failed",
         ),
         AdapterDiagnosticKind::ProcessExitFailure => (
             ObservationKind::RuntimeExecutionFailed,
@@ -756,6 +770,20 @@ mod tests {
                 SourcePlane::Adapter,
                 ObservationOutcome::Failed,
                 "wasm execution trapped",
+            ),
+            (
+                AdapterDiagnosticKind::WasmMissingExport,
+                ObservationKind::RuntimeExecutionFailed,
+                SourcePlane::Adapter,
+                ObservationOutcome::Failed,
+                "wasm export missing",
+            ),
+            (
+                AdapterDiagnosticKind::WasmValueConversionFailure,
+                ObservationKind::RuntimeExecutionFailed,
+                SourcePlane::Adapter,
+                ObservationOutcome::Failed,
+                "wasm value conversion failed",
             ),
             (
                 AdapterDiagnosticKind::ProcessExitFailure,
