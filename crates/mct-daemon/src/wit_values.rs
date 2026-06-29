@@ -513,14 +513,14 @@ fn lower_json_with_shape(value: &Value, shape: &ConversionShape, path: &str) -> 
                     )?))
                 }
                 None => {
-                    if let Some(raw_payload) = object.get("value") {
-                        if !raw_payload.is_null() {
-                            return Err(err(
-                                ConversionErrorCode::InvalidArgsShape,
-                                format!("variant case '{}' does not accept a payload value", case),
-                                child_path(path, "value"),
-                            ));
-                        }
+                    if let Some(raw_payload) = object.get("value")
+                        && !raw_payload.is_null()
+                    {
+                        return Err(err(
+                            ConversionErrorCode::InvalidArgsShape,
+                            format!("variant case '{}' does not accept a payload value", case),
+                            child_path(path, "value"),
+                        ));
                     }
                     None
                 }
