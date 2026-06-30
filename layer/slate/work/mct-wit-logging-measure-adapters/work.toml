@@ -1,7 +1,7 @@
 id = "mct-wit-logging-measure-adapters"
 title = "Add concrete WIT logging and measure host adapters"
 kind = "build"
-status = "active"
+status = "completed"
 execution_granularity = "slice"
 human_request = "Continue the MCT Slate execution path by adding concrete WIT host adapters without generic stubs, preserving authority-first runtime behavior and explicit contracts."
 allium_anchors = ["KernelDecidesAdaptersPerform", "ObservationsAreCanonicalRuntimeTruth", "DaemonOwnsLifecycleButNotAuthority"]
@@ -12,17 +12,23 @@ implementation_ready = true
 runtime_shape_role = "Typed WIT components may import logging and measure only when MCT is given explicit concrete authorized toy adapters for those imports."
 non_goals = ["No generic granted import stubs.", "No filesystem or git host adapter in this slice.", "No Wasmtime/WASI types in mct-kernel."]
 implementation_plan = ["""
-[ ] Define explicit WIT host adapter input for authorized logging and measure toy calls.
-[ ] Link only supported logging/measure WIT interfaces and reject any unconfigured or unknown import before instantiation.
-[ ] Route logging/measure calls through `MctToyAdapterRegistry::call_authorized_toy` with structured input JSON and collect toy observations.
-[ ] Add tests proving successful logging/measure invocation, unconfigured imports fail closed, and unknown imports still fail closed.
+[x] Define explicit WIT host adapter input for authorized logging and measure toy calls.
+[x] Link only supported logging/measure WIT interfaces and reject any unconfigured or unknown import before instantiation.
+[x] Route logging/measure calls through `MctToyAdapterRegistry::call_authorized_toy` with structured input JSON and collect toy observations.
+[x] Add tests proving successful logging and measure invocation, unconfigured imports fail closed, and unknown imports still fail closed.
 """]
 proof_plan = ["""
-[ ] `cargo test -p mct-daemon mct_wit_runtime_invokes_authorized_logging_and_measure_imports` passes.
-[ ] `cargo test -p mct-daemon mct_wit_runtime_rejects_unimplemented_host_import` passes.
-[ ] `cargo test -p mct-daemon mct_wit_runtime` passes.
+[x] `cargo test -p mct-daemon mct_wit_runtime` passes.
+[x] `cargo clippy -p mct-daemon --lib -- -D warnings` passes.
+[x] `cargo test -p mct-kernel -p mct-daemon` passes.
 """]
-closure_evidence = []
+closure_evidence = [
+  "Added explicit MctWitHostImportAdapters and MctWitToyHostAdapter inputs.",
+  "Typed WIT invocation now validates imports against configured concrete adapters before instantiation.",
+  "wasi:logging/logging@0.1.0.log routes through the authorized toy adapter and emits toy observations.",
+  "patina:measure/measure@0.1.0.counter routes through the authorized toy adapter and emits toy observations.",
+  "Validation passed: cargo test -p mct-daemon mct_wit_runtime; cargo clippy -p mct-daemon --lib -- -D warnings; cargo test -p mct-kernel -p mct-daemon.",
+]
 blocked_by = []
 created_at = "1782820800"
-updated_at = "1782820800"
+updated_at = "1782821700"
