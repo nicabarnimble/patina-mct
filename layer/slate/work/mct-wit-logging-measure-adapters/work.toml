@@ -1,0 +1,28 @@
+id = "mct-wit-logging-measure-adapters"
+title = "Add concrete WIT logging and measure host adapters"
+kind = "build"
+status = "active"
+execution_granularity = "slice"
+human_request = "Continue the MCT Slate execution path by adding concrete WIT host adapters without generic stubs, preserving authority-first runtime behavior and explicit contracts."
+allium_anchors = ["KernelDecidesAdaptersPerform", "ObservationsAreCanonicalRuntimeTruth", "DaemonOwnsLifecycleButNotAuthority"]
+user_alignment = "User asked to proceed with strong invariants, no defensive fallbacks, no unclear abstractions, and small focused commits. This slice targets the smallest concrete Slate imports: logging and measure."
+belief_refs = ["mother-kernel-decides-adapters-perform", "greenfield-products-reference-legacy", "typed-domain-records-before-algorithms"]
+code_targets = ["crates/mct-daemon/src/wasm.rs", "crates/mct-daemon/src/toy.rs"]
+implementation_ready = true
+runtime_shape_role = "Typed WIT components may import logging and measure only when MCT is given explicit concrete authorized toy adapters for those imports."
+non_goals = ["No generic granted import stubs.", "No filesystem or git host adapter in this slice.", "No Wasmtime/WASI types in mct-kernel."]
+implementation_plan = ["""
+[ ] Define explicit WIT host adapter input for authorized logging and measure toy calls.
+[ ] Link only supported logging/measure WIT interfaces and reject any unconfigured or unknown import before instantiation.
+[ ] Route logging/measure calls through `MctToyAdapterRegistry::call_authorized_toy` with structured input JSON and collect toy observations.
+[ ] Add tests proving successful logging/measure invocation, unconfigured imports fail closed, and unknown imports still fail closed.
+"""]
+proof_plan = ["""
+[ ] `cargo test -p mct-daemon mct_wit_runtime_invokes_authorized_logging_and_measure_imports` passes.
+[ ] `cargo test -p mct-daemon mct_wit_runtime_rejects_unimplemented_host_import` passes.
+[ ] `cargo test -p mct-daemon mct_wit_runtime` passes.
+"""]
+closure_evidence = []
+blocked_by = []
+created_at = "1782820800"
+updated_at = "1782820800"
