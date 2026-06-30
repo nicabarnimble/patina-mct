@@ -68,6 +68,7 @@ mod tests {
             r#"[child]
 name = "child-a"
 version = "0.1.0"
+kind = "child"
 [child.ingress]
 mode = "wit-only"
 [child.contract]

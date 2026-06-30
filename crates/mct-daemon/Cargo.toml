@@ -11,6 +11,7 @@ anyhow.workspace = true
 mct-iroh = { path = "../mct-iroh" }
 mct-kernel = { path = "../mct-kernel" }
 mct-observation = { path = "../mct-observation" }
+patina-sdk = { git = "https://github.com/nicabarnimble/patina.git", rev = "71bfc9a093994814deba6b66421a9050d0ca846a", default-features = false, features = ["manifest"] }
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
