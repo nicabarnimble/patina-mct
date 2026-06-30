@@ -59,10 +59,74 @@ pub struct MctWasmComponentDiagnosticIds {
 }
 
 #[derive(Clone, Debug)]
+pub struct MctWitToyHostAdapter {
+    pub authorized_toy_call: AuthorizedToyCall,
+    pub observation_id_prefix: String,
+    pub observed_at: Timestamp,
+}
+
+#[derive(Clone, Debug)]
+pub struct MctWitHostImportAdapters {
+    pub toy_registry: MctToyAdapterRegistry,
+    pub logging: Option<MctWitToyHostAdapter>,
+    pub measure: Option<MctWitToyHostAdapter>,
+}
+
+impl MctWitHostImportAdapters {
+    pub fn none() -> Self {
+        Self {
+            toy_registry: MctToyAdapterRegistry::new(),
+            logging: None,
+            measure: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 struct MctWasmHostState {
     toy_registry: MctToyAdapterRegistry,
     call: MctCall,
     toy_observations: Vec<MctObservation>,
+}
+
+#[derive(Clone, Debug)]
+struct MctWitHostState {
+    toy_registry: MctToyAdapterRegistry,
+    call: MctCall,
+    toy_observations: Vec<MctObservation>,
+    logging: Option<MctWitToyHostAdapter>,
+    measure: Option<MctWitToyHostAdapter>,
+    next_toy_call_index: u64,
+}
+
+impl MctWitHostState {
+    fn call_toy(
+        &mut self,
+        adapter: &MctWitToyHostAdapter,
+        input_json: &Value,
+    ) -> crate::toy::MctToyCallReport {
+        self.next_toy_call_index += 1;
+        let ids = MctToyCallIds {
+            started_observation_id: ObservationId::from(format!(
+                "{}:{}:started",
+                adapter.observation_id_prefix, self.next_toy_call_index
+            )),
+            completed_observation_id: ObservationId::from(format!(
+                "{}:{}:completed",
+                adapter.observation_id_prefix, self.next_toy_call_index
+            )),
+            started_at: adapter.observed_at.clone(),
+            completed_at: adapter.observed_at.clone(),
+        };
+        let mut report = self.toy_registry.call_authorized_toy(
+            &adapter.authorized_toy_call,
+            &self.call,
+            &input_json.to_string(),
+            ids,
+        );
+        self.toy_observations.append(&mut report.observations);
+        report
+    }
 }
 
 #[derive(Debug, Error)]
@@ -411,6 +475,39 @@ impl MctWasmComponentRuntime {
             call,
             &child.wasm_path,
             args_json,
+            MctWitHostImportAdapters::none(),
+            ids,
+        )
+    }
+
+    pub fn invoke_authorized_child_wit_export_with_host_adapters(
+        &self,
+        authorized: &AuthorizedChildInvocation,
+        child: &MctLoadedChild,
+        call: &MctCall,
+        args_json: &Value,
+        host_adapters: MctWitHostImportAdapters,
+        ids: MctWasmComponentInvocationIds,
+    ) -> Result<MctWitComponentInvocationReport, MctWasmComponentRuntimeError> {
+        if authorized.child_name != child.name {
+            return Err(MctWasmComponentRuntimeError::AuthorizedChildMismatch {
+                authorized_child_name: authorized.child_name.clone(),
+                loaded_child_name: child.name.clone(),
+            });
+        }
+        let operation_id = operation_id_from_target(&call.target);
+        if !child.allows_operation_target(&call.target) {
+            return Err(MctWasmComponentRuntimeError::WitOperationNotAllowed {
+                child_name: child.name.clone(),
+                operation_id,
+            });
+        }
+        self.invoke_wit_export_after_contract_check(
+            authorized,
+            call,
+            &child.wasm_path,
+            args_json,
+            host_adapters,
             ids,
         )
     }
@@ -421,6 +518,7 @@ impl MctWasmComponentRuntime {
         call: &MctCall,
         component_path: impl AsRef<Path>,
         args_json: &Value,
+        host_adapters: MctWitHostImportAdapters,
         ids: MctWasmComponentInvocationIds,
     ) -> Result<MctWitComponentInvocationReport, MctWasmComponentRuntimeError> {
         let component_path = component_path.as_ref().to_path_buf();
@@ -441,9 +539,25 @@ impl MctWasmComponentRuntime {
                     message: error.to_string(),
                 }
             })?;
-        reject_wit_host_imports_without_adapter(&self.engine, &component, &component_path)?;
-        let linker = component::Linker::<()>::new(&self.engine);
-        let mut store = Store::new(&self.engine, ());
+        validate_wit_host_imports_for_adapters(
+            &self.engine,
+            &component,
+            &component_path,
+            &host_adapters,
+        )?;
+        let mut linker = component::Linker::<MctWitHostState>::new(&self.engine);
+        link_wit_host_import_adapters(&mut linker, &host_adapters)?;
+        let mut store = Store::new(
+            &self.engine,
+            MctWitHostState {
+                toy_registry: host_adapters.toy_registry,
+                call: call.clone(),
+                toy_observations: Vec::new(),
+                logging: host_adapters.logging,
+                measure: host_adapters.measure,
+                next_toy_call_index: 0,
+            },
+        );
         let instance = linker
             .instantiate(&mut store, &component)
             .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
@@ -511,10 +625,13 @@ impl MctWasmComponentRuntime {
             requester_message: "wasm component completed".into(),
             audit_ref: ids.audit_ref,
         };
+        let mut observations = vec![started];
+        observations.extend(store.data().toy_observations.clone());
+        observations.push(completed);
         Ok(MctWitComponentInvocationReport {
             result,
             output_json,
-            observations: vec![started, completed],
+            observations,
         })
     }
 
@@ -764,29 +881,158 @@ fn discover_wit_component_imports(
         .collect()
 }
 
-fn reject_wit_host_imports_without_adapter(
+fn validate_wit_host_imports_for_adapters(
     engine: &Engine,
     component: &component::Component,
     component_path: &Path,
+    host_adapters: &MctWitHostImportAdapters,
 ) -> Result<(), MctWasmComponentRuntimeError> {
-    if let Some(import_name) = discover_wit_component_imports(engine, component)
-        .into_iter()
-        .next()
-    {
-        return Err(MctWasmComponentRuntimeError::UnsupportedWitHostImport {
-            path: component_path.to_path_buf(),
-            import_name: import_name.clone(),
-            item_name: import_name,
-            message:
-                "WIT host imports require a concrete MCT adapter; generic stubs are not permitted"
+    for import_name in discover_wit_component_imports(engine, component) {
+        let configured = match import_name.as_str() {
+            "wasi:logging/logging@0.1.0" => host_adapters.logging.is_some(),
+            "patina:measure/measure@0.1.0" => host_adapters.measure.is_some(),
+            _ => false,
+        };
+        if !configured {
+            return Err(MctWasmComponentRuntimeError::UnsupportedWitHostImport {
+                path: component_path.to_path_buf(),
+                import_name: import_name.clone(),
+                item_name: import_name,
+                message: "WIT host imports require a concrete MCT adapter; generic stubs are not permitted"
                     .into(),
-        });
+            });
+        }
     }
     Ok(())
 }
 
-fn lookup_wit_component_func(
-    store: &mut Store<()>,
+fn link_wit_host_import_adapters(
+    linker: &mut component::Linker<MctWitHostState>,
+    host_adapters: &MctWitHostImportAdapters,
+) -> Result<(), MctWasmComponentRuntimeError> {
+    if host_adapters.logging.is_some() {
+        let mut logging = linker
+            .instance("wasi:logging/logging@0.1.0")
+            .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+                path: PathBuf::from("wasi:logging/logging@0.1.0"),
+                message: error.to_string(),
+            })?;
+        logging
+            .func_new("log", |mut store, _ty, params, results| {
+                if !results.is_empty() {
+                    return Err(wasmtime::Error::msg(
+                        "invalid wasi logging host result shape",
+                    ));
+                }
+                let [
+                    level,
+                    component::Val::String(context),
+                    component::Val::String(message),
+                ] = params
+                else {
+                    return Err(wasmtime::Error::msg("invalid wasi logging host call shape"));
+                };
+                let level = match level {
+                    component::Val::Enum(level) => level.as_str(),
+                    component::Val::Variant(level, None) => level.as_str(),
+                    _ => return Err(wasmtime::Error::msg("invalid wasi logging level shape")),
+                };
+                let input_json = serde_json::json!({
+                    "interface": "wasi:logging/logging@0.1.0",
+                    "function": "log",
+                    "level": level,
+                    "context": context,
+                    "message": message,
+                });
+                let adapter =
+                    store.data().logging.clone().ok_or_else(|| {
+                        wasmtime::Error::msg("wasi logging adapter not configured")
+                    })?;
+                let report = store.data_mut().call_toy(&adapter, &input_json);
+                match report.outcome {
+                    MctToyAdapterOutcome::Success => Ok(()),
+                    MctToyAdapterOutcome::Failed => Err(wasmtime::Error::msg(report.safe_message)),
+                }
+            })
+            .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+                path: PathBuf::from("wasi:logging/logging@0.1.0.log"),
+                message: error.to_string(),
+            })?;
+    }
+
+    if host_adapters.measure.is_some() {
+        let mut measure = linker
+            .instance("patina:measure/measure@0.1.0")
+            .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+                path: PathBuf::from("patina:measure/measure@0.1.0"),
+                message: error.to_string(),
+            })?;
+        measure
+            .func_new("gauge", |mut store, _ty, params, results| {
+                let [component::Val::String(name), component::Val::Float64(value)] = params else {
+                    return Err(wasmtime::Error::msg(
+                        "invalid patina measure gauge host call shape",
+                    ));
+                };
+                call_measure_toy(&mut store, results, "gauge", name, *value)
+            })
+            .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+                path: PathBuf::from("patina:measure/measure@0.1.0.gauge"),
+                message: error.to_string(),
+            })?;
+        measure
+            .func_new("counter", |mut store, _ty, params, results| {
+                let [component::Val::String(name), component::Val::Float64(delta)] = params else {
+                    return Err(wasmtime::Error::msg(
+                        "invalid patina measure counter host call shape",
+                    ));
+                };
+                call_measure_toy(&mut store, results, "counter", name, *delta)
+            })
+            .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+                path: PathBuf::from("patina:measure/measure@0.1.0.counter"),
+                message: error.to_string(),
+            })?;
+    }
+
+    Ok(())
+}
+
+fn call_measure_toy(
+    store: &mut StoreContextMut<'_, MctWitHostState>,
+    results: &mut [component::Val],
+    function: &str,
+    name: &str,
+    value: f64,
+) -> wasmtime::Result<()> {
+    if results.len() != 1 {
+        return Err(wasmtime::Error::msg(
+            "invalid patina measure host result shape",
+        ));
+    }
+    let input_json = serde_json::json!({
+        "interface": "patina:measure/measure@0.1.0",
+        "function": function,
+        "name": name,
+        "value": value,
+    });
+    let adapter = store
+        .data()
+        .measure
+        .clone()
+        .ok_or_else(|| wasmtime::Error::msg("patina measure adapter not configured"))?;
+    let report = store.data_mut().call_toy(&adapter, &input_json);
+    results[0] = match report.outcome {
+        MctToyAdapterOutcome::Success => component::Val::Result(Ok(None)),
+        MctToyAdapterOutcome::Failed => component::Val::Result(Err(Some(Box::new(
+            component::Val::String(report.safe_message),
+        )))),
+    };
+    Ok(())
+}
+
+fn lookup_wit_component_func<T>(
+    store: &mut Store<T>,
     instance: &component::Instance,
     operation: &MctWitResolvedOperation,
 ) -> Option<component::Func> {
@@ -998,6 +1244,90 @@ mod tests {
         component_path
     }
 
+    fn typed_logging_component_path(dir: &tempfile::TempDir) -> PathBuf {
+        let component_wat = r#"
+(component
+  (import (interface "wasi:logging/logging@0.1.0") (instance $logging
+    (type $level' (variant (case "trace") (case "debug") (case "info") (case "warn") (case "error") (case "critical")))
+    (export "level" (type $level (eq $level')))
+    (export "log" (func (param "level" $level) (param "context" string) (param "message" string)))))
+  (alias export $logging "log" (func $log))
+  (core module $memory-module
+    (memory (export "memory") 1))
+  (core instance $memory-instance (instantiate $memory-module))
+  (alias core export $memory-instance "memory" (core memory $memory))
+  (core func $log-core (canon lower (func $log) (memory $memory) string-encoding=utf8))
+  (core module $m
+    (import "" "memory" (memory 1))
+    (import "" "log" (func $log-import (param i32 i32 i32 i32 i32)))
+    (data (i32.const 0) "mct-testhello")
+    (func $run (export "run") (result i32)
+      i32.const 2
+      i32.const 0
+      i32.const 8
+      i32.const 8
+      i32.const 5
+      call $log-import
+      i32.const 1))
+  (core instance $imports (export "memory" (memory $memory)) (export "log" (func $log-core)))
+  (core instance $i (instantiate $m (with "" (instance $imports))))
+  (func $run (result s32) (canon lift (core func $i "run")))
+  (instance $control (export "run" (func $run)))
+  (export "patina:demo/control@0.1.0" (instance $control)))
+"#;
+        let component_path = dir.path().join("typed-logging.component.wasm");
+        fs::write(&component_path, wat::parse_str(component_wat).unwrap()).unwrap();
+        component_path
+    }
+
+    fn typed_measure_component_path(dir: &tempfile::TempDir) -> PathBuf {
+        let component_wat = r#"
+(component
+  (import (interface "patina:measure/measure@0.1.0") (instance $measure
+    (export "counter" (func (param "name" string) (param "delta" float64) (result (result))))))
+  (alias export $measure "counter" (func $counter))
+  (core module $memory-module
+    (memory (export "memory") 1))
+  (core instance $memory-instance (instantiate $memory-module))
+  (alias core export $memory-instance "memory" (core memory $memory))
+  (core func $counter-core (canon lower (func $counter) (memory $memory) string-encoding=utf8))
+  (core module $m
+    (import "" "memory" (memory 1))
+    (import "" "counter" (func $counter-import (param i32 i32 f64) (result i32)))
+    (data (i32.const 0) "slate_dispatch_calls")
+    (func $run (export "run") (result i32)
+      i32.const 0
+      i32.const 20
+      f64.const 1
+      call $counter-import
+      drop
+      i32.const 1))
+  (core instance $imports (export "memory" (memory $memory)) (export "counter" (func $counter-core)))
+  (core instance $i (instantiate $m (with "" (instance $imports))))
+  (func $run (result s32) (canon lift (core func $i "run")))
+  (instance $control (export "run" (func $run)))
+  (export "patina:demo/control@0.1.0" (instance $control)))
+"#;
+        let component_path = dir.path().join("typed-measure.component.wasm");
+        fs::write(&component_path, wat::parse_str(component_wat).unwrap()).unwrap();
+        component_path
+    }
+
+    fn wit_host_adapters() -> MctWitHostImportAdapters {
+        let mut toy_registry = MctToyAdapterRegistry::new();
+        toy_registry.register(ToyId::from("toy-echo"), crate::MctToyBackend::EchoJson);
+        let adapter = MctWitToyHostAdapter {
+            authorized_toy_call: toy_authorized(),
+            observation_id_prefix: "obs-wit-host-toy".into(),
+            observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        };
+        MctWitHostImportAdapters {
+            toy_registry,
+            logging: Some(adapter.clone()),
+            measure: Some(adapter),
+        }
+    }
+
     fn loaded_typed_child(
         component_path: PathBuf,
         allowed_operations: Vec<String>,
@@ -1065,6 +1395,96 @@ mod tests {
                 &child,
                 &typed_call("double"),
                 &serde_json::json!([7]),
+                ids(),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            MctWasmComponentRuntimeError::UnsupportedWitHostImport { .. }
+        ));
+    }
+
+    #[test]
+    fn mct_wit_runtime_invokes_authorized_logging_import() {
+        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let component_path = typed_logging_component_path(&dir);
+        let child =
+            loaded_typed_child(component_path, vec!["patina:demo/control@0.1.0.run".into()]);
+
+        let report = runtime
+            .invoke_authorized_child_wit_export_with_host_adapters(
+                &authorized(),
+                &child,
+                &typed_call("run"),
+                &serde_json::json!([]),
+                wit_host_adapters(),
+                ids(),
+            )
+            .unwrap();
+
+        assert_eq!(report.output_json, serde_json::json!({"results": [1]}));
+        assert_eq!(report.result.outcome, ResultOutcome::Success);
+        assert_eq!(report.observations.len(), 4);
+        assert_eq!(report.observations[1].kind, ObservationKind::ToyCallStarted);
+        assert_eq!(
+            report.observations[2].kind,
+            ObservationKind::ToyCallCompleted
+        );
+        assert_eq!(
+            report.observations[3].kind,
+            ObservationKind::RuntimeExecutionCompleted
+        );
+    }
+
+    #[test]
+    fn mct_wit_runtime_invokes_authorized_measure_import() {
+        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let component_path = typed_measure_component_path(&dir);
+        let child =
+            loaded_typed_child(component_path, vec!["patina:demo/control@0.1.0.run".into()]);
+
+        let report = runtime
+            .invoke_authorized_child_wit_export_with_host_adapters(
+                &authorized(),
+                &child,
+                &typed_call("run"),
+                &serde_json::json!([]),
+                wit_host_adapters(),
+                ids(),
+            )
+            .unwrap();
+
+        assert_eq!(report.output_json, serde_json::json!({"results": [1]}));
+        assert_eq!(report.result.outcome, ResultOutcome::Success);
+        assert_eq!(report.observations[1].kind, ObservationKind::ToyCallStarted);
+        assert_eq!(
+            report.observations[2].kind,
+            ObservationKind::ToyCallCompleted
+        );
+    }
+
+    #[test]
+    fn mct_wit_runtime_rejects_configured_unknown_host_import() {
+        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let component_path = typed_importing_component_path(&dir);
+        let child = loaded_typed_child(
+            component_path,
+            vec!["patina:demo/control@0.1.0.double".into()],
+        );
+        let mut host_adapters = wit_host_adapters();
+        host_adapters.measure = None;
+
+        let error = runtime
+            .invoke_authorized_child_wit_export_with_host_adapters(
+                &authorized(),
+                &child,
+                &typed_call("double"),
+                &serde_json::json!([7]),
+                host_adapters,
                 ids(),
             )
             .unwrap_err();
