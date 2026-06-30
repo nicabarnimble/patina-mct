@@ -777,7 +777,11 @@ listens = ["events.changed"]
     }
 
     fn write_child_package(dir: &Path, artifact_name: &str, name: &str) {
-        fs::write(dir.join(artifact_name), format!("wasm-{name}")).unwrap();
+        let artifact_path = dir.join(artifact_name);
+        if let Some(parent) = artifact_path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&artifact_path, format!("wasm-{name}")).unwrap();
         fs::write(
             dir.join(CHILD_MANIFEST_FILE),
             format!(
@@ -790,6 +794,9 @@ role = "app"
 
 [child.ingress]
 mode = "wit-only"
+
+[child.artifact]
+wasm = "{artifact_name}"
 
 [child.contract]
 allow = ["patina:slate/control@0.1.0.list-work"]
@@ -881,7 +888,7 @@ listens = ["events.changed"]
         let dir = tempfile::tempdir().unwrap();
         write_child_package(
             dir.path(),
-            "patina_ai_child_slate_manager.wasm",
+            "target/wasm32-wasip1/release/patina_ai_child_slate_manager.wasm",
             "slate-manager",
         );
 
@@ -907,10 +914,32 @@ listens = ["events.changed"]
     }
 
     #[test]
-    fn sdk_child_package_rejects_ambiguous_artifacts() {
+    fn sdk_child_package_uses_manifest_declared_artifact() {
         let dir = tempfile::tempdir().unwrap();
         write_child_package(dir.path(), "one.wasm", "slate-manager");
         fs::write(dir.path().join("two.wasm"), "wasm-two").unwrap();
+
+        let report = load_children_from_dir(MctChildLoadOptions::new(dir.path()));
+
+        assert_eq!(report.discovered, 1);
+        assert_eq!(report.loaded, 1);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.children[0].wasm_path, dir.path().join("one.wasm"));
+    }
+
+    #[test]
+    fn sdk_child_package_rejects_missing_artifact_declaration() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("one.wasm"), "wasm-one").unwrap();
+        fs::write(
+            dir.path().join(CHILD_MANIFEST_FILE),
+            r#"[child]
+name = "slate-manager"
+version = "0.4.0"
+kind = "child"
+"#,
+        )
+        .unwrap();
 
         let report = load_children_from_dir(MctChildLoadOptions::new(dir.path()));
 
