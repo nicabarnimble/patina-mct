@@ -403,35 +403,20 @@ pub fn load_children_from_dir(options: MctChildLoadOptions) -> MctChildLoadRepor
         }
     };
 
-    let mut wasm_paths = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("wasm"))
-        .collect::<Vec<_>>();
-    wasm_paths.sort();
-    report.discovered = wasm_paths.len();
-
     let mut loaded_by_name = BTreeMap::<String, MctLoadedChild>::new();
-    for wasm_path in wasm_paths.iter() {
-        let manifest_path =
-            match resolve_child_manifest_path(&children_dir, wasm_path, wasm_paths.len()) {
-                Ok(path) => path,
-                Err(error) => {
-                    report.failures.push(MctChildLoadFailure {
-                        wasm_path: Some(wasm_path.clone()),
-                        manifest_path: None,
-                        safe_message: error.safe_message(),
-                        detail: error.to_string(),
-                    });
-                    continue;
-                }
-            };
-        match load_child_pair(wasm_path, &manifest_path, options.integrity_mode) {
+    for entry in entries.flatten() {
+        let wasm_path = entry.path();
+        if wasm_path.extension().and_then(|ext| ext.to_str()) != Some("wasm") {
+            continue;
+        }
+        report.discovered += 1;
+        let manifest_path = wasm_path.with_extension("toml");
+        match load_child_pair(&wasm_path, &manifest_path, options.integrity_mode) {
             Ok(child) => {
                 if loaded_by_name.contains_key(&child.name) {
                     report.failures.push(MctChildLoadFailure {
-                        wasm_path: Some(wasm_path.clone()),
-                        manifest_path: Some(manifest_path.clone()),
+                        wasm_path: Some(wasm_path),
+                        manifest_path: Some(manifest_path),
                         safe_message: "duplicate child name".into(),
                         detail: format!("duplicate child name '{}'", child.name),
                     });
@@ -440,7 +425,7 @@ pub fn load_children_from_dir(options: MctChildLoadOptions) -> MctChildLoadRepor
                 loaded_by_name.insert(child.name.clone(), child);
             }
             Err(error) => report.failures.push(MctChildLoadFailure {
-                wasm_path: Some(wasm_path.clone()),
+                wasm_path: Some(wasm_path),
                 manifest_path: Some(manifest_path),
                 safe_message: error.safe_message(),
                 detail: error.to_string(),
@@ -452,31 +437,6 @@ pub fn load_children_from_dir(options: MctChildLoadOptions) -> MctChildLoadRepor
     report.loaded = report.children.len();
     report.failed = report.failures.len();
     report
-}
-
-fn resolve_child_manifest_path(
-    children_dir: &Path,
-    wasm_path: &Path,
-    wasm_count: usize,
-) -> Result<PathBuf, MctChildLoadError> {
-    let sidecar_manifest = wasm_path.with_extension("toml");
-    if sidecar_manifest.exists() {
-        return Ok(sidecar_manifest);
-    }
-
-    let package_manifest = children_dir.join("child.toml");
-    if !package_manifest.exists() {
-        return Ok(sidecar_manifest);
-    }
-
-    if wasm_count == 1 {
-        return Ok(package_manifest);
-    }
-
-    Err(MctChildLoadError::AmbiguousPackageManifest {
-        wasm_path: wasm_path.to_path_buf(),
-        manifest_path: package_manifest,
-    })
 }
 
 pub fn operation_id_from_target(target: &OperationTarget) -> String {
@@ -594,11 +554,6 @@ enum MctChildLoadError {
     },
     #[error("child manifest {path} is missing [child].name")]
     MissingChildName { path: PathBuf },
-    #[error("child package manifest {manifest_path} is ambiguous for wasm {wasm_path}")]
-    AmbiguousPackageManifest {
-        wasm_path: PathBuf,
-        manifest_path: PathBuf,
-    },
     #[error("child manifest {path} has unknown ingress mode '{mode}'")]
     UnknownIngressMode { path: PathBuf, mode: String },
 }
@@ -612,7 +567,6 @@ impl MctChildLoadError {
             Self::MissingChildName { .. } | Self::ParseManifest { .. } => {
                 "invalid child manifest".into()
             }
-            Self::AmbiguousPackageManifest { .. } => "ambiguous child package manifest".into(),
             Self::UnknownIngressMode { .. } => "unsupported child ingress mode".into(),
             Self::ReadFile { .. } => "child file could not be read".into(),
         }
@@ -854,38 +808,6 @@ listens = ["events.changed"]
         }
     }
 
-    fn write_slate_package_child(dir: &Path) {
-        fs::write(dir.join("patina_ai_child_slate_manager.wasm"), "wasm-slate").unwrap();
-        fs::write(
-            dir.join("child.toml"),
-            r#"[child]
-name = "slate-manager"
-version = "0.4.0"
-description = "Slate full-WIT child scaffold"
-kind = "child"
-role = "app"
-patina_min = "0.64.0"
-
-[child.ingress]
-mode = "wit-only"
-
-[child.contract]
-default = "patina:slate/control@0.1.0.list-work"
-allow = [
-  "patina:slate/control@0.1.0.list-work",
-  "patina:slate/control@0.1.0.show-work",
-]
-
-[needs]
-toys = ["logging", "measure", "git", "filesystem"]
-
-[needs.metrics]
-slate_dispatch_calls = { type = "counter", labels = [] }
-"#,
-        )
-        .unwrap();
-    }
-
     fn call_for(operation: OperationTarget) -> MctCall {
         MctCall {
             call_id: mct_kernel::CallId::from("call-child-route"),
@@ -955,53 +877,6 @@ slate_dispatch_calls = { type = "counter", labels = [] }
             .unwrap();
         assert!(!watch.wasm_digest.sidecar_present);
         assert_eq!(watch.instance_state, MctChildInstanceState::Ready);
-    }
-
-    #[test]
-    fn loads_single_wasm_child_package_with_child_toml_manifest() {
-        let dir = tempfile::tempdir().unwrap();
-        write_slate_package_child(dir.path());
-
-        let report = load_children_from_dir(MctChildLoadOptions::new(dir.path()));
-
-        assert_eq!(report.discovered, 1);
-        assert_eq!(report.loaded, 1);
-        assert_eq!(report.failed, 0);
-        let slate = &report.children[0];
-        assert_eq!(slate.name, "slate-manager");
-        assert_eq!(slate.version, "0.4.0");
-        assert_eq!(slate.ingress_mode, MctChildIngressMode::WitOnly);
-        assert_eq!(slate.manifest_path, dir.path().join("child.toml"));
-        assert_eq!(
-            slate.allowed_operations,
-            vec![
-                "patina:slate/control@0.1.0.list-work".to_string(),
-                "patina:slate/control@0.1.0.show-work".to_string(),
-            ]
-        );
-        assert_eq!(
-            slate.requested_toys,
-            vec!["logging", "measure", "git", "filesystem"]
-        );
-    }
-
-    #[test]
-    fn child_toml_package_manifest_is_ambiguous_with_multiple_wasm_artifacts() {
-        let dir = tempfile::tempdir().unwrap();
-        write_slate_package_child(dir.path());
-        fs::write(dir.path().join("other-child.wasm"), "wasm-other").unwrap();
-
-        let report = load_children_from_dir(MctChildLoadOptions::new(dir.path()));
-
-        assert_eq!(report.discovered, 2);
-        assert_eq!(report.loaded, 0);
-        assert_eq!(report.failed, 2);
-        assert!(
-            report
-                .failures
-                .iter()
-                .all(|failure| failure.safe_message == "ambiguous child package manifest")
-        );
     }
 
     #[test]
