@@ -2131,6 +2131,7 @@ dependencies = [
  "mct-iroh",
  "mct-kernel",
  "mct-observation",
+ "patina-sdk",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2684,6 +2685,15 @@ name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "patina-sdk"
+version = "0.22.0"
+source = "git+https://github.com/nicabarnimble/patina.git?branch=mct-sdk-manifest-contract#ea1c88d938db11e0ffbe01ee44f40da75b4c3f4c"
+dependencies = [
+ "serde",
+ "toml 0.8.23",
+]
 
 [[package]]
 name = "pem-rfc7468"

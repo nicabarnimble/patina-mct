@@ -8,6 +8,9 @@ use mct_kernel::{
     NetworkPathClass, ObservationId, OperationTarget, ProjectId, RuntimeKind, VerificationStatus,
     VisionId, evaluate_child_call_authority,
 };
+use patina_sdk::manifest::{
+    CHILD_MANIFEST_FILE, ChildManifest as SdkChildManifest, ChildManifestError, ChildPackage,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -389,6 +392,21 @@ pub fn load_children_from_dir(options: MctChildLoadOptions) -> MctChildLoadRepor
         return report;
     }
 
+    if children_dir.join(CHILD_MANIFEST_FILE).exists() {
+        report.discovered = 1;
+        match load_child_package(&children_dir, options.integrity_mode) {
+            Ok(child) => {
+                report.children.push(child);
+                report.loaded = 1;
+            }
+            Err(failure) => {
+                report.failures.push(failure);
+                report.failed = 1;
+            }
+        }
+        return report;
+    }
+
     let entries = match fs::read_dir(&children_dir) {
         Ok(entries) => entries,
         Err(error) => {
@@ -437,6 +455,30 @@ pub fn load_children_from_dir(options: MctChildLoadOptions) -> MctChildLoadRepor
     report.loaded = report.children.len();
     report.failed = report.failures.len();
     report
+}
+
+fn load_child_package(
+    children_dir: &Path,
+    integrity_mode: MctChildIntegrityMode,
+) -> Result<MctLoadedChild, MctChildLoadFailure> {
+    let package =
+        ChildPackage::from_package_dir(children_dir).map_err(|source| MctChildLoadFailure {
+            wasm_path: None,
+            manifest_path: Some(children_dir.join(CHILD_MANIFEST_FILE)),
+            safe_message: "invalid child package".into(),
+            detail: source.to_string(),
+        })?;
+    load_child_pair(
+        &package.artifact_path,
+        &package.manifest_path,
+        integrity_mode,
+    )
+    .map_err(|error| MctChildLoadFailure {
+        wasm_path: Some(package.artifact_path),
+        manifest_path: Some(package.manifest_path),
+        safe_message: error.safe_message(),
+        detail: error.to_string(),
+    })
 }
 
 pub fn operation_id_from_target(target: &OperationTarget) -> String {
@@ -550,12 +592,8 @@ enum MctChildLoadError {
     ParseManifest {
         path: PathBuf,
         #[source]
-        source: toml::de::Error,
+        source: ChildManifestError,
     },
-    #[error("child manifest {path} is missing [child].name")]
-    MissingChildName { path: PathBuf },
-    #[error("child manifest {path} has unknown ingress mode '{mode}'")]
-    UnknownIngressMode { path: PathBuf, mode: String },
 }
 
 impl MctChildLoadError {
@@ -564,63 +602,10 @@ impl MctChildLoadError {
             Self::MissingManifest { .. } => "missing child manifest".into(),
             Self::MissingHashSidecar { .. } => "missing child integrity sidecar".into(),
             Self::HashMismatch { .. } => "child integrity check failed".into(),
-            Self::MissingChildName { .. } | Self::ParseManifest { .. } => {
-                "invalid child manifest".into()
-            }
-            Self::UnknownIngressMode { .. } => "unsupported child ingress mode".into(),
+            Self::ParseManifest { .. } => "invalid child manifest".into(),
             Self::ReadFile { .. } => "child file could not be read".into(),
         }
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct RawChildManifest {
-    child: RawChildSection,
-    #[serde(default)]
-    needs: RawNeedsSection,
-    #[serde(default)]
-    relationships: RawRelationshipsSection,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawChildSection {
-    name: Option<String>,
-    #[serde(default)]
-    version: Option<String>,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    kind: Option<String>,
-    #[serde(default)]
-    role: Option<String>,
-    #[serde(default)]
-    ingress: RawIngressSection,
-    #[serde(default)]
-    contract: RawContractSection,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct RawIngressSection {
-    #[serde(default)]
-    mode: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct RawContractSection {
-    #[serde(default)]
-    allow: Vec<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct RawNeedsSection {
-    #[serde(default)]
-    toys: Vec<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct RawRelationshipsSection {
-    #[serde(default)]
-    listens: Vec<String>,
 }
 
 fn load_child_pair(
@@ -646,38 +631,28 @@ fn load_child_pair(
     let manifest_digest =
         digest_bytes_with_sidecar(manifest_path, &manifest_bytes, integrity_mode)?;
     let manifest_text = String::from_utf8_lossy(&manifest_bytes);
-    let manifest: RawChildManifest =
-        toml::from_str(&manifest_text).map_err(|source| MctChildLoadError::ParseManifest {
+    let manifest = SdkChildManifest::from_toml_str(&manifest_text).map_err(|source| {
+        MctChildLoadError::ParseManifest {
             path: manifest_path.to_path_buf(),
             source,
-        })?;
-    let name = manifest
-        .child
-        .name
-        .filter(|name: &String| !name.trim().is_empty())
-        .ok_or_else(|| MctChildLoadError::MissingChildName {
-            path: manifest_path.to_path_buf(),
-        })?;
-    let ingress_mode = parse_ingress_mode(
-        manifest_path,
-        manifest.child.ingress.mode.as_deref().unwrap_or("handle"),
-    )?;
+        }
+    })?;
     let artifact_id = format!("sha256:{}", wasm_digest.sha256);
 
     Ok(MctLoadedChild {
-        child_id: ChildId::from(name.clone()),
-        name,
-        version: manifest.child.version.unwrap_or_else(|| "0.0.0".into()),
-        description: manifest.child.description,
-        kind: manifest.child.kind.unwrap_or_else(|| "child".into()),
-        role: manifest.child.role,
+        child_id: ChildId::from(manifest.name.clone()),
+        name: manifest.name,
+        version: manifest.version,
+        description: manifest.description,
+        kind: manifest.kind,
+        role: manifest.role,
         wasm_path: wasm_path.to_path_buf(),
         manifest_path: manifest_path.to_path_buf(),
         wasm_digest,
         manifest_digest,
         artifact_id,
-        ingress_mode,
-        allowed_operations: manifest.child.contract.allow,
+        ingress_mode: mct_ingress_mode_from_sdk(manifest.ingress_mode),
+        allowed_operations: manifest.contract.allow_operations,
         requested_toys: manifest.needs.toys,
         subscribed_streams: Vec::new(),
         relationship_listens: manifest.relationships.listens,
@@ -686,18 +661,11 @@ fn load_child_pair(
     })
 }
 
-fn parse_ingress_mode(
-    manifest_path: &Path,
-    mode: &str,
-) -> Result<MctChildIngressMode, MctChildLoadError> {
+fn mct_ingress_mode_from_sdk(mode: patina_sdk::manifest::ChildIngressMode) -> MctChildIngressMode {
     match mode {
-        "handle" => Ok(MctChildIngressMode::Handle),
-        "hybrid" => Ok(MctChildIngressMode::Hybrid),
-        "wit-only" => Ok(MctChildIngressMode::WitOnly),
-        other => Err(MctChildLoadError::UnknownIngressMode {
-            path: manifest_path.to_path_buf(),
-            mode: other.into(),
-        }),
+        patina_sdk::manifest::ChildIngressMode::Handle => MctChildIngressMode::Handle,
+        patina_sdk::manifest::ChildIngressMode::Hybrid => MctChildIngressMode::Hybrid,
+        patina_sdk::manifest::ChildIngressMode::WitOnly => MctChildIngressMode::WitOnly,
     }
 }
 
@@ -808,6 +776,35 @@ listens = ["events.changed"]
         }
     }
 
+    fn write_child_package(dir: &Path, artifact_name: &str, name: &str) {
+        fs::write(dir.join(artifact_name), format!("wasm-{name}")).unwrap();
+        fs::write(
+            dir.join(CHILD_MANIFEST_FILE),
+            format!(
+                r#"[child]
+name = "{name}"
+version = "0.4.0"
+description = "test package child"
+kind = "child"
+role = "app"
+
+[child.ingress]
+mode = "wit-only"
+
+[child.contract]
+allow = ["patina:slate/control@0.1.0.list-work"]
+
+[needs]
+toys = ["logging", "measure"]
+
+[relationships]
+listens = ["events.changed"]
+"#
+            ),
+        )
+        .unwrap();
+    }
+
     fn call_for(operation: OperationTarget) -> MctCall {
         MctCall {
             call_id: mct_kernel::CallId::from("call-child-route"),
@@ -877,6 +874,50 @@ listens = ["events.changed"]
             .unwrap();
         assert!(!watch.wasm_digest.sidecar_present);
         assert_eq!(watch.instance_state, MctChildInstanceState::Ready);
+    }
+
+    #[test]
+    fn loads_sdk_child_package_from_directory_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        write_child_package(
+            dir.path(),
+            "patina_ai_child_slate_manager.wasm",
+            "slate-manager",
+        );
+
+        let report = load_children_from_dir(MctChildLoadOptions::new(dir.path()));
+
+        assert_eq!(report.discovered, 1);
+        assert_eq!(report.loaded, 1);
+        assert_eq!(report.failed, 0);
+        let child = report.children.first().unwrap();
+        assert_eq!(child.name, "slate-manager");
+        assert_eq!(child.version, "0.4.0");
+        assert_eq!(child.ingress_mode, MctChildIngressMode::WitOnly);
+        assert_eq!(
+            child.wasm_path.file_name().unwrap(),
+            "patina_ai_child_slate_manager.wasm"
+        );
+        assert_eq!(
+            child.allowed_operations,
+            vec!["patina:slate/control@0.1.0.list-work"]
+        );
+        assert_eq!(child.requested_toys, vec!["logging", "measure"]);
+        assert_eq!(child.relationship_listens, vec!["events.changed"]);
+    }
+
+    #[test]
+    fn sdk_child_package_rejects_ambiguous_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        write_child_package(dir.path(), "one.wasm", "slate-manager");
+        fs::write(dir.path().join("two.wasm"), "wasm-two").unwrap();
+
+        let report = load_children_from_dir(MctChildLoadOptions::new(dir.path()));
+
+        assert_eq!(report.discovered, 1);
+        assert_eq!(report.loaded, 0);
+        assert_eq!(report.failed, 1);
+        assert_eq!(report.failures[0].safe_message, "invalid child package");
     }
 
     #[test]
