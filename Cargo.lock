@@ -2689,7 +2689,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 [[package]]
 name = "patina-sdk"
 version = "0.22.0"
-source = "git+https://github.com/nicabarnimble/patina.git?rev=71bfc9a093994814deba6b66421a9050d0ca846a#71bfc9a093994814deba6b66421a9050d0ca846a"
+source = "git+https://github.com/nicabarnimble/patina.git?rev=5106ef0feb55aef7c4c4bc43aad49237768a32c2#5106ef0feb55aef7c4c4bc43aad49237768a32c2"
 dependencies = [
  "serde",
  "toml 0.8.23",
