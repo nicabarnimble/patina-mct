@@ -1,7 +1,7 @@
 id = "mct-wit-git-adapter"
 title = "Add concrete WIT git host adapter"
 kind = "build"
-status = "active"
+status = "completed"
 execution_granularity = "slice"
 human_request = "Continue the MCT Slate execution path by adding a concrete git WIT host adapter without generic stubs."
 allium_anchors = ["KernelDecidesAdaptersPerform", "ObservationsAreCanonicalRuntimeTruth", "DaemonOwnsLifecycleButNotAuthority"]
@@ -12,16 +12,25 @@ implementation_ready = true
 runtime_shape_role = "Typed WIT components may import patina:git/git@0.1.0 only when MCT is given an explicit authorized git toy adapter backed by a concrete repository."
 non_goals = ["No generic granted import stubs.", "No WASI filesystem/preopen support in this slice.", "No Wasmtime/WASI types in mct-kernel."]
 implementation_plan = ["""
-[ ] Add a concrete git toy backend with sanitized git command execution scoped to one repository.
-[ ] Add explicit WIT git host adapter configuration and link all patina:git/git@0.1.0 functions.
-[ ] Route WIT git calls through authorized toy calls and typed result conversion.
-[ ] Add tests proving authorized git invocation and unsupported/unconfigured imports remain fail-closed.
+[x] Add a concrete git toy backend with sanitized git command execution scoped to one repository.
+[x] Add explicit WIT git host adapter configuration and link all patina:git/git@0.1.0 functions.
+[x] Route WIT git calls through authorized toy calls and typed result conversion.
+[x] Add tests proving authorized git invocation and unsupported/unconfigured imports remain fail-closed.
 """]
 proof_plan = ["""
-[ ] `cargo test -p mct-daemon mct_wit_runtime` passes.
-[ ] `cargo test -p mct-kernel -p mct-daemon` passes.
+[x] `cargo test -p mct-daemon mct_wit_runtime` passes.
+[x] `cargo test -p mct-daemon toy::tests::` passes.
+[x] `cargo clippy -p mct-daemon --lib -- -D warnings` passes.
+[x] `cargo test -p mct-kernel -p mct-daemon` passes.
 """]
-closure_evidence = []
+closure_evidence = [
+  "Added MctToyBackend::GitCommand scoped to a configured repository root.",
+  "Git toy command execution clears ambient GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, and GIT_PREFIX.",
+  "Repository path arguments are rejected unless repository-relative and non-escaping.",
+  "patina:git/git@0.1.0 host import links all current interface functions through authorized toy calls.",
+  "WIT git create-tag invocation creates a real tag in a temporary git repo and emits toy observations.",
+  "Validation passed: cargo test -p mct-daemon mct_wit_runtime; cargo test -p mct-daemon toy::tests::; cargo clippy -p mct-daemon --lib -- -D warnings; cargo test -p mct-kernel -p mct-daemon.",
+]
 blocked_by = []
 created_at = "1782919200"
-updated_at = "1782919200"
+updated_at = "1782920100"
