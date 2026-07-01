@@ -86,11 +86,12 @@ pub use toy::{
     MctToyAdapterOutcome, MctToyAdapterRegistry, MctToyBackend, MctToyCallIds, MctToyCallReport,
 };
 pub use wasm::{
-    MctWasmComponentDiagnosticIds, MctWasmComponentInvocationIds, MctWasmComponentInvocationReport,
-    MctWasmComponentRuntime, MctWasmComponentRuntimeError, MctWasmComponentToyInvocation,
-    MctWasmToyHostImport, MctWitComponentInvocationReport, MctWitHostImportAdapters,
-    MctWitResolvedOperation, MctWitToyHostAdapter, resolve_wit_operation_target,
-    wasm_component_runtime_error_observation, wit_operation_id_from_target,
+    MctWasiHostConfig, MctWasiPreopen, MctWasiPreopenAccess, MctWasmComponentDiagnosticIds,
+    MctWasmComponentInvocationIds, MctWasmComponentInvocationReport, MctWasmComponentRuntime,
+    MctWasmComponentRuntimeError, MctWasmComponentToyInvocation, MctWasmToyHostImport,
+    MctWitComponentInvocationReport, MctWitHostImportAdapters, MctWitResolvedOperation,
+    MctWitToyHostAdapter, resolve_wit_operation_target, wasm_component_runtime_error_observation,
+    wit_operation_id_from_target,
 };
 
 /// Returns the crate version for health and smoke tests.
