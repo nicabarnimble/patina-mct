@@ -365,6 +365,12 @@ impl MctDaemonConfigStore {
         child: &MctLoadedChild,
         scope: MctOperatorChildScope,
     ) -> Result<MctDaemonConfig> {
+        if !child.integrity_verified() {
+            bail!(
+                "child '{}' cannot be approved because its wasm and manifest hashes are not verified",
+                child.name
+            );
+        }
         let mut config = self.load()?;
         let now = unix_timestamp_string();
         config.child_approvals.insert(
@@ -593,6 +599,20 @@ mod tests {
             revoked.child_assignments["child-a"].assignment_state,
             ChildAssignmentState::Revoked
         );
+    }
+
+    #[test]
+    fn config_store_rejects_unverified_child_approval() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MctDaemonConfigStore::new(dir.path().join("config.json"));
+        let mut child = loaded_child();
+        child.wasm_digest.verified = false;
+
+        let result =
+            store.approve_and_assign_loaded_child(&child, MctOperatorChildScope::default());
+
+        assert!(result.is_err());
+        assert!(store.load().unwrap().child_approvals.is_empty());
     }
 
     #[test]
