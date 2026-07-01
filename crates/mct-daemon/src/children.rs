@@ -427,27 +427,37 @@ pub fn load_children_from_dir(options: MctChildLoadOptions) -> MctChildLoadRepor
 
     let mut loaded_by_name = BTreeMap::<String, MctLoadedChild>::new();
     for entry in entries.flatten() {
-        let wasm_path = entry.path();
-        if wasm_path.extension().and_then(|ext| ext.to_str()) != Some("wasm") {
+        let path = entry.path();
+        if path.is_dir() && path.join(CHILD_MANIFEST_FILE).exists() {
+            report.discovered += 1;
+            match load_child_package(&path, options.integrity_mode) {
+                Ok(child) => insert_loaded_child_or_record_duplicate(
+                    &mut loaded_by_name,
+                    &mut report.failures,
+                    child,
+                    None,
+                    Some(path.join(CHILD_MANIFEST_FILE)),
+                ),
+                Err(failure) => report.failures.push(failure),
+            }
+            continue;
+        }
+
+        if path.extension().and_then(|ext| ext.to_str()) != Some("wasm") {
             continue;
         }
         report.discovered += 1;
-        let manifest_path = wasm_path.with_extension("toml");
-        match load_child_pair(&wasm_path, &manifest_path, options.integrity_mode) {
-            Ok(child) => {
-                if loaded_by_name.contains_key(&child.name) {
-                    report.failures.push(MctChildLoadFailure {
-                        wasm_path: Some(wasm_path),
-                        manifest_path: Some(manifest_path),
-                        safe_message: "duplicate child name".into(),
-                        detail: format!("duplicate child name '{}'", child.name),
-                    });
-                    continue;
-                }
-                loaded_by_name.insert(child.name.clone(), child);
-            }
+        let manifest_path = path.with_extension("toml");
+        match load_child_pair(&path, &manifest_path, options.integrity_mode) {
+            Ok(child) => insert_loaded_child_or_record_duplicate(
+                &mut loaded_by_name,
+                &mut report.failures,
+                child,
+                Some(path),
+                Some(manifest_path),
+            ),
             Err(error) => report.failures.push(MctChildLoadFailure {
-                wasm_path: Some(wasm_path),
+                wasm_path: Some(path),
                 manifest_path: Some(manifest_path),
                 safe_message: error.safe_message(),
                 detail: error.to_string(),
@@ -459,6 +469,25 @@ pub fn load_children_from_dir(options: MctChildLoadOptions) -> MctChildLoadRepor
     report.loaded = report.children.len();
     report.failed = report.failures.len();
     report
+}
+
+fn insert_loaded_child_or_record_duplicate(
+    loaded_by_name: &mut BTreeMap<String, MctLoadedChild>,
+    failures: &mut Vec<MctChildLoadFailure>,
+    child: MctLoadedChild,
+    wasm_path: Option<PathBuf>,
+    manifest_path: Option<PathBuf>,
+) {
+    if loaded_by_name.contains_key(&child.name) {
+        failures.push(MctChildLoadFailure {
+            wasm_path,
+            manifest_path,
+            safe_message: "duplicate child name".into(),
+            detail: format!("duplicate child name '{}'", child.name),
+        });
+        return;
+    }
+    loaded_by_name.insert(child.name.clone(), child);
 }
 
 fn load_child_package(
@@ -770,14 +799,17 @@ listens = ["events.changed"]
 
     fn write_sidecars(dir: &Path, stem: &str) {
         for ext in ["wasm", "toml"] {
-            let path = dir.join(format!("{stem}.{ext}"));
-            let bytes = fs::read(&path).unwrap();
-            fs::write(
-                hash_sidecar_path(&path),
-                format!("{:x}", Sha256::digest(bytes)),
-            )
-            .unwrap();
+            write_sidecar(&dir.join(format!("{stem}.{ext}")));
         }
+    }
+
+    fn write_sidecar(path: &Path) {
+        let bytes = fs::read(path).unwrap();
+        fs::write(
+            hash_sidecar_path(path),
+            format!("{:x}", Sha256::digest(bytes)),
+        )
+        .unwrap();
     }
 
     fn write_child_package(dir: &Path, artifact_name: &str, name: &str) {
@@ -915,6 +947,30 @@ listens = ["events.changed"]
         );
         assert_eq!(child.requested_toys, vec!["logging", "measure"]);
         assert_eq!(child.relationship_listens, vec!["events.changed"]);
+    }
+
+    #[test]
+    fn loads_sdk_child_packages_from_child_subdirectories() {
+        let dir = tempfile::tempdir().unwrap();
+        let package = dir.path().join("slate-manager");
+        write_child_package(
+            &package,
+            "target/wasm32-wasip1/release/patina_ai_child_slate_manager.wasm",
+            "slate-manager",
+        );
+        write_sidecar(&package.join(CHILD_MANIFEST_FILE));
+        write_sidecar(
+            &package.join("target/wasm32-wasip1/release/patina_ai_child_slate_manager.wasm"),
+        );
+
+        let report =
+            load_children_from_dir(MctChildLoadOptions::new(dir.path()).strict_integrity());
+
+        assert_eq!(report.discovered, 1);
+        assert_eq!(report.loaded, 1);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.children[0].name, "slate-manager");
+        assert!(report.children[0].integrity_verified());
     }
 
     #[test]
