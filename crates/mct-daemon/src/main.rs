@@ -7,9 +7,9 @@ use mct_daemon::{
     MctToyAdapterRegistry, MctToyBackend, MctWasiHostConfig, MctWasiPreopen, MctWasiPreopenAccess,
     MctWasmComponentInvocationIds, MctWasmComponentRuntime, MctWitHostImportAdapters,
     MctWitToyHostAdapter, build_federation_capability_view, build_metrics_snapshot, daemon_status,
-    default_config_path, default_state_path, load_children_from_dir, record_composition_plan,
-    reload_configured_child, serve_http_control_once, sync_child_registry_source,
-    warmup_configured_child,
+    default_config_path, default_state_path, install_verified_child_package,
+    load_children_from_dir, record_composition_plan, reload_configured_child,
+    serve_http_control_once, sync_child_registry_source, warmup_configured_child,
 };
 use mct_iroh::{
     MctIrohCallHandlerResult, MctIrohServeState, MctIrohServedProtocol, MotherIrohEndpoint,
@@ -48,6 +48,7 @@ async fn main() -> Result<()> {
         "peers" => run_peers(args)?,
         "state" => run_state(args)?,
         "runs" => run_runs(args)?,
+        "slate" => run_slate(args)?,
         "toys" => run_toys(args)?,
         "wasm" => run_wasm(args)?,
         "federation" => run_federation(args)?,
@@ -896,6 +897,56 @@ fn slate_filesystem_toy_id() -> ToyId {
     ToyId::from("toy:slate:wasi-filesystem-project")
 }
 
+fn run_slate(mut args: Vec<String>) -> Result<()> {
+    if args.is_empty() {
+        bail!("expected slate subcommand: list-work");
+    }
+    match args.remove(0).as_str() {
+        "list-work" => run_slate_list_work(args),
+        other => bail!("unknown slate subcommand '{other}'"),
+    }
+}
+
+fn run_slate_list_work(mut args: Vec<String>) -> Result<()> {
+    let project_root = take_option(&mut args, "--project-root")
+        .ok_or_else(|| anyhow::anyhow!("slate list-work requires --project-root <path>"))?;
+    let children_dir = take_option(&mut args, "--children-dir");
+    let config_path = take_option(&mut args, "--config");
+    let state_path = take_option(&mut args, "--state");
+    let ledger_path = take_option(&mut args, "--ledger");
+    let status = take_option(&mut args, "--status");
+    let kind = take_option(&mut args, "--kind");
+    if !args.is_empty() {
+        bail!("unexpected slate list-work arguments: {}", args.join(" "));
+    }
+
+    let request = serde_json::json!([{
+        "project": "/project",
+        "status": status,
+        "kind": kind,
+    }]);
+    let mut call_args = vec![
+        "slate-manager".to_owned(),
+        "patina:slate/control@0.1.0.list-work".to_owned(),
+        request.to_string(),
+        "--project-root".to_owned(),
+        project_root,
+    ];
+    if let Some(children_dir) = children_dir {
+        call_args.extend(["--children-dir".to_owned(), children_dir]);
+    }
+    if let Some(config_path) = config_path {
+        call_args.extend(["--config".to_owned(), config_path]);
+    }
+    if let Some(state_path) = state_path {
+        call_args.extend(["--state".to_owned(), state_path]);
+    }
+    if let Some(ledger_path) = ledger_path {
+        call_args.extend(["--ledger".to_owned(), ledger_path]);
+    }
+    run_wasm_call_wit(call_args)
+}
+
 async fn run_control(mut args: Vec<String>) -> Result<()> {
     if args.is_empty() {
         bail!("expected control subcommand: serve-http | serve-uds");
@@ -959,12 +1010,44 @@ fn control_snapshot(state_path: &Path) -> Result<MctControlPlaneSnapshot> {
 }
 
 fn run_registry(mut args: Vec<String>) -> Result<()> {
-    if args.first().map(String::as_str) != Some("sync") {
+    if args.is_empty() {
+        bail!("expected registry subcommand: install | sync");
+    }
+    match args.remove(0).as_str() {
+        "install" => run_registry_install(args),
+        "sync" => run_registry_sync(args),
+        other => bail!("unknown registry subcommand '{other}'"),
+    }
+}
+
+fn run_registry_install(mut args: Vec<String>) -> Result<()> {
+    let children_dir = take_option(&mut args, "--children-dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_children_dir);
+    let replace = take_flag(&mut args, "--replace");
+    let as_json = take_flag(&mut args, "--json");
+    if args.len() != 1 {
         bail!(
-            "expected: mct-daemon registry sync <source-id> [children-dir] [--state path] [--strict-integrity] [--json]"
+            "expected: mct-daemon registry install <verified-package-dir> [--children-dir path] [--replace] [--json]"
         );
     }
-    args.remove(0);
+    let report = install_verified_child_package(PathBuf::from(&args[0]), children_dir, replace)?;
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!(
+            "installed child={} version={} artifact={} path={} replaced={}",
+            report.child_name,
+            report.artifact_version,
+            report.artifact_id,
+            report.installed_dir.display(),
+            report.replaced_existing
+        );
+    }
+    Ok(())
+}
+
+fn run_registry_sync(mut args: Vec<String>) -> Result<()> {
     let state_path = take_option(&mut args, "--state")
         .map(PathBuf::from)
         .unwrap_or_else(default_state_path);
@@ -2249,7 +2332,7 @@ fn default_identity_path() -> PathBuf {
 
 fn print_help() {
     println!(
-        "mct-daemon {version}\n\nCommands:\n  status\n  control serve-http [addr] [--state path]\n  control serve-uds [socket-path] [--state path]\n  registry sync <source-id> [children-dir] [--state path] [--strict-integrity] [--json]\n  federation view [--config path] [--state path] [--json]\n  metrics snapshot [--state path] [--json]\n  pando record <composition-id> [step-id,call-id,runtime,child,decision ...] [--state path] [--json]\n  children load [children-dir] [--strict-integrity] [--json]\n  process call <executable> [payload-json] [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  children approve <child-name> [children-dir] [--config path] [--strict-integrity]\n  children revoke <child-name> [--config path]\n  children approvals [--config path] [--json]\n  children warmup <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  children reload <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--config path]\n  peers list [--config path] [--json]\n  peers revoke <peer-node-id> [--config path]\n  peers remove <peer-node-id> [--config path]\n  state summary [--state path] [--json]\n  runs list [--state path] [--json] [--limit n]\n  toys authorize-slate <child-name> <project-root> [--children-dir path] [--config path] [--state path] [--json]\n  wasm call <component-file> <export-name> [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  wasm call-wit <child-name> <operation-id> <args-json> [--project-root path] [--guest-project /project] [--git-repo path] [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh identity [identity-file] [--config path]\n  iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir]\n  iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable> --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function]\n  iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path]",
+        "mct-daemon {version}\n\nCommands:\n  status\n  control serve-http [addr] [--state path]\n  control serve-uds [socket-path] [--state path]\n  registry install <verified-package-dir> [--children-dir path] [--replace] [--json]\n  registry sync <source-id> [children-dir] [--state path] [--strict-integrity] [--json]\n  federation view [--config path] [--state path] [--json]\n  metrics snapshot [--state path] [--json]\n  pando record <composition-id> [step-id,call-id,runtime,child,decision ...] [--state path] [--json]\n  children load [children-dir] [--strict-integrity] [--json]\n  process call <executable> [payload-json] [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  children approve <child-name> [children-dir] [--config path] [--strict-integrity]\n  children revoke <child-name> [--config path]\n  children approvals [--config path] [--json]\n  children warmup <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  children reload <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--config path]\n  peers list [--config path] [--json]\n  peers revoke <peer-node-id> [--config path]\n  peers remove <peer-node-id> [--config path]\n  state summary [--state path] [--json]\n  runs list [--state path] [--json] [--limit n]\n  slate list-work --project-root path [--status status] [--kind kind] [--children-dir path] [--config path] [--state path] [--ledger path]\n  toys authorize-slate <child-name> <project-root> [--children-dir path] [--config path] [--state path] [--json]\n  wasm call <component-file> <export-name> [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  wasm call-wit <child-name> <operation-id> <args-json> [--project-root path] [--guest-project /project] [--git-repo path] [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh identity [identity-file] [--config path]\n  iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir]\n  iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable> --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function]\n  iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path]",
         version = mct_daemon::version()
     );
 }
