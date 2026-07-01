@@ -4,10 +4,12 @@ use mct_daemon::{
     MctConfigChildAuthorityProjection, MctControlPlaneSnapshot, MctDaemonConfigStore,
     MctLocalNodeIdentity, MctOperatorChildScope, MctOperatorNodeScope, MctPeerAddressBookEntry,
     MctProcessChildHarness, MctProcessChildInvocationIds, MctRuntimeStateStore,
-    MctWasmComponentInvocationIds, MctWasmComponentRuntime, build_federation_capability_view,
-    build_metrics_snapshot, daemon_status, default_config_path, default_state_path,
-    load_children_from_dir, record_composition_plan, reload_configured_child,
-    serve_http_control_once, sync_child_registry_source, warmup_configured_child,
+    MctToyAdapterRegistry, MctToyBackend, MctWasiHostConfig, MctWasiPreopen, MctWasiPreopenAccess,
+    MctWasmComponentInvocationIds, MctWasmComponentRuntime, MctWitHostImportAdapters,
+    MctWitToyHostAdapter, build_federation_capability_view, build_metrics_snapshot, daemon_status,
+    default_config_path, default_state_path, load_children_from_dir, record_composition_plan,
+    reload_configured_child, serve_http_control_once, sync_child_registry_source,
+    warmup_configured_child,
 };
 use mct_iroh::{
     MctIrohCallHandlerResult, MctIrohServeState, MctIrohServedProtocol, MotherIrohEndpoint,
@@ -17,6 +19,7 @@ use mct_iroh::{
 use mct_kernel::*;
 use mct_observation::JsonlObservationLedger;
 use std::{
+    collections::BTreeSet,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -45,6 +48,7 @@ async fn main() -> Result<()> {
         "peers" => run_peers(args)?,
         "state" => run_state(args)?,
         "runs" => run_runs(args)?,
+        "toys" => run_toys(args)?,
         "wasm" => run_wasm(args)?,
         "federation" => run_federation(args)?,
         "iroh" => run_iroh(args).await?,
@@ -370,12 +374,22 @@ fn run_process(mut args: Vec<String>) -> Result<()> {
 }
 
 fn run_wasm(mut args: Vec<String>) -> Result<()> {
-    if args.first().map(String::as_str) != Some("call") || args.len() < 3 {
+    if args.is_empty() {
+        bail!("expected wasm subcommand: call | call-wit");
+    }
+    match args.remove(0).as_str() {
+        "call" => run_wasm_call(args),
+        "call-wit" => run_wasm_call_wit(args),
+        other => bail!("unknown wasm subcommand '{other}'"),
+    }
+}
+
+fn run_wasm_call(mut args: Vec<String>) -> Result<()> {
+    if args.len() < 2 {
         bail!(
             "expected: mct-daemon wasm call <component-file> <export-name> [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]"
         );
     }
-    args.remove(0);
     let child_name = take_option(&mut args, "--child")
         .ok_or_else(|| anyhow::anyhow!("wasm call requires --child <approved-child-name>"))?;
     let children_dir = take_option(&mut args, "--children-dir")
@@ -439,6 +453,447 @@ fn run_wasm(mut args: Vec<String>) -> Result<()> {
     state.complete_run(&run_id, &report.result, mct_daemon::unix_timestamp_string())?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
+}
+
+fn run_wasm_call_wit(mut args: Vec<String>) -> Result<()> {
+    if args.len() < 3 {
+        bail!(
+            "expected: mct-daemon wasm call-wit <child-name> <operation-id> <args-json> [--project-root path] [--guest-project /project] [--git-repo path] [--children-dir path] [--config path] [--ledger path] [--state path]"
+        );
+    }
+    let children_dir = take_option(&mut args, "--children-dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_children_dir);
+    let config_path = take_option(&mut args, "--config")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_config_path);
+    let ledger_path = take_option(&mut args, "--ledger")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_observation_ledger_path);
+    let state_path = take_option(&mut args, "--state")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_state_path);
+    let project_root = take_option(&mut args, "--project-root")
+        .map(|path| canonical_dir(PathBuf::from(path), "project root"))
+        .transpose()?;
+    let guest_project =
+        take_option(&mut args, "--guest-project").unwrap_or_else(|| "/project".into());
+    let git_repo = take_option(&mut args, "--git-repo")
+        .map(|path| canonical_dir(PathBuf::from(path), "git repo"))
+        .transpose()?;
+
+    let child_name = args.remove(0);
+    let operation_id = args.remove(0);
+    let args_json: serde_json::Value = serde_json::from_str(&args.remove(0))
+        .context("parse WIT args JSON; expected a JSON array")?;
+    let target = operation_target_from_wit_operation_id(&operation_id)?;
+    let call = local_wasm_call(target);
+    let child = load_named_child(&children_dir, &child_name)?;
+    let (authorized, authority_observation) =
+        authorize_configured_child_for_call(&config_path, &children_dir, &child_name, &call)?;
+    append_ledger_observations(&ledger_path, std::slice::from_ref(&authority_observation))?;
+
+    let state = MctRuntimeStateStore::open(&state_path)?;
+    let run_id = run_id_for_call("wasm-wit", &call);
+    state.insert_run_started(
+        &run_id,
+        &call,
+        RuntimeKind::WasmComponent,
+        Some(&authorized),
+        mct_daemon::unix_timestamp_string(),
+    )?;
+    state.append_run_observations(&run_id, std::slice::from_ref(&authority_observation))?;
+
+    let import_component_path = child.wasm_path.clone();
+    let imports = run_wit_runtime_on_blocking_thread(move || {
+        let runtime = MctWasmComponentRuntime::new()?;
+        Ok(runtime.discover_wit_imports(import_component_path)?)
+    })?;
+    let adapter_build = match build_wit_host_adapters_for_cli_call(CliWitAdapterRequest {
+        state: &state,
+        child: &child,
+        authorized_child: &authorized,
+        call: &call,
+        imports: &imports,
+        project_root: project_root.as_deref(),
+        guest_project: &guest_project,
+        git_repo: git_repo.as_deref(),
+    }) {
+        Ok(build) => build,
+        Err(error) => {
+            append_ledger_observations(&ledger_path, &error.observations)?;
+            state.append_run_observations(&run_id, &error.observations)?;
+            bail!(error.safe_message);
+        }
+    };
+    append_ledger_observations(&ledger_path, &adapter_build.observations)?;
+    state.append_run_observations(&run_id, &adapter_build.observations)?;
+
+    let invoke_authorized = authorized.clone();
+    let invoke_child = child.clone();
+    let invoke_call = call.clone();
+    let report = run_wit_runtime_on_blocking_thread(move || {
+        let runtime = MctWasmComponentRuntime::new()?;
+        Ok(
+            runtime.invoke_authorized_child_wit_export_with_host_adapters(
+                &invoke_authorized,
+                &invoke_child,
+                &invoke_call,
+                &args_json,
+                adapter_build.adapters,
+                MctWasmComponentInvocationIds {
+                    started_observation_id: ObservationId::from(format!(
+                        "obs-cli-wasm-wit-started:{}",
+                        invoke_call.call_id
+                    )),
+                    completed_observation_id: ObservationId::from(format!(
+                        "obs-cli-wasm-wit-completed:{}",
+                        invoke_call.call_id
+                    )),
+                    audit_ref: AuditRef::from(format!(
+                        "audit-cli-wasm-wit:{}",
+                        invoke_call.call_id
+                    )),
+                    started_at: Timestamp::from("2026-05-31T00:00:00Z"),
+                    completed_at: Timestamp::from("2026-05-31T00:00:01Z"),
+                },
+            )?,
+        )
+    })?;
+    append_ledger_observations(&ledger_path, &report.observations)?;
+    state.append_run_observations(&run_id, &report.observations)?;
+    state.complete_run(&run_id, &report.result, mct_daemon::unix_timestamp_string())?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+struct CliWitHostAdapterBuild {
+    adapters: MctWitHostImportAdapters,
+    observations: Vec<MctObservation>,
+}
+
+struct CliToyAuthorizationError {
+    safe_message: String,
+    observations: Vec<MctObservation>,
+}
+
+struct CliWitAdapterRequest<'a> {
+    state: &'a MctRuntimeStateStore,
+    child: &'a mct_daemon::MctLoadedChild,
+    authorized_child: &'a AuthorizedChildInvocation,
+    call: &'a MctCall,
+    imports: &'a BTreeSet<String>,
+    project_root: Option<&'a Path>,
+    guest_project: &'a str,
+    git_repo: Option<&'a Path>,
+}
+
+fn build_wit_host_adapters_for_cli_call(
+    request: CliWitAdapterRequest<'_>,
+) -> std::result::Result<CliWitHostAdapterBuild, CliToyAuthorizationError> {
+    let contracts = request.state.toy_contracts().map_err(cli_adapter_error)?;
+    let grants = request
+        .state
+        .toy_grant_snapshots()
+        .map_err(cli_adapter_error)?;
+    let resource_id = request.project_root.map(|path| path.display().to_string());
+    let mut observations = Vec::new();
+    let mut toy_registry = MctToyAdapterRegistry::new();
+    let mut logging = None;
+    let mut measure = None;
+    let mut git = None;
+    let mut wasi_preopens = Vec::new();
+
+    if request.imports.contains("wasi:logging/logging@0.1.0") {
+        let authorized = authorize_cli_toy(CliToyAuthorizationRequest {
+            child: request.child,
+            authorized_child: request.authorized_child,
+            call: request.call,
+            contracts: &contracts,
+            grants: &grants,
+            toy_id: slate_logging_toy_id(),
+            action: "invoke",
+            resource_id: resource_id.clone(),
+            label: "logging",
+        })?;
+        observations.push(toy_grant_evaluation_observation(
+            request.call.trace_context.trace_id.clone(),
+            &authorized.evaluation,
+        ));
+        toy_registry.register(slate_logging_toy_id(), MctToyBackend::EchoJson);
+        logging = Some(wit_toy_adapter(
+            authorized.authorized,
+            "obs-cli-wit-logging",
+        ));
+    }
+
+    if request.imports.contains("patina:measure/measure@0.1.0") {
+        let authorized = authorize_cli_toy(CliToyAuthorizationRequest {
+            child: request.child,
+            authorized_child: request.authorized_child,
+            call: request.call,
+            contracts: &contracts,
+            grants: &grants,
+            toy_id: slate_measure_toy_id(),
+            action: "invoke",
+            resource_id: resource_id.clone(),
+            label: "measure",
+        })?;
+        observations.push(toy_grant_evaluation_observation(
+            request.call.trace_context.trace_id.clone(),
+            &authorized.evaluation,
+        ));
+        toy_registry.register(slate_measure_toy_id(), MctToyBackend::EchoJson);
+        measure = Some(wit_toy_adapter(
+            authorized.authorized,
+            "obs-cli-wit-measure",
+        ));
+    }
+
+    if request.imports.contains("patina:git/git@0.1.0") {
+        let repo_root =
+            request
+                .git_repo
+                .or(request.project_root)
+                .ok_or_else(|| CliToyAuthorizationError {
+                    safe_message: "WIT git import requires --git-repo or --project-root".into(),
+                    observations: observations.clone(),
+                })?;
+        let authorized = authorize_cli_toy(CliToyAuthorizationRequest {
+            child: request.child,
+            authorized_child: request.authorized_child,
+            call: request.call,
+            contracts: &contracts,
+            grants: &grants,
+            toy_id: slate_git_toy_id(),
+            action: "invoke",
+            resource_id: resource_id.clone(),
+            label: "git",
+        })?;
+        observations.push(toy_grant_evaluation_observation(
+            request.call.trace_context.trace_id.clone(),
+            &authorized.evaluation,
+        ));
+        toy_registry.register(
+            slate_git_toy_id(),
+            MctToyBackend::GitCommand {
+                repo_root: repo_root.to_path_buf(),
+            },
+        );
+        git = Some(wit_toy_adapter(authorized.authorized, "obs-cli-wit-git"));
+    }
+
+    if imports_need_wasi_p2(request.imports) && imports_need_wasi_filesystem(request.imports) {
+        let project_root = request
+            .project_root
+            .ok_or_else(|| CliToyAuthorizationError {
+                safe_message: "WIT filesystem imports require --project-root".into(),
+                observations: observations.clone(),
+            })?;
+        let authorized = authorize_cli_toy(CliToyAuthorizationRequest {
+            child: request.child,
+            authorized_child: request.authorized_child,
+            call: request.call,
+            contracts: &contracts,
+            grants: &grants,
+            toy_id: slate_filesystem_toy_id(),
+            action: "preopen-project-root",
+            resource_id: resource_id.clone(),
+            label: "filesystem",
+        })?;
+        observations.push(toy_grant_evaluation_observation(
+            request.call.trace_context.trace_id.clone(),
+            &authorized.evaluation,
+        ));
+        wasi_preopens.push(MctWasiPreopen {
+            host_path: project_root.to_path_buf(),
+            guest_path: request.guest_project.to_owned(),
+            access: MctWasiPreopenAccess::ReadWrite,
+        });
+    }
+
+    let wasi = imports_need_wasi_p2(request.imports).then_some(MctWasiHostConfig {
+        preopens: wasi_preopens,
+    });
+
+    Ok(CliWitHostAdapterBuild {
+        adapters: MctWitHostImportAdapters {
+            toy_registry,
+            logging,
+            measure,
+            git,
+            wasi,
+        },
+        observations,
+    })
+}
+
+struct CliAuthorizedToy {
+    evaluation: ToyGrantEvaluation,
+    authorized: AuthorizedToyCall,
+}
+
+struct CliToyAuthorizationRequest<'a> {
+    child: &'a mct_daemon::MctLoadedChild,
+    authorized_child: &'a AuthorizedChildInvocation,
+    call: &'a MctCall,
+    contracts: &'a [CanonicalToyContract],
+    grants: &'a [ToyGrant],
+    toy_id: ToyId,
+    action: &'a str,
+    resource_id: Option<String>,
+    label: &'a str,
+}
+
+fn authorize_cli_toy(
+    request: CliToyAuthorizationRequest<'_>,
+) -> std::result::Result<CliAuthorizedToy, CliToyAuthorizationError> {
+    let result = evaluate_toy_grant_for_call(
+        request.call,
+        &ToyGrantEvaluationRequest {
+            toy_id: request.toy_id.clone(),
+            subject: ToyGrantSubject {
+                child_name: request.child.name.clone(),
+                artifact_id: request.child.artifact_id.clone(),
+                artifact_version: request.child.version.clone(),
+                assignment_id: Some(request.authorized_child.assignment_id.clone()),
+                caller_node_id: Some(request.call.caller.node_id.clone()),
+            },
+            child_instance_id: request.authorized_child.child_instance_id.clone(),
+            action: request.action.into(),
+            resource_id: request.resource_id,
+            node_id: request.call.caller.node_id.clone(),
+            now: Timestamp::from("2026-05-31T00:00:00Z"),
+            ids: ToyGrantEvaluationIds {
+                evaluation_id: ToyGrantEvaluationId::from(format!(
+                    "toy-eval-cli-{}",
+                    request.label
+                )),
+                decision_id: DecisionId::from(format!("decision-toy-cli-{}", request.label)),
+                observation_id: ObservationId::from(format!("obs-toy-grant-cli-{}", request.label)),
+                authorized_toy_call_id: AuthorizedToyCallId::from(format!(
+                    "authorized-toy-cli-{}",
+                    request.label
+                )),
+            },
+        },
+        request.contracts,
+        request.grants,
+    );
+    let Some(authorized) = result.authorized else {
+        let observation = toy_grant_evaluation_observation(
+            request.call.trace_context.trace_id.clone(),
+            &result.evaluation,
+        );
+        return Err(CliToyAuthorizationError {
+            safe_message: format!(
+                "toy grant denied for {}: {:?}",
+                request.label, result.evaluation.reason_code
+            ),
+            observations: vec![observation],
+        });
+    };
+    Ok(CliAuthorizedToy {
+        evaluation: result.evaluation,
+        authorized,
+    })
+}
+
+fn cli_adapter_error(error: anyhow::Error) -> CliToyAuthorizationError {
+    CliToyAuthorizationError {
+        safe_message: error.to_string(),
+        observations: Vec::new(),
+    }
+}
+
+fn wit_toy_adapter(
+    authorized_toy_call: AuthorizedToyCall,
+    observation_id_prefix: &str,
+) -> MctWitToyHostAdapter {
+    MctWitToyHostAdapter {
+        authorized_toy_call,
+        observation_id_prefix: observation_id_prefix.into(),
+        observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+    }
+}
+
+fn imports_need_wasi_p2(imports: &BTreeSet<String>) -> bool {
+    imports
+        .iter()
+        .any(|name| name.starts_with("wasi:") && name != "wasi:logging/logging@0.1.0")
+}
+
+fn imports_need_wasi_filesystem(imports: &BTreeSet<String>) -> bool {
+    imports.iter().any(|name| {
+        matches!(
+            name.as_str(),
+            "wasi:filesystem/types@0.2.3" | "wasi:filesystem/preopens@0.2.3"
+        )
+    })
+}
+
+fn load_named_child(children_dir: &Path, child_name: &str) -> Result<mct_daemon::MctLoadedChild> {
+    let report = load_children_from_dir(MctChildLoadOptions::new(children_dir));
+    report
+        .children
+        .into_iter()
+        .find(|child| child.name == child_name)
+        .ok_or_else(|| anyhow::anyhow!("loaded child '{child_name}' not found"))
+}
+
+fn operation_target_from_wit_operation_id(operation_id: &str) -> Result<OperationTarget> {
+    let (interface, function_name) = operation_id.rsplit_once('.').ok_or_else(|| {
+        anyhow::anyhow!("WIT operation id must be '<package>:<interface-path>.<function>'")
+    })?;
+    let (namespace, interface_name) = interface.split_once('/').ok_or_else(|| {
+        anyhow::anyhow!("WIT operation id must include '<namespace>/<interface>'")
+    })?;
+    Ok(OperationTarget {
+        namespace: namespace.into(),
+        interface_name: interface_name.into(),
+        function_name: function_name.into(),
+    })
+}
+
+fn run_wit_runtime_on_blocking_thread<T>(
+    f: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T>
+where
+    T: Send + 'static,
+{
+    std::thread::spawn(f)
+        .join()
+        .map_err(|panic| anyhow::anyhow!("WIT runtime worker panicked: {panic:?}"))?
+}
+
+fn canonical_dir(path: PathBuf, label: &str) -> Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let canonical = std::fs::canonicalize(&absolute)
+        .with_context(|| format!("resolve {label} '{}'", absolute.display()))?;
+    if !canonical.is_dir() {
+        bail!("{label} '{}' is not a directory", canonical.display());
+    }
+    Ok(canonical)
+}
+
+fn slate_logging_toy_id() -> ToyId {
+    ToyId::from("toy:slate:wasi-logging")
+}
+
+fn slate_measure_toy_id() -> ToyId {
+    ToyId::from("toy:slate:patina-measure")
+}
+
+fn slate_git_toy_id() -> ToyId {
+    ToyId::from("toy:slate:patina-git")
+}
+
+fn slate_filesystem_toy_id() -> ToyId {
+    ToyId::from("toy:slate:wasi-filesystem-project")
 }
 
 async fn run_control(mut args: Vec<String>) -> Result<()> {
@@ -675,6 +1130,200 @@ fn parse_runtime_kind(value: &str) -> Result<RuntimeKind> {
         "internal" => Ok(RuntimeKind::Internal),
         other => bail!("unknown runtime kind '{other}'"),
     }
+}
+
+fn run_toys(mut args: Vec<String>) -> Result<()> {
+    if args.is_empty() {
+        bail!("expected toys subcommand: authorize-slate");
+    }
+    match args.remove(0).as_str() {
+        "authorize-slate" => run_toys_authorize_slate(args),
+        other => bail!("unknown toys subcommand '{other}'"),
+    }
+}
+
+fn run_toys_authorize_slate(mut args: Vec<String>) -> Result<()> {
+    let children_dir = take_option(&mut args, "--children-dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_children_dir);
+    let config_path = take_option(&mut args, "--config")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_config_path);
+    let state_path = take_option(&mut args, "--state")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_state_path);
+    let as_json = take_flag(&mut args, "--json");
+    if args.len() < 2 {
+        bail!(
+            "expected: mct-daemon toys authorize-slate <child-name> <project-root> [--children-dir path] [--config path] [--state path] [--json]"
+        );
+    }
+    let child_name = args.remove(0);
+    let project_root = canonical_dir(PathBuf::from(args.remove(0)), "project root")?;
+    let child = load_named_child(&children_dir, &child_name)?;
+    let config = MctDaemonConfigStore::new(&config_path).load()?;
+    let approval = config
+        .child_approvals
+        .get(&child_name)
+        .ok_or_else(|| anyhow::anyhow!("child '{child_name}' is not approved in config"))?;
+    if approval.approval_state != ChildApprovalState::Approved {
+        bail!("child '{child_name}' approval is not active");
+    }
+    let assignment = config
+        .child_assignments
+        .get(&child_name)
+        .ok_or_else(|| anyhow::anyhow!("child '{child_name}' is not assigned in config"))?;
+    if assignment.assignment_state != ChildAssignmentState::Active {
+        bail!("child '{child_name}' assignment is not active");
+    }
+    if approval.artifact_id.as_str() != child.artifact_id
+        || assignment.artifact_id.as_str() != child.artifact_id
+    {
+        bail!("child '{child_name}' config artifact does not match loaded child package");
+    }
+
+    let state = MctRuntimeStateStore::open(&state_path)?;
+    let contracts = slate_toy_contracts();
+    for contract in &contracts {
+        state.upsert_toy_contract(contract)?;
+    }
+    let grants = slate_toy_grants_for_child(&child, &project_root);
+    for grant in &grants {
+        state.upsert_toy_grant_snapshot(grant)?;
+    }
+
+    if as_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "state": state_path,
+                "child": child_name,
+                "project_root": project_root,
+                "contracts": contracts,
+                "grants": grants,
+            }))?
+        );
+    } else {
+        println!(
+            "authorized slate toys child={} project_root={} state={} contracts={} grants={}",
+            child_name,
+            project_root.display(),
+            state_path.display(),
+            contracts.len(),
+            grants.len()
+        );
+    }
+    Ok(())
+}
+
+fn slate_toy_contracts() -> Vec<CanonicalToyContract> {
+    vec![
+        slate_toy_contract(
+            slate_logging_toy_id(),
+            ToyContractIdentity {
+                namespace: "wasi".into(),
+                interface_name: "logging/logging".into(),
+                version: "0.1.0".into(),
+                function_name: Some("log".into()),
+                resource_name: None,
+            },
+        ),
+        slate_toy_contract(
+            slate_measure_toy_id(),
+            ToyContractIdentity {
+                namespace: "patina".into(),
+                interface_name: "measure/measure".into(),
+                version: "0.1.0".into(),
+                function_name: None,
+                resource_name: None,
+            },
+        ),
+        slate_toy_contract(
+            slate_git_toy_id(),
+            ToyContractIdentity {
+                namespace: "patina".into(),
+                interface_name: "git/git".into(),
+                version: "0.1.0".into(),
+                function_name: None,
+                resource_name: None,
+            },
+        ),
+        slate_toy_contract(
+            slate_filesystem_toy_id(),
+            ToyContractIdentity {
+                namespace: "wasi".into(),
+                interface_name: "filesystem/preopens".into(),
+                version: "0.2.3".into(),
+                function_name: Some("preopen-project-root".into()),
+                resource_name: None,
+            },
+        ),
+    ]
+}
+
+fn slate_toy_contract(toy_id: ToyId, contract: ToyContractIdentity) -> CanonicalToyContract {
+    CanonicalToyContract {
+        admitted_by_observation_id: ObservationId::from(format!("obs:toy-catalog:{toy_id}")),
+        toy_id,
+        contract,
+        authority_bearing: true,
+        catalog_revision: 1,
+    }
+}
+
+fn slate_toy_grants_for_child(
+    child: &mct_daemon::MctLoadedChild,
+    project_root: &Path,
+) -> Vec<ToyGrant> {
+    [
+        (slate_logging_toy_id(), "invoke", "logging"),
+        (slate_measure_toy_id(), "invoke", "measure"),
+        (slate_git_toy_id(), "invoke", "git"),
+        (
+            slate_filesystem_toy_id(),
+            "preopen-project-root",
+            "filesystem",
+        ),
+    ]
+    .into_iter()
+    .map(|(toy_id, action, label)| ToyGrant {
+        grant_id: ToyGrantId::from(format!("grant:slate:{label}:{}", child.name)),
+        toy_id,
+        subject: ToyGrantSubject {
+            child_name: child.name.clone(),
+            artifact_id: child.artifact_id.clone(),
+            artifact_version: child.version.clone(),
+            assignment_id: Some(ChildAssignmentId::from(format!(
+                "assignment:{}",
+                child.name
+            ))),
+            caller_node_id: Some(MctNodeId::from("local-mct")),
+        },
+        scope: ToyGrantScope {
+            vision_id: VisionId::from("vision-local"),
+            node_id: Some(MctNodeId::from("local-mct")),
+            project_id: None,
+            data_classification: Some("public".into()),
+            resource_id: Some(project_root.display().to_string()),
+            allowed_actions: vec![action.into()],
+        },
+        constraints: ToyGrantConstraints {
+            starts_at: None,
+            expires_at: None,
+            max_uses: None,
+            max_duration_ms: None,
+            locality_required: true,
+        },
+        grant_state: ToyGrantState::Active,
+        issuer_id: "local-operator".into(),
+        policy_revision: 1,
+        grants_revision: 1,
+        authority_observation_id: ObservationId::from(format!(
+            "obs:toy-grant:slate:{label}:{}",
+            child.name
+        )),
+    })
+    .collect()
 }
 
 fn run_state(mut args: Vec<String>) -> Result<()> {
@@ -1600,7 +2249,7 @@ fn default_identity_path() -> PathBuf {
 
 fn print_help() {
     println!(
-        "mct-daemon {version}\n\nCommands:\n  status\n  control serve-http [addr] [--state path]\n  control serve-uds [socket-path] [--state path]\n  registry sync <source-id> [children-dir] [--state path] [--strict-integrity] [--json]\n  federation view [--config path] [--state path] [--json]\n  metrics snapshot [--state path] [--json]\n  pando record <composition-id> [step-id,call-id,runtime,child,decision ...] [--state path] [--json]\n  children load [children-dir] [--strict-integrity] [--json]\n  process call <executable> [payload-json] [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  children approve <child-name> [children-dir] [--config path] [--strict-integrity]\n  children revoke <child-name> [--config path]\n  children approvals [--config path] [--json]\n  children warmup <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  children reload <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--config path]\n  peers list [--config path] [--json]\n  peers revoke <peer-node-id> [--config path]\n  peers remove <peer-node-id> [--config path]\n  state summary [--state path] [--json]\n  runs list [--state path] [--json] [--limit n]\n  wasm call <component-file> <export-name> [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh identity [identity-file] [--config path]\n  iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir]\n  iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable> --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function]\n  iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path]",
+        "mct-daemon {version}\n\nCommands:\n  status\n  control serve-http [addr] [--state path]\n  control serve-uds [socket-path] [--state path]\n  registry sync <source-id> [children-dir] [--state path] [--strict-integrity] [--json]\n  federation view [--config path] [--state path] [--json]\n  metrics snapshot [--state path] [--json]\n  pando record <composition-id> [step-id,call-id,runtime,child,decision ...] [--state path] [--json]\n  children load [children-dir] [--strict-integrity] [--json]\n  process call <executable> [payload-json] [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  children approve <child-name> [children-dir] [--config path] [--strict-integrity]\n  children revoke <child-name> [--config path]\n  children approvals [--config path] [--json]\n  children warmup <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  children reload <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--config path]\n  peers list [--config path] [--json]\n  peers revoke <peer-node-id> [--config path]\n  peers remove <peer-node-id> [--config path]\n  state summary [--state path] [--json]\n  runs list [--state path] [--json] [--limit n]\n  toys authorize-slate <child-name> <project-root> [--children-dir path] [--config path] [--state path] [--json]\n  wasm call <component-file> <export-name> [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  wasm call-wit <child-name> <operation-id> <args-json> [--project-root path] [--guest-project /project] [--git-repo path] [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh identity [identity-file] [--config path]\n  iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir]\n  iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable> --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function]\n  iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path]",
         version = mct_daemon::version()
     );
 }
