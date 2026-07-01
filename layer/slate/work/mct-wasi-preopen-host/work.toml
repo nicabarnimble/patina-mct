@@ -1,0 +1,29 @@
+id = "mct-wasi-preopen-host"
+title = "Add explicit WASI p2 host context and filesystem preopens"
+kind = "build"
+status = "active"
+execution_granularity = "slice"
+human_request = "Finish the MCT Slate runtime path by adding concrete WASI p2 host plumbing and explicit filesystem preopens without generic stubs or fallback behavior."
+allium_anchors = ["KernelDecidesAdaptersPerform", "ObservationsAreCanonicalRuntimeTruth", "DaemonOwnsLifecycleButNotAuthority"]
+user_alignment = "User asked to finish the remaining Slate execution blockers while favoring invariants, simple explicit contracts, and scalpel commits."
+belief_refs = ["mother-kernel-decides-adapters-perform", "greenfield-products-reference-legacy", "typed-domain-records-before-algorithms"]
+code_targets = ["crates/mct-daemon/src/wasm.rs", "crates/mct-daemon/Cargo.toml", "Cargo.toml"]
+implementation_ready = true
+runtime_shape_role = "Typed WIT components may import WASI p2 only when invocation provides an explicit MCT WASI host configuration; filesystem imports require explicit preopens."
+non_goals = ["No generic WIT host stubs.", "No ambient filesystem inheritance.", "No network/socket WASI enablement.", "No Wasmtime/WASI types in mct-kernel."]
+implementation_plan = ["""
+[ ] Add explicit MCT-owned WASI host config and preopen structs.
+[ ] Link wasmtime-wasi p2 only when config is provided.
+[ ] Validate supported WASI imports before instantiation; reject filesystem imports without preopens and unsupported WASI surfaces.
+[ ] Add tests for configured WASI imports and filesystem-preopen fail-closed behavior.
+"""]
+proof_plan = ["""
+[ ] `cargo test -p mct-daemon mct_wit_runtime` passes.
+[ ] `cargo clippy -p mct-daemon --lib -- -D warnings` passes.
+[ ] `cargo test -p mct-kernel -p mct-daemon` passes.
+[ ] `./scripts/ci-tier0.sh` passes.
+"""]
+closure_evidence = []
+blocked_by = []
+created_at = "1782921600"
+updated_at = "1782921600"
