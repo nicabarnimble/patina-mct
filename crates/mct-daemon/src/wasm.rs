@@ -11,7 +11,11 @@ use std::{
     path::{Path, PathBuf},
 };
 use thiserror::Error;
-use wasmtime::{AsContext, AsContextMut, Config, Engine, Store, StoreContextMut, component};
+use wasmtime::{
+    AsContext, AsContextMut, Config, Engine, Store, StoreContextMut, component,
+    component::ResourceTable,
+};
+use wasmtime_wasi::{DirPerms, FilePerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MctWasmComponentInvocationIds {
@@ -71,6 +75,25 @@ pub struct MctWitHostImportAdapters {
     pub logging: Option<MctWitToyHostAdapter>,
     pub measure: Option<MctWitToyHostAdapter>,
     pub git: Option<MctWitToyHostAdapter>,
+    pub wasi: Option<MctWasiHostConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MctWasiHostConfig {
+    pub preopens: Vec<MctWasiPreopen>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MctWasiPreopen {
+    pub host_path: PathBuf,
+    pub guest_path: String,
+    pub access: MctWasiPreopenAccess,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MctWasiPreopenAccess {
+    ReadOnly,
+    ReadWrite,
 }
 
 impl MctWitHostImportAdapters {
@@ -80,6 +103,7 @@ impl MctWitHostImportAdapters {
             logging: None,
             measure: None,
             git: None,
+            wasi: None,
         }
     }
 }
@@ -91,7 +115,6 @@ struct MctWasmHostState {
     toy_observations: Vec<MctObservation>,
 }
 
-#[derive(Clone, Debug)]
 struct MctWitHostState {
     toy_registry: MctToyAdapterRegistry,
     call: MctCall,
@@ -99,7 +122,18 @@ struct MctWitHostState {
     logging: Option<MctWitToyHostAdapter>,
     measure: Option<MctWitToyHostAdapter>,
     git: Option<MctWitToyHostAdapter>,
+    wasi_ctx: WasiCtx,
+    wasi_table: ResourceTable,
     next_toy_call_index: u64,
+}
+
+impl WasiView for MctWitHostState {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi_ctx,
+            table: &mut self.wasi_table,
+        }
+    }
 }
 
 impl MctWitHostState {
@@ -130,6 +164,83 @@ impl MctWitHostState {
         self.toy_observations.append(&mut report.observations);
         report
     }
+}
+
+fn build_wasi_ctx(
+    config: Option<&MctWasiHostConfig>,
+) -> Result<WasiCtx, MctWasmComponentRuntimeError> {
+    let mut builder = WasiCtxBuilder::new();
+    builder.allow_blocking_current_thread(true);
+    if let Some(config) = config {
+        let mut guest_paths = BTreeSet::new();
+        for preopen in &config.preopens {
+            validate_wasi_preopen(preopen, &mut guest_paths)?;
+            let (dir_perms, file_perms) = match preopen.access {
+                MctWasiPreopenAccess::ReadOnly => (DirPerms::READ, FilePerms::READ),
+                MctWasiPreopenAccess::ReadWrite => (DirPerms::all(), FilePerms::all()),
+            };
+            builder
+                .preopened_dir(
+                    &preopen.host_path,
+                    &preopen.guest_path,
+                    dir_perms,
+                    file_perms,
+                )
+                .map_err(|error| {
+                    MctWasmComponentRuntimeError::Configure(format!(
+                        "configure WASI preopen '{}'=>'{}': {error}",
+                        preopen.host_path.display(),
+                        preopen.guest_path
+                    ))
+                })?;
+        }
+    }
+    Ok(builder.build())
+}
+
+fn validate_wasi_preopen(
+    preopen: &MctWasiPreopen,
+    guest_paths: &mut BTreeSet<String>,
+) -> Result<(), MctWasmComponentRuntimeError> {
+    if !preopen.host_path.is_absolute() {
+        return Err(MctWasmComponentRuntimeError::Configure(format!(
+            "WASI preopen host path '{}' must be absolute",
+            preopen.host_path.display()
+        )));
+    }
+    if !preopen.host_path.is_dir() {
+        return Err(MctWasmComponentRuntimeError::Configure(format!(
+            "WASI preopen host path '{}' must be an existing directory",
+            preopen.host_path.display()
+        )));
+    }
+    if !preopen.guest_path.starts_with('/') {
+        return Err(MctWasmComponentRuntimeError::Configure(format!(
+            "WASI preopen guest path '{}' must be absolute",
+            preopen.guest_path
+        )));
+    }
+    let guest_path = Path::new(&preopen.guest_path);
+    for component in guest_path.components() {
+        match component {
+            std::path::Component::RootDir | std::path::Component::Normal(_) => {}
+            std::path::Component::CurDir
+            | std::path::Component::ParentDir
+            | std::path::Component::Prefix(_) => {
+                return Err(MctWasmComponentRuntimeError::Configure(format!(
+                    "WASI preopen guest path '{}' must not contain relative components",
+                    preopen.guest_path
+                )));
+            }
+        }
+    }
+    if !guest_paths.insert(preopen.guest_path.clone()) {
+        return Err(MctWasmComponentRuntimeError::Configure(format!(
+            "duplicate WASI preopen guest path '{}'",
+            preopen.guest_path
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Error)]
@@ -550,6 +661,7 @@ impl MctWasmComponentRuntime {
         )?;
         let mut linker = component::Linker::<MctWitHostState>::new(&self.engine);
         link_wit_host_import_adapters(&mut linker, &host_adapters)?;
+        let wasi_ctx = build_wasi_ctx(host_adapters.wasi.as_ref())?;
         let mut store = Store::new(
             &self.engine,
             MctWitHostState {
@@ -559,6 +671,8 @@ impl MctWasmComponentRuntime {
                 logging: host_adapters.logging,
                 measure: host_adapters.measure,
                 git: host_adapters.git,
+                wasi_ctx,
+                wasi_table: ResourceTable::new(),
                 next_toy_call_index: 0,
             },
         );
@@ -896,6 +1010,10 @@ fn validate_wit_host_imports_for_adapters(
             "wasi:logging/logging@0.1.0" => host_adapters.logging.is_some(),
             "patina:measure/measure@0.1.0" => host_adapters.measure.is_some(),
             "patina:git/git@0.1.0" => host_adapters.git.is_some(),
+            name if is_supported_wasi_p2_import(name) => host_adapters
+                .wasi
+                .as_ref()
+                .is_some_and(|wasi| !is_wasi_filesystem_import(name) || !wasi.preopens.is_empty()),
             _ => false,
         };
         if !configured {
@@ -911,10 +1029,49 @@ fn validate_wit_host_imports_for_adapters(
     Ok(())
 }
 
+fn is_supported_wasi_p2_import(name: &str) -> bool {
+    matches!(
+        name,
+        "wasi:cli/environment@0.2.3"
+            | "wasi:cli/exit@0.2.3"
+            | "wasi:cli/stdin@0.2.3"
+            | "wasi:cli/stdout@0.2.3"
+            | "wasi:cli/stderr@0.2.3"
+            | "wasi:cli/terminal-input@0.2.3"
+            | "wasi:cli/terminal-output@0.2.3"
+            | "wasi:cli/terminal-stdin@0.2.3"
+            | "wasi:cli/terminal-stdout@0.2.3"
+            | "wasi:cli/terminal-stderr@0.2.3"
+            | "wasi:clocks/monotonic-clock@0.2.3"
+            | "wasi:clocks/wall-clock@0.2.3"
+            | "wasi:filesystem/types@0.2.3"
+            | "wasi:filesystem/preopens@0.2.3"
+            | "wasi:io/error@0.2.3"
+            | "wasi:io/streams@0.2.3"
+            | "wasi:random/random@0.2.3"
+    )
+}
+
+fn is_wasi_filesystem_import(name: &str) -> bool {
+    matches!(
+        name,
+        "wasi:filesystem/types@0.2.3" | "wasi:filesystem/preopens@0.2.3"
+    )
+}
+
 fn link_wit_host_import_adapters(
     linker: &mut component::Linker<MctWitHostState>,
     host_adapters: &MctWitHostImportAdapters,
 ) -> Result<(), MctWasmComponentRuntimeError> {
+    if host_adapters.wasi.is_some() {
+        wasmtime_wasi::p2::add_to_linker_sync(linker).map_err(|error| {
+            MctWasmComponentRuntimeError::Instantiate {
+                path: PathBuf::from("wasi:p2"),
+                message: error.to_string(),
+            }
+        })?;
+    }
+
     if host_adapters.logging.is_some() {
         let mut logging = linker
             .instance("wasi:logging/logging@0.1.0")
@@ -1691,7 +1848,55 @@ mod tests {
             logging: Some(adapter.clone()),
             measure: Some(adapter),
             git: None,
+            wasi: None,
         }
+    }
+
+    fn typed_wasi_random_import_component_path(dir: &tempfile::TempDir) -> PathBuf {
+        let component_wat = r#"
+(component
+  (import "wasi:random/random@0.2.3" (instance $random
+    (export "get-random-bytes" (func (param "len" u64) (result (list u8))))))
+  (core module $m
+    (func $double (export "double") (param i32) (result i32)
+      local.get 0
+      i32.const 2
+      i32.mul))
+  (core instance $i (instantiate $m))
+  (func $double (param "value" s32) (result s32) (canon lift (core func $i "double")))
+  (instance $control (export "double" (func $double)))
+  (export "patina:demo/control@0.1.0" (instance $control)))
+"#;
+        let component_path = dir.path().join("typed-wasi-random-import.component.wasm");
+        fs::write(&component_path, wat::parse_str(component_wat).unwrap()).unwrap();
+        component_path
+    }
+
+    fn typed_wasi_filesystem_import_component_path(dir: &tempfile::TempDir) -> PathBuf {
+        let component_wat = r#"
+(component
+  (import "wasi:filesystem/preopens@0.2.3" (instance $preopens))
+  (core module $m
+    (func $double (export "double") (param i32) (result i32)
+      local.get 0
+      i32.const 2
+      i32.mul))
+  (core instance $i (instantiate $m))
+  (func $double (param "value" s32) (result s32) (canon lift (core func $i "double")))
+  (instance $control (export "double" (func $double)))
+  (export "patina:demo/control@0.1.0" (instance $control)))
+"#;
+        let component_path = dir
+            .path()
+            .join("typed-wasi-filesystem-import.component.wasm");
+        fs::write(&component_path, wat::parse_str(component_wat).unwrap()).unwrap();
+        component_path
+    }
+
+    fn wasi_host_adapters() -> MctWitHostImportAdapters {
+        let mut adapters = MctWitHostImportAdapters::none();
+        adapters.wasi = Some(MctWasiHostConfig { preopens: vec![] });
+        adapters
     }
 
     fn typed_git_create_tag_component_path(dir: &tempfile::TempDir) -> PathBuf {
@@ -1767,6 +1972,7 @@ mod tests {
                 observation_id_prefix: "obs-wit-git-toy".into(),
                 observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
             }),
+            wasi: None,
         }
     }
 
@@ -1935,6 +2141,58 @@ mod tests {
             report.observations[2].kind,
             ObservationKind::ToyCallCompleted
         );
+    }
+
+    #[test]
+    fn mct_wit_runtime_invokes_configured_wasi_import() {
+        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let component_path = typed_wasi_random_import_component_path(&dir);
+        let child = loaded_typed_child(
+            component_path,
+            vec!["patina:demo/control@0.1.0.double".into()],
+        );
+
+        let report = runtime
+            .invoke_authorized_child_wit_export_with_host_adapters(
+                &authorized(),
+                &child,
+                &typed_call("double"),
+                &serde_json::json!([7]),
+                wasi_host_adapters(),
+                ids(),
+            )
+            .unwrap();
+
+        assert_eq!(report.output_json, serde_json::json!({"results": [14]}));
+        assert_eq!(report.result.outcome, ResultOutcome::Success);
+    }
+
+    #[test]
+    fn mct_wit_runtime_rejects_filesystem_import_without_preopen() {
+        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let component_path = typed_wasi_filesystem_import_component_path(&dir);
+        let child = loaded_typed_child(
+            component_path,
+            vec!["patina:demo/control@0.1.0.double".into()],
+        );
+
+        let error = runtime
+            .invoke_authorized_child_wit_export_with_host_adapters(
+                &authorized(),
+                &child,
+                &typed_call("double"),
+                &serde_json::json!([7]),
+                wasi_host_adapters(),
+                ids(),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            MctWasmComponentRuntimeError::UnsupportedWitHostImport { .. }
+        ));
     }
 
     #[test]
