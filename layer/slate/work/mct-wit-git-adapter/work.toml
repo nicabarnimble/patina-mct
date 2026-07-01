@@ -1,0 +1,27 @@
+id = "mct-wit-git-adapter"
+title = "Add concrete WIT git host adapter"
+kind = "build"
+status = "active"
+execution_granularity = "slice"
+human_request = "Continue the MCT Slate execution path by adding a concrete git WIT host adapter without generic stubs."
+allium_anchors = ["KernelDecidesAdaptersPerform", "ObservationsAreCanonicalRuntimeTruth", "DaemonOwnsLifecycleButNotAuthority"]
+user_alignment = "User asked to proceed after merging logging/measure. This slice targets patina:git/git@0.1.0 for Slate while preserving authority-first behavior and no fake host capability behavior."
+belief_refs = ["mother-kernel-decides-adapters-perform", "greenfield-products-reference-legacy", "typed-domain-records-before-algorithms"]
+code_targets = ["crates/mct-daemon/src/wasm.rs", "crates/mct-daemon/src/toy.rs"]
+implementation_ready = true
+runtime_shape_role = "Typed WIT components may import patina:git/git@0.1.0 only when MCT is given an explicit authorized git toy adapter backed by a concrete repository."
+non_goals = ["No generic granted import stubs.", "No WASI filesystem/preopen support in this slice.", "No Wasmtime/WASI types in mct-kernel."]
+implementation_plan = ["""
+[ ] Add a concrete git toy backend with sanitized git command execution scoped to one repository.
+[ ] Add explicit WIT git host adapter configuration and link all patina:git/git@0.1.0 functions.
+[ ] Route WIT git calls through authorized toy calls and typed result conversion.
+[ ] Add tests proving authorized git invocation and unsupported/unconfigured imports remain fail-closed.
+"""]
+proof_plan = ["""
+[ ] `cargo test -p mct-daemon mct_wit_runtime` passes.
+[ ] `cargo test -p mct-kernel -p mct-daemon` passes.
+"""]
+closure_evidence = []
+blocked_by = []
+created_at = "1782919200"
+updated_at = "1782919200"
