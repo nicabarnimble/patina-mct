@@ -70,6 +70,7 @@ pub struct MctWitHostImportAdapters {
     pub toy_registry: MctToyAdapterRegistry,
     pub logging: Option<MctWitToyHostAdapter>,
     pub measure: Option<MctWitToyHostAdapter>,
+    pub git: Option<MctWitToyHostAdapter>,
 }
 
 impl MctWitHostImportAdapters {
@@ -78,6 +79,7 @@ impl MctWitHostImportAdapters {
             toy_registry: MctToyAdapterRegistry::new(),
             logging: None,
             measure: None,
+            git: None,
         }
     }
 }
@@ -96,6 +98,7 @@ struct MctWitHostState {
     toy_observations: Vec<MctObservation>,
     logging: Option<MctWitToyHostAdapter>,
     measure: Option<MctWitToyHostAdapter>,
+    git: Option<MctWitToyHostAdapter>,
     next_toy_call_index: u64,
 }
 
@@ -555,6 +558,7 @@ impl MctWasmComponentRuntime {
                 toy_observations: Vec::new(),
                 logging: host_adapters.logging,
                 measure: host_adapters.measure,
+                git: host_adapters.git,
                 next_toy_call_index: 0,
             },
         );
@@ -891,6 +895,7 @@ fn validate_wit_host_imports_for_adapters(
         let configured = match import_name.as_str() {
             "wasi:logging/logging@0.1.0" => host_adapters.logging.is_some(),
             "patina:measure/measure@0.1.0" => host_adapters.measure.is_some(),
+            "patina:git/git@0.1.0" => host_adapters.git.is_some(),
             _ => false,
         };
         if !configured {
@@ -995,6 +1000,254 @@ fn link_wit_host_import_adapters(
             })?;
     }
 
+    if host_adapters.git.is_some() {
+        link_git_host_import(linker)?;
+    }
+
+    Ok(())
+}
+
+fn link_git_host_import(
+    linker: &mut component::Linker<MctWitHostState>,
+) -> Result<(), MctWasmComponentRuntimeError> {
+    let mut git = linker.instance("patina:git/git@0.1.0").map_err(|error| {
+        MctWasmComponentRuntimeError::Instantiate {
+            path: PathBuf::from("patina:git/git@0.1.0"),
+            message: error.to_string(),
+        }
+    })?;
+
+    git.func_new("create-tag", |mut store, _ty, params, results| {
+        let [component::Val::String(name)] = params else {
+            return Err(wasmtime::Error::msg(
+                "invalid patina git create-tag host call shape",
+            ));
+        };
+        call_git_toy(
+            &mut store,
+            results,
+            serde_json::json!({"function": "create-tag", "name": name}),
+            MctWitGitResultShape::Unit,
+        )
+    })
+    .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+        path: PathBuf::from("patina:git/git@0.1.0.create-tag"),
+        message: error.to_string(),
+    })?;
+    git.func_new("create-tag-at", |mut store, _ty, params, results| {
+        let [
+            component::Val::String(name),
+            component::Val::String(git_ref),
+        ] = params
+        else {
+            return Err(wasmtime::Error::msg(
+                "invalid patina git create-tag-at host call shape",
+            ));
+        };
+        call_git_toy(
+            &mut store,
+            results,
+            serde_json::json!({"function": "create-tag-at", "name": name, "git_ref": git_ref}),
+            MctWitGitResultShape::Unit,
+        )
+    })
+    .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+        path: PathBuf::from("patina:git/git@0.1.0.create-tag-at"),
+        message: error.to_string(),
+    })?;
+    git.func_new("delete-tag", |mut store, _ty, params, results| {
+        let [component::Val::String(name)] = params else {
+            return Err(wasmtime::Error::msg(
+                "invalid patina git delete-tag host call shape",
+            ));
+        };
+        call_git_toy(
+            &mut store,
+            results,
+            serde_json::json!({"function": "delete-tag", "name": name}),
+            MctWitGitResultShape::Unit,
+        )
+    })
+    .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+        path: PathBuf::from("patina:git/git@0.1.0.delete-tag"),
+        message: error.to_string(),
+    })?;
+    git.func_new("tag-exists", |mut store, _ty, params, results| {
+        let [component::Val::String(name)] = params else {
+            return Err(wasmtime::Error::msg(
+                "invalid patina git tag-exists host call shape",
+            ));
+        };
+        call_git_toy(
+            &mut store,
+            results,
+            serde_json::json!({"function": "tag-exists", "name": name}),
+            MctWitGitResultShape::Bool,
+        )
+    })
+    .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+        path: PathBuf::from("patina:git/git@0.1.0.tag-exists"),
+        message: error.to_string(),
+    })?;
+    git.func_new("commit", |mut store, _ty, params, results| {
+        let [component::Val::String(message)] = params else {
+            return Err(wasmtime::Error::msg(
+                "invalid patina git commit host call shape",
+            ));
+        };
+        call_git_toy(
+            &mut store,
+            results,
+            serde_json::json!({"function": "commit", "message": message}),
+            MctWitGitResultShape::String,
+        )
+    })
+    .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+        path: PathBuf::from("patina:git/git@0.1.0.commit"),
+        message: error.to_string(),
+    })?;
+    git.func_new("log-oneline", |mut store, _ty, params, results| {
+        let [component::Val::U32(limit)] = params else {
+            return Err(wasmtime::Error::msg(
+                "invalid patina git log-oneline host call shape",
+            ));
+        };
+        call_git_toy(
+            &mut store,
+            results,
+            serde_json::json!({"function": "log-oneline", "limit": limit}),
+            MctWitGitResultShape::StringList,
+        )
+    })
+    .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+        path: PathBuf::from("patina:git/git@0.1.0.log-oneline"),
+        message: error.to_string(),
+    })?;
+    git.func_new("diff-stat", |mut store, _ty, params, results| {
+        if !params.is_empty() {
+            return Err(wasmtime::Error::msg(
+                "invalid patina git diff-stat host call shape",
+            ));
+        }
+        call_git_toy(
+            &mut store,
+            results,
+            serde_json::json!({"function": "diff-stat"}),
+            MctWitGitResultShape::String,
+        )
+    })
+    .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+        path: PathBuf::from("patina:git/git@0.1.0.diff-stat"),
+        message: error.to_string(),
+    })?;
+    git.func_new("status-porcelain", |mut store, _ty, params, results| {
+        if !params.is_empty() {
+            return Err(wasmtime::Error::msg(
+                "invalid patina git status-porcelain host call shape",
+            ));
+        }
+        call_git_toy(
+            &mut store,
+            results,
+            serde_json::json!({"function": "status-porcelain"}),
+            MctWitGitResultShape::String,
+        )
+    })
+    .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+        path: PathBuf::from("patina:git/git@0.1.0.status-porcelain"),
+        message: error.to_string(),
+    })?;
+    git.func_new("add-paths", |mut store, _ty, params, results| {
+        let [component::Val::List(paths)] = params else {
+            return Err(wasmtime::Error::msg(
+                "invalid patina git add-paths host call shape",
+            ));
+        };
+        let paths = git_path_list(paths)?;
+        call_git_toy(
+            &mut store,
+            results,
+            serde_json::json!({"function": "add-paths", "paths": paths}),
+            MctWitGitResultShape::Unit,
+        )
+    })
+    .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+        path: PathBuf::from("patina:git/git@0.1.0.add-paths"),
+        message: error.to_string(),
+    })?;
+    git.func_new("remove-paths", |mut store, _ty, params, results| {
+        let [component::Val::List(paths)] = params else {
+            return Err(wasmtime::Error::msg(
+                "invalid patina git remove-paths host call shape",
+            ));
+        };
+        let paths = git_path_list(paths)?;
+        call_git_toy(
+            &mut store,
+            results,
+            serde_json::json!({"function": "remove-paths", "paths": paths}),
+            MctWitGitResultShape::Unit,
+        )
+    })
+    .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+        path: PathBuf::from("patina:git/git@0.1.0.remove-paths"),
+        message: error.to_string(),
+    })?;
+    git.func_new("is-clean-tracked", |mut store, _ty, params, results| {
+        if !params.is_empty() {
+            return Err(wasmtime::Error::msg(
+                "invalid patina git is-clean-tracked host call shape",
+            ));
+        }
+        call_git_toy(
+            &mut store,
+            results,
+            serde_json::json!({"function": "is-clean-tracked"}),
+            MctWitGitResultShape::Bool,
+        )
+    })
+    .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+        path: PathBuf::from("patina:git/git@0.1.0.is-clean-tracked"),
+        message: error.to_string(),
+    })?;
+    git.func_new(
+        "commits-behind-upstream",
+        |mut store, _ty, params, results| {
+            if !params.is_empty() {
+                return Err(wasmtime::Error::msg(
+                    "invalid patina git commits-behind-upstream host call shape",
+                ));
+            }
+            call_git_toy(
+                &mut store,
+                results,
+                serde_json::json!({"function": "commits-behind-upstream"}),
+                MctWitGitResultShape::U32,
+            )
+        },
+    )
+    .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+        path: PathBuf::from("patina:git/git@0.1.0.commits-behind-upstream"),
+        message: error.to_string(),
+    })?;
+    git.func_new("is-diverged", |mut store, _ty, params, results| {
+        if !params.is_empty() {
+            return Err(wasmtime::Error::msg(
+                "invalid patina git is-diverged host call shape",
+            ));
+        }
+        call_git_toy(
+            &mut store,
+            results,
+            serde_json::json!({"function": "is-diverged"}),
+            MctWitGitResultShape::Bool,
+        )
+    })
+    .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+        path: PathBuf::from("patina:git/git@0.1.0.is-diverged"),
+        message: error.to_string(),
+    })?;
+
     Ok(())
 }
 
@@ -1029,6 +1282,118 @@ fn call_measure_toy(
         )))),
     };
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MctWitGitResultShape {
+    Unit,
+    String,
+    Bool,
+    U32,
+    StringList,
+}
+
+fn call_git_toy(
+    store: &mut StoreContextMut<'_, MctWitHostState>,
+    results: &mut [component::Val],
+    mut input_json: Value,
+    shape: MctWitGitResultShape,
+) -> wasmtime::Result<()> {
+    if results.len() != 1 {
+        return Err(wasmtime::Error::msg("invalid patina git host result shape"));
+    }
+    let object = input_json
+        .as_object_mut()
+        .ok_or_else(|| wasmtime::Error::msg("patina git input must be a JSON object"))?;
+    object.insert(
+        "interface".into(),
+        Value::String("patina:git/git@0.1.0".into()),
+    );
+    let adapter = store
+        .data()
+        .git
+        .clone()
+        .ok_or_else(|| wasmtime::Error::msg("patina git adapter not configured"))?;
+    let report = store.data_mut().call_toy(&adapter, &input_json);
+    results[0] = match report.outcome {
+        MctToyAdapterOutcome::Success => {
+            component::Val::Result(Ok(git_ok_payload(&report, shape)?))
+        }
+        MctToyAdapterOutcome::Failed => component::Val::Result(Err(Some(Box::new(
+            component::Val::String(report.safe_message),
+        )))),
+    };
+    Ok(())
+}
+
+fn git_ok_payload(
+    report: &crate::toy::MctToyCallReport,
+    shape: MctWitGitResultShape,
+) -> wasmtime::Result<Option<Box<component::Val>>> {
+    if shape == MctWitGitResultShape::Unit {
+        return Ok(None);
+    }
+    let output_json = report
+        .output_json
+        .as_ref()
+        .ok_or_else(|| wasmtime::Error::msg("patina git toy returned no output JSON"))?;
+    let output: Value = serde_json::from_str(output_json).map_err(|error| {
+        wasmtime::Error::msg(format!("patina git toy returned invalid JSON: {error}"))
+    })?;
+    let ok = output
+        .get("ok")
+        .ok_or_else(|| wasmtime::Error::msg("patina git toy output missing 'ok' field"))?;
+    let value = match shape {
+        MctWitGitResultShape::Unit => unreachable!("unit handled before parsing output"),
+        MctWitGitResultShape::String => component::Val::String(
+            ok.as_str()
+                .ok_or_else(|| wasmtime::Error::msg("patina git toy 'ok' field must be a string"))?
+                .to_owned(),
+        ),
+        MctWitGitResultShape::Bool => component::Val::Bool(
+            ok.as_bool()
+                .ok_or_else(|| wasmtime::Error::msg("patina git toy 'ok' field must be a bool"))?,
+        ),
+        MctWitGitResultShape::U32 => {
+            let value = ok
+                .as_u64()
+                .ok_or_else(|| wasmtime::Error::msg("patina git toy 'ok' field must be a u32"))?;
+            component::Val::U32(
+                u32::try_from(value)
+                    .map_err(|_| wasmtime::Error::msg("patina git toy 'ok' field exceeds u32"))?,
+            )
+        }
+        MctWitGitResultShape::StringList => {
+            let values = ok
+                .as_array()
+                .ok_or_else(|| wasmtime::Error::msg("patina git toy 'ok' field must be a list"))?;
+            let values = values
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(|value| component::Val::String(value.to_owned()))
+                        .ok_or_else(|| {
+                            wasmtime::Error::msg("patina git toy string list contains a non-string")
+                        })
+                })
+                .collect::<wasmtime::Result<Vec<_>>>()?;
+            component::Val::List(values)
+        }
+    };
+    Ok(Some(Box::new(value)))
+}
+
+fn git_path_list(values: &[component::Val]) -> wasmtime::Result<Vec<String>> {
+    values
+        .iter()
+        .map(|value| match value {
+            component::Val::String(path) => Ok(path.clone()),
+            _ => Err(wasmtime::Error::msg(
+                "patina git path list contains a non-string",
+            )),
+        })
+        .collect()
 }
 
 fn lookup_wit_component_func<T>(
@@ -1325,7 +1690,113 @@ mod tests {
             toy_registry,
             logging: Some(adapter.clone()),
             measure: Some(adapter),
+            git: None,
         }
+    }
+
+    fn typed_git_create_tag_component_path(dir: &tempfile::TempDir) -> PathBuf {
+        let component_wat = r#"
+(component
+  (import (interface "patina:git/git@0.1.0") (instance $git
+    (export "create-tag" (func (param "name" string) (result (result (error string)))))
+    (export "create-tag-at" (func (param "name" string) (param "git-ref" string) (result (result (error string)))))
+    (export "delete-tag" (func (param "name" string) (result (result (error string)))))
+    (export "tag-exists" (func (param "name" string) (result (result bool (error string)))))
+    (export "commit" (func (param "message" string) (result (result string (error string)))))
+    (export "log-oneline" (func (param "limit" u32) (result (result (list string) (error string)))))
+    (export "diff-stat" (func (result (result string (error string)))))
+    (export "status-porcelain" (func (result (result string (error string)))))
+    (export "add-paths" (func (param "paths" (list string)) (result (result (error string)))))
+    (export "remove-paths" (func (param "paths" (list string)) (result (result (error string)))))
+    (export "is-clean-tracked" (func (result (result bool (error string)))))
+    (export "commits-behind-upstream" (func (result (result u32 (error string)))))
+    (export "is-diverged" (func (result (result bool (error string)))))))
+  (alias export $git "create-tag" (func $create-tag))
+  (core module $memory-module
+    (memory (export "memory") 1)
+    (global $heap (mut i32) (i32.const 1024))
+    (func $realloc (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
+      global.get $heap
+      global.get $heap
+      local.get 3
+      i32.add
+      global.set $heap))
+  (core instance $memory-instance (instantiate $memory-module))
+  (alias core export $memory-instance "memory" (core memory $memory))
+  (alias core export $memory-instance "cabi_realloc" (core func $realloc))
+  (core func $create-tag-core (canon lower (func $create-tag) (memory $memory) (realloc $realloc) string-encoding=utf8))
+  (core module $m
+    (import "" "memory" (memory 1))
+    (import "" "create-tag" (func $create-tag-import (param i32 i32 i32)))
+    (data (i32.const 0) "mct-test-tag")
+    (func $run (export "run") (result i32)
+      i32.const 0
+      i32.const 12
+      i32.const 100
+      call $create-tag-import
+      i32.const 1))
+  (core instance $imports (export "memory" (memory $memory)) (export "create-tag" (func $create-tag-core)))
+  (core instance $i (instantiate $m (with "" (instance $imports))))
+  (func $run (result s32) (canon lift (core func $i "run")))
+  (instance $control (export "run" (func $run)))
+  (export "patina:demo/control@0.1.0" (instance $control)))
+"#;
+        let component_path = dir.path().join("typed-git-create-tag.component.wasm");
+        fs::write(&component_path, wat::parse_str(component_wat).unwrap()).unwrap();
+        component_path
+    }
+
+    fn git_authorized() -> AuthorizedToyCall {
+        let mut authorized = toy_authorized();
+        authorized.toy_id = ToyId::from("toy-git");
+        authorized
+    }
+
+    fn git_host_adapters(repo_root: PathBuf) -> MctWitHostImportAdapters {
+        let mut toy_registry = MctToyAdapterRegistry::new();
+        toy_registry.register(
+            ToyId::from("toy-git"),
+            crate::MctToyBackend::GitCommand { repo_root },
+        );
+        MctWitHostImportAdapters {
+            toy_registry,
+            logging: None,
+            measure: None,
+            git: Some(MctWitToyHostAdapter {
+                authorized_toy_call: git_authorized(),
+                observation_id_prefix: "obs-wit-git-toy".into(),
+                observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+            }),
+        }
+    }
+
+    fn init_git_repo() -> tempfile::TempDir {
+        let repo = tempfile::tempdir().unwrap();
+        run_git_for_test(repo.path(), &["init"]);
+        run_git_for_test(repo.path(), &["config", "user.name", "MCT Test"]);
+        run_git_for_test(repo.path(), &["config", "user.email", "mct@example.com"]);
+        fs::write(repo.path().join("README.md"), "mct\n").unwrap();
+        run_git_for_test(repo.path(), &["add", "README.md"]);
+        run_git_for_test(repo.path(), &["commit", "-m", "init"]);
+        repo
+    }
+
+    fn run_git_for_test(repo_root: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .current_dir(repo_root)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_PREFIX")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     fn loaded_typed_child(
@@ -1464,6 +1935,41 @@ mod tests {
             report.observations[2].kind,
             ObservationKind::ToyCallCompleted
         );
+    }
+
+    #[test]
+    fn mct_wit_runtime_invokes_authorized_git_import() {
+        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_git_repo();
+        let component_path = typed_git_create_tag_component_path(&dir);
+        let child =
+            loaded_typed_child(component_path, vec!["patina:demo/control@0.1.0.run".into()]);
+
+        let report = runtime
+            .invoke_authorized_child_wit_export_with_host_adapters(
+                &authorized(),
+                &child,
+                &typed_call("run"),
+                &serde_json::json!([]),
+                git_host_adapters(repo.path().to_path_buf()),
+                ids(),
+            )
+            .unwrap();
+
+        assert_eq!(report.output_json, serde_json::json!({"results": [1]}));
+        assert_eq!(report.result.outcome, ResultOutcome::Success);
+        assert_eq!(report.observations[1].kind, ObservationKind::ToyCallStarted);
+        assert_eq!(
+            report.observations[2].kind,
+            ObservationKind::ToyCallCompleted
+        );
+        let tags = std::process::Command::new("git")
+            .current_dir(repo.path())
+            .args(["tag", "--list", "mct-test-tag"])
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&tags.stdout).contains("mct-test-tag"));
     }
 
     #[test]
