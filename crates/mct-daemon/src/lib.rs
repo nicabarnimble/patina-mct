@@ -70,7 +70,10 @@ pub use process::{
     MctProcessChildError, MctProcessChildHarness, MctProcessChildInvocationIds,
     MctProcessChildInvocationReport,
 };
-pub use registry::{MctRegistrySyncReport, sync_child_registry_source};
+pub use registry::{
+    MctChildPackageInstallReport, MctRegistrySyncReport, install_verified_child_package,
+    sync_child_registry_source,
+};
 pub use state::{
     MctCompositionRunRecord, MctMetricPoint, MctQueuedTaskRecord, MctRegistrySourceRecord,
     MctRuntimeRunRecord, MctRuntimeRunState, MctRuntimeStateStore, MctRuntimeStateSummary,
