@@ -105,6 +105,10 @@ pub struct MctLoadedChild {
 }
 
 impl MctLoadedChild {
+    pub fn integrity_verified(&self) -> bool {
+        self.wasm_digest.verified && self.manifest_digest.verified
+    }
+
     pub fn allows_operation_target(&self, target: &OperationTarget) -> bool {
         let operation_id = operation_id_from_target(target);
         match self.ingress_mode {
@@ -503,7 +507,7 @@ pub fn component_artifact_from_loaded_child(child: &MctLoadedChild) -> Component
             MctChildIngressMode::WitOnly => KernelChildIngressMode::WitOnly,
         },
         lifecycle_exports: LifecycleExports::AbsentAllowed,
-        verification_status: if child.wasm_digest.verified && child.manifest_digest.verified {
+        verification_status: if child.integrity_verified() {
             VerificationStatus::Verified
         } else {
             VerificationStatus::Rejected
