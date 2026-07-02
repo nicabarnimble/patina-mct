@@ -219,80 +219,84 @@ impl MctCallProtocolAuthority {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PayloadKind {
-    InlinePayload,
-    ContentAddressedBlob,
-    ExternalReference,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "payload_kind", rename_all = "snake_case")]
+pub enum MctCallPayloadHandle {
+    InlinePayload {
+        inline_payload_ref: String,
+        content_type: String,
+        approximate_size_bytes: u64,
+    },
+    ContentAddressedBlob {
+        digest: String,
+        blob_ref: String,
+        content_type: String,
+        approximate_size_bytes: u64,
+    },
+    ExternalReference {
+        external_ref: String,
+        content_type: Option<String>,
+        approximate_size_bytes: u64,
+    },
     Empty,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MctCallPayloadHandle {
-    pub payload_kind: PayloadKind,
-    pub content_type: Option<String>,
-    pub approximate_size_bytes: u64,
-    pub digest: Option<String>,
-    pub blob_ref: Option<String>,
-    pub external_ref: Option<String>,
-    pub inline_payload_ref: Option<String>,
-}
-
 impl MctCallPayloadHandle {
-    pub fn validate(&self) -> MctKernelResult<()> {
-        validate_optional_string_field("MctCallPayloadHandle", "content_type", &self.content_type)?;
-        validate_optional_string_field("MctCallPayloadHandle", "digest", &self.digest)?;
-        validate_optional_string_field("MctCallPayloadHandle", "blob_ref", &self.blob_ref)?;
-        validate_optional_string_field("MctCallPayloadHandle", "external_ref", &self.external_ref)?;
-        validate_optional_string_field(
-            "MctCallPayloadHandle",
-            "inline_payload_ref",
-            &self.inline_payload_ref,
-        )?;
+    pub fn approximate_size_bytes(&self) -> u64 {
+        match self {
+            Self::InlinePayload {
+                approximate_size_bytes,
+                ..
+            }
+            | Self::ContentAddressedBlob {
+                approximate_size_bytes,
+                ..
+            }
+            | Self::ExternalReference {
+                approximate_size_bytes,
+                ..
+            } => *approximate_size_bytes,
+            Self::Empty => 0,
+        }
+    }
 
-        match self.payload_kind {
-            PayloadKind::InlinePayload => {
-                require_payload_field(
-                    "inline_payload",
+    pub fn validate(&self) -> MctKernelResult<()> {
+        match self {
+            Self::InlinePayload {
+                inline_payload_ref,
+                content_type,
+                ..
+            } => {
+                ensure_non_blank(
+                    "MctCallPayloadHandle",
                     "inline_payload_ref",
-                    &self.inline_payload_ref,
+                    inline_payload_ref,
                 )?;
-                reject_payload_field("inline_payload", "digest", &self.digest)?;
-                reject_payload_field("inline_payload", "blob_ref", &self.blob_ref)?;
-                reject_payload_field("inline_payload", "external_ref", &self.external_ref)?;
+                ensure_non_blank("MctCallPayloadHandle", "content_type", content_type)?;
             }
-            PayloadKind::ContentAddressedBlob => {
-                require_payload_field("content_addressed_blob", "digest", &self.digest)?;
-                require_payload_field("content_addressed_blob", "blob_ref", &self.blob_ref)?;
-                reject_payload_field(
-                    "content_addressed_blob",
-                    "inline_payload_ref",
-                    &self.inline_payload_ref,
+            Self::ContentAddressedBlob {
+                digest,
+                blob_ref,
+                content_type,
+                ..
+            } => {
+                ensure_non_blank("MctCallPayloadHandle", "digest", digest)?;
+                ensure_non_blank("MctCallPayloadHandle", "blob_ref", blob_ref)?;
+                ensure_non_blank("MctCallPayloadHandle", "content_type", content_type)?;
+            }
+            Self::ExternalReference {
+                external_ref,
+                content_type,
+                ..
+            } => {
+                ensure_non_blank("MctCallPayloadHandle", "external_ref", external_ref)?;
+                validate_optional_string_field(
+                    "MctCallPayloadHandle",
+                    "content_type",
+                    content_type,
                 )?;
-                reject_payload_field("content_addressed_blob", "external_ref", &self.external_ref)?;
             }
-            PayloadKind::ExternalReference => {
-                require_payload_field("external_reference", "external_ref", &self.external_ref)?;
-                reject_payload_field(
-                    "external_reference",
-                    "inline_payload_ref",
-                    &self.inline_payload_ref,
-                )?;
-                reject_payload_field("external_reference", "blob_ref", &self.blob_ref)?;
-            }
-            PayloadKind::Empty => {
-                if self.approximate_size_bytes != 0 {
-                    return Err(MctKernelError::EmptyPayloadHasNonZeroSize {
-                        size_bytes: self.approximate_size_bytes,
-                    });
-                }
-                reject_payload_field("empty", "content_type", &self.content_type)?;
-                reject_payload_field("empty", "digest", &self.digest)?;
-                reject_payload_field("empty", "blob_ref", &self.blob_ref)?;
-                reject_payload_field("empty", "external_ref", &self.external_ref)?;
-                reject_payload_field("empty", "inline_payload_ref", &self.inline_payload_ref)?;
-            }
+            Self::Empty => {}
         }
 
         Ok(())
@@ -332,11 +336,12 @@ impl MctCallProtocolRequest {
             self.received_observation_id.as_str(),
         )?;
 
-        if self.payload.approximate_size_bytes != self.call.payload_metadata.approximate_size_bytes
+        if self.payload.approximate_size_bytes()
+            != self.call.payload_metadata.approximate_size_bytes
         {
             return Err(MctKernelError::PayloadSizeMismatch {
                 call_size_bytes: self.call.payload_metadata.approximate_size_bytes,
-                handle_size_bytes: self.payload.approximate_size_bytes,
+                handle_size_bytes: self.payload.approximate_size_bytes(),
             });
         }
 
@@ -494,36 +499,6 @@ fn validate_optional_string_field(
     Ok(())
 }
 
-fn require_payload_field(
-    payload_kind: &'static str,
-    field: &'static str,
-    value: &Option<String>,
-) -> MctKernelResult<()> {
-    if value.is_some() {
-        Ok(())
-    } else {
-        Err(MctKernelError::PayloadHandleMissingField {
-            payload_kind,
-            field,
-        })
-    }
-}
-
-fn reject_payload_field(
-    payload_kind: &'static str,
-    field: &'static str,
-    value: &Option<String>,
-) -> MctKernelResult<()> {
-    if value.is_none() {
-        Ok(())
-    } else {
-        Err(MctKernelError::PayloadHandleUnexpectedField {
-            payload_kind,
-            field,
-        })
-    }
-}
-
 pub fn call_reply_from_evaluation(
     reply_id: ReplyId,
     evaluation: &MctCallProtocolEvaluation,
@@ -636,14 +611,10 @@ mod tests {
                 presented_capability_ref: None,
             },
             call: example_call(),
-            payload: MctCallPayloadHandle {
-                payload_kind: PayloadKind::InlinePayload,
-                content_type: Some("text/plain".into()),
+            payload: MctCallPayloadHandle::InlinePayload {
+                inline_payload_ref: "payload-1".into(),
+                content_type: "text/plain".into(),
                 approximate_size_bytes: 5,
-                digest: None,
-                blob_ref: None,
-                external_ref: None,
-                inline_payload_ref: Some("payload-1".into()),
             },
             idempotency_key: Some("idem-1".into()),
             received_observation_id: ObservationId::from("obs-call-received"),
@@ -721,11 +692,13 @@ mod tests {
         ));
 
         let mut request = protocol_request();
-        request.payload.payload_kind = PayloadKind::Empty;
-        request.payload.inline_payload_ref = None;
+        request.payload = MctCallPayloadHandle::Empty;
         assert!(matches!(
             encode_call_protocol_request_json(&request),
-            Err(MctKernelError::EmptyPayloadHasNonZeroSize { size_bytes: 5 })
+            Err(MctKernelError::PayloadSizeMismatch {
+                call_size_bytes: 5,
+                handle_size_bytes: 0,
+            })
         ));
 
         let mut invalid_timestamp = serde_json::to_value(protocol_request()).unwrap();
@@ -749,9 +722,14 @@ mod tests {
         assert_eq!(decoded_request.call.target.interface_name, "echo");
         assert_eq!(decoded_request.call.target.function_name, "echo");
         assert_eq!(
-            decoded_request.payload.approximate_size_bytes,
+            decoded_request.payload.approximate_size_bytes(),
             decoded_request.call.payload_metadata.approximate_size_bytes
         );
+        let encoded_json = serde_json::to_value(&request.payload).unwrap();
+        assert_eq!(encoded_json["payload_kind"], "inline_payload");
+        assert_eq!(encoded_json["inline_payload_ref"], "payload-1");
+        assert_eq!(encoded_json["content_type"], "text/plain");
+        assert!(encoded_json.get("blob_ref").is_none());
 
         let evaluation = evaluate_call_protocol(&decoded_request, &admitted_hello(), eval_ids());
         assert_eq!(evaluation.call_id, Some(typed_call.call_id.clone()));
@@ -853,7 +831,7 @@ mod tests {
     #[test]
     fn payload_metadata_mismatch_is_malformed() {
         let mut request = protocol_request();
-        request.payload.approximate_size_bytes = 99;
+        request.payload = MctCallPayloadHandle::Empty;
         let evaluation = evaluate_call_protocol(&request, &admitted_hello(), eval_ids());
         assert_eq!(evaluation.outcome, CallProtocolOutcome::Malformed);
         assert_eq!(

@@ -299,14 +299,10 @@ fn fake_call_request(
             presented_capability_ref: None,
         },
         call,
-        payload: MctCallPayloadHandle {
-            payload_kind: PayloadKind::InlinePayload,
-            content_type: Some("text/plain".into()),
+        payload: MctCallPayloadHandle::InlinePayload {
+            inline_payload_ref: "payload-hello".into(),
+            content_type: "text/plain".into(),
             approximate_size_bytes: 5,
-            digest: None,
-            blob_ref: None,
-            external_ref: None,
-            inline_payload_ref: Some("payload-hello".into()),
         },
         idempotency_key: Some("idem-fake".into()),
         received_observation_id: ObservationId::from("obs-peer-call-received"),

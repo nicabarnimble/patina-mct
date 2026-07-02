@@ -2216,15 +2216,7 @@ fn cli_call_request(
             presented_capability_ref: None,
         },
         call,
-        payload: MctCallPayloadHandle {
-            payload_kind: PayloadKind::Empty,
-            content_type: None,
-            approximate_size_bytes: 0,
-            digest: None,
-            blob_ref: None,
-            external_ref: None,
-            inline_payload_ref: None,
-        },
+        payload: MctCallPayloadHandle::Empty,
         idempotency_key: Some("idem-cli-call".into()),
         received_observation_id: ObservationId::from("obs-cli-call-received"),
     }
