@@ -6,21 +6,21 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-/// Kernel module for `call` domain types and decisions.
+/// Call records, JSON edge validation, and call protocol admission decisions.
 pub mod call;
-/// Kernel module for `child` domain types and decisions.
+/// Child artifact, approval, assignment, lifecycle, and invocation authority.
 pub mod child;
-/// Kernel module for `error` domain types and decisions.
+/// Typed validation and JSON edge errors for malformed kernel inputs.
 pub mod error;
-/// Kernel module for `id` domain types and decisions.
+/// Opaque string identifiers and RFC3339 timestamps used by domain records.
 pub mod id;
-/// Kernel module for `observation` domain types and decisions.
+/// Observation records and projections from decisions into ledger facts.
 pub mod observation;
-/// Kernel module for `peer` domain types and decisions.
+/// Peer binding, hello negotiation, and ALPN admission decisions.
 pub mod peer;
-/// Kernel module for `route` domain types and decisions.
+/// Route candidate filtering and execution-time revalidation authority.
 pub mod route;
-/// Kernel module for `toy` domain types and decisions.
+/// Canonical toy contracts, grants, and toy-call authorization tokens.
 pub mod toy;
 
 pub use call::{
