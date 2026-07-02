@@ -1506,11 +1506,7 @@ fn from_json_atom<T: DeserializeOwned>(value: &str) -> Result<T> {
 }
 
 fn to_sql_error(error: anyhow::Error) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(
-        0,
-        rusqlite::types::Type::Text,
-        Box::new(std::io::Error::other(error.to_string())),
-    )
+    rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, error.into())
 }
 
 fn component_export_from_allowed_operations(allowed_operations: &[String]) -> ComponentWitExport {

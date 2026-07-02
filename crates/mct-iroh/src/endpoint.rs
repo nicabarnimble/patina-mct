@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::{
+    error::Error as StdError,
     fs::OpenOptions,
     io::Write,
     net::SocketAddr,
@@ -17,7 +18,14 @@ use thiserror::Error;
 
 pub type MotherIrohEndpointResult<T> = std::result::Result<T, MotherIrohEndpointError>;
 
+fn boxed_source(
+    source: impl StdError + Send + Sync + 'static,
+) -> Box<dyn StdError + Send + Sync + 'static> {
+    Box::new(source)
+}
+
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum MotherIrohEndpointError {
     #[error("Mother Iroh endpoint config must accept at least one ALPN")]
     EmptyAcceptedAlpns,
@@ -25,28 +33,48 @@ pub enum MotherIrohEndpointError {
     #[error("invalid Mother Iroh secret key hex: {reason}")]
     InvalidSecretKey { reason: String },
 
-    #[error("Mother Iroh identity file error at {path}: {message}")]
-    IdentityFile { path: PathBuf, message: String },
+    #[error("Mother Iroh identity file error at {path}: {source}")]
+    IdentityFile {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 
-    #[error("invalid Mother Iroh endpoint id '{value}': {message}")]
-    InvalidEndpointId { value: String, message: String },
+    #[error("invalid Mother Iroh endpoint id '{value}': {source}")]
+    InvalidEndpointId {
+        value: String,
+        #[source]
+        source: Box<dyn StdError + Send + Sync + 'static>,
+    },
 
-    #[error("invalid Mother Iroh direct address '{value}': {message}")]
-    InvalidDirectAddress { value: String, message: String },
+    #[error("invalid Mother Iroh direct address '{value}': {source}")]
+    InvalidDirectAddress {
+        value: String,
+        #[source]
+        source: Box<dyn StdError + Send + Sync + 'static>,
+    },
 
-    #[error("invalid Mother Iroh relay URL '{value}': {message}")]
-    InvalidRelayUrl { value: String, message: String },
+    #[error("invalid Mother Iroh relay URL '{value}': {source}")]
+    InvalidRelayUrl {
+        value: String,
+        #[source]
+        source: Box<dyn StdError + Send + Sync + 'static>,
+    },
 
     #[error("bind Mother-owned Iroh endpoint")]
-    Bind { source: BindError },
+    Bind {
+        #[source]
+        source: BindError,
+    },
 
     #[error("Mother-owned Iroh endpoint is closed")]
     EndpointClosed,
 
-    #[error("Mother Iroh protocol {action} failed: {message}")]
+    #[error("Mother Iroh protocol {action} failed: {source}")]
     ProtocolIo {
         action: &'static str,
-        message: String,
+        #[source]
+        source: Box<dyn StdError + Send + Sync + 'static>,
     },
 
     #[error("Mother Iroh protocol {action} JSON failed: {source}")]
@@ -405,7 +433,7 @@ impl MotherIrohEndpoint {
                 .accept()
                 .map_err(|source| MotherIrohEndpointError::ProtocolIo {
                     action: "accept incoming connection",
-                    message: source.to_string(),
+                    source: boxed_source(source),
                 })?;
         let alpn =
             accepting
@@ -413,13 +441,13 @@ impl MotherIrohEndpoint {
                 .await
                 .map_err(|source| MotherIrohEndpointError::ProtocolIo {
                     action: "read incoming ALPN",
-                    message: source.to_string(),
+                    source: boxed_source(source),
                 })?;
         let connection = accepting
             .await
             .map_err(|source| MotherIrohEndpointError::ProtocolIo {
                 action: "finish incoming connection",
-                message: source.to_string(),
+                source: boxed_source(source),
             })?;
         let remote_endpoint_id = EndpointIdText::new(connection.remote_id().to_string())
             .expect("string ID literal/generated value must be non-empty");
@@ -429,12 +457,12 @@ impl MotherIrohEndpoint {
                 .await
                 .map_err(|source| MotherIrohEndpointError::ProtocolIo {
                     action: "accept bidirectional stream",
-                    message: source.to_string(),
+                    source: boxed_source(source),
                 })?;
         let request_bytes = recv.read_to_end(64 * 1024).await.map_err(|source| {
             MotherIrohEndpointError::ProtocolIo {
                 action: "read request stream",
-                message: source.to_string(),
+                source: boxed_source(source),
             }
         })?;
 
@@ -550,13 +578,13 @@ impl MotherIrohEndpoint {
         send.write_all(&response_bytes).await.map_err(|source| {
             MotherIrohEndpointError::ProtocolIo {
                 action: "write response stream",
-                message: source.to_string(),
+                source: boxed_source(source),
             }
         })?;
         send.finish()
             .map_err(|source| MotherIrohEndpointError::ProtocolIo {
                 action: "finish response stream",
-                message: source.to_string(),
+                source: boxed_source(source),
             })?;
         connection.closed().await;
         Ok(served)
@@ -588,7 +616,7 @@ impl MotherIrohEndpoint {
             .await
             .map_err(|source| MotherIrohEndpointError::ProtocolIo {
                 action: "connect to peer",
-                message: source.to_string(),
+                source: boxed_source(source),
             })?;
         let (mut send, mut recv) =
             connection
@@ -596,7 +624,7 @@ impl MotherIrohEndpoint {
                 .await
                 .map_err(|source| MotherIrohEndpointError::ProtocolIo {
                     action: "open bidirectional stream",
-                    message: source.to_string(),
+                    source: boxed_source(source),
                 })?;
         let bytes = serde_json::to_vec(request).map_err(|source| {
             MotherIrohEndpointError::ProtocolJson {
@@ -608,17 +636,17 @@ impl MotherIrohEndpoint {
             .await
             .map_err(|source| MotherIrohEndpointError::ProtocolIo {
                 action: "write request stream",
-                message: source.to_string(),
+                source: boxed_source(source),
             })?;
         send.finish()
             .map_err(|source| MotherIrohEndpointError::ProtocolIo {
                 action: "finish request stream",
-                message: source.to_string(),
+                source: boxed_source(source),
             })?;
         let response = recv.read_to_end(64 * 1024).await.map_err(|source| {
             MotherIrohEndpointError::ProtocolIo {
                 action: "read response stream",
-                message: source.to_string(),
+                source: boxed_source(source),
             }
         })?;
         connection.close(0u32.into(), b"mct client complete");
@@ -637,7 +665,7 @@ pub fn load_or_create_node_secret_key_hex(
         let content = std::fs::read_to_string(path).map_err(|source| {
             MotherIrohEndpointError::IdentityFile {
                 path: path.to_path_buf(),
-                message: source.to_string(),
+                source,
             }
         })?;
         let secret_key_hex = content.trim().to_string();
@@ -649,7 +677,7 @@ pub fn load_or_create_node_secret_key_hex(
         std::fs::create_dir_all(parent).map_err(|source| {
             MotherIrohEndpointError::IdentityFile {
                 path: parent.to_path_buf(),
-                message: source.to_string(),
+                source,
             }
         })?;
     }
@@ -671,11 +699,11 @@ fn write_new_node_secret_key_file(
         .open(path)
         .map_err(|source| MotherIrohEndpointError::IdentityFile {
             path: path.to_path_buf(),
-            message: source.to_string(),
+            source,
         })?;
     writeln!(file, "{secret_key_hex}").map_err(|source| MotherIrohEndpointError::IdentityFile {
         path: path.to_path_buf(),
-        message: source.to_string(),
+        source,
     })
 }
 
@@ -724,7 +752,7 @@ fn endpoint_addr_from_ticket(
         iroh::EndpointId::from_str(ticket.endpoint_id.as_str()).map_err(|source| {
             MotherIrohEndpointError::InvalidEndpointId {
                 value: ticket.endpoint_id.as_str().to_string(),
-                message: source.to_string(),
+                source: boxed_source(source),
             }
         })?;
     let mut addrs = Vec::new();
@@ -732,7 +760,7 @@ fn endpoint_addr_from_ticket(
         let addr = value.parse::<SocketAddr>().map_err(|source| {
             MotherIrohEndpointError::InvalidDirectAddress {
                 value: value.clone(),
-                message: source.to_string(),
+                source: boxed_source(source),
             }
         })?;
         addrs.push(TransportAddr::Ip(addr));
@@ -741,7 +769,7 @@ fn endpoint_addr_from_ticket(
         let relay = RelayUrl::from_str(value).map_err(|source| {
             MotherIrohEndpointError::InvalidRelayUrl {
                 value: value.clone(),
-                message: source.to_string(),
+                source: boxed_source(source),
             }
         })?;
         addrs.push(TransportAddr::Relay(relay));
