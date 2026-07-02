@@ -2,15 +2,17 @@ use anyhow::{Context, Result, bail};
 use mct_daemon::{
     DEFAULT_WASM_MEMORY_LIMIT_BYTES, MctChildIntegrityMode, MctChildLoadOptions,
     MctCompositionPlan, MctCompositionStep, MctConfigChildAuthorityProjection,
-    MctControlPlaneSnapshot, MctDaemonConfigStore, MctLocalNodeIdentity, MctOperatorChildScope,
-    MctOperatorNodeScope, MctPeerAddressBookEntry, MctProcessChildHarness,
-    MctProcessChildInvocationIds, MctRuntimeStateStore, MctToyAdapterRegistry, MctToyBackend,
-    MctWasiHostConfig, MctWasiPreopen, MctWasiPreopenAccess, MctWasmComponentInvocationIds,
-    MctWasmComponentRuntime, MctWasmHostConfig, MctWitHostImportAdapters, MctWitToyHostAdapter,
+    MctControlPlaneSnapshot, MctControlPlaneSnapshotError, MctControlPlaneSnapshotResult,
+    MctDaemonConfigStore, MctLocalNodeIdentity, MctOperatorChildScope, MctOperatorNodeScope,
+    MctPeerAddressBookEntry, MctProcessChildHarness, MctProcessChildInvocationIds,
+    MctRuntimeStateStore, MctToyAdapterRegistry, MctToyBackend, MctWasiHostConfig, MctWasiPreopen,
+    MctWasiPreopenAccess, MctWasmComponentInvocationIds, MctWasmComponentRuntime,
+    MctWasmHostConfig, MctWitHostImportAdapters, MctWitToyHostAdapter,
     build_federation_capability_view, build_metrics_snapshot, current_timestamp, daemon_status,
     default_config_path, default_state_path, install_verified_child_package,
     load_children_from_dir, record_composition_plan, reload_configured_child,
-    serve_http_control_once, sync_child_registry_source, warmup_configured_child,
+    serve_http_control_once_with_snapshot_result, sync_child_registry_source,
+    warmup_configured_child,
 };
 use mct_iroh::{
     MctIrohCallHandlerResult, MctIrohServeState, MctIrohServedProtocol, MotherIrohEndpoint,
@@ -22,6 +24,7 @@ use mct_observation::JsonlObservationLedger;
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tokio::net::TcpListener;
@@ -999,9 +1002,14 @@ async fn run_serve(mut args: Vec<String>) -> Result<()> {
 
 async fn serve_http_control_loop(state_path: &Path, addr: &str) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
+    let snapshot_source = ControlSnapshotSource::open(state_path);
     println!("mct daemon serving control http on {addr}");
     loop {
-        serve_http_control_once(&listener, control_snapshot(state_path)?).await?;
+        serve_http_control_once_with_snapshot_result(
+            &listener,
+            control_snapshot(&snapshot_source).await,
+        )
+        .await?;
     }
 }
 
@@ -1050,8 +1058,13 @@ async fn run_control_serve_uds_with_state(state_path: PathBuf, socket_path: Path
         "mct daemon serving control uds on {}",
         socket_path.display()
     );
+    let snapshot_source = ControlSnapshotSource::open(&state_path);
     loop {
-        mct_daemon::serve_uds_control_once(&listener, control_snapshot(&state_path)?).await?;
+        mct_daemon::serve_uds_control_once_with_snapshot_result(
+            &listener,
+            control_snapshot(&snapshot_source).await,
+        )
+        .await?;
     }
 }
 
@@ -1068,13 +1081,49 @@ async fn run_control_serve_uds_with_state(
     bail!("UDS control plane is only available on Unix platforms")
 }
 
-fn control_snapshot(state_path: &Path) -> Result<MctControlPlaneSnapshot> {
-    let state = MctRuntimeStateStore::open(state_path)?;
-    let summary = state.summary().ok();
-    let runs = state.list_runs(20).unwrap_or_default();
+#[derive(Clone)]
+enum ControlSnapshotSource {
+    Store(Arc<Mutex<MctRuntimeStateStore>>),
+    Unavailable(Arc<anyhow::Error>),
+}
+
+impl ControlSnapshotSource {
+    fn open(state_path: &Path) -> Self {
+        match MctRuntimeStateStore::open(state_path)
+            .with_context(|| format!("open control runtime state at {}", state_path.display()))
+        {
+            Ok(state) => Self::Store(Arc::new(Mutex::new(state))),
+            Err(error) => Self::Unavailable(Arc::new(error)),
+        }
+    }
+}
+
+async fn control_snapshot(source: &ControlSnapshotSource) -> MctControlPlaneSnapshotResult {
+    match source {
+        ControlSnapshotSource::Unavailable(_source) => {
+            Err(MctControlPlaneSnapshotError::runtime_state_unavailable())
+        }
+        ControlSnapshotSource::Store(state) => {
+            let state = Arc::clone(state);
+            tokio::task::spawn_blocking(move || {
+                let state = state
+                    .lock()
+                    .map_err(|_| MctControlPlaneSnapshotError::runtime_state_unavailable())?;
+                control_snapshot_from_state(&state)
+                    .map_err(|_source| MctControlPlaneSnapshotError::runtime_state_unavailable())
+            })
+            .await
+            .map_err(|_source| MctControlPlaneSnapshotError::runtime_state_unavailable())?
+        }
+    }
+}
+
+fn control_snapshot_from_state(state: &MctRuntimeStateStore) -> Result<MctControlPlaneSnapshot> {
+    let summary = state.summary()?;
+    let runs = state.list_runs(20)?;
     Ok(MctControlPlaneSnapshot::new(
         daemon_status(None),
-        summary,
+        Some(summary),
         runs,
     ))
 }
@@ -2631,6 +2680,30 @@ mod tests {
             authority_observation_id: ObservationId::new("obs-grant")
                 .expect("string ID literal/generated value must be non-empty"),
         }
+    }
+
+    #[tokio::test]
+    async fn control_snapshot_unopenable_state_projects_error_response() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = ControlSnapshotSource::open(dir.path());
+
+        let snapshot = control_snapshot(&source).await;
+        let response = mct_daemon::handle_control_plane_path_result_with_auth(
+            "GET",
+            "/snapshot",
+            snapshot.as_ref(),
+            &mct_daemon::MctControlPlaneAuthPolicy::open_local(),
+            None,
+        );
+
+        assert!(matches!(
+            snapshot,
+            Err(MctControlPlaneSnapshotError::RuntimeStateUnavailable { .. })
+        ));
+        assert_eq!(response.status_code, 503);
+        assert!(response.body.contains("runtime state unavailable"));
+        assert!(response.body.contains("not_ready"));
+        assert!(!response.body.contains("\"ready\""));
     }
 
     #[test]
