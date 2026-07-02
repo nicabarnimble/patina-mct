@@ -273,7 +273,7 @@ pub fn hello_evaluation_observation(
     let admitted = evaluation.is_admitted();
     MctObservation {
         observation_id: evaluation.observation_id.clone(),
-        observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
         kind: if admitted {
             ObservationKind::PeerAdmitted
         } else {
@@ -349,7 +349,7 @@ pub fn peer_binding_state_observation(
             .superseded_by_observation_id
             .clone()
             .unwrap_or_else(|| binding.created_by_observation_id.clone()),
-        observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
         kind,
         source_plane: SourcePlane::Kernel,
         trace: ObservationTraceRef {
@@ -387,7 +387,7 @@ pub fn route_decision_observation(trace_id: TraceId, decision: &RouteDecision) -
 
     MctObservation {
         observation_id: decision.observation_id.clone(),
-        observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
         kind,
         source_plane: SourcePlane::Kernel,
         trace: ObservationTraceRef {
@@ -468,7 +468,7 @@ pub fn call_protocol_evaluation_observation(
 
     MctObservation {
         observation_id: evaluation.observation_id.clone(),
-        observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
         kind,
         source_plane: SourcePlane::Kernel,
         trace: ObservationTraceRef {
@@ -511,7 +511,7 @@ pub fn child_approval_observation(trace_id: TraceId, approval: &ChildApproval) -
 
     MctObservation {
         observation_id: approval.authority_observation_id.clone(),
-        observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
         kind,
         source_plane: SourcePlane::Kernel,
         trace: ObservationTraceRef {
@@ -555,7 +555,7 @@ pub fn child_assignment_observation(
 
     MctObservation {
         observation_id: assignment.assignment_observation_id.clone(),
-        observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
         kind,
         source_plane: SourcePlane::Kernel,
         trace: ObservationTraceRef {
@@ -616,7 +616,7 @@ pub fn child_instance_observation(trace_id: TraceId, instance: &ChildInstance) -
 
     MctObservation {
         observation_id: instance.last_lifecycle_observation_id.clone(),
-        observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
         kind,
         source_plane: SourcePlane::Kernel,
         trace: ObservationTraceRef {
@@ -648,7 +648,7 @@ pub fn child_call_authority_observation(
     let allowed = evaluation.verdict == ChildCallVerdict::Allowed;
     MctObservation {
         observation_id: evaluation.observation_id.clone(),
-        observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
         kind: if allowed {
             ObservationKind::RouteRevalidated
         } else {
@@ -704,7 +704,7 @@ pub fn toy_grant_evaluation_observation(
 
     MctObservation {
         observation_id: evaluation.observation_id.clone(),
-        observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
         kind,
         source_plane: SourcePlane::Kernel,
         trace: ObservationTraceRef {
@@ -743,7 +743,7 @@ mod tests {
     ) -> AdapterDiagnosticObservationInput {
         AdapterDiagnosticObservationInput {
             observation_id: ObservationId::from(id),
-            observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+            observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             diagnostic_kind: kind,
             trace: ObservationTraceRef {
                 trace_id: TraceId::from("trace-diagnostic"),
@@ -904,7 +904,7 @@ mod tests {
             issuer_node_id: MctNodeId::from("node-a"),
             policy_revision: 7,
             binding_state: state,
-            issued_at: Timestamp::from("2026-05-31T00:00:00Z"),
+            issued_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             expires_at: None,
             created_by_observation_id: ObservationId::from("obs-binding-created"),
             superseded_by_observation_id: Some(ObservationId::from("obs-binding-superseded")),
@@ -936,7 +936,7 @@ mod tests {
                 grants_revision: 4,
                 vision_policy_revision: 5,
             },
-            deadline: Timestamp::from("2026-05-31T00:01:00Z"),
+            deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
             trace_context: TraceContext {
                 trace_id: TraceId::from("trace-no-route"),
                 span_id: SpanId::from("span-no-route"),

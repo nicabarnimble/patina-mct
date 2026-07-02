@@ -1637,7 +1637,7 @@ mod tests {
                 grants_revision: 1,
                 vision_policy_revision: 1,
             },
-            deadline: Timestamp::from("2026-05-31T00:01:00Z"),
+            deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
             trace_context: TraceContext {
                 trace_id: TraceId::from("trace-a"),
                 span_id: SpanId::from("span-a"),
@@ -1697,7 +1697,7 @@ mod tests {
             },
             constraints: ToyGrantConstraints {
                 starts_at: None,
-                expires_at: Some(Timestamp::from("2026-05-31T00:10:00Z")),
+                expires_at: Some(Timestamp::new("2026-05-31T00:10:00Z").unwrap()),
                 max_uses: None,
                 max_duration_ms: Some(1000),
                 locality_required: true,
@@ -1820,7 +1820,7 @@ mod tests {
             .unwrap();
         let observation = MctObservation::informational(
             ObservationId::from("obs-run"),
-            Timestamp::from("2026-05-31T00:00:00Z"),
+            Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             ObservationKind::RuntimeExecutionStarted,
             TraceId::from("trace-a"),
             "started",

@@ -474,7 +474,7 @@ mod tests {
                 grants_revision: 1,
                 vision_policy_revision: 1,
             },
-            deadline: Timestamp::from("2026-05-31T00:01:00Z"),
+            deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
             trace_context: TraceContext {
                 trace_id: TraceId::from("trace-route-1"),
                 span_id: SpanId::from("span-route-1"),
@@ -598,7 +598,7 @@ mod tests {
             toy_id: ToyId::from("toy-echo"),
             child_instance_id: ChildInstanceId::from("child-instance-route-1"),
             authority_decision_id: evaluation.decision_id.clone(),
-            expires_at: Timestamp::from("2026-05-31T00:02:00Z"),
+            expires_at: Timestamp::new("2026-05-31T00:02:00Z").unwrap(),
         });
 
         ToyGrantEvaluationResult {

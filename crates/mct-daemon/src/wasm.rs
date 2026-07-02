@@ -1633,7 +1633,7 @@ mod tests {
                 grants_revision: 1,
                 vision_policy_revision: 1,
             },
-            deadline: Timestamp::from("2026-05-31T00:01:00Z"),
+            deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
             trace_context: TraceContext {
                 trace_id: TraceId::from("trace-wasm-component"),
                 span_id: SpanId::from("span-wasm-component"),
@@ -1665,7 +1665,7 @@ mod tests {
             toy_id: ToyId::from("toy-echo"),
             child_instance_id: ChildInstanceId::from("instance-wasm"),
             authority_decision_id: DecisionId::from("decision-toy-wasm"),
-            expires_at: Timestamp::from("2026-05-31T00:10:00Z"),
+            expires_at: Timestamp::new("2026-05-31T00:10:00Z").unwrap(),
         }
     }
 
@@ -1673,8 +1673,8 @@ mod tests {
         MctToyCallIds {
             started_observation_id: ObservationId::from("obs-wasm-toy-started"),
             completed_observation_id: ObservationId::from("obs-wasm-toy-completed"),
-            started_at: Timestamp::from("2026-05-31T00:00:00Z"),
-            completed_at: Timestamp::from("2026-05-31T00:00:01Z"),
+            started_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+            completed_at: Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
         }
     }
 
@@ -1683,15 +1683,15 @@ mod tests {
             started_observation_id: ObservationId::from("obs-wasm-started"),
             completed_observation_id: ObservationId::from("obs-wasm-completed"),
             audit_ref: AuditRef::from("audit-wasm"),
-            started_at: Timestamp::from("2026-05-31T00:00:00Z"),
-            completed_at: Timestamp::from("2026-05-31T00:00:01Z"),
+            started_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+            completed_at: Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
         }
     }
 
     fn diagnostic_ids() -> MctWasmComponentDiagnosticIds {
         MctWasmComponentDiagnosticIds {
             observation_id: ObservationId::from("obs-wasm-trap"),
-            observed_at: Timestamp::from("2026-05-31T00:00:02Z"),
+            observed_at: Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
         }
     }
 
@@ -1841,7 +1841,7 @@ mod tests {
         let adapter = MctWitToyHostAdapter {
             authorized_toy_call: toy_authorized(),
             observation_id_prefix: "obs-wit-host-toy".into(),
-            observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+            observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
         };
         MctWitHostImportAdapters {
             toy_registry,
@@ -1970,7 +1970,7 @@ mod tests {
             git: Some(MctWitToyHostAdapter {
                 authorized_toy_call: git_authorized(),
                 observation_id_prefix: "obs-wit-git-toy".into(),
-                observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+                observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             }),
             wasi: None,
         }

@@ -281,7 +281,7 @@ mod tests {
                 grants_revision: 1,
                 vision_policy_revision: 1,
             },
-            deadline: Timestamp::from("2026-05-31T00:01:00Z"),
+            deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
             trace_context: TraceContext {
                 trace_id: TraceId::from("trace-process-echo"),
                 span_id: SpanId::from("span-process-echo"),
@@ -310,8 +310,8 @@ mod tests {
             completed_observation_id: ObservationId::from(format!("obs-{stem}-completed")),
             result_ref: ResultRef::from(format!("result-{stem}")),
             audit_ref: AuditRef::from(format!("audit-{stem}")),
-            started_at: Timestamp::from("2026-05-31T00:00:00Z"),
-            completed_at: Timestamp::from("2026-05-31T00:00:01Z"),
+            started_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+            completed_at: Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
         }
     }
 

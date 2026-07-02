@@ -72,7 +72,7 @@ pub(crate) fn run_fake_echo_slice(ledger_path: impl AsRef<Path>) -> Result<FakeE
                 decision_id: DecisionId::from("decision-hello"),
                 observation_id: ObservationId::from("obs-hello-decision"),
             },
-            now: Timestamp::from("2026-05-31T00:00:01Z"),
+            now: Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
         },
     );
     ledger
@@ -206,7 +206,7 @@ fn fake_binding() -> MctPeerBinding {
         issuer_node_id: MctNodeId::from("mother-a"),
         policy_revision: 1,
         binding_state: BindingState::Admitted,
-        issued_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        issued_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
         expires_at: None,
         created_by_observation_id: ObservationId::from("obs-binding"),
         superseded_by_observation_id: None,
@@ -271,7 +271,7 @@ fn fake_call_request(
             grants_revision: 1,
             vision_policy_revision: 1,
         },
-        deadline: Timestamp::from("2026-05-31T00:01:00Z"),
+        deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
         trace_context: TraceContext {
             trace_id: trace_id.clone(),
             span_id: SpanId::from("span-call"),
@@ -346,7 +346,7 @@ fn observation(
 ) -> MctObservation {
     MctObservation {
         observation_id: ObservationId::from(id),
-        observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
         kind,
         source_plane: SourcePlane::Kernel,
         trace: ObservationTraceRef {

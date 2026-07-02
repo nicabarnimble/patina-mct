@@ -101,7 +101,7 @@ struct AdapterObservationFacts {
 fn adapter_observation(facts: AdapterObservationFacts) -> MctObservation {
     MctObservation {
         observation_id: ObservationId::from(facts.observation_id),
-        observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
         kind: facts.kind,
         source_plane: SourcePlane::Adapter,
         trace: ObservationTraceRef {

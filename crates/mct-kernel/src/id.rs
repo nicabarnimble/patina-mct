@@ -83,7 +83,7 @@ impl Timestamp {
         let parsed = value.parse::<jiff::Timestamp>().map_err(|source| {
             MctKernelError::InvalidTimestamp {
                 value: value.clone(),
-                source,
+                reason: source.to_string(),
             }
         })?;
         Ok(Self {
@@ -97,15 +97,19 @@ impl Timestamp {
     }
 }
 
-impl From<&str> for Timestamp {
-    fn from(value: &str) -> Self {
-        Self::new(value).expect("valid RFC3339 timestamp literal")
+impl TryFrom<&str> for Timestamp {
+    type Error = MctKernelError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::new(value)
     }
 }
 
-impl From<String> for Timestamp {
-    fn from(value: String) -> Self {
-        Self::new(value).expect("valid RFC3339 timestamp string")
+impl TryFrom<String> for Timestamp {
+    type Error = MctKernelError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
     }
 }
 
@@ -175,9 +179,9 @@ mod tests {
 
     #[test]
     fn timestamps_order_chronologically_across_subsecond_precision() {
-        let same_instant_short = Timestamp::from("2026-05-31T00:00:00.1Z");
-        let same_instant_padded = Timestamp::from("2026-05-31T00:00:00.10Z");
-        let later = Timestamp::from("2026-05-31T00:00:00.100001Z");
+        let same_instant_short = Timestamp::new("2026-05-31T00:00:00.1Z").unwrap();
+        let same_instant_padded = Timestamp::new("2026-05-31T00:00:00.10Z").unwrap();
+        let later = Timestamp::new("2026-05-31T00:00:00.100001Z").unwrap();
 
         assert_eq!(same_instant_short, same_instant_padded);
         assert!(same_instant_padded < later);

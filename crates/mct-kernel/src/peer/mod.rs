@@ -364,7 +364,7 @@ mod tests {
             issuer_node_id: MctNodeId::from("node-a"),
             policy_revision: 1,
             binding_state: state,
-            issued_at: Timestamp::from("2026-05-31T00:00:00Z"),
+            issued_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             expires_at: None,
             created_by_observation_id: ObservationId::from("obs-binding"),
             superseded_by_observation_id: None,
@@ -377,7 +377,7 @@ mod tests {
                 decision_id: DecisionId::from("decision-1"),
                 observation_id: ObservationId::from("obs-decision"),
             },
-            now: Timestamp::from("2026-05-31T00:00:30Z"),
+            now: Timestamp::new("2026-05-31T00:00:30Z").unwrap(),
         }
     }
 
@@ -469,7 +469,7 @@ mod tests {
     #[test]
     fn active_binding_past_expiry_is_denied() {
         let mut binding = binding(BindingState::Admitted);
-        binding.expires_at = Some(Timestamp::from("2026-05-31T00:00:29Z"));
+        binding.expires_at = Some(Timestamp::new("2026-05-31T00:00:29Z").unwrap());
         let evaluation = evaluate_hello(
             &request("endpoint-a"),
             &[binding],

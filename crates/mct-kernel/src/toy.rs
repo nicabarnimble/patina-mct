@@ -399,7 +399,7 @@ mod tests {
                 grants_revision: 7,
                 vision_policy_revision: 11,
             },
-            deadline: Timestamp::from("2026-05-31T00:10:00Z"),
+            deadline: Timestamp::new("2026-05-31T00:10:00Z").unwrap(),
             trace_context: TraceContext {
                 trace_id: TraceId::from("trace-toy-1"),
                 span_id: SpanId::from("span-toy-1"),
@@ -442,7 +442,7 @@ mod tests {
             action: "write".into(),
             resource_id: Some("log:project".into()),
             node_id: MctNodeId::from("node-a"),
-            now: Timestamp::from("2026-05-31T00:00:00Z"),
+            now: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             ids: ToyGrantEvaluationIds {
                 evaluation_id: ToyGrantEvaluationId::from("toy-eval-1"),
                 decision_id: DecisionId::from("toy-decision-1"),
@@ -467,7 +467,7 @@ mod tests {
             },
             constraints: ToyGrantConstraints {
                 starts_at: None,
-                expires_at: Some(Timestamp::from("2026-05-31T00:05:00Z")),
+                expires_at: Some(Timestamp::new("2026-05-31T00:05:00Z").unwrap()),
                 max_uses: None,
                 max_duration_ms: Some(1000),
                 locality_required: true,
@@ -503,7 +503,7 @@ mod tests {
         );
         assert_eq!(
             authorized.expires_at,
-            Timestamp::from("2026-05-31T00:05:00Z")
+            Timestamp::new("2026-05-31T00:05:00Z").unwrap()
         );
     }
 
@@ -562,7 +562,7 @@ mod tests {
     #[test]
     fn expired_time_window_denies_without_authorization() {
         let mut request = request();
-        request.now = Timestamp::from("2026-05-31T00:05:00Z");
+        request.now = Timestamp::new("2026-05-31T00:05:00Z").unwrap();
         let result = evaluate_toy_grant_for_call(
             &call(),
             &request,
