@@ -370,14 +370,10 @@ fn local_call_request(
             presented_capability_ref: None,
         },
         call,
-        payload: MctCallPayloadHandle {
-            payload_kind: PayloadKind::InlinePayload,
-            content_type: Some("text/plain".into()),
+        payload: MctCallPayloadHandle::InlinePayload {
+            inline_payload_ref: "payload-local-echo".into(),
+            content_type: "text/plain".into(),
             approximate_size_bytes: 5,
-            digest: None,
-            blob_ref: None,
-            external_ref: None,
-            inline_payload_ref: Some("payload-local-echo".into()),
         },
         idempotency_key: Some("idem-local-call".into()),
         received_observation_id: ObservationId::from("obs-local-call-received"),

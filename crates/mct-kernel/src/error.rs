@@ -30,21 +30,6 @@ pub enum MctKernelError {
     #[error("invalid Timestamp '{value}': {reason}")]
     InvalidTimestamp { value: String, reason: String },
 
-    #[error("invalid MCT call payload handle for {payload_kind}: missing {field}")]
-    PayloadHandleMissingField {
-        payload_kind: &'static str,
-        field: &'static str,
-    },
-
-    #[error("invalid MCT call payload handle for {payload_kind}: unexpected {field}")]
-    PayloadHandleUnexpectedField {
-        payload_kind: &'static str,
-        field: &'static str,
-    },
-
-    #[error("empty MCT call payload handle has non-zero size {size_bytes}")]
-    EmptyPayloadHasNonZeroSize { size_bytes: u64 },
-
     #[error(
         "MCT call payload metadata size {call_size_bytes} does not match payload handle size {handle_size_bytes}"
     )]
