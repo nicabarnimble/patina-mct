@@ -3,214 +3,224 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `NetworkPathClass` used by the MCT kernel.
+/// Coarse path class used when comparing candidate routes.
 pub enum NetworkPathClass {
-    /// Public `Direct` item.
+    /// Peer is reachable directly.
     Direct,
-    /// Public `Relayed` item.
+    /// Peer route traverses a relay.
     Relayed,
-    /// Public `Local` item.
+    /// Work stays on the local Mother.
     Local,
-    /// Public `Unknown` item.
+    /// Path class is not known to the adapter.
     Unknown,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `CandidateRoute` used by the MCT kernel.
+/// Possible execution path before authority filtering.
+///
+/// A candidate is not executable authority; it must appear as admissible in a
+/// route decision and pass revalidation immediately before execution.
 pub struct CandidateRoute {
-    /// Field `candidate_id` of this domain record.
+    /// Planner-local identifier for this candidate.
     pub candidate_id: String,
-    /// Field `node_id` of this domain record.
+    /// Node that would execute or receive the call.
     pub node_id: MctNodeId,
-    /// Field `child_id` of this domain record.
+    /// Child selected by the route, when child execution is required.
     pub child_id: Option<ChildId>,
-    /// Field `runtime_kind` of this domain record.
+    /// Runtime class for the candidate execution path.
     pub runtime_kind: RuntimeKind,
-    /// Field `network_path` of this domain record.
+    /// Network locality class for route planning and audit.
     pub network_path: NetworkPathClass,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `CandidateAuthorityOutcome` used by the MCT kernel.
+/// Authority filtering outcome for one candidate route.
 pub enum CandidateAuthorityOutcome {
-    /// Public `Admissible` item.
+    /// Candidate survived authority filtering.
     Admissible,
-    /// Public `Eliminated` item.
+    /// Candidate was removed from the feasible set.
     Eliminated,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `CandidateEliminationReason` used by the MCT kernel.
+/// Typed reason a candidate route was removed from consideration.
 pub enum CandidateEliminationReason {
-    /// Public `DataPolicyDenied` item.
+    /// Data classification or placement policy denied the route.
     DataPolicyDenied,
-    /// Public `VisionPolicyDenied` item.
+    /// Vision policy denied the route.
     VisionPolicyDenied,
-    /// Public `PeerNotAdmitted` item.
+    /// Remote peer was not admitted for this call.
     PeerNotAdmitted,
-    /// Public `ChildNotApproved` item.
+    /// Child approval or assignment authority was absent.
     ChildNotApproved,
-    /// Public `ToyGrantMissing` item.
+    /// Required toy grant was absent or denied.
     ToyGrantMissing,
-    /// Public `SecretScopeForbidden` item.
+    /// Secret-scoped payload was forbidden for this route.
     SecretScopeForbidden,
-    /// Public `PolicyRevisionStale` item.
+    /// Policy revision did not match the call authority snapshot.
     PolicyRevisionStale,
-    /// Public `GrantsRevisionStale` item.
+    /// Grants revision did not match the call authority snapshot.
     GrantsRevisionStale,
-    /// Public `RouteMismatch` item.
+    /// Revalidation facts did not match the selected route.
     RouteMismatch,
-    /// Public `CapabilityUnavailable` item.
+    /// Required runtime or route capability was unavailable.
     CapabilityUnavailable,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `RouteDecisionKind` used by the MCT kernel.
+/// Whether a route decision is initial planning or execution-time revalidation.
 pub enum RouteDecisionKind {
-    /// Public `Initial` item.
+    /// Initial two-phase route selection decision.
     Initial,
-    /// Public `Revalidation` item.
+    /// Decision made immediately before execution.
     Revalidation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `RouteRevalidationReason` used by the MCT kernel.
+/// Result reason for execution-time route revalidation.
 pub enum RouteRevalidationReason {
-    /// Public `Revalidated` item.
+    /// Selected route and all execution authorities still match.
     Revalidated,
-    /// Public `InitialDecisionNotSelected` item.
+    /// Initial decision had no selected route.
     InitialDecisionNotSelected,
-    /// Public `CallIdMismatch` item.
+    /// Initial decision was for a different call.
     CallIdMismatch,
-    /// Public `SelectedRouteNotAdmissible` item.
+    /// Selected route was not recorded as admissible in the initial decision.
     SelectedRouteNotAdmissible,
-    /// Public `SelectedChildMismatch` item.
+    /// Authorized child invocation did not match the selected child.
     SelectedChildMismatch,
-    /// Public `ChildAuthorityDenied` item.
+    /// Child authority token was absent or denied.
     ChildAuthorityDenied,
-    /// Public `ToyGrantDenied` item.
+    /// At least one required toy grant was absent or denied.
     ToyGrantDenied,
-    /// Public `PolicyRevisionStale` item.
+    /// Policy revision did not match the call authority snapshot.
     PolicyRevisionStale,
-    /// Public `GrantsRevisionStale` item.
+    /// Grants revision did not match the call authority snapshot.
     GrantsRevisionStale,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `CandidateAuthorityEvaluation` used by the MCT kernel.
+/// Authority result for one route candidate at one revision pair.
 pub struct CandidateAuthorityEvaluation {
-    /// Field `candidate` of this domain record.
+    /// Candidate route being judged.
     pub candidate: CandidateRoute,
-    /// Field `outcome` of this domain record.
+    /// Whether the candidate remains feasible.
     pub outcome: CandidateAuthorityOutcome,
-    /// Field `reason` of this domain record.
+    /// Elimination reason, present only for eliminated candidates.
     pub reason: Option<CandidateEliminationReason>,
-    /// Field `safe_message` of this domain record.
+    /// Caller-safe/operator-safe summary for projections.
     pub safe_message: String,
-    /// Field `policy_revision` of this domain record.
+    /// Policy revision used for the candidate judgment.
     pub policy_revision: u64,
-    /// Field `grants_revision` of this domain record.
+    /// Grants revision used for toy-related candidate judgment.
     pub grants_revision: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `RouteDecisionOutcome` used by the MCT kernel.
+/// Final outcome of route selection or revalidation.
 pub enum RouteDecisionOutcome {
-    /// Public `RouteSelected` item.
+    /// A route was selected and remains eligible.
     RouteSelected,
-    /// Public `NoRoute` item.
+    /// No route may be executed.
     NoRoute,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `RouteDecision` used by the MCT kernel.
+/// Two-phase routing authority decision for an MCT call.
+///
+/// Optimization may select only among candidates represented by admissible
+/// authority evaluations. `NoRoute` is the fail-closed default when no
+/// candidate remains or revalidation fails.
 pub struct RouteDecision {
-    /// Field `decision_id` of this domain record.
+    /// Unique decision identifier.
     pub decision_id: DecisionId,
-    /// Field `call_id` of this domain record.
+    /// Call whose route is being selected or revalidated.
     pub call_id: CallId,
-    /// Field `decision_kind` of this domain record.
+    /// Initial planning or revalidation phase.
     pub decision_kind: RouteDecisionKind,
-    /// Field `initial_decision_id` of this domain record.
+    /// Initial decision referenced by revalidation decisions.
     pub initial_decision_id: Option<DecisionId>,
-    /// Field `authority_evaluations` of this domain record.
+    /// Per-candidate authority evidence used by this decision.
     pub authority_evaluations: Vec<CandidateAuthorityEvaluation>,
-    /// Field `selected_route` of this domain record.
+    /// Selected route, present only when outcome is `RouteSelected`.
     pub selected_route: Option<CandidateRoute>,
-    /// Field `outcome` of this domain record.
+    /// Route decision outcome.
     pub outcome: RouteDecisionOutcome,
-    /// Field `no_route_reason` of this domain record.
+    /// Reason no route exists, present only for no-route decisions.
     pub no_route_reason: Option<CandidateEliminationReason>,
-    /// Field `safe_message` of this domain record.
+    /// Caller-safe message for result projection.
     pub safe_message: String,
-    /// Field `observation_id` of this domain record.
+    /// Observation recording this route decision.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Domain record `RouteDecisionIds` used by the MCT kernel.
+/// Identifiers assigned to an initial route decision.
 pub struct RouteDecisionIds {
-    /// Field `decision_id` of this domain record.
+    /// Decision identifier to stamp on the route decision.
     pub decision_id: DecisionId,
-    /// Field `observation_id` of this domain record.
+    /// Observation identifier to stamp on route evidence.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Domain record `RouteRevalidationIds` used by the MCT kernel.
+/// Identifiers assigned during execution-time route revalidation.
 pub struct RouteRevalidationIds {
-    /// Field `decision_id` of this domain record.
+    /// Decision identifier to stamp on the route decision.
     pub decision_id: DecisionId,
-    /// Field `observation_id` of this domain record.
+    /// Observation identifier to stamp on route evidence.
     pub observation_id: ObservationId,
-    /// Field `authorized_route_execution_id` of this domain record.
+    /// Token identifier minted only when revalidation succeeds.
     pub authorized_route_execution_id: AuthorizedRouteExecutionId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `AuthorizedRouteExecution` used by the MCT kernel.
+/// Capability token proving a selected route passed execution-time revalidation.
+///
+/// Adapters should execute only when this record is present in a successful
+/// revalidation result.
 pub struct AuthorizedRouteExecution {
-    /// Field `authorized_route_execution_id` of this domain record.
+    /// Unique identifier for this execution authorization.
     pub authorized_route_execution_id: AuthorizedRouteExecutionId,
-    /// Field `call_id` of this domain record.
+    /// Call authorized for execution.
     pub call_id: CallId,
-    /// Field `initial_decision_id` of this domain record.
+    /// Initial route decision being revalidated.
     pub initial_decision_id: DecisionId,
-    /// Field `revalidation_decision_id` of this domain record.
+    /// Revalidation decision that minted this token.
     pub revalidation_decision_id: DecisionId,
-    /// Field `route` of this domain record.
+    /// Route authorized for execution.
     pub route: CandidateRoute,
-    /// Field `child_invocation` of this domain record.
+    /// Child invocation token for the selected child.
     pub child_invocation: AuthorizedChildInvocation,
-    /// Field `toy_calls` of this domain record.
+    /// Toy call tokens that survived revalidation.
     pub toy_calls: Vec<AuthorizedToyCall>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Domain record `RouteRevalidationResult` used by the MCT kernel.
+/// Result of checking selected route authority immediately before execution.
 pub struct RouteRevalidationResult {
-    /// Field `decision` of this domain record.
+    /// Revalidation route decision, selected or no-route.
     pub decision: RouteDecision,
-    /// Field `reason` of this domain record.
+    /// Typed reason for authorization or denial.
     pub reason: RouteRevalidationReason,
-    /// Field `authorized` of this domain record.
+    /// Execution authorization token, present only when revalidated.
     pub authorized: Option<AuthorizedRouteExecution>,
 }
 
 impl RouteRevalidationResult {
-    /// Executes `is_authorized` for this domain type.
+    /// Returns true only when revalidation minted an execution token.
     pub fn is_authorized(&self) -> bool {
         self.reason == RouteRevalidationReason::Revalidated && self.authorized.is_some()
     }
 }
 
 impl CandidateAuthorityEvaluation {
-    /// Executes `admissible` for this domain type.
+    /// Builds an admissible candidate evaluation at the supplied revisions.
     pub fn admissible(
         candidate: CandidateRoute,
         policy_revision: u64,
@@ -226,7 +236,7 @@ impl CandidateAuthorityEvaluation {
         }
     }
 
-    /// Executes `eliminated` for this domain type.
+    /// Builds an eliminated candidate evaluation with a non-secret safe message.
     pub fn eliminated(
         candidate: CandidateRoute,
         reason: CandidateEliminationReason,
@@ -245,7 +255,7 @@ impl CandidateAuthorityEvaluation {
 }
 
 impl RouteDecision {
-    /// Executes `selected` for this domain type.
+    /// Builds an initial decision selecting one route from authority evaluations.
     pub fn selected(
         call: &MctCall,
         selected_route: CandidateRoute,
@@ -266,7 +276,7 @@ impl RouteDecision {
         }
     }
 
-    /// Executes `no_route` for this domain type.
+    /// Builds an initial fail-closed no-route decision.
     pub fn no_route(
         call: &MctCall,
         authority_evaluations: Vec<CandidateAuthorityEvaluation>,
@@ -287,13 +297,20 @@ impl RouteDecision {
         }
     }
 
-    /// Executes `is_no_route` for this domain type.
+    /// Returns true when this decision denies execution because no route remains.
     pub fn is_no_route(&self) -> bool {
         self.outcome == RouteDecisionOutcome::NoRoute
     }
 }
 
-/// Executes `revalidate_route_for_execution` for this domain type.
+/// Rechecks route, child, and toy authority immediately before execution.
+///
+/// Authority facts are the original call, initial route decision, child
+/// authority result, toy grant results, and caller-supplied IDs. It returns an
+/// execution token only when the initial decision selected an admissible route,
+/// the child invocation matches the selected child and call, all revisions match
+/// the call authority snapshot, and every toy grant is allowed. Any mismatch is
+/// a no-route decision with no token.
 pub fn revalidate_route_for_execution(
     call: &MctCall,
     initial: &RouteDecision,
@@ -509,7 +526,9 @@ fn revalidation_denied(
     }
 }
 
-/// Executes `no_route_denied_result` for this domain type.
+/// Projects a no-route decision into a caller-safe denied result.
+///
+/// The result contains no route and preserves the decision ID for audit lookup.
 pub fn no_route_denied_result(
     call: &MctCall,
     decision: &RouteDecision,
