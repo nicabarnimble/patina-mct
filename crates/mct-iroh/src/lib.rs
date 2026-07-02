@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 mod endpoint;
+mod identity;
 #[cfg(test)]
 mod observation;
 #[cfg(test)]
@@ -16,9 +17,9 @@ pub use endpoint::{
     MctIrohCallHandlerResult, MctIrohPeerCallReport, MctIrohServeState, MctIrohServedProtocol,
     MotherIrohEndpoint, MotherIrohEndpointConfig, MotherIrohEndpointError,
     MotherIrohEndpointLifecycle, MotherIrohEndpointResult, MotherIrohEndpointSnapshot,
-    MotherIrohEndpointTicket, MotherIrohRelayMode, endpoint_id_for_secret_key_hex,
-    load_or_create_node_secret_key_hex,
+    MotherIrohEndpointTicket, MotherIrohRelayMode,
 };
+pub use identity::{endpoint_id_for_secret_key_hex, load_or_create_node_secret_key_hex};
 
 /// Returns the crate version for health and smoke tests.
 pub fn version() -> &'static str {
