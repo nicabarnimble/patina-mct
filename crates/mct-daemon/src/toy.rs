@@ -94,10 +94,10 @@ impl MctToyAdapterRegistry {
                             ObservationKind::ToyCallCompleted,
                             ObservationOutcome::Completed,
                         ),
-                        Err(safe_message) => (
+                        Err(error) => (
                             MctToyAdapterOutcome::Failed,
                             None,
-                            safe_message,
+                            error.safe_message(),
                             ObservationKind::ToyCallFailed,
                             ObservationOutcome::Failed,
                         ),
@@ -130,20 +130,19 @@ impl MctToyAdapterRegistry {
     }
 }
 
-fn call_git_toy(repo_root: &Path, input_json: &str) -> Result<String, String> {
+fn call_git_toy(repo_root: &Path, input_json: &str) -> Result<String, GitToyError> {
     if !repo_root.is_dir() {
-        return Err(format!(
-            "git toy repo root '{}' is not a directory",
-            repo_root.display()
-        ));
+        return Err(GitToyError::RepoRootNotDirectory {
+            repo_root: repo_root.to_path_buf(),
+        });
     }
-    let input: Value = serde_json::from_str(input_json)
-        .map_err(|error| format!("git toy input must be JSON: {error}"))?;
+    let input: Value =
+        serde_json::from_str(input_json).map_err(|source| GitToyError::InputJson { source })?;
     let interface = required_str(&input, "interface")?;
     if interface != "patina:git/git@0.1.0" {
-        return Err(format!(
-            "git toy received unsupported interface '{interface}'"
-        ));
+        return Err(GitToyError::UnsupportedInterface {
+            interface: interface.to_owned(),
+        });
     }
     let function = required_str(&input, "function")?;
     let output = match function {
@@ -237,9 +236,71 @@ fn call_git_toy(repo_root: &Path, input_json: &str) -> Result<String, String> {
             };
             serde_json::json!({"ok": diverged})
         }
-        other => return Err(format!("unsupported git toy function '{other}'")),
+        other => {
+            return Err(GitToyError::UnsupportedFunction {
+                function: other.to_owned(),
+            });
+        }
     };
     Ok(output.to_string())
+}
+
+#[derive(Debug, Error)]
+enum GitToyError {
+    #[error("git toy repo root '{repo_root}' is not a directory", repo_root = repo_root.display())]
+    RepoRootNotDirectory { repo_root: PathBuf },
+    #[error("git toy input must be JSON: {source}")]
+    InputJson {
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("git toy received unsupported interface '{interface}'")]
+    UnsupportedInterface { interface: String },
+    #[error("unsupported git toy function '{function}'")]
+    UnsupportedFunction { function: String },
+    #[error("git toy input missing string field '{field}'")]
+    MissingStringField { field: &'static str },
+    #[error("git toy input missing u32 field '{field}'")]
+    MissingU32Field { field: &'static str },
+    #[error("git toy field '{field}' exceeds u32")]
+    U32FieldOverflow { field: &'static str },
+    #[error("git toy input missing path list field '{field}'")]
+    MissingPathListField { field: &'static str },
+    #[error("git toy path field '{field}' contains a non-string")]
+    NonStringPath { field: &'static str },
+    #[error("{source}")]
+    InvalidPath {
+        #[source]
+        source: GitToyPathError,
+    },
+    #[error("{source}")]
+    InvalidRef {
+        #[source]
+        source: GitRefArgError,
+    },
+    #[error("running git: {source}")]
+    RunGit {
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{stderr}")]
+    GitFailed { stderr: String },
+}
+
+impl GitToyError {
+    fn safe_message(&self) -> String {
+        self.to_string()
+    }
+}
+
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+enum GitToyPathError {
+    #[error("git toy path must not be empty")]
+    Empty,
+    #[error("git toy path must be repository-relative")]
+    NotRelative,
+    #[error("git toy path must not escape the repository")]
+    EscapesRepository,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -274,50 +335,49 @@ enum GitRefArgError {
 fn required_git_ref_arg<'a>(
     input: &'a Value,
     field: &'static str,
-) -> Result<GitRefArg<'a>, String> {
+) -> Result<GitRefArg<'a>, GitToyError> {
     let value = required_str(input, field)?;
-    GitRefArg::new(field, value).map_err(|error| error.to_string())
+    GitRefArg::new(field, value).map_err(|source| GitToyError::InvalidRef { source })
 }
 
-fn required_str<'a>(input: &'a Value, field: &str) -> Result<&'a str, String> {
+fn required_str<'a>(input: &'a Value, field: &'static str) -> Result<&'a str, GitToyError> {
     input
         .get(field)
         .and_then(Value::as_str)
-        .ok_or_else(|| format!("git toy input missing string field '{field}'"))
+        .ok_or(GitToyError::MissingStringField { field })
 }
 
-fn required_u32(input: &Value, field: &str) -> Result<u32, String> {
+fn required_u32(input: &Value, field: &'static str) -> Result<u32, GitToyError> {
     let value = input
         .get(field)
         .and_then(Value::as_u64)
-        .ok_or_else(|| format!("git toy input missing u32 field '{field}'"))?;
-    u32::try_from(value).map_err(|_| format!("git toy field '{field}' exceeds u32"))
+        .ok_or(GitToyError::MissingU32Field { field })?;
+    u32::try_from(value).map_err(|_| GitToyError::U32FieldOverflow { field })
 }
 
-fn required_paths(input: &Value, field: &str) -> Result<Vec<String>, String> {
+fn required_paths(input: &Value, field: &'static str) -> Result<Vec<String>, GitToyError> {
     let values = input
         .get(field)
         .and_then(Value::as_array)
-        .ok_or_else(|| format!("git toy input missing path list field '{field}'"))?;
+        .ok_or(GitToyError::MissingPathListField { field })?;
     values
         .iter()
         .map(|value| {
-            let path = value
-                .as_str()
-                .ok_or_else(|| format!("git toy path field '{field}' contains a non-string"))?;
-            validate_repo_relative_path(path)?;
+            let path = value.as_str().ok_or(GitToyError::NonStringPath { field })?;
+            validate_repo_relative_path(path)
+                .map_err(|source| GitToyError::InvalidPath { source })?;
             Ok(path.to_owned())
         })
         .collect()
 }
 
-fn validate_repo_relative_path(path: &str) -> Result<(), String> {
+fn validate_repo_relative_path(path: &str) -> Result<(), GitToyPathError> {
     if path.trim().is_empty() {
-        return Err("git toy path must not be empty".into());
+        return Err(GitToyPathError::Empty);
     }
     let path = Path::new(path);
     if !path.is_relative() {
-        return Err("git toy path must be repository-relative".into());
+        return Err(GitToyPathError::NotRelative);
     }
     for component in path.components() {
         match component {
@@ -326,18 +386,18 @@ fn validate_repo_relative_path(path: &str) -> Result<(), String> {
             | Component::ParentDir
             | Component::RootDir
             | Component::Prefix(_) => {
-                return Err("git toy path must not escape the repository".into());
+                return Err(GitToyPathError::EscapesRepository);
             }
         }
     }
     Ok(())
 }
 
-fn run_git(repo_root: &Path, args: &[&str]) -> Result<(), String> {
+fn run_git(repo_root: &Path, args: &[&str]) -> Result<(), GitToyError> {
     let output = git_command(repo_root)
         .args(args)
         .output()
-        .map_err(|error| format!("running git: {error}"))?;
+        .map_err(|source| GitToyError::RunGit { source })?;
     if output.status.success() {
         Ok(())
     } else {
@@ -345,11 +405,11 @@ fn run_git(repo_root: &Path, args: &[&str]) -> Result<(), String> {
     }
 }
 
-fn run_git_owned(repo_root: &Path, args: &[String]) -> Result<(), String> {
+fn run_git_owned(repo_root: &Path, args: &[String]) -> Result<(), GitToyError> {
     let output = git_command(repo_root)
         .args(args)
         .output()
-        .map_err(|error| format!("running git: {error}"))?;
+        .map_err(|source| GitToyError::RunGit { source })?;
     if output.status.success() {
         Ok(())
     } else {
@@ -357,11 +417,11 @@ fn run_git_owned(repo_root: &Path, args: &[String]) -> Result<(), String> {
     }
 }
 
-fn run_git_capture(repo_root: &Path, args: &[&str]) -> Result<String, String> {
+fn run_git_capture(repo_root: &Path, args: &[&str]) -> Result<String, GitToyError> {
     let output = git_command(repo_root)
         .args(args)
         .output()
-        .map_err(|error| format!("running git: {error}"))?;
+        .map_err(|source| GitToyError::RunGit { source })?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
@@ -369,11 +429,11 @@ fn run_git_capture(repo_root: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
-fn run_git_capture_allow_failure(repo_root: &Path, args: &[&str]) -> Result<String, String> {
+fn run_git_capture_allow_failure(repo_root: &Path, args: &[&str]) -> Result<String, GitToyError> {
     let output = git_command(repo_root)
         .args(args)
         .output()
-        .map_err(|error| format!("running git: {error}"))?;
+        .map_err(|source| GitToyError::RunGit { source })?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
@@ -392,12 +452,14 @@ fn git_command(repo_root: &Path) -> Command {
     command
 }
 
-fn git_stderr(output: &std::process::Output) -> String {
+fn git_stderr(output: &std::process::Output) -> GitToyError {
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    if stderr.is_empty() {
-        "git command failed".into()
-    } else {
-        stderr
+    GitToyError::GitFailed {
+        stderr: if stderr.is_empty() {
+            "git command failed".into()
+        } else {
+            stderr
+        },
     }
 }
 
@@ -638,6 +700,24 @@ mod tests {
             );
             assert_eq!(report.observations[1].kind, ObservationKind::ToyCallFailed);
         }
+    }
+
+    #[test]
+    fn git_toy_ref_validation_remains_typed_before_safe_message_projection() {
+        let repo = init_git_repo();
+
+        let error = call_git_toy(
+            repo.path(),
+            r#"{"interface":"patina:git/git@0.1.0","function":"create-tag","name":"--force"}"#,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            GitToyError::InvalidRef {
+                source: GitRefArgError::LeadingDash { field: "name" }
+            }
+        ));
     }
 
     #[test]

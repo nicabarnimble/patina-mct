@@ -15,6 +15,7 @@ use std::{
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ObservationLedgerError {
     #[error("observation ledger io error at {path}: {source}")]
     Io {
