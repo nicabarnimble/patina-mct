@@ -140,6 +140,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn serve_next_denies_binding_expired_against_current_accept_time() {
+        let mut server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let client_endpoint_id = client.snapshot().endpoint_id;
+        let server_ticket = server.ticket();
+        let mut binding = test_peer_binding(&client_endpoint_id);
+        binding.expires_at = Some(Timestamp::from("2026-06-01T00:00:00Z"));
+        let mut state = MctIrohServeState::new();
+        let trace_id = TraceId::from("trace-expired-binding-iroh");
+        let hello_request = test_hello_request(&client_endpoint_id, &trace_id);
+
+        let (served_hello, hello_response) = tokio::join!(
+            server.serve_next(&mut state, std::slice::from_ref(&binding), None),
+            client.send_hello(&server_ticket, &hello_request),
+        );
+
+        let served_hello = served_hello.unwrap();
+        let hello_response = hello_response.unwrap();
+        assert_eq!(hello_response.hello_outcome, HelloOutcome::Denied);
+        assert_eq!(hello_response.safe_message, "not authorized");
+        assert!(matches!(
+            served_hello,
+            MctIrohServedProtocol::Hello { evaluation, .. }
+                if evaluation.reason == HelloReason::BindingExpired
+        ));
+
+        server.close().await;
+        client.close().await;
+    }
+
+    #[tokio::test]
     async fn local_iroh_completes_mct_hello_then_call() {
         let report = run_local_iroh_echo_roundtrip().await.unwrap();
         assert_eq!(report.hello_response.hello_outcome, HelloOutcome::Admitted);
