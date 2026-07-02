@@ -2,300 +2,304 @@ use crate::{call::*, child::*, id::*, peer::*, route::*, toy::*};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `ObservationTraceRef` used by the MCT kernel.
+/// Trace linkage copied into durable observations.
 pub struct ObservationTraceRef {
-    /// Field `trace_id` of this domain record.
+    /// Trace shared by related observations.
     pub trace_id: TraceId,
-    /// Field `span_id` of this domain record.
+    /// Optional span that produced this observation.
     pub span_id: Option<SpanId>,
-    /// Field `parent_span_id` of this domain record.
+    /// Optional parent span for trace reconstruction.
     pub parent_span_id: Option<SpanId>,
-    /// Field `external_trace_id` of this domain record.
+    /// Optional foreign trace identifier from another system.
     pub external_trace_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `ObservationKind` used by the MCT kernel.
+/// Stable event taxonomy for observation ledger entries.
 pub enum ObservationKind {
-    /// Public `CallReceived` item.
+    /// Records that call received occurred.
     CallReceived,
-    /// Public `CallRejected` item.
+    /// Records that call rejected occurred.
     CallRejected,
-    /// Public `CallConstructed` item.
+    /// Records that call constructed occurred.
     CallConstructed,
-    /// Public `CallAuthorized` item.
+    /// Records that call authorized occurred.
     CallAuthorized,
-    /// Public `CallDenied` item.
+    /// Records that call denied occurred.
     CallDenied,
-    /// Public `CandidateConsidered` item.
+    /// Records that candidate considered occurred.
     CandidateConsidered,
-    /// Public `CandidateEliminated` item.
+    /// Records that candidate eliminated occurred.
     CandidateEliminated,
-    /// Public `RouteSelected` item.
+    /// Records that route selected occurred.
     RouteSelected,
-    /// Public `NoRouteRecorded` item.
+    /// Records that no route recorded occurred.
     NoRouteRecorded,
-    /// Public `RouteRevalidated` item.
+    /// Records that route revalidated occurred.
     RouteRevalidated,
-    /// Public `ResultRecorded` item.
+    /// Records that result recorded occurred.
     ResultRecorded,
-    /// Public `ArtifactVerified` item.
+    /// Records that artifact verified occurred.
     ArtifactVerified,
-    /// Public `ArtifactRejected` item.
+    /// Records that artifact rejected occurred.
     ArtifactRejected,
-    /// Public `ChildApproved` item.
+    /// Records that child approved occurred.
     ChildApproved,
-    /// Public `ChildRevoked` item.
+    /// Records that child revoked occurred.
     ChildRevoked,
-    /// Public `ChildAssigned` item.
+    /// Records that child assigned occurred.
     ChildAssigned,
-    /// Public `ChildAssignmentRevoked` item.
+    /// Records that child assignment revoked occurred.
     ChildAssignmentRevoked,
-    /// Public `ChildInstanceLoading` item.
+    /// Records that child instance loading occurred.
     ChildInstanceLoading,
-    /// Public `ChildInstanceReady` item.
+    /// Records that child instance ready occurred.
     ChildInstanceReady,
-    /// Public `ChildInstanceDegraded` item.
+    /// Records that child instance degraded occurred.
     ChildInstanceDegraded,
-    /// Public `ChildInstanceDraining` item.
+    /// Records that child instance draining occurred.
     ChildInstanceDraining,
-    /// Public `ChildInstanceStopped` item.
+    /// Records that child instance stopped occurred.
     ChildInstanceStopped,
-    /// Public `ChildInstanceFailed` item.
+    /// Records that child instance failed occurred.
     ChildInstanceFailed,
-    /// Public `ChildInvoked` item.
+    /// Records that child invoked occurred.
     ChildInvoked,
-    /// Public `ToyGrantAllowed` item.
+    /// Records that toy grant allowed occurred.
     ToyGrantAllowed,
-    /// Public `ToyGrantDenied` item.
+    /// Records that toy grant denied occurred.
     ToyGrantDenied,
-    /// Public `ToyGrantExpired` item.
+    /// Records that toy grant expired occurred.
     ToyGrantExpired,
-    /// Public `ToyGrantRevoked` item.
+    /// Records that toy grant revoked occurred.
     ToyGrantRevoked,
-    /// Public `ToyCallStarted` item.
+    /// Records that toy call started occurred.
     ToyCallStarted,
-    /// Public `ToyCallCompleted` item.
+    /// Records that toy call completed occurred.
     ToyCallCompleted,
-    /// Public `ToyCallFailed` item.
+    /// Records that toy call failed occurred.
     ToyCallFailed,
-    /// Public `DataMovementAllowed` item.
+    /// Records that data movement allowed occurred.
     DataMovementAllowed,
-    /// Public `DataMovementDenied` item.
+    /// Records that data movement denied occurred.
     DataMovementDenied,
-    /// Public `SecretAccessAllowed` item.
+    /// Records that secret access allowed occurred.
     SecretAccessAllowed,
-    /// Public `SecretAccessDenied` item.
+    /// Records that secret access denied occurred.
     SecretAccessDenied,
-    /// Public `PeerConnected` item.
+    /// Records that peer connected occurred.
     PeerConnected,
-    /// Public `PeerHelloReceived` item.
+    /// Records that peer hello received occurred.
     PeerHelloReceived,
-    /// Public `PeerProtocolNegotiated` item.
+    /// Records that peer protocol negotiated occurred.
     PeerProtocolNegotiated,
-    /// Public `PeerHelloResponded` item.
+    /// Records that peer hello responded occurred.
     PeerHelloResponded,
-    /// Public `PeerBindingRecorded` item.
+    /// Records that peer binding recorded occurred.
     PeerBindingRecorded,
-    /// Public `PeerBindingRevoked` item.
+    /// Records that peer binding revoked occurred.
     PeerBindingRevoked,
-    /// Public `PeerBindingExpired` item.
+    /// Records that peer binding expired occurred.
     PeerBindingExpired,
-    /// Public `PeerAdmitted` item.
+    /// Records that peer admitted occurred.
     PeerAdmitted,
-    /// Public `PeerRejected` item.
+    /// Records that peer rejected occurred.
     PeerRejected,
-    /// Public `PeerCallSent` item.
+    /// Records that peer call sent occurred.
     PeerCallSent,
-    /// Public `PeerCallReceived` item.
+    /// Records that peer call received occurred.
     PeerCallReceived,
-    /// Public `PeerCallMalformed` item.
+    /// Records that peer call malformed occurred.
     PeerCallMalformed,
-    /// Public `PeerCallReplied` item.
+    /// Records that peer call replied occurred.
     PeerCallReplied,
-    /// Public `PeerStreamOpened` item.
+    /// Records that peer stream opened occurred.
     PeerStreamOpened,
-    /// Public `PeerStreamReset` item.
+    /// Records that peer stream reset occurred.
     PeerStreamReset,
-    /// Public `IrohPathObserved` item.
+    /// Records that iroh path observed occurred.
     IrohPathObserved,
-    /// Public `RuntimeExecutionStarted` item.
+    /// Records that runtime execution started occurred.
     RuntimeExecutionStarted,
-    /// Public `RuntimeExecutionCompleted` item.
+    /// Records that runtime execution completed occurred.
     RuntimeExecutionCompleted,
-    /// Public `RuntimeExecutionFailed` item.
+    /// Records that runtime execution failed occurred.
     RuntimeExecutionFailed,
-    /// Public `RuntimeExecutionTrapped` item.
+    /// Records that runtime execution trapped occurred.
     RuntimeExecutionTrapped,
-    /// Public `RuntimeExecutionTimedOut` item.
+    /// Records that runtime execution timed out occurred.
     RuntimeExecutionTimedOut,
-    /// Public `AdapterEffectStarted` item.
+    /// Records that adapter effect started occurred.
     AdapterEffectStarted,
-    /// Public `AdapterEffectCompleted` item.
+    /// Records that adapter effect completed occurred.
     AdapterEffectCompleted,
-    /// Public `AdapterEffectFailed` item.
+    /// Records that adapter effect failed occurred.
     AdapterEffectFailed,
-    /// Public `StorageAppendSucceeded` item.
+    /// Records that storage append succeeded occurred.
     StorageAppendSucceeded,
-    /// Public `StorageAppendFailed` item.
+    /// Records that storage append failed occurred.
     StorageAppendFailed,
-    /// Public `ObservationBackpressureApplied` item.
+    /// Records that observation backpressure applied occurred.
     ObservationBackpressureApplied,
-    /// Public `LifecycleTransitionRecorded` item.
+    /// Records that lifecycle transition recorded occurred.
     LifecycleTransitionRecorded,
-    /// Public `NodeHealthReported` item.
+    /// Records that node health reported occurred.
     NodeHealthReported,
-    /// Public `OperatorActionRecorded` item.
+    /// Records that operator action recorded occurred.
     OperatorActionRecorded,
-    /// Public `TelemetryExported` item.
+    /// Records that telemetry exported occurred.
     TelemetryExported,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `SourcePlane` used by the MCT kernel.
+/// Layer that produced the observation fact.
 pub enum SourcePlane {
-    /// Public `Kernel` item.
+    /// Pure kernel decision or projection.
     Kernel,
-    /// Public `Adapter` item.
+    /// Adapter boundary or runtime effect.
     Adapter,
-    /// Public `Peer` item.
+    /// Peer protocol event.
     Peer,
-    /// Public `Child` item.
+    /// Child lifecycle or invocation event.
     Child,
-    /// Public `Toy` item.
+    /// Toy grant or effect event.
     Toy,
-    /// Public `Storage` item.
+    /// Storage or ledger event.
     Storage,
-    /// Public `Operator` item.
+    /// Operator action or health projection.
     Operator,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `ObservationOutcome` used by the MCT kernel.
+/// Outcome class recorded for an observation.
 pub enum ObservationOutcome {
-    /// Public `Allowed` item.
+    /// Authority allowed the action.
     Allowed,
-    /// Public `Denied` item.
+    /// Authority denied or failed closed.
     Denied,
-    /// Public `Started` item.
+    /// Effect or execution started.
     Started,
-    /// Public `Completed` item.
+    /// Effect or execution completed.
     Completed,
-    /// Public `Failed` item.
+    /// Effect or execution failed.
     Failed,
-    /// Public `TimedOut` item.
+    /// Effect or execution timed out.
     TimedOut,
-    /// Public `Cancelled` item.
+    /// Effect or execution was cancelled.
     Cancelled,
-    /// Public `Informational` item.
+    /// Fact is informational rather than an authority outcome.
     Informational,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `ObservationVisibility` used by the MCT kernel.
+/// Audience boundary for projecting observation details.
 pub enum ObservationVisibility {
-    /// Public `CallerSafe` item.
+    /// May be shown to the caller.
     CallerSafe,
-    /// Public `VisionOperator` item.
+    /// Visible to operators for the Vision.
     VisionOperator,
-    /// Public `NodeOperator` item.
+    /// Visible to operators of the local node.
     NodeOperator,
-    /// Public `SystemOperator` item.
+    /// Visible to system operators.
     SystemOperator,
-    /// Public `InternalOnly` item.
+    /// Internal diagnostic or audit detail only.
     InternalOnly,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `MctObservation` used by the MCT kernel.
+/// Durable typed fact written to the observation ledger.
+///
+/// Observations are the runtime truth for authority and adapter events. Safe
+/// messages and visibility define disclosure; privileged details remain behind
+/// `detail_ref` or typed records elsewhere.
 pub struct MctObservation {
-    /// Field `observation_id` of this domain record.
+    /// Unique observation identifier for ledger correlation.
     pub observation_id: ObservationId,
-    /// Field `observed_at` of this domain record.
+    /// Adapter-supplied time when the fact was observed.
     pub observed_at: Timestamp,
-    /// Field `kind` of this domain record.
+    /// Event taxonomy value for this fact.
     pub kind: ObservationKind,
-    /// Field `source_plane` of this domain record.
+    /// Layer that produced the observation.
     pub source_plane: SourcePlane,
-    /// Field `trace` of this domain record.
+    /// Trace linkage for reconstructing call flow.
     pub trace: ObservationTraceRef,
-    /// Field `call_id` of this domain record.
+    /// Call associated with the fact, when any.
     pub call_id: Option<CallId>,
-    /// Field `decision_id` of this domain record.
+    /// Authority decision associated with the fact, when any.
     pub decision_id: Option<DecisionId>,
-    /// Field `subject_id` of this domain record.
+    /// Subject of the fact, such as child, peer, or grant.
     pub subject_id: Option<String>,
-    /// Field `resource_id` of this domain record.
+    /// Resource affected or considered by the fact.
     pub resource_id: Option<String>,
-    /// Field `policy_revision` of this domain record.
+    /// Policy revision relevant to the fact, when any.
     pub policy_revision: Option<u64>,
-    /// Field `grants_revision` of this domain record.
+    /// Grants revision relevant to the fact, when any.
     pub grants_revision: Option<u64>,
-    /// Field `outcome` of this domain record.
+    /// Outcome class for projection and filtering.
     pub outcome: ObservationOutcome,
-    /// Field `visibility` of this domain record.
+    /// Maximum intended audience for this observation.
     pub visibility: ObservationVisibility,
-    /// Field `safe_message` of this domain record.
+    /// Audience-safe summary for projections.
     pub safe_message: String,
-    /// Field `detail_ref` of this domain record.
+    /// Opaque reference to privileged detail outside this record.
     pub detail_ref: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `AdapterDiagnosticKind` used by the MCT kernel.
+/// Adapter failure class projected into an observation.
 pub enum AdapterDiagnosticKind {
-    /// Public `IrohStreamReset` item.
+    /// Iroh stream reset before protocol completion.
     IrohStreamReset,
-    /// Public `WasmTrap` item.
+    /// WASM runtime trapped during execution.
     WasmTrap,
-    /// Public `WasmMissingExport` item.
+    /// Configured WASM export was absent.
     WasmMissingExport,
-    /// Public `WasmMissingHostImport` item.
+    /// Component requested a missing host import.
     WasmMissingHostImport,
-    /// Public `WasmValueConversionFailure` item.
+    /// WIT value conversion failed.
     WasmValueConversionFailure,
-    /// Public `ProcessExitFailure` item.
+    /// Process child exited unsuccessfully.
     ProcessExitFailure,
-    /// Public `JvmTimeout` item.
+    /// JVM-backed child timed out.
     JvmTimeout,
-    /// Public `StorageAppendFailure` item.
+    /// Storage append failed.
     StorageAppendFailure,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `AdapterDiagnosticObservationInput` used by the MCT kernel.
+/// Input facts for projecting an adapter diagnostic into an observation.
 pub struct AdapterDiagnosticObservationInput {
-    /// Field `observation_id` of this domain record.
+    /// Unique observation identifier for ledger correlation.
     pub observation_id: ObservationId,
-    /// Field `observed_at` of this domain record.
+    /// Adapter-supplied time when the fact was observed.
     pub observed_at: Timestamp,
-    /// Field `diagnostic_kind` of this domain record.
+    /// Adapter diagnostic class to project.
     pub diagnostic_kind: AdapterDiagnosticKind,
-    /// Field `trace` of this domain record.
+    /// Trace linkage for reconstructing call flow.
     pub trace: ObservationTraceRef,
-    /// Field `call_id` of this domain record.
+    /// Call associated with the fact, when any.
     pub call_id: Option<CallId>,
-    /// Field `decision_id` of this domain record.
+    /// Authority decision associated with the fact, when any.
     pub decision_id: Option<DecisionId>,
-    /// Field `subject_id` of this domain record.
+    /// Subject of the fact, such as child, peer, or grant.
     pub subject_id: Option<String>,
-    /// Field `resource_id` of this domain record.
+    /// Resource affected or considered by the fact.
     pub resource_id: Option<String>,
-    /// Field `policy_revision` of this domain record.
+    /// Policy revision relevant to the fact, when any.
     pub policy_revision: Option<u64>,
-    /// Field `grants_revision` of this domain record.
+    /// Grants revision relevant to the fact, when any.
     pub grants_revision: Option<u64>,
-    /// Field `detail_ref` of this domain record.
+    /// Opaque reference to privileged detail outside this record.
     pub detail_ref: Option<String>,
 }
 
 impl MctObservation {
-    /// Executes `informational` for this domain type.
+    /// Builds an internal informational observation with no call or decision context.
     pub fn informational(
         observation_id: ObservationId,
         observed_at: Timestamp,
@@ -328,7 +332,7 @@ impl MctObservation {
     }
 }
 
-/// Executes `adapter_diagnostic_observation` for this domain type.
+/// Projects an adapter diagnostic into the stable observation taxonomy.
 pub fn adapter_diagnostic_observation(input: AdapterDiagnosticObservationInput) -> MctObservation {
     let (kind, source_plane, outcome, safe_message) = match input.diagnostic_kind {
         AdapterDiagnosticKind::IrohStreamReset => (
@@ -400,7 +404,7 @@ pub fn adapter_diagnostic_observation(input: AdapterDiagnosticObservationInput) 
     }
 }
 
-/// Executes `hello_evaluation_observation` for this domain type.
+/// Projects a hello admission evaluation into an observation fact.
 pub fn hello_evaluation_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -448,7 +452,7 @@ pub fn hello_evaluation_observation(
     }
 }
 
-/// Executes `peer_binding_state_observation` for this domain type.
+/// Projects a peer binding lifecycle state into an observation fact.
 pub fn peer_binding_state_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -509,7 +513,7 @@ pub fn peer_binding_state_observation(
     }
 }
 
-/// Executes `route_decision_observation` for this domain type.
+/// Projects a route decision into an observation fact, preserving safe no-route detail.
 pub fn route_decision_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -586,7 +590,7 @@ fn route_decision_detail_ref(decision: &RouteDecision) -> Option<String> {
     }
 }
 
-/// Executes `call_protocol_evaluation_observation` for this domain type.
+/// Projects a call protocol evaluation into an observation fact.
 pub fn call_protocol_evaluation_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -635,7 +639,7 @@ pub fn call_protocol_evaluation_observation(
     }
 }
 
-/// Executes `child_approval_observation` for this domain type.
+/// Projects a child approval authority record into an observation fact.
 pub fn child_approval_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -686,7 +690,7 @@ pub fn child_approval_observation(
     }
 }
 
-/// Executes `child_assignment_observation` for this domain type.
+/// Projects a child assignment authority record into an observation fact.
 pub fn child_assignment_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -732,7 +736,7 @@ pub fn child_assignment_observation(
     }
 }
 
-/// Executes `child_instance_observation` for this domain type.
+/// Projects a child instance lifecycle state into an observation fact.
 pub fn child_instance_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -798,7 +802,7 @@ pub fn child_instance_observation(
     }
 }
 
-/// Executes `child_call_authority_observation` for this domain type.
+/// Projects a child call authority evaluation into an observation fact.
 pub fn child_call_authority_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -846,7 +850,7 @@ pub fn child_call_authority_observation(
     }
 }
 
-/// Executes `toy_grant_evaluation_observation` for this domain type.
+/// Projects a toy grant evaluation into an observation fact.
 pub fn toy_grant_evaluation_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
