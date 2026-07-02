@@ -176,7 +176,7 @@ async fn serve_two_local_connections(
                             decision_id: DecisionId::from("decision-iroh-hello"),
                             observation_id: ObservationId::from("obs-iroh-hello-decision"),
                         },
-                        now: Timestamp::from("2026-05-31T00:00:01Z"),
+                        now: Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
                     },
                 );
                 state.lock().await.last_hello = Some(evaluation.clone());
@@ -276,7 +276,7 @@ fn local_binding_for(endpoint_id: &EndpointIdText) -> MctPeerBinding {
         issuer_node_id: MctNodeId::from("mother-server"),
         policy_revision: 1,
         binding_state: BindingState::Admitted,
-        issued_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        issued_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
         expires_at: None,
         created_by_observation_id: ObservationId::from("obs-binding-local-iroh"),
         superseded_by_observation_id: None,
@@ -342,7 +342,7 @@ fn local_call_request(
             grants_revision: 1,
             vision_policy_revision: 1,
         },
-        deadline: Timestamp::from("2026-05-31T00:01:00Z"),
+        deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
         trace_context: TraceContext {
             trace_id: trace_id.clone(),
             span_id: SpanId::from("span-local-call"),

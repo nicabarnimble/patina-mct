@@ -105,7 +105,7 @@ mod tests {
             server.serve_next(
                 &mut state,
                 std::slice::from_ref(&binding),
-                Timestamp::from("2026-05-31T00:00:01Z"),
+                Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
                 None,
             ),
             client.send_hello(&server_ticket, &hello_request),
@@ -123,7 +123,7 @@ mod tests {
             server.serve_next(
                 &mut state,
                 std::slice::from_ref(&binding),
-                Timestamp::from("2026-05-31T00:00:02Z"),
+                Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
                 Some(ResultRef::from("result-public-iroh")),
             ),
             client.send_call(&server_ticket, &call_request),
@@ -152,7 +152,7 @@ mod tests {
         let client_endpoint_id = client.snapshot().endpoint_id;
         let server_ticket = server.ticket();
         let mut binding = test_peer_binding(&client_endpoint_id);
-        binding.expires_at = Some(Timestamp::from("2026-06-01T00:00:00Z"));
+        binding.expires_at = Some(Timestamp::new("2026-06-01T00:00:00Z").unwrap());
         let mut state = MctIrohServeState::new();
         let trace_id = TraceId::from("trace-expired-binding-iroh");
         let hello_request = test_hello_request(&client_endpoint_id, &trace_id);
@@ -161,7 +161,7 @@ mod tests {
             server.serve_next(
                 &mut state,
                 std::slice::from_ref(&binding),
-                Timestamp::from("2026-07-02T00:00:00Z"),
+                Timestamp::new("2026-07-02T00:00:00Z").unwrap(),
                 None,
             ),
             client.send_hello(&server_ticket, &hello_request),
@@ -210,7 +210,7 @@ mod tests {
             server.serve_next(
                 &mut state,
                 std::slice::from_ref(&binding),
-                Timestamp::from("2026-05-31T00:00:01Z"),
+                Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
                 None,
             ),
             client.send_hello(&server_ticket, &hello_request),
@@ -221,7 +221,7 @@ mod tests {
             server.serve_next_with_call_handler(
                 &mut state,
                 std::slice::from_ref(&binding),
-                Timestamp::from("2026-05-31T00:00:02Z"),
+                Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
                 |_, evaluation| {
                     assert!(evaluation.is_accepted_for_routing());
                     MctIrohCallHandlerResult::completed(ResultRef::from("result-runtime-child"))
@@ -346,7 +346,7 @@ mod tests {
             issuer_node_id: MctNodeId::from("mother-server"),
             policy_revision: 1,
             binding_state: BindingState::Admitted,
-            issued_at: Timestamp::from("2026-05-31T00:00:00Z"),
+            issued_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             expires_at: None,
             created_by_observation_id: ObservationId::from("obs-binding-public-iroh"),
             superseded_by_observation_id: None,
@@ -412,7 +412,7 @@ mod tests {
                 grants_revision: 1,
                 vision_policy_revision: 1,
             },
-            deadline: Timestamp::from("2026-05-31T00:01:00Z"),
+            deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
             trace_context: TraceContext {
                 trace_id: trace_id.clone(),
                 span_id: SpanId::from("span-public-call"),

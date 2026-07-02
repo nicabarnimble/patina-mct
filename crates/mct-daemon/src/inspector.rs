@@ -72,7 +72,7 @@ mod tests {
     ) -> MctObservation {
         MctObservation {
             observation_id: observation_id.into(),
-            observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+            observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             kind: ObservationKind::RuntimeExecutionCompleted,
             source_plane: SourcePlane::Adapter,
             trace: ObservationTraceRef {

@@ -352,7 +352,7 @@ mod tests {
                 grants_revision: 1,
                 vision_policy_revision: 1,
             },
-            deadline: Timestamp::from("2026-05-31T00:01:00Z"),
+            deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
             trace_context: TraceContext {
                 trace_id: TraceId::from("trace-supervisor"),
                 span_id: SpanId::from("span-supervisor"),
@@ -403,7 +403,7 @@ mod tests {
                     args: Vec::new(),
                 },
                 ObservationId::from("obs-supervisor-start"),
-                Timestamp::from("2026-05-31T00:00:00Z"),
+                Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             )
             .unwrap();
         assert_eq!(spawned.status.state, MctSupervisedProcessState::Running);
@@ -422,7 +422,7 @@ mod tests {
             .stop(
                 &ChildInstanceId::from("instance-supervisor"),
                 ObservationId::from("obs-supervisor-stop"),
-                Timestamp::from("2026-05-31T00:00:01Z"),
+                Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
             )
             .unwrap();
         assert_eq!(stopped.status.state, MctSupervisedProcessState::Stopped);
@@ -449,7 +449,7 @@ mod tests {
                 state: MctSupervisedProcessState::Running,
                 exit_code: None,
             }],
-            Timestamp::from("2026-05-31T00:00:02Z"),
+            Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
         );
 
         assert_eq!(report.recovered.len(), 1);
@@ -476,7 +476,7 @@ mod tests {
                     args: Vec::new(),
                 },
                 ObservationId::from("obs-supervisor-crash-start"),
-                Timestamp::from("2026-05-31T00:00:00Z"),
+                Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             )
             .unwrap();
 
@@ -501,7 +501,7 @@ mod tests {
             .stop(
                 &ChildInstanceId::from("instance-supervisor"),
                 ObservationId::from("obs-supervisor-crash-stop"),
-                Timestamp::from("2026-05-31T00:00:01Z"),
+                Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
             )
             .unwrap();
         assert_eq!(stopped.status.state, MctSupervisedProcessState::Stopped);

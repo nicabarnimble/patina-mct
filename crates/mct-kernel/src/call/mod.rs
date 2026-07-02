@@ -584,7 +584,7 @@ mod tests {
                 grants_revision: 1,
                 vision_policy_revision: 1,
             },
-            deadline: Timestamp::from("2026-05-31T00:00:00Z"),
+            deadline: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             trace_context: TraceContext {
                 trace_id: TraceId::from("trace-1"),
                 span_id: SpanId::from("span-1"),

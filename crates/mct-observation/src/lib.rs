@@ -386,7 +386,7 @@ mod tests {
     fn observation(id: &str, trace: &str, call: Option<&str>) -> MctObservation {
         let mut obs = MctObservation::informational(
             ObservationId::from(id),
-            Timestamp::from("2026-05-31T00:00:00Z"),
+            Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             ObservationKind::PeerHelloReceived,
             TraceId::from(trace),
             "hello received",
