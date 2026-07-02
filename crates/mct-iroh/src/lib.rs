@@ -10,16 +10,19 @@ mod endpoint;
 mod identity;
 #[cfg(test)]
 mod observation;
+mod serve;
 #[cfg(test)]
 mod test_support;
 
 pub use endpoint::{
-    MctIrohCallHandlerResult, MctIrohPeerCallReport, MctIrohServeState, MctIrohServedProtocol,
     MotherIrohEndpoint, MotherIrohEndpointConfig, MotherIrohEndpointError,
     MotherIrohEndpointLifecycle, MotherIrohEndpointResult, MotherIrohEndpointSnapshot,
     MotherIrohEndpointTicket, MotherIrohRelayMode,
 };
 pub use identity::{endpoint_id_for_secret_key_hex, load_or_create_node_secret_key_hex};
+pub use serve::{
+    MctIrohCallHandlerResult, MctIrohPeerCallReport, MctIrohServeState, MctIrohServedProtocol,
+};
 
 /// Returns the crate version for health and smoke tests.
 pub fn version() -> &'static str {
@@ -29,8 +32,9 @@ pub fn version() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::endpoint::{endpoint_addr_from_ticket, mct_alpn_bytes, mct_alpns};
+    use crate::endpoint::{mct_alpn_bytes, mct_alpns};
     use crate::observation::local_denied_peer_adapter_observations;
+    use crate::serve::endpoint_addr_from_ticket;
     use crate::test_support::{run_local_iroh_echo_roundtrip, run_unknown_peer_denial_roundtrip};
     use iroh::{Endpoint, RelayMode, endpoint::presets};
     use mct_kernel::*;
