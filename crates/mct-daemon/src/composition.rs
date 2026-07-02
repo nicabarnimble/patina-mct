@@ -603,13 +603,18 @@ args = [
             &state,
             MctCompositionPlan {
                 composition_id: "pando-a".into(),
-                vision_id: VisionId::from("vision-a"),
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 steps: vec![MctCompositionStep {
                     step_id: "step-a".into(),
-                    call_id: CallId::from("call-a"),
+                    call_id: CallId::new("call-a")
+                        .expect("string ID literal/generated value must be non-empty"),
                     runtime_kind: RuntimeKind::WasmComponent,
                     child_name: Some("child-a".into()),
-                    authority_decision_id: Some(DecisionId::from("decision-a")),
+                    authority_decision_id: Some(
+                        DecisionId::new("decision-a")
+                            .expect("string ID literal/generated value must be non-empty"),
+                    ),
                 }],
             },
         )

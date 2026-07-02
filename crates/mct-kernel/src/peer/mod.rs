@@ -38,11 +38,6 @@ pub struct IrohConnectionPresentation {
 
 impl IrohConnectionPresentation {
     pub fn validate(&self) -> MctKernelResult<()> {
-        ensure_non_blank(
-            "IrohConnectionPresentation",
-            "endpoint_id",
-            self.endpoint_id.as_str(),
-        )?;
         ensure_non_blank("IrohConnectionPresentation", "alpn", &self.alpn)?;
         if let Some(relay_url) = &self.relay_url {
             ensure_non_blank("IrohConnectionPresentation", "relay_url", relay_url)?;
@@ -317,7 +312,8 @@ mod tests {
 
     fn presentation(endpoint: &str) -> IrohConnectionPresentation {
         IrohConnectionPresentation {
-            endpoint_id: EndpointIdText::from(endpoint),
+            endpoint_id: EndpointIdText::new(endpoint)
+                .expect("string ID literal/generated value must be non-empty"),
             alpn: MCT_HELLO_ALPN.into(),
             connection_side: ConnectionSide::Incoming,
             path_class: PathClass::Direct,
@@ -331,13 +327,26 @@ mod tests {
             hello_id: "hello-1".into(),
             received_over: presentation(endpoint),
             requested_protocol: HelloPolicy::default().protocol,
-            requested_vision_id: Some(VisionId::from("vision-a")),
+            requested_vision_id: Some(
+                VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             requested_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
             presented_binding: MctPeerBindingPresentation {
-                binding_id: Some(PeerBindingId::from("binding-1")),
-                endpoint_id: EndpointIdText::from(endpoint),
-                mct_node_id: Some(MctNodeId::from("node-b")),
-                vision_id: Some(VisionId::from("vision-a")),
+                binding_id: Some(
+                    PeerBindingId::new("binding-1")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
+                endpoint_id: EndpointIdText::new(endpoint)
+                    .expect("string ID literal/generated value must be non-empty"),
+                mct_node_id: Some(
+                    MctNodeId::new("node-b")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
+                vision_id: Some(
+                    VisionId::new("vision-a")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
                 policy_revision: Some(1),
                 allowed_alpns_claim: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
                 signature_ref: None,
@@ -345,28 +354,36 @@ mod tests {
             },
             capability_view: None,
             local_policy_revision_seen: Some(1),
-            trace_id: TraceId::from("trace-1"),
-            received_observation_id: ObservationId::from("obs-received"),
+            trace_id: TraceId::new("trace-1")
+                .expect("string ID literal/generated value must be non-empty"),
+            received_observation_id: ObservationId::new("obs-received")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
     fn binding(state: BindingState) -> MctPeerBinding {
         MctPeerBinding {
-            binding_id: PeerBindingId::from("binding-1"),
-            iroh_endpoint_id: EndpointIdText::from("endpoint-a"),
+            binding_id: PeerBindingId::new("binding-1")
+                .expect("string ID literal/generated value must be non-empty"),
+            iroh_endpoint_id: EndpointIdText::new("endpoint-a")
+                .expect("string ID literal/generated value must be non-empty"),
             scope: MctPeerBindingScope {
-                mct_node_id: MctNodeId::from("node-b"),
-                vision_id: VisionId::from("vision-a"),
+                mct_node_id: MctNodeId::new("node-b")
+                    .expect("string ID literal/generated value must be non-empty"),
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 allowed_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
                 data_scope: None,
                 observation_scope: None,
             },
-            issuer_node_id: MctNodeId::from("node-a"),
+            issuer_node_id: MctNodeId::new("node-a")
+                .expect("string ID literal/generated value must be non-empty"),
             policy_revision: 1,
             binding_state: state,
             issued_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             expires_at: None,
-            created_by_observation_id: ObservationId::from("obs-binding"),
+            created_by_observation_id: ObservationId::new("obs-binding")
+                .expect("string ID literal/generated value must be non-empty"),
             superseded_by_observation_id: None,
         }
     }
@@ -374,8 +391,10 @@ mod tests {
     fn context() -> HelloEvaluationContext {
         HelloEvaluationContext {
             ids: EvaluationIds {
-                decision_id: DecisionId::from("decision-1"),
-                observation_id: ObservationId::from("obs-decision"),
+                decision_id: DecisionId::new("decision-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                observation_id: ObservationId::new("obs-decision")
+                    .expect("string ID literal/generated value must be non-empty"),
             },
             now: Timestamp::new("2026-05-31T00:00:30Z").unwrap(),
         }
@@ -405,7 +424,8 @@ mod tests {
     #[test]
     fn endpoint_mismatch_is_denied_before_binding_lookup() {
         let mut request = request("endpoint-a");
-        request.presented_binding.endpoint_id = EndpointIdText::from("endpoint-b");
+        request.presented_binding.endpoint_id = EndpointIdText::new("endpoint-b")
+            .expect("string ID literal/generated value must be non-empty");
         let evaluation = evaluate_hello(
             &request,
             &[binding(BindingState::Admitted)],
@@ -444,7 +464,8 @@ mod tests {
         let response = hello_response(
             "response-1",
             &evaluation,
-            ObservationId::from("obs-response"),
+            ObservationId::new("obs-response")
+                .expect("string ID literal/generated value must be non-empty"),
         );
         assert_eq!(response.safe_message, "not authorized");
     }
@@ -461,7 +482,8 @@ mod tests {
         let response = hello_response(
             "response-1",
             &evaluation,
-            ObservationId::from("obs-response"),
+            ObservationId::new("obs-response")
+                .expect("string ID literal/generated value must be non-empty"),
         );
         assert_eq!(response.safe_message, "not authorized");
     }
@@ -485,7 +507,9 @@ mod tests {
     #[test]
     fn presented_node_claim_must_match_binding_scope() {
         let mut request = request("endpoint-a");
-        request.presented_binding.mct_node_id = Some(MctNodeId::from("node-c"));
+        request.presented_binding.mct_node_id = Some(
+            MctNodeId::new("node-c").expect("string ID literal/generated value must be non-empty"),
+        );
         let evaluation = evaluate_hello(
             &request,
             &[binding(BindingState::Admitted)],
@@ -500,7 +524,9 @@ mod tests {
     #[test]
     fn presented_vision_claim_must_match_binding_scope() {
         let mut request = request("endpoint-a");
-        request.presented_binding.vision_id = Some(VisionId::from("vision-b"));
+        request.presented_binding.vision_id = Some(
+            VisionId::new("vision-b").expect("string ID literal/generated value must be non-empty"),
+        );
         let evaluation = evaluate_hello(
             &request,
             &[binding(BindingState::Admitted)],

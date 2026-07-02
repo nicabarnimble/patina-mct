@@ -14,11 +14,14 @@ fn timestamp_after_millis(millis: i64) -> Timestamp {
 
 fn call(deadline: Timestamp) -> MctCall {
     MctCall {
-        call_id: CallId::from("call-wasm-limit"),
+        call_id: CallId::new("call-wasm-limit")
+            .expect("string ID literal/generated value must be non-empty"),
         caller: CallerIdentity {
-            node_id: MctNodeId::from("mother-a"),
+            node_id: MctNodeId::new("mother-a")
+                .expect("string ID literal/generated value must be non-empty"),
             user_id: None,
-            vision_id: VisionId::from("vision-a"),
+            vision_id: VisionId::new("vision-a")
+                .expect("string ID literal/generated value must be non-empty"),
             project_id: None,
         },
         target: OperationTarget {
@@ -38,8 +41,10 @@ fn call(deadline: Timestamp) -> MctCall {
         },
         deadline,
         trace_context: TraceContext {
-            trace_id: TraceId::from("trace-wasm-limit"),
-            span_id: SpanId::from("span-wasm-limit"),
+            trace_id: TraceId::new("trace-wasm-limit")
+                .expect("string ID literal/generated value must be non-empty"),
+            span_id: SpanId::new("span-wasm-limit")
+                .expect("string ID literal/generated value must be non-empty"),
         },
         origin: CallOrigin::WasmHost,
     }
@@ -47,23 +52,34 @@ fn call(deadline: Timestamp) -> MctCall {
 
 fn authorized() -> AuthorizedChildInvocation {
     AuthorizedChildInvocation {
-        authorized_child_invocation_id: AuthorizedChildInvocationId::from("auth-wasm-limit"),
-        call_id: CallId::from("call-wasm-limit"),
-        evaluation_id: ChildCallEvaluationId::from("eval-wasm-limit"),
-        assignment_id: ChildAssignmentId::from("assignment-wasm-limit"),
-        approval_id: ChildApprovalId::from("approval-wasm-limit"),
-        artifact_id: ComponentArtifactId::from("artifact-wasm-limit"),
-        child_instance_id: ChildInstanceId::from("instance-wasm-limit"),
+        authorized_child_invocation_id: AuthorizedChildInvocationId::new("auth-wasm-limit")
+            .expect("string ID literal/generated value must be non-empty"),
+        call_id: CallId::new("call-wasm-limit")
+            .expect("string ID literal/generated value must be non-empty"),
+        evaluation_id: ChildCallEvaluationId::new("eval-wasm-limit")
+            .expect("string ID literal/generated value must be non-empty"),
+        assignment_id: ChildAssignmentId::new("assignment-wasm-limit")
+            .expect("string ID literal/generated value must be non-empty"),
+        approval_id: ChildApprovalId::new("approval-wasm-limit")
+            .expect("string ID literal/generated value must be non-empty"),
+        artifact_id: ComponentArtifactId::new("artifact-wasm-limit")
+            .expect("string ID literal/generated value must be non-empty"),
+        child_instance_id: ChildInstanceId::new("instance-wasm-limit")
+            .expect("string ID literal/generated value must be non-empty"),
         child_name: "wasm-limit".into(),
-        authority_decision_id: DecisionId::from("decision-wasm-limit"),
+        authority_decision_id: DecisionId::new("decision-wasm-limit")
+            .expect("string ID literal/generated value must be non-empty"),
     }
 }
 
 fn ids() -> MctWasmComponentInvocationIds {
     MctWasmComponentInvocationIds {
-        started_observation_id: ObservationId::from("obs-wasm-limit-started"),
-        completed_observation_id: ObservationId::from("obs-wasm-limit-completed"),
-        audit_ref: AuditRef::from("audit-wasm-limit"),
+        started_observation_id: ObservationId::new("obs-wasm-limit-started")
+            .expect("string ID literal/generated value must be non-empty"),
+        completed_observation_id: ObservationId::new("obs-wasm-limit-completed")
+            .expect("string ID literal/generated value must be non-empty"),
+        audit_ref: AuditRef::new("audit-wasm-limit")
+            .expect("string ID literal/generated value must be non-empty"),
         started_at: Timestamp::new("2026-07-02T00:00:00Z").unwrap(),
         completed_at: Timestamp::new("2026-07-02T00:00:01Z").unwrap(),
     }

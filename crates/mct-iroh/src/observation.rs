@@ -100,7 +100,8 @@ struct AdapterObservationFacts {
 
 fn adapter_observation(facts: AdapterObservationFacts) -> MctObservation {
     MctObservation {
-        observation_id: ObservationId::from(facts.observation_id),
+        observation_id: ObservationId::new(facts.observation_id)
+            .expect("string ID literal/generated value must be non-empty"),
         observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
         kind: facts.kind,
         source_plane: SourcePlane::Adapter,

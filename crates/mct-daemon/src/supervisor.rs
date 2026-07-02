@@ -183,18 +183,20 @@ impl MctProcessSupervisor {
                     recovered_status.state = MctSupervisedProcessState::Stopped;
                 }
                 let observation = MctObservation {
-                    observation_id: ObservationId::from(format!(
+                    observation_id: ObservationId::new(format!(
                         "obs:supervisor-recovery:{}",
                         recovered_status.instance_id
-                    )),
+                    ))
+                    .expect("string ID literal/generated value must be non-empty"),
                     observed_at: observed_at.clone(),
                     kind: ObservationKind::ChildInstanceDegraded,
                     source_plane: SourcePlane::Adapter,
                     trace: ObservationTraceRef {
-                        trace_id: TraceId::from(format!(
+                        trace_id: TraceId::new(format!(
                             "trace:supervisor-recovery:{}",
                             recovered_status.instance_id
-                        )),
+                        ))
+                        .expect("string ID literal/generated value must be non-empty"),
                         span_id: None,
                         parent_span_id: None,
                         external_trace_id: None,
@@ -330,11 +332,14 @@ mod tests {
 
     fn call() -> MctCall {
         MctCall {
-            call_id: CallId::from("call-supervisor"),
+            call_id: CallId::new("call-supervisor")
+                .expect("string ID literal/generated value must be non-empty"),
             caller: CallerIdentity {
-                node_id: MctNodeId::from("mother-a"),
+                node_id: MctNodeId::new("mother-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 user_id: None,
-                vision_id: VisionId::from("vision-a"),
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 project_id: None,
             },
             target: OperationTarget {
@@ -354,8 +359,10 @@ mod tests {
             },
             deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
             trace_context: TraceContext {
-                trace_id: TraceId::from("trace-supervisor"),
-                span_id: SpanId::from("span-supervisor"),
+                trace_id: TraceId::new("trace-supervisor")
+                    .expect("string ID literal/generated value must be non-empty"),
+                span_id: SpanId::new("span-supervisor")
+                    .expect("string ID literal/generated value must be non-empty"),
             },
             origin: CallOrigin::ProcessHarness,
         }
@@ -363,15 +370,23 @@ mod tests {
 
     fn authorized() -> AuthorizedChildInvocation {
         AuthorizedChildInvocation {
-            authorized_child_invocation_id: AuthorizedChildInvocationId::from("auth-supervisor"),
-            call_id: CallId::from("call-supervisor"),
-            evaluation_id: ChildCallEvaluationId::from("eval-supervisor"),
-            assignment_id: ChildAssignmentId::from("assignment-supervisor"),
-            approval_id: ChildApprovalId::from("approval-supervisor"),
-            artifact_id: ComponentArtifactId::from("artifact-supervisor"),
-            child_instance_id: ChildInstanceId::from("instance-supervisor"),
+            authorized_child_invocation_id: AuthorizedChildInvocationId::new("auth-supervisor")
+                .expect("string ID literal/generated value must be non-empty"),
+            call_id: CallId::new("call-supervisor")
+                .expect("string ID literal/generated value must be non-empty"),
+            evaluation_id: ChildCallEvaluationId::new("eval-supervisor")
+                .expect("string ID literal/generated value must be non-empty"),
+            assignment_id: ChildAssignmentId::new("assignment-supervisor")
+                .expect("string ID literal/generated value must be non-empty"),
+            approval_id: ChildApprovalId::new("approval-supervisor")
+                .expect("string ID literal/generated value must be non-empty"),
+            artifact_id: ComponentArtifactId::new("artifact-supervisor")
+                .expect("string ID literal/generated value must be non-empty"),
+            child_instance_id: ChildInstanceId::new("instance-supervisor")
+                .expect("string ID literal/generated value must be non-empty"),
             child_name: "supervised-process".into(),
-            authority_decision_id: DecisionId::from("decision-supervisor"),
+            authority_decision_id: DecisionId::new("decision-supervisor")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
@@ -392,7 +407,10 @@ mod tests {
     fn process_supervisor_spawns_statuses_and_stops_long_lived_child() {
         let (_dir, script) =
             write_script("long-lived.sh", "#!/bin/sh\nwhile true; do sleep 1; done\n");
-        let mut supervisor = MctProcessSupervisor::new(MctNodeId::from("mother-a"));
+        let mut supervisor = MctProcessSupervisor::new(
+            MctNodeId::new("mother-a")
+                .expect("string ID literal/generated value must be non-empty"),
+        );
 
         let spawned = supervisor
             .spawn_authorized(
@@ -402,7 +420,8 @@ mod tests {
                     executable: script,
                     args: Vec::new(),
                 },
-                ObservationId::from("obs-supervisor-start"),
+                ObservationId::new("obs-supervisor-start")
+                    .expect("string ID literal/generated value must be non-empty"),
                 Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             )
             .unwrap();
@@ -413,15 +432,20 @@ mod tests {
         );
 
         let status = supervisor
-            .status(&ChildInstanceId::from("instance-supervisor"))
+            .status(
+                &ChildInstanceId::new("instance-supervisor")
+                    .expect("string ID literal/generated value must be non-empty"),
+            )
             .unwrap()
             .unwrap();
         assert_eq!(status.state, MctSupervisedProcessState::Running);
 
         let stopped = supervisor
             .stop(
-                &ChildInstanceId::from("instance-supervisor"),
-                ObservationId::from("obs-supervisor-stop"),
+                &ChildInstanceId::new("instance-supervisor")
+                    .expect("string ID literal/generated value must be non-empty"),
+                ObservationId::new("obs-supervisor-stop")
+                    .expect("string ID literal/generated value must be non-empty"),
                 Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
             )
             .unwrap();
@@ -432,7 +456,10 @@ mod tests {
         );
         assert!(
             supervisor
-                .status(&ChildInstanceId::from("instance-supervisor"))
+                .status(
+                    &ChildInstanceId::new("instance-supervisor")
+                        .expect("string ID literal/generated value must be non-empty")
+                )
                 .unwrap()
                 .is_none()
         );
@@ -440,10 +467,14 @@ mod tests {
 
     #[test]
     fn process_supervisor_recovers_persisted_running_status_as_stopped() {
-        let supervisor = MctProcessSupervisor::new(MctNodeId::from("mother-a"));
+        let supervisor = MctProcessSupervisor::new(
+            MctNodeId::new("mother-a")
+                .expect("string ID literal/generated value must be non-empty"),
+        );
         let report = supervisor.recover_from_persisted_statuses(
             &[MctSupervisedProcessStatus {
-                instance_id: ChildInstanceId::from("instance-recover"),
+                instance_id: ChildInstanceId::new("instance-recover")
+                    .expect("string ID literal/generated value must be non-empty"),
                 child_name: "recover-child".into(),
                 pid: 123,
                 state: MctSupervisedProcessState::Running,
@@ -466,7 +497,10 @@ mod tests {
     #[test]
     fn process_supervisor_observes_exited_child_status() {
         let (_dir, script) = write_script("crash.sh", "#!/bin/sh\nexit 7\n");
-        let mut supervisor = MctProcessSupervisor::new(MctNodeId::from("mother-a"));
+        let mut supervisor = MctProcessSupervisor::new(
+            MctNodeId::new("mother-a")
+                .expect("string ID literal/generated value must be non-empty"),
+        );
         supervisor
             .spawn_authorized(
                 authorized(),
@@ -475,13 +509,17 @@ mod tests {
                     executable: script,
                     args: Vec::new(),
                 },
-                ObservationId::from("obs-supervisor-crash-start"),
+                ObservationId::new("obs-supervisor-crash-start")
+                    .expect("string ID literal/generated value must be non-empty"),
                 Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             )
             .unwrap();
 
         let mut status = supervisor
-            .status(&ChildInstanceId::from("instance-supervisor"))
+            .status(
+                &ChildInstanceId::new("instance-supervisor")
+                    .expect("string ID literal/generated value must be non-empty"),
+            )
             .unwrap()
             .unwrap();
         for _ in 0..100 {
@@ -490,7 +528,10 @@ mod tests {
             }
             thread::sleep(Duration::from_millis(10));
             status = supervisor
-                .status(&ChildInstanceId::from("instance-supervisor"))
+                .status(
+                    &ChildInstanceId::new("instance-supervisor")
+                        .expect("string ID literal/generated value must be non-empty"),
+                )
                 .unwrap()
                 .unwrap();
         }
@@ -499,8 +540,10 @@ mod tests {
 
         let stopped = supervisor
             .stop(
-                &ChildInstanceId::from("instance-supervisor"),
-                ObservationId::from("obs-supervisor-crash-stop"),
+                &ChildInstanceId::new("instance-supervisor")
+                    .expect("string ID literal/generated value must be non-empty"),
+                ObservationId::new("obs-supervisor-crash-stop")
+                    .expect("string ID literal/generated value must be non-empty"),
                 Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
             )
             .unwrap();
