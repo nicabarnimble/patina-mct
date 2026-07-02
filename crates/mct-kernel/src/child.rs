@@ -2,19 +2,29 @@ use crate::{call::*, id::*};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `ComponentWitExport` used by the MCT kernel.
 pub struct ComponentWitExport {
+    /// Field `namespace` of this domain record.
     pub namespace: String,
+    /// Field `interface_name` of this domain record.
     pub interface_name: String,
+    /// Field `version` of this domain record.
     pub version: String,
+    /// Field `function_names` of this domain record.
     pub function_names: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `ComponentRuntimeShape` used by the MCT kernel.
 pub enum ComponentRuntimeShape {
+    /// Public `WasmComponent` item.
     WasmComponent,
+    /// Public `JvmChild` item.
     JvmChild,
+    /// Public `ProcessChild` item.
     ProcessChild,
+    /// Public `RemoteChild` item.
     RemoteChild,
 }
 
@@ -32,43 +42,67 @@ impl From<RuntimeKind> for ComponentRuntimeShape {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `ChildIngressMode` used by the MCT kernel.
 pub enum ChildIngressMode {
+    /// Public `WitOnly` item.
     WitOnly,
+    /// Public `Hybrid` item.
     Hybrid,
+    /// Public `Handle` item.
     Handle,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `LifecycleExports` used by the MCT kernel.
 pub enum LifecycleExports {
+    /// Public `Required` item.
     Required,
+    /// Public `Optional` item.
     Optional,
+    /// Public `AbsentAllowed` item.
     AbsentAllowed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `VerificationStatus` used by the MCT kernel.
 pub enum VerificationStatus {
+    /// Public `Verified` item.
     Verified,
+    /// Public `Rejected` item.
     Rejected,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `ComponentArtifact` used by the MCT kernel.
 pub struct ComponentArtifact {
+    /// Field `artifact_id` of this domain record.
     pub artifact_id: ComponentArtifactId,
+    /// Field `child_name` of this domain record.
     pub child_name: String,
+    /// Field `artifact_version` of this domain record.
     pub artifact_version: String,
+    /// Field `content_hash` of this domain record.
     pub content_hash: String,
+    /// Field `manifest_hash` of this domain record.
     pub manifest_hash: String,
+    /// Field `primary_export` of this domain record.
     pub primary_export: ComponentWitExport,
+    /// Field `runtime_shape` of this domain record.
     pub runtime_shape: ComponentRuntimeShape,
+    /// Field `ingress_mode` of this domain record.
     pub ingress_mode: ChildIngressMode,
+    /// Field `lifecycle_exports` of this domain record.
     pub lifecycle_exports: LifecycleExports,
+    /// Field `verification_status` of this domain record.
     pub verification_status: VerificationStatus,
+    /// Field `created_by_observation_id` of this domain record.
     pub created_by_observation_id: ObservationId,
 }
 
 impl ComponentArtifact {
+    /// Executes `exports_operation` for this domain type.
     pub fn exports_operation(&self, target: &OperationTarget) -> bool {
         let interface_with_version = format!(
             "{}@{}",
@@ -87,174 +121,289 @@ impl ComponentArtifact {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `ChildApprovalState` used by the MCT kernel.
 pub enum ChildApprovalState {
+    /// Public `Candidate` item.
     Candidate,
+    /// Public `Approved` item.
     Approved,
+    /// Public `Blocked` item.
     Blocked,
+    /// Public `Revoked` item.
     Revoked,
+    /// Public `Deprecated` item.
     Deprecated,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `ChildApproval` used by the MCT kernel.
 pub struct ChildApproval {
+    /// Field `approval_id` of this domain record.
     pub approval_id: ChildApprovalId,
+    /// Field `artifact_id` of this domain record.
     pub artifact_id: ComponentArtifactId,
+    /// Field `child_name` of this domain record.
     pub child_name: String,
+    /// Field `artifact_version` of this domain record.
     pub artifact_version: String,
+    /// Field `scope_vision_id` of this domain record.
     pub scope_vision_id: Option<VisionId>,
+    /// Field `scope_node_id` of this domain record.
     pub scope_node_id: Option<MctNodeId>,
+    /// Field `scope_project_id` of this domain record.
     pub scope_project_id: Option<ProjectId>,
+    /// Field `approval_state` of this domain record.
     pub approval_state: ChildApprovalState,
+    /// Field `policy_revision` of this domain record.
     pub policy_revision: u64,
+    /// Field `authority_observation_id` of this domain record.
     pub authority_observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `ChildAssignmentState` used by the MCT kernel.
 pub enum ChildAssignmentState {
+    /// Public `Active` item.
     Active,
+    /// Public `Revoked` item.
     Revoked,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `ChildAssignment` used by the MCT kernel.
 pub struct ChildAssignment {
+    /// Field `assignment_id` of this domain record.
     pub assignment_id: ChildAssignmentId,
+    /// Field `approval_id` of this domain record.
     pub approval_id: ChildApprovalId,
+    /// Field `artifact_id` of this domain record.
     pub artifact_id: ComponentArtifactId,
+    /// Field `child_name` of this domain record.
     pub child_name: String,
+    /// Field `vision_id` of this domain record.
     pub vision_id: VisionId,
+    /// Field `node_id` of this domain record.
     pub node_id: Option<MctNodeId>,
+    /// Field `project_id` of this domain record.
     pub project_id: Option<ProjectId>,
+    /// Field `assignment_state` of this domain record.
     pub assignment_state: ChildAssignmentState,
+    /// Field `pinned_artifact_version` of this domain record.
     pub pinned_artifact_version: String,
+    /// Field `assignment_observation_id` of this domain record.
     pub assignment_observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `ChildInstanceState` used by the MCT kernel.
 pub enum ChildInstanceState {
+    /// Public `Loading` item.
     Loading,
+    /// Public `Ready` item.
     Ready,
+    /// Public `Degraded` item.
     Degraded,
+    /// Public `Draining` item.
     Draining,
+    /// Public `Stopped` item.
     Stopped,
+    /// Public `Failed` item.
     Failed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `ChildInstance` used by the MCT kernel.
 pub struct ChildInstance {
+    /// Field `instance_id` of this domain record.
     pub instance_id: ChildInstanceId,
+    /// Field `assignment_id` of this domain record.
     pub assignment_id: ChildAssignmentId,
+    /// Field `artifact_id` of this domain record.
     pub artifact_id: ComponentArtifactId,
+    /// Field `child_name` of this domain record.
     pub child_name: String,
+    /// Field `generation` of this domain record.
     pub generation: u64,
+    /// Field `node_id` of this domain record.
     pub node_id: MctNodeId,
+    /// Field `instance_state` of this domain record.
     pub instance_state: ChildInstanceState,
+    /// Field `readiness_observation_id` of this domain record.
     pub readiness_observation_id: Option<ObservationId>,
+    /// Field `last_lifecycle_observation_id` of this domain record.
     pub last_lifecycle_observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `ChildLifecycleTransitionReason` used by the MCT kernel.
 pub enum ChildLifecycleTransitionReason {
+    /// Public `Allowed` item.
     Allowed,
+    /// Public `IllegalTransition` item.
     IllegalTransition,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `ChildLifecycleTransition` used by the MCT kernel.
 pub struct ChildLifecycleTransition {
+    /// Field `instance_id` of this domain record.
     pub instance_id: ChildInstanceId,
+    /// Field `from_state` of this domain record.
     pub from_state: ChildInstanceState,
+    /// Field `to_state` of this domain record.
     pub to_state: ChildInstanceState,
+    /// Field `reason` of this domain record.
     pub reason: ChildLifecycleTransitionReason,
+    /// Field `allowed` of this domain record.
     pub allowed: bool,
+    /// Field `safe_message` of this domain record.
     pub safe_message: String,
+    /// Field `observation_id` of this domain record.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `ChildCallVerdict` used by the MCT kernel.
 pub enum ChildCallVerdict {
+    /// Public `Allowed` item.
     Allowed,
+    /// Public `Denied` item.
     Denied,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `ChildCallReasonCode` used by the MCT kernel.
 pub enum ChildCallReasonCode {
+    /// Public `ReadyAuthorizedInstance` item.
     ReadyAuthorizedInstance,
+    /// Public `UnknownInstance` item.
     UnknownInstance,
+    /// Public `MissingAssignment` item.
     MissingAssignment,
+    /// Public `AssignmentRevoked` item.
     AssignmentRevoked,
+    /// Public `MissingApproval` item.
     MissingApproval,
+    /// Public `ApprovalNotApproved` item.
     ApprovalNotApproved,
+    /// Public `ApprovalScopeMismatch` item.
     ApprovalScopeMismatch,
+    /// Public `ArtifactMissing` item.
     ArtifactMissing,
+    /// Public `ArtifactRejected` item.
     ArtifactRejected,
+    /// Public `OperationNotExported` item.
     OperationNotExported,
+    /// Public `InstanceNotReady` item.
     InstanceNotReady,
+    /// Public `WrongNode` item.
     WrongNode,
+    /// Public `WrongProject` item.
     WrongProject,
+    /// Public `StalePolicy` item.
     StalePolicy,
+    /// Public `VersionMismatch` item.
     VersionMismatch,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `ChildCallAuthorityEvaluation` used by the MCT kernel.
 pub struct ChildCallAuthorityEvaluation {
+    /// Field `evaluation_id` of this domain record.
     pub evaluation_id: ChildCallEvaluationId,
+    /// Field `call_id` of this domain record.
     pub call_id: CallId,
+    /// Field `decision_id` of this domain record.
     pub decision_id: DecisionId,
+    /// Field `instance_id` of this domain record.
     pub instance_id: Option<ChildInstanceId>,
+    /// Field `assignment_id` of this domain record.
     pub assignment_id: Option<ChildAssignmentId>,
+    /// Field `approval_id` of this domain record.
     pub approval_id: Option<ChildApprovalId>,
+    /// Field `artifact_id` of this domain record.
     pub artifact_id: Option<ComponentArtifactId>,
+    /// Field `child_name` of this domain record.
     pub child_name: Option<String>,
+    /// Field `verdict` of this domain record.
     pub verdict: ChildCallVerdict,
+    /// Field `reason_code` of this domain record.
     pub reason_code: ChildCallReasonCode,
+    /// Field `policy_revision` of this domain record.
     pub policy_revision: u64,
+    /// Field `observation_id` of this domain record.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `AuthorizedChildInvocation` used by the MCT kernel.
 pub struct AuthorizedChildInvocation {
+    /// Field `authorized_child_invocation_id` of this domain record.
     pub authorized_child_invocation_id: AuthorizedChildInvocationId,
+    /// Field `call_id` of this domain record.
     pub call_id: CallId,
+    /// Field `evaluation_id` of this domain record.
     pub evaluation_id: ChildCallEvaluationId,
+    /// Field `assignment_id` of this domain record.
     pub assignment_id: ChildAssignmentId,
+    /// Field `approval_id` of this domain record.
     pub approval_id: ChildApprovalId,
+    /// Field `artifact_id` of this domain record.
     pub artifact_id: ComponentArtifactId,
+    /// Field `child_instance_id` of this domain record.
     pub child_instance_id: ChildInstanceId,
+    /// Field `child_name` of this domain record.
     pub child_name: String,
+    /// Field `authority_decision_id` of this domain record.
     pub authority_decision_id: DecisionId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Domain record `ChildCallAuthorityIds` used by the MCT kernel.
 pub struct ChildCallAuthorityIds {
+    /// Field `evaluation_id` of this domain record.
     pub evaluation_id: ChildCallEvaluationId,
+    /// Field `decision_id` of this domain record.
     pub decision_id: DecisionId,
+    /// Field `observation_id` of this domain record.
     pub observation_id: ObservationId,
+    /// Field `authorized_child_invocation_id` of this domain record.
     pub authorized_child_invocation_id: AuthorizedChildInvocationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Domain record `ChildCallAuthorityRequest` used by the MCT kernel.
 pub struct ChildCallAuthorityRequest {
+    /// Field `instance_id` of this domain record.
     pub instance_id: ChildInstanceId,
+    /// Field `node_id` of this domain record.
     pub node_id: MctNodeId,
+    /// Field `ids` of this domain record.
     pub ids: ChildCallAuthorityIds,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Domain record `ChildCallAuthorityResult` used by the MCT kernel.
 pub struct ChildCallAuthorityResult {
+    /// Field `evaluation` of this domain record.
     pub evaluation: ChildCallAuthorityEvaluation,
+    /// Field `authorized` of this domain record.
     pub authorized: Option<AuthorizedChildInvocation>,
 }
 
 impl ChildCallAuthorityResult {
+    /// Executes `is_allowed` for this domain type.
     pub fn is_allowed(&self) -> bool {
         self.evaluation.verdict == ChildCallVerdict::Allowed && self.authorized.is_some()
     }
 }
 
+/// Executes `transition_child_instance` for this domain type.
 pub fn transition_child_instance(
     instance: &ChildInstance,
     to_state: ChildInstanceState,
@@ -292,6 +441,7 @@ pub fn transition_child_instance(
     (next, transition)
 }
 
+/// Executes `is_allowed_instance_transition` for this domain type.
 pub fn is_allowed_instance_transition(
     from_state: ChildInstanceState,
     to_state: ChildInstanceState,
@@ -310,6 +460,7 @@ pub fn is_allowed_instance_transition(
     }
 }
 
+/// Evaluates `evaluate_child_call_authority` fail-closed from explicit authority inputs.
 pub fn evaluate_child_call_authority(
     call: &MctCall,
     request: &ChildCallAuthorityRequest,

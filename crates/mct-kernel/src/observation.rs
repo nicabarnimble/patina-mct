@@ -2,167 +2,300 @@ use crate::{call::*, child::*, id::*, peer::*, route::*, toy::*};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `ObservationTraceRef` used by the MCT kernel.
 pub struct ObservationTraceRef {
+    /// Field `trace_id` of this domain record.
     pub trace_id: TraceId,
+    /// Field `span_id` of this domain record.
     pub span_id: Option<SpanId>,
+    /// Field `parent_span_id` of this domain record.
     pub parent_span_id: Option<SpanId>,
+    /// Field `external_trace_id` of this domain record.
     pub external_trace_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `ObservationKind` used by the MCT kernel.
 pub enum ObservationKind {
+    /// Public `CallReceived` item.
     CallReceived,
+    /// Public `CallRejected` item.
     CallRejected,
+    /// Public `CallConstructed` item.
     CallConstructed,
+    /// Public `CallAuthorized` item.
     CallAuthorized,
+    /// Public `CallDenied` item.
     CallDenied,
+    /// Public `CandidateConsidered` item.
     CandidateConsidered,
+    /// Public `CandidateEliminated` item.
     CandidateEliminated,
+    /// Public `RouteSelected` item.
     RouteSelected,
+    /// Public `NoRouteRecorded` item.
     NoRouteRecorded,
+    /// Public `RouteRevalidated` item.
     RouteRevalidated,
+    /// Public `ResultRecorded` item.
     ResultRecorded,
+    /// Public `ArtifactVerified` item.
     ArtifactVerified,
+    /// Public `ArtifactRejected` item.
     ArtifactRejected,
+    /// Public `ChildApproved` item.
     ChildApproved,
+    /// Public `ChildRevoked` item.
     ChildRevoked,
+    /// Public `ChildAssigned` item.
     ChildAssigned,
+    /// Public `ChildAssignmentRevoked` item.
     ChildAssignmentRevoked,
+    /// Public `ChildInstanceLoading` item.
     ChildInstanceLoading,
+    /// Public `ChildInstanceReady` item.
     ChildInstanceReady,
+    /// Public `ChildInstanceDegraded` item.
     ChildInstanceDegraded,
+    /// Public `ChildInstanceDraining` item.
     ChildInstanceDraining,
+    /// Public `ChildInstanceStopped` item.
     ChildInstanceStopped,
+    /// Public `ChildInstanceFailed` item.
     ChildInstanceFailed,
+    /// Public `ChildInvoked` item.
     ChildInvoked,
+    /// Public `ToyGrantAllowed` item.
     ToyGrantAllowed,
+    /// Public `ToyGrantDenied` item.
     ToyGrantDenied,
+    /// Public `ToyGrantExpired` item.
     ToyGrantExpired,
+    /// Public `ToyGrantRevoked` item.
     ToyGrantRevoked,
+    /// Public `ToyCallStarted` item.
     ToyCallStarted,
+    /// Public `ToyCallCompleted` item.
     ToyCallCompleted,
+    /// Public `ToyCallFailed` item.
     ToyCallFailed,
+    /// Public `DataMovementAllowed` item.
     DataMovementAllowed,
+    /// Public `DataMovementDenied` item.
     DataMovementDenied,
+    /// Public `SecretAccessAllowed` item.
     SecretAccessAllowed,
+    /// Public `SecretAccessDenied` item.
     SecretAccessDenied,
+    /// Public `PeerConnected` item.
     PeerConnected,
+    /// Public `PeerHelloReceived` item.
     PeerHelloReceived,
+    /// Public `PeerProtocolNegotiated` item.
     PeerProtocolNegotiated,
+    /// Public `PeerHelloResponded` item.
     PeerHelloResponded,
+    /// Public `PeerBindingRecorded` item.
     PeerBindingRecorded,
+    /// Public `PeerBindingRevoked` item.
     PeerBindingRevoked,
+    /// Public `PeerBindingExpired` item.
     PeerBindingExpired,
+    /// Public `PeerAdmitted` item.
     PeerAdmitted,
+    /// Public `PeerRejected` item.
     PeerRejected,
+    /// Public `PeerCallSent` item.
     PeerCallSent,
+    /// Public `PeerCallReceived` item.
     PeerCallReceived,
+    /// Public `PeerCallMalformed` item.
     PeerCallMalformed,
+    /// Public `PeerCallReplied` item.
     PeerCallReplied,
+    /// Public `PeerStreamOpened` item.
     PeerStreamOpened,
+    /// Public `PeerStreamReset` item.
     PeerStreamReset,
+    /// Public `IrohPathObserved` item.
     IrohPathObserved,
+    /// Public `RuntimeExecutionStarted` item.
     RuntimeExecutionStarted,
+    /// Public `RuntimeExecutionCompleted` item.
     RuntimeExecutionCompleted,
+    /// Public `RuntimeExecutionFailed` item.
     RuntimeExecutionFailed,
+    /// Public `RuntimeExecutionTrapped` item.
     RuntimeExecutionTrapped,
+    /// Public `RuntimeExecutionTimedOut` item.
     RuntimeExecutionTimedOut,
+    /// Public `AdapterEffectStarted` item.
     AdapterEffectStarted,
+    /// Public `AdapterEffectCompleted` item.
     AdapterEffectCompleted,
+    /// Public `AdapterEffectFailed` item.
     AdapterEffectFailed,
+    /// Public `StorageAppendSucceeded` item.
     StorageAppendSucceeded,
+    /// Public `StorageAppendFailed` item.
     StorageAppendFailed,
+    /// Public `ObservationBackpressureApplied` item.
     ObservationBackpressureApplied,
+    /// Public `LifecycleTransitionRecorded` item.
     LifecycleTransitionRecorded,
+    /// Public `NodeHealthReported` item.
     NodeHealthReported,
+    /// Public `OperatorActionRecorded` item.
     OperatorActionRecorded,
+    /// Public `TelemetryExported` item.
     TelemetryExported,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `SourcePlane` used by the MCT kernel.
 pub enum SourcePlane {
+    /// Public `Kernel` item.
     Kernel,
+    /// Public `Adapter` item.
     Adapter,
+    /// Public `Peer` item.
     Peer,
+    /// Public `Child` item.
     Child,
+    /// Public `Toy` item.
     Toy,
+    /// Public `Storage` item.
     Storage,
+    /// Public `Operator` item.
     Operator,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `ObservationOutcome` used by the MCT kernel.
 pub enum ObservationOutcome {
+    /// Public `Allowed` item.
     Allowed,
+    /// Public `Denied` item.
     Denied,
+    /// Public `Started` item.
     Started,
+    /// Public `Completed` item.
     Completed,
+    /// Public `Failed` item.
     Failed,
+    /// Public `TimedOut` item.
     TimedOut,
+    /// Public `Cancelled` item.
     Cancelled,
+    /// Public `Informational` item.
     Informational,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `ObservationVisibility` used by the MCT kernel.
 pub enum ObservationVisibility {
+    /// Public `CallerSafe` item.
     CallerSafe,
+    /// Public `VisionOperator` item.
     VisionOperator,
+    /// Public `NodeOperator` item.
     NodeOperator,
+    /// Public `SystemOperator` item.
     SystemOperator,
+    /// Public `InternalOnly` item.
     InternalOnly,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `MctObservation` used by the MCT kernel.
 pub struct MctObservation {
+    /// Field `observation_id` of this domain record.
     pub observation_id: ObservationId,
+    /// Field `observed_at` of this domain record.
     pub observed_at: Timestamp,
+    /// Field `kind` of this domain record.
     pub kind: ObservationKind,
+    /// Field `source_plane` of this domain record.
     pub source_plane: SourcePlane,
+    /// Field `trace` of this domain record.
     pub trace: ObservationTraceRef,
+    /// Field `call_id` of this domain record.
     pub call_id: Option<CallId>,
+    /// Field `decision_id` of this domain record.
     pub decision_id: Option<DecisionId>,
+    /// Field `subject_id` of this domain record.
     pub subject_id: Option<String>,
+    /// Field `resource_id` of this domain record.
     pub resource_id: Option<String>,
+    /// Field `policy_revision` of this domain record.
     pub policy_revision: Option<u64>,
+    /// Field `grants_revision` of this domain record.
     pub grants_revision: Option<u64>,
+    /// Field `outcome` of this domain record.
     pub outcome: ObservationOutcome,
+    /// Field `visibility` of this domain record.
     pub visibility: ObservationVisibility,
+    /// Field `safe_message` of this domain record.
     pub safe_message: String,
+    /// Field `detail_ref` of this domain record.
     pub detail_ref: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `AdapterDiagnosticKind` used by the MCT kernel.
 pub enum AdapterDiagnosticKind {
+    /// Public `IrohStreamReset` item.
     IrohStreamReset,
+    /// Public `WasmTrap` item.
     WasmTrap,
+    /// Public `WasmMissingExport` item.
     WasmMissingExport,
+    /// Public `WasmMissingHostImport` item.
     WasmMissingHostImport,
+    /// Public `WasmValueConversionFailure` item.
     WasmValueConversionFailure,
+    /// Public `ProcessExitFailure` item.
     ProcessExitFailure,
+    /// Public `JvmTimeout` item.
     JvmTimeout,
+    /// Public `StorageAppendFailure` item.
     StorageAppendFailure,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `AdapterDiagnosticObservationInput` used by the MCT kernel.
 pub struct AdapterDiagnosticObservationInput {
+    /// Field `observation_id` of this domain record.
     pub observation_id: ObservationId,
+    /// Field `observed_at` of this domain record.
     pub observed_at: Timestamp,
+    /// Field `diagnostic_kind` of this domain record.
     pub diagnostic_kind: AdapterDiagnosticKind,
+    /// Field `trace` of this domain record.
     pub trace: ObservationTraceRef,
+    /// Field `call_id` of this domain record.
     pub call_id: Option<CallId>,
+    /// Field `decision_id` of this domain record.
     pub decision_id: Option<DecisionId>,
+    /// Field `subject_id` of this domain record.
     pub subject_id: Option<String>,
+    /// Field `resource_id` of this domain record.
     pub resource_id: Option<String>,
+    /// Field `policy_revision` of this domain record.
     pub policy_revision: Option<u64>,
+    /// Field `grants_revision` of this domain record.
     pub grants_revision: Option<u64>,
+    /// Field `detail_ref` of this domain record.
     pub detail_ref: Option<String>,
 }
 
 impl MctObservation {
+    /// Executes `informational` for this domain type.
     pub fn informational(
         observation_id: ObservationId,
         observed_at: Timestamp,
@@ -195,6 +328,7 @@ impl MctObservation {
     }
 }
 
+/// Executes `adapter_diagnostic_observation` for this domain type.
 pub fn adapter_diagnostic_observation(input: AdapterDiagnosticObservationInput) -> MctObservation {
     let (kind, source_plane, outcome, safe_message) = match input.diagnostic_kind {
         AdapterDiagnosticKind::IrohStreamReset => (
@@ -266,6 +400,7 @@ pub fn adapter_diagnostic_observation(input: AdapterDiagnosticObservationInput) 
     }
 }
 
+/// Executes `hello_evaluation_observation` for this domain type.
 pub fn hello_evaluation_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -313,6 +448,7 @@ pub fn hello_evaluation_observation(
     }
 }
 
+/// Executes `peer_binding_state_observation` for this domain type.
 pub fn peer_binding_state_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -373,6 +509,7 @@ pub fn peer_binding_state_observation(
     }
 }
 
+/// Executes `route_decision_observation` for this domain type.
 pub fn route_decision_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -449,6 +586,7 @@ fn route_decision_detail_ref(decision: &RouteDecision) -> Option<String> {
     }
 }
 
+/// Executes `call_protocol_evaluation_observation` for this domain type.
 pub fn call_protocol_evaluation_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -497,6 +635,7 @@ pub fn call_protocol_evaluation_observation(
     }
 }
 
+/// Executes `child_approval_observation` for this domain type.
 pub fn child_approval_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -547,6 +686,7 @@ pub fn child_approval_observation(
     }
 }
 
+/// Executes `child_assignment_observation` for this domain type.
 pub fn child_assignment_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -592,6 +732,7 @@ pub fn child_assignment_observation(
     }
 }
 
+/// Executes `child_instance_observation` for this domain type.
 pub fn child_instance_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -657,6 +798,7 @@ pub fn child_instance_observation(
     }
 }
 
+/// Executes `child_call_authority_observation` for this domain type.
 pub fn child_call_authority_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -704,6 +846,7 @@ pub fn child_call_authority_observation(
     }
 }
 
+/// Executes `toy_grant_evaluation_observation` for this domain type.
 pub fn toy_grant_evaluation_observation(
     trace_id: TraceId,
     observed_at: Timestamp,

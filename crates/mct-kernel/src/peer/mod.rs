@@ -6,37 +6,60 @@ use serde::{Deserialize, Serialize};
 
 mod internal;
 
+/// Public constant `MCT_HELLO_ALPN` used by MCT protocol records.
 pub const MCT_HELLO_ALPN: &str = "mct/hello/0";
+/// Public constant `MCT_CALL_ALPN` used by MCT protocol records.
 pub const MCT_CALL_ALPN: &str = "mct/call/0";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `ConnectionSide` used by the MCT kernel.
 pub enum ConnectionSide {
+    /// Public `Incoming` item.
     Incoming,
+    /// Public `Outgoing` item.
     Outgoing,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `PathClass` used by the MCT kernel.
 pub enum PathClass {
+    /// Public `Direct` item.
     Direct,
+    /// Public `Relayed` item.
     Relayed,
+    /// Public `RelayOnly` item.
     RelayOnly,
+    /// Public `PrivacyTransport` item.
     PrivacyTransport,
+    /// Public `Unknown` item.
     Unknown,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `IrohConnectionPresentation` used by the MCT kernel.
 pub struct IrohConnectionPresentation {
+    /// Field `endpoint_id` of this domain record.
     pub endpoint_id: EndpointIdText,
+    /// Field `alpn` of this domain record.
     pub alpn: String,
+    /// Field `connection_side` of this domain record.
     pub connection_side: ConnectionSide,
+    /// Field `path_class` of this domain record.
     pub path_class: PathClass,
+    /// Field `relay_url` of this domain record.
     pub relay_url: Option<String>,
+    /// Field `presented_capability_ref` of this domain record.
     pub presented_capability_ref: Option<String>,
 }
 
 impl IrohConnectionPresentation {
+    /// Validates this domain record and returns typed kernel errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when required domain fields are invalid.
     pub fn validate(&self) -> MctKernelResult<()> {
         ensure_non_blank("IrohConnectionPresentation", "alpn", &self.alpn)?;
         if let Some(relay_url) = &self.relay_url {
@@ -54,184 +77,312 @@ impl IrohConnectionPresentation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `MctPeerBindingScope` used by the MCT kernel.
 pub struct MctPeerBindingScope {
+    /// Field `mct_node_id` of this domain record.
     pub mct_node_id: MctNodeId,
+    /// Field `vision_id` of this domain record.
     pub vision_id: VisionId,
+    /// Field `allowed_alpns` of this domain record.
     pub allowed_alpns: Vec<String>,
+    /// Field `data_scope` of this domain record.
     pub data_scope: Option<String>,
+    /// Field `observation_scope` of this domain record.
     pub observation_scope: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `BindingState` used by the MCT kernel.
 pub enum BindingState {
+    /// Public `Pending` item.
     Pending,
+    /// Public `Admitted` item.
     Admitted,
+    /// Public `Denied` item.
     Denied,
+    /// Public `Expired` item.
     Expired,
+    /// Public `Revoked` item.
     Revoked,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `MctPeerBinding` used by the MCT kernel.
 pub struct MctPeerBinding {
+    /// Field `binding_id` of this domain record.
     pub binding_id: PeerBindingId,
+    /// Field `iroh_endpoint_id` of this domain record.
     pub iroh_endpoint_id: EndpointIdText,
+    /// Field `scope` of this domain record.
     pub scope: MctPeerBindingScope,
+    /// Field `issuer_node_id` of this domain record.
     pub issuer_node_id: MctNodeId,
+    /// Field `policy_revision` of this domain record.
     pub policy_revision: u64,
+    /// Field `binding_state` of this domain record.
     pub binding_state: BindingState,
+    /// Field `issued_at` of this domain record.
     pub issued_at: Timestamp,
+    /// Field `expires_at` of this domain record.
     pub expires_at: Option<Timestamp>,
+    /// Field `created_by_observation_id` of this domain record.
     pub created_by_observation_id: ObservationId,
+    /// Field `superseded_by_observation_id` of this domain record.
     pub superseded_by_observation_id: Option<ObservationId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `MctProtocolVersion` used by the MCT kernel.
 pub struct MctProtocolVersion {
+    /// Field `protocol_name` of this domain record.
     pub protocol_name: String,
+    /// Field `major` of this domain record.
     pub major: u32,
+    /// Field `minor` of this domain record.
     pub minor: u32,
+    /// Field `compatibility_floor` of this domain record.
     pub compatibility_floor: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `MctPeerBindingPresentation` used by the MCT kernel.
 pub struct MctPeerBindingPresentation {
+    /// Field `binding_id` of this domain record.
     pub binding_id: Option<PeerBindingId>,
+    /// Field `endpoint_id` of this domain record.
     pub endpoint_id: EndpointIdText,
+    /// Field `mct_node_id` of this domain record.
     pub mct_node_id: Option<MctNodeId>,
+    /// Field `vision_id` of this domain record.
     pub vision_id: Option<VisionId>,
+    /// Field `policy_revision` of this domain record.
     pub policy_revision: Option<u64>,
+    /// Field `allowed_alpns_claim` of this domain record.
     pub allowed_alpns_claim: Vec<String>,
+    /// Field `signature_ref` of this domain record.
     pub signature_ref: Option<String>,
+    /// Field `expires_at` of this domain record.
     pub expires_at: Option<Timestamp>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `MctHelloCapabilityView` used by the MCT kernel.
 pub struct MctHelloCapabilityView {
+    /// Field `supported_alpns` of this domain record.
     pub supported_alpns: Vec<String>,
+    /// Field `supported_wit_worlds` of this domain record.
     pub supported_wit_worlds: Vec<String>,
+    /// Field `supported_observation_modes` of this domain record.
     pub supported_observation_modes: Vec<String>,
+    /// Field `capability_view_ref` of this domain record.
     pub capability_view_ref: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `MctHelloRequest` used by the MCT kernel.
 pub struct MctHelloRequest {
+    /// Field `hello_id` of this domain record.
     pub hello_id: String,
+    /// Field `received_over` of this domain record.
     pub received_over: IrohConnectionPresentation,
+    /// Field `requested_protocol` of this domain record.
     pub requested_protocol: MctProtocolVersion,
+    /// Field `requested_vision_id` of this domain record.
     pub requested_vision_id: Option<VisionId>,
+    /// Field `requested_alpns` of this domain record.
     pub requested_alpns: Vec<String>,
+    /// Field `presented_binding` of this domain record.
     pub presented_binding: MctPeerBindingPresentation,
+    /// Field `capability_view` of this domain record.
     pub capability_view: Option<MctHelloCapabilityView>,
+    /// Field `local_policy_revision_seen` of this domain record.
     pub local_policy_revision_seen: Option<u64>,
+    /// Field `trace_id` of this domain record.
     pub trace_id: TraceId,
+    /// Field `received_observation_id` of this domain record.
     pub received_observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `HelloOutcome` used by the MCT kernel.
 pub enum HelloOutcome {
+    /// Public `Admitted` item.
     Admitted,
+    /// Public `Denied` item.
     Denied,
+    /// Public `RetryLater` item.
     RetryLater,
+    /// Public `UpgradeRequired` item.
     UpgradeRequired,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `HelloReason` used by the MCT kernel.
 pub enum HelloReason {
+    /// Public `ActiveBinding` item.
     ActiveBinding,
+    /// Public `EndpointMismatch` item.
     EndpointMismatch,
+    /// Public `MissingBinding` item.
     MissingBinding,
+    /// Public `BindingPending` item.
     BindingPending,
+    /// Public `BindingRevoked` item.
     BindingRevoked,
+    /// Public `BindingExpired` item.
     BindingExpired,
+    /// Public `VisionNotAllowed` item.
     VisionNotAllowed,
+    /// Public `AlpnNotAllowed` item.
     AlpnNotAllowed,
+    /// Public `VersionUnsupported` item.
     VersionUnsupported,
+    /// Public `PolicyRevisionStale` item.
     PolicyRevisionStale,
+    /// Public `CapabilityInvalid` item.
     CapabilityInvalid,
+    /// Public `RelayAccessDenied` item.
     RelayAccessDenied,
+    /// Public `TemporaryUnavailable` item.
     TemporaryUnavailable,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `SafeHelloReason` used by the MCT kernel.
 pub enum SafeHelloReason {
+    /// Public `NotAuthorized` item.
     NotAuthorized,
+    /// Public `UnsupportedVersion` item.
     UnsupportedVersion,
+    /// Public `RetryLater` item.
     RetryLater,
+    /// Public `Admitted` item.
     Admitted,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `MctHelloAdmissionEvaluation` used by the MCT kernel.
 pub struct MctHelloAdmissionEvaluation {
+    /// Field `decision_id` of this domain record.
     pub decision_id: DecisionId,
+    /// Field `request_id` of this domain record.
     pub request_id: String,
+    /// Field `peer_admission_decision_id` of this domain record.
     pub peer_admission_decision_id: Option<DecisionId>,
+    /// Field `selected_binding_id` of this domain record.
     pub selected_binding_id: Option<PeerBindingId>,
+    /// Field `selected_node_id` of this domain record.
     pub selected_node_id: Option<MctNodeId>,
+    /// Field `selected_vision_id` of this domain record.
     pub selected_vision_id: Option<VisionId>,
+    /// Field `negotiated_protocol` of this domain record.
     pub negotiated_protocol: Option<MctProtocolVersion>,
+    /// Field `accepted_alpns` of this domain record.
     pub accepted_alpns: Vec<String>,
+    /// Field `hello_outcome` of this domain record.
     pub hello_outcome: HelloOutcome,
+    /// Field `reason` of this domain record.
     pub reason: HelloReason,
+    /// Field `safe_reason` of this domain record.
     pub safe_reason: SafeHelloReason,
+    /// Field `observation_id` of this domain record.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `MctHelloResponse` used by the MCT kernel.
 pub struct MctHelloResponse {
+    /// Field `response_id` of this domain record.
     pub response_id: String,
+    /// Field `request_id` of this domain record.
     pub request_id: String,
+    /// Field `decision_id` of this domain record.
     pub decision_id: DecisionId,
+    /// Field `hello_outcome` of this domain record.
     pub hello_outcome: HelloOutcome,
+    /// Field `negotiated_protocol` of this domain record.
     pub negotiated_protocol: Option<MctProtocolVersion>,
+    /// Field `accepted_alpns` of this domain record.
     pub accepted_alpns: Vec<String>,
+    /// Field `safe_message` of this domain record.
     pub safe_message: String,
+    /// Field `retry_after` of this domain record.
     pub retry_after: Option<Timestamp>,
+    /// Field `response_observation_id` of this domain record.
     pub response_observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `PeerAdmissionOutcome` used by the MCT kernel.
 pub enum PeerAdmissionOutcome {
+    /// Public `Admitted` item.
     Admitted,
+    /// Public `Denied` item.
     Denied,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `PeerAdmissionReason` used by the MCT kernel.
 pub enum PeerAdmissionReason {
+    /// Public `ActiveBinding` item.
     ActiveBinding,
+    /// Public `UnknownEndpoint` item.
     UnknownEndpoint,
+    /// Public `MissingBinding` item.
     MissingBinding,
+    /// Public `BindingPending` item.
     BindingPending,
+    /// Public `BindingRevoked` item.
     BindingRevoked,
+    /// Public `BindingExpired` item.
     BindingExpired,
+    /// Public `VisionNotAllowed` item.
     VisionNotAllowed,
+    /// Public `AlpnNotAllowed` item.
     AlpnNotAllowed,
+    /// Public `PolicyRevisionStale` item.
     PolicyRevisionStale,
+    /// Public `CapabilityInvalid` item.
     CapabilityInvalid,
+    /// Public `RelayAccessDenied` item.
     RelayAccessDenied,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `MctPeerAdmissionDecision` used by the MCT kernel.
 pub struct MctPeerAdmissionDecision {
+    /// Field `decision_id` of this domain record.
     pub decision_id: DecisionId,
+    /// Field `presentation` of this domain record.
     pub presentation: IrohConnectionPresentation,
+    /// Field `binding_id` of this domain record.
     pub binding_id: Option<PeerBindingId>,
+    /// Field `requested_vision_id` of this domain record.
     pub requested_vision_id: Option<VisionId>,
+    /// Field `policy_revision` of this domain record.
     pub policy_revision: u64,
+    /// Field `outcome` of this domain record.
     pub outcome: PeerAdmissionOutcome,
+    /// Field `reason` of this domain record.
     pub reason: PeerAdmissionReason,
+    /// Field `observation_id` of this domain record.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Domain record `HelloPolicy` used by the MCT kernel.
 pub struct HelloPolicy {
+    /// Field `protocol` of this domain record.
     pub protocol: MctProtocolVersion,
+    /// Field `current_policy_revision` of this domain record.
     pub current_policy_revision: u64,
+    /// Field `supported_alpns` of this domain record.
     pub supported_alpns: Vec<String>,
 }
 
@@ -251,17 +402,24 @@ impl Default for HelloPolicy {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Domain record `EvaluationIds` used by the MCT kernel.
 pub struct EvaluationIds {
+    /// Field `decision_id` of this domain record.
     pub decision_id: DecisionId,
+    /// Field `observation_id` of this domain record.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Domain record `HelloEvaluationContext` used by the MCT kernel.
 pub struct HelloEvaluationContext {
+    /// Field `ids` of this domain record.
     pub ids: EvaluationIds,
+    /// Field `now` of this domain record.
     pub now: Timestamp,
 }
 
+/// Evaluates `evaluate_hello` fail-closed from explicit authority inputs.
 pub fn evaluate_hello(
     request: &MctHelloRequest,
     bindings: &[MctPeerBinding],
@@ -272,15 +430,18 @@ pub fn evaluate_hello(
 }
 
 impl MctHelloAdmissionEvaluation {
+    /// Executes `is_admitted` for this domain type.
     pub fn is_admitted(&self) -> bool {
         self.hello_outcome == HelloOutcome::Admitted
     }
 
+    /// Executes `admits_alpn` for this domain type.
     pub fn admits_alpn(&self, alpn: &str) -> bool {
         self.accepted_alpns.iter().any(|accepted| accepted == alpn)
     }
 }
 
+/// Executes `hello_response` for this domain type.
 pub fn hello_response(
     response_id: impl Into<String>,
     evaluation: &MctHelloAdmissionEvaluation,

@@ -1,10 +1,14 @@
 use thiserror::Error;
 
+/// Public type alias `MctKernelResult` for kernel callers.
 pub type MctKernelResult<T> = std::result::Result<T, MctKernelError>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Closed domain enum `InvalidFieldReason` used by the MCT kernel.
 pub enum InvalidFieldReason {
+    /// Public `Empty` item.
     Empty,
+    /// Public `Blank` item.
     Blank,
 }
 
@@ -19,34 +23,52 @@ impl std::fmt::Display for InvalidFieldReason {
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
+/// Closed domain enum `MctKernelError` used by the MCT kernel.
 pub enum MctKernelError {
     #[error("invalid {record}.{field}: {reason}")]
+    /// Public `InvalidField` item.
     InvalidField {
+        /// Field `str` of this domain record.
         record: &'static str,
+        /// Field `str` of this domain record.
         field: &'static str,
+        /// Field `InvalidFieldReason` of this domain record.
         reason: InvalidFieldReason,
     },
 
     #[error("invalid Timestamp '{value}': {reason}")]
-    InvalidTimestamp { value: String, reason: String },
+    /// Public `InvalidTimestamp` item.
+    InvalidTimestamp {
+        /// Timestamp string that failed validation.
+        value: String,
+        /// Validation failure reason.
+        reason: String,
+    },
 
     #[error(
         "MCT call payload metadata size {call_size_bytes} does not match payload handle size {handle_size_bytes}"
     )]
+    /// Public `PayloadSizeMismatch` item.
     PayloadSizeMismatch {
+        /// Field `u64` of this domain record.
         call_size_bytes: u64,
+        /// Field `u64` of this domain record.
         handle_size_bytes: u64,
     },
 
     #[error("failed to encode MCT call protocol JSON edge value: {source}")]
+    /// Public `EncodeCallProtocolJson` item.
     EncodeCallProtocolJson {
         #[source]
+        /// Field `Error` of this domain record.
         source: serde_json::Error,
     },
 
     #[error("failed to decode MCT call protocol JSON edge value: {source}")]
+    /// Public `DecodeCallProtocolJson` item.
     DecodeCallProtocolJson {
         #[source]
+        /// Field `Error` of this domain record.
         source: serde_json::Error,
     },
 }

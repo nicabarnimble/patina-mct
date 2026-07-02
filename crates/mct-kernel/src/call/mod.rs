@@ -7,21 +7,35 @@ use serde::{Deserialize, Serialize};
 mod internal;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `CallerIdentity` used by the MCT kernel.
 pub struct CallerIdentity {
+    /// Field `node_id` of this domain record.
     pub node_id: MctNodeId,
+    /// Field `user_id` of this domain record.
     pub user_id: Option<UserId>,
+    /// Field `vision_id` of this domain record.
     pub vision_id: VisionId,
+    /// Field `project_id` of this domain record.
     pub project_id: Option<ProjectId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `OperationTarget` used by the MCT kernel.
 pub struct OperationTarget {
+    /// Field `namespace` of this domain record.
     pub namespace: String,
+    /// Field `interface_name` of this domain record.
     pub interface_name: String,
+    /// Field `function_name` of this domain record.
     pub function_name: String,
 }
 
 impl OperationTarget {
+    /// Constructs this domain record from validated inputs.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when any supplied field is invalid.
     pub fn new(
         namespace: impl Into<String>,
         interface_name: impl Into<String>,
@@ -36,6 +50,11 @@ impl OperationTarget {
         Ok(target)
     }
 
+    /// Validates this domain record and returns typed kernel errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when required domain fields are invalid.
     pub fn validate(&self) -> MctKernelResult<()> {
         ensure_non_blank("OperationTarget", "namespace", &self.namespace)?;
         ensure_non_blank("OperationTarget", "interface_name", &self.interface_name)?;
@@ -45,13 +64,22 @@ impl OperationTarget {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `PayloadMetadata` used by the MCT kernel.
 pub struct PayloadMetadata {
+    /// Field `data_classification` of this domain record.
     pub data_classification: String,
+    /// Field `approximate_size_bytes` of this domain record.
     pub approximate_size_bytes: u64,
+    /// Field `contains_secret_scoped_material` of this domain record.
     pub contains_secret_scoped_material: bool,
 }
 
 impl PayloadMetadata {
+    /// Validates this domain record and returns typed kernel errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when required domain fields are invalid.
     pub fn validate(&self) -> MctKernelResult<()> {
         ensure_non_blank(
             "PayloadMetadata",
@@ -62,53 +90,90 @@ impl PayloadMetadata {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `AuthorityContextSnapshot` used by the MCT kernel.
 pub struct AuthorityContextSnapshot {
+    /// Field `policy_revision` of this domain record.
     pub policy_revision: u64,
+    /// Field `grants_revision` of this domain record.
     pub grants_revision: u64,
+    /// Field `vision_policy_revision` of this domain record.
     pub vision_policy_revision: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `TraceContext` used by the MCT kernel.
 pub struct TraceContext {
+    /// Field `trace_id` of this domain record.
     pub trace_id: TraceId,
+    /// Field `span_id` of this domain record.
     pub span_id: SpanId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `CallOrigin` used by the MCT kernel.
 pub enum CallOrigin {
+    /// Public `Iroh` item.
     Iroh,
+    /// Public `JvmAdapter` item.
     JvmAdapter,
+    /// Public `WasmHost` item.
     WasmHost,
+    /// Public `ProcessHarness` item.
     ProcessHarness,
+    /// Public `Cli` item.
     Cli,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `MctCall` used by the MCT kernel.
 pub struct MctCall {
+    /// Field `call_id` of this domain record.
     pub call_id: CallId,
+    /// Field `caller` of this domain record.
     pub caller: CallerIdentity,
+    /// Field `target` of this domain record.
     pub target: OperationTarget,
+    /// Field `payload_metadata` of this domain record.
     pub payload_metadata: PayloadMetadata,
+    /// Field `authority_context` of this domain record.
     pub authority_context: AuthorityContextSnapshot,
+    /// Field `deadline` of this domain record.
     pub deadline: Timestamp,
+    /// Field `trace_context` of this domain record.
     pub trace_context: TraceContext,
+    /// Field `origin` of this domain record.
     pub origin: CallOrigin,
 }
 
 impl CallerIdentity {
+    /// Validates this domain record and returns typed kernel errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when required domain fields are invalid.
     pub fn validate(&self) -> MctKernelResult<()> {
         Ok(())
     }
 }
 
 impl TraceContext {
+    /// Validates this domain record and returns typed kernel errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when required domain fields are invalid.
     pub fn validate(&self) -> MctKernelResult<()> {
         Ok(())
     }
 }
 
 impl MctCall {
+    /// Validates this domain record and returns typed kernel errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when required domain fields are invalid.
     pub fn validate(&self) -> MctKernelResult<()> {
         self.caller.validate()?;
         self.target.validate()?;
@@ -121,63 +186,106 @@ impl MctCall {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `RuntimeKind` used by the MCT kernel.
 pub enum RuntimeKind {
+    /// Public `Process` item.
     Process,
+    /// Public `JvmChild` item.
     JvmChild,
+    /// Public `WasmComponent` item.
     WasmComponent,
+    /// Public `RemotePeer` item.
     RemotePeer,
+    /// Public `Internal` item.
     Internal,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `RouteTaken` used by the MCT kernel.
 pub struct RouteTaken {
+    /// Field `node_id` of this domain record.
     pub node_id: MctNodeId,
+    /// Field `child_id` of this domain record.
     pub child_id: Option<ChildId>,
+    /// Field `runtime_kind` of this domain record.
     pub runtime_kind: RuntimeKind,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `ExecutionSummary` used by the MCT kernel.
 pub struct ExecutionSummary {
+    /// Field `wall_time_ms` of this domain record.
     pub wall_time_ms: u64,
+    /// Field `execution_time_ms` of this domain record.
     pub execution_time_ms: Option<u64>,
+    /// Field `queue_wait_ms` of this domain record.
     pub queue_wait_ms: Option<u64>,
+    /// Field `input_size_bytes` of this domain record.
     pub input_size_bytes: u64,
+    /// Field `output_size_bytes` of this domain record.
     pub output_size_bytes: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `ResultOutcome` used by the MCT kernel.
 pub enum ResultOutcome {
+    /// Public `Success` item.
     Success,
+    /// Public `Denied` item.
     Denied,
+    /// Public `Failed` item.
     Failed,
+    /// Public `TimedOut` item.
     TimedOut,
+    /// Public `Cancelled` item.
     Cancelled,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `MctResult` used by the MCT kernel.
 pub struct MctResult {
+    /// Field `call_id` of this domain record.
     pub call_id: CallId,
+    /// Field `outcome` of this domain record.
     pub outcome: ResultOutcome,
+    /// Field `route_taken` of this domain record.
     pub route_taken: Option<RouteTaken>,
+    /// Field `authority_decision_ref` of this domain record.
     pub authority_decision_ref: DecisionId,
+    /// Field `execution_summary` of this domain record.
     pub execution_summary: ExecutionSummary,
+    /// Field `requester_message` of this domain record.
     pub requester_message: String,
+    /// Field `audit_ref` of this domain record.
     pub audit_ref: AuditRef,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `MctCallProtocolAuthority` used by the MCT kernel.
 pub struct MctCallProtocolAuthority {
+    /// Field `hello_decision_id` of this domain record.
     pub hello_decision_id: DecisionId,
+    /// Field `peer_binding_id` of this domain record.
     pub peer_binding_id: PeerBindingId,
+    /// Field `vision_id` of this domain record.
     pub vision_id: VisionId,
+    /// Field `accepted_alpn` of this domain record.
     pub accepted_alpn: String,
+    /// Field `endpoint_id` of this domain record.
     pub endpoint_id: EndpointIdText,
+    /// Field `policy_revision` of this domain record.
     pub policy_revision: u64,
+    /// Field `grants_revision` of this domain record.
     pub grants_revision: u64,
 }
 
 impl MctCallProtocolAuthority {
+    /// Validates this domain record and returns typed kernel errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when required domain fields are invalid.
     pub fn validate(&self) -> MctKernelResult<()> {
         ensure_non_blank(
             "MctCallProtocolAuthority",
@@ -190,27 +298,43 @@ impl MctCallProtocolAuthority {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "payload_kind", rename_all = "snake_case")]
+/// Closed domain enum `MctCallPayloadHandle` used by the MCT kernel.
 pub enum MctCallPayloadHandle {
+    /// Public `InlinePayload` item.
     InlinePayload {
+        /// Field `String` of this domain record.
         inline_payload_ref: String,
+        /// Field `String` of this domain record.
         content_type: String,
+        /// Field `u64` of this domain record.
         approximate_size_bytes: u64,
     },
+    /// Public `ContentAddressedBlob` item.
     ContentAddressedBlob {
+        /// Field `String` of this domain record.
         digest: String,
+        /// Field `String` of this domain record.
         blob_ref: String,
+        /// Field `String` of this domain record.
         content_type: String,
+        /// Field `u64` of this domain record.
         approximate_size_bytes: u64,
     },
+    /// Public `ExternalReference` item.
     ExternalReference {
+        /// Field `String` of this domain record.
         external_ref: String,
+        /// Field `item` of this domain record.
         content_type: Option<String>,
+        /// Field `u64` of this domain record.
         approximate_size_bytes: u64,
     },
+    /// Public `Empty` item.
     Empty,
 }
 
 impl MctCallPayloadHandle {
+    /// Executes `approximate_size_bytes` for this domain type.
     pub fn approximate_size_bytes(&self) -> u64 {
         match self {
             Self::InlinePayload {
@@ -229,6 +353,11 @@ impl MctCallPayloadHandle {
         }
     }
 
+    /// Validates this domain record and returns typed kernel errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when required domain fields are invalid.
     pub fn validate(&self) -> MctKernelResult<()> {
         match self {
             Self::InlinePayload {
@@ -273,17 +402,30 @@ impl MctCallPayloadHandle {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `MctCallProtocolRequest` used by the MCT kernel.
 pub struct MctCallProtocolRequest {
+    /// Field `protocol_request_id` of this domain record.
     pub protocol_request_id: ProtocolRequestId,
+    /// Field `authority` of this domain record.
     pub authority: MctCallProtocolAuthority,
+    /// Field `received_over` of this domain record.
     pub received_over: crate::peer::IrohConnectionPresentation,
+    /// Field `call` of this domain record.
     pub call: MctCall,
+    /// Field `payload` of this domain record.
     pub payload: MctCallPayloadHandle,
+    /// Field `idempotency_key` of this domain record.
     pub idempotency_key: Option<String>,
+    /// Field `received_observation_id` of this domain record.
     pub received_observation_id: ObservationId,
 }
 
 impl MctCallProtocolRequest {
+    /// Validates this domain record and returns typed kernel errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when required domain fields are invalid.
     pub fn validate(&self) -> MctKernelResult<()> {
         self.authority.validate()?;
         self.received_over.validate()?;
@@ -309,72 +451,126 @@ impl MctCallProtocolRequest {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `CallProtocolOutcome` used by the MCT kernel.
 pub enum CallProtocolOutcome {
+    /// Public `AcceptedForRouting` item.
     AcceptedForRouting,
+    /// Public `Malformed` item.
     Malformed,
+    /// Public `Denied` item.
     Denied,
+    /// Public `Failed` item.
     Failed,
+    /// Public `TimedOut` item.
     TimedOut,
+    /// Public `Completed` item.
     Completed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `CallProtocolReason` used by the MCT kernel.
 pub enum CallProtocolReason {
+    /// Public `HelloNotAdmitted` item.
     HelloNotAdmitted,
+    /// Public `AlpnNotAdmitted` item.
     AlpnNotAdmitted,
+    /// Public `EndpointMismatch` item.
     EndpointMismatch,
+    /// Public `BindingMismatch` item.
     BindingMismatch,
+    /// Public `CallerMismatch` item.
     CallerMismatch,
+    /// Public `VisionMismatch` item.
     VisionMismatch,
+    /// Public `BindingRevoked` item.
     BindingRevoked,
+    /// Public `BindingExpired` item.
     BindingExpired,
+    /// Public `PolicyRevisionStale` item.
     PolicyRevisionStale,
+    /// Public `MalformedCall` item.
     MalformedCall,
+    /// Public `PayloadMetadataMismatch` item.
     PayloadMetadataMismatch,
+    /// Public `AuthorityDenied` item.
     AuthorityDenied,
+    /// Public `NoRoute` item.
     NoRoute,
+    /// Public `ExecutionFailed` item.
     ExecutionFailed,
+    /// Public `ExecutionTimedOut` item.
     ExecutionTimedOut,
+    /// Public `ResultRecorded` item.
     ResultRecorded,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `MctCallProtocolEvaluation` used by the MCT kernel.
 pub struct MctCallProtocolEvaluation {
+    /// Field `decision_id` of this domain record.
     pub decision_id: DecisionId,
+    /// Field `protocol_request_id` of this domain record.
     pub protocol_request_id: ProtocolRequestId,
+    /// Field `call_id` of this domain record.
     pub call_id: Option<CallId>,
+    /// Field `route_decision_id` of this domain record.
     pub route_decision_id: Option<DecisionId>,
+    /// Field `result_ref` of this domain record.
     pub result_ref: Option<ResultRef>,
+    /// Field `outcome` of this domain record.
     pub outcome: CallProtocolOutcome,
+    /// Field `reason` of this domain record.
     pub reason: CallProtocolReason,
+    /// Field `safe_message` of this domain record.
     pub safe_message: String,
+    /// Field `observation_id` of this domain record.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `CallProtocolReplyOutcome` used by the MCT kernel.
 pub enum CallProtocolReplyOutcome {
+    /// Public `Success` item.
     Success,
+    /// Public `Denied` item.
     Denied,
+    /// Public `Failed` item.
     Failed,
+    /// Public `TimedOut` item.
     TimedOut,
+    /// Public `Cancelled` item.
     Cancelled,
+    /// Public `Malformed` item.
     Malformed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `MctCallProtocolReply` used by the MCT kernel.
 pub struct MctCallProtocolReply {
+    /// Field `reply_id` of this domain record.
     pub reply_id: ReplyId,
+    /// Field `protocol_request_id` of this domain record.
     pub protocol_request_id: ProtocolRequestId,
+    /// Field `decision_id` of this domain record.
     pub decision_id: DecisionId,
+    /// Field `result_ref` of this domain record.
     pub result_ref: Option<ResultRef>,
+    /// Field `reply_outcome` of this domain record.
     pub reply_outcome: CallProtocolReplyOutcome,
+    /// Field `safe_message` of this domain record.
     pub safe_message: String,
+    /// Field `reply_observation_id` of this domain record.
     pub reply_observation_id: ObservationId,
 }
 
 impl MctCallProtocolReply {
+    /// Validates this domain record and returns typed kernel errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when required domain fields are invalid.
     pub fn validate(&self) -> MctKernelResult<()> {
         ensure_non_blank("MctCallProtocolReply", "safe_message", &self.safe_message)?;
         Ok(())
@@ -382,11 +578,15 @@ impl MctCallProtocolReply {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Domain record `CallEvaluationIds` used by the MCT kernel.
 pub struct CallEvaluationIds {
+    /// Field `decision_id` of this domain record.
     pub decision_id: DecisionId,
+    /// Field `observation_id` of this domain record.
     pub observation_id: ObservationId,
 }
 
+/// Evaluates `evaluate_call_protocol` fail-closed from explicit authority inputs.
 pub fn evaluate_call_protocol(
     request: &MctCallProtocolRequest,
     hello: &crate::peer::MctHelloAdmissionEvaluation,
@@ -396,11 +596,17 @@ pub fn evaluate_call_protocol(
 }
 
 impl MctCallProtocolEvaluation {
+    /// Executes `is_accepted_for_routing` for this domain type.
     pub fn is_accepted_for_routing(&self) -> bool {
         self.outcome == CallProtocolOutcome::AcceptedForRouting
     }
 }
 
+/// Executes `encode_call_protocol_request_json` for this domain type.
+///
+/// # Errors
+///
+/// Returns a typed error when JSON encoding fails.
 pub fn encode_call_protocol_request_json(
     request: &MctCallProtocolRequest,
 ) -> MctKernelResult<Vec<u8>> {
@@ -408,6 +614,11 @@ pub fn encode_call_protocol_request_json(
     serde_json::to_vec(request).map_err(|source| MctKernelError::EncodeCallProtocolJson { source })
 }
 
+/// Executes `decode_call_protocol_request_json` for this domain type.
+///
+/// # Errors
+///
+/// Returns a typed error when JSON decoding or validation fails.
 pub fn decode_call_protocol_request_json(bytes: &[u8]) -> MctKernelResult<MctCallProtocolRequest> {
     let request: MctCallProtocolRequest = serde_json::from_slice(bytes)
         .map_err(|source| MctKernelError::DecodeCallProtocolJson { source })?;
@@ -415,11 +626,21 @@ pub fn decode_call_protocol_request_json(bytes: &[u8]) -> MctKernelResult<MctCal
     Ok(request)
 }
 
+/// Executes `encode_call_protocol_reply_json` for this domain type.
+///
+/// # Errors
+///
+/// Returns a typed error when JSON encoding fails.
 pub fn encode_call_protocol_reply_json(reply: &MctCallProtocolReply) -> MctKernelResult<Vec<u8>> {
     reply.validate()?;
     serde_json::to_vec(reply).map_err(|source| MctKernelError::EncodeCallProtocolJson { source })
 }
 
+/// Executes `decode_call_protocol_reply_json` for this domain type.
+///
+/// # Errors
+///
+/// Returns a typed error when JSON decoding or validation fails.
 pub fn decode_call_protocol_reply_json(bytes: &[u8]) -> MctKernelResult<MctCallProtocolReply> {
     let reply: MctCallProtocolReply = serde_json::from_slice(bytes)
         .map_err(|source| MctKernelError::DecodeCallProtocolJson { source })?;
@@ -438,6 +659,7 @@ fn validate_optional_string_field(
     Ok(())
 }
 
+/// Executes `call_reply_from_evaluation` for this domain type.
 pub fn call_reply_from_evaluation(
     reply_id: ReplyId,
     evaluation: &MctCallProtocolEvaluation,

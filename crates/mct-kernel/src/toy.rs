@@ -2,155 +2,256 @@ use crate::{call::*, id::*};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `ToyContractIdentity` used by the MCT kernel.
 pub struct ToyContractIdentity {
+    /// Field `namespace` of this domain record.
     pub namespace: String,
+    /// Field `interface_name` of this domain record.
     pub interface_name: String,
+    /// Field `version` of this domain record.
     pub version: String,
+    /// Field `function_name` of this domain record.
     pub function_name: Option<String>,
+    /// Field `resource_name` of this domain record.
     pub resource_name: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `CanonicalToyContract` used by the MCT kernel.
 pub struct CanonicalToyContract {
+    /// Field `toy_id` of this domain record.
     pub toy_id: ToyId,
+    /// Field `contract` of this domain record.
     pub contract: ToyContractIdentity,
+    /// Field `authority_bearing` of this domain record.
     pub authority_bearing: bool,
+    /// Field `catalog_revision` of this domain record.
     pub catalog_revision: u64,
+    /// Field `admitted_by_observation_id` of this domain record.
     pub admitted_by_observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `ToyGrantSubject` used by the MCT kernel.
 pub struct ToyGrantSubject {
+    /// Field `child_name` of this domain record.
     pub child_name: String,
+    /// Field `artifact_id` of this domain record.
     pub artifact_id: String,
+    /// Field `artifact_version` of this domain record.
     pub artifact_version: String,
+    /// Field `assignment_id` of this domain record.
     pub assignment_id: Option<ChildAssignmentId>,
+    /// Field `caller_node_id` of this domain record.
     pub caller_node_id: Option<MctNodeId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `ToyGrantScope` used by the MCT kernel.
 pub struct ToyGrantScope {
+    /// Field `vision_id` of this domain record.
     pub vision_id: VisionId,
+    /// Field `node_id` of this domain record.
     pub node_id: Option<MctNodeId>,
+    /// Field `project_id` of this domain record.
     pub project_id: Option<ProjectId>,
+    /// Field `data_classification` of this domain record.
     pub data_classification: Option<String>,
+    /// Field `resource_id` of this domain record.
     pub resource_id: Option<String>,
+    /// Field `allowed_actions` of this domain record.
     pub allowed_actions: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `ToyGrantConstraints` used by the MCT kernel.
 pub struct ToyGrantConstraints {
+    /// Field `starts_at` of this domain record.
     pub starts_at: Option<Timestamp>,
+    /// Field `expires_at` of this domain record.
     pub expires_at: Option<Timestamp>,
+    /// Field `max_uses` of this domain record.
     pub max_uses: Option<u64>,
+    /// Field `max_duration_ms` of this domain record.
     pub max_duration_ms: Option<u64>,
+    /// Field `locality_required` of this domain record.
     pub locality_required: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `ToyGrantState` used by the MCT kernel.
 pub enum ToyGrantState {
+    /// Public `Requested` item.
     Requested,
+    /// Public `Active` item.
     Active,
+    /// Public `Expired` item.
     Expired,
+    /// Public `Revoked` item.
     Revoked,
+    /// Public `Superseded` item.
     Superseded,
+    /// Public `Denied` item.
     Denied,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `ToyGrant` used by the MCT kernel.
 pub struct ToyGrant {
+    /// Field `grant_id` of this domain record.
     pub grant_id: ToyGrantId,
+    /// Field `toy_id` of this domain record.
     pub toy_id: ToyId,
+    /// Field `subject` of this domain record.
     pub subject: ToyGrantSubject,
+    /// Field `scope` of this domain record.
     pub scope: ToyGrantScope,
+    /// Field `constraints` of this domain record.
     pub constraints: ToyGrantConstraints,
+    /// Field `grant_state` of this domain record.
     pub grant_state: ToyGrantState,
+    /// Field `issuer_id` of this domain record.
     pub issuer_id: String,
+    /// Field `policy_revision` of this domain record.
     pub policy_revision: u64,
+    /// Field `grants_revision` of this domain record.
     pub grants_revision: u64,
+    /// Field `authority_observation_id` of this domain record.
     pub authority_observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `ToyGrantVerdict` used by the MCT kernel.
 pub enum ToyGrantVerdict {
+    /// Public `Allowed` item.
     Allowed,
+    /// Public `Denied` item.
     Denied,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `ToyGrantReasonCode` used by the MCT kernel.
 pub enum ToyGrantReasonCode {
+    /// Public `ActiveGrant` item.
     ActiveGrant,
+    /// Public `MissingGrant` item.
     MissingGrant,
+    /// Public `ExpiredGrant` item.
     ExpiredGrant,
+    /// Public `RevokedGrant` item.
     RevokedGrant,
+    /// Public `WrongScope` item.
     WrongScope,
+    /// Public `UnknownToy` item.
     UnknownToy,
+    /// Public `PolicyDenied` item.
     PolicyDenied,
+    /// Public `StaleSnapshot` item.
     StaleSnapshot,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `ToyGrantEvaluation` used by the MCT kernel.
 pub struct ToyGrantEvaluation {
+    /// Field `evaluation_id` of this domain record.
     pub evaluation_id: ToyGrantEvaluationId,
+    /// Field `call_id` of this domain record.
     pub call_id: CallId,
+    /// Field `decision_id` of this domain record.
     pub decision_id: DecisionId,
+    /// Field `grant_id` of this domain record.
     pub grant_id: Option<ToyGrantId>,
+    /// Field `toy_id` of this domain record.
     pub toy_id: ToyId,
+    /// Field `subject_child_name` of this domain record.
     pub subject_child_name: String,
+    /// Field `verdict` of this domain record.
     pub verdict: ToyGrantVerdict,
+    /// Field `reason_code` of this domain record.
     pub reason_code: ToyGrantReasonCode,
+    /// Field `policy_revision` of this domain record.
     pub policy_revision: u64,
+    /// Field `grants_revision` of this domain record.
     pub grants_revision: u64,
+    /// Field `observation_id` of this domain record.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `AuthorizedToyCall` used by the MCT kernel.
 pub struct AuthorizedToyCall {
+    /// Field `authorized_toy_call_id` of this domain record.
     pub authorized_toy_call_id: AuthorizedToyCallId,
+    /// Field `call_id` of this domain record.
     pub call_id: CallId,
+    /// Field `evaluation_id` of this domain record.
     pub evaluation_id: ToyGrantEvaluationId,
+    /// Field `grant_id` of this domain record.
     pub grant_id: ToyGrantId,
+    /// Field `toy_id` of this domain record.
     pub toy_id: ToyId,
+    /// Field `child_instance_id` of this domain record.
     pub child_instance_id: ChildInstanceId,
+    /// Field `authority_decision_id` of this domain record.
     pub authority_decision_id: DecisionId,
+    /// Field `expires_at` of this domain record.
     pub expires_at: Timestamp,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Domain record `ToyGrantEvaluationIds` used by the MCT kernel.
 pub struct ToyGrantEvaluationIds {
+    /// Field `evaluation_id` of this domain record.
     pub evaluation_id: ToyGrantEvaluationId,
+    /// Field `decision_id` of this domain record.
     pub decision_id: DecisionId,
+    /// Field `observation_id` of this domain record.
     pub observation_id: ObservationId,
+    /// Field `authorized_toy_call_id` of this domain record.
     pub authorized_toy_call_id: AuthorizedToyCallId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Domain record `ToyGrantEvaluationRequest` used by the MCT kernel.
 pub struct ToyGrantEvaluationRequest {
+    /// Field `toy_id` of this domain record.
     pub toy_id: ToyId,
+    /// Field `subject` of this domain record.
     pub subject: ToyGrantSubject,
+    /// Field `child_instance_id` of this domain record.
     pub child_instance_id: ChildInstanceId,
+    /// Field `action` of this domain record.
     pub action: String,
+    /// Field `resource_id` of this domain record.
     pub resource_id: Option<String>,
+    /// Field `node_id` of this domain record.
     pub node_id: MctNodeId,
+    /// Field `now` of this domain record.
     pub now: Timestamp,
+    /// Field `ids` of this domain record.
     pub ids: ToyGrantEvaluationIds,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Domain record `ToyGrantEvaluationResult` used by the MCT kernel.
 pub struct ToyGrantEvaluationResult {
+    /// Field `evaluation` of this domain record.
     pub evaluation: ToyGrantEvaluation,
+    /// Field `authorized` of this domain record.
     pub authorized: Option<AuthorizedToyCall>,
 }
 
 impl ToyGrantEvaluationResult {
+    /// Executes `is_allowed` for this domain type.
     pub fn is_allowed(&self) -> bool {
         self.evaluation.verdict == ToyGrantVerdict::Allowed && self.authorized.is_some()
     }
 }
 
+/// Evaluates `evaluate_toy_grant_for_call` fail-closed from explicit authority inputs.
 pub fn evaluate_toy_grant_for_call(
     call: &MctCall,
     request: &ToyGrantEvaluationRequest,

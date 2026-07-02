@@ -3,134 +3,214 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `NetworkPathClass` used by the MCT kernel.
 pub enum NetworkPathClass {
+    /// Public `Direct` item.
     Direct,
+    /// Public `Relayed` item.
     Relayed,
+    /// Public `Local` item.
     Local,
+    /// Public `Unknown` item.
     Unknown,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `CandidateRoute` used by the MCT kernel.
 pub struct CandidateRoute {
+    /// Field `candidate_id` of this domain record.
     pub candidate_id: String,
+    /// Field `node_id` of this domain record.
     pub node_id: MctNodeId,
+    /// Field `child_id` of this domain record.
     pub child_id: Option<ChildId>,
+    /// Field `runtime_kind` of this domain record.
     pub runtime_kind: RuntimeKind,
+    /// Field `network_path` of this domain record.
     pub network_path: NetworkPathClass,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `CandidateAuthorityOutcome` used by the MCT kernel.
 pub enum CandidateAuthorityOutcome {
+    /// Public `Admissible` item.
     Admissible,
+    /// Public `Eliminated` item.
     Eliminated,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `CandidateEliminationReason` used by the MCT kernel.
 pub enum CandidateEliminationReason {
+    /// Public `DataPolicyDenied` item.
     DataPolicyDenied,
+    /// Public `VisionPolicyDenied` item.
     VisionPolicyDenied,
+    /// Public `PeerNotAdmitted` item.
     PeerNotAdmitted,
+    /// Public `ChildNotApproved` item.
     ChildNotApproved,
+    /// Public `ToyGrantMissing` item.
     ToyGrantMissing,
+    /// Public `SecretScopeForbidden` item.
     SecretScopeForbidden,
+    /// Public `PolicyRevisionStale` item.
     PolicyRevisionStale,
+    /// Public `GrantsRevisionStale` item.
     GrantsRevisionStale,
+    /// Public `RouteMismatch` item.
     RouteMismatch,
+    /// Public `CapabilityUnavailable` item.
     CapabilityUnavailable,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `RouteDecisionKind` used by the MCT kernel.
 pub enum RouteDecisionKind {
+    /// Public `Initial` item.
     Initial,
+    /// Public `Revalidation` item.
     Revalidation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `RouteRevalidationReason` used by the MCT kernel.
 pub enum RouteRevalidationReason {
+    /// Public `Revalidated` item.
     Revalidated,
+    /// Public `InitialDecisionNotSelected` item.
     InitialDecisionNotSelected,
+    /// Public `CallIdMismatch` item.
     CallIdMismatch,
+    /// Public `SelectedRouteNotAdmissible` item.
     SelectedRouteNotAdmissible,
+    /// Public `SelectedChildMismatch` item.
     SelectedChildMismatch,
+    /// Public `ChildAuthorityDenied` item.
     ChildAuthorityDenied,
+    /// Public `ToyGrantDenied` item.
     ToyGrantDenied,
+    /// Public `PolicyRevisionStale` item.
     PolicyRevisionStale,
+    /// Public `GrantsRevisionStale` item.
     GrantsRevisionStale,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `CandidateAuthorityEvaluation` used by the MCT kernel.
 pub struct CandidateAuthorityEvaluation {
+    /// Field `candidate` of this domain record.
     pub candidate: CandidateRoute,
+    /// Field `outcome` of this domain record.
     pub outcome: CandidateAuthorityOutcome,
+    /// Field `reason` of this domain record.
     pub reason: Option<CandidateEliminationReason>,
+    /// Field `safe_message` of this domain record.
     pub safe_message: String,
+    /// Field `policy_revision` of this domain record.
     pub policy_revision: u64,
+    /// Field `grants_revision` of this domain record.
     pub grants_revision: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Closed domain enum `RouteDecisionOutcome` used by the MCT kernel.
 pub enum RouteDecisionOutcome {
+    /// Public `RouteSelected` item.
     RouteSelected,
+    /// Public `NoRoute` item.
     NoRoute,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `RouteDecision` used by the MCT kernel.
 pub struct RouteDecision {
+    /// Field `decision_id` of this domain record.
     pub decision_id: DecisionId,
+    /// Field `call_id` of this domain record.
     pub call_id: CallId,
+    /// Field `decision_kind` of this domain record.
     pub decision_kind: RouteDecisionKind,
+    /// Field `initial_decision_id` of this domain record.
     pub initial_decision_id: Option<DecisionId>,
+    /// Field `authority_evaluations` of this domain record.
     pub authority_evaluations: Vec<CandidateAuthorityEvaluation>,
+    /// Field `selected_route` of this domain record.
     pub selected_route: Option<CandidateRoute>,
+    /// Field `outcome` of this domain record.
     pub outcome: RouteDecisionOutcome,
+    /// Field `no_route_reason` of this domain record.
     pub no_route_reason: Option<CandidateEliminationReason>,
+    /// Field `safe_message` of this domain record.
     pub safe_message: String,
+    /// Field `observation_id` of this domain record.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Domain record `RouteDecisionIds` used by the MCT kernel.
 pub struct RouteDecisionIds {
+    /// Field `decision_id` of this domain record.
     pub decision_id: DecisionId,
+    /// Field `observation_id` of this domain record.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Domain record `RouteRevalidationIds` used by the MCT kernel.
 pub struct RouteRevalidationIds {
+    /// Field `decision_id` of this domain record.
     pub decision_id: DecisionId,
+    /// Field `observation_id` of this domain record.
     pub observation_id: ObservationId,
+    /// Field `authorized_route_execution_id` of this domain record.
     pub authorized_route_execution_id: AuthorizedRouteExecutionId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Domain record `AuthorizedRouteExecution` used by the MCT kernel.
 pub struct AuthorizedRouteExecution {
+    /// Field `authorized_route_execution_id` of this domain record.
     pub authorized_route_execution_id: AuthorizedRouteExecutionId,
+    /// Field `call_id` of this domain record.
     pub call_id: CallId,
+    /// Field `initial_decision_id` of this domain record.
     pub initial_decision_id: DecisionId,
+    /// Field `revalidation_decision_id` of this domain record.
     pub revalidation_decision_id: DecisionId,
+    /// Field `route` of this domain record.
     pub route: CandidateRoute,
+    /// Field `child_invocation` of this domain record.
     pub child_invocation: AuthorizedChildInvocation,
+    /// Field `toy_calls` of this domain record.
     pub toy_calls: Vec<AuthorizedToyCall>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Domain record `RouteRevalidationResult` used by the MCT kernel.
 pub struct RouteRevalidationResult {
+    /// Field `decision` of this domain record.
     pub decision: RouteDecision,
+    /// Field `reason` of this domain record.
     pub reason: RouteRevalidationReason,
+    /// Field `authorized` of this domain record.
     pub authorized: Option<AuthorizedRouteExecution>,
 }
 
 impl RouteRevalidationResult {
+    /// Executes `is_authorized` for this domain type.
     pub fn is_authorized(&self) -> bool {
         self.reason == RouteRevalidationReason::Revalidated && self.authorized.is_some()
     }
 }
 
 impl CandidateAuthorityEvaluation {
+    /// Executes `admissible` for this domain type.
     pub fn admissible(
         candidate: CandidateRoute,
         policy_revision: u64,
@@ -146,6 +226,7 @@ impl CandidateAuthorityEvaluation {
         }
     }
 
+    /// Executes `eliminated` for this domain type.
     pub fn eliminated(
         candidate: CandidateRoute,
         reason: CandidateEliminationReason,
@@ -164,6 +245,7 @@ impl CandidateAuthorityEvaluation {
 }
 
 impl RouteDecision {
+    /// Executes `selected` for this domain type.
     pub fn selected(
         call: &MctCall,
         selected_route: CandidateRoute,
@@ -184,6 +266,7 @@ impl RouteDecision {
         }
     }
 
+    /// Executes `no_route` for this domain type.
     pub fn no_route(
         call: &MctCall,
         authority_evaluations: Vec<CandidateAuthorityEvaluation>,
@@ -204,11 +287,13 @@ impl RouteDecision {
         }
     }
 
+    /// Executes `is_no_route` for this domain type.
     pub fn is_no_route(&self) -> bool {
         self.outcome == RouteDecisionOutcome::NoRoute
     }
 }
 
+/// Executes `revalidate_route_for_execution` for this domain type.
 pub fn revalidate_route_for_execution(
     call: &MctCall,
     initial: &RouteDecision,
@@ -424,6 +509,7 @@ fn revalidation_denied(
     }
 }
 
+/// Executes `no_route_denied_result` for this domain type.
 pub fn no_route_denied_result(
     call: &MctCall,
     decision: &RouteDecision,
