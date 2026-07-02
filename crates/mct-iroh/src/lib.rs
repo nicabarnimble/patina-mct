@@ -90,6 +90,20 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn node_secret_key_file_is_created_owner_read_write_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mother.secret");
+
+        let _secret = load_or_create_node_secret_key_hex(&path).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
     #[tokio::test]
     async fn mother_endpoint_ticket_connects_hello_then_call() {
         let mut server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
