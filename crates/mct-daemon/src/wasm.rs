@@ -9,11 +9,16 @@ use serde_json::Value;
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread::{self, JoinHandle},
 };
 use thiserror::Error;
 use wasmtime::{
-    AsContext, AsContextMut, Config, Engine, Store, StoreContextMut, component,
-    component::ResourceTable,
+    AsContext, AsContextMut, Config, Engine, Store, StoreContextMut, StoreLimits,
+    StoreLimitsBuilder, component, component::ResourceTable,
 };
 use wasmtime_wasi::{DirPerms, FilePerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
@@ -96,6 +101,21 @@ pub enum MctWasiPreopenAccess {
     ReadWrite,
 }
 
+pub const DEFAULT_WASM_MEMORY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MctWasmHostConfig {
+    pub memory_limit_bytes: usize,
+}
+
+impl MctWasmHostConfig {
+    pub fn default_local() -> Self {
+        Self {
+            memory_limit_bytes: DEFAULT_WASM_MEMORY_LIMIT_BYTES,
+        }
+    }
+}
+
 impl MctWitHostImportAdapters {
     pub fn none() -> Self {
         Self {
@@ -108,11 +128,15 @@ impl MctWitHostImportAdapters {
     }
 }
 
-#[derive(Clone, Debug)]
+struct MctWasmEmptyHostState {
+    limits: StoreLimits,
+}
+
 struct MctWasmHostState {
     toy_registry: MctToyAdapterRegistry,
     call: MctCall,
     toy_observations: Vec<MctObservation>,
+    limits: StoreLimits,
 }
 
 struct MctWitHostState {
@@ -125,6 +149,7 @@ struct MctWitHostState {
     wasi_ctx: WasiCtx,
     wasi_table: ResourceTable,
     next_toy_call_index: u64,
+    limits: StoreLimits,
 }
 
 impl WasiView for MctWitHostState {
@@ -251,6 +276,12 @@ pub enum MctWasmComponentRuntimeError {
     Load { path: PathBuf, message: String },
     #[error("instantiate wasm component {path}: {message}")]
     Instantiate { path: PathBuf, message: String },
+    #[error("wasm component {path} exceeded resource limit {memory_limit_bytes} bytes: {message}")]
+    ResourceLimit {
+        path: PathBuf,
+        memory_limit_bytes: usize,
+        message: String,
+    },
     #[error("missing wasm component export '{export_name}' in {path}")]
     MissingExport { path: PathBuf, export_name: String },
     #[error("invalid WIT operation '{operation_id}': {message}")]
@@ -519,18 +550,229 @@ fn resolve_wit_operation_id(
     })
 }
 
+struct WasmDeadlineGuard {
+    completed: Arc<AtomicBool>,
+    timed_out: Arc<AtomicBool>,
+    interrupter: JoinHandle<()>,
+}
+
+impl WasmDeadlineGuard {
+    fn timed_out(&self) -> bool {
+        self.timed_out.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for WasmDeadlineGuard {
+    fn drop(&mut self) {
+        self.completed.store(true, Ordering::SeqCst);
+        self.interrupter.thread().unpark();
+    }
+}
+
+enum WasmDeadlinePermit {
+    Expired,
+    Running(WasmDeadlineGuard),
+}
+
+fn is_wasm_resource_limit_message(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("resource limit")
+        || (message.contains("memory")
+            && (message.contains("limit")
+                || message.contains("minimum")
+                || message.contains("maximum")))
+}
+
+fn wasm_invocation_result(
+    call: &MctCall,
+    authorized: &AuthorizedChildInvocation,
+    audit_ref: AuditRef,
+    outcome: ResultOutcome,
+    requester_message: &str,
+    output_size_bytes: Option<u64>,
+) -> MctResult {
+    MctResult {
+        call_id: call.call_id.clone(),
+        outcome,
+        route_taken: Some(RouteTaken {
+            node_id: MctNodeId::from("local-mct"),
+            child_id: Some(ChildId::from(authorized.child_name.clone())),
+            runtime_kind: RuntimeKind::WasmComponent,
+        }),
+        authority_decision_ref: authorized.authority_decision_id.clone(),
+        execution_summary: ExecutionSummary {
+            wall_time_ms: 0,
+            execution_time_ms: None,
+            queue_wait_ms: None,
+            input_size_bytes: call.payload_metadata.approximate_size_bytes,
+            output_size_bytes,
+        },
+        requester_message: requester_message.into(),
+        audit_ref,
+    }
+}
+
+fn wasm_timeout_observation(
+    ids: &MctWasmComponentInvocationIds,
+    call: &MctCall,
+    authorized: &AuthorizedChildInvocation,
+) -> MctObservation {
+    wasm_observation(
+        ids.completed_observation_id.clone(),
+        ids.completed_at.clone(),
+        ObservationKind::RuntimeExecutionTimedOut,
+        ObservationOutcome::TimedOut,
+        call,
+        authorized,
+        "wasm component execution timed out",
+    )
+}
+
+fn s32_timeout_report(
+    started: MctObservation,
+    ids: MctWasmComponentInvocationIds,
+    call: &MctCall,
+    authorized: &AuthorizedChildInvocation,
+) -> MctWasmComponentInvocationReport {
+    let completed = wasm_timeout_observation(&ids, call, authorized);
+    let result = wasm_invocation_result(
+        call,
+        authorized,
+        ids.audit_ref,
+        ResultOutcome::TimedOut,
+        "wasm component timed out",
+        None,
+    );
+    MctWasmComponentInvocationReport {
+        result,
+        returned_s32: 0,
+        observations: vec![started, completed],
+    }
+}
+
+fn wit_timeout_report(
+    started: MctObservation,
+    ids: MctWasmComponentInvocationIds,
+    call: &MctCall,
+    authorized: &AuthorizedChildInvocation,
+) -> MctWitComponentInvocationReport {
+    let completed = wasm_timeout_observation(&ids, call, authorized);
+    let result = wasm_invocation_result(
+        call,
+        authorized,
+        ids.audit_ref,
+        ResultOutcome::TimedOut,
+        "wasm component timed out",
+        None,
+    );
+    MctWitComponentInvocationReport {
+        result,
+        output_json: Value::Null,
+        observations: vec![started, completed],
+    }
+}
+
 #[derive(Debug)]
 pub struct MctWasmComponentRuntime {
     engine: Engine,
+    host_config: MctWasmHostConfig,
 }
 
 impl MctWasmComponentRuntime {
-    pub fn new() -> Result<Self, MctWasmComponentRuntimeError> {
+    pub fn new(host_config: MctWasmHostConfig) -> Result<Self, MctWasmComponentRuntimeError> {
         let mut config = Config::new();
         config.wasm_component_model(true);
+        config.epoch_interruption(true);
         let engine = Engine::new(&config)
             .map_err(|error| MctWasmComponentRuntimeError::Configure(error.to_string()))?;
-        Ok(Self { engine })
+        Ok(Self {
+            engine,
+            host_config,
+        })
+    }
+
+    fn store_limits(&self) -> StoreLimits {
+        StoreLimitsBuilder::new()
+            .memory_size(self.host_config.memory_limit_bytes)
+            .build()
+    }
+
+    fn instantiate_error(
+        &self,
+        path: PathBuf,
+        source: wasmtime::Error,
+    ) -> MctWasmComponentRuntimeError {
+        let message = source.to_string();
+        if is_wasm_resource_limit_message(&message) {
+            MctWasmComponentRuntimeError::ResourceLimit {
+                path,
+                memory_limit_bytes: self.host_config.memory_limit_bytes,
+                message,
+            }
+        } else {
+            MctWasmComponentRuntimeError::Instantiate { path, message }
+        }
+    }
+
+    fn call_error(
+        &self,
+        path: PathBuf,
+        export_name: String,
+        source: wasmtime::Error,
+    ) -> MctWasmComponentRuntimeError {
+        let message = source.to_string();
+        if is_wasm_resource_limit_message(&message) {
+            MctWasmComponentRuntimeError::ResourceLimit {
+                path,
+                memory_limit_bytes: self.host_config.memory_limit_bytes,
+                message,
+            }
+        } else {
+            MctWasmComponentRuntimeError::Call {
+                path,
+                export_name,
+                message,
+            }
+        }
+    }
+
+    fn configure_deadline<T>(
+        &self,
+        store: &mut Store<T>,
+        call: &MctCall,
+    ) -> Result<WasmDeadlinePermit, MctWasmComponentRuntimeError> {
+        let deadline = call
+            .deadline
+            .as_str()
+            .parse::<jiff::Timestamp>()
+            .map_err(|error| MctWasmComponentRuntimeError::Configure(error.to_string()))?;
+        let now = jiff::Timestamp::now();
+        if now >= deadline {
+            return Ok(WasmDeadlinePermit::Expired);
+        }
+
+        store.set_epoch_deadline(1);
+        store.epoch_deadline_trap();
+
+        let wait = deadline.duration_since(now).unsigned_abs();
+        let engine = self.engine.clone();
+        let completed = Arc::new(AtomicBool::new(false));
+        let timed_out = Arc::new(AtomicBool::new(false));
+        let completed_for_thread = completed.clone();
+        let timed_out_for_thread = timed_out.clone();
+        let interrupter = thread::spawn(move || {
+            thread::park_timeout(wait);
+            if !completed_for_thread.load(Ordering::SeqCst) {
+                timed_out_for_thread.store(true, Ordering::SeqCst);
+                engine.increment_epoch();
+            }
+        });
+
+        Ok(WasmDeadlinePermit::Running(WasmDeadlineGuard {
+            completed,
+            timed_out,
+            interrupter,
+        }))
     }
 
     pub fn discover_wit_operations(
@@ -674,14 +916,17 @@ impl MctWasmComponentRuntime {
                 wasi_ctx,
                 wasi_table: ResourceTable::new(),
                 next_toy_call_index: 0,
+                limits: self.store_limits(),
             },
         );
+        store.limiter(|state| &mut state.limits);
+        let deadline = self.configure_deadline(&mut store, call)?;
+        if matches!(deadline, WasmDeadlinePermit::Expired) {
+            return Ok(wit_timeout_report(started, ids, call, authorized));
+        }
         let instance = linker
             .instantiate(&mut store, &component)
-            .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
-                path: component_path.clone(),
-                message: error.to_string(),
-            })?;
+            .map_err(|error| self.instantiate_error(component_path.clone(), error))?;
         let func =
             lookup_wit_component_func(&mut store, &instance, &operation).ok_or_else(|| {
                 MctWasmComponentRuntimeError::MissingWitOperation {
@@ -699,12 +944,22 @@ impl MctWasmComponentRuntime {
                 }
             })?;
         let mut results = vec![component::Val::Bool(false); func_ty.results().len()];
-        func.call(store.as_context_mut(), &lowered_args, &mut results)
-            .map_err(|error| MctWasmComponentRuntimeError::Call {
-                path: component_path.clone(),
-                export_name: operation.operation_id.clone(),
-                message: error.to_string(),
-            })?;
+        let call_result = func.call(store.as_context_mut(), &lowered_args, &mut results);
+        let timed_out =
+            matches!(&deadline, WasmDeadlinePermit::Running(guard) if guard.timed_out());
+        if let Err(error) = call_result {
+            if timed_out {
+                return Ok(wit_timeout_report(started, ids, call, authorized));
+            }
+            return Err(self.call_error(
+                component_path.clone(),
+                operation.operation_id.clone(),
+                error,
+            ));
+        }
+        if timed_out {
+            return Ok(wit_timeout_report(started, ids, call, authorized));
+        }
         let output_json = lift_component_results_to_json(&results, &func_ty).map_err(|error| {
             MctWasmComponentRuntimeError::WitValueConversion {
                 path: component_path.clone(),
@@ -778,14 +1033,21 @@ impl MctWasmComponentRuntime {
                     message: error.to_string(),
                 }
             })?;
-        let linker = component::Linker::<()>::new(&self.engine);
-        let mut store = Store::new(&self.engine, ());
+        let linker = component::Linker::<MctWasmEmptyHostState>::new(&self.engine);
+        let mut store = Store::new(
+            &self.engine,
+            MctWasmEmptyHostState {
+                limits: self.store_limits(),
+            },
+        );
+        store.limiter(|state| &mut state.limits);
+        let deadline = self.configure_deadline(&mut store, call)?;
+        if matches!(deadline, WasmDeadlinePermit::Expired) {
+            return Ok(s32_timeout_report(started, ids, call, authorized));
+        }
         let instance = linker
             .instantiate(&mut store, &component)
-            .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
-                path: component_path.clone(),
-                message: error.to_string(),
-            })?;
+            .map_err(|error| self.instantiate_error(component_path.clone(), error))?;
         let func = instance.get_func(&mut store, export_name).ok_or_else(|| {
             MctWasmComponentRuntimeError::MissingExport {
                 path: component_path.clone(),
@@ -793,13 +1055,18 @@ impl MctWasmComponentRuntime {
             }
         })?;
         let mut results = [component::Val::S32(0)];
-        func.call(&mut store, &[], &mut results).map_err(|error| {
-            MctWasmComponentRuntimeError::Call {
-                path: component_path.clone(),
-                export_name: export_name.into(),
-                message: error.to_string(),
+        let call_result = func.call(&mut store, &[], &mut results);
+        let timed_out =
+            matches!(&deadline, WasmDeadlinePermit::Running(guard) if guard.timed_out());
+        if let Err(error) = call_result {
+            if timed_out {
+                return Ok(s32_timeout_report(started, ids, call, authorized));
             }
-        })?;
+            return Err(self.call_error(component_path.clone(), export_name.into(), error));
+        }
+        if timed_out {
+            return Ok(s32_timeout_report(started, ids, call, authorized));
+        }
         let component::Val::S32(returned_s32) = results[0] else {
             return Err(MctWasmComponentRuntimeError::UnexpectedResult {
                 export_name: export_name.into(),
@@ -814,25 +1081,14 @@ impl MctWasmComponentRuntime {
             authorized,
             "wasm component execution completed",
         );
-        let result = MctResult {
-            call_id: call.call_id.clone(),
-            outcome: ResultOutcome::Success,
-            route_taken: Some(RouteTaken {
-                node_id: MctNodeId::from("local-mct"),
-                child_id: Some(ChildId::from(authorized.child_name.clone())),
-                runtime_kind: RuntimeKind::WasmComponent,
-            }),
-            authority_decision_ref: authorized.authority_decision_id.clone(),
-            execution_summary: ExecutionSummary {
-                wall_time_ms: 0,
-                execution_time_ms: None,
-                queue_wait_ms: None,
-                input_size_bytes: call.payload_metadata.approximate_size_bytes,
-                output_size_bytes: Some(std::mem::size_of::<i32>() as u64),
-            },
-            requester_message: "wasm component completed".into(),
-            audit_ref: ids.audit_ref,
-        };
+        let result = wasm_invocation_result(
+            call,
+            authorized,
+            ids.audit_ref,
+            ResultOutcome::Success,
+            "wasm component completed",
+            Some(std::mem::size_of::<i32>() as u64),
+        );
         Ok(MctWasmComponentInvocationReport {
             result,
             returned_s32,
@@ -900,14 +1156,17 @@ impl MctWasmComponentRuntime {
                 toy_registry: invocation.toy_registry,
                 call: call.clone(),
                 toy_observations: Vec::new(),
+                limits: self.store_limits(),
             },
         );
+        store.limiter(|state| &mut state.limits);
+        let deadline = self.configure_deadline(&mut store, call)?;
+        if matches!(deadline, WasmDeadlinePermit::Expired) {
+            return Ok(s32_timeout_report(started, ids, call, authorized));
+        }
         let instance = linker
             .instantiate(&mut store, &component)
-            .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
-                path: component_path.clone(),
-                message: error.to_string(),
-            })?;
+            .map_err(|error| self.instantiate_error(component_path.clone(), error))?;
         let func = instance.get_func(&mut store, &export_name).ok_or_else(|| {
             MctWasmComponentRuntimeError::MissingExport {
                 path: component_path.clone(),
@@ -915,13 +1174,18 @@ impl MctWasmComponentRuntime {
             }
         })?;
         let mut results = [component::Val::S32(0)];
-        func.call(&mut store, &[], &mut results).map_err(|error| {
-            MctWasmComponentRuntimeError::Call {
-                path: component_path.clone(),
-                export_name: export_name.clone(),
-                message: error.to_string(),
+        let call_result = func.call(&mut store, &[], &mut results);
+        let timed_out =
+            matches!(&deadline, WasmDeadlinePermit::Running(guard) if guard.timed_out());
+        if let Err(error) = call_result {
+            if timed_out {
+                return Ok(s32_timeout_report(started, ids, call, authorized));
             }
-        })?;
+            return Err(self.call_error(component_path.clone(), export_name.clone(), error));
+        }
+        if timed_out {
+            return Ok(s32_timeout_report(started, ids, call, authorized));
+        }
         let component::Val::S32(returned_s32) = results[0] else {
             return Err(MctWasmComponentRuntimeError::UnexpectedResult {
                 export_name: export_name.clone(),
@@ -939,25 +1203,14 @@ impl MctWasmComponentRuntime {
         let mut observations = vec![started];
         observations.extend(store.data().toy_observations.clone());
         observations.push(completed);
-        let result = MctResult {
-            call_id: call.call_id.clone(),
-            outcome: ResultOutcome::Success,
-            route_taken: Some(RouteTaken {
-                node_id: MctNodeId::from("local-mct"),
-                child_id: Some(ChildId::from(authorized.child_name.clone())),
-                runtime_kind: RuntimeKind::WasmComponent,
-            }),
-            authority_decision_ref: authorized.authority_decision_id.clone(),
-            execution_summary: ExecutionSummary {
-                wall_time_ms: 0,
-                execution_time_ms: None,
-                queue_wait_ms: None,
-                input_size_bytes: call.payload_metadata.approximate_size_bytes,
-                output_size_bytes: Some(std::mem::size_of::<i32>() as u64),
-            },
-            requester_message: "wasm component completed".into(),
-            audit_ref: ids.audit_ref,
-        };
+        let result = wasm_invocation_result(
+            call,
+            authorized,
+            ids.audit_ref,
+            ResultOutcome::Success,
+            "wasm component completed",
+            Some(std::mem::size_of::<i32>() as u64),
+        );
         Ok(MctWasmComponentInvocationReport {
             result,
             returned_s32,
@@ -1609,6 +1862,20 @@ mod tests {
     use super::*;
     use std::fs;
 
+    fn runtime() -> MctWasmComponentRuntime {
+        MctWasmComponentRuntime::new(MctWasmHostConfig {
+            memory_limit_bytes: DEFAULT_WASM_MEMORY_LIMIT_BYTES,
+        })
+        .unwrap()
+    }
+
+    fn test_deadline() -> Timestamp {
+        let deadline = jiff::Timestamp::now()
+            .checked_add(jiff::SignedDuration::from_secs(60))
+            .unwrap();
+        Timestamp::new(deadline.to_string()).unwrap()
+    }
+
     fn call() -> MctCall {
         MctCall {
             call_id: CallId::from("call-wasm-component"),
@@ -1633,7 +1900,7 @@ mod tests {
                 grants_revision: 1,
                 vision_policy_revision: 1,
             },
-            deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
+            deadline: test_deadline(),
             trace_context: TraceContext {
                 trace_id: TraceId::from("trace-wasm-component"),
                 span_id: SpanId::from("span-wasm-component"),
@@ -2041,7 +2308,7 @@ mod tests {
 
     #[test]
     fn mct_wit_runtime_resolves_versioned_component_export() {
-        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let runtime = runtime();
         let dir = tempfile::tempdir().unwrap();
         let component_path = typed_component_path(&dir);
 
@@ -2056,7 +2323,7 @@ mod tests {
 
     #[test]
     fn mct_wit_runtime_rejects_unimplemented_host_import() {
-        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let runtime = runtime();
         let dir = tempfile::tempdir().unwrap();
         let component_path = typed_importing_component_path(&dir);
         let imports = runtime.discover_wit_imports(&component_path).unwrap();
@@ -2084,7 +2351,7 @@ mod tests {
 
     #[test]
     fn mct_wit_runtime_invokes_authorized_logging_import() {
-        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let runtime = runtime();
         let dir = tempfile::tempdir().unwrap();
         let component_path = typed_logging_component_path(&dir);
         let child =
@@ -2117,7 +2384,7 @@ mod tests {
 
     #[test]
     fn mct_wit_runtime_invokes_authorized_measure_import() {
-        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let runtime = runtime();
         let dir = tempfile::tempdir().unwrap();
         let component_path = typed_measure_component_path(&dir);
         let child =
@@ -2145,7 +2412,7 @@ mod tests {
 
     #[test]
     fn mct_wit_runtime_invokes_configured_wasi_import() {
-        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let runtime = runtime();
         let dir = tempfile::tempdir().unwrap();
         let component_path = typed_wasi_random_import_component_path(&dir);
         let child = loaded_typed_child(
@@ -2170,7 +2437,7 @@ mod tests {
 
     #[test]
     fn mct_wit_runtime_rejects_filesystem_import_without_preopen() {
-        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let runtime = runtime();
         let dir = tempfile::tempdir().unwrap();
         let component_path = typed_wasi_filesystem_import_component_path(&dir);
         let child = loaded_typed_child(
@@ -2197,7 +2464,7 @@ mod tests {
 
     #[test]
     fn mct_wit_runtime_invokes_authorized_git_import() {
-        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let runtime = runtime();
         let dir = tempfile::tempdir().unwrap();
         let repo = init_git_repo();
         let component_path = typed_git_create_tag_component_path(&dir);
@@ -2232,7 +2499,7 @@ mod tests {
 
     #[test]
     fn mct_wit_runtime_rejects_configured_unknown_host_import() {
-        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let runtime = runtime();
         let dir = tempfile::tempdir().unwrap();
         let component_path = typed_importing_component_path(&dir);
         let child = loaded_typed_child(
@@ -2261,7 +2528,7 @@ mod tests {
 
     #[test]
     fn mct_wit_runtime_invokes_typed_component_export() {
-        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let runtime = runtime();
         let dir = tempfile::tempdir().unwrap();
         let component_path = typed_component_path(&dir);
 
@@ -2294,7 +2561,7 @@ mod tests {
 
     #[test]
     fn mct_wit_runtime_lowers_record_args_and_lifts_record_result() {
-        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let runtime = runtime();
         let dir = tempfile::tempdir().unwrap();
         let component_path = typed_record_component_path(&dir);
         let child = loaded_typed_child(
@@ -2320,7 +2587,7 @@ mod tests {
 
     #[test]
     fn mct_wit_runtime_rejects_unexported_operation() {
-        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let runtime = runtime();
         let dir = tempfile::tempdir().unwrap();
         let component_path = typed_component_path(&dir);
 
@@ -2347,7 +2614,7 @@ mod tests {
 
     #[test]
     fn mct_wit_runtime_maps_missing_export_to_adapter_observation() {
-        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let runtime = runtime();
         let dir = tempfile::tempdir().unwrap();
         let component_path = typed_component_path(&dir);
         let child = loaded_typed_child(
@@ -2383,7 +2650,7 @@ mod tests {
 
     #[test]
     fn mct_wit_runtime_rejects_non_allowlisted_operation() {
-        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let runtime = runtime();
         let dir = tempfile::tempdir().unwrap();
         let component_path = typed_component_path(&dir);
         let child = loaded_typed_child(
@@ -2421,7 +2688,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let component_path = dir.path().join("trap.component.wasm");
         fs::write(&component_path, wat::parse_str(component_wat).unwrap()).unwrap();
-        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let runtime = runtime();
 
         let error = runtime
             .invoke_authorized_s32_export(&authorized(), &call(), &component_path, "trap", ids())
@@ -2466,7 +2733,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let component_path = dir.path().join("failed-toy.component.wasm");
         fs::write(&component_path, wat::parse_str(component_wat).unwrap()).unwrap();
-        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let runtime = runtime();
         let mut toy_registry = MctToyAdapterRegistry::new();
         toy_registry.register(
             ToyId::from("toy-echo"),
@@ -2520,7 +2787,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let component_path = dir.path().join("toy.component.wasm");
         fs::write(&component_path, wat::parse_str(component_wat).unwrap()).unwrap();
-        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let runtime = runtime();
         let mut toy_registry = MctToyAdapterRegistry::new();
         toy_registry.register(ToyId::from("toy-echo"), crate::MctToyBackend::EchoJson);
 
@@ -2565,7 +2832,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let component_path = dir.path().join("answer.component.wasm");
         fs::write(&component_path, wat::parse_str(component_wat).unwrap()).unwrap();
-        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let runtime = runtime();
 
         let report = runtime
             .invoke_authorized_s32_export(&authorized(), &call(), &component_path, "answer", ids())

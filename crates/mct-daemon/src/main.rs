@@ -1,15 +1,16 @@
 use anyhow::{Context, Result, bail};
 use mct_daemon::{
-    MctChildIntegrityMode, MctChildLoadOptions, MctCompositionPlan, MctCompositionStep,
-    MctConfigChildAuthorityProjection, MctControlPlaneSnapshot, MctDaemonConfigStore,
-    MctLocalNodeIdentity, MctOperatorChildScope, MctOperatorNodeScope, MctPeerAddressBookEntry,
-    MctProcessChildHarness, MctProcessChildInvocationIds, MctRuntimeStateStore,
-    MctToyAdapterRegistry, MctToyBackend, MctWasiHostConfig, MctWasiPreopen, MctWasiPreopenAccess,
-    MctWasmComponentInvocationIds, MctWasmComponentRuntime, MctWitHostImportAdapters,
-    MctWitToyHostAdapter, build_federation_capability_view, build_metrics_snapshot, daemon_status,
-    default_config_path, default_state_path, install_verified_child_package,
-    load_children_from_dir, record_composition_plan, reload_configured_child,
-    serve_http_control_once, sync_child_registry_source, warmup_configured_child,
+    DEFAULT_WASM_MEMORY_LIMIT_BYTES, MctChildIntegrityMode, MctChildLoadOptions,
+    MctCompositionPlan, MctCompositionStep, MctConfigChildAuthorityProjection,
+    MctControlPlaneSnapshot, MctDaemonConfigStore, MctLocalNodeIdentity, MctOperatorChildScope,
+    MctOperatorNodeScope, MctPeerAddressBookEntry, MctProcessChildHarness,
+    MctProcessChildInvocationIds, MctRuntimeStateStore, MctToyAdapterRegistry, MctToyBackend,
+    MctWasiHostConfig, MctWasiPreopen, MctWasiPreopenAccess, MctWasmComponentInvocationIds,
+    MctWasmComponentRuntime, MctWasmHostConfig, MctWitHostImportAdapters, MctWitToyHostAdapter,
+    build_federation_capability_view, build_metrics_snapshot, daemon_status, default_config_path,
+    default_state_path, install_verified_child_package, load_children_from_dir,
+    record_composition_plan, reload_configured_child, serve_http_control_once,
+    sync_child_registry_source, warmup_configured_child,
 };
 use mct_iroh::{
     MctIrohCallHandlerResult, MctIrohServeState, MctIrohServedProtocol, MotherIrohEndpoint,
@@ -434,7 +435,7 @@ fn run_wasm_call(mut args: Vec<String>) -> Result<()> {
     )?;
     state.append_run_observations(&run_id, std::slice::from_ref(&authority_observation))?;
 
-    let runtime = MctWasmComponentRuntime::new()?;
+    let runtime = MctWasmComponentRuntime::new(default_wasm_host_config())?;
     let report = runtime.invoke_authorized_s32_export(
         &authorized,
         &call,
@@ -516,7 +517,7 @@ fn run_wasm_call_wit(mut args: Vec<String>) -> Result<()> {
 
     let import_component_path = child.wasm_path.clone();
     let imports = run_wit_runtime_on_blocking_thread(move || {
-        let runtime = MctWasmComponentRuntime::new()?;
+        let runtime = MctWasmComponentRuntime::new(default_wasm_host_config())?;
         Ok(runtime.discover_wit_imports(import_component_path)?)
     })?;
     let adapter_build = match build_wit_host_adapters_for_cli_call(CliWitAdapterRequest {
@@ -543,7 +544,7 @@ fn run_wasm_call_wit(mut args: Vec<String>) -> Result<()> {
     let invoke_child = child.clone();
     let invoke_call = call.clone();
     let report = run_wit_runtime_on_blocking_thread(move || {
-        let runtime = MctWasmComponentRuntime::new()?;
+        let runtime = MctWasmComponentRuntime::new(default_wasm_host_config())?;
         Ok(
             runtime.invoke_authorized_child_wit_export_with_host_adapters(
                 &invoke_authorized,
@@ -1741,6 +1742,12 @@ fn current_timestamp_after(budget: jiff::SignedDuration) -> Timestamp {
         .checked_add(budget)
         .expect("CLI deadline budget is within jiff timestamp range");
     Timestamp::new(deadline.to_string()).expect("jiff produced RFC3339 timestamp")
+}
+
+fn default_wasm_host_config() -> MctWasmHostConfig {
+    MctWasmHostConfig {
+        memory_limit_bytes: DEFAULT_WASM_MEMORY_LIMIT_BYTES,
+    }
 }
 
 async fn serve_iroh(mut args: Vec<String>) -> Result<()> {
