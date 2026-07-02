@@ -7,6 +7,7 @@
 - [x] Task P2 — Unique decision/observation IDs in the Iroh adapter
 - [x] Task P3 — Control plane: stop swallowing errors, reuse the store
 - [x] Task P4 — Ledger read API: stream instead of slurp
+- [x] Task P4b — De-flake the new Iroh timeout tests
 - [ ] Task P5 — Kernel rustdoc and missing_docs
 - [ ] Task P6 — Module shape: split mct-iroh endpoint.rs
 
@@ -122,6 +123,27 @@ load the entire ledger into a `Vec` on every call. The file grows forever.
 - Reimplement `entries`, `by_trace`, `by_call` on top of it (keep them —
   callers exist). No behavior change to their results.
 - Hold the doctrine line: no new public types from std::io in signatures.
+
+## Task P4b — De-flake the new Iroh timeout tests
+
+Independent verification observed one intermittent failure in the mct-iroh
+unit tests during a full-workspace `cargo test` run (1 of 15 failed; passed
+on 9 re-runs). The suspects are the timing-sensitive P1 tests
+(`serve_next_times_out_when_peer_never_sends_data`,
+`send_hello_times_out_when_peer_never_replies`), whose short injected
+timeouts can be blown by scheduler load from parallel wasm-compilation
+tests rather than by the code under test.
+
+- Read both tests and make them robust under parallel load without
+  weakening what they prove. Prefer: widen the margin between the injected
+  timeout and any surrounding assertion window; assert on the typed
+  `ProtocolTimeout` error only, never on elapsed wall-clock bounds; if a
+  test currently races a real connection against a tight deadline, restructure
+  so the peer provably never responds (which makes even a generous timeout
+  deterministic).
+- Prove it: run `cargo test -p mct-iroh` at least 10 consecutive times and
+  `cargo test --workspace` at least 3 consecutive times, all green. State
+  the run counts in your final summary.
 
 ## Task P5 — Kernel rustdoc and missing_docs (docs)
 
