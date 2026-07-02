@@ -11,6 +11,7 @@ pub(crate) struct FakeEchoReport {
     pub(crate) result: MctResult,
     pub(crate) reply: MctCallProtocolReply,
     pub(crate) trace_observation_count: usize,
+    pub(crate) call_observation_count: usize,
 }
 
 pub(crate) struct FakeEndToEndStatusReport {
@@ -25,14 +26,7 @@ pub(crate) fn run_fake_end_to_end_status_slice(
 ) -> Result<FakeEndToEndStatusReport> {
     let ledger_path = ledger_path.as_ref();
     let echo = run_fake_echo_slice(ledger_path)?;
-    let ledger = JsonlObservationLedger::open(ledger_path, "ledger-dev", "mother-a")
-        .context("open fake end-to-end status ledger")?;
-    let call_observation_count = ledger
-        .by_call(
-            &CallId::new("call-fake-echo")
-                .expect("string ID literal/generated value must be non-empty"),
-        )?
-        .len();
+    let call_observation_count = echo.call_observation_count;
 
     Ok(FakeEndToEndStatusReport {
         daemon: daemon_status(Some(iroh_endpoint)),
@@ -200,12 +194,19 @@ pub(crate) fn run_fake_echo_slice(ledger_path: impl AsRef<Path>) -> Result<FakeE
         .context("append call reply observation")?;
 
     let trace_observation_count = ledger.by_trace(&trace_id)?.len();
+    let call_observation_count = ledger
+        .by_call(
+            &CallId::new("call-fake-echo")
+                .expect("string ID literal/generated value must be non-empty"),
+        )?
+        .len();
     Ok(FakeEchoReport {
         hello,
         call,
         result,
         reply,
         trace_observation_count,
+        call_observation_count,
     })
 }
 
