@@ -8,13 +8,14 @@ use std::{
 
 macro_rules! string_id {
     ($name:ident) => {
-        #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-        #[serde(transparent)]
+        #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub struct $name(String);
 
         impl $name {
-            pub fn new(value: impl Into<String>) -> Self {
-                Self(value.into())
+            pub fn new(value: impl Into<String>) -> MctKernelResult<Self> {
+                let value = value.into();
+                crate::error::ensure_non_blank(stringify!($name), "value", &value)?;
+                Ok(Self(value))
             }
 
             pub fn as_str(&self) -> &str {
@@ -24,13 +25,32 @@ macro_rules! string_id {
 
         impl From<&str> for $name {
             fn from(value: &str) -> Self {
-                Self::new(value)
+                Self::new(value).expect("string ID literal must be non-empty")
             }
         }
 
         impl From<String> for $name {
             fn from(value: String) -> Self {
-                Self::new(value)
+                Self::new(value).expect("string ID value must be non-empty")
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                serializer.serialize_str(&self.0)
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let value = String::deserialize(deserializer)?;
+                Self::new(value).map_err(de::Error::custom)
             }
         }
 
@@ -175,6 +195,27 @@ mod tests {
         assert_eq!(encoded, "\"call-1\"");
         let decoded: CallId = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.as_str(), "call-1");
+    }
+
+    #[test]
+    fn string_id_construction_rejects_empty_and_blank_values() {
+        assert!(matches!(
+            CallId::new(""),
+            Err(crate::MctKernelError::InvalidField {
+                record: "CallId",
+                field: "value",
+                reason: crate::InvalidFieldReason::Empty,
+            })
+        ));
+        assert!(matches!(
+            CallId::new("   "),
+            Err(crate::MctKernelError::InvalidField {
+                record: "CallId",
+                field: "value",
+                reason: crate::InvalidFieldReason::Blank,
+            })
+        ));
+        assert!(serde_json::from_str::<CallId>("\"\"").is_err());
     }
 
     #[test]
