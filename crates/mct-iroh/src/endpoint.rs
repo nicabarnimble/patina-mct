@@ -13,8 +13,12 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     str::FromStr,
+    time::Duration,
 };
 use thiserror::Error;
+
+const SERVE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
+const ROUNDTRIP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub type MotherIrohEndpointResult<T> = std::result::Result<T, MotherIrohEndpointError>;
 
@@ -90,6 +94,9 @@ pub enum MotherIrohEndpointError {
         #[source]
         source: MctKernelError,
     },
+
+    #[error("Mother Iroh protocol {action} timed out")]
+    ProtocolTimeout { action: &'static str },
 
     #[error("unsupported MCT ALPN '{alpn}'")]
     UnsupportedAlpn { alpn: String },
@@ -415,6 +422,27 @@ impl MotherIrohEndpoint {
         state: &mut MctIrohServeState,
         bindings: &[MctPeerBinding],
         now: Timestamp,
+        call_handler: F,
+    ) -> MotherIrohEndpointResult<MctIrohServedProtocol>
+    where
+        F: FnMut(&MctCallProtocolRequest, &MctCallProtocolEvaluation) -> MctIrohCallHandlerResult,
+    {
+        self.serve_next_with_call_handler_timeout(
+            state,
+            bindings,
+            now,
+            SERVE_CONNECTION_TIMEOUT,
+            call_handler,
+        )
+        .await
+    }
+
+    pub(crate) async fn serve_next_with_call_handler_timeout<F>(
+        &self,
+        state: &mut MctIrohServeState,
+        bindings: &[MctPeerBinding],
+        now: Timestamp,
+        connection_timeout: Duration,
         mut call_handler: F,
     ) -> MotherIrohEndpointResult<MctIrohServedProtocol>
     where
@@ -428,166 +456,172 @@ impl MotherIrohEndpoint {
             .accept()
             .await
             .ok_or(MotherIrohEndpointError::EndpointClosed)?;
-        let mut accepting =
-            incoming
-                .accept()
-                .map_err(|source| MotherIrohEndpointError::ProtocolIo {
-                    action: "accept incoming connection",
-                    source: boxed_source(source),
-                })?;
-        let alpn =
-            accepting
-                .alpn()
-                .await
-                .map_err(|source| MotherIrohEndpointError::ProtocolIo {
-                    action: "read incoming ALPN",
-                    source: boxed_source(source),
-                })?;
-        let connection = accepting
-            .await
-            .map_err(|source| MotherIrohEndpointError::ProtocolIo {
-                action: "finish incoming connection",
-                source: boxed_source(source),
-            })?;
-        let remote_endpoint_id = EndpointIdText::new(connection.remote_id().to_string())
-            .expect("string ID literal/generated value must be non-empty");
-        let (mut send, mut recv) =
-            connection
-                .accept_bi()
-                .await
-                .map_err(|source| MotherIrohEndpointError::ProtocolIo {
+        tokio::time::timeout(connection_timeout, async {
+            let mut accepting =
+                incoming
+                    .accept()
+                    .map_err(|source| MotherIrohEndpointError::ProtocolIo {
+                        action: "accept incoming connection",
+                        source: boxed_source(source),
+                    })?;
+            let alpn =
+                accepting
+                    .alpn()
+                    .await
+                    .map_err(|source| MotherIrohEndpointError::ProtocolIo {
+                        action: "read incoming ALPN",
+                        source: boxed_source(source),
+                    })?;
+            let connection =
+                accepting
+                    .await
+                    .map_err(|source| MotherIrohEndpointError::ProtocolIo {
+                        action: "finish incoming connection",
+                        source: boxed_source(source),
+                    })?;
+            let remote_endpoint_id = EndpointIdText::new(connection.remote_id().to_string())
+                .expect("string ID literal/generated value must be non-empty");
+            let (mut send, mut recv) = connection.accept_bi().await.map_err(|source| {
+                MotherIrohEndpointError::ProtocolIo {
                     action: "accept bidirectional stream",
                     source: boxed_source(source),
-                })?;
-        let request_bytes = recv.read_to_end(64 * 1024).await.map_err(|source| {
-            MotherIrohEndpointError::ProtocolIo {
-                action: "read request stream",
-                source: boxed_source(source),
-            }
-        })?;
+                }
+            })?;
+            let request_bytes = recv.read_to_end(64 * 1024).await.map_err(|source| {
+                MotherIrohEndpointError::ProtocolIo {
+                    action: "read request stream",
+                    source: boxed_source(source),
+                }
+            })?;
 
-        let (response_bytes, served) = match alpn.as_slice() {
-            bytes if bytes == MCT_HELLO_ALPN.as_bytes() => {
-                let mut request: MctHelloRequest =
-                    serde_json::from_slice(&request_bytes).map_err(|source| {
-                        MotherIrohEndpointError::ProtocolJson {
+            let (response_bytes, served) = match alpn.as_slice() {
+                bytes if bytes == MCT_HELLO_ALPN.as_bytes() => {
+                    let mut request: MctHelloRequest = serde_json::from_slice(&request_bytes)
+                        .map_err(|source| MotherIrohEndpointError::ProtocolJson {
                             action: "decode mct/hello/0 request",
+                            source,
+                        })?;
+                    request.received_over.endpoint_id = remote_endpoint_id;
+                    request.received_over.alpn = MCT_HELLO_ALPN.into();
+                    request.received_over.connection_side = ConnectionSide::Incoming;
+
+                    let evaluation = evaluate_hello(
+                        &request,
+                        bindings,
+                        &HelloPolicy::default(),
+                        HelloEvaluationContext {
+                            ids: EvaluationIds {
+                                decision_id: state.next_decision_id("hello"),
+                                observation_id: state.next_observation_id("hello"),
+                            },
+                            now,
+                        },
+                    );
+                    state.last_hello = Some(evaluation.clone());
+                    let response = hello_response(
+                        format!("reply-iroh-hello-{}", state.next_suffix()),
+                        &evaluation,
+                        state.next_observation_id("hello-reply"),
+                    );
+                    let response_bytes = serde_json::to_vec(&response).map_err(|source| {
+                        MotherIrohEndpointError::ProtocolJson {
+                            action: "encode mct/hello/0 response",
                             source,
                         }
                     })?;
-                request.received_over.endpoint_id = remote_endpoint_id;
-                request.received_over.alpn = MCT_HELLO_ALPN.into();
-                request.received_over.connection_side = ConnectionSide::Incoming;
-
-                let evaluation = evaluate_hello(
-                    &request,
-                    bindings,
-                    &HelloPolicy::default(),
-                    HelloEvaluationContext {
-                        ids: EvaluationIds {
-                            decision_id: state.next_decision_id("hello"),
-                            observation_id: state.next_observation_id("hello"),
+                    (
+                        response_bytes,
+                        MctIrohServedProtocol::Hello {
+                            request,
+                            evaluation,
+                            response,
                         },
-                        now,
-                    },
-                );
-                state.last_hello = Some(evaluation.clone());
-                let response = hello_response(
-                    format!("reply-iroh-hello-{}", state.next_suffix()),
-                    &evaluation,
-                    state.next_observation_id("hello-reply"),
-                );
-                let response_bytes = serde_json::to_vec(&response).map_err(|source| {
-                    MotherIrohEndpointError::ProtocolJson {
-                        action: "encode mct/hello/0 response",
-                        source,
-                    }
-                })?;
-                (
-                    response_bytes,
-                    MctIrohServedProtocol::Hello {
-                        request,
-                        evaluation,
-                        response,
-                    },
-                )
-            }
-            bytes if bytes == MCT_CALL_ALPN.as_bytes() => {
-                let mut request: MctCallProtocolRequest = serde_json::from_slice(&request_bytes)
-                    .map_err(|source| MotherIrohEndpointError::ProtocolJson {
-                        action: "decode mct/call/0 request",
-                        source,
-                    })?;
-                request.received_over.endpoint_id = remote_endpoint_id;
-                request.received_over.alpn = MCT_CALL_ALPN.into();
-                request.received_over.connection_side = ConnectionSide::Incoming;
-                request
-                    .validate()
-                    .map_err(|source| MotherIrohEndpointError::ProtocolKernel {
-                        action: "validate inbound mct/call/0 request",
-                        source,
+                    )
+                }
+                bytes if bytes == MCT_CALL_ALPN.as_bytes() => {
+                    let mut request: MctCallProtocolRequest =
+                        serde_json::from_slice(&request_bytes).map_err(|source| {
+                            MotherIrohEndpointError::ProtocolJson {
+                                action: "decode mct/call/0 request",
+                                source,
+                            }
+                        })?;
+                    request.received_over.endpoint_id = remote_endpoint_id;
+                    request.received_over.alpn = MCT_CALL_ALPN.into();
+                    request.received_over.connection_side = ConnectionSide::Incoming;
+                    request.validate().map_err(|source| {
+                        MotherIrohEndpointError::ProtocolKernel {
+                            action: "validate inbound mct/call/0 request",
+                            source,
+                        }
                     })?;
 
-                let hello = state.last_hello.clone().unwrap_or_else(|| {
-                    denied_missing_hello(request.protocol_request_id.as_str(), state)
-                });
-                let mut evaluation = evaluate_call_protocol(
-                    &request,
-                    &hello,
-                    CallEvaluationIds {
-                        decision_id: state.next_decision_id("call"),
-                        observation_id: state.next_observation_id("call"),
-                    },
-                );
-                let reply_result_ref = if evaluation.is_accepted_for_routing() {
-                    let handled = call_handler(&request, &evaluation);
-                    evaluation.outcome = handled.outcome;
-                    evaluation.safe_message = handled.safe_message;
-                    handled.result_ref
-                } else {
-                    None
-                };
-                let reply = call_reply_from_evaluation(
-                    ReplyId::new(format!("reply-iroh-call-{}", state.next_suffix()))
-                        .expect("string ID literal/generated value must be non-empty"),
-                    &evaluation,
-                    reply_result_ref,
-                    state.next_observation_id("call-reply"),
-                );
-                let response_bytes = encode_call_protocol_reply_json(&reply).map_err(|source| {
-                    MotherIrohEndpointError::ProtocolKernel {
-                        action: "encode mct/call/0 response",
-                        source,
-                    }
-                })?;
-                (
-                    response_bytes,
-                    MctIrohServedProtocol::Call {
-                        request,
-                        evaluation,
-                        reply,
-                    },
-                )
-            }
-            other => {
-                let alpn = String::from_utf8_lossy(other).to_string();
-                return Err(MotherIrohEndpointError::UnsupportedAlpn { alpn });
-            }
-        };
+                    let hello = state.last_hello.clone().unwrap_or_else(|| {
+                        denied_missing_hello(request.protocol_request_id.as_str(), state)
+                    });
+                    let mut evaluation = evaluate_call_protocol(
+                        &request,
+                        &hello,
+                        CallEvaluationIds {
+                            decision_id: state.next_decision_id("call"),
+                            observation_id: state.next_observation_id("call"),
+                        },
+                    );
+                    let reply_result_ref = if evaluation.is_accepted_for_routing() {
+                        let handled = call_handler(&request, &evaluation);
+                        evaluation.outcome = handled.outcome;
+                        evaluation.safe_message = handled.safe_message;
+                        handled.result_ref
+                    } else {
+                        None
+                    };
+                    let reply = call_reply_from_evaluation(
+                        ReplyId::new(format!("reply-iroh-call-{}", state.next_suffix()))
+                            .expect("string ID literal/generated value must be non-empty"),
+                        &evaluation,
+                        reply_result_ref,
+                        state.next_observation_id("call-reply"),
+                    );
+                    let response_bytes =
+                        encode_call_protocol_reply_json(&reply).map_err(|source| {
+                            MotherIrohEndpointError::ProtocolKernel {
+                                action: "encode mct/call/0 response",
+                                source,
+                            }
+                        })?;
+                    (
+                        response_bytes,
+                        MctIrohServedProtocol::Call {
+                            request,
+                            evaluation,
+                            reply,
+                        },
+                    )
+                }
+                other => {
+                    let alpn = String::from_utf8_lossy(other).to_string();
+                    return Err(MotherIrohEndpointError::UnsupportedAlpn { alpn });
+                }
+            };
 
-        send.write_all(&response_bytes).await.map_err(|source| {
-            MotherIrohEndpointError::ProtocolIo {
-                action: "write response stream",
-                source: boxed_source(source),
-            }
-        })?;
-        send.finish()
-            .map_err(|source| MotherIrohEndpointError::ProtocolIo {
-                action: "finish response stream",
-                source: boxed_source(source),
+            send.write_all(&response_bytes).await.map_err(|source| {
+                MotherIrohEndpointError::ProtocolIo {
+                    action: "write response stream",
+                    source: boxed_source(source),
+                }
             })?;
-        connection.closed().await;
-        Ok(served)
+            send.finish()
+                .map_err(|source| MotherIrohEndpointError::ProtocolIo {
+                    action: "finish response stream",
+                    source: boxed_source(source),
+                })?;
+            connection.closed().await;
+            Ok(served)
+        })
+        .await
+        .map_err(|_| MotherIrohEndpointError::ProtocolTimeout {
+            action: "serve incoming MCT connection",
+        })?
     }
 
     pub async fn close(&mut self) {
@@ -607,53 +641,85 @@ impl MotherIrohEndpoint {
         Request: Serialize,
         Response: DeserializeOwned,
     {
+        self.roundtrip_json_with_timeout(peer, alpn, request, ROUNDTRIP_CONNECTION_TIMEOUT)
+            .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn send_hello_with_timeout(
+        &self,
+        peer: &MotherIrohEndpointTicket,
+        request: &MctHelloRequest,
+        connection_timeout: Duration,
+    ) -> MotherIrohEndpointResult<MctHelloResponse> {
+        self.roundtrip_json_with_timeout(peer, MCT_HELLO_ALPN, request, connection_timeout)
+            .await
+    }
+
+    async fn roundtrip_json_with_timeout<Request, Response>(
+        &self,
+        peer: &MotherIrohEndpointTicket,
+        alpn: &'static str,
+        request: &Request,
+        connection_timeout: Duration,
+    ) -> MotherIrohEndpointResult<Response>
+    where
+        Request: Serialize,
+        Response: DeserializeOwned,
+    {
         let endpoint = self
             .endpoint
             .as_ref()
             .ok_or(MotherIrohEndpointError::EndpointClosed)?;
-        let connection = endpoint
-            .connect(endpoint_addr_from_ticket(peer)?, alpn.as_bytes())
-            .await
-            .map_err(|source| MotherIrohEndpointError::ProtocolIo {
-                action: "connect to peer",
-                source: boxed_source(source),
-            })?;
-        let (mut send, mut recv) =
-            connection
-                .open_bi()
+        tokio::time::timeout(connection_timeout, async {
+            let connection = endpoint
+                .connect(endpoint_addr_from_ticket(peer)?, alpn.as_bytes())
                 .await
                 .map_err(|source| MotherIrohEndpointError::ProtocolIo {
-                    action: "open bidirectional stream",
+                    action: "connect to peer",
                     source: boxed_source(source),
                 })?;
-        let bytes = serde_json::to_vec(request).map_err(|source| {
-            MotherIrohEndpointError::ProtocolJson {
-                action: "encode request",
-                source,
-            }
-        })?;
-        send.write_all(&bytes)
-            .await
-            .map_err(|source| MotherIrohEndpointError::ProtocolIo {
-                action: "write request stream",
-                source: boxed_source(source),
+            let (mut send, mut recv) = connection.open_bi().await.map_err(|source| {
+                MotherIrohEndpointError::ProtocolIo {
+                    action: "open bidirectional stream",
+                    source: boxed_source(source),
+                }
             })?;
-        send.finish()
-            .map_err(|source| MotherIrohEndpointError::ProtocolIo {
-                action: "finish request stream",
-                source: boxed_source(source),
+            let bytes = serde_json::to_vec(request).map_err(|source| {
+                MotherIrohEndpointError::ProtocolJson {
+                    action: "encode request",
+                    source,
+                }
             })?;
-        let response = recv.read_to_end(64 * 1024).await.map_err(|source| {
-            MotherIrohEndpointError::ProtocolIo {
-                action: "read response stream",
-                source: boxed_source(source),
-            }
-        })?;
-        connection.close(0u32.into(), b"mct client complete");
-        serde_json::from_slice(&response).map_err(|source| MotherIrohEndpointError::ProtocolJson {
-            action: "decode response",
-            source,
+            send.write_all(&bytes)
+                .await
+                .map_err(|source| MotherIrohEndpointError::ProtocolIo {
+                    action: "write request stream",
+                    source: boxed_source(source),
+                })?;
+            send.finish()
+                .map_err(|source| MotherIrohEndpointError::ProtocolIo {
+                    action: "finish request stream",
+                    source: boxed_source(source),
+                })?;
+            let response = recv.read_to_end(64 * 1024).await.map_err(|source| {
+                MotherIrohEndpointError::ProtocolIo {
+                    action: "read response stream",
+                    source: boxed_source(source),
+                }
+            })?;
+            connection.close(0u32.into(), b"mct client complete");
+            serde_json::from_slice(&response).map_err(|source| {
+                MotherIrohEndpointError::ProtocolJson {
+                    action: "decode response",
+                    source,
+                }
+            })
         })
+        .await
+        .map_err(|_| MotherIrohEndpointError::ProtocolTimeout {
+            action: "complete outbound MCT roundtrip",
+        })?
     }
 }
 
@@ -745,7 +811,7 @@ fn denied_missing_hello(
     }
 }
 
-fn endpoint_addr_from_ticket(
+pub(crate) fn endpoint_addr_from_ticket(
     ticket: &MotherIrohEndpointTicket,
 ) -> MotherIrohEndpointResult<EndpointAddr> {
     let endpoint_id =

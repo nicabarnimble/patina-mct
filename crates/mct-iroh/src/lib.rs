@@ -28,10 +28,12 @@ pub fn version() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::endpoint::mct_alpns;
+    use crate::endpoint::{endpoint_addr_from_ticket, mct_alpn_bytes, mct_alpns};
     use crate::observation::local_denied_peer_adapter_observations;
     use crate::test_support::{run_local_iroh_echo_roundtrip, run_unknown_peer_denial_roundtrip};
+    use iroh::{Endpoint, RelayMode, endpoint::presets};
     use mct_kernel::*;
+    use std::time::Duration;
 
     #[test]
     fn exposes_version() {
@@ -200,6 +202,102 @@ mod tests {
         ));
 
         server.close().await;
+        client.close().await;
+    }
+
+    #[tokio::test]
+    async fn serve_next_times_out_when_peer_never_sends_data() {
+        let server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let server_ticket = server.ticket();
+        let raw_client = Endpoint::builder(presets::N0)
+            .relay_mode(RelayMode::Disabled)
+            .alpns(mct_alpn_bytes())
+            .bind()
+            .await
+            .unwrap();
+        let server_addr = endpoint_addr_from_ticket(&server_ticket).unwrap();
+        let mut state = MctIrohServeState::new();
+
+        let raw_client_task = async {
+            let connection = raw_client
+                .connect(server_addr, MCT_HELLO_ALPN.as_bytes())
+                .await
+                .unwrap();
+            let (_send, _recv) = connection.open_bi().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            connection.close(0u32.into(), b"stalled peer test complete");
+            raw_client.close().await;
+        };
+        let serve_task = server.serve_next_with_call_handler_timeout(
+            &mut state,
+            &[],
+            Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
+            Duration::from_millis(20),
+            |_, _| MctIrohCallHandlerResult::accepted_for_routing(None),
+        );
+
+        let (served, _) = tokio::join!(serve_task, raw_client_task);
+
+        assert!(matches!(
+            served,
+            Err(MotherIrohEndpointError::ProtocolTimeout {
+                action: "serve incoming MCT connection"
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn send_hello_times_out_when_peer_never_replies() {
+        let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let raw_server = Endpoint::builder(presets::N0)
+            .relay_mode(RelayMode::Disabled)
+            .alpns(mct_alpn_bytes())
+            .bind()
+            .await
+            .unwrap();
+        let raw_server_addr = raw_server.addr();
+        let server_ticket = MotherIrohEndpointTicket {
+            endpoint_id: EndpointIdText::new(raw_server.id().to_string())
+                .expect("string ID literal/generated value must be non-empty"),
+            direct_addresses: raw_server_addr
+                .ip_addrs()
+                .map(|addr| addr.to_string())
+                .collect(),
+            relay_urls: raw_server_addr
+                .relay_urls()
+                .map(|url| url.to_string())
+                .collect(),
+        };
+        let client_endpoint_id = client.snapshot().endpoint_id;
+        let trace_id = TraceId::new("trace-client-timeout")
+            .expect("string ID literal/generated value must be non-empty");
+        let hello_request = test_hello_request(&client_endpoint_id, &trace_id);
+
+        let raw_server_task = async {
+            let incoming = raw_server.accept().await.unwrap();
+            let mut accepting = incoming.accept().unwrap();
+            let _alpn = accepting.alpn().await.unwrap();
+            let connection = accepting.await.unwrap();
+            let (_send, mut recv) = connection.accept_bi().await.unwrap();
+            let _request = recv.read_to_end(64 * 1024).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            connection.close(0u32.into(), b"stalled server test complete");
+            raw_server.close().await;
+        };
+        let send_task = client.send_hello_with_timeout(
+            &server_ticket,
+            &hello_request,
+            Duration::from_millis(20),
+        );
+
+        let (sent, _) = tokio::join!(send_task, raw_server_task);
+
+        assert!(matches!(
+            sent,
+            Err(MotherIrohEndpointError::ProtocolTimeout {
+                action: "complete outbound MCT roundtrip"
+            })
+        ));
         client.close().await;
     }
 
