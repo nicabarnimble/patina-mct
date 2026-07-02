@@ -102,7 +102,12 @@ mod tests {
         let hello_request = test_hello_request(&client_endpoint_id, &trace_id);
 
         let (served_hello, hello_response) = tokio::join!(
-            server.serve_next(&mut state, std::slice::from_ref(&binding), None),
+            server.serve_next(
+                &mut state,
+                std::slice::from_ref(&binding),
+                Timestamp::from("2026-05-31T00:00:01Z"),
+                None,
+            ),
             client.send_hello(&server_ticket, &hello_request),
         );
         let served_hello = served_hello.unwrap();
@@ -118,6 +123,7 @@ mod tests {
             server.serve_next(
                 &mut state,
                 std::slice::from_ref(&binding),
+                Timestamp::from("2026-05-31T00:00:02Z"),
                 Some(ResultRef::from("result-public-iroh")),
             ),
             client.send_call(&server_ticket, &call_request),
@@ -152,7 +158,12 @@ mod tests {
         let hello_request = test_hello_request(&client_endpoint_id, &trace_id);
 
         let (served_hello, hello_response) = tokio::join!(
-            server.serve_next(&mut state, std::slice::from_ref(&binding), None),
+            server.serve_next(
+                &mut state,
+                std::slice::from_ref(&binding),
+                Timestamp::from("2026-07-02T00:00:00Z"),
+                None,
+            ),
             client.send_hello(&server_ticket, &hello_request),
         );
 
@@ -196,7 +207,12 @@ mod tests {
         let hello_request = test_hello_request(&client_endpoint_id, &trace_id);
 
         let (_served_hello, hello_response) = tokio::join!(
-            server.serve_next(&mut state, std::slice::from_ref(&binding), None),
+            server.serve_next(
+                &mut state,
+                std::slice::from_ref(&binding),
+                Timestamp::from("2026-05-31T00:00:01Z"),
+                None,
+            ),
             client.send_hello(&server_ticket, &hello_request),
         );
         let hello_response = hello_response.unwrap();
@@ -205,6 +221,7 @@ mod tests {
             server.serve_next_with_call_handler(
                 &mut state,
                 std::slice::from_ref(&binding),
+                Timestamp::from("2026-05-31T00:00:02Z"),
                 |_, evaluation| {
                     assert!(evaluation.is_accepted_for_routing());
                     MctIrohCallHandlerResult::completed(ResultRef::from("result-runtime-child"))

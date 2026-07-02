@@ -1718,6 +1718,10 @@ async fn run_iroh(mut args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+fn current_timestamp() -> Timestamp {
+    Timestamp::from(jiff::Timestamp::now().to_string())
+}
+
 async fn serve_iroh(mut args: Vec<String>) -> Result<()> {
     let relay_default = take_flag(&mut args, "--relay-default");
     if args.len() < 5 {
@@ -1763,6 +1767,7 @@ async fn serve_iroh(mut args: Vec<String>) -> Result<()> {
             .serve_next(
                 &mut state,
                 std::slice::from_ref(&binding),
+                current_timestamp(),
                 Some(ResultRef::from("result-mct-peer-call")),
             )
             .await
@@ -1856,6 +1861,7 @@ async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
             .serve_next_with_call_handler(
                 &mut state,
                 std::slice::from_ref(&binding),
+                current_timestamp(),
                 move |request, _evaluation| {
                     let (authorized, authority_observation) =
                         match authorize_configured_child_from_projection(

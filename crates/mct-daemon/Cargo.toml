@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+jiff.workspace = true
 mct-iroh = { path = "../mct-iroh" }
 mct-kernel = { path = "../mct-kernel" }
 mct-observation = { path = "../mct-observation" }
