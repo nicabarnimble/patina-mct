@@ -8,7 +8,7 @@
 - [x] Task P3 — Control plane: stop swallowing errors, reuse the store
 - [x] Task P4 — Ledger read API: stream instead of slurp
 - [x] Task P4b — De-flake the new Iroh timeout tests
-- [ ] Task P5 — Kernel rustdoc and missing_docs
+- [x] Task P5 — Kernel rustdoc and missing_docs
 - [ ] Task P6 — Module shape: split mct-iroh endpoint.rs
 
 ---

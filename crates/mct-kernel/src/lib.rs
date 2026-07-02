@@ -4,14 +4,23 @@
 //! Wasmtime, storage, telemetry, or daemon implementation types in its public API.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
+/// Kernel module for `call` domain types and decisions.
 pub mod call;
+/// Kernel module for `child` domain types and decisions.
 pub mod child;
+/// Kernel module for `error` domain types and decisions.
 pub mod error;
+/// Kernel module for `id` domain types and decisions.
 pub mod id;
+/// Kernel module for `observation` domain types and decisions.
 pub mod observation;
+/// Kernel module for `peer` domain types and decisions.
 pub mod peer;
+/// Kernel module for `route` domain types and decisions.
 pub mod route;
+/// Kernel module for `toy` domain types and decisions.
 pub mod toy;
 
 pub use call::{

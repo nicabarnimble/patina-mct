@@ -8,16 +8,23 @@ use std::{
 
 macro_rules! string_id {
     ($name:ident) => {
+        #[doc = concat!("Stable string identifier for `", stringify!($name), "` values.")]
         #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub struct $name(String);
 
         impl $name {
+            #[doc = concat!("Creates a `", stringify!($name), "` from a non-blank string.")]
+            ///
+            /// # Errors
+            ///
+            /// Returns an error when the supplied identifier is empty or blank.
             pub fn new(value: impl Into<String>) -> MctKernelResult<Self> {
                 let value = value.into();
                 crate::error::ensure_non_blank(stringify!($name), "value", &value)?;
                 Ok(Self(value))
             }
 
+            #[doc = concat!("Returns the string value of this `", stringify!($name), "`.")]
             pub fn as_str(&self) -> &str {
                 &self.0
             }
@@ -102,6 +109,11 @@ pub struct Timestamp {
 }
 
 impl Timestamp {
+    /// Creates a timestamp from an RFC3339 instant string.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the value is not a valid RFC3339 instant.
     pub fn new(value: impl Into<String>) -> MctKernelResult<Self> {
         let value = value.into();
         let parsed = value.parse::<jiff::Timestamp>().map_err(|source| {
@@ -116,6 +128,7 @@ impl Timestamp {
         })
     }
 
+    /// Returns the original RFC3339 timestamp string.
     pub fn as_str(&self) -> &str {
         &self.value
     }
