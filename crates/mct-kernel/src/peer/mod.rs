@@ -6,51 +6,54 @@ use serde::{Deserialize, Serialize};
 
 mod internal;
 
-/// Public constant `MCT_HELLO_ALPN` used by MCT protocol records.
+/// ALPN for the hello/admission protocol between Mothers.
 pub const MCT_HELLO_ALPN: &str = "mct/hello/0";
-/// Public constant `MCT_CALL_ALPN` used by MCT protocol records.
+/// ALPN for submitting calls after hello admission.
 pub const MCT_CALL_ALPN: &str = "mct/call/0";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `ConnectionSide` used by the MCT kernel.
+/// Direction of a transport connection from the local Mother's perspective.
 pub enum ConnectionSide {
-    /// Public `Incoming` item.
+    /// Peer connected to the local Mother.
     Incoming,
-    /// Public `Outgoing` item.
+    /// Local Mother initiated the peer connection.
     Outgoing,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `PathClass` used by the MCT kernel.
+/// Coarse network path class supplied by the adapter for audit and policy.
 pub enum PathClass {
-    /// Public `Direct` item.
+    /// Direct endpoint-to-endpoint path.
     Direct,
-    /// Public `Relayed` item.
+    /// Connection used a relay path.
     Relayed,
-    /// Public `RelayOnly` item.
+    /// Only relay connectivity is available.
     RelayOnly,
-    /// Public `PrivacyTransport` item.
+    /// Adapter classified the path as privacy-preserving transport.
     PrivacyTransport,
-    /// Public `Unknown` item.
+    /// Adapter could not classify the path.
     Unknown,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `IrohConnectionPresentation` used by the MCT kernel.
+/// Transport facts observed by the adapter for one Iroh connection.
+///
+/// Endpoint ID proves only possession of the Iroh key. Authority requires a
+/// matching admitted peer binding during hello evaluation.
 pub struct IrohConnectionPresentation {
-    /// Field `endpoint_id` of this domain record.
+    /// Iroh endpoint ID observed on the connection.
     pub endpoint_id: EndpointIdText,
-    /// Field `alpn` of this domain record.
+    /// Negotiated ALPN; must be non-blank.
     pub alpn: String,
-    /// Field `connection_side` of this domain record.
+    /// Whether this endpoint accepted or initiated the connection.
     pub connection_side: ConnectionSide,
-    /// Field `path_class` of this domain record.
+    /// Adapter-supplied network path class for audit/policy.
     pub path_class: PathClass,
-    /// Field `relay_url` of this domain record.
+    /// Relay URL used by the connection, if known; if present it must be non-blank.
     pub relay_url: Option<String>,
-    /// Field `presented_capability_ref` of this domain record.
+    /// Optional adapter reference to peer capability evidence.
     pub presented_capability_ref: Option<String>,
 }
 
@@ -77,312 +80,331 @@ impl IrohConnectionPresentation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `MctPeerBindingScope` used by the MCT kernel.
+/// Authority scope granted by a peer binding.
+///
+/// Hello admission intersects requested ALPNs with `allowed_alpns` and binds the
+/// endpoint to exactly one MCT node and Vision.
 pub struct MctPeerBindingScope {
-    /// Field `mct_node_id` of this domain record.
+    /// MCT node identity the endpoint may present.
     pub mct_node_id: MctNodeId,
-    /// Field `vision_id` of this domain record.
+    /// Vision boundary in which the binding is valid.
     pub vision_id: VisionId,
-    /// Field `allowed_alpns` of this domain record.
+    /// ALPNs the peer may negotiate under this binding.
     pub allowed_alpns: Vec<String>,
-    /// Field `data_scope` of this domain record.
+    /// Optional data scope for higher-level policy projections.
     pub data_scope: Option<String>,
-    /// Field `observation_scope` of this domain record.
+    /// Optional observation sharing scope for audit projections.
     pub observation_scope: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `BindingState` used by the MCT kernel.
+/// Lifecycle state of a peer binding as authority data.
 pub enum BindingState {
-    /// Public `Pending` item.
+    /// Binding exists but hello admission must retry later.
     Pending,
-    /// Public `Admitted` item.
+    /// Binding may authorize hello if all other facts match.
     Admitted,
-    /// Public `Denied` item.
+    /// Binding was denied and is treated as no usable binding.
     Denied,
-    /// Public `Expired` item.
+    /// Binding is no longer valid by lifecycle state.
     Expired,
-    /// Public `Revoked` item.
+    /// Binding was explicitly revoked.
     Revoked,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `MctPeerBinding` used by the MCT kernel.
+/// Durable authority record tying an Iroh endpoint to an MCT node and Vision.
+///
+/// Hello admission requires `Admitted`, matching endpoint/binding claims, fresh
+/// policy revision, and `expires_at > now`; `None` expiry means no time limit.
 pub struct MctPeerBinding {
-    /// Field `binding_id` of this domain record.
+    /// Stable identifier for this binding authority record.
     pub binding_id: PeerBindingId,
-    /// Field `iroh_endpoint_id` of this domain record.
+    /// Iroh endpoint key text this binding admits.
     pub iroh_endpoint_id: EndpointIdText,
-    /// Field `scope` of this domain record.
+    /// Node, Vision, and ALPN scope granted by the binding.
     pub scope: MctPeerBindingScope,
-    /// Field `issuer_node_id` of this domain record.
+    /// Node that issued this binding.
     pub issuer_node_id: MctNodeId,
-    /// Field `policy_revision` of this domain record.
+    /// Policy revision under which the binding was issued.
     pub policy_revision: u64,
-    /// Field `binding_state` of this domain record.
+    /// Current lifecycle state used by hello admission.
     pub binding_state: BindingState,
-    /// Field `issued_at` of this domain record.
+    /// Time the binding was issued, for audit.
     pub issued_at: Timestamp,
-    /// Field `expires_at` of this domain record.
+    /// Expiry compared against adapter-supplied `now`; `None` means no expiry.
     pub expires_at: Option<Timestamp>,
-    /// Field `created_by_observation_id` of this domain record.
+    /// Observation that created or admitted this binding.
     pub created_by_observation_id: ObservationId,
-    /// Field `superseded_by_observation_id` of this domain record.
+    /// Observation that superseded this binding, if it has been replaced.
     pub superseded_by_observation_id: Option<ObservationId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `MctProtocolVersion` used by the MCT kernel.
+/// Protocol version requested or negotiated during hello.
+///
+/// Hello accepts only the configured protocol name and major version; minor and
+/// compatibility floor are recorded for negotiation/audit.
 pub struct MctProtocolVersion {
-    /// Field `protocol_name` of this domain record.
+    /// Protocol name, normally `mct/hello/0` for hello negotiation.
     pub protocol_name: String,
-    /// Field `major` of this domain record.
+    /// Major version that must match the local policy.
     pub major: u32,
-    /// Field `minor` of this domain record.
+    /// Minor version requested or selected.
     pub minor: u32,
-    /// Field `compatibility_floor` of this domain record.
+    /// Lowest compatible major/minor floor advertised by the peer.
     pub compatibility_floor: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `MctPeerBindingPresentation` used by the MCT kernel.
+/// Binding claims presented by a peer during hello.
+///
+/// Claims are checked against local binding records; omitted node, Vision, or
+/// revision claims do not grant authority, but mismatched claims deny.
 pub struct MctPeerBindingPresentation {
-    /// Field `binding_id` of this domain record.
+    /// Optional binding ID used to select a local binding record.
     pub binding_id: Option<PeerBindingId>,
-    /// Field `endpoint_id` of this domain record.
+    /// Endpoint the peer claims; must match the observed connection endpoint.
     pub endpoint_id: EndpointIdText,
-    /// Field `mct_node_id` of this domain record.
+    /// Optional node claim; if present it must match the selected binding scope.
     pub mct_node_id: Option<MctNodeId>,
-    /// Field `vision_id` of this domain record.
+    /// Optional Vision claim; if present it must match the selected binding scope.
     pub vision_id: Option<VisionId>,
-    /// Field `policy_revision` of this domain record.
+    /// Optional policy revision claim checked for staleness.
     pub policy_revision: Option<u64>,
-    /// Field `allowed_alpns_claim` of this domain record.
+    /// ALPNs the peer asks to use under this binding.
     pub allowed_alpns_claim: Vec<String>,
-    /// Field `signature_ref` of this domain record.
+    /// Adapter-managed reference to binding proof material.
     pub signature_ref: Option<String>,
-    /// Field `expires_at` of this domain record.
+    /// Peer-presented expiry, recorded but local binding expiry controls admission.
     pub expires_at: Option<Timestamp>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `MctHelloCapabilityView` used by the MCT kernel.
+/// Peer-advertised capability summary attached to hello for audit/planning.
 pub struct MctHelloCapabilityView {
-    /// Field `supported_alpns` of this domain record.
+    /// ALPNs the peer says it can speak.
     pub supported_alpns: Vec<String>,
-    /// Field `supported_wit_worlds` of this domain record.
+    /// WIT worlds the peer says it can host or route.
     pub supported_wit_worlds: Vec<String>,
-    /// Field `supported_observation_modes` of this domain record.
+    /// Observation sharing modes advertised by the peer.
     pub supported_observation_modes: Vec<String>,
-    /// Field `capability_view_ref` of this domain record.
+    /// Optional external reference to a fuller capability document.
     pub capability_view_ref: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `MctHelloRequest` used by the MCT kernel.
+/// `mct/hello/0` request presented before any call authority exists.
+///
+/// Evaluation admits only the intersection of requested ALPNs, local policy,
+/// and the selected active binding scope.
 pub struct MctHelloRequest {
-    /// Field `hello_id` of this domain record.
+    /// Request identifier copied into the evaluation and response.
     pub hello_id: String,
-    /// Field `received_over` of this domain record.
+    /// Adapter-observed transport facts for the hello connection.
     pub received_over: IrohConnectionPresentation,
-    /// Field `requested_protocol` of this domain record.
+    /// Protocol version the peer wants to negotiate.
     pub requested_protocol: MctProtocolVersion,
-    /// Field `requested_vision_id` of this domain record.
+    /// Optional Vision requested by the peer; if present it must match binding scope.
     pub requested_vision_id: Option<VisionId>,
-    /// Field `requested_alpns` of this domain record.
+    /// ALPNs requested for subsequent protocols.
     pub requested_alpns: Vec<String>,
-    /// Field `presented_binding` of this domain record.
+    /// Binding claims supplied by the peer.
     pub presented_binding: MctPeerBindingPresentation,
-    /// Field `capability_view` of this domain record.
+    /// Optional capability summary, recorded but not sufficient for authority.
     pub capability_view: Option<MctHelloCapabilityView>,
-    /// Field `local_policy_revision_seen` of this domain record.
+    /// Policy revision the peer says it has seen.
     pub local_policy_revision_seen: Option<u64>,
-    /// Field `trace_id` of this domain record.
+    /// Trace joining hello, call, and observations.
     pub trace_id: TraceId,
-    /// Field `received_observation_id` of this domain record.
+    /// Observation recording receipt of the hello request.
     pub received_observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `HelloOutcome` used by the MCT kernel.
+/// Public outcome class for hello admission and response.
 pub enum HelloOutcome {
-    /// Public `Admitted` item.
+    /// Peer was admitted under a selected binding.
     Admitted,
-    /// Public `Denied` item.
+    /// Peer was not authorized.
     Denied,
-    /// Public `RetryLater` item.
+    /// Peer may retry after a temporary state such as pending binding.
     RetryLater,
-    /// Public `UpgradeRequired` item.
+    /// Requested protocol major/name is unsupported.
     UpgradeRequired,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `HelloReason` used by the MCT kernel.
+/// Audit reason for a hello admission decision.
 pub enum HelloReason {
-    /// Public `ActiveBinding` item.
+    /// A matching admitted binding authorized the peer.
     ActiveBinding,
-    /// Public `EndpointMismatch` item.
+    /// Presented endpoint did not match the observed connection endpoint.
     EndpointMismatch,
-    /// Public `MissingBinding` item.
+    /// No local binding matched the presented endpoint or binding ID.
     MissingBinding,
-    /// Public `BindingPending` item.
+    /// Matching binding exists but is not yet admitted.
     BindingPending,
-    /// Public `BindingRevoked` item.
+    /// Matching binding has been revoked.
     BindingRevoked,
-    /// Public `BindingExpired` item.
+    /// Matching binding is expired by state or time window.
     BindingExpired,
-    /// Public `VisionNotAllowed` item.
+    /// Requested or presented Vision is outside binding scope.
     VisionNotAllowed,
-    /// Public `AlpnNotAllowed` item.
+    /// Requested ALPNs did not intersect local policy and binding scope.
     AlpnNotAllowed,
-    /// Public `VersionUnsupported` item.
+    /// Requested protocol name or major version is unsupported.
     VersionUnsupported,
-    /// Public `PolicyRevisionStale` item.
+    /// Binding or presented revision is older than local policy.
     PolicyRevisionStale,
-    /// Public `CapabilityInvalid` item.
+    /// Presented node or capability claim conflicts with the binding.
     CapabilityInvalid,
-    /// Public `RelayAccessDenied` item.
+    /// Relay/path policy denied this connection class.
     RelayAccessDenied,
-    /// Public `TemporaryUnavailable` item.
+    /// Local policy asks the peer to retry later.
     TemporaryUnavailable,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `SafeHelloReason` used by the MCT kernel.
+/// Caller-safe projection of hello admission reasons.
 pub enum SafeHelloReason {
-    /// Public `NotAuthorized` item.
+    /// Do not disclose which authority fact failed.
     NotAuthorized,
-    /// Public `UnsupportedVersion` item.
+    /// Safe to disclose that the protocol version is unsupported.
     UnsupportedVersion,
-    /// Public `RetryLater` item.
+    /// Safe to ask the peer to retry later.
     RetryLater,
-    /// Public `Admitted` item.
+    /// Safe admission message.
     Admitted,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `MctHelloAdmissionEvaluation` used by the MCT kernel.
+/// Kernel decision for a hello request.
+///
+/// Admitted evaluations carry selected node, Vision, binding, negotiated
+/// protocol, and accepted ALPNs; denied evaluations leave those authority
+/// grants empty.
 pub struct MctHelloAdmissionEvaluation {
-    /// Field `decision_id` of this domain record.
+    /// Decision identifier assigned by the adapter context.
     pub decision_id: DecisionId,
-    /// Field `request_id` of this domain record.
+    /// Hello request identifier being answered.
     pub request_id: String,
-    /// Field `peer_admission_decision_id` of this domain record.
+    /// Optional lower-level peer decision, reserved for future projections.
     pub peer_admission_decision_id: Option<DecisionId>,
-    /// Field `selected_binding_id` of this domain record.
+    /// Binding selected for authority; present only on admission.
     pub selected_binding_id: Option<PeerBindingId>,
-    /// Field `selected_node_id` of this domain record.
+    /// MCT node admitted for subsequent calls; present only on admission.
     pub selected_node_id: Option<MctNodeId>,
-    /// Field `selected_vision_id` of this domain record.
+    /// Vision admitted for subsequent calls; present only on admission.
     pub selected_vision_id: Option<VisionId>,
-    /// Field `negotiated_protocol` of this domain record.
+    /// Protocol version negotiated; present only on admission.
     pub negotiated_protocol: Option<MctProtocolVersion>,
-    /// Field `accepted_alpns` of this domain record.
+    /// ALPNs admitted for later phases.
     pub accepted_alpns: Vec<String>,
-    /// Field `hello_outcome` of this domain record.
+    /// Public outcome of hello evaluation.
     pub hello_outcome: HelloOutcome,
-    /// Field `reason` of this domain record.
+    /// Full typed reason for observations and audit.
     pub reason: HelloReason,
-    /// Field `safe_reason` of this domain record.
+    /// Caller-safe reason used to build responses.
     pub safe_reason: SafeHelloReason,
-    /// Field `observation_id` of this domain record.
+    /// Observation recording this evaluation.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `MctHelloResponse` used by the MCT kernel.
+/// Caller-facing response derived from a hello evaluation.
 pub struct MctHelloResponse {
-    /// Field `response_id` of this domain record.
+    /// Response identifier minted by the serving adapter.
     pub response_id: String,
-    /// Field `request_id` of this domain record.
+    /// Hello request identifier being answered.
     pub request_id: String,
-    /// Field `decision_id` of this domain record.
+    /// Hello decision that determined this response.
     pub decision_id: DecisionId,
-    /// Field `hello_outcome` of this domain record.
+    /// Caller-facing admission outcome.
     pub hello_outcome: HelloOutcome,
-    /// Field `negotiated_protocol` of this domain record.
+    /// Negotiated protocol, present only when admitted.
     pub negotiated_protocol: Option<MctProtocolVersion>,
-    /// Field `accepted_alpns` of this domain record.
+    /// ALPNs admitted for later protocols.
     pub accepted_alpns: Vec<String>,
-    /// Field `safe_message` of this domain record.
+    /// Safe message derived from [`SafeHelloReason`].
     pub safe_message: String,
-    /// Field `retry_after` of this domain record.
+    /// Optional retry time for retry-later responses.
     pub retry_after: Option<Timestamp>,
-    /// Field `response_observation_id` of this domain record.
+    /// Observation recording response emission.
     pub response_observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `PeerAdmissionOutcome` used by the MCT kernel.
+/// Internal peer admission outcome before hello response projection.
 pub enum PeerAdmissionOutcome {
-    /// Public `Admitted` item.
+    /// Peer admission succeeded.
     Admitted,
-    /// Public `Denied` item.
+    /// Peer admission failed closed.
     Denied,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `PeerAdmissionReason` used by the MCT kernel.
+/// Internal reason for peer admission decisions.
 pub enum PeerAdmissionReason {
-    /// Public `ActiveBinding` item.
+    /// A matching admitted binding authorized the peer.
     ActiveBinding,
-    /// Public `UnknownEndpoint` item.
+    /// Endpoint is unknown to local peer authority.
     UnknownEndpoint,
-    /// Public `MissingBinding` item.
+    /// No local binding matched the presented endpoint or binding ID.
     MissingBinding,
-    /// Public `BindingPending` item.
+    /// Matching binding exists but is not yet admitted.
     BindingPending,
-    /// Public `BindingRevoked` item.
+    /// Matching binding has been revoked.
     BindingRevoked,
-    /// Public `BindingExpired` item.
+    /// Matching binding is expired by state or time window.
     BindingExpired,
-    /// Public `VisionNotAllowed` item.
+    /// Requested or presented Vision is outside binding scope.
     VisionNotAllowed,
-    /// Public `AlpnNotAllowed` item.
+    /// Requested ALPNs did not intersect local policy and binding scope.
     AlpnNotAllowed,
-    /// Public `PolicyRevisionStale` item.
+    /// Binding or presented revision is older than local policy.
     PolicyRevisionStale,
-    /// Public `CapabilityInvalid` item.
+    /// Presented node or capability claim conflicts with the binding.
     CapabilityInvalid,
-    /// Public `RelayAccessDenied` item.
+    /// Relay/path policy denied this connection class.
     RelayAccessDenied,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `MctPeerAdmissionDecision` used by the MCT kernel.
+/// Lower-level peer binding decision retained for observation compatibility.
 pub struct MctPeerAdmissionDecision {
-    /// Field `decision_id` of this domain record.
+    /// Decision identifier assigned to peer admission.
     pub decision_id: DecisionId,
-    /// Field `presentation` of this domain record.
+    /// Connection facts evaluated for the peer.
     pub presentation: IrohConnectionPresentation,
-    /// Field `binding_id` of this domain record.
+    /// Binding considered by the decision, if any.
     pub binding_id: Option<PeerBindingId>,
-    /// Field `requested_vision_id` of this domain record.
+    /// Vision requested by the peer, if any.
     pub requested_vision_id: Option<VisionId>,
-    /// Field `policy_revision` of this domain record.
+    /// Policy revision used for the decision.
     pub policy_revision: u64,
-    /// Field `outcome` of this domain record.
+    /// Admission outcome before safe response projection.
     pub outcome: PeerAdmissionOutcome,
-    /// Field `reason` of this domain record.
+    /// Typed audit reason for the outcome.
     pub reason: PeerAdmissionReason,
-    /// Field `observation_id` of this domain record.
+    /// Observation recording this decision.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Domain record `HelloPolicy` used by the MCT kernel.
+/// Local policy facts used to evaluate hello admission.
 pub struct HelloPolicy {
-    /// Field `protocol` of this domain record.
+    /// Protocol version the local Mother is willing to negotiate.
     pub protocol: MctProtocolVersion,
-    /// Field `current_policy_revision` of this domain record.
+    /// Minimum policy revision accepted for bindings and presentations.
     pub current_policy_revision: u64,
-    /// Field `supported_alpns` of this domain record.
+    /// ALPNs supported by local policy for hello negotiation.
     pub supported_alpns: Vec<String>,
 }
 
@@ -402,24 +424,30 @@ impl Default for HelloPolicy {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Domain record `EvaluationIds` used by the MCT kernel.
+/// Caller-supplied identifiers for hello evaluation evidence.
 pub struct EvaluationIds {
-    /// Field `decision_id` of this domain record.
+    /// Decision identifier assigned to the hello evaluation.
     pub decision_id: DecisionId,
-    /// Field `observation_id` of this domain record.
+    /// Observation identifier assigned to the hello evaluation.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Domain record `HelloEvaluationContext` used by the MCT kernel.
+/// Evaluation context supplied by the adapter, including current time.
 pub struct HelloEvaluationContext {
-    /// Field `ids` of this domain record.
+    /// Identifiers to stamp on the produced evaluation.
     pub ids: EvaluationIds,
-    /// Field `now` of this domain record.
+    /// Adapter-supplied current time used for expiry checks.
     pub now: Timestamp,
 }
 
-/// Evaluates `evaluate_hello` fail-closed from explicit authority inputs.
+/// Decides whether a peer connection may proceed beyond `mct/hello/0`.
+///
+/// Authority facts are the hello request, local peer bindings, local hello
+/// policy, and adapter-supplied current time. Returns `Admitted` only for a
+/// matching active binding with compatible protocol, Vision, ALPN intersection,
+/// fresh policy revision, and unexpired time window. Missing or mismatched
+/// authority becomes a denied/retry/upgrade decision, never an error.
 pub fn evaluate_hello(
     request: &MctHelloRequest,
     bindings: &[MctPeerBinding],
@@ -430,18 +458,21 @@ pub fn evaluate_hello(
 }
 
 impl MctHelloAdmissionEvaluation {
-    /// Executes `is_admitted` for this domain type.
+    /// Returns true only when the evaluation grants hello admission.
     pub fn is_admitted(&self) -> bool {
         self.hello_outcome == HelloOutcome::Admitted
     }
 
-    /// Executes `admits_alpn` for this domain type.
+    /// Returns true when hello admission included the requested ALPN.
     pub fn admits_alpn(&self, alpn: &str) -> bool {
         self.accepted_alpns.iter().any(|accepted| accepted == alpn)
     }
 }
 
-/// Executes `hello_response` for this domain type.
+/// Projects a hello evaluation into the caller-safe wire response.
+///
+/// The response copies negotiated protocol and accepted ALPNs only from the
+/// evaluation and maps detailed reasons to safe messages.
 pub fn hello_response(
     response_id: impl Into<String>,
     evaluation: &MctHelloAdmissionEvaluation,
