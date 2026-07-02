@@ -737,6 +737,10 @@ pub fn toy_grant_evaluation_observation(
 mod tests {
     use super::*;
 
+    fn supplied_observed_at() -> Timestamp {
+        Timestamp::new("2026-06-01T00:00:00Z").unwrap()
+    }
+
     fn diagnostic_input(
         kind: AdapterDiagnosticKind,
         id: &str,
@@ -866,6 +870,7 @@ mod tests {
             Some(DecisionId::from("decision-hello"))
         );
         assert_eq!(hello_observation.safe_message, "not authorized");
+        assert_eq!(hello_observation.observed_at, supplied_observed_at());
 
         let call = MctCallProtocolEvaluation {
             decision_id: DecisionId::from("decision-call"),
@@ -888,6 +893,7 @@ mod tests {
             call_observation.decision_id,
             Some(DecisionId::from("decision-call"))
         );
+        assert_eq!(call_observation.observed_at, supplied_observed_at());
     }
 
     fn binding(state: BindingState) -> MctPeerBinding {
@@ -976,6 +982,7 @@ mod tests {
         assert_eq!(observation.safe_message, "not authorized");
         assert_eq!(observation.policy_revision, Some(3));
         assert_eq!(observation.grants_revision, Some(4));
+        assert_eq!(observation.observed_at, supplied_observed_at());
     }
 
     #[test]
@@ -1054,6 +1061,7 @@ mod tests {
         assert_eq!(revoked.outcome, ObservationOutcome::Denied);
         assert_eq!(revoked.safe_message, "not authorized");
         assert_eq!(revoked.policy_revision, Some(7));
+        assert_eq!(revoked.observed_at, supplied_observed_at());
 
         let expired = peer_binding_state_observation(
             TraceId::from("trace-1"),
@@ -1062,6 +1070,7 @@ mod tests {
         assert_eq!(expired.kind, ObservationKind::PeerBindingExpired);
         assert_eq!(expired.outcome, ObservationOutcome::Denied);
         assert_eq!(expired.resource_id, Some("endpoint-a".into()));
+        assert_eq!(expired.observed_at, supplied_observed_at());
     }
 
     #[test]
@@ -1085,6 +1094,7 @@ mod tests {
         assert_eq!(allowed_observation.outcome, ObservationOutcome::Allowed);
         assert_eq!(allowed_observation.call_id, Some(CallId::from("call-toy")));
         assert_eq!(allowed_observation.resource_id, Some("toy-logging".into()));
+        assert_eq!(allowed_observation.observed_at, supplied_observed_at());
 
         let mut denied = allowed;
         denied.verdict = ToyGrantVerdict::Denied;
@@ -1095,6 +1105,7 @@ mod tests {
         assert_eq!(denied_observation.kind, ObservationKind::ToyGrantDenied);
         assert_eq!(denied_observation.outcome, ObservationOutcome::Denied);
         assert_eq!(denied_observation.safe_message, "not authorized");
+        assert_eq!(denied_observation.observed_at, supplied_observed_at());
     }
 
     #[test]
@@ -1119,6 +1130,7 @@ mod tests {
             approval_observation.resource_id,
             Some("artifact-child".into())
         );
+        assert_eq!(approval_observation.observed_at, supplied_observed_at());
 
         let assignment = ChildAssignment {
             assignment_id: ChildAssignmentId::from("assignment-child"),
@@ -1136,6 +1148,7 @@ mod tests {
             child_assignment_observation(TraceId::from("trace-child"), &assignment);
         assert_eq!(assignment_observation.kind, ObservationKind::ChildAssigned);
         assert_eq!(assignment_observation.outcome, ObservationOutcome::Allowed);
+        assert_eq!(assignment_observation.observed_at, supplied_observed_at());
 
         let instance = ChildInstance {
             instance_id: ChildInstanceId::from("instance-child"),
@@ -1155,6 +1168,7 @@ mod tests {
             ObservationKind::ChildInstanceReady
         );
         assert_eq!(instance_observation.outcome, ObservationOutcome::Allowed);
+        assert_eq!(instance_observation.observed_at, supplied_observed_at());
 
         let evaluation = ChildCallAuthorityEvaluation {
             evaluation_id: ChildCallEvaluationId::from("child-eval"),
@@ -1175,6 +1189,7 @@ mod tests {
         assert_eq!(denial_observation.kind, ObservationKind::CallDenied);
         assert_eq!(denial_observation.outcome, ObservationOutcome::Denied);
         assert_eq!(denial_observation.safe_message, "not authorized");
+        assert_eq!(denial_observation.observed_at, supplied_observed_at());
     }
 
     #[test]
