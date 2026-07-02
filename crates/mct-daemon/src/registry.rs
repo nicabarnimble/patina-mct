@@ -1,7 +1,7 @@
 use crate::{
     MctChildIntegrityMode, MctChildLoadOptions, MctChildLoadReport, MctLoadedChild,
-    MctOperatorChildScope, MctRegistrySourceRecord, MctRuntimeStateStore, load_children_from_dir,
-    unix_timestamp_string,
+    MctOperatorChildScope, MctRegistrySourceRecord, MctRuntimeStateStore, current_timestamp_string,
+    load_children_from_dir,
 };
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -49,7 +49,7 @@ pub fn sync_child_registry_source(
     state.upsert_registry_source(MctRegistrySourceRecord {
         source_id: source_id.clone(),
         source_path: children_dir.clone(),
-        last_sync_at: Some(unix_timestamp_string()),
+        last_sync_at: Some(current_timestamp_string()),
         last_loaded: report.loaded as u64,
         last_failed: report.failed as u64,
         state: if report.failed == 0 {
@@ -91,7 +91,7 @@ pub fn install_verified_child_package(
     let staging_dir = children_dir.join(format!(
         ".installing-{}-{}",
         sanitize_path_token(&child.name),
-        unix_timestamp_string()
+        current_timestamp_string()
     ));
     if staging_dir.exists() {
         fs::remove_dir_all(&staging_dir)
@@ -106,7 +106,7 @@ pub fn install_verified_child_package(
     let backup_dir = children_dir.join(format!(
         ".replaced-{}-{}",
         sanitize_path_token(&child.name),
-        unix_timestamp_string()
+        current_timestamp_string()
     ));
     let replaced_existing = installed_dir.exists();
     if replaced_existing {

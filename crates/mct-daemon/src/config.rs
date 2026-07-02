@@ -9,7 +9,6 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,7 +97,7 @@ impl MctDaemonConfig {
                 .peers
                 .values()
                 .map(|peer| peer.to_peer_binding(identity))
-                .collect(),
+                .collect::<Result<Vec<_>, _>>()?,
         })
     }
 
@@ -199,8 +198,8 @@ impl MctDaemonConfig {
 }
 
 impl MctPeerAddressBookEntry {
-    pub fn to_peer_binding(&self, local_identity: &MctLocalNodeIdentity) -> MctPeerBinding {
-        MctPeerBinding {
+    pub fn to_peer_binding(&self, local_identity: &MctLocalNodeIdentity) -> Result<MctPeerBinding> {
+        Ok(MctPeerBinding {
             binding_id: self.binding_id.clone(),
             iroh_endpoint_id: self.endpoint_id.clone(),
             scope: MctPeerBindingScope {
@@ -213,7 +212,7 @@ impl MctPeerAddressBookEntry {
             issuer_node_id: local_identity.node_id.clone(),
             policy_revision: self.policy_revision,
             binding_state: self.binding_state,
-            issued_at: Timestamp::from(self.updated_at.clone()),
+            issued_at: Timestamp::new(self.updated_at.clone())?,
             expires_at: None,
             created_by_observation_id: ObservationId::from(format!(
                 "obs:peer-binding:{}",
@@ -228,7 +227,7 @@ impl MctPeerAddressBookEntry {
                 }
                 BindingState::Pending | BindingState::Admitted | BindingState::Denied => None,
             },
-        }
+        })
     }
 }
 
@@ -352,7 +351,7 @@ impl MctDaemonConfigStore {
             endpoint_id,
             identity_path,
             policy_revision: scope.policy_revision,
-            updated_at: unix_timestamp_string(),
+            updated_at: current_timestamp_string(),
         };
         let mut config = self.load()?;
         config.local_identity = Some(identity.clone());
@@ -372,7 +371,7 @@ impl MctDaemonConfigStore {
             );
         }
         let mut config = self.load()?;
-        let now = unix_timestamp_string();
+        let now = current_timestamp_string();
         config.child_approvals.insert(
             child.name.clone(),
             MctStoredChildApproval {
@@ -407,7 +406,7 @@ impl MctDaemonConfigStore {
 
     pub fn revoke_child(&self, child_name: &str) -> Result<MctDaemonConfig> {
         let mut config = self.load()?;
-        let now = unix_timestamp_string();
+        let now = current_timestamp_string();
         if let Some(approval) = config.child_approvals.get_mut(child_name) {
             approval.approval_state = ChildApprovalState::Revoked;
             approval.updated_at = now.clone();
@@ -437,7 +436,7 @@ impl MctDaemonConfigStore {
             bail!("peer '{peer_node_id}' not found in config");
         };
         peer.binding_state = binding_state;
-        peer.updated_at = unix_timestamp_string();
+        peer.updated_at = current_timestamp_string();
         self.save(&config)?;
         Ok(config)
     }
@@ -494,11 +493,8 @@ pub fn default_config_path() -> PathBuf {
     PathBuf::from(".mct").join("config.json")
 }
 
-pub fn unix_timestamp_string() -> String {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs().to_string())
-        .unwrap_or_else(|_| "0".into())
+pub fn current_timestamp_string() -> String {
+    jiff::Timestamp::now().to_string()
 }
 
 #[cfg(test)]

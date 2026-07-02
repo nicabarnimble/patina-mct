@@ -27,6 +27,13 @@ pub enum MctKernelError {
         reason: InvalidFieldReason,
     },
 
+    #[error("invalid Timestamp '{value}': {source}")]
+    InvalidTimestamp {
+        value: String,
+        #[source]
+        source: jiff::Error,
+    },
+
     #[error("invalid MCT call payload handle for {payload_kind}: missing {field}")]
     PayloadHandleMissingField {
         payload_kind: &'static str,
