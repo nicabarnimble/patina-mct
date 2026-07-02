@@ -199,9 +199,15 @@ impl MotherIrohEndpointTicket {
     }
 }
 
+/// Mutable state for serving MCT protocols over one Mother-owned endpoint.
+///
+/// Decision and observation IDs minted from this state include a random prefix
+/// generated once in `new`, plus a state-local monotonic counter, so a daemon
+/// restart does not reuse the same IDs after the counter resets.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MctIrohServeState {
     pub last_hello: Option<MctHelloAdmissionEvaluation>,
+    id_prefix: String,
     next_sequence: u64,
 }
 
@@ -215,14 +221,15 @@ impl MctIrohServeState {
     pub fn new() -> Self {
         Self {
             last_hello: None,
+            id_prefix: random_id_prefix(),
             next_sequence: 0,
         }
     }
 
-    fn next_suffix(&mut self) -> u64 {
-        let suffix = self.next_sequence;
+    fn next_suffix(&mut self) -> String {
+        let sequence = self.next_sequence;
         self.next_sequence += 1;
-        suffix
+        format!("{}-{sequence}", self.id_prefix)
     }
 
     fn next_decision_id(&mut self, kind: &str) -> DecisionId {
@@ -233,6 +240,31 @@ impl MctIrohServeState {
     fn next_observation_id(&mut self, kind: &str) -> ObservationId {
         ObservationId::new(format!("obs-iroh-{kind}-{}", self.next_suffix()))
             .expect("string ID literal/generated value must be non-empty")
+    }
+}
+
+fn random_id_prefix() -> String {
+    let random_bytes = SecretKey::generate().to_bytes();
+    encode_hex(&random_bytes[..8])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serve_state_ids_do_not_collide_across_instances() {
+        let mut first = MctIrohServeState::new();
+        let mut second = MctIrohServeState::new();
+
+        assert_ne!(
+            first.next_decision_id("hello"),
+            second.next_decision_id("hello")
+        );
+        assert_ne!(
+            first.next_observation_id("hello"),
+            second.next_observation_id("hello")
+        );
     }
 }
 

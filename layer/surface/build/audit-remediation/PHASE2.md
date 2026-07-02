@@ -4,7 +4,7 @@
   - [x] P0a committed pre-existing Slate WIP test-only diff as `7a4a661 test: add slate list-work WIT runtime coverage`.
   - [x] P0b persisted this task list in this file.
 - [x] Task P1 — Timeouts on the Iroh serve path
-- [ ] Task P2 — Unique decision/observation IDs in the Iroh adapter
+- [x] Task P2 — Unique decision/observation IDs in the Iroh adapter
 - [ ] Task P3 — Control plane: stop swallowing errors, reuse the store
 - [ ] Task P4 — Ledger read API: stream instead of slurp
 - [ ] Task P5 — Kernel rustdoc and missing_docs
