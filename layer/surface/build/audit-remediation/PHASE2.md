@@ -9,7 +9,7 @@
 - [x] Task P4 — Ledger read API: stream instead of slurp
 - [x] Task P4b — De-flake the new Iroh timeout tests
 - [x] Task P5 — Kernel rustdoc and missing_docs
-- [ ] Task P6 — Module shape: split mct-iroh endpoint.rs
+- [x] Task P6 — Module shape: split mct-iroh endpoint.rs
 
 ---
 
