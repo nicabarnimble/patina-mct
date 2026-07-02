@@ -9,6 +9,7 @@
 - [x] Task P4 — Ledger read API: stream instead of slurp
 - [x] Task P4b — De-flake the new Iroh timeout tests
 - [x] Task P5 — Kernel rustdoc and missing_docs
+- [ ] Task P5b — Replace boilerplate kernel docs with real invariant docs
 - [x] Task P6 — Module shape: split mct-iroh endpoint.rs
 
 ---
@@ -156,6 +157,49 @@ The kernel is an authority surface with almost no item-level docs.
   they demonstrate stable usage (per `dependable-rust.md`).
 - Keep it factual and terse — no marketing prose. Clippy/warnings stay
   clean, so every flagged item must be documented, not `#[allow]`ed.
+
+## Task P5b — Replace boilerplate kernel docs with real invariant docs
+
+Task P5 satisfied `missing_docs` with ~490 template comments ("Domain
+record `X` used by the MCT kernel", "Field `y` of this domain record",
+"Evaluates `evaluate_call_protocol` fail-closed from explicit authority
+inputs"). These convey zero information and violate the "do not add
+complexity to paper over the task" principle. Docs on an authority surface
+must state invariants, not restate identifiers.
+
+Rewrite in two tiers:
+
+1. **High-value items get real docs** — every `evaluate_*` /
+   `revalidate_*` function, the JSON edge encode/decode functions, and the
+   core records (`MctCall`, `MctResult`, `MctPeerBinding`,
+   `MctCallPayloadHandle`, `MctObservation`, `MctCallProtocolRequest`,
+   `ToyGrant`-family, `RouteDecision`-family, both error enums). For
+   functions: what authority question it answers, what inputs constitute
+   the authority facts, and the fail-closed guarantee (e.g. "Returns a
+   Denied evaluation unless an Admitted, unexpired binding matches the
+   presenting endpoint; never errors — absence of authority is a decision,
+   not a failure"). For records: what fact the record asserts and any
+   cross-field invariants (e.g. on `MctPeerBinding.expires_at`: "compared
+   against adapter-supplied current time during hello evaluation; None
+   means no expiry"). Read the implementation before documenting it — the
+   doc must describe actual behavior, not intent.
+2. **Low-value items get honest one-liners** — for a self-explanatory
+   field like `pub call_id: CallId`, a doc like "Identifier of the call
+   this result answers." is fine. The test: the comment must add at least
+   one fact not present in the name and type. If you cannot state such a
+   fact, the doc should say what the field is FOR, not what it is called.
+
+Constraints: no doctests unless they demonstrate stable usage; no
+`#[allow(missing_docs)]`; `cargo doc -p mct-kernel --no-deps` stays
+warning-free; zero code changes in this task — docs only, one commit per
+kernel module.
+
+When done:
+- Check P5b off in PHASE2.md in the same commit as the final doc change.
+- Final summary: commits landed, confirmation PHASE2.md shows every task
+  complete, and full validation results (`cargo test --workspace`, clippy
+  `-D warnings`, `./scripts/ci-tier0.sh`).
+- Do not push or open a PR — the operator handles that.
 
 ## Task P6 — Module shape: split mct-iroh endpoint.rs (doctrine)
 
