@@ -4,7 +4,11 @@ use iroh::{
 };
 use mct_kernel::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::{
+    fs::OpenOptions,
+    io::Write,
     net::SocketAddr,
     path::{Path, PathBuf},
     str::FromStr,
@@ -645,13 +649,29 @@ pub fn load_or_create_node_secret_key_hex(
         })?;
     }
     let secret_key_hex = secret_key_to_hex(&SecretKey::generate());
-    std::fs::write(path, format!("{secret_key_hex}\n")).map_err(|source| {
-        MotherIrohEndpointError::IdentityFile {
+    write_new_node_secret_key_file(path, &secret_key_hex)?;
+    Ok(secret_key_hex)
+}
+
+fn write_new_node_secret_key_file(
+    path: &Path,
+    secret_key_hex: &str,
+) -> MotherIrohEndpointResult<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+
+    let mut file = options
+        .open(path)
+        .map_err(|source| MotherIrohEndpointError::IdentityFile {
             path: path.to_path_buf(),
             message: source.to_string(),
-        }
-    })?;
-    Ok(secret_key_hex)
+        })?;
+    writeln!(file, "{secret_key_hex}").map_err(|source| MotherIrohEndpointError::IdentityFile {
+        path: path.to_path_buf(),
+        message: source.to_string(),
+    })
 }
 
 pub fn endpoint_id_for_secret_key_hex(
