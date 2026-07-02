@@ -366,9 +366,10 @@ impl MotherIrohEndpoint {
         &self,
         state: &mut MctIrohServeState,
         bindings: &[MctPeerBinding],
+        now: Timestamp,
         result_ref: Option<ResultRef>,
     ) -> MotherIrohEndpointResult<MctIrohServedProtocol> {
-        self.serve_next_with_call_handler(state, bindings, move |_, _| {
+        self.serve_next_with_call_handler(state, bindings, now, move |_, _| {
             MctIrohCallHandlerResult::accepted_for_routing(result_ref.clone())
         })
         .await
@@ -378,6 +379,7 @@ impl MotherIrohEndpoint {
         &self,
         state: &mut MctIrohServeState,
         bindings: &[MctPeerBinding],
+        now: Timestamp,
         mut call_handler: F,
     ) -> MotherIrohEndpointResult<MctIrohServedProtocol>
     where
@@ -450,7 +452,7 @@ impl MotherIrohEndpoint {
                             decision_id: state.next_decision_id("hello"),
                             observation_id: state.next_observation_id("hello"),
                         },
-                        now: Timestamp::from("2026-05-31T00:00:01Z"),
+                        now,
                     },
                 );
                 state.last_hello = Some(evaluation.clone());
