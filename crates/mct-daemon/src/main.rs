@@ -7,10 +7,10 @@ use mct_daemon::{
     MctProcessChildInvocationIds, MctRuntimeStateStore, MctToyAdapterRegistry, MctToyBackend,
     MctWasiHostConfig, MctWasiPreopen, MctWasiPreopenAccess, MctWasmComponentInvocationIds,
     MctWasmComponentRuntime, MctWasmHostConfig, MctWitHostImportAdapters, MctWitToyHostAdapter,
-    build_federation_capability_view, build_metrics_snapshot, daemon_status, default_config_path,
-    default_state_path, install_verified_child_package, load_children_from_dir,
-    record_composition_plan, reload_configured_child, serve_http_control_once,
-    sync_child_registry_source, warmup_configured_child,
+    build_federation_capability_view, build_metrics_snapshot, current_timestamp, daemon_status,
+    default_config_path, default_state_path, install_verified_child_package,
+    load_children_from_dir, record_composition_plan, reload_configured_child,
+    serve_http_control_once, sync_child_registry_source, warmup_configured_child,
 };
 use mct_iroh::{
     MctIrohCallHandlerResult, MctIrohServeState, MctIrohServedProtocol, MotherIrohEndpoint,
@@ -633,6 +633,7 @@ fn build_wit_host_adapters_for_cli_call(
         })?;
         observations.push(toy_grant_evaluation_observation(
             request.call.trace_context.trace_id.clone(),
+            current_timestamp(),
             &authorized.evaluation,
         ));
         toy_registry.register(slate_logging_toy_id(), MctToyBackend::EchoJson);
@@ -656,6 +657,7 @@ fn build_wit_host_adapters_for_cli_call(
         })?;
         observations.push(toy_grant_evaluation_observation(
             request.call.trace_context.trace_id.clone(),
+            current_timestamp(),
             &authorized.evaluation,
         ));
         toy_registry.register(slate_measure_toy_id(), MctToyBackend::EchoJson);
@@ -687,6 +689,7 @@ fn build_wit_host_adapters_for_cli_call(
         })?;
         observations.push(toy_grant_evaluation_observation(
             request.call.trace_context.trace_id.clone(),
+            current_timestamp(),
             &authorized.evaluation,
         ));
         toy_registry.register(
@@ -718,6 +721,7 @@ fn build_wit_host_adapters_for_cli_call(
         })?;
         observations.push(toy_grant_evaluation_observation(
             request.call.trace_context.trace_id.clone(),
+            current_timestamp(),
             &authorized.evaluation,
         ));
         wasi_preopens.push(MctWasiPreopen {
@@ -798,6 +802,7 @@ fn authorize_cli_toy(
     let Some(authorized) = result.authorized else {
         let observation = toy_grant_evaluation_observation(
             request.call.trace_context.trace_id.clone(),
+            current_timestamp(),
             &result.evaluation,
         );
         return Err(CliToyAuthorizationError {
@@ -1733,10 +1738,6 @@ async fn run_iroh(mut args: Vec<String>) -> Result<()> {
 
 const DEFAULT_CLI_CALL_DEADLINE: jiff::SignedDuration = jiff::SignedDuration::from_secs(60);
 
-fn current_timestamp() -> Timestamp {
-    Timestamp::new(jiff::Timestamp::now().to_string()).expect("jiff produced RFC3339 timestamp")
-}
-
 fn current_timestamp_after(budget: jiff::SignedDuration) -> Timestamp {
     let deadline = jiff::Timestamp::now()
         .checked_add(budget)
@@ -2257,8 +2258,11 @@ fn authorize_configured_child_from_projection(
     call: &MctCall,
 ) -> Result<(AuthorizedChildInvocation, MctObservation)> {
     let result = projection.authorize_child_for_call(child_name, call);
-    let observation =
-        child_call_authority_observation(call.trace_context.trace_id.clone(), &result.evaluation);
+    let observation = child_call_authority_observation(
+        call.trace_context.trace_id.clone(),
+        current_timestamp(),
+        &result.evaluation,
+    );
     let authorized = result.authorized.ok_or_else(|| {
         anyhow::anyhow!(
             "child '{child_name}' not authorized for {}.{}.{}: {:?}",
