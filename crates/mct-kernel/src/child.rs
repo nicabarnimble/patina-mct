@@ -2,29 +2,31 @@ use crate::{call::*, id::*};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `ComponentWitExport` used by the MCT kernel.
+/// WIT export surface declared by a component artifact.
+///
+/// Child authority requires the artifact primary export to contain the requested operation.
 pub struct ComponentWitExport {
-    /// Field `namespace` of this domain record.
+    /// WIT namespace for the exported interface.
     pub namespace: String,
-    /// Field `interface_name` of this domain record.
+    /// WIT interface name exported by the component.
     pub interface_name: String,
-    /// Field `version` of this domain record.
+    /// Version of the exported WIT interface.
     pub version: String,
-    /// Field `function_names` of this domain record.
+    /// Functions exported by this WIT interface.
     pub function_names: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `ComponentRuntimeShape` used by the MCT kernel.
+/// Execution substrate class declared for a child artifact.
 pub enum ComponentRuntimeShape {
-    /// Public `WasmComponent` item.
+    /// WASM component runtime.
     WasmComponent,
-    /// Public `JvmChild` item.
+    /// JVM-backed child runtime.
     JvmChild,
-    /// Public `ProcessChild` item.
+    /// Process-backed child runtime.
     ProcessChild,
-    /// Public `RemoteChild` item.
+    /// Remote peer child route.
     RemoteChild,
 }
 
@@ -42,67 +44,69 @@ impl From<RuntimeKind> for ComponentRuntimeShape {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `ChildIngressMode` used by the MCT kernel.
+/// How a child accepts calls at its component boundary.
 pub enum ChildIngressMode {
-    /// Public `WitOnly` item.
+    /// Only WIT-shaped exports are used for ingress.
     WitOnly,
-    /// Public `Hybrid` item.
+    /// WIT ingress plus compatibility lifecycle/handle exports.
     Hybrid,
-    /// Public `Handle` item.
+    /// Legacy handle-style ingress.
     Handle,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `LifecycleExports` used by the MCT kernel.
+/// Whether legacy lifecycle exports are expected from the child.
 pub enum LifecycleExports {
-    /// Public `Required` item.
+    /// Lifecycle exports must be present.
     Required,
-    /// Public `Optional` item.
+    /// Lifecycle exports may be present.
     Optional,
-    /// Public `AbsentAllowed` item.
+    /// Lifecycle exports are not required.
     AbsentAllowed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `VerificationStatus` used by the MCT kernel.
+/// Integrity and manifest verification state for an artifact.
 pub enum VerificationStatus {
-    /// Public `Verified` item.
+    /// Artifact integrity and manifest checks passed.
     Verified,
-    /// Public `Rejected` item.
+    /// Artifact verification failed.
     Rejected,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `ComponentArtifact` used by the MCT kernel.
+/// Immutable artifact identity and verified WIT export facts.
+///
+/// Child call authority requires a verified artifact matching the selected assignment, approval, and instance, and exporting the requested operation.
 pub struct ComponentArtifact {
-    /// Field `artifact_id` of this domain record.
+    /// Artifact identifier that must match approvals, assignments, and instances.
     pub artifact_id: ComponentArtifactId,
-    /// Field `child_name` of this domain record.
+    /// Stable child name used in authority matching.
     pub child_name: String,
-    /// Field `artifact_version` of this domain record.
+    /// Artifact version pinned by approval and assignment.
     pub artifact_version: String,
-    /// Field `content_hash` of this domain record.
+    /// Digest of the artifact contents.
     pub content_hash: String,
-    /// Field `manifest_hash` of this domain record.
+    /// Digest of the child manifest used for verification.
     pub manifest_hash: String,
-    /// Field `primary_export` of this domain record.
+    /// Primary WIT export used to match call targets.
     pub primary_export: ComponentWitExport,
-    /// Field `runtime_shape` of this domain record.
+    /// Runtime substrate declared for this artifact.
     pub runtime_shape: ComponentRuntimeShape,
-    /// Field `ingress_mode` of this domain record.
+    /// Call ingress shape supported by this artifact.
     pub ingress_mode: ChildIngressMode,
-    /// Field `lifecycle_exports` of this domain record.
+    /// Lifecycle export policy for this artifact.
     pub lifecycle_exports: LifecycleExports,
-    /// Field `verification_status` of this domain record.
+    /// Verification result used by authority evaluation.
     pub verification_status: VerificationStatus,
-    /// Field `created_by_observation_id` of this domain record.
+    /// Observation that recorded creation of this artifact fact.
     pub created_by_observation_id: ObservationId,
 }
 
 impl ComponentArtifact {
-    /// Executes `exports_operation` for this domain type.
+    /// Returns true when the artifact primary export exposes the requested call target.
     pub fn exports_operation(&self, target: &OperationTarget) -> bool {
         let interface_with_version = format!(
             "{}@{}",
@@ -121,289 +125,301 @@ impl ComponentArtifact {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `ChildApprovalState` used by the MCT kernel.
+/// Lifecycle state of approval authority for an artifact.
 pub enum ChildApprovalState {
-    /// Public `Candidate` item.
+    /// Approval exists but grants no execution authority yet.
     Candidate,
-    /// Public `Approved` item.
+    /// Artifact is approved for matching scoped calls.
     Approved,
-    /// Public `Blocked` item.
+    /// Approval blocks use.
     Blocked,
-    /// Public `Revoked` item.
+    /// Authority was revoked.
     Revoked,
-    /// Public `Deprecated` item.
+    /// Approval remains visible but should not authorize new use.
     Deprecated,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `ChildApproval` used by the MCT kernel.
+/// Authority record saying whether an artifact may be used in a scope.
+///
+/// Evaluation accepts only `Approved` records whose artifact, child, version, scope, and policy revision match the call and assignment.
 pub struct ChildApproval {
-    /// Field `approval_id` of this domain record.
+    /// Approval considered by the evaluation.
     pub approval_id: ChildApprovalId,
-    /// Field `artifact_id` of this domain record.
+    /// Artifact identifier that must match approvals, assignments, and instances.
     pub artifact_id: ComponentArtifactId,
-    /// Field `child_name` of this domain record.
+    /// Stable child name used in authority matching.
     pub child_name: String,
-    /// Field `artifact_version` of this domain record.
+    /// Artifact version pinned by approval and assignment.
     pub artifact_version: String,
-    /// Field `scope_vision_id` of this domain record.
+    /// Vision scope in which approval is valid.
     pub scope_vision_id: Option<VisionId>,
-    /// Field `scope_node_id` of this domain record.
+    /// Optional node scope; absent means any node in the Vision.
     pub scope_node_id: Option<MctNodeId>,
-    /// Field `scope_project_id` of this domain record.
+    /// Optional project scope; absent means any project in the Vision.
     pub scope_project_id: Option<ProjectId>,
-    /// Field `approval_state` of this domain record.
+    /// Approval lifecycle state used during child authority checks.
     pub approval_state: ChildApprovalState,
-    /// Field `policy_revision` of this domain record.
+    /// Policy revision under which this authority fact was issued.
     pub policy_revision: u64,
-    /// Field `authority_observation_id` of this domain record.
+    /// Observation that recorded this authority fact.
     pub authority_observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `ChildAssignmentState` used by the MCT kernel.
+/// Lifecycle state of a child placement assignment.
 pub enum ChildAssignmentState {
-    /// Public `Active` item.
+    /// Assignment or grant may authorize if other facts match.
     Active,
-    /// Public `Revoked` item.
+    /// Authority was revoked.
     Revoked,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `ChildAssignment` used by the MCT kernel.
+/// Placement record binding an approved artifact to a node, Vision, and optional project.
+///
+/// Assignment is not approval by itself; child call authority also requires a matching approval, artifact, and ready instance.
 pub struct ChildAssignment {
-    /// Field `assignment_id` of this domain record.
+    /// Assignment identifier referenced by instances and evaluations.
     pub assignment_id: ChildAssignmentId,
-    /// Field `approval_id` of this domain record.
+    /// Approval considered by the evaluation.
     pub approval_id: ChildApprovalId,
-    /// Field `artifact_id` of this domain record.
+    /// Artifact identifier that must match approvals, assignments, and instances.
     pub artifact_id: ComponentArtifactId,
-    /// Field `child_name` of this domain record.
+    /// Stable child name used in authority matching.
     pub child_name: String,
-    /// Field `vision_id` of this domain record.
+    /// Vision scope for placement or authority matching.
     pub vision_id: VisionId,
-    /// Field `node_id` of this domain record.
+    /// Node constraint or requested execution node.
     pub node_id: Option<MctNodeId>,
-    /// Field `project_id` of this domain record.
+    /// Optional project scope for placement or caller matching.
     pub project_id: Option<ProjectId>,
-    /// Field `assignment_state` of this domain record.
+    /// Assignment lifecycle state used during authority checks.
     pub assignment_state: ChildAssignmentState,
-    /// Field `pinned_artifact_version` of this domain record.
+    /// Artifact version this assignment is pinned to.
     pub pinned_artifact_version: String,
-    /// Field `assignment_observation_id` of this domain record.
+    /// Observation that recorded this assignment.
     pub assignment_observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `ChildInstanceState` used by the MCT kernel.
+/// Runtime readiness state of one child generation.
 pub enum ChildInstanceState {
-    /// Public `Loading` item.
+    /// Instance is starting and not ready for calls.
     Loading,
-    /// Public `Ready` item.
+    /// Instance may serve calls if authority matches.
     Ready,
-    /// Public `Degraded` item.
+    /// Instance is unhealthy but may transition.
     Degraded,
-    /// Public `Draining` item.
+    /// Instance is draining before stop.
     Draining,
-    /// Public `Stopped` item.
+    /// Instance is stopped.
     Stopped,
-    /// Public `Failed` item.
+    /// Instance failed.
     Failed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `ChildInstance` used by the MCT kernel.
+/// Live runtime instance of an assigned child generation.
+///
+/// Only `Ready` instances on the requested node can produce an authorized child invocation.
 pub struct ChildInstance {
-    /// Field `instance_id` of this domain record.
+    /// Child instance considered for execution.
     pub instance_id: ChildInstanceId,
-    /// Field `assignment_id` of this domain record.
+    /// Assignment identifier referenced by instances and evaluations.
     pub assignment_id: ChildAssignmentId,
-    /// Field `artifact_id` of this domain record.
+    /// Artifact identifier that must match approvals, assignments, and instances.
     pub artifact_id: ComponentArtifactId,
-    /// Field `child_name` of this domain record.
+    /// Stable child name used in authority matching.
     pub child_name: String,
-    /// Field `generation` of this domain record.
+    /// Runtime generation number for replacement and drain flows.
     pub generation: u64,
-    /// Field `node_id` of this domain record.
+    /// Node constraint or requested execution node.
     pub node_id: MctNodeId,
-    /// Field `instance_state` of this domain record.
+    /// Readiness state used during child authority checks.
     pub instance_state: ChildInstanceState,
-    /// Field `readiness_observation_id` of this domain record.
+    /// Observation that marked the instance ready, if any.
     pub readiness_observation_id: Option<ObservationId>,
-    /// Field `last_lifecycle_observation_id` of this domain record.
+    /// Most recent lifecycle transition observation for this instance.
     pub last_lifecycle_observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `ChildLifecycleTransitionReason` used by the MCT kernel.
+/// Reason a child instance state transition was accepted or rejected.
 pub enum ChildLifecycleTransitionReason {
-    /// Public `Allowed` item.
+    /// Authority or transition succeeded.
     Allowed,
-    /// Public `IllegalTransition` item.
+    /// Requested lifecycle transition is not permitted.
     IllegalTransition,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `ChildLifecycleTransition` used by the MCT kernel.
+/// Observation-ready record of an attempted child instance state transition.
 pub struct ChildLifecycleTransition {
-    /// Field `instance_id` of this domain record.
+    /// Child instance considered for execution.
     pub instance_id: ChildInstanceId,
-    /// Field `from_state` of this domain record.
+    /// State before the attempted transition.
     pub from_state: ChildInstanceState,
-    /// Field `to_state` of this domain record.
+    /// State requested by the transition.
     pub to_state: ChildInstanceState,
-    /// Field `reason` of this domain record.
+    /// Typed reason for the transition decision.
     pub reason: ChildLifecycleTransitionReason,
-    /// Field `allowed` of this domain record.
+    /// Whether the transition changed the instance state.
     pub allowed: bool,
-    /// Field `safe_message` of this domain record.
+    /// Caller-safe or operator-safe message for projections.
     pub safe_message: String,
-    /// Field `observation_id` of this domain record.
+    /// Observation recording this fact.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `ChildCallVerdict` used by the MCT kernel.
+/// Verdict of child call authority evaluation.
 pub enum ChildCallVerdict {
-    /// Public `Allowed` item.
+    /// Authority or transition succeeded.
     Allowed,
-    /// Public `Denied` item.
+    /// Authority check failed closed.
     Denied,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `ChildCallReasonCode` used by the MCT kernel.
+/// Typed reason produced by child call authority evaluation.
 pub enum ChildCallReasonCode {
-    /// Public `ReadyAuthorizedInstance` item.
+    /// Ready instance matched assignment, approval, artifact, scope, export, and policy.
     ReadyAuthorizedInstance,
-    /// Public `UnknownInstance` item.
+    /// Requested instance was not found.
     UnknownInstance,
-    /// Public `MissingAssignment` item.
+    /// Instance assignment was not found.
     MissingAssignment,
-    /// Public `AssignmentRevoked` item.
+    /// Assignment was not active.
     AssignmentRevoked,
-    /// Public `MissingApproval` item.
+    /// Assignment approval was not found.
     MissingApproval,
-    /// Public `ApprovalNotApproved` item.
+    /// Approval state was not approved.
     ApprovalNotApproved,
-    /// Public `ApprovalScopeMismatch` item.
+    /// Approval or assignment scope did not match the call.
     ApprovalScopeMismatch,
-    /// Public `ArtifactMissing` item.
+    /// Assigned artifact was not found.
     ArtifactMissing,
-    /// Public `ArtifactRejected` item.
+    /// Artifact verification was not successful.
     ArtifactRejected,
-    /// Public `OperationNotExported` item.
+    /// Artifact does not export the requested operation.
     OperationNotExported,
-    /// Public `InstanceNotReady` item.
+    /// Instance state was not ready.
     InstanceNotReady,
-    /// Public `WrongNode` item.
+    /// Instance or assignment node did not match the request.
     WrongNode,
-    /// Public `WrongProject` item.
+    /// Assignment project did not match the call project.
     WrongProject,
-    /// Public `StalePolicy` item.
+    /// Approval policy revision did not match the call snapshot.
     StalePolicy,
-    /// Public `VersionMismatch` item.
+    /// Artifact, approval, assignment, or instance versions did not agree.
     VersionMismatch,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `ChildCallAuthorityEvaluation` used by the MCT kernel.
+/// Decision produced by checking whether a ready child instance may handle a call.
+///
+/// Allowed evaluations cite instance, assignment, approval, and artifact evidence; denied evaluations preserve the first missing or mismatched authority fact.
 pub struct ChildCallAuthorityEvaluation {
-    /// Field `evaluation_id` of this domain record.
+    /// Evaluation identifier for this authority decision.
     pub evaluation_id: ChildCallEvaluationId,
-    /// Field `call_id` of this domain record.
+    /// Call being evaluated or authorized.
     pub call_id: CallId,
-    /// Field `decision_id` of this domain record.
+    /// Decision identifier for authority and observation linkage.
     pub decision_id: DecisionId,
-    /// Field `instance_id` of this domain record.
+    /// Child instance considered for execution.
     pub instance_id: Option<ChildInstanceId>,
-    /// Field `assignment_id` of this domain record.
+    /// Assignment identifier referenced by instances and evaluations.
     pub assignment_id: Option<ChildAssignmentId>,
-    /// Field `approval_id` of this domain record.
+    /// Approval considered by the evaluation.
     pub approval_id: Option<ChildApprovalId>,
-    /// Field `artifact_id` of this domain record.
+    /// Artifact identifier that must match approvals, assignments, and instances.
     pub artifact_id: Option<ComponentArtifactId>,
-    /// Field `child_name` of this domain record.
+    /// Stable child name used in authority matching.
     pub child_name: Option<String>,
-    /// Field `verdict` of this domain record.
+    /// Allowed or denied outcome.
     pub verdict: ChildCallVerdict,
-    /// Field `reason_code` of this domain record.
+    /// Typed reason for the verdict.
     pub reason_code: ChildCallReasonCode,
-    /// Field `policy_revision` of this domain record.
+    /// Policy revision under which this authority fact was issued.
     pub policy_revision: u64,
-    /// Field `observation_id` of this domain record.
+    /// Observation recording this fact.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `AuthorizedChildInvocation` used by the MCT kernel.
+/// Capability token allowing one child instance to execute one call.
+///
+/// Adapters should invoke children only when this token is present in an allowed authority result.
 pub struct AuthorizedChildInvocation {
-    /// Field `authorized_child_invocation_id` of this domain record.
+    /// Token identifier minted only when child authority succeeds.
     pub authorized_child_invocation_id: AuthorizedChildInvocationId,
-    /// Field `call_id` of this domain record.
+    /// Call being evaluated or authorized.
     pub call_id: CallId,
-    /// Field `evaluation_id` of this domain record.
+    /// Evaluation identifier for this authority decision.
     pub evaluation_id: ChildCallEvaluationId,
-    /// Field `assignment_id` of this domain record.
+    /// Assignment identifier referenced by instances and evaluations.
     pub assignment_id: ChildAssignmentId,
-    /// Field `approval_id` of this domain record.
+    /// Approval considered by the evaluation.
     pub approval_id: ChildApprovalId,
-    /// Field `artifact_id` of this domain record.
+    /// Artifact identifier that must match approvals, assignments, and instances.
     pub artifact_id: ComponentArtifactId,
-    /// Field `child_instance_id` of this domain record.
+    /// Child instance authorized to execute the call.
     pub child_instance_id: ChildInstanceId,
-    /// Field `child_name` of this domain record.
+    /// Stable child name used in authority matching.
     pub child_name: String,
-    /// Field `authority_decision_id` of this domain record.
+    /// Decision that minted this authorization token.
     pub authority_decision_id: DecisionId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Domain record `ChildCallAuthorityIds` used by the MCT kernel.
+/// Identifiers supplied for child call authority evaluation and token minting.
 pub struct ChildCallAuthorityIds {
-    /// Field `evaluation_id` of this domain record.
+    /// Evaluation identifier for this authority decision.
     pub evaluation_id: ChildCallEvaluationId,
-    /// Field `decision_id` of this domain record.
+    /// Decision identifier for authority and observation linkage.
     pub decision_id: DecisionId,
-    /// Field `observation_id` of this domain record.
+    /// Observation recording this fact.
     pub observation_id: ObservationId,
-    /// Field `authorized_child_invocation_id` of this domain record.
+    /// Token identifier minted only when child authority succeeds.
     pub authorized_child_invocation_id: AuthorizedChildInvocationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Domain record `ChildCallAuthorityRequest` used by the MCT kernel.
+/// Adapter-supplied facts naming the child instance and node requested for execution.
 pub struct ChildCallAuthorityRequest {
-    /// Field `instance_id` of this domain record.
+    /// Child instance considered for execution.
     pub instance_id: ChildInstanceId,
-    /// Field `node_id` of this domain record.
+    /// Node constraint or requested execution node.
     pub node_id: MctNodeId,
-    /// Field `ids` of this domain record.
+    /// Identifiers to stamp on the produced evaluation and token.
     pub ids: ChildCallAuthorityIds,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Domain record `ChildCallAuthorityResult` used by the MCT kernel.
+/// Result of child call authority evaluation, including a token only on allow.
 pub struct ChildCallAuthorityResult {
-    /// Field `evaluation` of this domain record.
+    /// Typed authority evaluation result.
     pub evaluation: ChildCallAuthorityEvaluation,
-    /// Field `authorized` of this domain record.
+    /// Executable child invocation token, present only on allow.
     pub authorized: Option<AuthorizedChildInvocation>,
 }
 
 impl ChildCallAuthorityResult {
-    /// Executes `is_allowed` for this domain type.
+    /// Returns true only when the evaluation allowed and minted an invocation token.
     pub fn is_allowed(&self) -> bool {
         self.evaluation.verdict == ChildCallVerdict::Allowed && self.authorized.is_some()
     }
 }
 
-/// Executes `transition_child_instance` for this domain type.
+/// Attempts a child lifecycle transition and records whether it was allowed.
+///
+/// The instance state changes only for transitions accepted by [`is_allowed_instance_transition`]; illegal transitions return the original instance with a denial transition record.
 pub fn transition_child_instance(
     instance: &ChildInstance,
     to_state: ChildInstanceState,
@@ -441,7 +457,9 @@ pub fn transition_child_instance(
     (next, transition)
 }
 
-/// Executes `is_allowed_instance_transition` for this domain type.
+/// Returns whether a lifecycle state change is valid for child instances.
+///
+/// The transition graph permits restart from stopped/failed through loading, readiness changes from loading/degraded, and drain/stop/fail paths; all other changes fail closed.
 pub fn is_allowed_instance_transition(
     from_state: ChildInstanceState,
     to_state: ChildInstanceState,
@@ -460,7 +478,9 @@ pub fn is_allowed_instance_transition(
     }
 }
 
-/// Evaluates `evaluate_child_call_authority` fail-closed from explicit authority inputs.
+/// Decides whether a child instance may execute one MCT call.
+///
+/// Authority facts are the call, requested instance/node, artifact catalog, approvals, assignments, and live instances. It allows only a ready instance on the requested node with an active assignment, approved matching approval, verified matching artifact, fresh policy revision, matching scope, and an exported target operation. Any absent, stale, revoked, mismatched, unready, or unexported fact returns a denied evaluation and no [`AuthorizedChildInvocation`].
 pub fn evaluate_child_call_authority(
     call: &MctCall,
     request: &ChildCallAuthorityRequest,
