@@ -1,4 +1,4 @@
-use crate::{MctDaemonConfig, MctRuntimeStateSummary, unix_timestamp_string};
+use crate::{MctDaemonConfig, MctRuntimeStateSummary, current_timestamp_string};
 use mct_kernel::{MctNodeId, VisionId};
 use serde::{Deserialize, Serialize};
 
@@ -46,7 +46,7 @@ pub fn build_federation_capability_view(
     MctFederationCapabilityView {
         node_id,
         vision_id,
-        published_at: unix_timestamp_string(),
+        published_at: current_timestamp_string(),
         artifacts: summary.artifacts,
         approved_children: summary.approved_children,
         ready_instances: summary.ready_instances,

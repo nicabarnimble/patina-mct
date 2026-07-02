@@ -1,5 +1,10 @@
-use serde::{Deserialize, Serialize};
-use std::fmt;
+use crate::{MctKernelError, MctKernelResult};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use std::{
+    cmp::Ordering,
+    fmt,
+    hash::{Hash, Hasher},
+};
 
 macro_rules! string_id {
     ($name:ident) => {
@@ -65,36 +70,93 @@ string_id!(ChildCallEvaluationId);
 string_id!(AuthorizedChildInvocationId);
 string_id!(AuthorizedRouteExecutionId);
 
-/// Allium uses `Timestamp`; v0 keeps it as an RFC3339-ish string at the domain boundary.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct Timestamp(String);
+/// RFC3339 timestamp at the domain boundary, ordered by chronological instant.
+#[derive(Clone, Debug)]
+pub struct Timestamp {
+    value: String,
+    epoch_nanoseconds: i128,
+}
 
 impl Timestamp {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+    pub fn new(value: impl Into<String>) -> MctKernelResult<Self> {
+        let value = value.into();
+        let parsed = value.parse::<jiff::Timestamp>().map_err(|source| {
+            MctKernelError::InvalidTimestamp {
+                value: value.clone(),
+                source,
+            }
+        })?;
+        Ok(Self {
+            value,
+            epoch_nanoseconds: parsed.as_nanosecond(),
+        })
     }
 
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.value
     }
 }
 
 impl From<&str> for Timestamp {
     fn from(value: &str) -> Self {
-        Self::new(value)
+        Self::new(value).expect("valid RFC3339 timestamp literal")
     }
 }
 
 impl From<String> for Timestamp {
     fn from(value: String) -> Self {
-        Self::new(value)
+        Self::new(value).expect("valid RFC3339 timestamp string")
+    }
+}
+
+impl PartialEq for Timestamp {
+    fn eq(&self, other: &Self) -> bool {
+        self.epoch_nanoseconds == other.epoch_nanoseconds
+    }
+}
+
+impl Eq for Timestamp {}
+
+impl PartialOrd for Timestamp {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Timestamp {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.epoch_nanoseconds.cmp(&other.epoch_nanoseconds)
+    }
+}
+
+impl Hash for Timestamp {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.epoch_nanoseconds.hash(state);
+    }
+}
+
+impl Serialize for Timestamp {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.value)
+    }
+}
+
+impl<'de> Deserialize<'de> for Timestamp {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::new(value).map_err(de::Error::custom)
     }
 }
 
 impl fmt::Display for Timestamp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.value)
     }
 }
 
@@ -113,16 +175,22 @@ mod tests {
 
     #[test]
     fn timestamps_order_chronologically_across_subsecond_precision() {
-        let earlier = Timestamp::from("2026-05-31T00:00:00.09Z");
-        let later = Timestamp::from("2026-05-31T00:00:00.100Z");
+        let same_instant_short = Timestamp::from("2026-05-31T00:00:00.1Z");
+        let same_instant_padded = Timestamp::from("2026-05-31T00:00:00.10Z");
+        let later = Timestamp::from("2026-05-31T00:00:00.100001Z");
 
-        assert!(earlier < later);
+        assert_eq!(same_instant_short, same_instant_padded);
+        assert!(same_instant_padded < later);
     }
 
     #[test]
     fn epoch_second_strings_are_rejected_as_timestamps() {
-        let decoded = serde_json::from_str::<Timestamp>("\"1772323200\"");
+        assert!(matches!(
+            Timestamp::new("1772323200"),
+            Err(crate::MctKernelError::InvalidTimestamp { .. })
+        ));
 
+        let decoded = serde_json::from_str::<Timestamp>("\"1772323200\"");
         assert!(decoded.is_err());
     }
 }

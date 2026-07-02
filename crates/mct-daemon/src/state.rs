@@ -1,6 +1,6 @@
 use crate::{
     MctDaemonConfig, MctLoadedChild, MctOperatorChildScope, MctPeerAddressBookEntry,
-    unix_timestamp_string,
+    current_timestamp_string,
 };
 use anyhow::{Context, Result, bail};
 use mct_kernel::*;
@@ -550,7 +550,7 @@ impl MctRuntimeStateStore {
                 json_atom(&artifact.lifecycle_exports)?,
                 json_atom(&artifact.verification_status)?,
                 artifact.created_by_observation_id.as_str(),
-                unix_timestamp_string(),
+                current_timestamp_string(),
             ],
         )?;
         Ok(())
@@ -606,7 +606,7 @@ impl MctRuntimeStateStore {
                 json_atom(&approval.approval_state)?,
                 approval.policy_revision,
                 approval.authority_observation_id.as_str(),
-                unix_timestamp_string(),
+                current_timestamp_string(),
             ],
         )?;
         Ok(())
@@ -643,7 +643,7 @@ impl MctRuntimeStateStore {
                 json_atom(&assignment.assignment_state)?,
                 assignment.pinned_artifact_version,
                 assignment.assignment_observation_id.as_str(),
-                unix_timestamp_string(),
+                current_timestamp_string(),
             ],
         )?;
         Ok(())
@@ -680,7 +680,7 @@ impl MctRuntimeStateStore {
                     .as_ref()
                     .map(ObservationId::as_str),
                 instance.last_lifecycle_observation_id.as_str(),
-                unix_timestamp_string(),
+                current_timestamp_string(),
             ],
         )?;
         Ok(())
@@ -890,7 +890,7 @@ impl MctRuntimeStateStore {
                 value_json = excluded.value_json,
                 updated_at = excluded.updated_at
             "#,
-            params![child_name, key, value_json, unix_timestamp_string()],
+            params![child_name, key, value_json, current_timestamp_string()],
         )?;
         Ok(())
     }
@@ -938,7 +938,12 @@ impl MctRuntimeStateStore {
                 checkpoint_json = excluded.checkpoint_json,
                 updated_at = excluded.updated_at
             "#,
-            params![child_name, stream, checkpoint_json, unix_timestamp_string()],
+            params![
+                child_name,
+                stream,
+                checkpoint_json,
+                current_timestamp_string()
+            ],
         )?;
         Ok(())
     }
@@ -960,7 +965,7 @@ impl MctRuntimeStateStore {
             INSERT OR IGNORE INTO child_subscriptions(child_name, stream, created_at)
             VALUES (?1, ?2, ?3)
             "#,
-            params![child_name, stream, unix_timestamp_string()],
+            params![child_name, stream, current_timestamp_string()],
         )?;
         Ok(())
     }
@@ -983,7 +988,12 @@ impl MctRuntimeStateStore {
                 acked_offset = MAX(child_offsets.acked_offset, excluded.acked_offset),
                 updated_at = excluded.updated_at
             "#,
-            params![child_name, stream, offset as i64, unix_timestamp_string()],
+            params![
+                child_name,
+                stream,
+                offset as i64,
+                current_timestamp_string()
+            ],
         )?;
         Ok(())
     }
@@ -1015,10 +1025,10 @@ impl MctRuntimeStateStore {
                     "task:{}:{}:{}",
                     child_name,
                     intent.kind,
-                    unix_timestamp_string()
+                    current_timestamp_string()
                 )
             });
-        let now = unix_timestamp_string();
+        let now = current_timestamp_string();
         self.conn.execute(
             r#"
             INSERT OR IGNORE INTO runtime_tasks(
@@ -1074,7 +1084,7 @@ impl MctRuntimeStateStore {
             params![
                 lease_owner,
                 lease_until,
-                unix_timestamp_string(),
+                current_timestamp_string(),
                 task.task_id
             ],
         )?;
@@ -1137,7 +1147,12 @@ impl MctRuntimeStateStore {
             SET status = ?1, last_error = ?2, updated_at = ?3
             WHERE task_id = ?4
             "#,
-            params![json_atom(&status)?, error, unix_timestamp_string(), task_id],
+            params![
+                json_atom(&status)?,
+                error,
+                current_timestamp_string(),
+                task_id
+            ],
         )?;
         Ok(())
     }
@@ -1244,7 +1259,7 @@ impl MctRuntimeStateStore {
                 },
                 contract.catalog_revision,
                 contract.admitted_by_observation_id.as_str(),
-                unix_timestamp_string(),
+                current_timestamp_string(),
             ],
         )?;
         Ok(())
@@ -1294,7 +1309,7 @@ impl MctRuntimeStateStore {
                 grant.policy_revision,
                 grant.grants_revision,
                 grant.authority_observation_id.as_str(),
-                unix_timestamp_string(),
+                current_timestamp_string(),
             ],
         )?;
         Ok(())

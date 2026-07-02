@@ -339,7 +339,7 @@ fn run_process(mut args: Vec<String>) -> Result<()> {
         &call,
         RuntimeKind::Process,
         Some(&authorized),
-        mct_daemon::unix_timestamp_string(),
+        mct_daemon::current_timestamp_string(),
     )?;
     state.append_run_observations(&run_id, std::slice::from_ref(&authority_observation))?;
 
@@ -370,7 +370,11 @@ fn run_process(mut args: Vec<String>) -> Result<()> {
     )?;
     append_ledger_observations(&ledger_path, &report.observations)?;
     state.append_run_observations(&run_id, &report.observations)?;
-    state.complete_run(&run_id, &report.result, mct_daemon::unix_timestamp_string())?;
+    state.complete_run(
+        &run_id,
+        &report.result,
+        mct_daemon::current_timestamp_string(),
+    )?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
@@ -426,7 +430,7 @@ fn run_wasm_call(mut args: Vec<String>) -> Result<()> {
         &call,
         RuntimeKind::WasmComponent,
         Some(&authorized),
-        mct_daemon::unix_timestamp_string(),
+        mct_daemon::current_timestamp_string(),
     )?;
     state.append_run_observations(&run_id, std::slice::from_ref(&authority_observation))?;
 
@@ -452,7 +456,11 @@ fn run_wasm_call(mut args: Vec<String>) -> Result<()> {
     )?;
     append_ledger_observations(&ledger_path, &report.observations)?;
     state.append_run_observations(&run_id, &report.observations)?;
-    state.complete_run(&run_id, &report.result, mct_daemon::unix_timestamp_string())?;
+    state.complete_run(
+        &run_id,
+        &report.result,
+        mct_daemon::current_timestamp_string(),
+    )?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
@@ -502,7 +510,7 @@ fn run_wasm_call_wit(mut args: Vec<String>) -> Result<()> {
         &call,
         RuntimeKind::WasmComponent,
         Some(&authorized),
-        mct_daemon::unix_timestamp_string(),
+        mct_daemon::current_timestamp_string(),
     )?;
     state.append_run_observations(&run_id, std::slice::from_ref(&authority_observation))?;
 
@@ -564,7 +572,11 @@ fn run_wasm_call_wit(mut args: Vec<String>) -> Result<()> {
     })?;
     append_ledger_observations(&ledger_path, &report.observations)?;
     state.append_run_observations(&run_id, &report.observations)?;
-    state.complete_run(&run_id, &report.result, mct_daemon::unix_timestamp_string())?;
+    state.complete_run(
+        &run_id,
+        &report.result,
+        mct_daemon::current_timestamp_string(),
+    )?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
@@ -1554,7 +1566,7 @@ fn run_peers_add(mut args: Vec<String>) -> Result<()> {
         ticket,
         binding_state: BindingState::Admitted,
         policy_revision: 1,
-        updated_at: mct_daemon::unix_timestamp_string(),
+        updated_at: mct_daemon::current_timestamp_string(),
     })?;
     println!(
         "peer added={} config={} peers={}",
@@ -1719,7 +1731,7 @@ async fn run_iroh(mut args: Vec<String>) -> Result<()> {
 }
 
 fn current_timestamp() -> Timestamp {
-    Timestamp::from(jiff::Timestamp::now().to_string())
+    Timestamp::new(jiff::Timestamp::now().to_string()).expect("jiff produced RFC3339 timestamp")
 }
 
 async fn serve_iroh(mut args: Vec<String>) -> Result<()> {
@@ -1894,7 +1906,7 @@ async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
                         &request.call,
                         RuntimeKind::Process,
                         Some(&authorized),
-                        mct_daemon::unix_timestamp_string(),
+                        mct_daemon::current_timestamp_string(),
                     ) {
                         return MctIrohCallHandlerResult::failed(format!(
                             "runtime run could not start: {error}"
@@ -1941,7 +1953,7 @@ async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
                     let _ = runtime_state.complete_run(
                         &run_id,
                         &report.result,
-                        mct_daemon::unix_timestamp_string(),
+                        mct_daemon::current_timestamp_string(),
                     );
                     match report.result.outcome {
                         ResultOutcome::Success => {
@@ -2284,7 +2296,7 @@ fn append_ledger_observations(ledger_path: &Path, observations: &[MctObservation
     let mut ledger = JsonlObservationLedger::open(ledger_path, "ledger-local", "local-mct")?;
     ledger.append_batch_before_effect(
         observations.iter().cloned(),
-        mct_daemon::unix_timestamp_string(),
+        mct_daemon::current_timestamp_string(),
     )?;
     Ok(())
 }
@@ -2294,7 +2306,7 @@ fn run_id_for_call(prefix: &str, call: &MctCall) -> String {
         "run:{}:{}:{}",
         prefix,
         call.call_id,
-        mct_daemon::unix_timestamp_string()
+        mct_daemon::current_timestamp_string()
     )
 }
 
@@ -2324,7 +2336,7 @@ fn cli_peer_binding(
         endpoint_id: local_endpoint_id,
         identity_path,
         policy_revision: 1,
-        updated_at: mct_daemon::unix_timestamp_string(),
+        updated_at: mct_daemon::current_timestamp_string(),
     };
     MctPeerAddressBookEntry {
         peer_node_id,
@@ -2337,6 +2349,7 @@ fn cli_peer_binding(
         updated_at: local_identity.updated_at.clone(),
     }
     .to_peer_binding(&local_identity)
+    .expect("CLI peer binding timestamp is generated as RFC3339")
 }
 
 fn read_ticket(path: &Path) -> Result<MotherIrohEndpointTicket> {

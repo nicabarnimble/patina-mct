@@ -66,7 +66,7 @@ pub fn run_child_task_cycle(
             "tick_intents": intents.len(),
             "failed_tasks": failed_tasks,
         }),
-        observed_at: crate::unix_timestamp_string(),
+        observed_at: crate::current_timestamp_string(),
     })?;
 
     Ok(MctChildTaskCycleReport {

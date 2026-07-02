@@ -43,7 +43,7 @@ pub use config::{
     MctConfigChildAuthorityProjection, MctDaemonConfig, MctDaemonConfigStore, MctLocalNodeIdentity,
     MctOperatorChildScope, MctOperatorNodeScope, MctPeerAddressBookEntry,
     MctPeerAuthorityProjection, MctStoredChildApproval, MctStoredChildAssignment,
-    default_config_path, unix_timestamp_string,
+    current_timestamp_string, default_config_path,
 };
 pub use control::{
     MctControlPlaneAuthPolicy, MctControlPlaneResponse, MctControlPlaneSnapshot,

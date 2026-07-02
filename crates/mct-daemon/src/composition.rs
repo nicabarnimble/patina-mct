@@ -1,4 +1,4 @@
-use crate::{MctCompositionRunRecord, MctRuntimeStateStore, unix_timestamp_string};
+use crate::{MctCompositionRunRecord, MctRuntimeStateStore, current_timestamp_string};
 use anyhow::{Context, Result};
 use mct_kernel::{CallId, DecisionId, RuntimeKind, VisionId};
 use serde::{Deserialize, Serialize};
@@ -378,7 +378,7 @@ pub fn record_composition_plan(
     state: &MctRuntimeStateStore,
     plan: MctCompositionPlan,
 ) -> Result<MctCompositionRunRecord> {
-    let now = unix_timestamp_string();
+    let now = current_timestamp_string();
     let record = MctCompositionRunRecord {
         composition_id: plan.composition_id.clone(),
         state: if plan.steps.is_empty() {
