@@ -1,14 +1,14 @@
 use thiserror::Error;
 
-/// Public type alias `MctKernelResult` for kernel callers.
+/// Kernel result type that preserves typed authority and validation failures.
 pub type MctKernelResult<T> = std::result::Result<T, MctKernelError>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-/// Closed domain enum `InvalidFieldReason` used by the MCT kernel.
+/// Reason a string field failed the kernel's non-blank invariant.
 pub enum InvalidFieldReason {
-    /// Public `Empty` item.
+    /// The field contained no bytes.
     Empty,
-    /// Public `Blank` item.
+    /// The field contained only whitespace after trimming.
     Blank,
 }
 
@@ -23,52 +23,56 @@ impl std::fmt::Display for InvalidFieldReason {
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
-/// Closed domain enum `MctKernelError` used by the MCT kernel.
+/// Typed kernel boundary errors for invalid records and JSON edge values.
+///
+/// Authority denials are represented as decisions, not errors. This enum is
+/// reserved for malformed domain data, invalid timestamps, payload consistency
+/// failures, and serialization faults at the protocol edge.
 pub enum MctKernelError {
     #[error("invalid {record}.{field}: {reason}")]
-    /// Public `InvalidField` item.
+    /// A required string field was empty or blank.
     InvalidField {
-        /// Field `str` of this domain record.
+        /// Domain record being validated.
         record: &'static str,
-        /// Field `str` of this domain record.
+        /// Field within the record that violated the invariant.
         field: &'static str,
-        /// Field `InvalidFieldReason` of this domain record.
+        /// Whether the value was empty or whitespace-only.
         reason: InvalidFieldReason,
     },
 
     #[error("invalid Timestamp '{value}': {reason}")]
-    /// Public `InvalidTimestamp` item.
+    /// Timestamp text was not a valid RFC3339 instant accepted by the kernel.
     InvalidTimestamp {
         /// Timestamp string that failed validation.
         value: String,
-        /// Validation failure reason.
+        /// Parser or range failure reason.
         reason: String,
     },
 
     #[error(
         "MCT call payload metadata size {call_size_bytes} does not match payload handle size {handle_size_bytes}"
     )]
-    /// Public `PayloadSizeMismatch` item.
+    /// Call metadata and payload handle disagreed about payload size.
     PayloadSizeMismatch {
-        /// Field `u64` of this domain record.
+        /// Size declared in [`crate::MctCall::payload_metadata`].
         call_size_bytes: u64,
-        /// Field `u64` of this domain record.
+        /// Size carried by the protocol payload handle.
         handle_size_bytes: u64,
     },
 
     #[error("failed to encode MCT call protocol JSON edge value: {source}")]
-    /// Public `EncodeCallProtocolJson` item.
+    /// Serialization failed while emitting a validated call protocol edge value.
     EncodeCallProtocolJson {
         #[source]
-        /// Field `Error` of this domain record.
+        /// Serde source error preserved for diagnostics.
         source: serde_json::Error,
     },
 
     #[error("failed to decode MCT call protocol JSON edge value: {source}")]
-    /// Public `DecodeCallProtocolJson` item.
+    /// Deserialization failed before a call protocol edge value could be validated.
     DecodeCallProtocolJson {
         #[source]
-        /// Field `Error` of this domain record.
+        /// Serde source error preserved for diagnostics.
         source: serde_json::Error,
     },
 }
