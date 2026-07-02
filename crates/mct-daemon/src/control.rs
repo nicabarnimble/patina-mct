@@ -1,6 +1,6 @@
 use crate::{
     MctRuntimeRunRecord, MctRuntimeStateSummary,
-    status::{MctDaemonStatus, daemon_status},
+    status::{MctDaemonHealth, MctDaemonReadiness, MctDaemonStatus, daemon_status},
 };
 use anyhow::{Context, Result, bail};
 use mct_iroh::MotherIrohEndpointSnapshot;
@@ -48,6 +48,39 @@ pub struct MctControlPlaneSnapshot {
     pub status: MctDaemonStatus,
     pub state: Option<MctRuntimeStateSummary>,
     pub runs: Vec<MctRuntimeRunRecord>,
+}
+
+pub type MctControlPlaneSnapshotResult =
+    std::result::Result<MctControlPlaneSnapshot, MctControlPlaneSnapshotError>;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MctControlPlaneSnapshotError {
+    RuntimeStateUnavailable { safe_message: String },
+}
+
+impl MctControlPlaneSnapshotError {
+    pub fn runtime_state_unavailable() -> Self {
+        Self::RuntimeStateUnavailable {
+            safe_message: "runtime state unavailable".into(),
+        }
+    }
+
+    fn safe_message(&self) -> &str {
+        match self {
+            Self::RuntimeStateUnavailable { safe_message } => safe_message,
+        }
+    }
+
+    fn status(&self) -> MctDaemonStatus {
+        MctDaemonStatus {
+            version: crate::version().into(),
+            health: MctDaemonHealth::Unhealthy,
+            readiness: MctDaemonReadiness::NotReady,
+            iroh_endpoint: None,
+            safe_message: self.safe_message().into(),
+        }
+    }
 }
 
 impl MctControlPlaneSnapshot {
@@ -137,6 +170,22 @@ pub fn handle_control_plane_path_with_auth(
     policy: &MctControlPlaneAuthPolicy,
     authorization_header: Option<&str>,
 ) -> MctControlPlaneResponse {
+    handle_control_plane_path_result_with_auth(
+        method,
+        path,
+        Ok(snapshot),
+        policy,
+        authorization_header,
+    )
+}
+
+pub fn handle_control_plane_path_result_with_auth(
+    method: &str,
+    path: &str,
+    snapshot: std::result::Result<&MctControlPlaneSnapshot, &MctControlPlaneSnapshotError>,
+    policy: &MctControlPlaneAuthPolicy,
+    authorization_header: Option<&str>,
+) -> MctControlPlaneResponse {
     match policy.authorize(authorization_header) {
         MctControlPlaneAuthDecision::Allowed => {}
         MctControlPlaneAuthDecision::MissingCredential => {
@@ -149,6 +198,10 @@ pub fn handle_control_plane_path_with_auth(
     if method != "GET" {
         return json_response(405, serde_json::json!({"error": "method not allowed"}));
     }
+    let snapshot = match snapshot {
+        Ok(snapshot) => snapshot,
+        Err(error) => return snapshot_error_response(error),
+    };
     match path {
         "/" | "/status" => json_response(200, &snapshot.status),
         "/state" => json_response(200, &snapshot.state),
@@ -164,6 +217,33 @@ pub async fn serve_http_control_once(
 ) -> Result<()> {
     serve_http_control_once_with_auth(listener, snapshot, MctControlPlaneAuthPolicy::open_local())
         .await
+}
+
+pub async fn serve_http_control_once_with_snapshot_result(
+    listener: &TcpListener,
+    snapshot: MctControlPlaneSnapshotResult,
+) -> Result<()> {
+    let (mut stream, _) = listener.accept().await.context("accept http control")?;
+    let mut buffer = [0_u8; 4096];
+    let read = stream
+        .read(&mut buffer)
+        .await
+        .context("read http control request")?;
+    let request = String::from_utf8_lossy(&buffer[..read]);
+    let (method, path) = parse_http_request_line(&request)?;
+    let authorization_header = parse_authorization_header(&request);
+    let response = handle_control_plane_path_result_with_auth(
+        method,
+        path,
+        snapshot.as_ref(),
+        &MctControlPlaneAuthPolicy::open_local(),
+        authorization_header,
+    );
+    stream
+        .write_all(http_response_bytes(&response).as_bytes())
+        .await
+        .context("write http control response")?;
+    Ok(())
 }
 
 pub async fn serve_http_control_once_with_auth(
@@ -199,6 +279,33 @@ pub async fn serve_uds_control_once(
 }
 
 #[cfg(unix)]
+pub async fn serve_uds_control_once_with_snapshot_result(
+    listener: &UnixListener,
+    snapshot: MctControlPlaneSnapshotResult,
+) -> Result<()> {
+    let (mut stream, _) = listener.accept().await.context("accept uds control")?;
+    let mut buffer = [0_u8; 4096];
+    let read = stream
+        .read(&mut buffer)
+        .await
+        .context("read uds control request")?;
+    let request = String::from_utf8_lossy(&buffer[..read]);
+    let (method, path) = parse_http_request_line(&request)?;
+    let authorization_header = parse_authorization_header(&request);
+    let response = handle_control_plane_path_result_with_auth(
+        method,
+        path,
+        snapshot.as_ref(),
+        &MctControlPlaneAuthPolicy::open_local(),
+        authorization_header,
+    );
+    stream
+        .write_all(http_response_bytes(&response).as_bytes())
+        .await
+        .context("write uds control response")?;
+    Ok(())
+}
+
 pub async fn serve_uds_control_once_with_auth(
     listener: &UnixListener,
     snapshot: MctControlPlaneSnapshot,
@@ -251,6 +358,7 @@ fn http_response_bytes(response: &MctControlPlaneResponse) -> String {
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        503 => "Service Unavailable",
         _ => "OK",
     };
     format!(
@@ -260,6 +368,16 @@ fn http_response_bytes(response: &MctControlPlaneResponse) -> String {
         response.content_type,
         response.body.len(),
         response.body
+    )
+}
+
+fn snapshot_error_response(error: &MctControlPlaneSnapshotError) -> MctControlPlaneResponse {
+    json_response(
+        503,
+        serde_json::json!({
+            "error": error.safe_message(),
+            "status": error.status(),
+        }),
     )
 }
 

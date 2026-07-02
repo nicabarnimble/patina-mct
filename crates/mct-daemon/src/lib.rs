@@ -47,12 +47,17 @@ pub use config::{
 };
 pub use control::{
     MctControlPlaneAuthPolicy, MctControlPlaneResponse, MctControlPlaneSnapshot,
-    MctDaemonLocalControlFacts, MctDaemonLocalControlRequest, MctDaemonLocalControlResponse,
-    handle_control_plane_path, handle_control_plane_path_with_auth, handle_local_control_request,
-    serve_http_control_once, serve_http_control_once_with_auth,
+    MctControlPlaneSnapshotError, MctControlPlaneSnapshotResult, MctDaemonLocalControlFacts,
+    MctDaemonLocalControlRequest, MctDaemonLocalControlResponse, handle_control_plane_path,
+    handle_control_plane_path_result_with_auth, handle_control_plane_path_with_auth,
+    handle_local_control_request, serve_http_control_once, serve_http_control_once_with_auth,
+    serve_http_control_once_with_snapshot_result,
 };
 #[cfg(unix)]
-pub use control::{serve_uds_control_once, serve_uds_control_once_with_auth};
+pub use control::{
+    serve_uds_control_once, serve_uds_control_once_with_auth,
+    serve_uds_control_once_with_snapshot_result,
+};
 pub use cycle::{
     MctChildTaskCycleReport, MctDrainedEvent, MctTaskCycleChild, run_child_task_cycle,
 };
