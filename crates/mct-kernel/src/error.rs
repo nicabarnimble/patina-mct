@@ -32,7 +32,7 @@ pub enum MctKernelError {
     #[error("invalid {record}.{field}: {reason}")]
     /// A required string field was empty or blank.
     InvalidField {
-        /// Domain record being validated.
+        /// Name of the kernel record being validated.
         record: &'static str,
         /// Field within the record that violated the invariant.
         field: &'static str,
