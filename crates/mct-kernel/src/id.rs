@@ -110,4 +110,19 @@ mod tests {
         let decoded: CallId = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.as_str(), "call-1");
     }
+
+    #[test]
+    fn timestamps_order_chronologically_across_subsecond_precision() {
+        let earlier = Timestamp::from("2026-05-31T00:00:00.09Z");
+        let later = Timestamp::from("2026-05-31T00:00:00.100Z");
+
+        assert!(earlier < later);
+    }
+
+    #[test]
+    fn epoch_second_strings_are_rejected_as_timestamps() {
+        let decoded = serde_json::from_str::<Timestamp>("\"1772323200\"");
+
+        assert!(decoded.is_err());
+    }
 }
