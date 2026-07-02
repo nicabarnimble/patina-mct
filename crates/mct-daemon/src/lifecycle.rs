@@ -47,7 +47,11 @@ pub fn warmup_configured_child(
 
     Ok(MctChildWarmupReport {
         child_name: child_name.into(),
-        observations: vec![child_instance_observation(trace_id, &ready)],
+        observations: vec![child_instance_observation(
+            trace_id,
+            crate::current_timestamp(),
+            &ready,
+        )],
         instance: ready,
     })
 }
@@ -121,9 +125,9 @@ pub fn reload_configured_child(
     Ok(MctChildReloadReport {
         child_name: child_name.into(),
         observations: vec![
-            child_instance_observation(trace_id.clone(), &draining),
-            child_instance_observation(trace_id.clone(), &stopped),
-            child_instance_observation(trace_id, &ready_next),
+            child_instance_observation(trace_id.clone(), crate::current_timestamp(), &draining),
+            child_instance_observation(trace_id.clone(), crate::current_timestamp(), &stopped),
+            child_instance_observation(trace_id, crate::current_timestamp(), &ready_next),
         ],
         previous_instance: stopped,
         next_instance: ready_next,

@@ -268,12 +268,13 @@ pub fn adapter_diagnostic_observation(input: AdapterDiagnosticObservationInput) 
 
 pub fn hello_evaluation_observation(
     trace_id: TraceId,
+    observed_at: Timestamp,
     evaluation: &MctHelloAdmissionEvaluation,
 ) -> MctObservation {
     let admitted = evaluation.is_admitted();
     MctObservation {
         observation_id: evaluation.observation_id.clone(),
-        observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+        observed_at,
         kind: if admitted {
             ObservationKind::PeerAdmitted
         } else {
@@ -314,6 +315,7 @@ pub fn hello_evaluation_observation(
 
 pub fn peer_binding_state_observation(
     trace_id: TraceId,
+    observed_at: Timestamp,
     binding: &MctPeerBinding,
 ) -> MctObservation {
     let (kind, outcome, safe_message) = match binding.binding_state {
@@ -349,7 +351,7 @@ pub fn peer_binding_state_observation(
             .superseded_by_observation_id
             .clone()
             .unwrap_or_else(|| binding.created_by_observation_id.clone()),
-        observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+        observed_at,
         kind,
         source_plane: SourcePlane::Kernel,
         trace: ObservationTraceRef {
@@ -371,7 +373,11 @@ pub fn peer_binding_state_observation(
     }
 }
 
-pub fn route_decision_observation(trace_id: TraceId, decision: &RouteDecision) -> MctObservation {
+pub fn route_decision_observation(
+    trace_id: TraceId,
+    observed_at: Timestamp,
+    decision: &RouteDecision,
+) -> MctObservation {
     let (kind, outcome) = match (decision.decision_kind, decision.outcome) {
         (RouteDecisionKind::Initial, RouteDecisionOutcome::RouteSelected) => {
             (ObservationKind::RouteSelected, ObservationOutcome::Allowed)
@@ -387,7 +393,7 @@ pub fn route_decision_observation(trace_id: TraceId, decision: &RouteDecision) -
 
     MctObservation {
         observation_id: decision.observation_id.clone(),
-        observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+        observed_at,
         kind,
         source_plane: SourcePlane::Kernel,
         trace: ObservationTraceRef {
@@ -445,6 +451,7 @@ fn route_decision_detail_ref(decision: &RouteDecision) -> Option<String> {
 
 pub fn call_protocol_evaluation_observation(
     trace_id: TraceId,
+    observed_at: Timestamp,
     evaluation: &MctCallProtocolEvaluation,
 ) -> MctObservation {
     let (kind, outcome) = match evaluation.outcome {
@@ -468,7 +475,7 @@ pub fn call_protocol_evaluation_observation(
 
     MctObservation {
         observation_id: evaluation.observation_id.clone(),
-        observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+        observed_at,
         kind,
         source_plane: SourcePlane::Kernel,
         trace: ObservationTraceRef {
@@ -490,7 +497,11 @@ pub fn call_protocol_evaluation_observation(
     }
 }
 
-pub fn child_approval_observation(trace_id: TraceId, approval: &ChildApproval) -> MctObservation {
+pub fn child_approval_observation(
+    trace_id: TraceId,
+    observed_at: Timestamp,
+    approval: &ChildApproval,
+) -> MctObservation {
     let (kind, outcome, safe_message) = match approval.approval_state {
         ChildApprovalState::Approved => (
             ObservationKind::ChildApproved,
@@ -511,7 +522,7 @@ pub fn child_approval_observation(trace_id: TraceId, approval: &ChildApproval) -
 
     MctObservation {
         observation_id: approval.authority_observation_id.clone(),
-        observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+        observed_at,
         kind,
         source_plane: SourcePlane::Kernel,
         trace: ObservationTraceRef {
@@ -538,6 +549,7 @@ pub fn child_approval_observation(trace_id: TraceId, approval: &ChildApproval) -
 
 pub fn child_assignment_observation(
     trace_id: TraceId,
+    observed_at: Timestamp,
     assignment: &ChildAssignment,
 ) -> MctObservation {
     let (kind, outcome, safe_message) = match assignment.assignment_state {
@@ -555,7 +567,7 @@ pub fn child_assignment_observation(
 
     MctObservation {
         observation_id: assignment.assignment_observation_id.clone(),
-        observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+        observed_at,
         kind,
         source_plane: SourcePlane::Kernel,
         trace: ObservationTraceRef {
@@ -580,7 +592,11 @@ pub fn child_assignment_observation(
     }
 }
 
-pub fn child_instance_observation(trace_id: TraceId, instance: &ChildInstance) -> MctObservation {
+pub fn child_instance_observation(
+    trace_id: TraceId,
+    observed_at: Timestamp,
+    instance: &ChildInstance,
+) -> MctObservation {
     let (kind, outcome, safe_message) = match instance.instance_state {
         ChildInstanceState::Loading => (
             ObservationKind::ChildInstanceLoading,
@@ -616,7 +632,7 @@ pub fn child_instance_observation(trace_id: TraceId, instance: &ChildInstance) -
 
     MctObservation {
         observation_id: instance.last_lifecycle_observation_id.clone(),
-        observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+        observed_at,
         kind,
         source_plane: SourcePlane::Kernel,
         trace: ObservationTraceRef {
@@ -643,12 +659,13 @@ pub fn child_instance_observation(trace_id: TraceId, instance: &ChildInstance) -
 
 pub fn child_call_authority_observation(
     trace_id: TraceId,
+    observed_at: Timestamp,
     evaluation: &ChildCallAuthorityEvaluation,
 ) -> MctObservation {
     let allowed = evaluation.verdict == ChildCallVerdict::Allowed;
     MctObservation {
         observation_id: evaluation.observation_id.clone(),
-        observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+        observed_at,
         kind: if allowed {
             ObservationKind::RouteRevalidated
         } else {
@@ -689,6 +706,7 @@ pub fn child_call_authority_observation(
 
 pub fn toy_grant_evaluation_observation(
     trace_id: TraceId,
+    observed_at: Timestamp,
     evaluation: &ToyGrantEvaluation,
 ) -> MctObservation {
     let kind = match (evaluation.verdict, evaluation.reason_code) {
@@ -704,7 +722,7 @@ pub fn toy_grant_evaluation_observation(
 
     MctObservation {
         observation_id: evaluation.observation_id.clone(),
-        observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+        observed_at,
         kind,
         source_plane: SourcePlane::Kernel,
         trace: ObservationTraceRef {
@@ -861,7 +879,8 @@ mod tests {
             safe_reason: SafeHelloReason::NotAuthorized,
             observation_id: ObservationId::from("obs-hello-denied"),
         };
-        let hello_observation = hello_evaluation_observation(TraceId::from("trace-1"), &hello);
+        let hello_observation =
+            hello_evaluation_observation(TraceId::from("trace-1"), supplied_observed_at(), &hello);
         assert_eq!(hello_observation.kind, ObservationKind::PeerRejected);
         assert_eq!(hello_observation.source_plane, SourcePlane::Kernel);
         assert_eq!(hello_observation.outcome, ObservationOutcome::Denied);
@@ -883,8 +902,11 @@ mod tests {
             safe_message: "not authorized".into(),
             observation_id: ObservationId::from("obs-call-denied"),
         };
-        let call_observation =
-            call_protocol_evaluation_observation(TraceId::from("trace-1"), &call);
+        let call_observation = call_protocol_evaluation_observation(
+            TraceId::from("trace-1"),
+            supplied_observed_at(),
+            &call,
+        );
         assert_eq!(call_observation.kind, ObservationKind::CallDenied);
         assert_eq!(call_observation.source_plane, SourcePlane::Kernel);
         assert_eq!(call_observation.outcome, ObservationOutcome::Denied);
@@ -970,7 +992,11 @@ mod tests {
                 observation_id: ObservationId::from("obs-route-no-route"),
             },
         );
-        let observation = route_decision_observation(TraceId::from("trace-no-route"), &decision);
+        let observation = route_decision_observation(
+            TraceId::from("trace-no-route"),
+            supplied_observed_at(),
+            &decision,
+        );
 
         assert_eq!(observation.kind, ObservationKind::NoRouteRecorded);
         assert_eq!(observation.outcome, ObservationOutcome::Denied);
@@ -1011,7 +1037,8 @@ mod tests {
             safe_message: "route revalidated".into(),
             observation_id: ObservationId::from("obs-route-revalidated"),
         };
-        let allowed_observation = route_decision_observation(trace_id.clone(), &allowed);
+        let allowed_observation =
+            route_decision_observation(trace_id.clone(), supplied_observed_at(), &allowed);
         assert_eq!(allowed_observation.kind, ObservationKind::RouteRevalidated);
         assert_eq!(allowed_observation.outcome, ObservationOutcome::Allowed);
         assert_eq!(allowed_observation.policy_revision, Some(3));
@@ -1038,7 +1065,8 @@ mod tests {
             safe_message: "not authorized".into(),
             observation_id: ObservationId::from("obs-route-revalidation-denied"),
         };
-        let denied_observation = route_decision_observation(trace_id, &denied);
+        let denied_observation =
+            route_decision_observation(trace_id, supplied_observed_at(), &denied);
         assert_eq!(denied_observation.kind, ObservationKind::NoRouteRecorded);
         assert_eq!(denied_observation.outcome, ObservationOutcome::Denied);
         assert_eq!(denied_observation.safe_message, "not authorized");
@@ -1055,6 +1083,7 @@ mod tests {
     fn revoked_and_expired_bindings_become_observations() {
         let revoked = peer_binding_state_observation(
             TraceId::from("trace-1"),
+            supplied_observed_at(),
             &binding(BindingState::Revoked),
         );
         assert_eq!(revoked.kind, ObservationKind::PeerBindingRevoked);
@@ -1065,6 +1094,7 @@ mod tests {
 
         let expired = peer_binding_state_observation(
             TraceId::from("trace-1"),
+            supplied_observed_at(),
             &binding(BindingState::Expired),
         );
         assert_eq!(expired.kind, ObservationKind::PeerBindingExpired);
@@ -1088,8 +1118,11 @@ mod tests {
             grants_revision: 7,
             observation_id: ObservationId::from("obs-toy-allowed"),
         };
-        let allowed_observation =
-            toy_grant_evaluation_observation(TraceId::from("trace-toy"), &allowed);
+        let allowed_observation = toy_grant_evaluation_observation(
+            TraceId::from("trace-toy"),
+            supplied_observed_at(),
+            &allowed,
+        );
         assert_eq!(allowed_observation.kind, ObservationKind::ToyGrantAllowed);
         assert_eq!(allowed_observation.outcome, ObservationOutcome::Allowed);
         assert_eq!(allowed_observation.call_id, Some(CallId::from("call-toy")));
@@ -1100,8 +1133,11 @@ mod tests {
         denied.verdict = ToyGrantVerdict::Denied;
         denied.reason_code = ToyGrantReasonCode::MissingGrant;
         denied.observation_id = ObservationId::from("obs-toy-denied");
-        let denied_observation =
-            toy_grant_evaluation_observation(TraceId::from("trace-toy"), &denied);
+        let denied_observation = toy_grant_evaluation_observation(
+            TraceId::from("trace-toy"),
+            supplied_observed_at(),
+            &denied,
+        );
         assert_eq!(denied_observation.kind, ObservationKind::ToyGrantDenied);
         assert_eq!(denied_observation.outcome, ObservationOutcome::Denied);
         assert_eq!(denied_observation.safe_message, "not authorized");
@@ -1122,8 +1158,11 @@ mod tests {
             policy_revision: 5,
             authority_observation_id: ObservationId::from("obs-child-approved"),
         };
-        let approval_observation =
-            child_approval_observation(TraceId::from("trace-child"), &approval);
+        let approval_observation = child_approval_observation(
+            TraceId::from("trace-child"),
+            supplied_observed_at(),
+            &approval,
+        );
         assert_eq!(approval_observation.kind, ObservationKind::ChildApproved);
         assert_eq!(approval_observation.outcome, ObservationOutcome::Allowed);
         assert_eq!(
@@ -1144,8 +1183,11 @@ mod tests {
             pinned_artifact_version: "0.2.0".into(),
             assignment_observation_id: ObservationId::from("obs-child-assigned"),
         };
-        let assignment_observation =
-            child_assignment_observation(TraceId::from("trace-child"), &assignment);
+        let assignment_observation = child_assignment_observation(
+            TraceId::from("trace-child"),
+            supplied_observed_at(),
+            &assignment,
+        );
         assert_eq!(assignment_observation.kind, ObservationKind::ChildAssigned);
         assert_eq!(assignment_observation.outcome, ObservationOutcome::Allowed);
         assert_eq!(assignment_observation.observed_at, supplied_observed_at());
@@ -1161,8 +1203,11 @@ mod tests {
             readiness_observation_id: Some(ObservationId::from("obs-child-ready")),
             last_lifecycle_observation_id: ObservationId::from("obs-child-ready"),
         };
-        let instance_observation =
-            child_instance_observation(TraceId::from("trace-child"), &instance);
+        let instance_observation = child_instance_observation(
+            TraceId::from("trace-child"),
+            supplied_observed_at(),
+            &instance,
+        );
         assert_eq!(
             instance_observation.kind,
             ObservationKind::ChildInstanceReady
@@ -1184,8 +1229,11 @@ mod tests {
             policy_revision: 5,
             observation_id: ObservationId::from("obs-child-denied"),
         };
-        let denial_observation =
-            child_call_authority_observation(TraceId::from("trace-child"), &evaluation);
+        let denial_observation = child_call_authority_observation(
+            TraceId::from("trace-child"),
+            supplied_observed_at(),
+            &evaluation,
+        );
         assert_eq!(denial_observation.kind, ObservationKind::CallDenied);
         assert_eq!(denial_observation.outcome, ObservationOutcome::Denied);
         assert_eq!(denial_observation.safe_message, "not authorized");

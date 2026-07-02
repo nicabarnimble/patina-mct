@@ -497,6 +497,10 @@ pub fn current_timestamp_string() -> String {
     jiff::Timestamp::now().to_string()
 }
 
+pub fn current_timestamp() -> Timestamp {
+    Timestamp::new(current_timestamp_string()).expect("jiff produced RFC3339 timestamp")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
