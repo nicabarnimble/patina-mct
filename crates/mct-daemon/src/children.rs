@@ -248,9 +248,12 @@ impl MctChildAuthorityProjection {
         for child in children {
             let artifact = component_artifact_from_loaded_child(child);
             let artifact_verified = artifact.verification_status == VerificationStatus::Verified;
-            let approval_id = ChildApprovalId::from(format!("approval:{}", child.name));
-            let assignment_id = ChildAssignmentId::from(format!("assignment:{}", child.name));
-            let instance_id = ChildInstanceId::from(format!("instance:{}:1", child.name));
+            let approval_id = ChildApprovalId::new(format!("approval:{}", child.name))
+                .expect("string ID literal/generated value must be non-empty");
+            let assignment_id = ChildAssignmentId::new(format!("assignment:{}", child.name))
+                .expect("string ID literal/generated value must be non-empty");
+            let instance_id = ChildInstanceId::new(format!("instance:{}:1", child.name))
+                .expect("string ID literal/generated value must be non-empty");
             let activated = options.activation_mode
                 == MctChildActivationMode::ApproveAndAssignLocal
                 && artifact_verified;
@@ -270,10 +273,11 @@ impl MctChildAuthorityProjection {
                     ChildApprovalState::Candidate
                 },
                 policy_revision: options.policy_revision,
-                authority_observation_id: ObservationId::from(format!(
+                authority_observation_id: ObservationId::new(format!(
                     "obs:child-approval:{}",
                     child.name
-                )),
+                ))
+                .expect("string ID literal/generated value must be non-empty"),
             });
 
             if activated {
@@ -287,10 +291,11 @@ impl MctChildAuthorityProjection {
                     project_id: options.project_id.clone(),
                     assignment_state: ChildAssignmentState::Active,
                     pinned_artifact_version: child.version.clone(),
-                    assignment_observation_id: ObservationId::from(format!(
+                    assignment_observation_id: ObservationId::new(format!(
                         "obs:child-assignment:{}",
                         child.name
-                    )),
+                    ))
+                    .expect("string ID literal/generated value must be non-empty"),
                 });
             }
 
@@ -312,17 +317,18 @@ impl MctChildAuthorityProjection {
                 readiness_observation_id: if activated
                     && child.instance_state == MctChildInstanceState::Ready
                 {
-                    Some(ObservationId::from(format!(
-                        "obs:child-ready:{}",
-                        child.name
-                    )))
+                    Some(
+                        ObservationId::new(format!("obs:child-ready:{}", child.name))
+                            .expect("string ID literal/generated value must be non-empty"),
+                    )
                 } else {
                     None
                 },
-                last_lifecycle_observation_id: ObservationId::from(format!(
+                last_lifecycle_observation_id: ObservationId::new(format!(
                     "obs:child-instance:{}:1",
                     child.name
-                )),
+                ))
+                .expect("string ID literal/generated value must be non-empty"),
             });
         }
 
@@ -343,22 +349,26 @@ impl MctChildAuthorityProjection {
             .iter()
             .filter_map(|instance| {
                 let ids = ChildCallAuthorityIds {
-                    evaluation_id: ChildCallEvaluationId::from(format!(
+                    evaluation_id: ChildCallEvaluationId::new(format!(
                         "child-eval:{}:{}",
                         call.call_id, instance.instance_id
-                    )),
-                    decision_id: mct_kernel::DecisionId::from(format!(
+                    ))
+                    .expect("string ID literal/generated value must be non-empty"),
+                    decision_id: mct_kernel::DecisionId::new(format!(
                         "child-decision:{}:{}",
                         call.call_id, instance.instance_id
-                    )),
-                    observation_id: ObservationId::from(format!(
+                    ))
+                    .expect("string ID literal/generated value must be non-empty"),
+                    observation_id: ObservationId::new(format!(
                         "obs:child-call:{}:{}",
                         call.call_id, instance.instance_id
-                    )),
-                    authorized_child_invocation_id: AuthorizedChildInvocationId::from(format!(
+                    ))
+                    .expect("string ID literal/generated value must be non-empty"),
+                    authorized_child_invocation_id: AuthorizedChildInvocationId::new(format!(
                         "authorized-child:{}:{}",
                         call.call_id, instance.instance_id
-                    )),
+                    ))
+                    .expect("string ID literal/generated value must be non-empty"),
                 };
                 let request = ChildCallAuthorityRequest {
                     instance_id: instance.instance_id.clone(),
@@ -376,7 +386,10 @@ impl MctChildAuthorityProjection {
                 evaluation.is_allowed().then(|| CandidateRoute {
                     candidate_id: format!("child:{}", instance.child_name),
                     node_id: self.local_node_id.clone(),
-                    child_id: Some(ChildId::from(instance.child_name.clone())),
+                    child_id: Some(
+                        ChildId::new(instance.child_name.clone())
+                            .expect("string ID literal/generated value must be non-empty"),
+                    ),
                     runtime_kind: runtime_kind_for_instance(instance, &self.artifacts),
                     network_path: NetworkPathClass::Local,
                 })
@@ -523,7 +536,8 @@ pub fn operation_id_from_target(target: &OperationTarget) -> String {
 
 pub fn component_artifact_from_loaded_child(child: &MctLoadedChild) -> ComponentArtifact {
     ComponentArtifact {
-        artifact_id: ComponentArtifactId::from(child.artifact_id.clone()),
+        artifact_id: ComponentArtifactId::new(child.artifact_id.clone())
+            .expect("string ID literal/generated value must be non-empty"),
         child_name: child.name.clone(),
         artifact_version: child.version.clone(),
         content_hash: format!("sha256:{}", child.wasm_digest.sha256),
@@ -541,7 +555,8 @@ pub fn component_artifact_from_loaded_child(child: &MctLoadedChild) -> Component
         } else {
             VerificationStatus::Rejected
         },
-        created_by_observation_id: ObservationId::from(format!("obs:artifact:{}", child.name)),
+        created_by_observation_id: ObservationId::new(format!("obs:artifact:{}", child.name))
+            .expect("string ID literal/generated value must be non-empty"),
     }
 }
 
@@ -673,7 +688,8 @@ fn load_child_pair(
     let artifact_id = format!("sha256:{}", wasm_digest.sha256);
 
     Ok(MctLoadedChild {
-        child_id: ChildId::from(manifest.name.clone()),
+        child_id: ChildId::new(manifest.name.clone())
+            .expect("string ID literal/generated value must be non-empty"),
         name: manifest.name,
         version: manifest.version,
         description: manifest.description,
@@ -850,11 +866,14 @@ listens = ["events.changed"]
 
     fn call_for(operation: OperationTarget) -> MctCall {
         MctCall {
-            call_id: mct_kernel::CallId::from("call-child-route"),
+            call_id: mct_kernel::CallId::new("call-child-route")
+                .expect("string ID literal/generated value must be non-empty"),
             caller: CallerIdentity {
-                node_id: MctNodeId::from("mother-a"),
+                node_id: MctNodeId::new("mother-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 user_id: Option::<UserId>::None,
-                vision_id: VisionId::from("vision-a"),
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 project_id: Option::<ProjectId>::None,
             },
             target: operation,
@@ -870,8 +889,10 @@ listens = ["events.changed"]
             },
             deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
             trace_context: TraceContext {
-                trace_id: TraceId::from("trace-child-route"),
-                span_id: SpanId::from("span-child-route"),
+                trace_id: TraceId::new("trace-child-route")
+                    .expect("string ID literal/generated value must be non-empty"),
+                span_id: SpanId::new("span-child-route")
+                    .expect("string ID literal/generated value must be non-empty"),
             },
             origin: CallOrigin::Cli,
         }
@@ -1059,10 +1080,20 @@ kind = "child"
             function_name: "list-work".into(),
         });
 
-        let candidates = registry.local_candidates_for_call(&call, MctNodeId::from("mother-a"));
+        let candidates = registry.local_candidates_for_call(
+            &call,
+            MctNodeId::new("mother-a")
+                .expect("string ID literal/generated value must be non-empty"),
+        );
 
         assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].child_id, Some(ChildId::from("slate-manager")));
+        assert_eq!(
+            candidates[0].child_id,
+            Some(
+                ChildId::new("slate-manager")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
+        );
         assert_eq!(candidates[0].runtime_kind, RuntimeKind::WasmComponent);
     }
 
@@ -1089,8 +1120,10 @@ kind = "child"
         });
 
         let candidate_only = registry.authority_projection(MctChildAuthorityProjectionOptions {
-            local_node_id: MctNodeId::from("mother-a"),
-            vision_id: VisionId::from("vision-a"),
+            local_node_id: MctNodeId::new("mother-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            vision_id: VisionId::new("vision-a")
+                .expect("string ID literal/generated value must be non-empty"),
             project_id: None,
             policy_revision: 1,
             activation_mode: MctChildActivationMode::CandidateOnly,
@@ -1107,8 +1140,10 @@ kind = "child"
         assert!(candidate_only.assignments.is_empty());
 
         let approved = registry.authority_projection(MctChildAuthorityProjectionOptions {
-            local_node_id: MctNodeId::from("mother-a"),
-            vision_id: VisionId::from("vision-a"),
+            local_node_id: MctNodeId::new("mother-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            vision_id: VisionId::new("vision-a")
+                .expect("string ID literal/generated value must be non-empty"),
             project_id: None,
             policy_revision: 1,
             activation_mode: MctChildActivationMode::ApproveAndAssignLocal,
@@ -1128,7 +1163,13 @@ kind = "child"
             ChildAssignmentState::Active
         );
         assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].child_id, Some(ChildId::from("slate-manager")));
+        assert_eq!(
+            candidates[0].child_id,
+            Some(
+                ChildId::new("slate-manager")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
+        );
     }
 
     #[test]
@@ -1144,8 +1185,10 @@ kind = "child"
         let report = load_children_from_dir(MctChildLoadOptions::new(dir.path()));
         let registry = MctChildRegistry::from_loaded(report.children);
         let projection = registry.authority_projection(MctChildAuthorityProjectionOptions {
-            local_node_id: MctNodeId::from("mother-a"),
-            vision_id: VisionId::from("vision-a"),
+            local_node_id: MctNodeId::new("mother-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            vision_id: VisionId::new("vision-a")
+                .expect("string ID literal/generated value must be non-empty"),
             project_id: None,
             policy_revision: 1,
             activation_mode: MctChildActivationMode::ApproveAndAssignLocal,

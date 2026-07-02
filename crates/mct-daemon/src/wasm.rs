@@ -169,14 +169,16 @@ impl MctWitHostState {
     ) -> crate::toy::MctToyCallReport {
         self.next_toy_call_index += 1;
         let ids = MctToyCallIds {
-            started_observation_id: ObservationId::from(format!(
+            started_observation_id: ObservationId::new(format!(
                 "{}:{}:started",
                 adapter.observation_id_prefix, self.next_toy_call_index
-            )),
-            completed_observation_id: ObservationId::from(format!(
+            ))
+            .expect("string ID literal/generated value must be non-empty"),
+            completed_observation_id: ObservationId::new(format!(
                 "{}:{}:completed",
                 adapter.observation_id_prefix, self.next_toy_call_index
-            )),
+            ))
+            .expect("string ID literal/generated value must be non-empty"),
             started_at: adapter.observed_at.clone(),
             completed_at: adapter.observed_at.clone(),
         };
@@ -595,8 +597,12 @@ fn wasm_invocation_result(
         call_id: call.call_id.clone(),
         outcome,
         route_taken: Some(RouteTaken {
-            node_id: MctNodeId::from("local-mct"),
-            child_id: Some(ChildId::from(authorized.child_name.clone())),
+            node_id: MctNodeId::new("local-mct")
+                .expect("string ID literal/generated value must be non-empty"),
+            child_id: Some(
+                ChildId::new(authorized.child_name.clone())
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             runtime_kind: RuntimeKind::WasmComponent,
         }),
         authority_decision_ref: authorized.authority_decision_id.clone(),
@@ -983,8 +989,12 @@ impl MctWasmComponentRuntime {
             call_id: call.call_id.clone(),
             outcome: ResultOutcome::Success,
             route_taken: Some(RouteTaken {
-                node_id: MctNodeId::from("local-mct"),
-                child_id: Some(ChildId::from(authorized.child_name.clone())),
+                node_id: MctNodeId::new("local-mct")
+                    .expect("string ID literal/generated value must be non-empty"),
+                child_id: Some(
+                    ChildId::new(authorized.child_name.clone())
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
                 runtime_kind: RuntimeKind::WasmComponent,
             }),
             authority_decision_ref: authorized.authority_decision_id.clone(),
@@ -1878,11 +1888,14 @@ mod tests {
 
     fn call() -> MctCall {
         MctCall {
-            call_id: CallId::from("call-wasm-component"),
+            call_id: CallId::new("call-wasm-component")
+                .expect("string ID literal/generated value must be non-empty"),
             caller: CallerIdentity {
-                node_id: MctNodeId::from("mother-a"),
+                node_id: MctNodeId::new("mother-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 user_id: None,
-                vision_id: VisionId::from("vision-a"),
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 project_id: None,
             },
             target: OperationTarget {
@@ -1902,8 +1915,10 @@ mod tests {
             },
             deadline: test_deadline(),
             trace_context: TraceContext {
-                trace_id: TraceId::from("trace-wasm-component"),
-                span_id: SpanId::from("span-wasm-component"),
+                trace_id: TraceId::new("trace-wasm-component")
+                    .expect("string ID literal/generated value must be non-empty"),
+                span_id: SpanId::new("span-wasm-component")
+                    .expect("string ID literal/generated value must be non-empty"),
             },
             origin: CallOrigin::WasmHost,
         }
@@ -1911,35 +1926,52 @@ mod tests {
 
     fn authorized() -> AuthorizedChildInvocation {
         AuthorizedChildInvocation {
-            authorized_child_invocation_id: AuthorizedChildInvocationId::from("auth-wasm"),
-            call_id: CallId::from("call-wasm-component"),
-            evaluation_id: ChildCallEvaluationId::from("eval-wasm"),
-            assignment_id: ChildAssignmentId::from("assignment-wasm"),
-            approval_id: ChildApprovalId::from("approval-wasm"),
-            artifact_id: ComponentArtifactId::from("artifact-wasm"),
-            child_instance_id: ChildInstanceId::from("instance-wasm"),
+            authorized_child_invocation_id: AuthorizedChildInvocationId::new("auth-wasm")
+                .expect("string ID literal/generated value must be non-empty"),
+            call_id: CallId::new("call-wasm-component")
+                .expect("string ID literal/generated value must be non-empty"),
+            evaluation_id: ChildCallEvaluationId::new("eval-wasm")
+                .expect("string ID literal/generated value must be non-empty"),
+            assignment_id: ChildAssignmentId::new("assignment-wasm")
+                .expect("string ID literal/generated value must be non-empty"),
+            approval_id: ChildApprovalId::new("approval-wasm")
+                .expect("string ID literal/generated value must be non-empty"),
+            artifact_id: ComponentArtifactId::new("artifact-wasm")
+                .expect("string ID literal/generated value must be non-empty"),
+            child_instance_id: ChildInstanceId::new("instance-wasm")
+                .expect("string ID literal/generated value must be non-empty"),
             child_name: "wasm-answer".into(),
-            authority_decision_id: DecisionId::from("decision-wasm"),
+            authority_decision_id: DecisionId::new("decision-wasm")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
     fn toy_authorized() -> AuthorizedToyCall {
         AuthorizedToyCall {
-            authorized_toy_call_id: AuthorizedToyCallId::from("auth-toy-wasm"),
-            call_id: CallId::from("call-wasm-component"),
-            evaluation_id: ToyGrantEvaluationId::from("eval-toy-wasm"),
-            grant_id: ToyGrantId::from("grant-toy-wasm"),
-            toy_id: ToyId::from("toy-echo"),
-            child_instance_id: ChildInstanceId::from("instance-wasm"),
-            authority_decision_id: DecisionId::from("decision-toy-wasm"),
+            authorized_toy_call_id: AuthorizedToyCallId::new("auth-toy-wasm")
+                .expect("string ID literal/generated value must be non-empty"),
+            call_id: CallId::new("call-wasm-component")
+                .expect("string ID literal/generated value must be non-empty"),
+            evaluation_id: ToyGrantEvaluationId::new("eval-toy-wasm")
+                .expect("string ID literal/generated value must be non-empty"),
+            grant_id: ToyGrantId::new("grant-toy-wasm")
+                .expect("string ID literal/generated value must be non-empty"),
+            toy_id: ToyId::new("toy-echo")
+                .expect("string ID literal/generated value must be non-empty"),
+            child_instance_id: ChildInstanceId::new("instance-wasm")
+                .expect("string ID literal/generated value must be non-empty"),
+            authority_decision_id: DecisionId::new("decision-toy-wasm")
+                .expect("string ID literal/generated value must be non-empty"),
             expires_at: Timestamp::new("2026-05-31T00:10:00Z").unwrap(),
         }
     }
 
     fn toy_ids() -> MctToyCallIds {
         MctToyCallIds {
-            started_observation_id: ObservationId::from("obs-wasm-toy-started"),
-            completed_observation_id: ObservationId::from("obs-wasm-toy-completed"),
+            started_observation_id: ObservationId::new("obs-wasm-toy-started")
+                .expect("string ID literal/generated value must be non-empty"),
+            completed_observation_id: ObservationId::new("obs-wasm-toy-completed")
+                .expect("string ID literal/generated value must be non-empty"),
             started_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             completed_at: Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
         }
@@ -1947,9 +1979,12 @@ mod tests {
 
     fn ids() -> MctWasmComponentInvocationIds {
         MctWasmComponentInvocationIds {
-            started_observation_id: ObservationId::from("obs-wasm-started"),
-            completed_observation_id: ObservationId::from("obs-wasm-completed"),
-            audit_ref: AuditRef::from("audit-wasm"),
+            started_observation_id: ObservationId::new("obs-wasm-started")
+                .expect("string ID literal/generated value must be non-empty"),
+            completed_observation_id: ObservationId::new("obs-wasm-completed")
+                .expect("string ID literal/generated value must be non-empty"),
+            audit_ref: AuditRef::new("audit-wasm")
+                .expect("string ID literal/generated value must be non-empty"),
             started_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             completed_at: Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
         }
@@ -1957,7 +1992,8 @@ mod tests {
 
     fn diagnostic_ids() -> MctWasmComponentDiagnosticIds {
         MctWasmComponentDiagnosticIds {
-            observation_id: ObservationId::from("obs-wasm-trap"),
+            observation_id: ObservationId::new("obs-wasm-trap")
+                .expect("string ID literal/generated value must be non-empty"),
             observed_at: Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
         }
     }
@@ -2104,7 +2140,10 @@ mod tests {
 
     fn wit_host_adapters() -> MctWitHostImportAdapters {
         let mut toy_registry = MctToyAdapterRegistry::new();
-        toy_registry.register(ToyId::from("toy-echo"), crate::MctToyBackend::EchoJson);
+        toy_registry.register(
+            ToyId::new("toy-echo").expect("string ID literal/generated value must be non-empty"),
+            crate::MctToyBackend::EchoJson,
+        );
         let adapter = MctWitToyHostAdapter {
             authorized_toy_call: toy_authorized(),
             observation_id_prefix: "obs-wit-host-toy".into(),
@@ -2220,14 +2259,15 @@ mod tests {
 
     fn git_authorized() -> AuthorizedToyCall {
         let mut authorized = toy_authorized();
-        authorized.toy_id = ToyId::from("toy-git");
+        authorized.toy_id =
+            ToyId::new("toy-git").expect("string ID literal/generated value must be non-empty");
         authorized
     }
 
     fn git_host_adapters(repo_root: PathBuf) -> MctWitHostImportAdapters {
         let mut toy_registry = MctToyAdapterRegistry::new();
         toy_registry.register(
-            ToyId::from("toy-git"),
+            ToyId::new("toy-git").expect("string ID literal/generated value must be non-empty"),
             crate::MctToyBackend::GitCommand { repo_root },
         );
         MctWitHostImportAdapters {
@@ -2277,7 +2317,8 @@ mod tests {
         allowed_operations: Vec<String>,
     ) -> MctLoadedChild {
         MctLoadedChild {
-            child_id: ChildId::from("child:wasm-answer"),
+            child_id: ChildId::new("child:wasm-answer")
+                .expect("string ID literal/generated value must be non-empty"),
             name: "wasm-answer".into(),
             version: "0.1.0".into(),
             description: None,
@@ -2707,11 +2748,17 @@ mod tests {
         assert_eq!(observation.outcome, ObservationOutcome::Failed);
         assert_eq!(
             observation.call_id,
-            Some(CallId::from("call-wasm-component"))
+            Some(
+                CallId::new("call-wasm-component")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
         );
         assert_eq!(
             observation.decision_id,
-            Some(DecisionId::from("decision-wasm"))
+            Some(
+                DecisionId::new("decision-wasm")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
         );
     }
 
@@ -2736,7 +2783,7 @@ mod tests {
         let runtime = runtime();
         let mut toy_registry = MctToyAdapterRegistry::new();
         toy_registry.register(
-            ToyId::from("toy-echo"),
+            ToyId::new("toy-echo").expect("string ID literal/generated value must be non-empty"),
             crate::MctToyBackend::StaticFailure {
                 safe_message: "toy unavailable".into(),
             },
@@ -2764,7 +2811,10 @@ mod tests {
         assert_eq!(report.observations[2].kind, ObservationKind::ToyCallFailed);
         assert_eq!(
             report.observations[2].call_id,
-            Some(CallId::from("call-wasm-component"))
+            Some(
+                CallId::new("call-wasm-component")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
         );
         assert_eq!(report.observations[2].outcome, ObservationOutcome::Failed);
     }
@@ -2789,7 +2839,10 @@ mod tests {
         fs::write(&component_path, wat::parse_str(component_wat).unwrap()).unwrap();
         let runtime = runtime();
         let mut toy_registry = MctToyAdapterRegistry::new();
-        toy_registry.register(ToyId::from("toy-echo"), crate::MctToyBackend::EchoJson);
+        toy_registry.register(
+            ToyId::new("toy-echo").expect("string ID literal/generated value must be non-empty"),
+            crate::MctToyBackend::EchoJson,
+        );
 
         let report = runtime
             .invoke_authorized_s32_export_with_toy_imports(
@@ -2854,7 +2907,10 @@ mod tests {
         );
         assert_eq!(
             report.observations[1].call_id,
-            Some(CallId::from("call-wasm-component"))
+            Some(
+                CallId::new("call-wasm-component")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
         );
     }
 }

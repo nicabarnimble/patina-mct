@@ -688,12 +688,18 @@ mod tests {
 
     fn call() -> MctCall {
         MctCall {
-            call_id: CallId::from("call-child-1"),
+            call_id: CallId::new("call-child-1")
+                .expect("string ID literal/generated value must be non-empty"),
             caller: CallerIdentity {
-                node_id: MctNodeId::from("caller-node"),
+                node_id: MctNodeId::new("caller-node")
+                    .expect("string ID literal/generated value must be non-empty"),
                 user_id: None,
-                vision_id: VisionId::from("vision-a"),
-                project_id: Some(ProjectId::from("project-a")),
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+                project_id: Some(
+                    ProjectId::new("project-a")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
             },
             target: OperationTarget {
                 namespace: "patina".into(),
@@ -712,8 +718,10 @@ mod tests {
             },
             deadline: Timestamp::new("2026-05-31T00:10:00Z").unwrap(),
             trace_context: TraceContext {
-                trace_id: TraceId::from("trace-child-1"),
-                span_id: SpanId::from("span-child-1"),
+                trace_id: TraceId::new("trace-child-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                span_id: SpanId::new("span-child-1")
+                    .expect("string ID literal/generated value must be non-empty"),
             },
             origin: CallOrigin::Cli,
         }
@@ -721,7 +729,8 @@ mod tests {
 
     fn artifact() -> ComponentArtifact {
         ComponentArtifact {
-            artifact_id: ComponentArtifactId::from("artifact:slate-manager:0.2.0"),
+            artifact_id: ComponentArtifactId::new("artifact:slate-manager:0.2.0")
+                .expect("string ID literal/generated value must be non-empty"),
             child_name: "slate-manager".into(),
             artifact_version: "0.2.0".into(),
             content_hash: "sha256:wasm".into(),
@@ -736,69 +745,107 @@ mod tests {
             ingress_mode: ChildIngressMode::WitOnly,
             lifecycle_exports: LifecycleExports::AbsentAllowed,
             verification_status: VerificationStatus::Verified,
-            created_by_observation_id: ObservationId::from("obs-artifact"),
+            created_by_observation_id: ObservationId::new("obs-artifact")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
     fn approval(state: ChildApprovalState) -> ChildApproval {
         ChildApproval {
-            approval_id: ChildApprovalId::from("approval-slate-manager"),
-            artifact_id: ComponentArtifactId::from("artifact:slate-manager:0.2.0"),
+            approval_id: ChildApprovalId::new("approval-slate-manager")
+                .expect("string ID literal/generated value must be non-empty"),
+            artifact_id: ComponentArtifactId::new("artifact:slate-manager:0.2.0")
+                .expect("string ID literal/generated value must be non-empty"),
             child_name: "slate-manager".into(),
             artifact_version: "0.2.0".into(),
-            scope_vision_id: Some(VisionId::from("vision-a")),
-            scope_node_id: Some(MctNodeId::from("node-a")),
-            scope_project_id: Some(ProjectId::from("project-a")),
+            scope_vision_id: Some(
+                VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            scope_node_id: Some(
+                MctNodeId::new("node-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            scope_project_id: Some(
+                ProjectId::new("project-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             approval_state: state,
             policy_revision: 5,
-            authority_observation_id: ObservationId::from("obs-approval"),
+            authority_observation_id: ObservationId::new("obs-approval")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
     fn assignment(state: ChildAssignmentState) -> ChildAssignment {
         ChildAssignment {
-            assignment_id: ChildAssignmentId::from("assignment-slate-manager"),
-            approval_id: ChildApprovalId::from("approval-slate-manager"),
-            artifact_id: ComponentArtifactId::from("artifact:slate-manager:0.2.0"),
+            assignment_id: ChildAssignmentId::new("assignment-slate-manager")
+                .expect("string ID literal/generated value must be non-empty"),
+            approval_id: ChildApprovalId::new("approval-slate-manager")
+                .expect("string ID literal/generated value must be non-empty"),
+            artifact_id: ComponentArtifactId::new("artifact:slate-manager:0.2.0")
+                .expect("string ID literal/generated value must be non-empty"),
             child_name: "slate-manager".into(),
-            vision_id: VisionId::from("vision-a"),
-            node_id: Some(MctNodeId::from("node-a")),
-            project_id: Some(ProjectId::from("project-a")),
+            vision_id: VisionId::new("vision-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            node_id: Some(
+                MctNodeId::new("node-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            project_id: Some(
+                ProjectId::new("project-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             assignment_state: state,
             pinned_artifact_version: "0.2.0".into(),
-            assignment_observation_id: ObservationId::from("obs-assignment"),
+            assignment_observation_id: ObservationId::new("obs-assignment")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
     fn instance(state: ChildInstanceState) -> ChildInstance {
         ChildInstance {
-            instance_id: ChildInstanceId::from("instance-slate-manager-1"),
-            assignment_id: ChildAssignmentId::from("assignment-slate-manager"),
-            artifact_id: ComponentArtifactId::from("artifact:slate-manager:0.2.0"),
+            instance_id: ChildInstanceId::new("instance-slate-manager-1")
+                .expect("string ID literal/generated value must be non-empty"),
+            assignment_id: ChildAssignmentId::new("assignment-slate-manager")
+                .expect("string ID literal/generated value must be non-empty"),
+            artifact_id: ComponentArtifactId::new("artifact:slate-manager:0.2.0")
+                .expect("string ID literal/generated value must be non-empty"),
             child_name: "slate-manager".into(),
             generation: 1,
-            node_id: MctNodeId::from("node-a"),
+            node_id: MctNodeId::new("node-a")
+                .expect("string ID literal/generated value must be non-empty"),
             instance_state: state,
             readiness_observation_id: if state == ChildInstanceState::Ready {
-                Some(ObservationId::from("obs-instance-ready"))
+                Some(
+                    ObservationId::new("obs-instance-ready")
+                        .expect("string ID literal/generated value must be non-empty"),
+                )
             } else {
                 None
             },
-            last_lifecycle_observation_id: ObservationId::from("obs-instance-last"),
+            last_lifecycle_observation_id: ObservationId::new("obs-instance-last")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
     fn request() -> ChildCallAuthorityRequest {
         ChildCallAuthorityRequest {
-            instance_id: ChildInstanceId::from("instance-slate-manager-1"),
-            node_id: MctNodeId::from("node-a"),
+            instance_id: ChildInstanceId::new("instance-slate-manager-1")
+                .expect("string ID literal/generated value must be non-empty"),
+            node_id: MctNodeId::new("node-a")
+                .expect("string ID literal/generated value must be non-empty"),
             ids: ChildCallAuthorityIds {
-                evaluation_id: ChildCallEvaluationId::from("child-eval-1"),
-                decision_id: DecisionId::from("child-decision-1"),
-                observation_id: ObservationId::from("obs-child-eval-1"),
-                authorized_child_invocation_id: AuthorizedChildInvocationId::from(
+                evaluation_id: ChildCallEvaluationId::new("child-eval-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                decision_id: DecisionId::new("child-decision-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                observation_id: ObservationId::new("obs-child-eval-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                authorized_child_invocation_id: AuthorizedChildInvocationId::new(
                     "authorized-child-invocation-1",
-                ),
+                )
+                .expect("string ID literal/generated value must be non-empty"),
             },
         }
     }
@@ -822,11 +869,13 @@ mod tests {
         let authorized = result.authorized.expect("authorized child invocation");
         assert_eq!(
             authorized.child_instance_id,
-            ChildInstanceId::from("instance-slate-manager-1")
+            ChildInstanceId::new("instance-slate-manager-1")
+                .expect("string ID literal/generated value must be non-empty")
         );
         assert_eq!(
             authorized.assignment_id,
-            ChildAssignmentId::from("assignment-slate-manager")
+            ChildAssignmentId::new("assignment-slate-manager")
+                .expect("string ID literal/generated value must be non-empty")
         );
         assert_eq!(authorized.child_name, "slate-manager");
     }
@@ -834,7 +883,8 @@ mod tests {
     #[test]
     fn unknown_instance_denies_by_default() {
         let mut request = request();
-        request.instance_id = ChildInstanceId::from("unknown-instance");
+        request.instance_id = ChildInstanceId::new("unknown-instance")
+            .expect("string ID literal/generated value must be non-empty");
         let result = evaluate_child_call_authority(
             &call(),
             &request,
@@ -927,7 +977,10 @@ mod tests {
     #[test]
     fn approval_scope_must_match_call() {
         let mut approval = approval(ChildApprovalState::Approved);
-        approval.scope_project_id = Some(ProjectId::from("other-project"));
+        approval.scope_project_id = Some(
+            ProjectId::new("other-project")
+                .expect("string ID literal/generated value must be non-empty"),
+        );
         let result = evaluate_child_call_authority(
             &call(),
             &request(),
@@ -990,19 +1043,24 @@ mod tests {
         let (ready, ready_transition) = transition_child_instance(
             &loading,
             ChildInstanceState::Ready,
-            ObservationId::from("obs-ready"),
+            ObservationId::new("obs-ready")
+                .expect("string ID literal/generated value must be non-empty"),
         );
         assert!(ready_transition.allowed);
         assert_eq!(ready.instance_state, ChildInstanceState::Ready);
         assert_eq!(
             ready.readiness_observation_id,
-            Some(ObservationId::from("obs-ready"))
+            Some(
+                ObservationId::new("obs-ready")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
         );
 
         let (draining, draining_transition) = transition_child_instance(
             &ready,
             ChildInstanceState::Draining,
-            ObservationId::from("obs-draining"),
+            ObservationId::new("obs-draining")
+                .expect("string ID literal/generated value must be non-empty"),
         );
         assert!(draining_transition.allowed);
         assert_eq!(draining.instance_state, ChildInstanceState::Draining);
@@ -1010,7 +1068,8 @@ mod tests {
         let (stopped, stopped_transition) = transition_child_instance(
             &draining,
             ChildInstanceState::Stopped,
-            ObservationId::from("obs-stopped"),
+            ObservationId::new("obs-stopped")
+                .expect("string ID literal/generated value must be non-empty"),
         );
         assert!(stopped_transition.allowed);
         assert_eq!(stopped.instance_state, ChildInstanceState::Stopped);
@@ -1018,7 +1077,8 @@ mod tests {
         let (still_stopped, illegal_transition) = transition_child_instance(
             &stopped,
             ChildInstanceState::Ready,
-            ObservationId::from("obs-illegal"),
+            ObservationId::new("obs-illegal")
+                .expect("string ID literal/generated value must be non-empty"),
         );
         assert!(!illegal_transition.allowed);
         assert_eq!(
@@ -1028,7 +1088,8 @@ mod tests {
         assert_eq!(still_stopped.instance_state, ChildInstanceState::Stopped);
         assert_eq!(
             still_stopped.last_lifecycle_observation_id,
-            ObservationId::from("obs-stopped")
+            ObservationId::new("obs-stopped")
+                .expect("string ID literal/generated value must be non-empty")
         );
     }
 

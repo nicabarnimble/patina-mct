@@ -113,7 +113,8 @@ mod tests {
 
     fn iroh_snapshot(lifecycle: MotherIrohEndpointLifecycle) -> MotherIrohEndpointSnapshot {
         MotherIrohEndpointSnapshot {
-            endpoint_id: EndpointIdText::from("endpoint-daemon"),
+            endpoint_id: EndpointIdText::new("endpoint-daemon")
+                .expect("string ID literal/generated value must be non-empty"),
             lifecycle,
             accepted_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
             direct_addresses: vec!["127.0.0.1:0".into()],
@@ -189,7 +190,12 @@ mod tests {
         assert_eq!(report.trace_observation_count, 6);
 
         let ledger = JsonlObservationLedger::open(&ledger_path, "ledger-dev", "mother-a").unwrap();
-        let call_entries = ledger.by_call(&CallId::from("call-fake-echo")).unwrap();
+        let call_entries = ledger
+            .by_call(
+                &CallId::new("call-fake-echo")
+                    .expect("string ID literal/generated value must be non-empty"),
+            )
+            .unwrap();
         assert_eq!(call_entries.len(), 4);
     }
 }

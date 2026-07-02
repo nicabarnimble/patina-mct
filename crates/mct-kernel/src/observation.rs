@@ -764,17 +764,28 @@ mod tests {
         id: &str,
     ) -> AdapterDiagnosticObservationInput {
         AdapterDiagnosticObservationInput {
-            observation_id: ObservationId::from(id),
+            observation_id: ObservationId::new(id)
+                .expect("string ID literal/generated value must be non-empty"),
             observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             diagnostic_kind: kind,
             trace: ObservationTraceRef {
-                trace_id: TraceId::from("trace-diagnostic"),
-                span_id: Some(SpanId::from("span-diagnostic")),
+                trace_id: TraceId::new("trace-diagnostic")
+                    .expect("string ID literal/generated value must be non-empty"),
+                span_id: Some(
+                    SpanId::new("span-diagnostic")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
                 parent_span_id: None,
                 external_trace_id: None,
             },
-            call_id: Some(CallId::from("call-diagnostic")),
-            decision_id: Some(DecisionId::from("decision-diagnostic")),
+            call_id: Some(
+                CallId::new("call-diagnostic")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            decision_id: Some(
+                DecisionId::new("decision-diagnostic")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             subject_id: Some("adapter-subject".into()),
             resource_id: Some("adapter-resource".into()),
             policy_revision: Some(3),
@@ -857,7 +868,13 @@ mod tests {
             assert_eq!(observation.safe_message, safe_message);
             assert_eq!(observation.visibility, ObservationVisibility::InternalOnly);
             assert_eq!(observation.detail_ref, Some("detail:opaque".into()));
-            assert_eq!(observation.call_id, Some(CallId::from("call-diagnostic")));
+            assert_eq!(
+                observation.call_id,
+                Some(
+                    CallId::new("call-diagnostic")
+                        .expect("string ID literal/generated value must be non-empty")
+                )
+            );
             assert_eq!(observation.policy_revision, Some(3));
             assert_eq!(observation.grants_revision, Some(4));
         }
@@ -866,7 +883,8 @@ mod tests {
     #[test]
     fn kernel_denial_evaluations_become_observations() {
         let hello = MctHelloAdmissionEvaluation {
-            decision_id: DecisionId::from("decision-hello"),
+            decision_id: DecisionId::new("decision-hello")
+                .expect("string ID literal/generated value must be non-empty"),
             request_id: "hello-1".into(),
             peer_admission_decision_id: None,
             selected_binding_id: None,
@@ -877,76 +895,108 @@ mod tests {
             hello_outcome: HelloOutcome::Denied,
             reason: HelloReason::MissingBinding,
             safe_reason: SafeHelloReason::NotAuthorized,
-            observation_id: ObservationId::from("obs-hello-denied"),
+            observation_id: ObservationId::new("obs-hello-denied")
+                .expect("string ID literal/generated value must be non-empty"),
         };
-        let hello_observation =
-            hello_evaluation_observation(TraceId::from("trace-1"), supplied_observed_at(), &hello);
+        let hello_observation = hello_evaluation_observation(
+            TraceId::new("trace-1").expect("string ID literal/generated value must be non-empty"),
+            supplied_observed_at(),
+            &hello,
+        );
         assert_eq!(hello_observation.kind, ObservationKind::PeerRejected);
         assert_eq!(hello_observation.source_plane, SourcePlane::Kernel);
         assert_eq!(hello_observation.outcome, ObservationOutcome::Denied);
         assert_eq!(
             hello_observation.decision_id,
-            Some(DecisionId::from("decision-hello"))
+            Some(
+                DecisionId::new("decision-hello")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
         );
         assert_eq!(hello_observation.safe_message, "not authorized");
         assert_eq!(hello_observation.observed_at, supplied_observed_at());
 
         let call = MctCallProtocolEvaluation {
-            decision_id: DecisionId::from("decision-call"),
-            protocol_request_id: ProtocolRequestId::from("proto-call"),
-            call_id: Some(CallId::from("call-1")),
+            decision_id: DecisionId::new("decision-call")
+                .expect("string ID literal/generated value must be non-empty"),
+            protocol_request_id: ProtocolRequestId::new("proto-call")
+                .expect("string ID literal/generated value must be non-empty"),
+            call_id: Some(
+                CallId::new("call-1").expect("string ID literal/generated value must be non-empty"),
+            ),
             route_decision_id: None,
             result_ref: None,
             outcome: CallProtocolOutcome::Denied,
             reason: CallProtocolReason::HelloNotAdmitted,
             safe_message: "not authorized".into(),
-            observation_id: ObservationId::from("obs-call-denied"),
+            observation_id: ObservationId::new("obs-call-denied")
+                .expect("string ID literal/generated value must be non-empty"),
         };
         let call_observation = call_protocol_evaluation_observation(
-            TraceId::from("trace-1"),
+            TraceId::new("trace-1").expect("string ID literal/generated value must be non-empty"),
             supplied_observed_at(),
             &call,
         );
         assert_eq!(call_observation.kind, ObservationKind::CallDenied);
         assert_eq!(call_observation.source_plane, SourcePlane::Kernel);
         assert_eq!(call_observation.outcome, ObservationOutcome::Denied);
-        assert_eq!(call_observation.call_id, Some(CallId::from("call-1")));
+        assert_eq!(
+            call_observation.call_id,
+            Some(
+                CallId::new("call-1").expect("string ID literal/generated value must be non-empty")
+            )
+        );
         assert_eq!(
             call_observation.decision_id,
-            Some(DecisionId::from("decision-call"))
+            Some(
+                DecisionId::new("decision-call")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
         );
         assert_eq!(call_observation.observed_at, supplied_observed_at());
     }
 
     fn binding(state: BindingState) -> MctPeerBinding {
         MctPeerBinding {
-            binding_id: PeerBindingId::from("binding-1"),
-            iroh_endpoint_id: EndpointIdText::from("endpoint-a"),
+            binding_id: PeerBindingId::new("binding-1")
+                .expect("string ID literal/generated value must be non-empty"),
+            iroh_endpoint_id: EndpointIdText::new("endpoint-a")
+                .expect("string ID literal/generated value must be non-empty"),
             scope: MctPeerBindingScope {
-                mct_node_id: MctNodeId::from("node-b"),
-                vision_id: VisionId::from("vision-a"),
+                mct_node_id: MctNodeId::new("node-b")
+                    .expect("string ID literal/generated value must be non-empty"),
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 allowed_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
                 data_scope: None,
                 observation_scope: None,
             },
-            issuer_node_id: MctNodeId::from("node-a"),
+            issuer_node_id: MctNodeId::new("node-a")
+                .expect("string ID literal/generated value must be non-empty"),
             policy_revision: 7,
             binding_state: state,
             issued_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             expires_at: None,
-            created_by_observation_id: ObservationId::from("obs-binding-created"),
-            superseded_by_observation_id: Some(ObservationId::from("obs-binding-superseded")),
+            created_by_observation_id: ObservationId::new("obs-binding-created")
+                .expect("string ID literal/generated value must be non-empty"),
+            superseded_by_observation_id: Some(
+                ObservationId::new("obs-binding-superseded")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
         }
     }
 
     #[test]
     fn no_route_decision_becomes_observation() {
         let call = MctCall {
-            call_id: CallId::from("call-no-route"),
+            call_id: CallId::new("call-no-route")
+                .expect("string ID literal/generated value must be non-empty"),
             caller: CallerIdentity {
-                node_id: MctNodeId::from("node-a"),
+                node_id: MctNodeId::new("node-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 user_id: None,
-                vision_id: VisionId::from("vision-a"),
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 project_id: None,
             },
             target: OperationTarget {
@@ -966,14 +1016,17 @@ mod tests {
             },
             deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
             trace_context: TraceContext {
-                trace_id: TraceId::from("trace-no-route"),
-                span_id: SpanId::from("span-no-route"),
+                trace_id: TraceId::new("trace-no-route")
+                    .expect("string ID literal/generated value must be non-empty"),
+                span_id: SpanId::new("span-no-route")
+                    .expect("string ID literal/generated value must be non-empty"),
             },
             origin: CallOrigin::Cli,
         };
         let candidate = CandidateRoute {
             candidate_id: "candidate-denied".into(),
-            node_id: MctNodeId::from("node-b"),
+            node_id: MctNodeId::new("node-b")
+                .expect("string ID literal/generated value must be non-empty"),
             child_id: None,
             runtime_kind: RuntimeKind::RemotePeer,
             network_path: NetworkPathClass::Relayed,
@@ -988,22 +1041,34 @@ mod tests {
             )],
             CandidateEliminationReason::PeerNotAdmitted,
             RouteDecisionIds {
-                decision_id: DecisionId::from("route-decision-no-route"),
-                observation_id: ObservationId::from("obs-route-no-route"),
+                decision_id: DecisionId::new("route-decision-no-route")
+                    .expect("string ID literal/generated value must be non-empty"),
+                observation_id: ObservationId::new("obs-route-no-route")
+                    .expect("string ID literal/generated value must be non-empty"),
             },
         );
         let observation = route_decision_observation(
-            TraceId::from("trace-no-route"),
+            TraceId::new("trace-no-route")
+                .expect("string ID literal/generated value must be non-empty"),
             supplied_observed_at(),
             &decision,
         );
 
         assert_eq!(observation.kind, ObservationKind::NoRouteRecorded);
         assert_eq!(observation.outcome, ObservationOutcome::Denied);
-        assert_eq!(observation.call_id, Some(CallId::from("call-no-route")));
+        assert_eq!(
+            observation.call_id,
+            Some(
+                CallId::new("call-no-route")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
+        );
         assert_eq!(
             observation.decision_id,
-            Some(DecisionId::from("route-decision-no-route"))
+            Some(
+                DecisionId::new("route-decision-no-route")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
         );
         assert_eq!(observation.safe_message, "not authorized");
         assert_eq!(observation.policy_revision, Some(3));
@@ -1013,19 +1078,29 @@ mod tests {
 
     #[test]
     fn route_revalidation_observation_records_allowed_and_denied_outcomes() {
-        let trace_id = TraceId::from("trace-revalidation");
+        let trace_id = TraceId::new("trace-revalidation")
+            .expect("string ID literal/generated value must be non-empty");
         let candidate = CandidateRoute {
             candidate_id: "candidate-revalidated".into(),
-            node_id: MctNodeId::from("node-b"),
-            child_id: Some(ChildId::from("child-echo")),
+            node_id: MctNodeId::new("node-b")
+                .expect("string ID literal/generated value must be non-empty"),
+            child_id: Some(
+                ChildId::new("child-echo")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             runtime_kind: RuntimeKind::Process,
             network_path: NetworkPathClass::Local,
         };
         let allowed = RouteDecision {
-            decision_id: DecisionId::from("route-revalidation-allowed"),
-            call_id: CallId::from("call-revalidation"),
+            decision_id: DecisionId::new("route-revalidation-allowed")
+                .expect("string ID literal/generated value must be non-empty"),
+            call_id: CallId::new("call-revalidation")
+                .expect("string ID literal/generated value must be non-empty"),
             decision_kind: RouteDecisionKind::Revalidation,
-            initial_decision_id: Some(DecisionId::from("route-initial")),
+            initial_decision_id: Some(
+                DecisionId::new("route-initial")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             authority_evaluations: vec![CandidateAuthorityEvaluation::admissible(
                 candidate.clone(),
                 3,
@@ -1035,7 +1110,8 @@ mod tests {
             outcome: RouteDecisionOutcome::RouteSelected,
             no_route_reason: None,
             safe_message: "route revalidated".into(),
-            observation_id: ObservationId::from("obs-route-revalidated"),
+            observation_id: ObservationId::new("obs-route-revalidated")
+                .expect("string ID literal/generated value must be non-empty"),
         };
         let allowed_observation =
             route_decision_observation(trace_id.clone(), supplied_observed_at(), &allowed);
@@ -1049,10 +1125,15 @@ mod tests {
         );
 
         let denied = RouteDecision {
-            decision_id: DecisionId::from("route-revalidation-denied"),
-            call_id: CallId::from("call-revalidation"),
+            decision_id: DecisionId::new("route-revalidation-denied")
+                .expect("string ID literal/generated value must be non-empty"),
+            call_id: CallId::new("call-revalidation")
+                .expect("string ID literal/generated value must be non-empty"),
             decision_kind: RouteDecisionKind::Revalidation,
-            initial_decision_id: Some(DecisionId::from("route-initial")),
+            initial_decision_id: Some(
+                DecisionId::new("route-initial")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             authority_evaluations: vec![CandidateAuthorityEvaluation::eliminated(
                 candidate,
                 CandidateEliminationReason::PolicyRevisionStale,
@@ -1063,7 +1144,8 @@ mod tests {
             outcome: RouteDecisionOutcome::NoRoute,
             no_route_reason: Some(CandidateEliminationReason::PolicyRevisionStale),
             safe_message: "not authorized".into(),
-            observation_id: ObservationId::from("obs-route-revalidation-denied"),
+            observation_id: ObservationId::new("obs-route-revalidation-denied")
+                .expect("string ID literal/generated value must be non-empty"),
         };
         let denied_observation =
             route_decision_observation(trace_id, supplied_observed_at(), &denied);
@@ -1082,7 +1164,7 @@ mod tests {
     #[test]
     fn revoked_and_expired_bindings_become_observations() {
         let revoked = peer_binding_state_observation(
-            TraceId::from("trace-1"),
+            TraceId::new("trace-1").expect("string ID literal/generated value must be non-empty"),
             supplied_observed_at(),
             &binding(BindingState::Revoked),
         );
@@ -1093,7 +1175,7 @@ mod tests {
         assert_eq!(revoked.observed_at, supplied_observed_at());
 
         let expired = peer_binding_state_observation(
-            TraceId::from("trace-1"),
+            TraceId::new("trace-1").expect("string ID literal/generated value must be non-empty"),
             supplied_observed_at(),
             &binding(BindingState::Expired),
         );
@@ -1106,35 +1188,50 @@ mod tests {
     #[test]
     fn toy_grant_evaluations_become_observations() {
         let allowed = ToyGrantEvaluation {
-            evaluation_id: ToyGrantEvaluationId::from("toy-eval-1"),
-            call_id: CallId::from("call-toy"),
-            decision_id: DecisionId::from("decision-toy"),
-            grant_id: Some(ToyGrantId::from("grant-toy")),
-            toy_id: ToyId::from("toy-logging"),
+            evaluation_id: ToyGrantEvaluationId::new("toy-eval-1")
+                .expect("string ID literal/generated value must be non-empty"),
+            call_id: CallId::new("call-toy")
+                .expect("string ID literal/generated value must be non-empty"),
+            decision_id: DecisionId::new("decision-toy")
+                .expect("string ID literal/generated value must be non-empty"),
+            grant_id: Some(
+                ToyGrantId::new("grant-toy")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            toy_id: ToyId::new("toy-logging")
+                .expect("string ID literal/generated value must be non-empty"),
             subject_child_name: "slate-manager".into(),
             verdict: ToyGrantVerdict::Allowed,
             reason_code: ToyGrantReasonCode::ActiveGrant,
             policy_revision: 3,
             grants_revision: 7,
-            observation_id: ObservationId::from("obs-toy-allowed"),
+            observation_id: ObservationId::new("obs-toy-allowed")
+                .expect("string ID literal/generated value must be non-empty"),
         };
         let allowed_observation = toy_grant_evaluation_observation(
-            TraceId::from("trace-toy"),
+            TraceId::new("trace-toy").expect("string ID literal/generated value must be non-empty"),
             supplied_observed_at(),
             &allowed,
         );
         assert_eq!(allowed_observation.kind, ObservationKind::ToyGrantAllowed);
         assert_eq!(allowed_observation.outcome, ObservationOutcome::Allowed);
-        assert_eq!(allowed_observation.call_id, Some(CallId::from("call-toy")));
+        assert_eq!(
+            allowed_observation.call_id,
+            Some(
+                CallId::new("call-toy")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
+        );
         assert_eq!(allowed_observation.resource_id, Some("toy-logging".into()));
         assert_eq!(allowed_observation.observed_at, supplied_observed_at());
 
         let mut denied = allowed;
         denied.verdict = ToyGrantVerdict::Denied;
         denied.reason_code = ToyGrantReasonCode::MissingGrant;
-        denied.observation_id = ObservationId::from("obs-toy-denied");
+        denied.observation_id = ObservationId::new("obs-toy-denied")
+            .expect("string ID literal/generated value must be non-empty");
         let denied_observation = toy_grant_evaluation_observation(
-            TraceId::from("trace-toy"),
+            TraceId::new("trace-toy").expect("string ID literal/generated value must be non-empty"),
             supplied_observed_at(),
             &denied,
         );
@@ -1147,19 +1244,29 @@ mod tests {
     #[test]
     fn child_lifecycle_and_call_authority_become_observations() {
         let approval = ChildApproval {
-            approval_id: ChildApprovalId::from("approval-child"),
-            artifact_id: ComponentArtifactId::from("artifact-child"),
+            approval_id: ChildApprovalId::new("approval-child")
+                .expect("string ID literal/generated value must be non-empty"),
+            artifact_id: ComponentArtifactId::new("artifact-child")
+                .expect("string ID literal/generated value must be non-empty"),
             child_name: "slate-manager".into(),
             artifact_version: "0.2.0".into(),
-            scope_vision_id: Some(VisionId::from("vision-a")),
-            scope_node_id: Some(MctNodeId::from("node-a")),
+            scope_vision_id: Some(
+                VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            scope_node_id: Some(
+                MctNodeId::new("node-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             scope_project_id: None,
             approval_state: ChildApprovalState::Approved,
             policy_revision: 5,
-            authority_observation_id: ObservationId::from("obs-child-approved"),
+            authority_observation_id: ObservationId::new("obs-child-approved")
+                .expect("string ID literal/generated value must be non-empty"),
         };
         let approval_observation = child_approval_observation(
-            TraceId::from("trace-child"),
+            TraceId::new("trace-child")
+                .expect("string ID literal/generated value must be non-empty"),
             supplied_observed_at(),
             &approval,
         );
@@ -1172,19 +1279,28 @@ mod tests {
         assert_eq!(approval_observation.observed_at, supplied_observed_at());
 
         let assignment = ChildAssignment {
-            assignment_id: ChildAssignmentId::from("assignment-child"),
-            approval_id: ChildApprovalId::from("approval-child"),
-            artifact_id: ComponentArtifactId::from("artifact-child"),
+            assignment_id: ChildAssignmentId::new("assignment-child")
+                .expect("string ID literal/generated value must be non-empty"),
+            approval_id: ChildApprovalId::new("approval-child")
+                .expect("string ID literal/generated value must be non-empty"),
+            artifact_id: ComponentArtifactId::new("artifact-child")
+                .expect("string ID literal/generated value must be non-empty"),
             child_name: "slate-manager".into(),
-            vision_id: VisionId::from("vision-a"),
-            node_id: Some(MctNodeId::from("node-a")),
+            vision_id: VisionId::new("vision-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            node_id: Some(
+                MctNodeId::new("node-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             project_id: None,
             assignment_state: ChildAssignmentState::Active,
             pinned_artifact_version: "0.2.0".into(),
-            assignment_observation_id: ObservationId::from("obs-child-assigned"),
+            assignment_observation_id: ObservationId::new("obs-child-assigned")
+                .expect("string ID literal/generated value must be non-empty"),
         };
         let assignment_observation = child_assignment_observation(
-            TraceId::from("trace-child"),
+            TraceId::new("trace-child")
+                .expect("string ID literal/generated value must be non-empty"),
             supplied_observed_at(),
             &assignment,
         );
@@ -1193,18 +1309,27 @@ mod tests {
         assert_eq!(assignment_observation.observed_at, supplied_observed_at());
 
         let instance = ChildInstance {
-            instance_id: ChildInstanceId::from("instance-child"),
-            assignment_id: ChildAssignmentId::from("assignment-child"),
-            artifact_id: ComponentArtifactId::from("artifact-child"),
+            instance_id: ChildInstanceId::new("instance-child")
+                .expect("string ID literal/generated value must be non-empty"),
+            assignment_id: ChildAssignmentId::new("assignment-child")
+                .expect("string ID literal/generated value must be non-empty"),
+            artifact_id: ComponentArtifactId::new("artifact-child")
+                .expect("string ID literal/generated value must be non-empty"),
             child_name: "slate-manager".into(),
             generation: 1,
-            node_id: MctNodeId::from("node-a"),
+            node_id: MctNodeId::new("node-a")
+                .expect("string ID literal/generated value must be non-empty"),
             instance_state: ChildInstanceState::Ready,
-            readiness_observation_id: Some(ObservationId::from("obs-child-ready")),
-            last_lifecycle_observation_id: ObservationId::from("obs-child-ready"),
+            readiness_observation_id: Some(
+                ObservationId::new("obs-child-ready")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            last_lifecycle_observation_id: ObservationId::new("obs-child-ready")
+                .expect("string ID literal/generated value must be non-empty"),
         };
         let instance_observation = child_instance_observation(
-            TraceId::from("trace-child"),
+            TraceId::new("trace-child")
+                .expect("string ID literal/generated value must be non-empty"),
             supplied_observed_at(),
             &instance,
         );
@@ -1216,21 +1341,38 @@ mod tests {
         assert_eq!(instance_observation.observed_at, supplied_observed_at());
 
         let evaluation = ChildCallAuthorityEvaluation {
-            evaluation_id: ChildCallEvaluationId::from("child-eval"),
-            call_id: CallId::from("call-child"),
-            decision_id: DecisionId::from("decision-child"),
-            instance_id: Some(ChildInstanceId::from("instance-child")),
-            assignment_id: Some(ChildAssignmentId::from("assignment-child")),
-            approval_id: Some(ChildApprovalId::from("approval-child")),
-            artifact_id: Some(ComponentArtifactId::from("artifact-child")),
+            evaluation_id: ChildCallEvaluationId::new("child-eval")
+                .expect("string ID literal/generated value must be non-empty"),
+            call_id: CallId::new("call-child")
+                .expect("string ID literal/generated value must be non-empty"),
+            decision_id: DecisionId::new("decision-child")
+                .expect("string ID literal/generated value must be non-empty"),
+            instance_id: Some(
+                ChildInstanceId::new("instance-child")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            assignment_id: Some(
+                ChildAssignmentId::new("assignment-child")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            approval_id: Some(
+                ChildApprovalId::new("approval-child")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            artifact_id: Some(
+                ComponentArtifactId::new("artifact-child")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             child_name: Some("slate-manager".into()),
             verdict: ChildCallVerdict::Denied,
             reason_code: ChildCallReasonCode::InstanceNotReady,
             policy_revision: 5,
-            observation_id: ObservationId::from("obs-child-denied"),
+            observation_id: ObservationId::new("obs-child-denied")
+                .expect("string ID literal/generated value must be non-empty"),
         };
         let denial_observation = child_call_authority_observation(
-            TraceId::from("trace-child"),
+            TraceId::new("trace-child")
+                .expect("string ID literal/generated value must be non-empty"),
             supplied_observed_at(),
             &evaluation,
         );

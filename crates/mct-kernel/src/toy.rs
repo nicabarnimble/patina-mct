@@ -377,12 +377,18 @@ mod tests {
 
     fn call() -> MctCall {
         MctCall {
-            call_id: CallId::from("call-toy-1"),
+            call_id: CallId::new("call-toy-1")
+                .expect("string ID literal/generated value must be non-empty"),
             caller: CallerIdentity {
-                node_id: MctNodeId::from("caller-node"),
+                node_id: MctNodeId::new("caller-node")
+                    .expect("string ID literal/generated value must be non-empty"),
                 user_id: None,
-                vision_id: VisionId::from("vision-a"),
-                project_id: Some(ProjectId::from("project-a")),
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+                project_id: Some(
+                    ProjectId::new("project-a")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
             },
             target: OperationTarget {
                 namespace: "patina".into(),
@@ -401,8 +407,10 @@ mod tests {
             },
             deadline: Timestamp::new("2026-05-31T00:10:00Z").unwrap(),
             trace_context: TraceContext {
-                trace_id: TraceId::from("trace-toy-1"),
-                span_id: SpanId::from("span-toy-1"),
+                trace_id: TraceId::new("trace-toy-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                span_id: SpanId::new("span-toy-1")
+                    .expect("string ID literal/generated value must be non-empty"),
             },
             origin: CallOrigin::Cli,
         }
@@ -410,7 +418,8 @@ mod tests {
 
     fn toy() -> CanonicalToyContract {
         CanonicalToyContract {
-            toy_id: ToyId::from("toy-logging"),
+            toy_id: ToyId::new("toy-logging")
+                .expect("string ID literal/generated value must be non-empty"),
             contract: ToyContractIdentity {
                 namespace: "mct".into(),
                 interface_name: "logging".into(),
@@ -420,7 +429,8 @@ mod tests {
             },
             authority_bearing: true,
             catalog_revision: 1,
-            admitted_by_observation_id: ObservationId::from("obs-toy-catalog"),
+            admitted_by_observation_id: ObservationId::new("obs-toy-catalog")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
@@ -429,38 +439,60 @@ mod tests {
             child_name: "slate-manager".into(),
             artifact_id: "sha256:artifact".into(),
             artifact_version: "0.2.0".into(),
-            assignment_id: Some(ChildAssignmentId::from("assignment-a")),
-            caller_node_id: Some(MctNodeId::from("caller-node")),
+            assignment_id: Some(
+                ChildAssignmentId::new("assignment-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            caller_node_id: Some(
+                MctNodeId::new("caller-node")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
         }
     }
 
     fn request() -> ToyGrantEvaluationRequest {
         ToyGrantEvaluationRequest {
-            toy_id: ToyId::from("toy-logging"),
+            toy_id: ToyId::new("toy-logging")
+                .expect("string ID literal/generated value must be non-empty"),
             subject: subject(),
-            child_instance_id: ChildInstanceId::from("instance-a"),
+            child_instance_id: ChildInstanceId::new("instance-a")
+                .expect("string ID literal/generated value must be non-empty"),
             action: "write".into(),
             resource_id: Some("log:project".into()),
-            node_id: MctNodeId::from("node-a"),
+            node_id: MctNodeId::new("node-a")
+                .expect("string ID literal/generated value must be non-empty"),
             now: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             ids: ToyGrantEvaluationIds {
-                evaluation_id: ToyGrantEvaluationId::from("toy-eval-1"),
-                decision_id: DecisionId::from("toy-decision-1"),
-                observation_id: ObservationId::from("obs-toy-eval-1"),
-                authorized_toy_call_id: AuthorizedToyCallId::from("authorized-toy-call-1"),
+                evaluation_id: ToyGrantEvaluationId::new("toy-eval-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                decision_id: DecisionId::new("toy-decision-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                observation_id: ObservationId::new("obs-toy-eval-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                authorized_toy_call_id: AuthorizedToyCallId::new("authorized-toy-call-1")
+                    .expect("string ID literal/generated value must be non-empty"),
             },
         }
     }
 
     fn grant(state: ToyGrantState) -> ToyGrant {
         ToyGrant {
-            grant_id: ToyGrantId::from("grant-logging"),
-            toy_id: ToyId::from("toy-logging"),
+            grant_id: ToyGrantId::new("grant-logging")
+                .expect("string ID literal/generated value must be non-empty"),
+            toy_id: ToyId::new("toy-logging")
+                .expect("string ID literal/generated value must be non-empty"),
             subject: subject(),
             scope: ToyGrantScope {
-                vision_id: VisionId::from("vision-a"),
-                node_id: Some(MctNodeId::from("node-a")),
-                project_id: Some(ProjectId::from("project-a")),
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+                node_id: Some(
+                    MctNodeId::new("node-a")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
+                project_id: Some(
+                    ProjectId::new("project-a")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
                 data_classification: Some("project".into()),
                 resource_id: Some("log:project".into()),
                 allowed_actions: vec!["write".into()],
@@ -476,7 +508,8 @@ mod tests {
             issuer_id: "issuer-a".into(),
             policy_revision: 3,
             grants_revision: 7,
-            authority_observation_id: ObservationId::from("obs-grant"),
+            authority_observation_id: ObservationId::new("obs-grant")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
@@ -496,10 +529,15 @@ mod tests {
             ToyGrantReasonCode::ActiveGrant
         );
         let authorized = result.authorized.expect("authorized toy call");
-        assert_eq!(authorized.grant_id, ToyGrantId::from("grant-logging"));
+        assert_eq!(
+            authorized.grant_id,
+            ToyGrantId::new("grant-logging")
+                .expect("string ID literal/generated value must be non-empty")
+        );
         assert_eq!(
             authorized.child_instance_id,
-            ChildInstanceId::from("instance-a")
+            ChildInstanceId::new("instance-a")
+                .expect("string ID literal/generated value must be non-empty")
         );
         assert_eq!(
             authorized.expires_at,
@@ -510,7 +548,8 @@ mod tests {
     #[test]
     fn unknown_toy_denies_by_default() {
         let mut request = request();
-        request.toy_id = ToyId::from("legacy-host-filesystem");
+        request.toy_id = ToyId::new("legacy-host-filesystem")
+            .expect("string ID literal/generated value must be non-empty");
         let result = evaluate_toy_grant_for_call(
             &call(),
             &request,
@@ -554,7 +593,10 @@ mod tests {
         );
         assert_eq!(
             result.evaluation.grant_id,
-            Some(ToyGrantId::from("grant-logging"))
+            Some(
+                ToyGrantId::new("grant-logging")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
         );
         assert!(result.authorized.is_none());
     }

@@ -98,29 +98,18 @@ pub struct MctCall {
 
 impl CallerIdentity {
     pub fn validate(&self) -> MctKernelResult<()> {
-        ensure_non_blank("CallerIdentity", "node_id", self.node_id.as_str())?;
-        if let Some(user_id) = &self.user_id {
-            ensure_non_blank("CallerIdentity", "user_id", user_id.as_str())?;
-        }
-        ensure_non_blank("CallerIdentity", "vision_id", self.vision_id.as_str())?;
-        if let Some(project_id) = &self.project_id {
-            ensure_non_blank("CallerIdentity", "project_id", project_id.as_str())?;
-        }
         Ok(())
     }
 }
 
 impl TraceContext {
     pub fn validate(&self) -> MctKernelResult<()> {
-        ensure_non_blank("TraceContext", "trace_id", self.trace_id.as_str())?;
-        ensure_non_blank("TraceContext", "span_id", self.span_id.as_str())?;
         Ok(())
     }
 }
 
 impl MctCall {
     pub fn validate(&self) -> MctKernelResult<()> {
-        ensure_non_blank("MctCall", "call_id", self.call_id.as_str())?;
         self.caller.validate()?;
         self.target.validate()?;
         self.payload_metadata.validate()?;
@@ -192,28 +181,8 @@ impl MctCallProtocolAuthority {
     pub fn validate(&self) -> MctKernelResult<()> {
         ensure_non_blank(
             "MctCallProtocolAuthority",
-            "hello_decision_id",
-            self.hello_decision_id.as_str(),
-        )?;
-        ensure_non_blank(
-            "MctCallProtocolAuthority",
-            "peer_binding_id",
-            self.peer_binding_id.as_str(),
-        )?;
-        ensure_non_blank(
-            "MctCallProtocolAuthority",
-            "vision_id",
-            self.vision_id.as_str(),
-        )?;
-        ensure_non_blank(
-            "MctCallProtocolAuthority",
             "accepted_alpn",
             &self.accepted_alpn,
-        )?;
-        ensure_non_blank(
-            "MctCallProtocolAuthority",
-            "endpoint_id",
-            self.endpoint_id.as_str(),
         )?;
         Ok(())
     }
@@ -316,11 +285,6 @@ pub struct MctCallProtocolRequest {
 
 impl MctCallProtocolRequest {
     pub fn validate(&self) -> MctKernelResult<()> {
-        ensure_non_blank(
-            "MctCallProtocolRequest",
-            "protocol_request_id",
-            self.protocol_request_id.as_str(),
-        )?;
         self.authority.validate()?;
         self.received_over.validate()?;
         self.call.validate()?;
@@ -330,12 +294,6 @@ impl MctCallProtocolRequest {
             "idempotency_key",
             &self.idempotency_key,
         )?;
-        ensure_non_blank(
-            "MctCallProtocolRequest",
-            "received_observation_id",
-            self.received_observation_id.as_str(),
-        )?;
-
         if self.payload.approximate_size_bytes()
             != self.call.payload_metadata.approximate_size_bytes
         {
@@ -418,26 +376,7 @@ pub struct MctCallProtocolReply {
 
 impl MctCallProtocolReply {
     pub fn validate(&self) -> MctKernelResult<()> {
-        ensure_non_blank("MctCallProtocolReply", "reply_id", self.reply_id.as_str())?;
-        ensure_non_blank(
-            "MctCallProtocolReply",
-            "protocol_request_id",
-            self.protocol_request_id.as_str(),
-        )?;
-        ensure_non_blank(
-            "MctCallProtocolReply",
-            "decision_id",
-            self.decision_id.as_str(),
-        )?;
-        if let Some(result_ref) = &self.result_ref {
-            ensure_non_blank("MctCallProtocolReply", "result_ref", result_ref.as_str())?;
-        }
         ensure_non_blank("MctCallProtocolReply", "safe_message", &self.safe_message)?;
-        ensure_non_blank(
-            "MctCallProtocolReply",
-            "reply_observation_id",
-            self.reply_observation_id.as_str(),
-        )?;
         Ok(())
     }
 }
@@ -537,11 +476,14 @@ mod tests {
 
     fn example_call() -> MctCall {
         MctCall {
-            call_id: CallId::from("call-1"),
+            call_id: CallId::new("call-1")
+                .expect("string ID literal/generated value must be non-empty"),
             caller: CallerIdentity {
-                node_id: MctNodeId::from("node-a"),
+                node_id: MctNodeId::new("node-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 user_id: None,
-                vision_id: VisionId::from("vision-a"),
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 project_id: None,
             },
             target: OperationTarget {
@@ -561,8 +503,10 @@ mod tests {
             },
             deadline: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             trace_context: TraceContext {
-                trace_id: TraceId::from("trace-1"),
-                span_id: SpanId::from("span-1"),
+                trace_id: TraceId::new("trace-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                span_id: SpanId::new("span-1")
+                    .expect("string ID literal/generated value must be non-empty"),
             },
             origin: CallOrigin::Iroh,
         }
@@ -570,12 +514,22 @@ mod tests {
 
     fn admitted_hello() -> MctHelloAdmissionEvaluation {
         MctHelloAdmissionEvaluation {
-            decision_id: DecisionId::from("hello-decision-1"),
+            decision_id: DecisionId::new("hello-decision-1")
+                .expect("string ID literal/generated value must be non-empty"),
             request_id: "hello-1".into(),
             peer_admission_decision_id: None,
-            selected_binding_id: Some(PeerBindingId::from("binding-1")),
-            selected_node_id: Some(MctNodeId::from("node-a")),
-            selected_vision_id: Some(VisionId::from("vision-a")),
+            selected_binding_id: Some(
+                PeerBindingId::new("binding-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            selected_node_id: Some(
+                MctNodeId::new("node-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            selected_vision_id: Some(
+                VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             negotiated_protocol: Some(MctProtocolVersion {
                 protocol_name: MCT_HELLO_ALPN.into(),
                 major: 0,
@@ -586,24 +540,31 @@ mod tests {
             hello_outcome: HelloOutcome::Admitted,
             reason: HelloReason::ActiveBinding,
             safe_reason: SafeHelloReason::Admitted,
-            observation_id: ObservationId::from("obs-hello-decision"),
+            observation_id: ObservationId::new("obs-hello-decision")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
     fn protocol_request() -> MctCallProtocolRequest {
         MctCallProtocolRequest {
-            protocol_request_id: ProtocolRequestId::from("proto-request-1"),
+            protocol_request_id: ProtocolRequestId::new("proto-request-1")
+                .expect("string ID literal/generated value must be non-empty"),
             authority: MctCallProtocolAuthority {
-                hello_decision_id: DecisionId::from("hello-decision-1"),
-                peer_binding_id: PeerBindingId::from("binding-1"),
-                vision_id: VisionId::from("vision-a"),
+                hello_decision_id: DecisionId::new("hello-decision-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                peer_binding_id: PeerBindingId::new("binding-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 accepted_alpn: MCT_CALL_ALPN.into(),
-                endpoint_id: EndpointIdText::from("endpoint-a"),
+                endpoint_id: EndpointIdText::new("endpoint-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 policy_revision: 1,
                 grants_revision: 1,
             },
             received_over: IrohConnectionPresentation {
-                endpoint_id: EndpointIdText::from("endpoint-a"),
+                endpoint_id: EndpointIdText::new("endpoint-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 alpn: MCT_CALL_ALPN.into(),
                 connection_side: ConnectionSide::Incoming,
                 path_class: PathClass::Direct,
@@ -617,14 +578,17 @@ mod tests {
                 approximate_size_bytes: 5,
             },
             idempotency_key: Some("idem-1".into()),
-            received_observation_id: ObservationId::from("obs-call-received"),
+            received_observation_id: ObservationId::new("obs-call-received")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
     fn eval_ids() -> CallEvaluationIds {
         CallEvaluationIds {
-            decision_id: DecisionId::from("call-decision-1"),
-            observation_id: ObservationId::from("obs-call-decision"),
+            decision_id: DecisionId::new("call-decision-1")
+                .expect("string ID literal/generated value must be non-empty"),
+            observation_id: ObservationId::new("obs-call-decision")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
@@ -648,10 +612,12 @@ mod tests {
         hello.hello_outcome = HelloOutcome::Denied;
         let evaluation = evaluate_call_protocol(&request, &hello, eval_ids());
         let reply = call_reply_from_evaluation(
-            ReplyId::from("reply-denied"),
+            ReplyId::new("reply-denied")
+                .expect("string ID literal/generated value must be non-empty"),
             &evaluation,
             None,
-            ObservationId::from("obs-reply-denied"),
+            ObservationId::new("obs-reply-denied")
+                .expect("string ID literal/generated value must be non-empty"),
         );
         let encoded_reply = encode_call_protocol_reply_json(&reply).unwrap();
         let decoded_reply = decode_call_protocol_reply_json(&encoded_reply).unwrap();
@@ -736,10 +702,15 @@ mod tests {
         assert_eq!(evaluation.outcome, CallProtocolOutcome::AcceptedForRouting);
 
         let reply = call_reply_from_evaluation(
-            ReplyId::from("reply-success"),
+            ReplyId::new("reply-success")
+                .expect("string ID literal/generated value must be non-empty"),
             &evaluation,
-            Some(ResultRef::from("result-call-1")),
-            ObservationId::from("obs-reply-success"),
+            Some(
+                ResultRef::new("result-call-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            ObservationId::new("obs-reply-success")
+                .expect("string ID literal/generated value must be non-empty"),
         );
         let decoded_reply =
             decode_call_protocol_reply_json(&encode_call_protocol_reply_json(&reply).unwrap())
@@ -755,7 +726,10 @@ mod tests {
         );
         assert_eq!(
             decoded_reply.result_ref,
-            Some(ResultRef::from("result-call-1"))
+            Some(
+                ResultRef::new("result-call-1")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
         );
     }
 
@@ -763,7 +737,12 @@ mod tests {
     fn admitted_hello_allows_call_for_routing() {
         let evaluation = evaluate_call_protocol(&protocol_request(), &admitted_hello(), eval_ids());
         assert!(evaluation.is_accepted_for_routing());
-        assert_eq!(evaluation.call_id, Some(CallId::from("call-1")));
+        assert_eq!(
+            evaluation.call_id,
+            Some(
+                CallId::new("call-1").expect("string ID literal/generated value must be non-empty")
+            )
+        );
     }
 
     #[test]
@@ -786,7 +765,8 @@ mod tests {
     #[test]
     fn endpoint_mismatch_is_denied() {
         let mut request = protocol_request();
-        request.received_over.endpoint_id = EndpointIdText::from("endpoint-b");
+        request.received_over.endpoint_id = EndpointIdText::new("endpoint-b")
+            .expect("string ID literal/generated value must be non-empty");
         let evaluation = evaluate_call_protocol(&request, &admitted_hello(), eval_ids());
         assert_eq!(evaluation.reason, CallProtocolReason::EndpointMismatch);
         assert_eq!(evaluation.safe_message, "not authorized");
@@ -795,7 +775,8 @@ mod tests {
     #[test]
     fn call_authority_binding_must_match_admitted_hello() {
         let mut request = protocol_request();
-        request.authority.peer_binding_id = PeerBindingId::from("binding-other");
+        request.authority.peer_binding_id = PeerBindingId::new("binding-other")
+            .expect("string ID literal/generated value must be non-empty");
 
         let evaluation = evaluate_call_protocol(&request, &admitted_hello(), eval_ids());
 
@@ -807,7 +788,8 @@ mod tests {
     #[test]
     fn call_caller_must_match_admitted_hello_node() {
         let mut request = protocol_request();
-        request.call.caller.node_id = MctNodeId::from("node-other");
+        request.call.caller.node_id = MctNodeId::new("node-other")
+            .expect("string ID literal/generated value must be non-empty");
 
         let evaluation = evaluate_call_protocol(&request, &admitted_hello(), eval_ids());
 
@@ -819,7 +801,8 @@ mod tests {
     #[test]
     fn call_authority_vision_must_match_admitted_hello_and_call() {
         let mut request = protocol_request();
-        request.authority.vision_id = VisionId::from("vision-other");
+        request.authority.vision_id = VisionId::new("vision-other")
+            .expect("string ID literal/generated value must be non-empty");
 
         let evaluation = evaluate_call_protocol(&request, &admitted_hello(), eval_ids());
 
@@ -839,10 +822,11 @@ mod tests {
             CallProtocolReason::PayloadMetadataMismatch
         );
         let reply = call_reply_from_evaluation(
-            ReplyId::from("reply-1"),
+            ReplyId::new("reply-1").expect("string ID literal/generated value must be non-empty"),
             &evaluation,
             None,
-            ObservationId::from("obs-reply"),
+            ObservationId::new("obs-reply")
+                .expect("string ID literal/generated value must be non-empty"),
         );
         assert_eq!(reply.reply_outcome, CallProtocolReplyOutcome::Malformed);
     }
@@ -850,10 +834,12 @@ mod tests {
     #[test]
     fn denied_result_has_no_route_taken() {
         let result = MctResult {
-            call_id: CallId::from("call-1"),
+            call_id: CallId::new("call-1")
+                .expect("string ID literal/generated value must be non-empty"),
             outcome: ResultOutcome::Denied,
             route_taken: None,
-            authority_decision_ref: DecisionId::from("decision-1"),
+            authority_decision_ref: DecisionId::new("decision-1")
+                .expect("string ID literal/generated value must be non-empty"),
             execution_summary: ExecutionSummary {
                 wall_time_ms: 0,
                 execution_time_ms: None,
@@ -862,7 +848,8 @@ mod tests {
                 output_size_bytes: None,
             },
             requester_message: "not authorized".into(),
-            audit_ref: AuditRef::from("audit-1"),
+            audit_ref: AuditRef::new("audit-1")
+                .expect("string ID literal/generated value must be non-empty"),
         };
         assert_eq!(result.outcome, ResultOutcome::Denied);
         assert!(result.route_taken.is_none());

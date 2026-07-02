@@ -27,7 +27,12 @@ pub(crate) fn run_fake_end_to_end_status_slice(
     let echo = run_fake_echo_slice(ledger_path)?;
     let ledger = JsonlObservationLedger::open(ledger_path, "ledger-dev", "mother-a")
         .context("open fake end-to-end status ledger")?;
-    let call_observation_count = ledger.by_call(&CallId::from("call-fake-echo"))?.len();
+    let call_observation_count = ledger
+        .by_call(
+            &CallId::new("call-fake-echo")
+                .expect("string ID literal/generated value must be non-empty"),
+        )?
+        .len();
 
     Ok(FakeEndToEndStatusReport {
         daemon: daemon_status(Some(iroh_endpoint)),
@@ -44,7 +49,8 @@ pub(crate) fn run_fake_echo_slice(ledger_path: impl AsRef<Path>) -> Result<FakeE
     let mut ledger = JsonlObservationLedger::open(ledger_path, "ledger-dev", "mother-a")
         .context("open fake echo observation ledger")?;
 
-    let trace_id = TraceId::from("trace-fake-echo");
+    let trace_id = TraceId::new("trace-fake-echo")
+        .expect("string ID literal/generated value must be non-empty");
     let binding = fake_binding();
     let hello_request = fake_hello_request(&trace_id);
 
@@ -69,8 +75,10 @@ pub(crate) fn run_fake_echo_slice(ledger_path: impl AsRef<Path>) -> Result<FakeE
         &HelloPolicy::default(),
         HelloEvaluationContext {
             ids: EvaluationIds {
-                decision_id: DecisionId::from("decision-hello"),
-                observation_id: ObservationId::from("obs-hello-decision"),
+                decision_id: DecisionId::new("decision-hello")
+                    .expect("string ID literal/generated value must be non-empty"),
+                observation_id: ObservationId::new("obs-hello-decision")
+                    .expect("string ID literal/generated value must be non-empty"),
             },
             now: Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
         },
@@ -118,8 +126,10 @@ pub(crate) fn run_fake_echo_slice(ledger_path: impl AsRef<Path>) -> Result<FakeE
         &call_request,
         &hello,
         CallEvaluationIds {
-            decision_id: DecisionId::from("decision-call"),
-            observation_id: ObservationId::from("obs-call-decision"),
+            decision_id: DecisionId::new("decision-call")
+                .expect("string ID literal/generated value must be non-empty"),
+            observation_id: ObservationId::new("obs-call-decision")
+                .expect("string ID literal/generated value must be non-empty"),
         },
     );
     ledger
@@ -153,7 +163,10 @@ pub(crate) fn run_fake_echo_slice(ledger_path: impl AsRef<Path>) -> Result<FakeE
                 ObservationKind::ResultRecorded,
                 trace_id.clone(),
                 Some(result.call_id.clone()),
-                Some(DecisionId::from("decision-call")),
+                Some(
+                    DecisionId::new("decision-call")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
                 ObservationOutcome::Completed,
                 "result recorded",
             ),
@@ -162,10 +175,14 @@ pub(crate) fn run_fake_echo_slice(ledger_path: impl AsRef<Path>) -> Result<FakeE
         .context("append result observation")?;
 
     let reply = call_reply_from_evaluation(
-        ReplyId::from("reply-call"),
+        ReplyId::new("reply-call").expect("string ID literal/generated value must be non-empty"),
         &call,
-        Some(ResultRef::from("result-call-1")),
-        ObservationId::from("obs-call-reply"),
+        Some(
+            ResultRef::new("result-call-1")
+                .expect("string ID literal/generated value must be non-empty"),
+        ),
+        ObservationId::new("obs-call-reply")
+            .expect("string ID literal/generated value must be non-empty"),
     );
     ledger
         .append_before_effect(
@@ -194,21 +211,27 @@ pub(crate) fn run_fake_echo_slice(ledger_path: impl AsRef<Path>) -> Result<FakeE
 
 fn fake_binding() -> MctPeerBinding {
     MctPeerBinding {
-        binding_id: PeerBindingId::from("binding-fake"),
-        iroh_endpoint_id: EndpointIdText::from("endpoint-b"),
+        binding_id: PeerBindingId::new("binding-fake")
+            .expect("string ID literal/generated value must be non-empty"),
+        iroh_endpoint_id: EndpointIdText::new("endpoint-b")
+            .expect("string ID literal/generated value must be non-empty"),
         scope: MctPeerBindingScope {
-            mct_node_id: MctNodeId::from("mother-b"),
-            vision_id: VisionId::from("vision-a"),
+            mct_node_id: MctNodeId::new("mother-b")
+                .expect("string ID literal/generated value must be non-empty"),
+            vision_id: VisionId::new("vision-a")
+                .expect("string ID literal/generated value must be non-empty"),
             allowed_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
             data_scope: None,
             observation_scope: None,
         },
-        issuer_node_id: MctNodeId::from("mother-a"),
+        issuer_node_id: MctNodeId::new("mother-a")
+            .expect("string ID literal/generated value must be non-empty"),
         policy_revision: 1,
         binding_state: BindingState::Admitted,
         issued_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
         expires_at: None,
-        created_by_observation_id: ObservationId::from("obs-binding"),
+        created_by_observation_id: ObservationId::new("obs-binding")
+            .expect("string ID literal/generated value must be non-empty"),
         superseded_by_observation_id: None,
     }
 }
@@ -217,7 +240,8 @@ fn fake_hello_request(trace_id: &TraceId) -> MctHelloRequest {
     MctHelloRequest {
         hello_id: "hello-fake".into(),
         received_over: IrohConnectionPresentation {
-            endpoint_id: EndpointIdText::from("endpoint-b"),
+            endpoint_id: EndpointIdText::new("endpoint-b")
+                .expect("string ID literal/generated value must be non-empty"),
             alpn: MCT_HELLO_ALPN.into(),
             connection_side: ConnectionSide::Incoming,
             path_class: PathClass::Direct,
@@ -225,13 +249,25 @@ fn fake_hello_request(trace_id: &TraceId) -> MctHelloRequest {
             presented_capability_ref: None,
         },
         requested_protocol: HelloPolicy::default().protocol,
-        requested_vision_id: Some(VisionId::from("vision-a")),
+        requested_vision_id: Some(
+            VisionId::new("vision-a").expect("string ID literal/generated value must be non-empty"),
+        ),
         requested_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
         presented_binding: MctPeerBindingPresentation {
-            binding_id: Some(PeerBindingId::from("binding-fake")),
-            endpoint_id: EndpointIdText::from("endpoint-b"),
-            mct_node_id: Some(MctNodeId::from("mother-b")),
-            vision_id: Some(VisionId::from("vision-a")),
+            binding_id: Some(
+                PeerBindingId::new("binding-fake")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            endpoint_id: EndpointIdText::new("endpoint-b")
+                .expect("string ID literal/generated value must be non-empty"),
+            mct_node_id: Some(
+                MctNodeId::new("mother-b")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            vision_id: Some(
+                VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             policy_revision: Some(1),
             allowed_alpns_claim: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
             signature_ref: None,
@@ -240,7 +276,8 @@ fn fake_hello_request(trace_id: &TraceId) -> MctHelloRequest {
         capability_view: None,
         local_policy_revision_seen: Some(1),
         trace_id: trace_id.clone(),
-        received_observation_id: ObservationId::from("obs-hello-received"),
+        received_observation_id: ObservationId::new("obs-hello-received")
+            .expect("string ID literal/generated value must be non-empty"),
     }
 }
 
@@ -249,11 +286,14 @@ fn fake_call_request(
     hello: &MctHelloAdmissionEvaluation,
 ) -> MctCallProtocolRequest {
     let call = MctCall {
-        call_id: CallId::from("call-fake-echo"),
+        call_id: CallId::new("call-fake-echo")
+            .expect("string ID literal/generated value must be non-empty"),
         caller: CallerIdentity {
-            node_id: MctNodeId::from("mother-b"),
+            node_id: MctNodeId::new("mother-b")
+                .expect("string ID literal/generated value must be non-empty"),
             user_id: None,
-            vision_id: VisionId::from("vision-a"),
+            vision_id: VisionId::new("vision-a")
+                .expect("string ID literal/generated value must be non-empty"),
             project_id: None,
         },
         target: OperationTarget {
@@ -274,24 +314,30 @@ fn fake_call_request(
         deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
         trace_context: TraceContext {
             trace_id: trace_id.clone(),
-            span_id: SpanId::from("span-call"),
+            span_id: SpanId::new("span-call")
+                .expect("string ID literal/generated value must be non-empty"),
         },
         origin: CallOrigin::Iroh,
     };
 
     MctCallProtocolRequest {
-        protocol_request_id: ProtocolRequestId::from("proto-call-fake"),
+        protocol_request_id: ProtocolRequestId::new("proto-call-fake")
+            .expect("string ID literal/generated value must be non-empty"),
         authority: MctCallProtocolAuthority {
             hello_decision_id: hello.decision_id.clone(),
-            peer_binding_id: PeerBindingId::from("binding-fake"),
-            vision_id: VisionId::from("vision-a"),
+            peer_binding_id: PeerBindingId::new("binding-fake")
+                .expect("string ID literal/generated value must be non-empty"),
+            vision_id: VisionId::new("vision-a")
+                .expect("string ID literal/generated value must be non-empty"),
             accepted_alpn: MCT_CALL_ALPN.into(),
-            endpoint_id: EndpointIdText::from("endpoint-b"),
+            endpoint_id: EndpointIdText::new("endpoint-b")
+                .expect("string ID literal/generated value must be non-empty"),
             policy_revision: 1,
             grants_revision: 1,
         },
         received_over: IrohConnectionPresentation {
-            endpoint_id: EndpointIdText::from("endpoint-b"),
+            endpoint_id: EndpointIdText::new("endpoint-b")
+                .expect("string ID literal/generated value must be non-empty"),
             alpn: MCT_CALL_ALPN.into(),
             connection_side: ConnectionSide::Incoming,
             path_class: PathClass::Direct,
@@ -305,7 +351,8 @@ fn fake_call_request(
             approximate_size_bytes: 5,
         },
         idempotency_key: Some("idem-fake".into()),
-        received_observation_id: ObservationId::from("obs-peer-call-received"),
+        received_observation_id: ObservationId::new("obs-peer-call-received")
+            .expect("string ID literal/generated value must be non-empty"),
     }
 }
 
@@ -314,11 +361,13 @@ fn fake_echo_result(call: &MctCall) -> MctResult {
         call_id: call.call_id.clone(),
         outcome: ResultOutcome::Success,
         route_taken: Some(RouteTaken {
-            node_id: MctNodeId::from("mother-a"),
+            node_id: MctNodeId::new("mother-a")
+                .expect("string ID literal/generated value must be non-empty"),
             child_id: None,
             runtime_kind: RuntimeKind::Internal,
         }),
-        authority_decision_ref: DecisionId::from("decision-call"),
+        authority_decision_ref: DecisionId::new("decision-call")
+            .expect("string ID literal/generated value must be non-empty"),
         execution_summary: ExecutionSummary {
             wall_time_ms: 1,
             execution_time_ms: Some(1),
@@ -327,7 +376,8 @@ fn fake_echo_result(call: &MctCall) -> MctResult {
             output_size_bytes: Some(call.payload_metadata.approximate_size_bytes),
         },
         requester_message: "echo ok".into(),
-        audit_ref: AuditRef::from("audit-call-fake"),
+        audit_ref: AuditRef::new("audit-call-fake")
+            .expect("string ID literal/generated value must be non-empty"),
     }
 }
 
@@ -341,7 +391,8 @@ fn observation(
     safe_message: &str,
 ) -> MctObservation {
     MctObservation {
-        observation_id: ObservationId::from(id),
+        observation_id: ObservationId::new(id)
+            .expect("string ID literal/generated value must be non-empty"),
         observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
         kind,
         source_plane: SourcePlane::Kernel,

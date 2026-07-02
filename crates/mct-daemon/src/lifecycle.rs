@@ -33,10 +33,11 @@ pub fn warmup_configured_child(
     let (ready, transition) = transition_child_instance(
         instance,
         ChildInstanceState::Ready,
-        ObservationId::from(format!(
+        ObservationId::new(format!(
             "obs:warmup-ready:{child_name}:{}",
             instance.generation
-        )),
+        ))
+        .expect("string ID literal/generated value must be non-empty"),
     );
     if !transition.allowed {
         bail!(
@@ -71,10 +72,11 @@ pub fn reload_configured_child(
     let (draining, drain_transition) = transition_child_instance(
         instance,
         ChildInstanceState::Draining,
-        ObservationId::from(format!(
+        ObservationId::new(format!(
             "obs:reload-draining:{child_name}:{}",
             instance.generation
-        )),
+        ))
+        .expect("string ID literal/generated value must be non-empty"),
     );
     if !drain_transition.allowed {
         bail!(
@@ -85,10 +87,11 @@ pub fn reload_configured_child(
     let (stopped, stop_transition) = transition_child_instance(
         &draining,
         ChildInstanceState::Stopped,
-        ObservationId::from(format!(
+        ObservationId::new(format!(
             "obs:reload-stopped:{child_name}:{}",
             instance.generation
-        )),
+        ))
+        .expect("string ID literal/generated value must be non-empty"),
     );
     if !stop_transition.allowed {
         bail!(
@@ -98,22 +101,25 @@ pub fn reload_configured_child(
     }
 
     let mut next = stopped.clone();
-    next.instance_id = ChildInstanceId::from(format!(
+    next.instance_id = ChildInstanceId::new(format!(
         "instance:{child_name}:{}",
         instance.generation.saturating_add(1)
-    ));
+    ))
+    .expect("string ID literal/generated value must be non-empty");
     next.generation = instance.generation.saturating_add(1);
     next.instance_state = ChildInstanceState::Loading;
     next.readiness_observation_id = None;
-    next.last_lifecycle_observation_id = ObservationId::from(format!(
+    next.last_lifecycle_observation_id = ObservationId::new(format!(
         "obs:reload-loading:{child_name}:{}",
         next.generation
-    ));
+    ))
+    .expect("string ID literal/generated value must be non-empty");
 
     let (ready_next, ready_transition) = transition_child_instance(
         &next,
         ChildInstanceState::Ready,
-        ObservationId::from(format!("obs:reload-ready:{child_name}:{}", next.generation)),
+        ObservationId::new(format!("obs:reload-ready:{child_name}:{}", next.generation))
+            .expect("string ID literal/generated value must be non-empty"),
     );
     if !ready_transition.allowed {
         bail!(
@@ -171,7 +177,8 @@ mod tests {
 
     fn projection(approved: bool) -> MctConfigChildAuthorityProjection {
         let artifact = ComponentArtifact {
-            artifact_id: ComponentArtifactId::from("artifact-a"),
+            artifact_id: ComponentArtifactId::new("artifact-a")
+                .expect("string ID literal/generated value must be non-empty"),
             child_name: "child-a".into(),
             artifact_version: "0.1.0".into(),
             content_hash: "sha256:wasm".into(),
@@ -186,15 +193,23 @@ mod tests {
             ingress_mode: ChildIngressMode::WitOnly,
             lifecycle_exports: LifecycleExports::AbsentAllowed,
             verification_status: VerificationStatus::Verified,
-            created_by_observation_id: ObservationId::from("obs-artifact"),
+            created_by_observation_id: ObservationId::new("obs-artifact")
+                .expect("string ID literal/generated value must be non-empty"),
         };
         let approval = ChildApproval {
-            approval_id: ChildApprovalId::from("approval:child-a"),
+            approval_id: ChildApprovalId::new("approval:child-a")
+                .expect("string ID literal/generated value must be non-empty"),
             artifact_id: artifact.artifact_id.clone(),
             child_name: "child-a".into(),
             artifact_version: "0.1.0".into(),
-            scope_vision_id: Some(VisionId::from("vision-local")),
-            scope_node_id: Some(MctNodeId::from("local-mct")),
+            scope_vision_id: Some(
+                VisionId::new("vision-local")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            scope_node_id: Some(
+                MctNodeId::new("local-mct")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             scope_project_id: None,
             approval_state: if approved {
                 ChildApprovalState::Approved
@@ -202,34 +217,49 @@ mod tests {
                 ChildApprovalState::Candidate
             },
             policy_revision: 1,
-            authority_observation_id: ObservationId::from("obs-approval"),
+            authority_observation_id: ObservationId::new("obs-approval")
+                .expect("string ID literal/generated value must be non-empty"),
         };
         let assignment = ChildAssignment {
-            assignment_id: ChildAssignmentId::from("assignment:child-a"),
+            assignment_id: ChildAssignmentId::new("assignment:child-a")
+                .expect("string ID literal/generated value must be non-empty"),
             approval_id: approval.approval_id.clone(),
             artifact_id: artifact.artifact_id.clone(),
             child_name: "child-a".into(),
-            vision_id: VisionId::from("vision-local"),
-            node_id: Some(MctNodeId::from("local-mct")),
+            vision_id: VisionId::new("vision-local")
+                .expect("string ID literal/generated value must be non-empty"),
+            node_id: Some(
+                MctNodeId::new("local-mct")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             project_id: None,
             assignment_state: ChildAssignmentState::Active,
             pinned_artifact_version: "0.1.0".into(),
-            assignment_observation_id: ObservationId::from("obs-assignment"),
+            assignment_observation_id: ObservationId::new("obs-assignment")
+                .expect("string ID literal/generated value must be non-empty"),
         };
         let instance = ChildInstance {
-            instance_id: ChildInstanceId::from("instance:child-a:1"),
+            instance_id: ChildInstanceId::new("instance:child-a:1")
+                .expect("string ID literal/generated value must be non-empty"),
             assignment_id: assignment.assignment_id.clone(),
             artifact_id: artifact.artifact_id.clone(),
             child_name: "child-a".into(),
             generation: 1,
-            node_id: MctNodeId::from("local-mct"),
+            node_id: MctNodeId::new("local-mct")
+                .expect("string ID literal/generated value must be non-empty"),
             instance_state: ChildInstanceState::Ready,
-            readiness_observation_id: Some(ObservationId::from("obs-ready")),
-            last_lifecycle_observation_id: ObservationId::from("obs-ready"),
+            readiness_observation_id: Some(
+                ObservationId::new("obs-ready")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            last_lifecycle_observation_id: ObservationId::new("obs-ready")
+                .expect("string ID literal/generated value must be non-empty"),
         };
         MctConfigChildAuthorityProjection {
-            local_node_id: MctNodeId::from("local-mct"),
-            vision_id: VisionId::from("vision-local"),
+            local_node_id: MctNodeId::new("local-mct")
+                .expect("string ID literal/generated value must be non-empty"),
+            vision_id: VisionId::new("vision-local")
+                .expect("string ID literal/generated value must be non-empty"),
             project_id: None,
             policy_revision: 1,
             artifacts: vec![artifact],
@@ -241,13 +271,21 @@ mod tests {
 
     #[test]
     fn warmup_requires_approved_authority() {
-        let denied =
-            warmup_configured_child(&projection(false), "child-a", TraceId::from("trace-warmup"));
+        let denied = warmup_configured_child(
+            &projection(false),
+            "child-a",
+            TraceId::new("trace-warmup")
+                .expect("string ID literal/generated value must be non-empty"),
+        );
         assert!(denied.is_err());
 
-        let report =
-            warmup_configured_child(&projection(true), "child-a", TraceId::from("trace-warmup"))
-                .unwrap();
+        let report = warmup_configured_child(
+            &projection(true),
+            "child-a",
+            TraceId::new("trace-warmup")
+                .expect("string ID literal/generated value must be non-empty"),
+        )
+        .unwrap();
         assert_eq!(report.instance.instance_state, ChildInstanceState::Ready);
         assert_eq!(
             report.observations[0].kind,
@@ -257,9 +295,13 @@ mod tests {
 
     #[test]
     fn reload_drains_stops_and_replaces_generation() {
-        let report =
-            reload_configured_child(&projection(true), "child-a", TraceId::from("trace-reload"))
-                .unwrap();
+        let report = reload_configured_child(
+            &projection(true),
+            "child-a",
+            TraceId::new("trace-reload")
+                .expect("string ID literal/generated value must be non-empty"),
+        )
+        .unwrap();
         assert_eq!(
             report.previous_instance.instance_state,
             ChildInstanceState::Stopped

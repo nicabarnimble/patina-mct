@@ -191,11 +191,13 @@ impl MctIrohServeState {
     }
 
     fn next_decision_id(&mut self, kind: &str) -> DecisionId {
-        DecisionId::from(format!("decision-iroh-{kind}-{}", self.next_suffix()))
+        DecisionId::new(format!("decision-iroh-{kind}-{}", self.next_suffix()))
+            .expect("string ID literal/generated value must be non-empty")
     }
 
     fn next_observation_id(&mut self, kind: &str) -> ObservationId {
-        ObservationId::from(format!("obs-iroh-{kind}-{}", self.next_suffix()))
+        ObservationId::new(format!("obs-iroh-{kind}-{}", self.next_suffix()))
+            .expect("string ID literal/generated value must be non-empty")
     }
 }
 
@@ -295,7 +297,8 @@ impl MotherIrohEndpoint {
             .map_err(|source| MotherIrohEndpointError::Bind { source })?;
         let endpoint_addr = endpoint.addr();
         let snapshot = MotherIrohEndpointSnapshot {
-            endpoint_id: EndpointIdText::from(endpoint.id().to_string()),
+            endpoint_id: EndpointIdText::new(endpoint.id().to_string())
+                .expect("string ID literal/generated value must be non-empty"),
             lifecycle: MotherIrohEndpointLifecycle::Bound,
             accepted_alpns,
             direct_addresses: endpoint_addr
@@ -418,7 +421,8 @@ impl MotherIrohEndpoint {
                 action: "finish incoming connection",
                 message: source.to_string(),
             })?;
-        let remote_endpoint_id = EndpointIdText::from(connection.remote_id().to_string());
+        let remote_endpoint_id = EndpointIdText::new(connection.remote_id().to_string())
+            .expect("string ID literal/generated value must be non-empty");
         let (mut send, mut recv) =
             connection
                 .accept_bi()
@@ -516,7 +520,8 @@ impl MotherIrohEndpoint {
                     None
                 };
                 let reply = call_reply_from_evaluation(
-                    ReplyId::from(format!("reply-iroh-call-{}", state.next_suffix())),
+                    ReplyId::new(format!("reply-iroh-call-{}", state.next_suffix()))
+                        .expect("string ID literal/generated value must be non-empty"),
                     &evaluation,
                     reply_result_ref,
                     state.next_observation_id("call-reply"),
@@ -677,9 +682,10 @@ fn write_new_node_secret_key_file(
 pub fn endpoint_id_for_secret_key_hex(
     secret_key_hex: &str,
 ) -> MotherIrohEndpointResult<EndpointIdText> {
-    Ok(EndpointIdText::from(
-        secret_key_from_hex(secret_key_hex)?.public().to_string(),
-    ))
+    Ok(
+        EndpointIdText::new(secret_key_from_hex(secret_key_hex)?.public().to_string())
+            .expect("string ID literal/generated value must be non-empty"),
+    )
 }
 
 pub(crate) fn mct_alpns() -> Vec<String> {

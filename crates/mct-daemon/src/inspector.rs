@@ -59,8 +59,8 @@ fn observation_matches(observation: &MctObservation, query: &MctInspectorObserva
 mod tests {
     use super::*;
     use mct_kernel::{
-        CallId, MctObservation, ObservationKind, ObservationOutcome, ObservationTraceRef,
-        ObservationVisibility, SourcePlane, SpanId, Timestamp, TraceId,
+        CallId, MctObservation, ObservationId, ObservationKind, ObservationOutcome,
+        ObservationTraceRef, ObservationVisibility, SourcePlane, SpanId, Timestamp, TraceId,
     };
     use mct_observation::{DurabilityClass, ExportStatus};
 
@@ -71,17 +71,24 @@ mod tests {
         resource_id: &str,
     ) -> MctObservation {
         MctObservation {
-            observation_id: observation_id.into(),
+            observation_id: ObservationId::new(observation_id)
+                .expect("string ID literal/generated value must be non-empty"),
             observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             kind: ObservationKind::RuntimeExecutionCompleted,
             source_plane: SourcePlane::Adapter,
             trace: ObservationTraceRef {
-                trace_id: TraceId::from("trace-inspector"),
-                span_id: Some(SpanId::from("span-inspector")),
+                trace_id: TraceId::new("trace-inspector")
+                    .expect("string ID literal/generated value must be non-empty"),
+                span_id: Some(
+                    SpanId::new("span-inspector")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
                 parent_span_id: None,
                 external_trace_id: None,
             },
-            call_id: Some(CallId::from(call_id)),
+            call_id: Some(
+                CallId::new(call_id).expect("string ID literal/generated value must be non-empty"),
+            ),
             decision_id: None,
             subject_id: Some(subject_id.into()),
             resource_id: Some(resource_id.into()),
@@ -119,7 +126,10 @@ mod tests {
         let by_call = inspect_observation_entries(
             &entries,
             &MctInspectorObservationQuery {
-                call_id: Some(CallId::from("call-a")),
+                call_id: Some(
+                    CallId::new("call-a")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
                 ..Default::default()
             },
         );
@@ -149,7 +159,10 @@ mod tests {
         let view = inspect_observation_entries(
             &entries,
             &MctInspectorObservationQuery {
-                call_id: Some(CallId::from("call-a")),
+                call_id: Some(
+                    CallId::new("call-a")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
                 limit: Some(2),
                 ..Default::default()
             },

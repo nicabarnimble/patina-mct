@@ -182,7 +182,10 @@ impl MctProcessChildHarness {
             outcome,
             route_taken: Some(RouteTaken {
                 node_id: self.local_node_id.clone(),
-                child_id: Some(ChildId::from(authorized.child_name.clone())),
+                child_id: Some(
+                    ChildId::new(authorized.child_name.clone())
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
                 runtime_kind: RuntimeKind::Process,
             }),
             authority_decision_ref: authorized.authority_decision_id.clone(),
@@ -259,11 +262,14 @@ mod tests {
 
     fn call() -> MctCall {
         MctCall {
-            call_id: CallId::from("call-process-echo"),
+            call_id: CallId::new("call-process-echo")
+                .expect("string ID literal/generated value must be non-empty"),
             caller: CallerIdentity {
-                node_id: MctNodeId::from("mother-a"),
+                node_id: MctNodeId::new("mother-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 user_id: None,
-                vision_id: VisionId::from("vision-a"),
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 project_id: None,
             },
             target: OperationTarget {
@@ -283,8 +289,10 @@ mod tests {
             },
             deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
             trace_context: TraceContext {
-                trace_id: TraceId::from("trace-process-echo"),
-                span_id: SpanId::from("span-process-echo"),
+                trace_id: TraceId::new("trace-process-echo")
+                    .expect("string ID literal/generated value must be non-empty"),
+                span_id: SpanId::new("span-process-echo")
+                    .expect("string ID literal/generated value must be non-empty"),
             },
             origin: CallOrigin::Cli,
         }
@@ -292,24 +300,36 @@ mod tests {
 
     fn authorized() -> AuthorizedChildInvocation {
         AuthorizedChildInvocation {
-            authorized_child_invocation_id: AuthorizedChildInvocationId::from("auth-process-1"),
-            call_id: CallId::from("call-process-echo"),
-            evaluation_id: ChildCallEvaluationId::from("child-eval-process"),
-            assignment_id: ChildAssignmentId::from("assignment-process"),
-            approval_id: ChildApprovalId::from("approval-process"),
-            artifact_id: ComponentArtifactId::from("artifact-process"),
-            child_instance_id: ChildInstanceId::from("instance-process"),
+            authorized_child_invocation_id: AuthorizedChildInvocationId::new("auth-process-1")
+                .expect("string ID literal/generated value must be non-empty"),
+            call_id: CallId::new("call-process-echo")
+                .expect("string ID literal/generated value must be non-empty"),
+            evaluation_id: ChildCallEvaluationId::new("child-eval-process")
+                .expect("string ID literal/generated value must be non-empty"),
+            assignment_id: ChildAssignmentId::new("assignment-process")
+                .expect("string ID literal/generated value must be non-empty"),
+            approval_id: ChildApprovalId::new("approval-process")
+                .expect("string ID literal/generated value must be non-empty"),
+            artifact_id: ComponentArtifactId::new("artifact-process")
+                .expect("string ID literal/generated value must be non-empty"),
+            child_instance_id: ChildInstanceId::new("instance-process")
+                .expect("string ID literal/generated value must be non-empty"),
             child_name: "process-echo".into(),
-            authority_decision_id: DecisionId::from("decision-child-process"),
+            authority_decision_id: DecisionId::new("decision-child-process")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
     fn ids(stem: &str) -> MctProcessChildInvocationIds {
         MctProcessChildInvocationIds {
-            started_observation_id: ObservationId::from(format!("obs-{stem}-started")),
-            completed_observation_id: ObservationId::from(format!("obs-{stem}-completed")),
-            result_ref: ResultRef::from(format!("result-{stem}")),
-            audit_ref: AuditRef::from(format!("audit-{stem}")),
+            started_observation_id: ObservationId::new(format!("obs-{stem}-started"))
+                .expect("string ID literal/generated value must be non-empty"),
+            completed_observation_id: ObservationId::new(format!("obs-{stem}-completed"))
+                .expect("string ID literal/generated value must be non-empty"),
+            result_ref: ResultRef::new(format!("result-{stem}"))
+                .expect("string ID literal/generated value must be non-empty"),
+            audit_ref: AuditRef::new(format!("audit-{stem}"))
+                .expect("string ID literal/generated value must be non-empty"),
             started_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             completed_at: Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
         }
@@ -338,7 +358,8 @@ mod tests {
             executable: script,
             args: Vec::new(),
             timeout: Duration::from_secs(2),
-            local_node_id: MctNodeId::from("mother-a"),
+            local_node_id: MctNodeId::new("mother-a")
+                .expect("string ID literal/generated value must be non-empty"),
         };
 
         let report = harness
@@ -358,11 +379,15 @@ mod tests {
         );
         assert_eq!(
             report.observations[1].call_id,
-            Some(CallId::from("call-process-echo"))
+            Some(
+                CallId::new("call-process-echo")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
         );
         assert_eq!(
             report.result.authority_decision_ref,
-            DecisionId::from("decision-child-process")
+            DecisionId::new("decision-child-process")
+                .expect("string ID literal/generated value must be non-empty")
         );
     }
 
@@ -373,7 +398,8 @@ mod tests {
             executable: script,
             args: Vec::new(),
             timeout: Duration::from_millis(20),
-            local_node_id: MctNodeId::from("mother-a"),
+            local_node_id: MctNodeId::new("mother-a")
+                .expect("string ID literal/generated value must be non-empty"),
         };
 
         let report = harness

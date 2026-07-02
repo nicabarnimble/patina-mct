@@ -381,17 +381,19 @@ pub fn version() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mct_kernel::{MctObservation, ObservationId, ObservationKind, Timestamp, TraceId};
+    use mct_kernel::{CallId, MctObservation, ObservationId, ObservationKind, Timestamp, TraceId};
 
     fn observation(id: &str, trace: &str, call: Option<&str>) -> MctObservation {
         let mut obs = MctObservation::informational(
-            ObservationId::from(id),
+            ObservationId::new(id).expect("string ID literal/generated value must be non-empty"),
             Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             ObservationKind::PeerHelloReceived,
-            TraceId::from(trace),
+            TraceId::new(trace).expect("string ID literal/generated value must be non-empty"),
             "hello received",
         );
-        obs.call_id = call.map(CallId::from);
+        obs.call_id = call.map(|call| {
+            CallId::new(call).expect("string ID literal/generated value must be non-empty")
+        });
         obs
     }
 
@@ -526,8 +528,26 @@ mod tests {
                 "2026-05-31T00:00:02Z",
             )
             .unwrap();
-        assert_eq!(ledger.by_trace(&TraceId::from("trace-1")).unwrap().len(), 1);
-        assert_eq!(ledger.by_call(&CallId::from("call-2")).unwrap().len(), 1);
+        assert_eq!(
+            ledger
+                .by_trace(
+                    &TraceId::new("trace-1")
+                        .expect("string ID literal/generated value must be non-empty")
+                )
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            ledger
+                .by_call(
+                    &CallId::new("call-2")
+                        .expect("string ID literal/generated value must be non-empty")
+                )
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -557,7 +577,12 @@ mod tests {
             Some(entries[0].entry_hash.as_str())
         );
 
-        let trace_entries = ledger.by_trace(&TraceId::from("trace-1")).unwrap();
+        let trace_entries = ledger
+            .by_trace(
+                &TraceId::new("trace-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+            )
+            .unwrap();
         assert_eq!(trace_entries.len(), 2);
         assert_eq!(
             trace_entries[0].observation.kind,
@@ -567,7 +592,16 @@ mod tests {
             trace_entries[1].observation.kind,
             ObservationKind::CallAuthorized
         );
-        assert_eq!(ledger.by_call(&CallId::from("call-1")).unwrap().len(), 2);
+        assert_eq!(
+            ledger
+                .by_call(
+                    &CallId::new("call-1")
+                        .expect("string ID literal/generated value must be non-empty")
+                )
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[test]

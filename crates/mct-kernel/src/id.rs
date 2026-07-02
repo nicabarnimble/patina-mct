@@ -23,15 +23,19 @@ macro_rules! string_id {
             }
         }
 
-        impl From<&str> for $name {
-            fn from(value: &str) -> Self {
-                Self::new(value).expect("string ID literal must be non-empty")
+        impl TryFrom<&str> for $name {
+            type Error = MctKernelError;
+
+            fn try_from(value: &str) -> Result<Self, Self::Error> {
+                Self::new(value)
             }
         }
 
-        impl From<String> for $name {
-            fn from(value: String) -> Self {
-                Self::new(value).expect("string ID value must be non-empty")
+        impl TryFrom<String> for $name {
+            type Error = MctKernelError;
+
+            fn try_from(value: String) -> Result<Self, Self::Error> {
+                Self::new(value)
             }
         }
 
@@ -190,7 +194,8 @@ mod tests {
 
     #[test]
     fn string_ids_roundtrip_as_strings() {
-        let id = CallId::from("call-1");
+        let id =
+            CallId::new("call-1").expect("string ID literal/generated value must be non-empty");
         let encoded = serde_json::to_string(&id).unwrap();
         assert_eq!(encoded, "\"call-1\"");
         let decoded: CallId = serde_json::from_str(&encoded).unwrap();

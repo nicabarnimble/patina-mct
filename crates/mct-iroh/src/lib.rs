@@ -112,7 +112,8 @@ mod tests {
         let server_ticket = server.ticket();
         let binding = test_peer_binding(&client_endpoint_id);
         let mut state = MctIrohServeState::new();
-        let trace_id = TraceId::from("trace-public-iroh-connect");
+        let trace_id = TraceId::new("trace-public-iroh-connect")
+            .expect("string ID literal/generated value must be non-empty");
         let hello_request = test_hello_request(&client_endpoint_id, &trace_id);
 
         let (served_hello, hello_response) = tokio::join!(
@@ -138,7 +139,10 @@ mod tests {
                 &mut state,
                 std::slice::from_ref(&binding),
                 Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
-                Some(ResultRef::from("result-public-iroh")),
+                Some(
+                    ResultRef::new("result-public-iroh")
+                        .expect("string ID literal/generated value must be non-empty")
+                ),
             ),
             client.send_call(&server_ticket, &call_request),
         );
@@ -147,7 +151,10 @@ mod tests {
         assert_eq!(call_reply.reply_outcome, CallProtocolReplyOutcome::Success);
         assert_eq!(
             call_reply.result_ref,
-            Some(ResultRef::from("result-public-iroh"))
+            Some(
+                ResultRef::new("result-public-iroh")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
         );
         assert!(matches!(
             served_call,
@@ -168,7 +175,8 @@ mod tests {
         let mut binding = test_peer_binding(&client_endpoint_id);
         binding.expires_at = Some(Timestamp::new("2026-06-01T00:00:00Z").unwrap());
         let mut state = MctIrohServeState::new();
-        let trace_id = TraceId::from("trace-expired-binding-iroh");
+        let trace_id = TraceId::new("trace-expired-binding-iroh")
+            .expect("string ID literal/generated value must be non-empty");
         let hello_request = test_hello_request(&client_endpoint_id, &trace_id);
 
         let (served_hello, hello_response) = tokio::join!(
@@ -205,7 +213,10 @@ mod tests {
         );
         assert_eq!(
             report.call_reply.result_ref,
-            Some(ResultRef::from("result-iroh-echo"))
+            Some(
+                ResultRef::new("result-iroh-echo")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
         );
     }
 
@@ -217,7 +228,8 @@ mod tests {
         let server_ticket = server.ticket();
         let binding = test_peer_binding(&client_endpoint_id);
         let mut state = MctIrohServeState::new();
-        let trace_id = TraceId::from("trace-handler-iroh");
+        let trace_id = TraceId::new("trace-handler-iroh")
+            .expect("string ID literal/generated value must be non-empty");
         let hello_request = test_hello_request(&client_endpoint_id, &trace_id);
 
         let (_served_hello, hello_response) = tokio::join!(
@@ -238,7 +250,10 @@ mod tests {
                 Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
                 |_, evaluation| {
                     assert!(evaluation.is_accepted_for_routing());
-                    MctIrohCallHandlerResult::completed(ResultRef::from("result-runtime-child"))
+                    MctIrohCallHandlerResult::completed(
+                        ResultRef::new("result-runtime-child")
+                            .expect("string ID literal/generated value must be non-empty"),
+                    )
                 }
             ),
             client.send_call(&server_ticket, &call_request),
@@ -249,7 +264,10 @@ mod tests {
         assert_eq!(call_reply.reply_outcome, CallProtocolReplyOutcome::Success);
         assert_eq!(
             call_reply.result_ref,
-            Some(ResultRef::from("result-runtime-child"))
+            Some(
+                ResultRef::new("result-runtime-child")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
         );
         assert!(matches!(
             served_call,
@@ -273,7 +291,7 @@ mod tests {
             &bound,
             &closed,
             &report,
-            TraceId::from("trace-obs"),
+            TraceId::new("trace-obs").expect("string ID literal/generated value must be non-empty"),
         );
 
         let kinds = observations
@@ -326,7 +344,8 @@ mod tests {
         assert_eq!(report.hello_evaluation.selected_binding_id, None);
         assert_eq!(
             report.hello_evaluation.observation_id,
-            ObservationId::from("obs-iroh-hello-decision")
+            ObservationId::new("obs-iroh-hello-decision")
+                .expect("string ID literal/generated value must be non-empty")
         );
 
         assert_eq!(
@@ -342,27 +361,33 @@ mod tests {
         assert_eq!(report.call_evaluation.route_decision_id, None);
         assert_eq!(
             report.call_evaluation.observation_id,
-            ObservationId::from("obs-iroh-call-decision")
+            ObservationId::new("obs-iroh-call-decision")
+                .expect("string ID literal/generated value must be non-empty")
         );
     }
 
     fn test_peer_binding(endpoint_id: &EndpointIdText) -> MctPeerBinding {
         MctPeerBinding {
-            binding_id: PeerBindingId::from("binding-public-iroh"),
+            binding_id: PeerBindingId::new("binding-public-iroh")
+                .expect("string ID literal/generated value must be non-empty"),
             iroh_endpoint_id: endpoint_id.clone(),
             scope: MctPeerBindingScope {
-                mct_node_id: MctNodeId::from("mother-client"),
-                vision_id: VisionId::from("vision-public"),
+                mct_node_id: MctNodeId::new("mother-client")
+                    .expect("string ID literal/generated value must be non-empty"),
+                vision_id: VisionId::new("vision-public")
+                    .expect("string ID literal/generated value must be non-empty"),
                 allowed_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
                 data_scope: None,
                 observation_scope: None,
             },
-            issuer_node_id: MctNodeId::from("mother-server"),
+            issuer_node_id: MctNodeId::new("mother-server")
+                .expect("string ID literal/generated value must be non-empty"),
             policy_revision: 1,
             binding_state: BindingState::Admitted,
             issued_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             expires_at: None,
-            created_by_observation_id: ObservationId::from("obs-binding-public-iroh"),
+            created_by_observation_id: ObservationId::new("obs-binding-public-iroh")
+                .expect("string ID literal/generated value must be non-empty"),
             superseded_by_observation_id: None,
         }
     }
@@ -379,13 +404,25 @@ mod tests {
                 presented_capability_ref: None,
             },
             requested_protocol: HelloPolicy::default().protocol,
-            requested_vision_id: Some(VisionId::from("vision-public")),
+            requested_vision_id: Some(
+                VisionId::new("vision-public")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             requested_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
             presented_binding: MctPeerBindingPresentation {
-                binding_id: Some(PeerBindingId::from("binding-public-iroh")),
+                binding_id: Some(
+                    PeerBindingId::new("binding-public-iroh")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
                 endpoint_id: endpoint_id.clone(),
-                mct_node_id: Some(MctNodeId::from("mother-client")),
-                vision_id: Some(VisionId::from("vision-public")),
+                mct_node_id: Some(
+                    MctNodeId::new("mother-client")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
+                vision_id: Some(
+                    VisionId::new("vision-public")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
                 policy_revision: Some(1),
                 allowed_alpns_claim: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
                 signature_ref: None,
@@ -394,7 +431,8 @@ mod tests {
             capability_view: None,
             local_policy_revision_seen: Some(1),
             trace_id: trace_id.clone(),
-            received_observation_id: ObservationId::from("obs-public-hello-received"),
+            received_observation_id: ObservationId::new("obs-public-hello-received")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
@@ -404,11 +442,14 @@ mod tests {
         hello: &MctHelloResponse,
     ) -> MctCallProtocolRequest {
         let call = MctCall {
-            call_id: CallId::from("call-public-iroh"),
+            call_id: CallId::new("call-public-iroh")
+                .expect("string ID literal/generated value must be non-empty"),
             caller: CallerIdentity {
-                node_id: MctNodeId::from("mother-client"),
+                node_id: MctNodeId::new("mother-client")
+                    .expect("string ID literal/generated value must be non-empty"),
                 user_id: None,
-                vision_id: VisionId::from("vision-public"),
+                vision_id: VisionId::new("vision-public")
+                    .expect("string ID literal/generated value must be non-empty"),
                 project_id: None,
             },
             target: OperationTarget {
@@ -429,17 +470,21 @@ mod tests {
             deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
             trace_context: TraceContext {
                 trace_id: trace_id.clone(),
-                span_id: SpanId::from("span-public-call"),
+                span_id: SpanId::new("span-public-call")
+                    .expect("string ID literal/generated value must be non-empty"),
             },
             origin: CallOrigin::Iroh,
         };
 
         MctCallProtocolRequest {
-            protocol_request_id: ProtocolRequestId::from("proto-public-call"),
+            protocol_request_id: ProtocolRequestId::new("proto-public-call")
+                .expect("string ID literal/generated value must be non-empty"),
             authority: MctCallProtocolAuthority {
                 hello_decision_id: hello.decision_id.clone(),
-                peer_binding_id: PeerBindingId::from("binding-public-iroh"),
-                vision_id: VisionId::from("vision-public"),
+                peer_binding_id: PeerBindingId::new("binding-public-iroh")
+                    .expect("string ID literal/generated value must be non-empty"),
+                vision_id: VisionId::new("vision-public")
+                    .expect("string ID literal/generated value must be non-empty"),
                 accepted_alpn: MCT_CALL_ALPN.into(),
                 endpoint_id: endpoint_id.clone(),
                 policy_revision: 1,
@@ -460,7 +505,8 @@ mod tests {
                 approximate_size_bytes: 5,
             },
             idempotency_key: Some("idem-public-call".into()),
-            received_observation_id: ObservationId::from("obs-public-call-received"),
+            received_observation_id: ObservationId::new("obs-public-call-received")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 }

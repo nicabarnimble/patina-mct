@@ -443,11 +443,14 @@ mod tests {
 
     fn call() -> MctCall {
         MctCall {
-            call_id: CallId::from("call-toy-adapter"),
+            call_id: CallId::new("call-toy-adapter")
+                .expect("string ID literal/generated value must be non-empty"),
             caller: CallerIdentity {
-                node_id: MctNodeId::from("mother-a"),
+                node_id: MctNodeId::new("mother-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 user_id: None,
-                vision_id: VisionId::from("vision-a"),
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 project_id: None,
             },
             target: OperationTarget {
@@ -467,8 +470,10 @@ mod tests {
             },
             deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
             trace_context: TraceContext {
-                trace_id: TraceId::from("trace-toy-adapter"),
-                span_id: SpanId::from("span-toy-adapter"),
+                trace_id: TraceId::new("trace-toy-adapter")
+                    .expect("string ID literal/generated value must be non-empty"),
+                span_id: SpanId::new("span-toy-adapter")
+                    .expect("string ID literal/generated value must be non-empty"),
             },
             origin: CallOrigin::Cli,
         }
@@ -476,21 +481,30 @@ mod tests {
 
     fn authorized(toy_id: &str) -> AuthorizedToyCall {
         AuthorizedToyCall {
-            authorized_toy_call_id: AuthorizedToyCallId::from("authorized-toy-adapter"),
-            call_id: CallId::from("call-toy-adapter"),
-            evaluation_id: ToyGrantEvaluationId::from("toy-eval-adapter"),
-            grant_id: ToyGrantId::from("grant-toy-adapter"),
-            toy_id: ToyId::from(toy_id),
-            child_instance_id: ChildInstanceId::from("instance-toy-adapter"),
-            authority_decision_id: DecisionId::from("decision-toy-adapter"),
+            authorized_toy_call_id: AuthorizedToyCallId::new("authorized-toy-adapter")
+                .expect("string ID literal/generated value must be non-empty"),
+            call_id: CallId::new("call-toy-adapter")
+                .expect("string ID literal/generated value must be non-empty"),
+            evaluation_id: ToyGrantEvaluationId::new("toy-eval-adapter")
+                .expect("string ID literal/generated value must be non-empty"),
+            grant_id: ToyGrantId::new("grant-toy-adapter")
+                .expect("string ID literal/generated value must be non-empty"),
+            toy_id: ToyId::new(toy_id)
+                .expect("string ID literal/generated value must be non-empty"),
+            child_instance_id: ChildInstanceId::new("instance-toy-adapter")
+                .expect("string ID literal/generated value must be non-empty"),
+            authority_decision_id: DecisionId::new("decision-toy-adapter")
+                .expect("string ID literal/generated value must be non-empty"),
             expires_at: Timestamp::new("2026-05-31T00:10:00Z").unwrap(),
         }
     }
 
     fn ids(stem: &str) -> MctToyCallIds {
         MctToyCallIds {
-            started_observation_id: ObservationId::from(format!("obs-{stem}-started")),
-            completed_observation_id: ObservationId::from(format!("obs-{stem}-completed")),
+            started_observation_id: ObservationId::new(format!("obs-{stem}-started"))
+                .expect("string ID literal/generated value must be non-empty"),
+            completed_observation_id: ObservationId::new(format!("obs-{stem}-completed"))
+                .expect("string ID literal/generated value must be non-empty"),
             started_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             completed_at: Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
         }
@@ -520,7 +534,10 @@ mod tests {
     #[test]
     fn toy_adapter_requires_authorized_toy_call_and_records_success() {
         let mut registry = MctToyAdapterRegistry::new();
-        registry.register(ToyId::from("toy-echo"), MctToyBackend::EchoJson);
+        registry.register(
+            ToyId::new("toy-echo").expect("string ID literal/generated value must be non-empty"),
+            MctToyBackend::EchoJson,
+        );
 
         let report = registry.call_authorized_toy(
             &authorized("toy-echo"),
@@ -539,7 +556,10 @@ mod tests {
         assert_eq!(report.observations[1].source_plane, SourcePlane::Toy);
         assert_eq!(
             report.observations[1].decision_id,
-            Some(DecisionId::from("decision-toy-adapter"))
+            Some(
+                DecisionId::new("decision-toy-adapter")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
         );
     }
 
@@ -548,7 +568,7 @@ mod tests {
         let repo = init_git_repo();
         let mut registry = MctToyAdapterRegistry::new();
         registry.register(
-            ToyId::from("toy-git"),
+            ToyId::new("toy-git").expect("string ID literal/generated value must be non-empty"),
             MctToyBackend::GitCommand {
                 repo_root: repo.path().to_path_buf(),
             },
@@ -574,7 +594,7 @@ mod tests {
     fn git_report(repo: &Path, input_json: &str, stem: &str) -> MctToyCallReport {
         let mut registry = MctToyAdapterRegistry::new();
         registry.register(
-            ToyId::from("toy-git"),
+            ToyId::new("toy-git").expect("string ID literal/generated value must be non-empty"),
             MctToyBackend::GitCommand {
                 repo_root: repo.to_path_buf(),
             },
@@ -625,7 +645,7 @@ mod tests {
         let repo = init_git_repo();
         let mut registry = MctToyAdapterRegistry::new();
         registry.register(
-            ToyId::from("toy-git"),
+            ToyId::new("toy-git").expect("string ID literal/generated value must be non-empty"),
             MctToyBackend::GitCommand {
                 repo_root: repo.path().to_path_buf(),
             },
@@ -660,7 +680,10 @@ mod tests {
         assert_eq!(report.observations[1].outcome, ObservationOutcome::Failed);
         assert_eq!(
             report.observations[1].call_id,
-            Some(CallId::from("call-toy-adapter"))
+            Some(
+                CallId::new("call-toy-adapter")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
         );
     }
 }
