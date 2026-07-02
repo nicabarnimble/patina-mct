@@ -6,6 +6,7 @@ use std::{
     path::{Component, Path, PathBuf},
     process::Command,
 };
+use thiserror::Error;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MctToyBackend {
@@ -147,38 +148,30 @@ fn call_git_toy(repo_root: &Path, input_json: &str) -> Result<String, String> {
     let function = required_str(&input, "function")?;
     let output = match function {
         "create-tag" => {
-            let name = required_str(&input, "name")?;
-            run_git(
-                repo_root,
-                &["tag", "-a", name, "-m", &format!("mct git toy tag: {name}")],
-            )?;
+            let name = required_git_ref_arg(&input, "name")?;
+            let message = format!("mct git toy tag: {}", name.as_str());
+            run_git(repo_root, &["tag", "-a", name.as_str(), "-m", &message])?;
             serde_json::json!({"ok": null})
         }
         "create-tag-at" => {
-            let name = required_str(&input, "name")?;
-            let git_ref = required_str(&input, "git_ref")?;
+            let name = required_git_ref_arg(&input, "name")?;
+            let git_ref = required_git_ref_arg(&input, "git_ref")?;
+            let message = format!("mct git toy tag: {}", name.as_str());
             run_git(
                 repo_root,
-                &[
-                    "tag",
-                    "-a",
-                    name,
-                    "-m",
-                    &format!("mct git toy tag: {name}"),
-                    git_ref,
-                ],
+                &["tag", "-a", name.as_str(), "-m", &message, git_ref.as_str()],
             )?;
             serde_json::json!({"ok": null})
         }
         "delete-tag" => {
-            let name = required_str(&input, "name")?;
-            run_git(repo_root, &["tag", "-d", name])?;
+            let name = required_git_ref_arg(&input, "name")?;
+            run_git(repo_root, &["tag", "-d", name.as_str()])?;
             serde_json::json!({"ok": null})
         }
         "tag-exists" => {
-            let name = required_str(&input, "name")?;
-            let tags = run_git_capture(repo_root, &["tag", "--list", name])?;
-            serde_json::json!({"ok": tags.lines().any(|line| line.trim() == name)})
+            let name = required_git_ref_arg(&input, "name")?;
+            let tags = run_git_capture(repo_root, &["tag", "--list", name.as_str()])?;
+            serde_json::json!({"ok": tags.lines().any(|line| line.trim() == name.as_str())})
         }
         "commit" => {
             let message = required_str(&input, "message")?;
@@ -247,6 +240,43 @@ fn call_git_toy(repo_root: &Path, input_json: &str) -> Result<String, String> {
         other => return Err(format!("unsupported git toy function '{other}'")),
     };
     Ok(output.to_string())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GitRefArg<'a> {
+    value: &'a str,
+}
+
+impl<'a> GitRefArg<'a> {
+    fn new(field: &'static str, value: &'a str) -> Result<Self, GitRefArgError> {
+        if value.trim().is_empty() {
+            return Err(GitRefArgError::Empty { field });
+        }
+        if value.starts_with('-') {
+            return Err(GitRefArgError::LeadingDash { field });
+        }
+        Ok(Self { value })
+    }
+
+    fn as_str(&self) -> &'a str {
+        self.value
+    }
+}
+
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+enum GitRefArgError {
+    #[error("git ref argument '{field}' must not be empty")]
+    Empty { field: &'static str },
+    #[error("git ref argument '{field}' must not start with '-'")]
+    LeadingDash { field: &'static str },
+}
+
+fn required_git_ref_arg<'a>(
+    input: &'a Value,
+    field: &'static str,
+) -> Result<GitRefArg<'a>, String> {
+    let value = required_str(input, field)?;
+    GitRefArg::new(field, value).map_err(|error| error.to_string())
 }
 
 fn required_str<'a>(input: &'a Value, field: &str) -> Result<&'a str, String> {
