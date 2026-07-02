@@ -93,8 +93,7 @@ pub enum ExportStatus {
 #[derive(Debug)]
 pub struct JsonlObservationLedger {
     path: PathBuf,
-    lock_path: PathBuf,
-    _lock_file: File,
+    file: File,
     ledger_id: String,
     mother_node_id: String,
     next_sequence: u64,
@@ -118,29 +117,29 @@ impl JsonlObservationLedger {
             })?;
         }
 
-        if !path.exists() {
-            File::create(&path).map_err(|source| ObservationLedgerError::Io {
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(&path)
+            .map_err(|source| ObservationLedgerError::Io {
                 path: path.clone(),
                 source,
             })?;
-        }
 
-        let lock_path = lock_path_for(&path);
-        let lock_file = acquire_writer_lock(&lock_path)?;
+        let file = acquire_writer_lock(&path, file)?;
         let scan_result = scan_existing(&path, &ledger_id, &mother_node_id);
         let (next_sequence, previous_hash) = match scan_result {
             Ok(state) => state,
             Err(error) => {
-                drop(lock_file);
-                let _ = std::fs::remove_file(&lock_path);
+                drop(file);
                 return Err(error);
             }
         };
 
         Ok(Self {
             path,
-            lock_path,
-            _lock_file: lock_file,
+            file,
             ledger_id,
             mother_node_id,
             next_sequence,
@@ -180,8 +179,6 @@ impl JsonlObservationLedger {
         durability_class: DurabilityClass,
         export_status: ExportStatus,
     ) -> Result<MctObservationLedgerEntry> {
-        self.ensure_current_tip()?;
-
         let mut entry = MctObservationLedgerEntry {
             ledger_id: self.ledger_id.clone(),
             mother_node_id: self.mother_node_id.clone(),
@@ -200,18 +197,12 @@ impl JsonlObservationLedger {
                 path: self.path.clone(),
                 source,
             })?;
-        let mut file = OpenOptions::new()
-            .append(true)
-            .open(&self.path)
-            .map_err(|source| ObservationLedgerError::Io {
-                path: self.path.clone(),
-                source,
-            })?;
-        writeln!(file, "{line}").map_err(|source| ObservationLedgerError::Io {
+        writeln!(self.file, "{line}").map_err(|source| ObservationLedgerError::Io {
             path: self.path.clone(),
             source,
         })?;
-        file.sync_data()
+        self.file
+            .sync_data()
             .map_err(|source| ObservationLedgerError::Io {
                 path: self.path.clone(),
                 source,
@@ -242,26 +233,6 @@ impl JsonlObservationLedger {
             .into_iter()
             .filter(|entry| entry.observation.call_id.as_ref() == Some(call_id))
             .collect())
-    }
-
-    fn ensure_current_tip(&self) -> Result<()> {
-        let (actual_sequence, actual_hash) =
-            scan_existing(&self.path, &self.ledger_id, &self.mother_node_id)?;
-        if actual_sequence != self.next_sequence || actual_hash != self.previous_hash {
-            return Err(ObservationLedgerError::LedgerChanged {
-                path: self.path.clone(),
-                expected_sequence: self.next_sequence,
-                actual_sequence,
-            });
-        }
-
-        Ok(())
-    }
-}
-
-impl Drop for JsonlObservationLedger {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.lock_path);
     }
 }
 
@@ -341,26 +312,23 @@ fn read_entries(path: &Path) -> Result<Vec<MctObservationLedgerEntry>> {
     Ok(entries)
 }
 
-fn lock_path_for(path: &Path) -> PathBuf {
-    match path.file_name() {
-        Some(file_name) => {
-            let mut lock_name = file_name.to_os_string();
-            lock_name.push(".lock");
-            path.with_file_name(lock_name)
-        }
-        None => path.with_extension("lock"),
-    }
+fn acquire_writer_lock(path: &Path, file: File) -> Result<File> {
+    file.try_lock()
+        .map_err(|source| ObservationLedgerError::WriterLock {
+            path: path.to_path_buf(),
+            source: lock_error_to_io(source),
+        })?;
+    Ok(file)
 }
 
-fn acquire_writer_lock(lock_path: &Path) -> Result<File> {
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(lock_path)
-        .map_err(|source| ObservationLedgerError::WriterLock {
-            path: lock_path.to_path_buf(),
-            source,
-        })
+fn lock_error_to_io(error: std::fs::TryLockError) -> std::io::Error {
+    match error {
+        std::fs::TryLockError::WouldBlock => std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "observation ledger is already locked by another writer",
+        ),
+        std::fs::TryLockError::Error(source) => source,
+    }
 }
 
 fn entry_hash(entry: &MctObservationLedgerEntry) -> Result<String> {
@@ -484,31 +452,22 @@ mod tests {
     }
 
     #[test]
-    fn append_fails_if_file_changes_behind_writer() {
+    fn stale_marker_lock_file_does_not_block_opening_writer() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("observations.jsonl");
+        let marker_lock_path = path.with_file_name("observations.jsonl.lock");
+        std::fs::write(&marker_lock_path, "stale marker from crashed writer").unwrap();
+
         let mut ledger = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
-        ledger
+        let entry = ledger
             .append_before_effect(
                 observation("obs-1", "trace-1", None),
                 "2026-05-31T00:00:01Z",
             )
             .unwrap();
-        std::fs::write(&path, "").unwrap();
 
-        let result = ledger.append_before_effect(
-            observation("obs-2", "trace-1", None),
-            "2026-05-31T00:00:02Z",
-        );
-
-        assert!(matches!(
-            result,
-            Err(ObservationLedgerError::LedgerChanged {
-                expected_sequence: 1,
-                actual_sequence: 0,
-                ..
-            })
-        ));
+        assert_eq!(entry.local_sequence, 0);
+        assert!(marker_lock_path.exists());
     }
 
     #[test]
