@@ -2008,6 +2008,16 @@ mod tests {
         call
     }
 
+    fn slate_call(function_name: &str) -> MctCall {
+        let mut call = call();
+        call.target = OperationTarget {
+            namespace: "patina:slate".into(),
+            interface_name: "control@0.1.0".into(),
+            function_name: function_name.into(),
+        };
+        call
+    }
+
     fn typed_component_path(dir: &tempfile::TempDir) -> PathBuf {
         let component_wat = r#"
 (component
@@ -2065,6 +2075,50 @@ mod tests {
   (export "patina:demo/control@0.1.0" (instance $control)))
 "#;
         let component_path = dir.path().join("typed-record.component.wasm");
+        fs::write(&component_path, wat::parse_str(component_wat).unwrap()).unwrap();
+        component_path
+    }
+
+    fn slate_list_work_component_path(dir: &tempfile::TempDir) -> PathBuf {
+        let component_wat = r#"
+(component
+  (core module $m
+    (memory (export "memory") 1)
+    (global $heap (mut i32) (i32.const 1024))
+    (func $realloc (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
+      global.get $heap
+      global.get $heap
+      local.get 3
+      i32.add
+      global.set $heap)
+    (func $list-work (export "list-work")
+      (param i32 i32 i32 i32 i32 i32 i32 i32 i32)
+      (result i32)
+      i32.const 0))
+  (core instance $i (instantiate $m))
+  (alias core export $i "memory" (core memory $memory))
+  (alias core export $i "cabi_realloc" (core func $realloc))
+  (type $work-list-request (record
+    (field "project" (option string))
+    (field "status" (option string))
+    (field "kind" (option string))))
+  (type $work-summary (record
+    (field "id" string)
+    (field "title" string)
+    (field "kind" string)
+    (field "status" string)
+    (field "path" string)))
+  (type $list-work-result (result (list $work-summary) (error string)))
+  (func $list-work (param "req" $work-list-request) (result $list-work-result)
+    (canon lift (core func $i "list-work") (memory $memory) (realloc $realloc) string-encoding=utf8))
+  (instance $control
+    (export "work-list-request" (type $work-list-request))
+    (export "work-summary" (type $work-summary))
+    (export "list-work-result" (type $list-work-result))
+    (export "list-work" (func $list-work) (func (param "req" $work-list-request) (result $list-work-result))))
+  (export "patina:slate/control@0.1.0" (instance $control)))
+"#;
+        let component_path = dir.path().join("slate-list-work.component.wasm");
         fs::write(&component_path, wat::parse_str(component_wat).unwrap()).unwrap();
         component_path
     }
@@ -2623,6 +2677,44 @@ mod tests {
         assert_eq!(
             report.output_json,
             serde_json::json!({"results": [{"total": 9}]})
+        );
+    }
+
+    #[test]
+    fn slate_manager_list_work_runs_through_mct_wit_runtime() {
+        let runtime = runtime();
+        let dir = tempfile::tempdir().unwrap();
+        let component_path = slate_list_work_component_path(&dir);
+        let child = loaded_typed_child(
+            component_path,
+            vec!["patina:slate/control@0.1.0.list-work".into()],
+        );
+
+        let exported = runtime.discover_wit_operations(&child.wasm_path).unwrap();
+        assert!(exported.contains("patina:slate/control@0.1.0.list-work"));
+
+        let report = runtime
+            .invoke_authorized_child_wit_export(
+                &authorized(),
+                &child,
+                &slate_call("list-work"),
+                &serde_json::json!([{ "project": null, "status": "active", "kind": null }]),
+                ids(),
+            )
+            .unwrap();
+
+        assert_eq!(report.result.outcome, ResultOutcome::Success);
+        assert_eq!(
+            report.output_json,
+            serde_json::json!({"results": [{"ok": []}]})
+        );
+        assert_eq!(
+            report.observations[0].kind,
+            ObservationKind::RuntimeExecutionStarted
+        );
+        assert_eq!(
+            report.observations[1].kind,
+            ObservationKind::RuntimeExecutionCompleted
         );
     }
 
