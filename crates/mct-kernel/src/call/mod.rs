@@ -7,35 +7,42 @@ use serde::{Deserialize, Serialize};
 mod internal;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `CallerIdentity` used by the MCT kernel.
+/// Identity asserted for the caller of an MCT call.
+///
+/// The caller node and vision are authority-bearing; optional user and
+/// project fields narrow audit and policy scope without changing node identity.
 pub struct CallerIdentity {
-    /// Field `node_id` of this domain record.
+    /// MCT node on whose behalf the call is made.
     pub node_id: MctNodeId,
-    /// Field `user_id` of this domain record.
+    /// Optional human or service principal associated with the call.
     pub user_id: Option<UserId>,
-    /// Field `vision_id` of this domain record.
+    /// Vision boundary in which the call claims authority.
     pub vision_id: VisionId,
-    /// Field `project_id` of this domain record.
+    /// Optional project boundary for routing and audit projections.
     pub project_id: Option<ProjectId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `OperationTarget` used by the MCT kernel.
+/// WIT-shaped function identity targeted by a call.
+///
+/// All fields must be non-empty; substrate-specific export names are normalized
+/// to this namespace/interface/function triple before authority checks.
 pub struct OperationTarget {
-    /// Field `namespace` of this domain record.
+    /// WIT package namespace containing the interface.
     pub namespace: String,
-    /// Field `interface_name` of this domain record.
+    /// WIT interface name exported by the child.
     pub interface_name: String,
-    /// Field `function_name` of this domain record.
+    /// Function name requested within the interface.
     pub function_name: String,
 }
 
 impl OperationTarget {
-    /// Constructs this domain record from validated inputs.
+    /// Builds an operation target after validating that no WIT identity part is blank.
     ///
     /// # Errors
     ///
-    /// Returns a typed error when any supplied field is invalid.
+    /// Returns [`MctKernelError::InvalidField`] when namespace, interface, or
+    /// function is empty or whitespace.
     pub fn new(
         namespace: impl Into<String>,
         interface_name: impl Into<String>,
@@ -50,11 +57,12 @@ impl OperationTarget {
         Ok(target)
     }
 
-    /// Validates this domain record and returns typed kernel errors.
+    /// Validates that every WIT identity segment is present.
     ///
     /// # Errors
     ///
-    /// Returns a typed error when required domain fields are invalid.
+    /// Returns [`MctKernelError::InvalidField`] for an empty or whitespace-only
+    /// namespace, interface, or function.
     pub fn validate(&self) -> MctKernelResult<()> {
         ensure_non_blank("OperationTarget", "namespace", &self.namespace)?;
         ensure_non_blank("OperationTarget", "interface_name", &self.interface_name)?;
@@ -64,22 +72,26 @@ impl OperationTarget {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `PayloadMetadata` used by the MCT kernel.
+/// Routing-visible metadata about call payload bytes.
+///
+/// The kernel uses this summary for authority and routing; it does not inspect
+/// business payload contents.
 pub struct PayloadMetadata {
-    /// Field `data_classification` of this domain record.
+    /// Policy label used for data-placement and toy-grant matching.
     pub data_classification: String,
-    /// Field `approximate_size_bytes` of this domain record.
+    /// Size claim that must match the protocol payload handle size.
     pub approximate_size_bytes: u64,
-    /// Field `contains_secret_scoped_material` of this domain record.
+    /// Whether the adapter says the payload contains secret-scoped material.
     pub contains_secret_scoped_material: bool,
 }
 
 impl PayloadMetadata {
-    /// Validates this domain record and returns typed kernel errors.
+    /// Validates that every WIT identity segment is present.
     ///
     /// # Errors
     ///
-    /// Returns a typed error when required domain fields are invalid.
+    /// Returns [`MctKernelError::InvalidField`] for an empty or whitespace-only
+    /// namespace, interface, or function.
     pub fn validate(&self) -> MctKernelResult<()> {
         ensure_non_blank(
             "PayloadMetadata",
@@ -90,90 +102,100 @@ impl PayloadMetadata {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `AuthorityContextSnapshot` used by the MCT kernel.
+/// Revision numbers of authority inputs observed when the call was formed.
+///
+/// Protocol evaluation rejects calls whose call-side policy or grants revision
+/// is older than the authority asserted by the admitted hello.
 pub struct AuthorityContextSnapshot {
-    /// Field `policy_revision` of this domain record.
+    /// Node-wide policy revision included in the call authority snapshot.
     pub policy_revision: u64,
-    /// Field `grants_revision` of this domain record.
+    /// Toy-grant catalog revision included in the call authority snapshot.
     pub grants_revision: u64,
-    /// Field `vision_policy_revision` of this domain record.
+    /// Vision-specific policy revision visible to routing decisions.
     pub vision_policy_revision: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `TraceContext` used by the MCT kernel.
+/// Trace identifiers carried through call, route, result, and observations.
 pub struct TraceContext {
-    /// Field `trace_id` of this domain record.
+    /// End-to-end trace that joins protocol, routing, and execution facts.
     pub trace_id: TraceId,
-    /// Field `span_id` of this domain record.
+    /// Span for this call within the trace.
     pub span_id: SpanId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `CallOrigin` used by the MCT kernel.
+/// Adapter surface that constructed the semantic call.
 pub enum CallOrigin {
-    /// Public `Iroh` item.
+    /// Call arrived through the MCT peer protocol over Iroh.
     Iroh,
-    /// Public `JvmAdapter` item.
+    /// Call was projected from a JVM adapter.
     JvmAdapter,
-    /// Public `WasmHost` item.
+    /// Call originated inside the WASM host boundary.
     WasmHost,
-    /// Public `ProcessHarness` item.
+    /// Call came from a local process harness.
     ProcessHarness,
-    /// Public `Cli` item.
+    /// Call was submitted by a local CLI command.
     Cli,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `MctCall` used by the MCT kernel.
+/// Immutable semantic unit of requested work.
+///
+/// An adapter constructs exactly one call from protocol facts. Authority checks
+/// compare caller, target, metadata, revisions, deadline, and origin without
+/// reading payload bytes.
 pub struct MctCall {
-    /// Field `call_id` of this domain record.
+    /// Stable identifier used by results, routes, and observations for this work.
     pub call_id: CallId,
-    /// Field `caller` of this domain record.
+    /// Authority-bearing caller asserted by the adapter.
     pub caller: CallerIdentity,
-    /// Field `target` of this domain record.
+    /// WIT function the caller wants invoked.
     pub target: OperationTarget,
-    /// Field `payload_metadata` of this domain record.
+    /// Payload summary used by policy and route selection.
     pub payload_metadata: PayloadMetadata,
-    /// Field `authority_context` of this domain record.
+    /// Policy and grants revisions that accompanied call construction.
     pub authority_context: AuthorityContextSnapshot,
-    /// Field `deadline` of this domain record.
+    /// Adapter-supplied deadline for completing the call.
     pub deadline: Timestamp,
-    /// Field `trace_context` of this domain record.
+    /// Trace identifiers copied into derived observations.
     pub trace_context: TraceContext,
-    /// Field `origin` of this domain record.
+    /// Adapter boundary that produced the call.
     pub origin: CallOrigin,
 }
 
 impl CallerIdentity {
-    /// Validates this domain record and returns typed kernel errors.
+    /// Validates that every WIT identity segment is present.
     ///
     /// # Errors
     ///
-    /// Returns a typed error when required domain fields are invalid.
+    /// Returns [`MctKernelError::InvalidField`] for an empty or whitespace-only
+    /// namespace, interface, or function.
     pub fn validate(&self) -> MctKernelResult<()> {
         Ok(())
     }
 }
 
 impl TraceContext {
-    /// Validates this domain record and returns typed kernel errors.
+    /// Validates that every WIT identity segment is present.
     ///
     /// # Errors
     ///
-    /// Returns a typed error when required domain fields are invalid.
+    /// Returns [`MctKernelError::InvalidField`] for an empty or whitespace-only
+    /// namespace, interface, or function.
     pub fn validate(&self) -> MctKernelResult<()> {
         Ok(())
     }
 }
 
 impl MctCall {
-    /// Validates this domain record and returns typed kernel errors.
+    /// Validates that every WIT identity segment is present.
     ///
     /// # Errors
     ///
-    /// Returns a typed error when required domain fields are invalid.
+    /// Returns [`MctKernelError::InvalidField`] for an empty or whitespace-only
+    /// namespace, interface, or function.
     pub fn validate(&self) -> MctKernelResult<()> {
         self.caller.validate()?;
         self.target.validate()?;
@@ -186,106 +208,113 @@ impl MctCall {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `RuntimeKind` used by the MCT kernel.
+/// Execution substrate selected for a route or result projection.
 pub enum RuntimeKind {
-    /// Public `Process` item.
+    /// Local process-backed child.
     Process,
-    /// Public `JvmChild` item.
+    /// JVM-hosted child adapter.
     JvmChild,
-    /// Public `WasmComponent` item.
+    /// WASM component child.
     WasmComponent,
-    /// Public `RemotePeer` item.
+    /// Remote Mother reached through peer routing.
     RemotePeer,
-    /// Public `Internal` item.
+    /// Mother-internal implementation path.
     Internal,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `RouteTaken` used by the MCT kernel.
+/// Route actually used to execute or attempt a call.
 pub struct RouteTaken {
-    /// Field `node_id` of this domain record.
+    /// Node that handled the call.
     pub node_id: MctNodeId,
-    /// Field `child_id` of this domain record.
+    /// Child selected on that node, when execution went through a child.
     pub child_id: Option<ChildId>,
-    /// Field `runtime_kind` of this domain record.
+    /// Runtime class used for the selected execution path.
     pub runtime_kind: RuntimeKind,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `ExecutionSummary` used by the MCT kernel.
+/// Caller-safe execution timing and byte counts for a terminal result.
 pub struct ExecutionSummary {
-    /// Field `wall_time_ms` of this domain record.
+    /// End-to-end elapsed time observed by the adapter.
     pub wall_time_ms: u64,
-    /// Field `execution_time_ms` of this domain record.
+    /// Time spent running child code, if measured separately.
     pub execution_time_ms: Option<u64>,
-    /// Field `queue_wait_ms` of this domain record.
+    /// Time spent waiting before execution began, if measured.
     pub queue_wait_ms: Option<u64>,
-    /// Field `input_size_bytes` of this domain record.
+    /// Input byte count supplied to the execution path.
     pub input_size_bytes: u64,
-    /// Field `output_size_bytes` of this domain record.
+    /// Output byte count returned by the execution path, if any.
     pub output_size_bytes: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `ResultOutcome` used by the MCT kernel.
+/// Terminal outcome class exposed to the caller.
 pub enum ResultOutcome {
-    /// Public `Success` item.
+    /// Work completed successfully.
     Success,
-    /// Public `Denied` item.
+    /// Authority denied the work before execution completed.
     Denied,
-    /// Public `Failed` item.
+    /// Execution failed without granting the caller internal details.
     Failed,
-    /// Public `TimedOut` item.
+    /// Work exceeded its deadline or runtime limit.
     TimedOut,
-    /// Public `Cancelled` item.
+    /// Work was cancelled by the runtime or operator.
     Cancelled,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `MctResult` used by the MCT kernel.
+/// Caller-safe terminal answer for an MCT call.
+///
+/// The result references the authority decision and audit evidence instead of
+/// embedding privileged details in `requester_message`.
 pub struct MctResult {
-    /// Field `call_id` of this domain record.
+    /// Identifier of the call this result answers.
     pub call_id: CallId,
-    /// Field `outcome` of this domain record.
+    /// Closed outcome category safe to disclose to the requester.
     pub outcome: ResultOutcome,
-    /// Field `route_taken` of this domain record.
+    /// Execution path used, absent when the call never reached execution.
     pub route_taken: Option<RouteTaken>,
-    /// Field `authority_decision_ref` of this domain record.
+    /// Decision that authorized or denied the terminal path.
     pub authority_decision_ref: DecisionId,
-    /// Field `execution_summary` of this domain record.
+    /// Timing and size facts safe for result consumers.
     pub execution_summary: ExecutionSummary,
-    /// Field `requester_message` of this domain record.
+    /// Caller-safe message; privileged denial reasons live in observations.
     pub requester_message: String,
-    /// Field `audit_ref` of this domain record.
+    /// Opaque reference for audit lookup outside the caller response.
     pub audit_ref: AuditRef,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `MctCallProtocolAuthority` used by the MCT kernel.
+/// Authority facts carried from a successful hello into `mct/call/0`.
+///
+/// Call evaluation requires these facts to match the admitted hello, the
+/// connection presentation, and the call authority snapshot.
 pub struct MctCallProtocolAuthority {
-    /// Field `hello_decision_id` of this domain record.
+    /// Hello admission decision the call claims to extend.
     pub hello_decision_id: DecisionId,
-    /// Field `peer_binding_id` of this domain record.
+    /// Peer binding selected during hello admission.
     pub peer_binding_id: PeerBindingId,
-    /// Field `vision_id` of this domain record.
+    /// Vision admitted by hello and required to match the call caller.
     pub vision_id: VisionId,
-    /// Field `accepted_alpn` of this domain record.
+    /// ALPN admitted for the call phase; must be `mct/call/0`.
     pub accepted_alpn: String,
-    /// Field `endpoint_id` of this domain record.
+    /// Transport endpoint that must match the received connection.
     pub endpoint_id: EndpointIdText,
-    /// Field `policy_revision` of this domain record.
+    /// Minimum policy revision the call snapshot must cover.
     pub policy_revision: u64,
-    /// Field `grants_revision` of this domain record.
+    /// Minimum grants revision the call snapshot must cover.
     pub grants_revision: u64,
 }
 
 impl MctCallProtocolAuthority {
-    /// Validates this domain record and returns typed kernel errors.
+    /// Validates that every WIT identity segment is present.
     ///
     /// # Errors
     ///
-    /// Returns a typed error when required domain fields are invalid.
+    /// Returns [`MctKernelError::InvalidField`] for an empty or whitespace-only
+    /// namespace, interface, or function.
     pub fn validate(&self) -> MctKernelResult<()> {
         ensure_non_blank(
             "MctCallProtocolAuthority",
@@ -298,43 +327,47 @@ impl MctCallProtocolAuthority {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "payload_kind", rename_all = "snake_case")]
-/// Closed domain enum `MctCallPayloadHandle` used by the MCT kernel.
+/// Adapter-neutral reference to call payload bytes.
+///
+/// Each non-empty variant carries a size that must equal
+/// [`MctCall::payload_metadata`].`approximate_size_bytes`; the kernel validates
+/// the handle shape but never dereferences payload storage.
 pub enum MctCallPayloadHandle {
-    /// Public `InlinePayload` item.
+    /// Payload stored inline or in an adapter-local inline buffer.
     InlinePayload {
-        /// Field `String` of this domain record.
+        /// Non-blank adapter-local reference to the inline bytes.
         inline_payload_ref: String,
-        /// Field `String` of this domain record.
+        /// Non-blank media type or schema label for the bytes.
         content_type: String,
-        /// Field `u64` of this domain record.
+        /// Claimed byte size used for validation against call metadata.
         approximate_size_bytes: u64,
     },
-    /// Public `ContentAddressedBlob` item.
+    /// Payload stored in content-addressed storage.
     ContentAddressedBlob {
-        /// Field `String` of this domain record.
+        /// Non-blank digest identifying the blob contents.
         digest: String,
-        /// Field `String` of this domain record.
+        /// Non-blank adapter reference used to retrieve the blob.
         blob_ref: String,
-        /// Field `String` of this domain record.
+        /// Non-blank media type or schema label for the blob.
         content_type: String,
-        /// Field `u64` of this domain record.
+        /// Claimed byte size used for validation against call metadata.
         approximate_size_bytes: u64,
     },
-    /// Public `ExternalReference` item.
+    /// Payload held outside MCT-managed storage.
     ExternalReference {
-        /// Field `String` of this domain record.
+        /// Non-blank reference whose dereference is an adapter responsibility.
         external_ref: String,
-        /// Field `item` of this domain record.
+        /// Optional media type; if present it must not be blank.
         content_type: Option<String>,
-        /// Field `u64` of this domain record.
+        /// Claimed byte size used for validation against call metadata.
         approximate_size_bytes: u64,
     },
-    /// Public `Empty` item.
+    /// No payload bytes are associated with the call.
     Empty,
 }
 
 impl MctCallPayloadHandle {
-    /// Executes `approximate_size_bytes` for this domain type.
+    /// Returns the byte-size claim carried by this handle, or zero for empty payloads.
     pub fn approximate_size_bytes(&self) -> u64 {
         match self {
             Self::InlinePayload {
@@ -353,11 +386,12 @@ impl MctCallPayloadHandle {
         }
     }
 
-    /// Validates this domain record and returns typed kernel errors.
+    /// Validates that every WIT identity segment is present.
     ///
     /// # Errors
     ///
-    /// Returns a typed error when required domain fields are invalid.
+    /// Returns [`MctKernelError::InvalidField`] for an empty or whitespace-only
+    /// namespace, interface, or function.
     pub fn validate(&self) -> MctKernelResult<()> {
         match self {
             Self::InlinePayload {
@@ -402,30 +436,34 @@ impl MctCallPayloadHandle {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `MctCallProtocolRequest` used by the MCT kernel.
+/// Wire-edge `mct/call/0` request after JSON decoding.
+///
+/// Validation requires authority, connection, call, and payload facts to be
+/// internally consistent before evaluation can authorize routing.
 pub struct MctCallProtocolRequest {
-    /// Field `protocol_request_id` of this domain record.
+    /// Request identifier for correlating the protocol reply.
     pub protocol_request_id: ProtocolRequestId,
-    /// Field `authority` of this domain record.
+    /// Hello-derived authority facts asserted by the caller.
     pub authority: MctCallProtocolAuthority,
-    /// Field `received_over` of this domain record.
+    /// Connection facts supplied by the receiving adapter, not by the peer.
     pub received_over: crate::peer::IrohConnectionPresentation,
-    /// Field `call` of this domain record.
+    /// Immutable semantic call constructed from the request.
     pub call: MctCall,
-    /// Field `payload` of this domain record.
+    /// Adapter-neutral payload reference whose size must match call metadata.
     pub payload: MctCallPayloadHandle,
-    /// Field `idempotency_key` of this domain record.
+    /// Optional retry key; when present it must be non-blank.
     pub idempotency_key: Option<String>,
-    /// Field `received_observation_id` of this domain record.
+    /// Observation recording receipt of this protocol request.
     pub received_observation_id: ObservationId,
 }
 
 impl MctCallProtocolRequest {
-    /// Validates this domain record and returns typed kernel errors.
+    /// Validates that every WIT identity segment is present.
     ///
     /// # Errors
     ///
-    /// Returns a typed error when required domain fields are invalid.
+    /// Returns [`MctKernelError::InvalidField`] for an empty or whitespace-only
+    /// namespace, interface, or function.
     pub fn validate(&self) -> MctKernelResult<()> {
         self.authority.validate()?;
         self.received_over.validate()?;
@@ -451,126 +489,133 @@ impl MctCallProtocolRequest {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `CallProtocolOutcome` used by the MCT kernel.
+/// Kernel outcome for the `mct/call/0` protocol decision.
 pub enum CallProtocolOutcome {
-    /// Public `AcceptedForRouting` item.
+    /// Authority checks passed and an adapter may route the call.
     AcceptedForRouting,
-    /// Public `Malformed` item.
+    /// Request shape or metadata consistency failed validation.
     Malformed,
-    /// Public `Denied` item.
+    /// Authority facts did not justify routing.
     Denied,
-    /// Public `Failed` item.
+    /// Downstream execution failed after protocol admission.
     Failed,
-    /// Public `TimedOut` item.
+    /// Downstream execution timed out after protocol admission.
     TimedOut,
-    /// Public `Completed` item.
+    /// Downstream execution completed and a result reference may be present.
     Completed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `CallProtocolReason` used by the MCT kernel.
+/// Specific non-secret reason recorded for a call protocol evaluation.
 pub enum CallProtocolReason {
-    /// Public `HelloNotAdmitted` item.
+    /// Prior hello decision was missing, denied, or did not match this request.
     HelloNotAdmitted,
-    /// Public `AlpnNotAdmitted` item.
+    /// Hello admission did not include the call ALPN.
     AlpnNotAdmitted,
-    /// Public `EndpointMismatch` item.
+    /// Received transport endpoint differs from the admitted endpoint.
     EndpointMismatch,
-    /// Public `BindingMismatch` item.
+    /// Request cites a peer binding not selected during hello.
     BindingMismatch,
-    /// Public `CallerMismatch` item.
+    /// Call caller node differs from the node admitted by hello.
     CallerMismatch,
-    /// Public `VisionMismatch` item.
+    /// Request, caller, and hello do not agree on one Vision.
     VisionMismatch,
-    /// Public `BindingRevoked` item.
+    /// Peer binding was revoked before call routing.
     BindingRevoked,
-    /// Public `BindingExpired` item.
+    /// Peer binding expired before call routing.
     BindingExpired,
-    /// Public `PolicyRevisionStale` item.
+    /// Call authority snapshot is older than the admitted authority facts.
     PolicyRevisionStale,
-    /// Public `MalformedCall` item.
+    /// Request shape could not become a valid semantic call.
     MalformedCall,
-    /// Public `PayloadMetadataMismatch` item.
+    /// Payload handle size disagrees with call payload metadata.
     PayloadMetadataMismatch,
-    /// Public `AuthorityDenied` item.
+    /// Later authority checks denied the call after protocol admission.
     AuthorityDenied,
-    /// Public `NoRoute` item.
+    /// No authorized route remained for the admitted call.
     NoRoute,
-    /// Public `ExecutionFailed` item.
+    /// Execution failed after routing.
     ExecutionFailed,
-    /// Public `ExecutionTimedOut` item.
+    /// Execution timed out after routing.
     ExecutionTimedOut,
-    /// Public `ResultRecorded` item.
+    /// Evaluation accepted or recorded a terminal result.
     ResultRecorded,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `MctCallProtocolEvaluation` used by the MCT kernel.
+/// Decision produced by `mct/call/0` authority evaluation.
+///
+/// Denied and malformed evaluations carry no route or result reference; safe
+/// messages are caller-facing projections of the typed reason.
 pub struct MctCallProtocolEvaluation {
-    /// Field `decision_id` of this domain record.
+    /// Unique decision identifier for this protocol evaluation.
     pub decision_id: DecisionId,
-    /// Field `protocol_request_id` of this domain record.
+    /// Request this evaluation answers.
     pub protocol_request_id: ProtocolRequestId,
-    /// Field `call_id` of this domain record.
+    /// Semantic call evaluated; present because protocol decoding succeeded.
     pub call_id: Option<CallId>,
-    /// Field `route_decision_id` of this domain record.
+    /// Route decision produced after admission, when one exists.
     pub route_decision_id: Option<DecisionId>,
-    /// Field `result_ref` of this domain record.
+    /// Result reference supplied after execution, when one exists.
     pub result_ref: Option<ResultRef>,
-    /// Field `outcome` of this domain record.
+    /// Closed outcome class for the protocol decision.
     pub outcome: CallProtocolOutcome,
-    /// Field `reason` of this domain record.
+    /// Typed reason retained for audit and observation projection.
     pub reason: CallProtocolReason,
-    /// Field `safe_message` of this domain record.
+    /// Caller-safe message that must not disclose privileged policy detail.
     pub safe_message: String,
-    /// Field `observation_id` of this domain record.
+    /// Observation that records this evaluation.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `CallProtocolReplyOutcome` used by the MCT kernel.
+/// Wire-safe outcome class returned in a `mct/call/0` reply.
 pub enum CallProtocolReplyOutcome {
-    /// Public `Success` item.
+    /// Work completed successfully.
     Success,
-    /// Public `Denied` item.
+    /// Authority denied the work before execution completed.
     Denied,
-    /// Public `Failed` item.
+    /// Execution failed without granting the caller internal details.
     Failed,
-    /// Public `TimedOut` item.
+    /// Work exceeded its deadline or runtime limit.
     TimedOut,
-    /// Public `Cancelled` item.
+    /// Work was cancelled by the runtime or operator.
     Cancelled,
-    /// Public `Malformed` item.
+    /// Request or reply shape was malformed before execution.
     Malformed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `MctCallProtocolReply` used by the MCT kernel.
+/// Wire-edge response for `mct/call/0`.
+///
+/// The reply carries only caller-safe outcome and an optional opaque result
+/// reference; detailed authority reasons remain in observations.
 pub struct MctCallProtocolReply {
-    /// Field `reply_id` of this domain record.
+    /// Unique identifier for this protocol reply.
     pub reply_id: ReplyId,
-    /// Field `protocol_request_id` of this domain record.
+    /// Request identifier being answered.
     pub protocol_request_id: ProtocolRequestId,
-    /// Field `decision_id` of this domain record.
+    /// Evaluation decision that determined the reply.
     pub decision_id: DecisionId,
-    /// Field `result_ref` of this domain record.
+    /// Opaque result lookup reference, present only when one is safe to return.
     pub result_ref: Option<ResultRef>,
-    /// Field `reply_outcome` of this domain record.
+    /// Caller-facing outcome class.
     pub reply_outcome: CallProtocolReplyOutcome,
-    /// Field `safe_message` of this domain record.
+    /// Caller-safe message derived from the evaluation or execution path.
     pub safe_message: String,
-    /// Field `reply_observation_id` of this domain record.
+    /// Observation recording emission of this reply.
     pub reply_observation_id: ObservationId,
 }
 
 impl MctCallProtocolReply {
-    /// Validates this domain record and returns typed kernel errors.
+    /// Validates that every WIT identity segment is present.
     ///
     /// # Errors
     ///
-    /// Returns a typed error when required domain fields are invalid.
+    /// Returns [`MctKernelError::InvalidField`] for an empty or whitespace-only
+    /// namespace, interface, or function.
     pub fn validate(&self) -> MctKernelResult<()> {
         ensure_non_blank("MctCallProtocolReply", "safe_message", &self.safe_message)?;
         Ok(())
@@ -578,15 +623,21 @@ impl MctCallProtocolReply {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Domain record `CallEvaluationIds` used by the MCT kernel.
+/// Caller-supplied IDs used when minting a call protocol evaluation.
 pub struct CallEvaluationIds {
-    /// Field `decision_id` of this domain record.
+    /// Decision identifier assigned to the evaluation.
     pub decision_id: DecisionId,
-    /// Field `observation_id` of this domain record.
+    /// Observation identifier assigned to the evaluation evidence.
     pub observation_id: ObservationId,
 }
 
-/// Evaluates `evaluate_call_protocol` fail-closed from explicit authority inputs.
+/// Decides whether an admitted peer may submit this `mct/call/0` request.
+///
+/// The authority facts are the validated request, the prior hello admission,
+/// and caller-supplied IDs. Returns `AcceptedForRouting` only when hello was
+/// admitted and binding, caller node, vision, ALPN, endpoint, revisions, and
+/// payload size all match. Absence or mismatch of authority is a denied or
+/// malformed decision, not an error.
 pub fn evaluate_call_protocol(
     request: &MctCallProtocolRequest,
     hello: &crate::peer::MctHelloAdmissionEvaluation,
@@ -596,17 +647,19 @@ pub fn evaluate_call_protocol(
 }
 
 impl MctCallProtocolEvaluation {
-    /// Executes `is_accepted_for_routing` for this domain type.
+    /// Returns true only for evaluations that an adapter may route onward.
     pub fn is_accepted_for_routing(&self) -> bool {
         self.outcome == CallProtocolOutcome::AcceptedForRouting
     }
 }
 
-/// Executes `encode_call_protocol_request_json` for this domain type.
+/// Validates and serializes a call protocol request for the JSON wire edge.
 ///
 /// # Errors
 ///
-/// Returns a typed error when JSON encoding fails.
+/// Returns a kernel validation error before serialization if the request is
+/// internally inconsistent, or [`MctKernelError::EncodeCallProtocolJson`] if
+/// JSON encoding fails.
 pub fn encode_call_protocol_request_json(
     request: &MctCallProtocolRequest,
 ) -> MctKernelResult<Vec<u8>> {
@@ -614,11 +667,12 @@ pub fn encode_call_protocol_request_json(
     serde_json::to_vec(request).map_err(|source| MctKernelError::EncodeCallProtocolJson { source })
 }
 
-/// Executes `decode_call_protocol_request_json` for this domain type.
+/// Decodes and validates a call protocol request from the JSON wire edge.
 ///
 /// # Errors
 ///
-/// Returns a typed error when JSON decoding or validation fails.
+/// Returns [`MctKernelError::DecodeCallProtocolJson`] for invalid JSON and a
+/// kernel validation error for malformed authority, call, or payload facts.
 pub fn decode_call_protocol_request_json(bytes: &[u8]) -> MctKernelResult<MctCallProtocolRequest> {
     let request: MctCallProtocolRequest = serde_json::from_slice(bytes)
         .map_err(|source| MctKernelError::DecodeCallProtocolJson { source })?;
@@ -626,21 +680,23 @@ pub fn decode_call_protocol_request_json(bytes: &[u8]) -> MctKernelResult<MctCal
     Ok(request)
 }
 
-/// Executes `encode_call_protocol_reply_json` for this domain type.
+/// Validates and serializes a call protocol reply for the JSON wire edge.
 ///
 /// # Errors
 ///
-/// Returns a typed error when JSON encoding fails.
+/// Returns a kernel validation error when the reply message is blank, or
+/// [`MctKernelError::EncodeCallProtocolJson`] when JSON encoding fails.
 pub fn encode_call_protocol_reply_json(reply: &MctCallProtocolReply) -> MctKernelResult<Vec<u8>> {
     reply.validate()?;
     serde_json::to_vec(reply).map_err(|source| MctKernelError::EncodeCallProtocolJson { source })
 }
 
-/// Executes `decode_call_protocol_reply_json` for this domain type.
+/// Decodes and validates a call protocol reply from the JSON wire edge.
 ///
 /// # Errors
 ///
-/// Returns a typed error when JSON decoding or validation fails.
+/// Returns [`MctKernelError::DecodeCallProtocolJson`] for invalid JSON and a
+/// kernel validation error for an invalid reply shape.
 pub fn decode_call_protocol_reply_json(bytes: &[u8]) -> MctKernelResult<MctCallProtocolReply> {
     let reply: MctCallProtocolReply = serde_json::from_slice(bytes)
         .map_err(|source| MctKernelError::DecodeCallProtocolJson { source })?;
@@ -659,7 +715,10 @@ fn validate_optional_string_field(
     Ok(())
 }
 
-/// Executes `call_reply_from_evaluation` for this domain type.
+/// Projects a protocol evaluation into the caller-safe reply shape.
+///
+/// Accepted and completed evaluations map to success; malformed, denied,
+/// failed, and timed-out evaluations retain their caller-safe outcome class.
 pub fn call_reply_from_evaluation(
     reply_id: ReplyId,
     evaluation: &MctCallProtocolEvaluation,
