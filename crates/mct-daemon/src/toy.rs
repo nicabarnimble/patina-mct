@@ -541,6 +541,55 @@ mod tests {
         assert!(tags.contains("mct-toy-test"));
     }
 
+    fn git_report(repo: &Path, input_json: &str, stem: &str) -> MctToyCallReport {
+        let mut registry = MctToyAdapterRegistry::new();
+        registry.register(
+            ToyId::from("toy-git"),
+            MctToyBackend::GitCommand {
+                repo_root: repo.to_path_buf(),
+            },
+        );
+        registry.call_authorized_toy(&authorized("toy-git"), &call(), input_json, ids(stem))
+    }
+
+    #[test]
+    fn git_toy_rejects_option_like_untrusted_refs_before_invoking_git() {
+        let repo = init_git_repo();
+        let cases = [
+            (
+                "create-tag-name",
+                r#"{"interface":"patina:git/git@0.1.0","function":"create-tag","name":"--force"}"#,
+            ),
+            (
+                "create-tag-at-name",
+                r#"{"interface":"patina:git/git@0.1.0","function":"create-tag-at","name":"--force","git_ref":"HEAD"}"#,
+            ),
+            (
+                "create-tag-at-ref",
+                r#"{"interface":"patina:git/git@0.1.0","function":"create-tag-at","name":"safe-tag","git_ref":"--all"}"#,
+            ),
+            (
+                "delete-tag-name",
+                r#"{"interface":"patina:git/git@0.1.0","function":"delete-tag","name":"--force"}"#,
+            ),
+            (
+                "tag-exists-name",
+                r#"{"interface":"patina:git/git@0.1.0","function":"tag-exists","name":"--force"}"#,
+            ),
+        ];
+
+        for (stem, input_json) in cases {
+            let report = git_report(repo.path(), input_json, stem);
+            assert_eq!(report.outcome, MctToyAdapterOutcome::Failed, "{stem}");
+            assert!(
+                report.safe_message.contains("git ref argument"),
+                "{stem}: {}",
+                report.safe_message
+            );
+            assert_eq!(report.observations[1].kind, ObservationKind::ToyCallFailed);
+        }
+    }
+
     #[test]
     fn git_toy_backend_rejects_paths_that_escape_repo() {
         let repo = init_git_repo();
