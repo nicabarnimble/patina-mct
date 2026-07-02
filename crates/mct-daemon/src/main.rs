@@ -364,8 +364,8 @@ fn run_process(mut args: Vec<String>) -> Result<()> {
             )),
             result_ref: ResultRef::from(format!("result-cli-process:{}", call.call_id)),
             audit_ref: AuditRef::from(format!("audit-cli-process:{}", call.call_id)),
-            started_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
-            completed_at: Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
+            started_at: current_timestamp(),
+            completed_at: current_timestamp(),
         },
     )?;
     append_ledger_observations(&ledger_path, &report.observations)?;
@@ -450,8 +450,8 @@ fn run_wasm_call(mut args: Vec<String>) -> Result<()> {
                 call.call_id
             )),
             audit_ref: AuditRef::from(format!("audit-cli-wasm:{}", call.call_id)),
-            started_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
-            completed_at: Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
+            started_at: current_timestamp(),
+            completed_at: current_timestamp(),
         },
     )?;
     append_ledger_observations(&ledger_path, &report.observations)?;
@@ -564,8 +564,8 @@ fn run_wasm_call_wit(mut args: Vec<String>) -> Result<()> {
                         "audit-cli-wasm-wit:{}",
                         invoke_call.call_id
                     )),
-                    started_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
-                    completed_at: Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
+                    started_at: current_timestamp(),
+                    completed_at: current_timestamp(),
                 },
             )?,
         )
@@ -777,7 +777,7 @@ fn authorize_cli_toy(
             action: request.action.into(),
             resource_id: request.resource_id,
             node_id: request.call.caller.node_id.clone(),
-            now: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+            now: current_timestamp(),
             ids: ToyGrantEvaluationIds {
                 evaluation_id: ToyGrantEvaluationId::from(format!(
                     "toy-eval-cli-{}",
@@ -827,7 +827,7 @@ fn wit_toy_adapter(
     MctWitToyHostAdapter {
         authorized_toy_call,
         observation_id_prefix: observation_id_prefix.into(),
-        observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+        observed_at: current_timestamp(),
     }
 }
 
@@ -1662,7 +1662,7 @@ fn local_wasm_call(target: OperationTarget) -> MctCall {
             grants_revision: 1,
             vision_policy_revision: 1,
         },
-        deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
+        deadline: current_timestamp_after(DEFAULT_CLI_CALL_DEADLINE),
         trace_context: TraceContext {
             trace_id: TraceId::from("trace-cli-wasm"),
             span_id: SpanId::from("span-cli-wasm"),
@@ -1691,7 +1691,7 @@ fn local_process_call(target: OperationTarget, payload_size_bytes: u64) -> MctCa
             grants_revision: 1,
             vision_policy_revision: 1,
         },
-        deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
+        deadline: current_timestamp_after(DEFAULT_CLI_CALL_DEADLINE),
         trace_context: TraceContext {
             trace_id: TraceId::from("trace-cli-process"),
             span_id: SpanId::from("span-cli-process"),
@@ -1730,8 +1730,17 @@ async fn run_iroh(mut args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+const DEFAULT_CLI_CALL_DEADLINE: jiff::SignedDuration = jiff::SignedDuration::from_secs(60);
+
 fn current_timestamp() -> Timestamp {
     Timestamp::new(jiff::Timestamp::now().to_string()).expect("jiff produced RFC3339 timestamp")
+}
+
+fn current_timestamp_after(budget: jiff::SignedDuration) -> Timestamp {
+    let deadline = jiff::Timestamp::now()
+        .checked_add(budget)
+        .expect("CLI deadline budget is within jiff timestamp range");
+    Timestamp::new(deadline.to_string()).expect("jiff produced RFC3339 timestamp")
 }
 
 async fn serve_iroh(mut args: Vec<String>) -> Result<()> {
@@ -1937,8 +1946,8 @@ async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
                                 "audit-iroh-process:{}",
                                 request.call.call_id
                             )),
-                            started_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
-                            completed_at: Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
+                            started_at: current_timestamp(),
+                            completed_at: current_timestamp(),
                         },
                     ) {
                         Ok(report) => report,
@@ -2171,7 +2180,7 @@ fn cli_call_request(
             grants_revision: 1,
             vision_policy_revision: 1,
         },
-        deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
+        deadline: current_timestamp_after(DEFAULT_CLI_CALL_DEADLINE),
         trace_context: TraceContext {
             trace_id: trace_id.clone(),
             span_id: SpanId::from("span-cli-call"),
