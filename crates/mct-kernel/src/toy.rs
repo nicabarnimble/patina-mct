@@ -2,256 +2,283 @@ use crate::{call::*, id::*};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `ToyContractIdentity` used by the MCT kernel.
+/// WIT identity of a canonical toy capability.
+///
+/// Function and resource narrow the interface when a toy exposes multiple
+/// authority-bearing operations.
 pub struct ToyContractIdentity {
-    /// Field `namespace` of this domain record.
+    /// WIT package namespace containing the toy contract.
     pub namespace: String,
-    /// Field `interface_name` of this domain record.
+    /// WIT interface name for the toy.
     pub interface_name: String,
-    /// Field `version` of this domain record.
+    /// Contract version used by the canonical catalog.
     pub version: String,
-    /// Field `function_name` of this domain record.
+    /// Optional function name when authority is operation-specific.
     pub function_name: Option<String>,
-    /// Field `resource_name` of this domain record.
+    /// Optional resource name when authority is resource-specific.
     pub resource_name: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `CanonicalToyContract` used by the MCT kernel.
+/// Catalog entry defining whether a toy can carry authority.
+///
+/// Grant evaluation denies non-catalog toys and catalog entries that are not
+/// authority-bearing.
 pub struct CanonicalToyContract {
-    /// Field `toy_id` of this domain record.
+    /// Stable toy identifier used by grants and requests.
     pub toy_id: ToyId,
-    /// Field `contract` of this domain record.
+    /// WIT contract identity for this catalog entry.
     pub contract: ToyContractIdentity,
-    /// Field `authority_bearing` of this domain record.
+    /// Whether this toy may be authorized through ToyGrant evaluation.
     pub authority_bearing: bool,
-    /// Field `catalog_revision` of this domain record.
+    /// Catalog revision that admitted this entry.
     pub catalog_revision: u64,
-    /// Field `admitted_by_observation_id` of this domain record.
+    /// Observation that admitted the toy to the canonical catalog.
     pub admitted_by_observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `ToyGrantSubject` used by the MCT kernel.
+/// Child identity a toy grant applies to.
+///
+/// Grant subject matching is exact for child name/artifact/version; optional
+/// assignment and caller fields narrow the grant when present.
 pub struct ToyGrantSubject {
-    /// Field `child_name` of this domain record.
+    /// Child name requesting toy access.
     pub child_name: String,
-    /// Field `artifact_id` of this domain record.
+    /// Artifact identity of the requesting child.
     pub artifact_id: String,
-    /// Field `artifact_version` of this domain record.
+    /// Artifact version of the requesting child.
     pub artifact_version: String,
-    /// Field `assignment_id` of this domain record.
+    /// Optional assignment that must match the request when grant-scoped.
     pub assignment_id: Option<ChildAssignmentId>,
-    /// Field `caller_node_id` of this domain record.
+    /// Optional caller node that must match when grant-scoped.
     pub caller_node_id: Option<MctNodeId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `ToyGrantScope` used by the MCT kernel.
+/// Vision, node, data, resource, and action scope of a toy grant.
+///
+/// Optional scope fields are wildcards when absent and exact requirements when
+/// present; `allowed_actions` must contain the requested action.
 pub struct ToyGrantScope {
-    /// Field `vision_id` of this domain record.
+    /// Vision in which the grant is valid.
     pub vision_id: VisionId,
-    /// Field `node_id` of this domain record.
+    /// Optional node restriction for the effect.
     pub node_id: Option<MctNodeId>,
-    /// Field `project_id` of this domain record.
+    /// Optional project restriction matched against the call caller.
     pub project_id: Option<ProjectId>,
-    /// Field `data_classification` of this domain record.
+    /// Optional data classification restriction matched against payload metadata.
     pub data_classification: Option<String>,
-    /// Field `resource_id` of this domain record.
+    /// Optional resource identifier restriction matched against the request.
     pub resource_id: Option<String>,
-    /// Field `allowed_actions` of this domain record.
+    /// Actions permitted by this grant.
     pub allowed_actions: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `ToyGrantConstraints` used by the MCT kernel.
+/// Time and usage constraints attached to a toy grant.
+///
+/// Evaluation checks `starts_at <= now < expires_at` when bounds are present;
+/// max-use and duration fields are authority facts for adapters to enforce.
 pub struct ToyGrantConstraints {
-    /// Field `starts_at` of this domain record.
+    /// Earliest time the grant may be used.
     pub starts_at: Option<Timestamp>,
-    /// Field `expires_at` of this domain record.
+    /// Exclusive expiry time for grant evaluation.
     pub expires_at: Option<Timestamp>,
-    /// Field `max_uses` of this domain record.
+    /// Optional maximum uses tracked by adapters or storage.
     pub max_uses: Option<u64>,
-    /// Field `max_duration_ms` of this domain record.
+    /// Optional maximum duration for a toy effect.
     pub max_duration_ms: Option<u64>,
-    /// Field `locality_required` of this domain record.
+    /// Whether the effect must remain local to the node.
     pub locality_required: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `ToyGrantState` used by the MCT kernel.
+/// Lifecycle state of a toy grant authority record.
 pub enum ToyGrantState {
-    /// Public `Requested` item.
+    /// Grant was requested but does not authorize effects.
     Requested,
-    /// Public `Active` item.
+    /// Grant may authorize effects if all other facts match.
     Active,
-    /// Public `Expired` item.
+    /// Grant is expired by lifecycle state.
     Expired,
-    /// Public `Revoked` item.
+    /// Grant was explicitly revoked.
     Revoked,
-    /// Public `Superseded` item.
+    /// Grant was replaced by a newer authority record.
     Superseded,
-    /// Public `Denied` item.
+    /// Grant request was denied.
     Denied,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `ToyGrant` used by the MCT kernel.
+/// Authority record that may permit a child to use one canonical toy.
+///
+/// Evaluation requires an active grant matching subject, scope, action, policy
+/// revision, grants revision, and time window before minting a toy-call token.
 pub struct ToyGrant {
-    /// Field `grant_id` of this domain record.
+    /// Stable grant identifier.
     pub grant_id: ToyGrantId,
-    /// Field `toy_id` of this domain record.
+    /// Canonical toy this grant covers.
     pub toy_id: ToyId,
-    /// Field `subject` of this domain record.
+    /// Child identity eligible to use the grant.
     pub subject: ToyGrantSubject,
-    /// Field `scope` of this domain record.
+    /// Vision/action/resource scope of the grant.
     pub scope: ToyGrantScope,
-    /// Field `constraints` of this domain record.
+    /// Time and usage constraints for the grant.
     pub constraints: ToyGrantConstraints,
-    /// Field `grant_state` of this domain record.
+    /// Lifecycle state used during evaluation.
     pub grant_state: ToyGrantState,
-    /// Field `issuer_id` of this domain record.
+    /// Authority issuer for audit.
     pub issuer_id: String,
-    /// Field `policy_revision` of this domain record.
+    /// Policy revision under which the grant was issued.
     pub policy_revision: u64,
-    /// Field `grants_revision` of this domain record.
+    /// Grants revision under which the grant was issued.
     pub grants_revision: u64,
-    /// Field `authority_observation_id` of this domain record.
+    /// Observation that created or updated this authority record.
     pub authority_observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `ToyGrantVerdict` used by the MCT kernel.
+/// Verdict of evaluating one toy request against catalog and grants.
 pub enum ToyGrantVerdict {
-    /// Public `Allowed` item.
+    /// A grant authorized the requested toy action.
     Allowed,
-    /// Public `Denied` item.
+    /// No grant authorized the requested toy action.
     Denied,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Closed domain enum `ToyGrantReasonCode` used by the MCT kernel.
+/// Audit reason for a toy grant evaluation.
 pub enum ToyGrantReasonCode {
-    /// Public `ActiveGrant` item.
+    /// Active grant matched every authority fact.
     ActiveGrant,
-    /// Public `MissingGrant` item.
+    /// No grant matched the toy and subject.
     MissingGrant,
-    /// Public `ExpiredGrant` item.
+    /// Matching grant was expired by state or time window.
     ExpiredGrant,
-    /// Public `RevokedGrant` item.
+    /// Matching grant was revoked, superseded, or denied.
     RevokedGrant,
-    /// Public `WrongScope` item.
+    /// Matching grant did not cover the requested scope or action.
     WrongScope,
-    /// Public `UnknownToy` item.
+    /// Requested toy was absent from the canonical catalog.
     UnknownToy,
-    /// Public `PolicyDenied` item.
+    /// Policy or lifecycle state denied use of the toy.
     PolicyDenied,
-    /// Public `StaleSnapshot` item.
+    /// Grant revisions did not match the call authority snapshot.
     StaleSnapshot,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `ToyGrantEvaluation` used by the MCT kernel.
+/// Decision produced by toy grant evaluation.
+///
+/// Allowed evaluations cite the matching grant and can mint an
+/// [`AuthorizedToyCall`]; denied evaluations carry no executable token.
 pub struct ToyGrantEvaluation {
-    /// Field `evaluation_id` of this domain record.
+    /// Evaluation identifier for this toy decision.
     pub evaluation_id: ToyGrantEvaluationId,
-    /// Field `call_id` of this domain record.
+    /// Call whose toy request was evaluated.
     pub call_id: CallId,
-    /// Field `decision_id` of this domain record.
+    /// Decision identifier for authority/audit linkage.
     pub decision_id: DecisionId,
-    /// Field `grant_id` of this domain record.
+    /// Matching grant, present when a specific grant was considered.
     pub grant_id: Option<ToyGrantId>,
-    /// Field `toy_id` of this domain record.
+    /// Requested canonical toy.
     pub toy_id: ToyId,
-    /// Field `subject_child_name` of this domain record.
+    /// Child name from the evaluated subject.
     pub subject_child_name: String,
-    /// Field `verdict` of this domain record.
+    /// Allowed or denied verdict.
     pub verdict: ToyGrantVerdict,
-    /// Field `reason_code` of this domain record.
+    /// Typed reason for the verdict.
     pub reason_code: ToyGrantReasonCode,
-    /// Field `policy_revision` of this domain record.
+    /// Policy revision used by the evaluation.
     pub policy_revision: u64,
-    /// Field `grants_revision` of this domain record.
+    /// Grants revision used by the evaluation.
     pub grants_revision: u64,
-    /// Field `observation_id` of this domain record.
+    /// Observation recording this evaluation.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Domain record `AuthorizedToyCall` used by the MCT kernel.
+/// Capability token allowing one child toy effect after grant evaluation.
 pub struct AuthorizedToyCall {
-    /// Field `authorized_toy_call_id` of this domain record.
+    /// Unique token identifier for the authorized toy effect.
     pub authorized_toy_call_id: AuthorizedToyCallId,
-    /// Field `call_id` of this domain record.
+    /// Call during which the toy may be used.
     pub call_id: CallId,
-    /// Field `evaluation_id` of this domain record.
+    /// Evaluation that minted this token.
     pub evaluation_id: ToyGrantEvaluationId,
-    /// Field `grant_id` of this domain record.
+    /// Grant that authorized the toy effect.
     pub grant_id: ToyGrantId,
-    /// Field `toy_id` of this domain record.
+    /// Toy the token authorizes.
     pub toy_id: ToyId,
-    /// Field `child_instance_id` of this domain record.
+    /// Child instance allowed to exercise the toy.
     pub child_instance_id: ChildInstanceId,
-    /// Field `authority_decision_id` of this domain record.
+    /// Authority decision tied to this token.
     pub authority_decision_id: DecisionId,
-    /// Field `expires_at` of this domain record.
+    /// Token expiry, using grant expiry or call deadline when the grant has none.
     pub expires_at: Timestamp,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Domain record `ToyGrantEvaluationIds` used by the MCT kernel.
+/// Identifiers supplied for toy grant evaluation and token minting.
 pub struct ToyGrantEvaluationIds {
-    /// Field `evaluation_id` of this domain record.
+    /// Identifier for the produced evaluation.
     pub evaluation_id: ToyGrantEvaluationId,
-    /// Field `decision_id` of this domain record.
+    /// Decision identifier for authority linkage.
     pub decision_id: DecisionId,
-    /// Field `observation_id` of this domain record.
+    /// Observation identifier for evaluation evidence.
     pub observation_id: ObservationId,
-    /// Field `authorized_toy_call_id` of this domain record.
+    /// Token identifier used only when authorization succeeds.
     pub authorized_toy_call_id: AuthorizedToyCallId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Domain record `ToyGrantEvaluationRequest` used by the MCT kernel.
+/// Facts supplied by an adapter when a child requests a toy effect.
 pub struct ToyGrantEvaluationRequest {
-    /// Field `toy_id` of this domain record.
+    /// Toy the child wants to use.
     pub toy_id: ToyId,
-    /// Field `subject` of this domain record.
+    /// Child identity requesting the effect.
     pub subject: ToyGrantSubject,
-    /// Field `child_instance_id` of this domain record.
+    /// Live child instance requesting the effect.
     pub child_instance_id: ChildInstanceId,
-    /// Field `action` of this domain record.
+    /// Requested action; must be present in the grant scope.
     pub action: String,
-    /// Field `resource_id` of this domain record.
+    /// Optional resource requested by the child.
     pub resource_id: Option<String>,
-    /// Field `node_id` of this domain record.
+    /// Node where the effect would occur.
     pub node_id: MctNodeId,
-    /// Field `now` of this domain record.
+    /// Adapter-supplied current time for grant window checks.
     pub now: Timestamp,
-    /// Field `ids` of this domain record.
+    /// Identifiers to stamp on the evaluation and token.
     pub ids: ToyGrantEvaluationIds,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Domain record `ToyGrantEvaluationResult` used by the MCT kernel.
+/// Result of toy grant evaluation, including token only on allow.
 pub struct ToyGrantEvaluationResult {
-    /// Field `evaluation` of this domain record.
+    /// Typed evaluation recording verdict and reason.
     pub evaluation: ToyGrantEvaluation,
-    /// Field `authorized` of this domain record.
+    /// Executable toy-call token, present only for allowed evaluations.
     pub authorized: Option<AuthorizedToyCall>,
 }
 
 impl ToyGrantEvaluationResult {
-    /// Executes `is_allowed` for this domain type.
+    /// Returns true only when evaluation allowed and minted a toy-call token.
     pub fn is_allowed(&self) -> bool {
         self.evaluation.verdict == ToyGrantVerdict::Allowed && self.authorized.is_some()
     }
 }
 
-/// Evaluates `evaluate_toy_grant_for_call` fail-closed from explicit authority inputs.
+/// Decides whether a child may exercise a canonical toy for one call.
+///
+/// Authority facts are the call snapshot, toy request, canonical catalog, and
+/// current grants. It allows only cataloged authority-bearing toys with an
+/// active grant whose subject, scope, action, revisions, and time window match.
+/// Every missing, stale, revoked, expired, or mismatched fact returns a denied
+/// evaluation and no [`AuthorizedToyCall`].
 pub fn evaluate_toy_grant_for_call(
     call: &MctCall,
     request: &ToyGrantEvaluationRequest,
