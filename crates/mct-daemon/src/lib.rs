@@ -89,11 +89,12 @@ pub use toy::{
     MctToyAdapterOutcome, MctToyAdapterRegistry, MctToyBackend, MctToyCallIds, MctToyCallReport,
 };
 pub use wasm::{
-    MctWasiHostConfig, MctWasiPreopen, MctWasiPreopenAccess, MctWasmComponentDiagnosticIds,
-    MctWasmComponentInvocationIds, MctWasmComponentInvocationReport, MctWasmComponentRuntime,
-    MctWasmComponentRuntimeError, MctWasmComponentToyInvocation, MctWasmToyHostImport,
-    MctWitComponentInvocationReport, MctWitHostImportAdapters, MctWitResolvedOperation,
-    MctWitToyHostAdapter, resolve_wit_operation_target, wasm_component_runtime_error_observation,
+    DEFAULT_WASM_MEMORY_LIMIT_BYTES, MctWasiHostConfig, MctWasiPreopen, MctWasiPreopenAccess,
+    MctWasmComponentDiagnosticIds, MctWasmComponentInvocationIds, MctWasmComponentInvocationReport,
+    MctWasmComponentRuntime, MctWasmComponentRuntimeError, MctWasmComponentToyInvocation,
+    MctWasmHostConfig, MctWasmToyHostImport, MctWitComponentInvocationReport,
+    MctWitHostImportAdapters, MctWitResolvedOperation, MctWitToyHostAdapter,
+    resolve_wit_operation_target, wasm_component_runtime_error_observation,
     wit_operation_id_from_target,
 };
 

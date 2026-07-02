@@ -1,4 +1,7 @@
-use mct_daemon::{MctWasmComponentInvocationIds, MctWasmComponentRuntime};
+use mct_daemon::{
+    DEFAULT_WASM_MEMORY_LIMIT_BYTES, MctWasmComponentInvocationIds, MctWasmComponentRuntime,
+    MctWasmComponentRuntimeError, MctWasmHostConfig,
+};
 use mct_kernel::*;
 use std::{fs, path::PathBuf, sync::mpsc, time::Duration};
 
@@ -90,7 +93,10 @@ fn looping_component_times_out_instead_of_hanging() {
     let (tx, rx) = mpsc::channel();
 
     std::thread::spawn(move || {
-        let runtime = MctWasmComponentRuntime::new().unwrap();
+        let runtime = MctWasmComponentRuntime::new(MctWasmHostConfig {
+            memory_limit_bytes: DEFAULT_WASM_MEMORY_LIMIT_BYTES,
+        })
+        .unwrap();
         let report = runtime.invoke_authorized_s32_export(
             &authorized(),
             &call(timestamp_after_millis(100)),
@@ -114,7 +120,7 @@ fn looping_component_times_out_instead_of_hanging() {
     );
     assert_eq!(
         report.observations[1].kind,
-        ObservationKind::RuntimeExecutionCompleted
+        ObservationKind::RuntimeExecutionTimedOut
     );
 }
 
@@ -132,7 +138,10 @@ fn component_allocation_over_memory_cap_fails() {
 "#;
     let dir = tempfile::tempdir().unwrap();
     let component_path = write_component(&dir, "large-memory.component.wasm", component_wat);
-    let runtime = MctWasmComponentRuntime::new().unwrap();
+    let runtime = MctWasmComponentRuntime::new(MctWasmHostConfig {
+        memory_limit_bytes: DEFAULT_WASM_MEMORY_LIMIT_BYTES,
+    })
+    .unwrap();
 
     let result = runtime.invoke_authorized_s32_export(
         &authorized(),
@@ -142,5 +151,11 @@ fn component_allocation_over_memory_cap_fails() {
         ids(),
     );
 
-    assert!(result.is_err(), "memory over cap must fail closed");
+    assert!(
+        matches!(
+            result,
+            Err(MctWasmComponentRuntimeError::ResourceLimit { .. })
+        ),
+        "memory over cap must fail closed with a typed resource-limit error"
+    );
 }
