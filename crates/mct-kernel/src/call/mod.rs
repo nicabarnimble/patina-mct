@@ -727,6 +727,14 @@ mod tests {
             encode_call_protocol_request_json(&request),
             Err(MctKernelError::EmptyPayloadHasNonZeroSize { size_bytes: 5 })
         ));
+
+        let mut invalid_timestamp = serde_json::to_value(protocol_request()).unwrap();
+        invalid_timestamp["call"]["deadline"] = serde_json::json!("1772323200");
+        let invalid_timestamp_json = serde_json::to_vec(&invalid_timestamp).unwrap();
+        assert!(matches!(
+            decode_call_protocol_request_json(&invalid_timestamp_json),
+            Err(MctKernelError::DecodeCallProtocolJson { .. })
+        ));
     }
 
     #[test]
