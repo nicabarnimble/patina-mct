@@ -51,13 +51,9 @@ crates/mct-iroh/         Iroh endpoint and ALPN protocol adapter
 crates/mct-daemon/       process lifecycle and composition
 ```
 
-Later, if pressure proves the split:
-
-```text
-crates/mct-wasm/         WASM/WASI/WIT child runtime adapter
-crates/mct-toys/         toy backends and grant enforcement helpers
-crates/mct-cli/          user-facing commands
-```
+The current workspace keeps WASM/process runtimes, toy backends, SQLite state,
+control surfaces, and CLI composition inside `crates/mct-daemon/`. Split them
+only after a second concrete implementation proves the seam.
 
 ## Jobs That Must Stay Separate
 
@@ -100,12 +96,12 @@ Mother starts
   → Iroh endpoint receives mct/hello/0
   → kernel admits or denies
   → admitted peer sends mct/call/0
-  → kernel constructs MctCall
-  → fake local handler returns MctResult
+  → kernel accepts the call envelope for routing
+  → authorized local handler returns MctResult
   → observations reconstruct the trace
 ```
 
-That slice is enough to prove the architecture without prematurely building the whole Toy catalog, WASM runtime, thought mesh, or federation layer.
+That slice is enough to prove the architecture without prematurely building the whole Toy catalog, additional runtime breadth, thought mesh, or federation layer.
 
 ## Good MCT Module Names
 
@@ -149,10 +145,10 @@ Good:
 ```rust
 pub fn handle_iroh_stream(stream: IrohStream) -> Result<()> {
     let presentation = adapter.read_presentation(&stream)?;
-    let hello = adapter.read_hello(&stream)?;
-    let decision = kernel.evaluate_hello(presentation, hello, snapshots)?;
-    observations.append(decision.observation())?;
-    adapter.write_hello_response(&stream, decision.safe_response())?;
+    let request = adapter.read_hello_request(&stream)?;
+    let decision = evaluate_hello(&request, bindings, policy, context);
+    observations.append(hello_evaluation_observation(trace_id, observed_at, &decision))?;
+    adapter.write_hello_response(&stream, hello_response(response_id, &decision, response_observation_id))?;
     Ok(())
 }
 ```

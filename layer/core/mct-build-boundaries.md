@@ -68,7 +68,7 @@ MCT owns:
 
 ### 3. Children use WIT/Toys
 
-Children do not receive raw substrate power. They call WIT interfaces and receive host powers only through Toy capabilities authorized by ToyGrants.
+Children do not receive raw substrate power. They call WIT interfaces and receive host powers only through `ToyGrant` evaluation and kernel-minted `AuthorizedToyCall` capabilities.
 
 ### 4. Observations are first-class
 
@@ -88,7 +88,7 @@ kernel records
   → trace reconstruction
 ```
 
-Only after that should we deepen WASM, thought mesh, federation, storage backends, or rich CLI surfaces.
+Only after that should we deepen thought mesh, federation, additional storage backends, rich CLI surfaces, or further runtime splits.
 
 ## Do Not Build Yet
 
@@ -102,7 +102,7 @@ Until separately specified:
 - full banking/domain-specific model;
 - multiple storage backends;
 - complex UI/inspector surfaces;
-- full WASM runtime depth.
+- additional WASM/runtime backend depth beyond the current typed WIT and process slices.
 
 ## First Implementation Checklist
 

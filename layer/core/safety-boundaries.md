@@ -36,7 +36,7 @@ Use `MctPeerBinding` and `mct/hello/0` admission.
 
 Children do not receive raw Iroh endpoints, raw filesystem roots, raw secrets, raw process handles, or raw database connections by default.
 
-They receive WIT/Toy capabilities after ToyGrant evaluation.
+They receive WIT/Toy access only after `ToyGrant` evaluation mints an executable capability such as `AuthorizedToyCall`.
 
 ### 3. Observations before protected effects
 
