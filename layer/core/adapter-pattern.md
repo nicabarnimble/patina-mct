@@ -62,9 +62,9 @@ These are adapters:
 | Adapter | External thing | MCT boundary |
 |---------|----------------|--------------|
 | Iroh adapter | Iroh endpoint, streams, hooks, relay/discovery, noq path facts | `mct/hello/0`, `mct/call/0`, peer observations |
-| WASM adapter | Wasmtime/WASI/component runtime | WIT-shaped child invocation + ToyGrant host calls |
-| Observation sink | JSONL/SQLite/fsync/backpressure | append `MctObservation` facts |
-| Toy backend | filesystem, git, messaging, state, network, secrets | authorized `ToyGrant` effect |
+| WASM adapter | Wasmtime/WASI/component runtime | WIT-shaped child invocation + authorized toy host calls |
+| Observation sink | JSONL/fsync/backpressure | append and validate `MctObservation` facts |
+| Toy backend | filesystem, git, messaging, state, network, secrets | `AuthorizedToyCall`-guarded effect |
 | Telemetry exporter | OTel/Prometheus/qlog dashboards | projection from local ledger |
 | Control adapter | CLI/UDS/HTTP local control | local request translated to `MctCall` or operator action |
 
@@ -87,19 +87,24 @@ The kernel should not expose Iroh streams, Wasmtime stores, SQLite connections, 
 // Bad: kernel API depends on Iroh details.
 pub fn admit(conn: &iroh::endpoint::ConnectionInfo) -> Result<Admission>;
 
-// Good: adapter extracts facts; kernel evaluates domain record.
-pub fn admit(presentation: IrohConnectionPresentation) -> Result<PeerAdmission>;
+// Good: adapter extracts facts; kernel evaluates domain records.
+pub fn evaluate_hello(
+    request: &MctHelloRequest,
+    bindings: &[MctPeerBinding],
+    policy: &HelloPolicy,
+    context: HelloEvaluationContext,
+) -> MctHelloAdmissionEvaluation;
 ```
 
 ### 3. Traits wait for the second implementation
 
 Do not create traits for imagined future backends. Start concrete. Introduce traits when a second real implementation or a proven test seam exists.
 
-MCT v0 examples:
+MCT examples:
 
-- Start with one concrete append-only observation sink.
-- Start with one concrete Iroh adapter.
-- Start with one concrete in-process/fake child handler before WASM.
+- Keep one concrete append-only JSONL observation ledger until another sink is real.
+- Keep one concrete Iroh adapter until another transport is real.
+- Keep WASM/process runtime composition concrete inside the daemon until a split is earned.
 - Add traits only after the seam is proven.
 
 ### 4. Adapters emit observations
@@ -118,7 +123,7 @@ Adapter errors are not invisible logs; they become `MctObservation` facts or hea
 
 ### 5. Children use Toys, not adapter handles
 
-WASM/WASI/WIT children do not receive raw Iroh endpoints, raw database handles, unrestricted filesystem access, or host secrets. They receive scoped WIT/Toy capabilities backed by explicit `ToyGrant`s.
+WASM/WASI/WIT children do not receive raw Iroh endpoints, raw database handles, unrestricted filesystem access, or host secrets. They receive scoped WIT/Toy access only through explicit `ToyGrant` evaluation and kernel-minted `AuthorizedToyCall` capabilities.
 
 ## First Build Application
 
@@ -165,8 +170,8 @@ Right:
 
 ```text
 Iroh stream handler constructs MctCallProtocolRequest.
-Kernel constructs/evaluates MctCall.
-Runtime adapter invokes child only after authorization.
+Kernel evaluates the call protocol request and child authority.
+Runtime adapter invokes child only with a kernel-minted `AuthorizedChildInvocation`.
 ```
 
 ### Abstracting before the seam exists
