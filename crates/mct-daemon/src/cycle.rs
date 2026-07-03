@@ -44,7 +44,7 @@ pub fn run_child_task_cycle(
     let mut executed_tasks = 0_usize;
     let mut failed_tasks = 0_usize;
     while let Some(task) =
-        state.lease_next_task(&child_name, lease_owner, "2026-05-31T00:01:00Z")?
+        state.lease_next_task(&child_name, lease_owner, &crate::current_timestamp_string())?
     {
         state.mark_task_running(&task.task_id)?;
         match child.handle_task(&task) {
@@ -66,7 +66,7 @@ pub fn run_child_task_cycle(
             "tick_intents": intents.len(),
             "failed_tasks": failed_tasks,
         }),
-        observed_at: crate::unix_timestamp_string(),
+        observed_at: crate::current_timestamp_string(),
     })?;
 
     Ok(MctChildTaskCycleReport {

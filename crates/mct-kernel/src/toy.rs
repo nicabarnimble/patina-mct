@@ -2,155 +2,283 @@ use crate::{call::*, id::*};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// WIT identity of a canonical toy capability.
+///
+/// Function and resource narrow the interface when a toy exposes multiple
+/// authority-bearing operations.
 pub struct ToyContractIdentity {
+    /// WIT package namespace containing the toy contract.
     pub namespace: String,
+    /// WIT interface name for the toy.
     pub interface_name: String,
+    /// Contract version used by the canonical catalog.
     pub version: String,
+    /// Optional function name when authority is operation-specific.
     pub function_name: Option<String>,
+    /// Optional resource name when authority is resource-specific.
     pub resource_name: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Catalog entry defining whether a toy can carry authority.
+///
+/// Grant evaluation denies non-catalog toys and catalog entries that are not
+/// authority-bearing.
 pub struct CanonicalToyContract {
+    /// Stable toy identifier used by grants and requests.
     pub toy_id: ToyId,
+    /// WIT contract identity for this catalog entry.
     pub contract: ToyContractIdentity,
+    /// Whether this toy may be authorized through ToyGrant evaluation.
     pub authority_bearing: bool,
+    /// Catalog revision that admitted this entry.
     pub catalog_revision: u64,
+    /// Observation that admitted the toy to the canonical catalog.
     pub admitted_by_observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Child identity a toy grant applies to.
+///
+/// Grant subject matching is exact for child name/artifact/version; optional
+/// assignment and caller fields narrow the grant when present.
 pub struct ToyGrantSubject {
+    /// Child name requesting toy access.
     pub child_name: String,
+    /// Artifact identity of the requesting child.
     pub artifact_id: String,
+    /// Artifact version of the requesting child.
     pub artifact_version: String,
+    /// Optional assignment that must match the request when grant-scoped.
     pub assignment_id: Option<ChildAssignmentId>,
+    /// Optional caller node that must match when grant-scoped.
     pub caller_node_id: Option<MctNodeId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Vision, node, data, resource, and action scope of a toy grant.
+///
+/// Optional scope fields are wildcards when absent and exact requirements when
+/// present; `allowed_actions` must contain the requested action.
 pub struct ToyGrantScope {
+    /// Vision in which the grant is valid.
     pub vision_id: VisionId,
+    /// Optional node restriction for the effect.
     pub node_id: Option<MctNodeId>,
+    /// Optional project restriction matched against the call caller.
     pub project_id: Option<ProjectId>,
+    /// Optional data classification restriction matched against payload metadata.
     pub data_classification: Option<String>,
+    /// Optional resource identifier restriction matched against the request.
     pub resource_id: Option<String>,
+    /// Actions permitted by this grant.
     pub allowed_actions: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Time and usage constraints attached to a toy grant.
+///
+/// Evaluation checks `starts_at <= now < expires_at` when bounds are present;
+/// max-use and duration fields are authority facts for adapters to enforce.
 pub struct ToyGrantConstraints {
+    /// Earliest time the grant may be used.
     pub starts_at: Option<Timestamp>,
+    /// Exclusive expiry time for grant evaluation.
     pub expires_at: Option<Timestamp>,
+    /// Optional maximum uses tracked by adapters or storage.
     pub max_uses: Option<u64>,
+    /// Optional maximum duration for a toy effect.
     pub max_duration_ms: Option<u64>,
+    /// Whether the effect must remain local to the node.
     pub locality_required: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Lifecycle state of a toy grant authority record.
 pub enum ToyGrantState {
+    /// Grant was requested but does not authorize effects.
     Requested,
+    /// Grant may authorize effects if all other facts match.
     Active,
+    /// Grant is expired by lifecycle state.
     Expired,
+    /// Grant was explicitly revoked.
     Revoked,
+    /// Grant was replaced by a newer authority record.
     Superseded,
+    /// Grant request was denied.
     Denied,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Authority record that may permit a child to use one canonical toy.
+///
+/// Evaluation requires an active grant matching subject, scope, action, policy
+/// revision, grants revision, and time window before minting a toy-call token.
 pub struct ToyGrant {
+    /// Stable grant identifier.
     pub grant_id: ToyGrantId,
+    /// Canonical toy this grant covers.
     pub toy_id: ToyId,
+    /// Child identity eligible to use the grant.
     pub subject: ToyGrantSubject,
+    /// Vision/action/resource scope of the grant.
     pub scope: ToyGrantScope,
+    /// Time and usage constraints for the grant.
     pub constraints: ToyGrantConstraints,
+    /// Lifecycle state used during evaluation.
     pub grant_state: ToyGrantState,
+    /// Authority issuer for audit.
     pub issuer_id: String,
+    /// Policy revision under which the grant was issued.
     pub policy_revision: u64,
+    /// Grants revision under which the grant was issued.
     pub grants_revision: u64,
+    /// Observation that created or updated this authority record.
     pub authority_observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Verdict of evaluating one toy request against catalog and grants.
 pub enum ToyGrantVerdict {
+    /// A grant authorized the requested toy action.
     Allowed,
+    /// No grant authorized the requested toy action.
     Denied,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Audit reason for a toy grant evaluation.
 pub enum ToyGrantReasonCode {
+    /// Active grant matched every authority fact.
     ActiveGrant,
+    /// No grant matched the toy and subject.
     MissingGrant,
+    /// Matching grant was expired by state or time window.
     ExpiredGrant,
+    /// Matching grant was revoked, superseded, or denied.
     RevokedGrant,
+    /// Matching grant did not cover the requested scope or action.
     WrongScope,
+    /// Requested toy was absent from the canonical catalog.
     UnknownToy,
+    /// Policy or lifecycle state denied use of the toy.
     PolicyDenied,
+    /// Grant revisions did not match the call authority snapshot.
     StaleSnapshot,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Decision produced by toy grant evaluation.
+///
+/// Allowed evaluations cite the matching grant and can mint an
+/// [`AuthorizedToyCall`]; denied evaluations carry no executable token.
 pub struct ToyGrantEvaluation {
+    /// Evaluation identifier for this toy decision.
     pub evaluation_id: ToyGrantEvaluationId,
+    /// Call whose toy request was evaluated.
     pub call_id: CallId,
+    /// Decision identifier for authority/audit linkage.
     pub decision_id: DecisionId,
+    /// Matching grant, present when a specific grant was considered.
     pub grant_id: Option<ToyGrantId>,
+    /// Requested canonical toy.
     pub toy_id: ToyId,
+    /// Child name from the evaluated subject.
     pub subject_child_name: String,
+    /// Allowed or denied verdict.
     pub verdict: ToyGrantVerdict,
+    /// Typed reason for the verdict.
     pub reason_code: ToyGrantReasonCode,
+    /// Policy revision used by the evaluation.
     pub policy_revision: u64,
+    /// Grants revision used by the evaluation.
     pub grants_revision: u64,
+    /// Observation recording this evaluation.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Capability token allowing one child toy effect after grant evaluation.
 pub struct AuthorizedToyCall {
+    /// Unique token identifier for the authorized toy effect.
     pub authorized_toy_call_id: AuthorizedToyCallId,
+    /// Call during which the toy may be used.
     pub call_id: CallId,
+    /// Evaluation that minted this token.
     pub evaluation_id: ToyGrantEvaluationId,
+    /// Grant that authorized the toy effect.
     pub grant_id: ToyGrantId,
+    /// Toy the token authorizes.
     pub toy_id: ToyId,
+    /// Child instance allowed to exercise the toy.
     pub child_instance_id: ChildInstanceId,
+    /// Authority decision tied to this token.
     pub authority_decision_id: DecisionId,
+    /// Token expiry, using grant expiry or call deadline when the grant has none.
     pub expires_at: Timestamp,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Identifiers supplied for toy grant evaluation and token minting.
 pub struct ToyGrantEvaluationIds {
+    /// Identifier for the produced evaluation.
     pub evaluation_id: ToyGrantEvaluationId,
+    /// Decision identifier for authority linkage.
     pub decision_id: DecisionId,
+    /// Observation identifier for evaluation evidence.
     pub observation_id: ObservationId,
+    /// Token identifier used only when authorization succeeds.
     pub authorized_toy_call_id: AuthorizedToyCallId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Facts supplied by an adapter when a child requests a toy effect.
 pub struct ToyGrantEvaluationRequest {
+    /// Toy the child wants to use.
     pub toy_id: ToyId,
+    /// Child identity requesting the effect.
     pub subject: ToyGrantSubject,
+    /// Live child instance requesting the effect.
     pub child_instance_id: ChildInstanceId,
+    /// Requested action; must be present in the grant scope.
     pub action: String,
+    /// Optional resource requested by the child.
     pub resource_id: Option<String>,
+    /// Node where the effect would occur.
     pub node_id: MctNodeId,
+    /// Adapter-supplied current time for grant window checks.
     pub now: Timestamp,
+    /// Identifiers to stamp on the evaluation and token.
     pub ids: ToyGrantEvaluationIds,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Result of toy grant evaluation, including token only on allow.
 pub struct ToyGrantEvaluationResult {
+    /// Typed evaluation recording verdict and reason.
     pub evaluation: ToyGrantEvaluation,
+    /// Executable toy-call token, present only for allowed evaluations.
     pub authorized: Option<AuthorizedToyCall>,
 }
 
 impl ToyGrantEvaluationResult {
+    /// Returns true only when evaluation allowed and minted a toy-call token.
     pub fn is_allowed(&self) -> bool {
         self.evaluation.verdict == ToyGrantVerdict::Allowed && self.authorized.is_some()
     }
 }
 
+/// Decides whether a child may exercise a canonical toy for one call.
+///
+/// Authority facts are the call snapshot, toy request, canonical catalog, and
+/// current grants. It allows only cataloged authority-bearing toys with an
+/// active grant whose subject, scope, action, revisions, and time window match.
+/// Every missing, stale, revoked, expired, or mismatched fact returns a denied
+/// evaluation and no [`AuthorizedToyCall`].
 pub fn evaluate_toy_grant_for_call(
     call: &MctCall,
     request: &ToyGrantEvaluationRequest,
@@ -377,12 +505,18 @@ mod tests {
 
     fn call() -> MctCall {
         MctCall {
-            call_id: CallId::from("call-toy-1"),
+            call_id: CallId::new("call-toy-1")
+                .expect("string ID literal/generated value must be non-empty"),
             caller: CallerIdentity {
-                node_id: MctNodeId::from("caller-node"),
+                node_id: MctNodeId::new("caller-node")
+                    .expect("string ID literal/generated value must be non-empty"),
                 user_id: None,
-                vision_id: VisionId::from("vision-a"),
-                project_id: Some(ProjectId::from("project-a")),
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+                project_id: Some(
+                    ProjectId::new("project-a")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
             },
             target: OperationTarget {
                 namespace: "patina".into(),
@@ -399,10 +533,12 @@ mod tests {
                 grants_revision: 7,
                 vision_policy_revision: 11,
             },
-            deadline: Timestamp::from("2026-05-31T00:10:00Z"),
+            deadline: Timestamp::new("2026-05-31T00:10:00Z").unwrap(),
             trace_context: TraceContext {
-                trace_id: TraceId::from("trace-toy-1"),
-                span_id: SpanId::from("span-toy-1"),
+                trace_id: TraceId::new("trace-toy-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                span_id: SpanId::new("span-toy-1")
+                    .expect("string ID literal/generated value must be non-empty"),
             },
             origin: CallOrigin::Cli,
         }
@@ -410,7 +546,8 @@ mod tests {
 
     fn toy() -> CanonicalToyContract {
         CanonicalToyContract {
-            toy_id: ToyId::from("toy-logging"),
+            toy_id: ToyId::new("toy-logging")
+                .expect("string ID literal/generated value must be non-empty"),
             contract: ToyContractIdentity {
                 namespace: "mct".into(),
                 interface_name: "logging".into(),
@@ -420,7 +557,8 @@ mod tests {
             },
             authority_bearing: true,
             catalog_revision: 1,
-            admitted_by_observation_id: ObservationId::from("obs-toy-catalog"),
+            admitted_by_observation_id: ObservationId::new("obs-toy-catalog")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
@@ -429,45 +567,67 @@ mod tests {
             child_name: "slate-manager".into(),
             artifact_id: "sha256:artifact".into(),
             artifact_version: "0.2.0".into(),
-            assignment_id: Some(ChildAssignmentId::from("assignment-a")),
-            caller_node_id: Some(MctNodeId::from("caller-node")),
+            assignment_id: Some(
+                ChildAssignmentId::new("assignment-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            caller_node_id: Some(
+                MctNodeId::new("caller-node")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
         }
     }
 
     fn request() -> ToyGrantEvaluationRequest {
         ToyGrantEvaluationRequest {
-            toy_id: ToyId::from("toy-logging"),
+            toy_id: ToyId::new("toy-logging")
+                .expect("string ID literal/generated value must be non-empty"),
             subject: subject(),
-            child_instance_id: ChildInstanceId::from("instance-a"),
+            child_instance_id: ChildInstanceId::new("instance-a")
+                .expect("string ID literal/generated value must be non-empty"),
             action: "write".into(),
             resource_id: Some("log:project".into()),
-            node_id: MctNodeId::from("node-a"),
-            now: Timestamp::from("2026-05-31T00:00:00Z"),
+            node_id: MctNodeId::new("node-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            now: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             ids: ToyGrantEvaluationIds {
-                evaluation_id: ToyGrantEvaluationId::from("toy-eval-1"),
-                decision_id: DecisionId::from("toy-decision-1"),
-                observation_id: ObservationId::from("obs-toy-eval-1"),
-                authorized_toy_call_id: AuthorizedToyCallId::from("authorized-toy-call-1"),
+                evaluation_id: ToyGrantEvaluationId::new("toy-eval-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                decision_id: DecisionId::new("toy-decision-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                observation_id: ObservationId::new("obs-toy-eval-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                authorized_toy_call_id: AuthorizedToyCallId::new("authorized-toy-call-1")
+                    .expect("string ID literal/generated value must be non-empty"),
             },
         }
     }
 
     fn grant(state: ToyGrantState) -> ToyGrant {
         ToyGrant {
-            grant_id: ToyGrantId::from("grant-logging"),
-            toy_id: ToyId::from("toy-logging"),
+            grant_id: ToyGrantId::new("grant-logging")
+                .expect("string ID literal/generated value must be non-empty"),
+            toy_id: ToyId::new("toy-logging")
+                .expect("string ID literal/generated value must be non-empty"),
             subject: subject(),
             scope: ToyGrantScope {
-                vision_id: VisionId::from("vision-a"),
-                node_id: Some(MctNodeId::from("node-a")),
-                project_id: Some(ProjectId::from("project-a")),
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+                node_id: Some(
+                    MctNodeId::new("node-a")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
+                project_id: Some(
+                    ProjectId::new("project-a")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
                 data_classification: Some("project".into()),
                 resource_id: Some("log:project".into()),
                 allowed_actions: vec!["write".into()],
             },
             constraints: ToyGrantConstraints {
                 starts_at: None,
-                expires_at: Some(Timestamp::from("2026-05-31T00:05:00Z")),
+                expires_at: Some(Timestamp::new("2026-05-31T00:05:00Z").unwrap()),
                 max_uses: None,
                 max_duration_ms: Some(1000),
                 locality_required: true,
@@ -476,7 +636,8 @@ mod tests {
             issuer_id: "issuer-a".into(),
             policy_revision: 3,
             grants_revision: 7,
-            authority_observation_id: ObservationId::from("obs-grant"),
+            authority_observation_id: ObservationId::new("obs-grant")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
@@ -496,21 +657,27 @@ mod tests {
             ToyGrantReasonCode::ActiveGrant
         );
         let authorized = result.authorized.expect("authorized toy call");
-        assert_eq!(authorized.grant_id, ToyGrantId::from("grant-logging"));
+        assert_eq!(
+            authorized.grant_id,
+            ToyGrantId::new("grant-logging")
+                .expect("string ID literal/generated value must be non-empty")
+        );
         assert_eq!(
             authorized.child_instance_id,
-            ChildInstanceId::from("instance-a")
+            ChildInstanceId::new("instance-a")
+                .expect("string ID literal/generated value must be non-empty")
         );
         assert_eq!(
             authorized.expires_at,
-            Timestamp::from("2026-05-31T00:05:00Z")
+            Timestamp::new("2026-05-31T00:05:00Z").unwrap()
         );
     }
 
     #[test]
     fn unknown_toy_denies_by_default() {
         let mut request = request();
-        request.toy_id = ToyId::from("legacy-host-filesystem");
+        request.toy_id = ToyId::new("legacy-host-filesystem")
+            .expect("string ID literal/generated value must be non-empty");
         let result = evaluate_toy_grant_for_call(
             &call(),
             &request,
@@ -554,7 +721,10 @@ mod tests {
         );
         assert_eq!(
             result.evaluation.grant_id,
-            Some(ToyGrantId::from("grant-logging"))
+            Some(
+                ToyGrantId::new("grant-logging")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
         );
         assert!(result.authorized.is_none());
     }
@@ -562,7 +732,7 @@ mod tests {
     #[test]
     fn expired_time_window_denies_without_authorization() {
         let mut request = request();
-        request.now = Timestamp::from("2026-05-31T00:05:00Z");
+        request.now = Timestamp::new("2026-05-31T00:05:00Z").unwrap();
         let result = evaluate_toy_grant_for_call(
             &call(),
             &request,

@@ -9,7 +9,6 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,7 +97,7 @@ impl MctDaemonConfig {
                 .peers
                 .values()
                 .map(|peer| peer.to_peer_binding(identity))
-                .collect(),
+                .collect::<Result<Vec<_>, _>>()?,
         })
     }
 
@@ -119,7 +118,8 @@ impl MctDaemonConfig {
             let Some(stored_approval) = self.child_approvals.get(&child.name) else {
                 continue;
             };
-            let approval_id = ChildApprovalId::from(format!("approval:{}", child.name));
+            let approval_id = ChildApprovalId::new(format!("approval:{}", child.name))
+                .expect("string ID literal/generated value must be non-empty");
             approvals.push(ChildApproval {
                 approval_id: approval_id.clone(),
                 artifact_id: stored_approval.artifact_id.clone(),
@@ -130,16 +130,18 @@ impl MctDaemonConfig {
                 scope_project_id: stored_approval.project_id.clone(),
                 approval_state: stored_approval.approval_state,
                 policy_revision: stored_approval.policy_revision,
-                authority_observation_id: ObservationId::from(format!(
+                authority_observation_id: ObservationId::new(format!(
                     "obs:approval:{}",
                     child.name
-                )),
+                ))
+                .expect("string ID literal/generated value must be non-empty"),
             });
 
             let Some(stored_assignment) = self.child_assignments.get(&child.name) else {
                 continue;
             };
-            let assignment_id = ChildAssignmentId::from(format!("assignment:{}", child.name));
+            let assignment_id = ChildAssignmentId::new(format!("assignment:{}", child.name))
+                .expect("string ID literal/generated value must be non-empty");
             assignments.push(ChildAssignment {
                 assignment_id: assignment_id.clone(),
                 approval_id,
@@ -150,14 +152,16 @@ impl MctDaemonConfig {
                 project_id: stored_assignment.project_id.clone(),
                 assignment_state: stored_assignment.assignment_state,
                 pinned_artifact_version: stored_assignment.artifact_version.clone(),
-                assignment_observation_id: ObservationId::from(format!(
+                assignment_observation_id: ObservationId::new(format!(
                     "obs:assignment:{}",
                     child.name
-                )),
+                ))
+                .expect("string ID literal/generated value must be non-empty"),
             });
 
             instances.push(ChildInstance {
-                instance_id: ChildInstanceId::from(format!("instance:{}:1", child.name)),
+                instance_id: ChildInstanceId::new(format!("instance:{}:1", child.name))
+                    .expect("string ID literal/generated value must be non-empty"),
                 assignment_id,
                 artifact_id: stored_assignment.artifact_id.clone(),
                 child_name: child.name.clone(),
@@ -174,14 +178,15 @@ impl MctDaemonConfig {
                     crate::MctChildInstanceState::Failed => ChildInstanceState::Failed,
                     _ => ChildInstanceState::Loading,
                 },
-                readiness_observation_id: Some(ObservationId::from(format!(
-                    "obs:ready:{}",
-                    child.name
-                ))),
-                last_lifecycle_observation_id: ObservationId::from(format!(
+                readiness_observation_id: Some(
+                    ObservationId::new(format!("obs:ready:{}", child.name))
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
+                last_lifecycle_observation_id: ObservationId::new(format!(
                     "obs:instance:{}:1",
                     child.name
-                )),
+                ))
+                .expect("string ID literal/generated value must be non-empty"),
             });
         }
 
@@ -199,8 +204,8 @@ impl MctDaemonConfig {
 }
 
 impl MctPeerAddressBookEntry {
-    pub fn to_peer_binding(&self, local_identity: &MctLocalNodeIdentity) -> MctPeerBinding {
-        MctPeerBinding {
+    pub fn to_peer_binding(&self, local_identity: &MctLocalNodeIdentity) -> Result<MctPeerBinding> {
+        Ok(MctPeerBinding {
             binding_id: self.binding_id.clone(),
             iroh_endpoint_id: self.endpoint_id.clone(),
             scope: MctPeerBindingScope {
@@ -213,22 +218,24 @@ impl MctPeerAddressBookEntry {
             issuer_node_id: local_identity.node_id.clone(),
             policy_revision: self.policy_revision,
             binding_state: self.binding_state,
-            issued_at: Timestamp::from(self.updated_at.clone()),
+            issued_at: Timestamp::new(self.updated_at.clone())?,
             expires_at: None,
-            created_by_observation_id: ObservationId::from(format!(
+            created_by_observation_id: ObservationId::new(format!(
                 "obs:peer-binding:{}",
                 self.binding_id
-            )),
+            ))
+            .expect("string ID literal/generated value must be non-empty"),
             superseded_by_observation_id: match self.binding_state {
-                BindingState::Revoked | BindingState::Expired => {
-                    Some(ObservationId::from(format!(
+                BindingState::Revoked | BindingState::Expired => Some(
+                    ObservationId::new(format!(
                         "obs:peer-binding:{}:{:?}",
                         self.binding_id, self.binding_state
-                    )))
-                }
+                    ))
+                    .expect("string ID literal/generated value must be non-empty"),
+                ),
                 BindingState::Pending | BindingState::Admitted | BindingState::Denied => None,
             },
-        }
+        })
     }
 }
 
@@ -256,7 +263,8 @@ impl MctConfigChildAuthorityProjection {
             .find(|instance| instance.child_name == child_name)
         else {
             let request = ChildCallAuthorityRequest {
-                instance_id: ChildInstanceId::from(format!("instance:{child_name}:missing")),
+                instance_id: ChildInstanceId::new(format!("instance:{child_name}:missing"))
+                    .expect("string ID literal/generated value must be non-empty"),
                 node_id: self.local_node_id.clone(),
                 ids: child_authority_ids(child_name, call),
             };
@@ -287,16 +295,20 @@ impl MctConfigChildAuthorityProjection {
 
 fn child_authority_ids(child_name: &str, call: &MctCall) -> ChildCallAuthorityIds {
     ChildCallAuthorityIds {
-        evaluation_id: ChildCallEvaluationId::from(format!("eval:{}:{}", call.call_id, child_name)),
-        decision_id: DecisionId::from(format!("decision:{}:{}", call.call_id, child_name)),
-        observation_id: ObservationId::from(format!(
+        evaluation_id: ChildCallEvaluationId::new(format!("eval:{}:{}", call.call_id, child_name))
+            .expect("string ID literal/generated value must be non-empty"),
+        decision_id: DecisionId::new(format!("decision:{}:{}", call.call_id, child_name))
+            .expect("string ID literal/generated value must be non-empty"),
+        observation_id: ObservationId::new(format!(
             "obs:authorize:{}:{}",
             call.call_id, child_name
-        )),
-        authorized_child_invocation_id: AuthorizedChildInvocationId::from(format!(
+        ))
+        .expect("string ID literal/generated value must be non-empty"),
+        authorized_child_invocation_id: AuthorizedChildInvocationId::new(format!(
             "authorized:{}:{}",
             call.call_id, child_name
-        )),
+        ))
+        .expect("string ID literal/generated value must be non-empty"),
     }
 }
 
@@ -352,7 +364,7 @@ impl MctDaemonConfigStore {
             endpoint_id,
             identity_path,
             policy_revision: scope.policy_revision,
-            updated_at: unix_timestamp_string(),
+            updated_at: current_timestamp_string(),
         };
         let mut config = self.load()?;
         config.local_identity = Some(identity.clone());
@@ -372,12 +384,13 @@ impl MctDaemonConfigStore {
             );
         }
         let mut config = self.load()?;
-        let now = unix_timestamp_string();
+        let now = current_timestamp_string();
         config.child_approvals.insert(
             child.name.clone(),
             MctStoredChildApproval {
                 child_name: child.name.clone(),
-                artifact_id: ComponentArtifactId::from(child.artifact_id.clone()),
+                artifact_id: ComponentArtifactId::new(child.artifact_id.clone())
+                    .expect("string ID literal/generated value must be non-empty"),
                 artifact_version: child.version.clone(),
                 approval_state: ChildApprovalState::Approved,
                 vision_id: scope.vision_id.clone(),
@@ -391,7 +404,8 @@ impl MctDaemonConfigStore {
             child.name.clone(),
             MctStoredChildAssignment {
                 child_name: child.name.clone(),
-                artifact_id: ComponentArtifactId::from(child.artifact_id.clone()),
+                artifact_id: ComponentArtifactId::new(child.artifact_id.clone())
+                    .expect("string ID literal/generated value must be non-empty"),
                 artifact_version: child.version.clone(),
                 assignment_state: ChildAssignmentState::Active,
                 vision_id: scope.vision_id,
@@ -407,7 +421,7 @@ impl MctDaemonConfigStore {
 
     pub fn revoke_child(&self, child_name: &str) -> Result<MctDaemonConfig> {
         let mut config = self.load()?;
-        let now = unix_timestamp_string();
+        let now = current_timestamp_string();
         if let Some(approval) = config.child_approvals.get_mut(child_name) {
             approval.approval_state = ChildApprovalState::Revoked;
             approval.updated_at = now.clone();
@@ -437,7 +451,7 @@ impl MctDaemonConfigStore {
             bail!("peer '{peer_node_id}' not found in config");
         };
         peer.binding_state = binding_state;
-        peer.updated_at = unix_timestamp_string();
+        peer.updated_at = current_timestamp_string();
         self.save(&config)?;
         Ok(config)
     }
@@ -464,8 +478,10 @@ pub struct MctOperatorNodeScope {
 impl Default for MctOperatorNodeScope {
     fn default() -> Self {
         Self {
-            node_id: MctNodeId::from("local-mct"),
-            vision_id: VisionId::from("vision-local"),
+            node_id: MctNodeId::new("local-mct")
+                .expect("string ID literal/generated value must be non-empty"),
+            vision_id: VisionId::new("vision-local")
+                .expect("string ID literal/generated value must be non-empty"),
             policy_revision: 1,
         }
     }
@@ -482,8 +498,10 @@ pub struct MctOperatorChildScope {
 impl Default for MctOperatorChildScope {
     fn default() -> Self {
         Self {
-            vision_id: VisionId::from("vision-local"),
-            node_id: MctNodeId::from("local-mct"),
+            vision_id: VisionId::new("vision-local")
+                .expect("string ID literal/generated value must be non-empty"),
+            node_id: MctNodeId::new("local-mct")
+                .expect("string ID literal/generated value must be non-empty"),
             project_id: None,
             policy_revision: 1,
         }
@@ -494,11 +512,12 @@ pub fn default_config_path() -> PathBuf {
     PathBuf::from(".mct").join("config.json")
 }
 
-pub fn unix_timestamp_string() -> String {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs().to_string())
-        .unwrap_or_else(|_| "0".into())
+pub fn current_timestamp_string() -> String {
+    jiff::Timestamp::now().to_string()
+}
+
+pub fn current_timestamp() -> Timestamp {
+    Timestamp::new(current_timestamp_string()).expect("jiff produced RFC3339 timestamp")
 }
 
 #[cfg(test)]
@@ -508,11 +527,14 @@ mod tests {
 
     fn call() -> MctCall {
         MctCall {
-            call_id: CallId::from("call-a"),
+            call_id: CallId::new("call-a")
+                .expect("string ID literal/generated value must be non-empty"),
             caller: CallerIdentity {
-                node_id: MctNodeId::from("local-mct"),
+                node_id: MctNodeId::new("local-mct")
+                    .expect("string ID literal/generated value must be non-empty"),
                 user_id: None,
-                vision_id: VisionId::from("vision-local"),
+                vision_id: VisionId::new("vision-local")
+                    .expect("string ID literal/generated value must be non-empty"),
                 project_id: None,
             },
             target: OperationTarget {
@@ -530,10 +552,12 @@ mod tests {
                 grants_revision: 1,
                 vision_policy_revision: 1,
             },
-            deadline: Timestamp::from("2026-05-31T00:01:00Z"),
+            deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
             trace_context: TraceContext {
-                trace_id: TraceId::from("trace-a"),
-                span_id: SpanId::from("span-a"),
+                trace_id: TraceId::new("trace-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+                span_id: SpanId::new("span-a")
+                    .expect("string ID literal/generated value must be non-empty"),
             },
             origin: CallOrigin::Cli,
         }
@@ -541,7 +565,8 @@ mod tests {
 
     fn loaded_child() -> MctLoadedChild {
         MctLoadedChild {
-            child_id: ChildId::from("child-a"),
+            child_id: ChildId::new("child-a")
+                .expect("string ID literal/generated value must be non-empty"),
             name: "child-a".into(),
             version: "0.1.0".into(),
             description: None,
@@ -623,11 +648,14 @@ mod tests {
             child.name.clone(),
             MctStoredChildApproval {
                 child_name: child.name.clone(),
-                artifact_id: ComponentArtifactId::from(child.artifact_id.clone()),
+                artifact_id: ComponentArtifactId::new(child.artifact_id.clone())
+                    .expect("string ID literal/generated value must be non-empty"),
                 artifact_version: child.version.clone(),
                 approval_state: ChildApprovalState::Approved,
-                vision_id: VisionId::from("vision-local"),
-                node_id: MctNodeId::from("local-mct"),
+                vision_id: VisionId::new("vision-local")
+                    .expect("string ID literal/generated value must be non-empty"),
+                node_id: MctNodeId::new("local-mct")
+                    .expect("string ID literal/generated value must be non-empty"),
                 project_id: None,
                 policy_revision: 1,
                 updated_at: "1".into(),
@@ -637,11 +665,14 @@ mod tests {
             child.name.clone(),
             MctStoredChildAssignment {
                 child_name: child.name.clone(),
-                artifact_id: ComponentArtifactId::from(child.artifact_id.clone()),
+                artifact_id: ComponentArtifactId::new(child.artifact_id.clone())
+                    .expect("string ID literal/generated value must be non-empty"),
                 artifact_version: child.version.clone(),
                 assignment_state: ChildAssignmentState::Active,
-                vision_id: VisionId::from("vision-local"),
-                node_id: MctNodeId::from("local-mct"),
+                vision_id: VisionId::new("vision-local")
+                    .expect("string ID literal/generated value must be non-empty"),
+                node_id: MctNodeId::new("local-mct")
+                    .expect("string ID literal/generated value must be non-empty"),
                 project_id: None,
                 policy_revision: 1,
                 updated_at: "1".into(),
@@ -661,12 +692,17 @@ mod tests {
 
     fn peer_entry(state: BindingState) -> MctPeerAddressBookEntry {
         MctPeerAddressBookEntry {
-            peer_node_id: MctNodeId::from("peer-a"),
-            binding_id: PeerBindingId::from("binding-peer-a"),
-            endpoint_id: EndpointIdText::from("endpoint-a"),
-            vision_id: VisionId::from("vision-a"),
+            peer_node_id: MctNodeId::new("peer-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            binding_id: PeerBindingId::new("binding-peer-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            endpoint_id: EndpointIdText::new("endpoint-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            vision_id: VisionId::new("vision-a")
+                .expect("string ID literal/generated value must be non-empty"),
             ticket: Some(MotherIrohEndpointTicket {
-                endpoint_id: EndpointIdText::from("endpoint-a"),
+                endpoint_id: EndpointIdText::new("endpoint-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 direct_addresses: vec!["127.0.0.1:12345".into()],
                 relay_urls: Vec::new(),
             }),
@@ -687,8 +723,16 @@ mod tests {
             .ensure_local_identity(MctOperatorNodeScope::default(), &identity_path)
             .unwrap();
 
-        assert_eq!(identity.node_id, MctNodeId::from("local-mct"));
-        assert_eq!(identity.vision_id, VisionId::from("vision-local"));
+        assert_eq!(
+            identity.node_id,
+            MctNodeId::new("local-mct")
+                .expect("string ID literal/generated value must be non-empty")
+        );
+        assert_eq!(
+            identity.vision_id,
+            VisionId::new("vision-local")
+                .expect("string ID literal/generated value must be non-empty")
+        );
         assert_eq!(identity.identity_path, identity_path);
         assert!(identity_path.exists());
         assert_eq!(store.load().unwrap().local_identity, Some(identity));
@@ -716,8 +760,10 @@ mod tests {
         let identity = store
             .ensure_local_identity(
                 MctOperatorNodeScope {
-                    node_id: MctNodeId::from("node-local"),
-                    vision_id: VisionId::from("vision-local"),
+                    node_id: MctNodeId::new("node-local")
+                        .expect("string ID literal/generated value must be non-empty"),
+                    vision_id: VisionId::new("vision-local")
+                        .expect("string ID literal/generated value must be non-empty"),
                     policy_revision: 7,
                 },
                 dir.path().join("iroh-secret.hex"),
@@ -726,7 +772,12 @@ mod tests {
         store
             .upsert_peer(peer_entry(BindingState::Admitted))
             .unwrap();
-        store.revoke_peer(&MctNodeId::from("peer-a")).unwrap();
+        store
+            .revoke_peer(
+                &MctNodeId::new("peer-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            )
+            .unwrap();
 
         let projection = store.load().unwrap().peer_authority_projection().unwrap();
 
@@ -735,11 +786,29 @@ mod tests {
         assert_eq!(projection.policy_revision, 7);
         assert_eq!(projection.bindings.len(), 1);
         let binding = &projection.bindings[0];
-        assert_eq!(binding.binding_id, PeerBindingId::from("binding-peer-a"));
-        assert_eq!(binding.iroh_endpoint_id, EndpointIdText::from("endpoint-a"));
-        assert_eq!(binding.scope.mct_node_id, MctNodeId::from("peer-a"));
-        assert_eq!(binding.scope.vision_id, VisionId::from("vision-a"));
-        assert_eq!(binding.issuer_node_id, MctNodeId::from("node-local"));
+        assert_eq!(
+            binding.binding_id,
+            PeerBindingId::new("binding-peer-a")
+                .expect("string ID literal/generated value must be non-empty")
+        );
+        assert_eq!(
+            binding.iroh_endpoint_id,
+            EndpointIdText::new("endpoint-a")
+                .expect("string ID literal/generated value must be non-empty")
+        );
+        assert_eq!(
+            binding.scope.mct_node_id,
+            MctNodeId::new("peer-a").expect("string ID literal/generated value must be non-empty")
+        );
+        assert_eq!(
+            binding.scope.vision_id,
+            VisionId::new("vision-a").expect("string ID literal/generated value must be non-empty")
+        );
+        assert_eq!(
+            binding.issuer_node_id,
+            MctNodeId::new("node-local")
+                .expect("string ID literal/generated value must be non-empty")
+        );
         assert_eq!(binding.binding_state, BindingState::Revoked);
         assert_eq!(
             binding.scope.allowed_alpns,
@@ -758,7 +827,12 @@ mod tests {
         let reloaded = store.load().unwrap();
         assert_eq!(reloaded.peers["peer-a"], entry);
 
-        store.remove_peer(&MctNodeId::from("peer-a")).unwrap();
+        store
+            .remove_peer(
+                &MctNodeId::new("peer-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            )
+            .unwrap();
         assert!(store.load().unwrap().peers.is_empty());
     }
 }

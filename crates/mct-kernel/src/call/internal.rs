@@ -73,19 +73,8 @@ pub(super) fn evaluate_call_protocol_internal(
         );
     }
 
-    if request.payload.approximate_size_bytes
+    if request.payload.approximate_size_bytes()
         != request.call.payload_metadata.approximate_size_bytes
-    {
-        return denied(
-            request,
-            ids,
-            CallProtocolReason::PayloadMetadataMismatch,
-            "malformed call",
-        );
-    }
-
-    if matches!(request.payload.payload_kind, PayloadKind::Empty)
-        && request.call.payload_metadata.approximate_size_bytes != 0
     {
         return denied(
             request,
