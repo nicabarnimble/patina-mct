@@ -4,7 +4,7 @@
 - [x] Task T1 — Persistence split: run records store provenance, not capabilities
 - [x] Task T2 — Seal `AuthorizedChildInvocation` (single-effect capability)
 - [x] Task T3 — Seal `AuthorizedToyCall` (session-scoped capability)
-- [ ] Task T4 — Seal `AuthorizedRouteExecution` (single-effect capability)
+- [x] Task T4 — Seal `AuthorizedRouteExecution` (single-effect capability)
 - [ ] Task T5 — Staleness guard at the effect boundary
 
 ---

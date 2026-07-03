@@ -186,19 +186,56 @@ pub struct RouteRevalidationIds {
 /// revalidation result.
 pub struct AuthorizedRouteExecution {
     /// Unique identifier for this execution authorization.
-    pub authorized_route_execution_id: AuthorizedRouteExecutionId,
+    authorized_route_execution_id: AuthorizedRouteExecutionId,
     /// Call authorized for execution.
-    pub call_id: CallId,
+    call_id: CallId,
     /// Initial route decision being revalidated.
-    pub initial_decision_id: DecisionId,
+    initial_decision_id: DecisionId,
     /// Revalidation decision that minted this token.
-    pub revalidation_decision_id: DecisionId,
+    revalidation_decision_id: DecisionId,
     /// Route authorized for execution.
-    pub route: CandidateRoute,
+    route: CandidateRoute,
     /// Child invocation token for the selected child.
-    pub child_invocation: AuthorizedChildInvocation,
+    child_invocation: AuthorizedChildInvocation,
     /// Toy call tokens that survived revalidation.
-    pub toy_calls: Vec<AuthorizedToyCall>,
+    toy_calls: Vec<AuthorizedToyCall>,
+}
+
+impl AuthorizedRouteExecution {
+    /// Unique identifier for this execution authorization.
+    pub fn authorized_route_execution_id(&self) -> &AuthorizedRouteExecutionId {
+        &self.authorized_route_execution_id
+    }
+
+    /// Call authorized for execution.
+    pub fn call_id(&self) -> &CallId {
+        &self.call_id
+    }
+
+    /// Initial route decision being revalidated.
+    pub fn initial_decision_id(&self) -> &DecisionId {
+        &self.initial_decision_id
+    }
+
+    /// Revalidation decision that minted this token.
+    pub fn revalidation_decision_id(&self) -> &DecisionId {
+        &self.revalidation_decision_id
+    }
+
+    /// Route authorized for execution.
+    pub fn route(&self) -> &CandidateRoute {
+        &self.route
+    }
+
+    /// Child invocation token for the selected child.
+    pub fn child_invocation(&self) -> &AuthorizedChildInvocation {
+        &self.child_invocation
+    }
+
+    /// Toy call tokens that survived revalidation.
+    pub fn toy_calls(&self) -> &[AuthorizedToyCall] {
+        &self.toy_calls
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -889,9 +926,9 @@ mod tests {
         );
         assert_eq!(revalidation.decision.selected_route, Some(selected.clone()));
         let authorized = revalidation.authorized.expect("authorized route execution");
-        assert_eq!(authorized.route, selected);
-        assert_eq!(authorized.child_invocation.child_name(), "child-echo");
-        assert_eq!(authorized.toy_calls.len(), 1);
+        assert_eq!(authorized.route(), &selected);
+        assert_eq!(authorized.child_invocation().child_name(), "child-echo");
+        assert_eq!(authorized.toy_calls().len(), 1);
     }
 
     #[test]
