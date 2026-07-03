@@ -45,14 +45,14 @@ pub struct MctWitComponentInvocationReport {
     pub observations: Vec<MctObservation>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct MctWasmToyHostImport {
     pub import_name: String,
     pub authorized_toy_call: AuthorizedToyCall,
     pub ids: MctToyCallIds,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct MctWasmComponentToyInvocation {
     pub component_path: PathBuf,
     pub export_name: String,
@@ -67,14 +67,14 @@ pub struct MctWasmComponentDiagnosticIds {
     pub observed_at: Timestamp,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct MctWitToyHostAdapter {
     pub authorized_toy_call: AuthorizedToyCall,
     pub observation_id_prefix: String,
     pub observed_at: Timestamp,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct MctWitHostImportAdapters {
     pub toy_registry: MctToyAdapterRegistry,
     pub logging: Option<MctWitToyHostAdapter>,
@@ -1370,10 +1370,11 @@ fn link_wit_host_import_adapters(
                     "message": message,
                 });
                 let adapter =
-                    store.data().logging.clone().ok_or_else(|| {
+                    store.data_mut().logging.take().ok_or_else(|| {
                         wasmtime::Error::msg("wasi logging adapter not configured")
                     })?;
                 let report = store.data_mut().call_toy(&adapter, &input_json);
+                store.data_mut().logging = Some(adapter);
                 match report.outcome {
                     MctToyAdapterOutcome::Success => Ok(()),
                     MctToyAdapterOutcome::Failed => Err(wasmtime::Error::msg(report.safe_message)),
@@ -1690,11 +1691,12 @@ fn call_measure_toy(
         "value": value,
     });
     let adapter = store
-        .data()
+        .data_mut()
         .measure
-        .clone()
+        .take()
         .ok_or_else(|| wasmtime::Error::msg("patina measure adapter not configured"))?;
     let report = store.data_mut().call_toy(&adapter, &input_json);
+    store.data_mut().measure = Some(adapter);
     results[0] = match report.outcome {
         MctToyAdapterOutcome::Success => component::Val::Result(Ok(None)),
         MctToyAdapterOutcome::Failed => component::Val::Result(Err(Some(Box::new(
@@ -1730,11 +1732,12 @@ fn call_git_toy(
         Value::String("patina:git/git@0.1.0".into()),
     );
     let adapter = store
-        .data()
+        .data_mut()
         .git
-        .clone()
+        .take()
         .ok_or_else(|| wasmtime::Error::msg("patina git adapter not configured"))?;
     let report = store.data_mut().call_toy(&adapter, &input_json);
+    store.data_mut().git = Some(adapter);
     results[0] = match report.outcome {
         MctToyAdapterOutcome::Success => {
             component::Val::Result(Ok(git_ok_payload(&report, shape)?))
@@ -1934,24 +1937,15 @@ mod tests {
         )
     }
 
-    fn toy_authorized() -> AuthorizedToyCall {
-        AuthorizedToyCall {
-            authorized_toy_call_id: AuthorizedToyCallId::new("auth-toy-wasm")
+    fn toy_authorized(stem: &str) -> AuthorizedToyCall {
+        crate::authority_test_fixture::authorized_toy_for_call(
+            &call(),
+            "toy-echo",
+            ChildInstanceId::new("instance-wasm")
                 .expect("string ID literal/generated value must be non-empty"),
-            call_id: CallId::new("call-wasm-component")
-                .expect("string ID literal/generated value must be non-empty"),
-            evaluation_id: ToyGrantEvaluationId::new("eval-toy-wasm")
-                .expect("string ID literal/generated value must be non-empty"),
-            grant_id: ToyGrantId::new("grant-toy-wasm")
-                .expect("string ID literal/generated value must be non-empty"),
-            toy_id: ToyId::new("toy-echo")
-                .expect("string ID literal/generated value must be non-empty"),
-            child_instance_id: ChildInstanceId::new("instance-wasm")
-                .expect("string ID literal/generated value must be non-empty"),
-            authority_decision_id: DecisionId::new("decision-toy-wasm")
-                .expect("string ID literal/generated value must be non-empty"),
-            expires_at: Timestamp::new("2026-05-31T00:10:00Z").unwrap(),
-        }
+            "use",
+            stem,
+        )
     }
 
     fn toy_ids() -> MctToyCallIds {
@@ -2187,14 +2181,18 @@ mod tests {
             crate::MctToyBackend::EchoJson,
         );
         let adapter = MctWitToyHostAdapter {
-            authorized_toy_call: toy_authorized(),
+            authorized_toy_call: toy_authorized("wasm"),
             observation_id_prefix: "obs-wit-host-toy".into(),
             observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
         };
         MctWitHostImportAdapters {
             toy_registry,
-            logging: Some(adapter.clone()),
-            measure: Some(adapter),
+            logging: Some(adapter),
+            measure: Some(MctWitToyHostAdapter {
+                authorized_toy_call: toy_authorized("wasm-measure"),
+                observation_id_prefix: "obs-wit-host-toy".into(),
+                observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+            }),
             git: None,
             wasi: None,
         }
@@ -2300,10 +2298,14 @@ mod tests {
     }
 
     fn git_authorized() -> AuthorizedToyCall {
-        let mut authorized = toy_authorized();
-        authorized.toy_id =
-            ToyId::new("toy-git").expect("string ID literal/generated value must be non-empty");
-        authorized
+        crate::authority_test_fixture::authorized_toy_for_call(
+            &call(),
+            "toy-git",
+            ChildInstanceId::new("instance-wasm")
+                .expect("string ID literal/generated value must be non-empty"),
+            "use",
+            "wasm-git",
+        )
     }
 
     fn git_host_adapters(repo_root: PathBuf) -> MctWitHostImportAdapters {
@@ -2883,7 +2885,7 @@ mod tests {
                     toy_registry,
                     toy_imports: vec![MctWasmToyHostImport {
                         import_name: "mct-toy-call".into(),
-                        authorized_toy_call: toy_authorized(),
+                        authorized_toy_call: toy_authorized("wasm-import-fail"),
                         ids: toy_ids(),
                     }],
                     ids: ids(),
@@ -2938,7 +2940,7 @@ mod tests {
                     toy_registry,
                     toy_imports: vec![MctWasmToyHostImport {
                         import_name: "mct-toy-call".into(),
-                        authorized_toy_call: toy_authorized(),
+                        authorized_toy_call: toy_authorized("wasm-import"),
                         ids: toy_ids(),
                     }],
                     ids: ids(),

@@ -315,7 +315,7 @@ pub fn revalidate_route_for_execution(
     call: &MctCall,
     initial: &RouteDecision,
     child: ChildCallAuthorityResult,
-    toys: &[ToyGrantEvaluationResult],
+    toys: Vec<ToyGrantEvaluationResult>,
     ids: RouteRevalidationIds,
 ) -> RouteRevalidationResult {
     if initial.call_id != call.call_id {
@@ -414,16 +414,6 @@ pub fn revalidate_route_for_execution(
                 CandidateEliminationReason::GrantsRevisionStale,
             );
         }
-        let Some(authorized_toy) = toy.authorized.as_ref() else {
-            return revalidation_denied(
-                call,
-                initial,
-                Some(selected_route.clone()),
-                ids,
-                RouteRevalidationReason::ToyGrantDenied,
-                CandidateEliminationReason::ToyGrantMissing,
-            );
-        };
         if toy.evaluation.call_id != call.call_id || !toy.is_allowed() {
             return revalidation_denied(
                 call,
@@ -434,7 +424,17 @@ pub fn revalidate_route_for_execution(
                 CandidateEliminationReason::ToyGrantMissing,
             );
         }
-        authorized_toys.push(authorized_toy.clone());
+        let Some(authorized_toy) = toy.authorized else {
+            return revalidation_denied(
+                call,
+                initial,
+                Some(selected_route.clone()),
+                ids,
+                RouteRevalidationReason::ToyGrantDenied,
+                CandidateEliminationReason::ToyGrantMissing,
+            );
+        };
+        authorized_toys.push(authorized_toy);
     }
 
     let decision_id = ids.decision_id.clone();
@@ -743,55 +743,89 @@ mod tests {
         grants_revision: u64,
         allowed: bool,
     ) -> ToyGrantEvaluationResult {
-        let evaluation = ToyGrantEvaluation {
-            evaluation_id: ToyGrantEvaluationId::new("toy-eval-route-1")
-                .expect("string ID literal/generated value must be non-empty"),
-            call_id: CallId::new("call-route-1")
-                .expect("string ID literal/generated value must be non-empty"),
-            decision_id: DecisionId::new("toy-decision-route-1")
-                .expect("string ID literal/generated value must be non-empty"),
-            grant_id: allowed.then(|| {
-                ToyGrantId::new("toy-grant-route-1")
-                    .expect("string ID literal/generated value must be non-empty")
-            }),
-            toy_id: ToyId::new("toy-echo")
-                .expect("string ID literal/generated value must be non-empty"),
-            subject_child_name: "child-echo".into(),
-            verdict: if allowed {
-                ToyGrantVerdict::Allowed
-            } else {
-                ToyGrantVerdict::Denied
+        let mut authority_call = call();
+        authority_call.authority_context.policy_revision = policy_revision;
+        authority_call.authority_context.grants_revision = grants_revision;
+        let toy_id =
+            ToyId::new("toy-echo").expect("string ID literal/generated value must be non-empty");
+        let subject = ToyGrantSubject {
+            child_name: "child-echo".into(),
+            artifact_id: "artifact-route".into(),
+            artifact_version: "0.1.0".into(),
+            assignment_id: None,
+            caller_node_id: Some(authority_call.caller.node_id.clone()),
+        };
+        let catalog = CanonicalToyContract {
+            toy_id: toy_id.clone(),
+            contract: ToyContractIdentity {
+                namespace: "mct".into(),
+                interface_name: "echo".into(),
+                version: "0.1.0".into(),
+                function_name: Some("use".into()),
+                resource_name: None,
             },
-            reason_code: if allowed {
-                ToyGrantReasonCode::ActiveGrant
-            } else {
-                ToyGrantReasonCode::RevokedGrant
-            },
-            policy_revision,
-            grants_revision,
-            observation_id: ObservationId::new("obs-toy-route-1")
+            authority_bearing: true,
+            catalog_revision: 1,
+            admitted_by_observation_id: ObservationId::new("obs-toy-catalog-route-1")
                 .expect("string ID literal/generated value must be non-empty"),
         };
-        let authorized = allowed.then(|| AuthorizedToyCall {
-            authorized_toy_call_id: AuthorizedToyCallId::new("authorized-toy-route-1")
-                .expect("string ID literal/generated value must be non-empty"),
-            call_id: CallId::new("call-route-1")
-                .expect("string ID literal/generated value must be non-empty"),
-            evaluation_id: evaluation.evaluation_id.clone(),
+        let grant = ToyGrant {
             grant_id: ToyGrantId::new("toy-grant-route-1")
                 .expect("string ID literal/generated value must be non-empty"),
-            toy_id: ToyId::new("toy-echo")
+            toy_id: toy_id.clone(),
+            subject: subject.clone(),
+            scope: ToyGrantScope {
+                vision_id: authority_call.caller.vision_id.clone(),
+                node_id: Some(authority_call.caller.node_id.clone()),
+                project_id: authority_call.caller.project_id.clone(),
+                data_classification: Some(
+                    authority_call.payload_metadata.data_classification.clone(),
+                ),
+                resource_id: None,
+                allowed_actions: vec!["use".into()],
+            },
+            constraints: ToyGrantConstraints {
+                starts_at: None,
+                expires_at: Some(Timestamp::new("2026-05-31T00:02:00Z").unwrap()),
+                max_uses: None,
+                max_duration_ms: Some(1000),
+                locality_required: true,
+            },
+            grant_state: if allowed {
+                ToyGrantState::Active
+            } else {
+                ToyGrantState::Revoked
+            },
+            issuer_id: "issuer-route".into(),
+            policy_revision,
+            grants_revision,
+            authority_observation_id: ObservationId::new("obs-toy-grant-route-1")
                 .expect("string ID literal/generated value must be non-empty"),
+        };
+        let request = ToyGrantEvaluationRequest {
+            toy_id,
+            subject,
             child_instance_id: ChildInstanceId::new("child-instance-route-1")
                 .expect("string ID literal/generated value must be non-empty"),
-            authority_decision_id: evaluation.decision_id.clone(),
-            expires_at: Timestamp::new("2026-05-31T00:02:00Z").unwrap(),
-        });
+            action: "use".into(),
+            resource_id: None,
+            node_id: authority_call.caller.node_id.clone(),
+            now: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+            ids: ToyGrantEvaluationIds {
+                evaluation_id: ToyGrantEvaluationId::new("toy-eval-route-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                decision_id: DecisionId::new("toy-decision-route-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                observation_id: ObservationId::new("obs-toy-route-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                authorized_toy_call_id: AuthorizedToyCallId::new("authorized-toy-route-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+            },
+        };
 
-        ToyGrantEvaluationResult {
-            evaluation,
-            authorized,
-        }
+        let result = evaluate_toy_grant_for_call(&authority_call, &request, &[catalog], &[grant]);
+        assert_eq!(result.is_allowed(), allowed);
+        result
     }
 
     #[test]
@@ -841,7 +875,7 @@ mod tests {
         let toy = toy_result(1, 1, true);
 
         let revalidation =
-            revalidate_route_for_execution(&call, &initial, child, &[toy], revalidation_ids());
+            revalidate_route_for_execution(&call, &initial, child, vec![toy], revalidation_ids());
 
         assert!(revalidation.is_authorized());
         assert_eq!(revalidation.reason, RouteRevalidationReason::Revalidated);
@@ -868,7 +902,7 @@ mod tests {
         let child = child_result(0, true, "child-echo");
 
         let revalidation =
-            revalidate_route_for_execution(&call, &initial, child, &[], revalidation_ids());
+            revalidate_route_for_execution(&call, &initial, child, vec![], revalidation_ids());
 
         assert!(!revalidation.is_authorized());
         assert_eq!(
@@ -891,7 +925,7 @@ mod tests {
         let child = child_result(1, true, "other-child");
 
         let revalidation =
-            revalidate_route_for_execution(&call, &initial, child, &[], revalidation_ids());
+            revalidate_route_for_execution(&call, &initial, child, vec![], revalidation_ids());
 
         assert_eq!(
             revalidation.reason,
@@ -913,7 +947,7 @@ mod tests {
         let toy = toy_result(1, 1, false);
 
         let revalidation =
-            revalidate_route_for_execution(&call, &initial, child, &[toy], revalidation_ids());
+            revalidate_route_for_execution(&call, &initial, child, vec![toy], revalidation_ids());
 
         assert_eq!(revalidation.reason, RouteRevalidationReason::ToyGrantDenied);
         assert_eq!(

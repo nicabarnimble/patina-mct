@@ -3,7 +3,7 @@
 - [x] Task T0 — Housekeeping
 - [x] Task T1 — Persistence split: run records store provenance, not capabilities
 - [x] Task T2 — Seal `AuthorizedChildInvocation` (single-effect capability)
-- [ ] Task T3 — Seal `AuthorizedToyCall` (session-scoped capability)
+- [x] Task T3 — Seal `AuthorizedToyCall` (session-scoped capability)
 - [ ] Task T4 — Seal `AuthorizedRouteExecution` (single-effect capability)
 - [ ] Task T5 — Staleness guard at the effect boundary
 
@@ -381,3 +381,70 @@ Assessment: this matches the rare ledger-writer flake. The failing test is
 `JsonlObservationLedger` writer for a temp `observations.jsonl` path while an
 advisory writer lock is still reported as held (`WouldBlock`). Per protocol,
 no fix attempted mid-task; rerun will determine intermittence.
+
+### 2026-07-03 — T3 compile failure, route toy capability move ordering
+
+Command:
+
+```bash
+cargo test --workspace
+```
+
+Failure output:
+
+```text
+   Compiling mct-kernel v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-kernel)
+error[E0382]: borrow of partially moved value: `toy`
+   --> crates/mct-kernel/src/route.rs:427:55
+    |
+417 |         let Some(authorized_toy) = toy.authorized else {
+    |                  -------------- value partially moved here
+...
+427 |         if toy.evaluation.call_id != call.call_id || !toy.is_allowed() {
+    |                                                       ^^^ value borrowed here after partial move
+    |
+    = note: partial move occurs because value has type `toy::AuthorizedToyCall`, which does not implement the `Copy` trait
+help: borrow this binding in the pattern to avoid moving the value
+    |
+417 |         let Some(ref authorized_toy) = toy.authorized else {
+    |                  +++
+
+For more information about this error, try `rustc --explain E0382`.
+error: could not compile `mct-kernel` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `mct-kernel` (lib test) due to 1 previous error
+```
+
+Assessment: deterministic compile error from moving the now-non-Clone toy
+capability before finishing result validation in route revalidation; not the
+ledger-writer flake and no `JsonlObservationLedger` writer-lock path was
+involved.
+
+### 2026-07-03 — T3 CI formatting failure after toy sealing edits
+
+Command:
+
+```bash
+cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh
+```
+
+Failure output:
+
+```text
+    Checking mct-kernel v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-kernel)
+    Checking mct-observation v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-observation)
+    Checking mct-iroh v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-iroh)
+    Checking mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.85s
+Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon/src/authority_test_fixture.rs:118:
+...
+Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon/src/wasm.rs:1369:
+...
+Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-kernel/src/route.rs:746:
+...
+Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-kernel/src/route.rs:778:
+...
+```
+
+Assessment: deterministic formatting failure from T3 edits; clippy had
+already passed, and no `JsonlObservationLedger` writer-lock path was involved.
