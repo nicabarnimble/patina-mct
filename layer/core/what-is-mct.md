@@ -68,7 +68,11 @@ must trace to an explicit, issued, scoped, time-bounded, revocable record:
   issuer, policy revision, and time bounds.
 - Execution never uses a grant directly. Grants are evaluated against the
   current call, and what runs carries an `AuthorizedToyCall` (or
-  `AuthorizedChildInvocation`) token minted by that evaluation.
+  `AuthorizedChildInvocation`) capability minted by that evaluation. These
+  executable capabilities are unforgeable by construction: their fields are
+  private, they are minted only by kernel evaluators, they are not cloned or
+  deserialized as authority, and effect adapters reject stale policy/grant
+  revisions before performing the effect.
 
 Why so strict: the product is multi-node. A Mother runs other people's
 components and accepts other Mothers' calls. That is only sane when authority
