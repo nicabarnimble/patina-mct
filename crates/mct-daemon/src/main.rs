@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use mct_daemon::{
-    DEFAULT_WASM_MEMORY_LIMIT_BYTES, MctChildIntegrityMode, MctChildLoadOptions,
-    MctCompositionPlan, MctCompositionStep, MctConfigChildAuthorityProjection,
+    ChildInvocationProvenance, DEFAULT_WASM_MEMORY_LIMIT_BYTES, MctChildIntegrityMode,
+    MctChildLoadOptions, MctCompositionPlan, MctCompositionStep, MctConfigChildAuthorityProjection,
     MctControlPlaneSnapshot, MctControlPlaneSnapshotError, MctControlPlaneSnapshotResult,
     MctDaemonConfigStore, MctLocalNodeIdentity, MctOperatorChildScope, MctOperatorNodeScope,
     MctPeerAddressBookEntry, MctProcessChildHarness, MctProcessChildInvocationIds,
@@ -340,11 +340,15 @@ fn run_process(mut args: Vec<String>) -> Result<()> {
 
     let state = MctRuntimeStateStore::open(&state_path)?;
     let run_id = run_id_for_call("process", &call);
+    let child_invocation_provenance = ChildInvocationProvenance::from_authorized(
+        &authorized,
+        authority_observation.observation_id.clone(),
+    );
     state.insert_run_started(
         &run_id,
         &call,
         RuntimeKind::Process,
-        Some(&authorized),
+        Some(&child_invocation_provenance),
         mct_daemon::current_timestamp_string(),
     )?;
     state.append_run_observations(&run_id, std::slice::from_ref(&authority_observation))?;
@@ -436,11 +440,15 @@ fn run_wasm_call(mut args: Vec<String>) -> Result<()> {
 
     let state = MctRuntimeStateStore::open(&state_path)?;
     let run_id = run_id_for_call("wasm", &call);
+    let child_invocation_provenance = ChildInvocationProvenance::from_authorized(
+        &authorized,
+        authority_observation.observation_id.clone(),
+    );
     state.insert_run_started(
         &run_id,
         &call,
         RuntimeKind::WasmComponent,
-        Some(&authorized),
+        Some(&child_invocation_provenance),
         mct_daemon::current_timestamp_string(),
     )?;
     state.append_run_observations(&run_id, std::slice::from_ref(&authority_observation))?;
@@ -519,11 +527,15 @@ fn run_wasm_call_wit(mut args: Vec<String>) -> Result<()> {
 
     let state = MctRuntimeStateStore::open(&state_path)?;
     let run_id = run_id_for_call("wasm-wit", &call);
+    let child_invocation_provenance = ChildInvocationProvenance::from_authorized(
+        &authorized,
+        authority_observation.observation_id.clone(),
+    );
     state.insert_run_started(
         &run_id,
         &call,
         RuntimeKind::WasmComponent,
-        Some(&authorized),
+        Some(&child_invocation_provenance),
         mct_daemon::current_timestamp_string(),
     )?;
     state.append_run_observations(&run_id, std::slice::from_ref(&authority_observation))?;
@@ -2020,11 +2032,15 @@ async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
                         }
                     };
                     let run_id = run_id_for_call("iroh-process", &request.call);
+                    let child_invocation_provenance = ChildInvocationProvenance::from_authorized(
+                        &authorized,
+                        authority_observation.observation_id.clone(),
+                    );
                     if let Err(error) = runtime_state.insert_run_started(
                         &run_id,
                         &request.call,
                         RuntimeKind::Process,
-                        Some(&authorized),
+                        Some(&child_invocation_provenance),
                         mct_daemon::current_timestamp_string(),
                     ) {
                         return MctIrohCallHandlerResult::failed(format!(
