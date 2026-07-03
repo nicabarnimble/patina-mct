@@ -6,6 +6,7 @@
 - [x] Task T3 — Seal `AuthorizedToyCall` (session-scoped capability)
 - [x] Task T4 — Seal `AuthorizedRouteExecution` (single-effect capability)
 - [x] Task T5 — Staleness guard at the effect boundary
+- [ ] Task T6 — Read-only ledger access; eliminate the writer-reopen flake class
 
 ---
 
@@ -49,7 +50,7 @@ Net behavior change: zero (one disclosed exception in Task T1).
    first.
 6. Baseline must be green before starting and after every commit:
    `cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh`
-7. Order: T0 → T1 → T2 → T3 → T4 → T5. Each task is independently
+7. Order: T0 → T1 → T2 → T3 → T4 → T5 → T6. Each task is independently
    shippable; if context runs low, stop at a task boundary and report.
 
 ## Sealing mechanics (applies to every seal task)
@@ -178,6 +179,33 @@ exists.
   visibility; keep it small. If a call path has no current-revision fact
   available without new plumbing, note it in PHASE3.md as future work
   rather than building speculative plumbing now.
+
+## Task T6 — Read-only ledger access; eliminate the writer-reopen flake class
+
+The captured flake (PHASE3.md Flake log, "T2 post-commit validation
+ledger-writer flake") shows `fake_echo_slice_records_trace_and_result`
+reopening a second WRITER on a path whose first writer's advisory lock is
+occasionally still held. Root cause is an API gap: `mct-observation` offers
+no way to read a ledger without taking the exclusive writer lock, so
+verification code opens writers it never writes with.
+
+- Add read-only access to `crates/mct-observation`: a function or type
+  (e.g. `read_ledger_entries(path, ledger_id, mother_node_id)` or
+  `JsonlObservationLedger::open_read_only`) that takes NO writer lock,
+  streams entries via the existing incremental chain validation, and
+  enforces the same identity/chain fail-closed checks as `open()`. Read
+  the existing `iter_entries` implementation first and share its logic —
+  do not duplicate the validation.
+- Migrate every test and daemon site that opens a writer only to read
+  (grep `JsonlObservationLedger::open` and audit each call site; the known
+  offenders are the fake-slice verification tests in
+  `crates/mct-daemon/src/lib.rs`). After this, a second writer-open on a
+  live path should occur nowhere except the test that asserts
+  second-writer rejection.
+- Prove it: `cargo test -p mct-daemon --lib` 10 consecutive times and
+  `cargo test --workspace` 3 consecutive times, all green; report counts.
+- Check T6 off in PHASE3.md; note in the Flake log entry that the class is
+  closed by design (readers no longer contend for the writer lock).
 
 ## Definition of done (every task)
 
