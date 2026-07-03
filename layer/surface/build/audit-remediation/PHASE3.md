@@ -504,3 +504,24 @@ Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-kernel/src/route.rs
 
 Assessment: deterministic formatting failure from T3 edits; clippy had
 already passed, and no `JsonlObservationLedger` writer-lock path was involved.
+
+---
+
+## Arc complete — 2026-07-03
+
+Final remediation implementation commit: `91e606c` (`fix: add read-only observation ledger access`).
+Documentation closeout sweep reached `45b4eef` (`docs: refresh core architecture facts`) before this arc-complete note.
+
+Phase summary:
+
+- Phase 1 closed the correctness/security invariant items from the audit.
+- Phase 2 aligned robustness and doctrine: typed error sources, timeout/error hardening, streaming ledger validation, Iroh module shape, and kernel invariant docs.
+- Phase 3 made executable authority unforgeable by construction: persisted state stores provenance instead of executable capabilities; child, toy, and route authority tokens are private-field, kernel-minted, non-serde capabilities; effect adapters reject stale policy/grant revisions before execution; and observation verification uses read-only hash-chain validation without contending for the exclusive writer lock.
+- The documentation closeout corrected current README/core facts for execution limits, ledger access, capability sealing, stale-revision checks, current crate/module layout, and current typed WIT/process runtime scope.
+
+Scoped-out future work:
+
+- No push, PR creation, release packaging, or operator-owned branch publication in this arc.
+- No new runtime features, storage backends, transport abstractions, UI/inspector surfaces, or thought-mesh/federation work.
+- Future route-execution adapters must perform the same effect-boundary stale-revision guard already documented for `AuthorizedRouteExecution`.
+- Future crate splits for WASM/runtime, toys, storage, or CLI remain design work until a second concrete implementation proves the seam.
