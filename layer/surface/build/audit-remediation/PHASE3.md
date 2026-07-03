@@ -1,7 +1,7 @@
 # Phase 3 progress
 
 - [x] Task T0 — Housekeeping
-- [ ] Task T1 — Persistence split: run records store provenance, not capabilities
+- [x] Task T1 — Persistence split: run records store provenance, not capabilities
 - [ ] Task T2 — Seal `AuthorizedChildInvocation` (single-effect capability)
 - [ ] Task T3 — Seal `AuthorizedToyCall` (session-scoped capability)
 - [ ] Task T4 — Seal `AuthorizedRouteExecution` (single-effect capability)
