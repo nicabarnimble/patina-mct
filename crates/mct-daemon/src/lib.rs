@@ -196,7 +196,8 @@ mod tests {
         );
         assert_eq!(report.trace_observation_count, 6);
 
-        let ledger = JsonlObservationLedger::open(&ledger_path, "ledger-dev", "mother-a").unwrap();
+        let ledger =
+            JsonlObservationLedger::open_read_only(&ledger_path, "ledger-dev", "mother-a").unwrap();
         let call_entries = ledger
             .by_call(
                 &CallId::new("call-fake-echo")

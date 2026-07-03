@@ -6,7 +6,7 @@
 - [x] Task T3 — Seal `AuthorizedToyCall` (session-scoped capability)
 - [x] Task T4 — Seal `AuthorizedRouteExecution` (single-effect capability)
 - [x] Task T5 — Staleness guard at the effect boundary
-- [ ] Task T6 — Read-only ledger access; eliminate the writer-reopen flake class
+- [x] Task T6 — Read-only ledger access; eliminate the writer-reopen flake class
 
 ---
 
@@ -229,6 +229,20 @@ the route boundary and already compares current call revisions before minting.
 If a future route-execution adapter begins consuming the route capability, it
 must perform the same equality guard at that effect boundary.
 
+## Task T6 notes
+
+`mct-observation` now has read-only ledger access via
+`JsonlObservationLedger::open_read_only`, `JsonlObservationLedgerReader`, and
+`read_ledger_entries`. Read-only access uses the same `LedgerEntryIter`
+incremental chain and identity validation as writer open, but never acquires
+the exclusive writer lock. The fake-slice verification test now reads through
+that path instead of reopening a writer.
+
+Stress proof completed:
+
+- `cargo test -p mct-daemon --lib`: 10/10 consecutive green runs.
+- `cargo test --workspace`: 3/3 consecutive green runs.
+
 ## Flake log
 
 ### 2026-07-03 — T2 compile failure, not intermittent ledger-writer flake
@@ -418,6 +432,11 @@ Assessment: this matches the rare ledger-writer flake. The failing test is
 `JsonlObservationLedger` writer for a temp `observations.jsonl` path while an
 advisory writer lock is still reported as held (`WouldBlock`). Per protocol,
 no fix attempted mid-task; rerun will determine intermittence.
+
+T6 closure: this flake class is closed by design. Verification readers no
+longer contend for the writer lock; read-only ledger access validates identity
+and hash chain through the shared incremental iterator without taking an
+exclusive lock.
 
 ### 2026-07-03 — T3 compile failure, route toy capability move ordering
 
