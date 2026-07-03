@@ -70,7 +70,7 @@ impl MctToyAdapterRegistry {
         );
 
         let (outcome, output_json, safe_message, kind, observation_outcome) =
-            match self.backends.get(&authorized.toy_id) {
+            match self.backends.get(authorized.toy_id()) {
                 Some(MctToyBackend::EchoJson) => (
                     MctToyAdapterOutcome::Success,
                     Some(input_json.to_owned()),
@@ -484,9 +484,9 @@ fn toy_observation(
             external_trace_id: None,
         },
         call_id: Some(call.call_id.clone()),
-        decision_id: Some(authorized.authority_decision_id.clone()),
-        subject_id: Some(authorized.child_instance_id.to_string()),
-        resource_id: Some(authorized.toy_id.to_string()),
+        decision_id: Some(authorized.authority_decision_id().clone()),
+        subject_id: Some(authorized.child_instance_id().to_string()),
+        resource_id: Some(authorized.toy_id().to_string()),
         policy_revision: Some(call.authority_context.policy_revision),
         grants_revision: Some(call.authority_context.grants_revision),
         outcome,
@@ -494,7 +494,7 @@ fn toy_observation(
         safe_message: safe_message.into(),
         detail_ref: Some(format!(
             "authorized_toy_call:{}",
-            authorized.authorized_toy_call_id
+            authorized.authorized_toy_call_id()
         )),
     }
 }
@@ -542,23 +542,14 @@ mod tests {
     }
 
     fn authorized(toy_id: &str) -> AuthorizedToyCall {
-        AuthorizedToyCall {
-            authorized_toy_call_id: AuthorizedToyCallId::new("authorized-toy-adapter")
+        crate::authority_test_fixture::authorized_toy_for_call(
+            &call(),
+            toy_id,
+            ChildInstanceId::new("instance-toy-adapter")
                 .expect("string ID literal/generated value must be non-empty"),
-            call_id: CallId::new("call-toy-adapter")
-                .expect("string ID literal/generated value must be non-empty"),
-            evaluation_id: ToyGrantEvaluationId::new("toy-eval-adapter")
-                .expect("string ID literal/generated value must be non-empty"),
-            grant_id: ToyGrantId::new("grant-toy-adapter")
-                .expect("string ID literal/generated value must be non-empty"),
-            toy_id: ToyId::new(toy_id)
-                .expect("string ID literal/generated value must be non-empty"),
-            child_instance_id: ChildInstanceId::new("instance-toy-adapter")
-                .expect("string ID literal/generated value must be non-empty"),
-            authority_decision_id: DecisionId::new("decision-toy-adapter")
-                .expect("string ID literal/generated value must be non-empty"),
-            expires_at: Timestamp::new("2026-05-31T00:10:00Z").unwrap(),
-        }
+            "use",
+            "adapter",
+        )
     }
 
     fn ids(stem: &str) -> MctToyCallIds {

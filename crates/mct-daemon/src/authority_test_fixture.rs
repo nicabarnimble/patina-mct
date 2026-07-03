@@ -108,3 +108,92 @@ pub(crate) fn authorized_child_for_call(
         .authorized
         .expect("allowed child authority must include a capability")
 }
+
+#[allow(dead_code)]
+pub(crate) fn authorized_toy_for_call(
+    call: &MctCall,
+    toy_id: &str,
+    child_instance_id: ChildInstanceId,
+    action: &str,
+    stem: &str,
+) -> AuthorizedToyCall {
+    let toy_id = ToyId::new(toy_id).expect("generated toy id must be non-empty");
+    let grant_id =
+        ToyGrantId::new(format!("grant-toy-{stem}")).expect("generated grant id must be non-empty");
+    let subject = ToyGrantSubject {
+        child_name: format!("child-{stem}"),
+        artifact_id: format!("artifact-{stem}"),
+        artifact_version: "0.1.0".into(),
+        assignment_id: None,
+        caller_node_id: Some(call.caller.node_id.clone()),
+    };
+    let catalog = CanonicalToyContract {
+        toy_id: toy_id.clone(),
+        contract: ToyContractIdentity {
+            namespace: "mct".into(),
+            interface_name: format!("toy-{stem}"),
+            version: "0.1.0".into(),
+            function_name: Some(action.into()),
+            resource_name: None,
+        },
+        authority_bearing: true,
+        catalog_revision: 1,
+        admitted_by_observation_id: ObservationId::new(format!("obs-toy-catalog-{stem}"))
+            .expect("generated observation id must be non-empty"),
+    };
+    let grant = ToyGrant {
+        grant_id,
+        toy_id: toy_id.clone(),
+        subject: subject.clone(),
+        scope: ToyGrantScope {
+            vision_id: call.caller.vision_id.clone(),
+            node_id: Some(call.caller.node_id.clone()),
+            project_id: call.caller.project_id.clone(),
+            data_classification: Some(call.payload_metadata.data_classification.clone()),
+            resource_id: None,
+            allowed_actions: vec![action.into()],
+        },
+        constraints: ToyGrantConstraints {
+            starts_at: None,
+            expires_at: Some(call.deadline.clone()),
+            max_uses: None,
+            max_duration_ms: None,
+            locality_required: true,
+        },
+        grant_state: ToyGrantState::Active,
+        issuer_id: format!("issuer-{stem}"),
+        policy_revision: call.authority_context.policy_revision,
+        grants_revision: call.authority_context.grants_revision,
+        authority_observation_id: ObservationId::new(format!("obs-toy-grant-{stem}"))
+            .expect("generated observation id must be non-empty"),
+    };
+    let request = ToyGrantEvaluationRequest {
+        toy_id,
+        subject,
+        child_instance_id,
+        action: action.into(),
+        resource_id: None,
+        node_id: call.caller.node_id.clone(),
+        now: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+        ids: ToyGrantEvaluationIds {
+            evaluation_id: ToyGrantEvaluationId::new(format!("eval-toy-{stem}"))
+                .expect("generated evaluation id must be non-empty"),
+            decision_id: DecisionId::new(format!("decision-toy-{stem}"))
+                .expect("generated decision id must be non-empty"),
+            observation_id: ObservationId::new(format!("obs-toy-authority-{stem}"))
+                .expect("generated observation id must be non-empty"),
+            authorized_toy_call_id: AuthorizedToyCallId::new(format!("auth-toy-{stem}"))
+                .expect("generated authorization id must be non-empty"),
+        },
+    };
+
+    let result = evaluate_toy_grant_for_call(call, &request, &[catalog], &[grant]);
+    assert!(
+        result.is_allowed(),
+        "fixture must mint authorized toy call through evaluator: {:?}",
+        result.evaluation
+    );
+    result
+        .authorized
+        .expect("allowed toy grant must include a capability")
+}
