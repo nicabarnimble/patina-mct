@@ -38,6 +38,9 @@ build/
 .patina/local/
 ENVIRONMENT.toml
 
+# Patina managed-file tracking (internal bookkeeping, regeneratable)
+**/.patina-managed.toml
+
 # Temporary files
 *.tmp
 *.bak
