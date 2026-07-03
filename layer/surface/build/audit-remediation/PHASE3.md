@@ -2,7 +2,7 @@
 
 - [x] Task T0 — Housekeeping
 - [x] Task T1 — Persistence split: run records store provenance, not capabilities
-- [ ] Task T2 — Seal `AuthorizedChildInvocation` (single-effect capability)
+- [x] Task T2 — Seal `AuthorizedChildInvocation` (single-effect capability)
 - [ ] Task T3 — Seal `AuthorizedToyCall` (session-scoped capability)
 - [ ] Task T4 — Seal `AuthorizedRouteExecution` (single-effect capability)
 - [ ] Task T5 — Staleness guard at the effect boundary
@@ -191,3 +191,193 @@ exists.
 - Final summary: commits landed, grep-audit results (zero out-of-kernel
   constructions of the three sealed types), tasks completed/remaining per
   PHASE3.md, full validation results.
+
+## Flake log
+
+### 2026-07-03 — T2 compile failure, not intermittent ledger-writer flake
+
+Command:
+
+```bash
+cargo test --workspace
+```
+
+Failure output:
+
+```text
+   Compiling mct-kernel v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-kernel)
+error[E0277]: can't compare `&id::ChildInstanceId` with `id::ChildInstanceId`
+    --> crates/mct-kernel/src/child.rs:1090:9
+     |
+1090 | /         assert_eq!(
+1091 | |             authorized.child_instance_id(),
+1092 | |             ChildInstanceId::new("instance-slate-manager-1")
+1093 | |                 .expect("string ID literal/generated value must be non-empty")
+1094 | |         );
+     | |_________^ no implementation for `&id::ChildInstanceId == id::ChildInstanceId`
+     |
+     = help: the trait `PartialEq<id::ChildInstanceId>` is not implemented for `&id::ChildInstanceId`
+     = note: this error originates in the macro `assert_eq` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: consider dereferencing here
+    -->  /Users/nicabar/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/macros/mod.rs:46:22
+     |
+  46 |                 if !(**left_val == *right_val) {
+     |                      +
+
+error[E0277]: can't compare `&id::ChildAssignmentId` with `id::ChildAssignmentId`
+    --> crates/mct-kernel/src/child.rs:1095:9
+     |
+1095 | /         assert_eq!(
+1096 | |             authorized.assignment_id(),
+1097 | |             ChildAssignmentId::new("assignment-slate-manager")
+1098 | |                 .expect("string ID literal/generated value must be non-empty")
+1099 | |         );
+     | |_________^ no implementation for `&id::ChildAssignmentId == id::ChildAssignmentId`
+     |
+     = help: the trait `PartialEq<id::ChildAssignmentId>` is not implemented for `&id::ChildAssignmentId`
+     = note: this error originates in the macro `assert_eq` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: consider dereferencing here
+    -->  /Users/nicabar/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/macros/mod.rs:46:22
+     |
+  46 |                 if !(**left_val == *right_val) {
+     |                      +
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `mct-kernel` (lib test) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+```
+
+Assessment: deterministic compile error from accessor migration in T2 tests;
+not the ledger-writer flake and no `JsonlObservationLedger` writer-lock path
+was involved.
+
+### 2026-07-03 — T2 compile failure, remaining borrowed capability call
+
+Command:
+
+```bash
+cargo test --workspace
+```
+
+Failure output:
+
+```text
+   Compiling mct-kernel v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-kernel)
+   Compiling mct-observation v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-observation)
+   Compiling mct-iroh v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-iroh)
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0308]: mismatched types
+    --> crates/mct-daemon/src/wasm.rs:2750:17
+     |
+2749 |             .invoke_authorized_child_wit_export(
+     |              ---------------------------------- arguments to this method are incorrect
+2750 |                 &authorized,
+     |                 ^^^^^^^^^^^ expected `AuthorizedChildInvocation`, found `&AuthorizedChildInvocation`
+     |
+note: method defined here
+    --> crates/mct-daemon/src/wasm.rs:814:12
+     |
+ 814 |     pub fn invoke_authorized_child_wit_export(
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ 815 |         &self,
+ 816 |         authorized: AuthorizedChildInvocation,
+     |         -------------------------------------
+help: consider removing the borrow
+     |
+2750 -                 &authorized,
+2750 +                 authorized,
+     |
+
+For more information about this error, try `rustc --explain E0308`.
+error: could not compile `mct-daemon` (lib test) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+```
+
+Assessment: deterministic compile error from by-value T2 effect-entrypoint
+migration; not the ledger-writer flake and no `JsonlObservationLedger`
+writer-lock path was involved.
+
+### 2026-07-03 — T2 assertion update after real evaluator fixture IDs
+
+Command:
+
+```bash
+cargo test --workspace
+```
+
+Failure output:
+
+```text
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.76s
+     Running unittests src/lib.rs (target/debug/deps/mct_daemon-a8edfdb472c9b5be)
+
+running 87 tests
+...
+test wasm::tests::wasm_component_runtime_trap_maps_to_adapter_observation ... FAILED
+...
+
+failures:
+
+---- wasm::tests::wasm_component_runtime_trap_maps_to_adapter_observation stdout ----
+
+thread 'wasm::tests::wasm_component_runtime_trap_maps_to_adapter_observation' (2197679) panicked at crates/mct-daemon/src/wasm.rs:2840:9:
+assertion `left == right` failed
+  left: Some(DecisionId("decision-child-wasm"))
+ right: Some(DecisionId("decision-wasm"))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    wasm::tests::wasm_component_runtime_trap_maps_to_adapter_observation
+
+test result: FAILED. 86 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+
+error: test failed, to rerun pass `-p mct-daemon --lib`
+```
+
+Assessment: deterministic assertion drift after replacing a forged test
+literal with a real evaluator-minted capability; not the ledger-writer flake
+and no `JsonlObservationLedger` writer-lock path was involved.
+
+### 2026-07-03 — T2 post-commit validation ledger-writer flake
+
+Command:
+
+```bash
+cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh
+```
+
+Failure output:
+
+```text
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
+     Running unittests src/lib.rs (target/debug/deps/mct_daemon-a8edfdb472c9b5be)
+
+running 87 tests
+...
+test tests::fake_echo_slice_records_trace_and_result ... FAILED
+...
+
+failures:
+
+---- tests::fake_echo_slice_records_trace_and_result stdout ----
+
+thread 'tests::fake_echo_slice_records_trace_and_result' (2204151) panicked at crates/mct-daemon/src/lib.rs:199:91:
+called `Result::unwrap()` on an `Err` value: WriterLock { path: "/var/folders/6h/329275913d1d3k1lfvvvryp40000gn/T/.tmp7PEPjJ/observations.jsonl", source: Custom { kind: WouldBlock, error: "observation ledger is already locked by another writer" } }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::fake_echo_slice_records_trace_and_result
+
+test result: FAILED. 86 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
+
+error: test failed, to rerun pass `-p mct-daemon --lib`
+```
+
+Assessment: this matches the rare ledger-writer flake. The failing test is
+`tests::fake_echo_slice_records_trace_and_result`; the failure path opens a
+`JsonlObservationLedger` writer for a temp `observations.jsonl` path while an
+advisory writer lock is still reported as held (`WouldBlock`). Per protocol,
+no fix attempted mid-task; rerun will determine intermittence.

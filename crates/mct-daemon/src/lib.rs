@@ -5,6 +5,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
+mod authority_test_fixture;
 mod children;
 mod composition;
 mod config;

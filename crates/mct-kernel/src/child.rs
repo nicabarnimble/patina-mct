@@ -352,29 +352,78 @@ pub struct ChildCallAuthorityEvaluation {
     pub observation_id: ObservationId,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq)]
 /// Capability token allowing one child instance to execute one call.
 ///
-/// Adapters should invoke children only when this token is present in an allowed authority result.
+/// Only [`evaluate_child_call_authority`] mints this single-effect capability.
+/// Adapters consume it when invoking the child; persisted state stores
+/// provenance facts instead of rehydrating this executable authority.
 pub struct AuthorizedChildInvocation {
     /// Token identifier minted only when child authority succeeds.
-    pub authorized_child_invocation_id: AuthorizedChildInvocationId,
+    authorized_child_invocation_id: AuthorizedChildInvocationId,
     /// Call being evaluated or authorized.
-    pub call_id: CallId,
+    call_id: CallId,
     /// Evaluation identifier for this authority decision.
-    pub evaluation_id: ChildCallEvaluationId,
+    evaluation_id: ChildCallEvaluationId,
     /// Assignment identifier referenced by instances and evaluations.
-    pub assignment_id: ChildAssignmentId,
+    assignment_id: ChildAssignmentId,
     /// Approval considered by the evaluation.
-    pub approval_id: ChildApprovalId,
+    approval_id: ChildApprovalId,
     /// Artifact identifier that must match approvals, assignments, and instances.
-    pub artifact_id: ComponentArtifactId,
+    artifact_id: ComponentArtifactId,
     /// Child instance authorized to execute the call.
-    pub child_instance_id: ChildInstanceId,
+    child_instance_id: ChildInstanceId,
     /// Stable child name used in authority matching.
-    pub child_name: String,
+    child_name: String,
     /// Decision that minted this authorization token.
-    pub authority_decision_id: DecisionId,
+    authority_decision_id: DecisionId,
+}
+
+impl AuthorizedChildInvocation {
+    /// Returns the token identifier minted for this single child invocation.
+    pub fn authorized_child_invocation_id(&self) -> &AuthorizedChildInvocationId {
+        &self.authorized_child_invocation_id
+    }
+
+    /// Returns the call authorized for execution.
+    pub fn call_id(&self) -> &CallId {
+        &self.call_id
+    }
+
+    /// Returns the evaluation that produced this capability.
+    pub fn evaluation_id(&self) -> &ChildCallEvaluationId {
+        &self.evaluation_id
+    }
+
+    /// Returns the assignment whose active binding authorized the instance.
+    pub fn assignment_id(&self) -> &ChildAssignmentId {
+        &self.assignment_id
+    }
+
+    /// Returns the approval that authorized the artifact.
+    pub fn approval_id(&self) -> &ChildApprovalId {
+        &self.approval_id
+    }
+
+    /// Returns the verified artifact authorized for execution.
+    pub fn artifact_id(&self) -> &ComponentArtifactId {
+        &self.artifact_id
+    }
+
+    /// Returns the child instance authorized to execute.
+    pub fn child_instance_id(&self) -> &ChildInstanceId {
+        &self.child_instance_id
+    }
+
+    /// Returns the stable child name authorized for execution.
+    pub fn child_name(&self) -> &str {
+        &self.child_name
+    }
+
+    /// Returns the decision that minted this capability.
+    pub fn authority_decision_id(&self) -> &DecisionId {
+        &self.authority_decision_id
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -401,7 +450,7 @@ pub struct ChildCallAuthorityRequest {
     pub ids: ChildCallAuthorityIds,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 /// Result of child call authority evaluation, including a token only on allow.
 pub struct ChildCallAuthorityResult {
     /// Typed authority evaluation result.
@@ -1039,16 +1088,16 @@ mod tests {
         );
         let authorized = result.authorized.expect("authorized child invocation");
         assert_eq!(
-            authorized.child_instance_id,
-            ChildInstanceId::new("instance-slate-manager-1")
+            authorized.child_instance_id(),
+            &ChildInstanceId::new("instance-slate-manager-1")
                 .expect("string ID literal/generated value must be non-empty")
         );
         assert_eq!(
-            authorized.assignment_id,
-            ChildAssignmentId::new("assignment-slate-manager")
+            authorized.assignment_id(),
+            &ChildAssignmentId::new("assignment-slate-manager")
                 .expect("string ID literal/generated value must be non-empty")
         );
-        assert_eq!(authorized.child_name, "slate-manager");
+        assert_eq!(authorized.child_name(), "slate-manager");
     }
 
     #[test]

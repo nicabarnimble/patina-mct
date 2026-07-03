@@ -342,7 +342,7 @@ pub fn wasm_component_runtime_error_observation(
             path.display().to_string(),
             format!(
                 "authorized_child_invocation:{}:export:{export_name}",
-                authorized.authorized_child_invocation_id
+                authorized.authorized_child_invocation_id()
             ),
         ),
         MctWasmComponentRuntimeError::MissingExport { path, export_name } => (
@@ -350,7 +350,7 @@ pub fn wasm_component_runtime_error_observation(
             path.display().to_string(),
             format!(
                 "authorized_child_invocation:{}:missing_export:{export_name}",
-                authorized.authorized_child_invocation_id
+                authorized.authorized_child_invocation_id()
             ),
         ),
         MctWasmComponentRuntimeError::MissingWitOperation { path, operation_id } => (
@@ -358,7 +358,7 @@ pub fn wasm_component_runtime_error_observation(
             path.display().to_string(),
             format!(
                 "authorized_child_invocation:{}:missing_wit_operation:{operation_id}",
-                authorized.authorized_child_invocation_id
+                authorized.authorized_child_invocation_id()
             ),
         ),
         MctWasmComponentRuntimeError::UnsupportedWitHostImport {
@@ -371,7 +371,7 @@ pub fn wasm_component_runtime_error_observation(
             path.display().to_string(),
             format!(
                 "authorized_child_invocation:{}:unsupported_wit_host_import:{import_name}.{item_name}",
-                authorized.authorized_child_invocation_id
+                authorized.authorized_child_invocation_id()
             ),
         ),
         MctWasmComponentRuntimeError::WitValueConversion {
@@ -381,7 +381,7 @@ pub fn wasm_component_runtime_error_observation(
             path.display().to_string(),
             format!(
                 "authorized_child_invocation:{}:wit_value_conversion:{operation_id}",
-                authorized.authorized_child_invocation_id
+                authorized.authorized_child_invocation_id()
             ),
         ),
         _ => return None,
@@ -398,8 +398,8 @@ pub fn wasm_component_runtime_error_observation(
                 external_trace_id: None,
             },
             call_id: Some(call.call_id.clone()),
-            decision_id: Some(authorized.authority_decision_id.clone()),
-            subject_id: Some(authorized.child_name.clone()),
+            decision_id: Some(authorized.authority_decision_id().clone()),
+            subject_id: Some(authorized.child_name().to_owned()),
             resource_id: Some(resource_id),
             policy_revision: Some(call.authority_context.policy_revision),
             grants_revision: Some(call.authority_context.grants_revision),
@@ -600,12 +600,12 @@ fn wasm_invocation_result(
             node_id: MctNodeId::new("local-mct")
                 .expect("string ID literal/generated value must be non-empty"),
             child_id: Some(
-                ChildId::new(authorized.child_name.clone())
+                ChildId::new(authorized.child_name().to_owned())
                     .expect("string ID literal/generated value must be non-empty"),
             ),
             runtime_kind: RuntimeKind::WasmComponent,
         }),
-        authority_decision_ref: authorized.authority_decision_id.clone(),
+        authority_decision_ref: authorized.authority_decision_id().clone(),
         execution_summary: ExecutionSummary {
             wall_time_ms: 0,
             execution_time_ms: None,
@@ -813,15 +813,15 @@ impl MctWasmComponentRuntime {
 
     pub fn invoke_authorized_child_wit_export(
         &self,
-        authorized: &AuthorizedChildInvocation,
+        authorized: AuthorizedChildInvocation,
         child: &MctLoadedChild,
         call: &MctCall,
         args_json: &Value,
         ids: MctWasmComponentInvocationIds,
     ) -> Result<MctWitComponentInvocationReport, MctWasmComponentRuntimeError> {
-        if authorized.child_name != child.name {
+        if authorized.child_name() != child.name {
             return Err(MctWasmComponentRuntimeError::AuthorizedChildMismatch {
-                authorized_child_name: authorized.child_name.clone(),
+                authorized_child_name: authorized.child_name().to_owned(),
                 loaded_child_name: child.name.clone(),
             });
         }
@@ -844,16 +844,16 @@ impl MctWasmComponentRuntime {
 
     pub fn invoke_authorized_child_wit_export_with_host_adapters(
         &self,
-        authorized: &AuthorizedChildInvocation,
+        authorized: AuthorizedChildInvocation,
         child: &MctLoadedChild,
         call: &MctCall,
         args_json: &Value,
         host_adapters: MctWitHostImportAdapters,
         ids: MctWasmComponentInvocationIds,
     ) -> Result<MctWitComponentInvocationReport, MctWasmComponentRuntimeError> {
-        if authorized.child_name != child.name {
+        if authorized.child_name() != child.name {
             return Err(MctWasmComponentRuntimeError::AuthorizedChildMismatch {
-                authorized_child_name: authorized.child_name.clone(),
+                authorized_child_name: authorized.child_name().to_owned(),
                 loaded_child_name: child.name.clone(),
             });
         }
@@ -876,7 +876,7 @@ impl MctWasmComponentRuntime {
 
     fn invoke_wit_export_after_contract_check(
         &self,
-        authorized: &AuthorizedChildInvocation,
+        authorized: AuthorizedChildInvocation,
         call: &MctCall,
         component_path: impl AsRef<Path>,
         args_json: &Value,
@@ -891,7 +891,7 @@ impl MctWasmComponentRuntime {
             ObservationKind::RuntimeExecutionStarted,
             ObservationOutcome::Started,
             call,
-            authorized,
+            &authorized,
             "wasm component execution started",
         );
         let component =
@@ -928,7 +928,7 @@ impl MctWasmComponentRuntime {
         store.limiter(|state| &mut state.limits);
         let deadline = self.configure_deadline(&mut store, call)?;
         if matches!(deadline, WasmDeadlinePermit::Expired) {
-            return Ok(wit_timeout_report(started, ids, call, authorized));
+            return Ok(wit_timeout_report(started, ids, call, &authorized));
         }
         let instance = linker
             .instantiate(&mut store, &component)
@@ -955,7 +955,7 @@ impl MctWasmComponentRuntime {
             matches!(&deadline, WasmDeadlinePermit::Running(guard) if guard.timed_out());
         if let Err(error) = call_result {
             if timed_out {
-                return Ok(wit_timeout_report(started, ids, call, authorized));
+                return Ok(wit_timeout_report(started, ids, call, &authorized));
             }
             return Err(self.call_error(
                 component_path.clone(),
@@ -964,7 +964,7 @@ impl MctWasmComponentRuntime {
             ));
         }
         if timed_out {
-            return Ok(wit_timeout_report(started, ids, call, authorized));
+            return Ok(wit_timeout_report(started, ids, call, &authorized));
         }
         let output_json = lift_component_results_to_json(&results, &func_ty).map_err(|error| {
             MctWasmComponentRuntimeError::WitValueConversion {
@@ -979,7 +979,7 @@ impl MctWasmComponentRuntime {
             ObservationKind::RuntimeExecutionCompleted,
             ObservationOutcome::Completed,
             call,
-            authorized,
+            &authorized,
             "wasm component execution completed",
         );
         let output_size_bytes = serde_json::to_vec(&output_json)
@@ -992,12 +992,12 @@ impl MctWasmComponentRuntime {
                 node_id: MctNodeId::new("local-mct")
                     .expect("string ID literal/generated value must be non-empty"),
                 child_id: Some(
-                    ChildId::new(authorized.child_name.clone())
+                    ChildId::new(authorized.child_name().to_owned())
                         .expect("string ID literal/generated value must be non-empty"),
                 ),
                 runtime_kind: RuntimeKind::WasmComponent,
             }),
-            authority_decision_ref: authorized.authority_decision_id.clone(),
+            authority_decision_ref: authorized.authority_decision_id().clone(),
             execution_summary: ExecutionSummary {
                 wall_time_ms: 0,
                 execution_time_ms: None,
@@ -1020,7 +1020,7 @@ impl MctWasmComponentRuntime {
 
     pub fn invoke_authorized_s32_export(
         &self,
-        authorized: &AuthorizedChildInvocation,
+        authorized: AuthorizedChildInvocation,
         call: &MctCall,
         component_path: impl AsRef<Path>,
         export_name: &str,
@@ -1033,7 +1033,7 @@ impl MctWasmComponentRuntime {
             ObservationKind::RuntimeExecutionStarted,
             ObservationOutcome::Started,
             call,
-            authorized,
+            &authorized,
             "wasm component execution started",
         );
         let component =
@@ -1053,7 +1053,7 @@ impl MctWasmComponentRuntime {
         store.limiter(|state| &mut state.limits);
         let deadline = self.configure_deadline(&mut store, call)?;
         if matches!(deadline, WasmDeadlinePermit::Expired) {
-            return Ok(s32_timeout_report(started, ids, call, authorized));
+            return Ok(s32_timeout_report(started, ids, call, &authorized));
         }
         let instance = linker
             .instantiate(&mut store, &component)
@@ -1070,12 +1070,12 @@ impl MctWasmComponentRuntime {
             matches!(&deadline, WasmDeadlinePermit::Running(guard) if guard.timed_out());
         if let Err(error) = call_result {
             if timed_out {
-                return Ok(s32_timeout_report(started, ids, call, authorized));
+                return Ok(s32_timeout_report(started, ids, call, &authorized));
             }
             return Err(self.call_error(component_path.clone(), export_name.into(), error));
         }
         if timed_out {
-            return Ok(s32_timeout_report(started, ids, call, authorized));
+            return Ok(s32_timeout_report(started, ids, call, &authorized));
         }
         let component::Val::S32(returned_s32) = results[0] else {
             return Err(MctWasmComponentRuntimeError::UnexpectedResult {
@@ -1088,12 +1088,12 @@ impl MctWasmComponentRuntime {
             ObservationKind::RuntimeExecutionCompleted,
             ObservationOutcome::Completed,
             call,
-            authorized,
+            &authorized,
             "wasm component execution completed",
         );
         let result = wasm_invocation_result(
             call,
-            authorized,
+            &authorized,
             ids.audit_ref,
             ResultOutcome::Success,
             "wasm component completed",
@@ -1108,7 +1108,7 @@ impl MctWasmComponentRuntime {
 
     pub fn invoke_authorized_s32_export_with_toy_imports(
         &self,
-        authorized: &AuthorizedChildInvocation,
+        authorized: AuthorizedChildInvocation,
         call: &MctCall,
         invocation: MctWasmComponentToyInvocation,
     ) -> Result<MctWasmComponentInvocationReport, MctWasmComponentRuntimeError> {
@@ -1121,7 +1121,7 @@ impl MctWasmComponentRuntime {
             ObservationKind::RuntimeExecutionStarted,
             ObservationOutcome::Started,
             call,
-            authorized,
+            &authorized,
             "wasm component execution started",
         );
         let component =
@@ -1172,7 +1172,7 @@ impl MctWasmComponentRuntime {
         store.limiter(|state| &mut state.limits);
         let deadline = self.configure_deadline(&mut store, call)?;
         if matches!(deadline, WasmDeadlinePermit::Expired) {
-            return Ok(s32_timeout_report(started, ids, call, authorized));
+            return Ok(s32_timeout_report(started, ids, call, &authorized));
         }
         let instance = linker
             .instantiate(&mut store, &component)
@@ -1189,12 +1189,12 @@ impl MctWasmComponentRuntime {
             matches!(&deadline, WasmDeadlinePermit::Running(guard) if guard.timed_out());
         if let Err(error) = call_result {
             if timed_out {
-                return Ok(s32_timeout_report(started, ids, call, authorized));
+                return Ok(s32_timeout_report(started, ids, call, &authorized));
             }
             return Err(self.call_error(component_path.clone(), export_name.clone(), error));
         }
         if timed_out {
-            return Ok(s32_timeout_report(started, ids, call, authorized));
+            return Ok(s32_timeout_report(started, ids, call, &authorized));
         }
         let component::Val::S32(returned_s32) = results[0] else {
             return Err(MctWasmComponentRuntimeError::UnexpectedResult {
@@ -1207,7 +1207,7 @@ impl MctWasmComponentRuntime {
             ObservationKind::RuntimeExecutionCompleted,
             ObservationOutcome::Completed,
             call,
-            authorized,
+            &authorized,
             "wasm component execution completed",
         );
         let mut observations = vec![started];
@@ -1215,7 +1215,7 @@ impl MctWasmComponentRuntime {
         observations.push(completed);
         let result = wasm_invocation_result(
             call,
-            authorized,
+            &authorized,
             ids.audit_ref,
             ResultOutcome::Success,
             "wasm component completed",
@@ -1852,9 +1852,9 @@ fn wasm_observation(
             external_trace_id: None,
         },
         call_id: Some(call.call_id.clone()),
-        decision_id: Some(authorized.authority_decision_id.clone()),
-        subject_id: Some(authorized.child_name.clone()),
-        resource_id: Some(authorized.child_instance_id.to_string()),
+        decision_id: Some(authorized.authority_decision_id().clone()),
+        subject_id: Some(authorized.child_name().to_owned()),
+        resource_id: Some(authorized.child_instance_id().to_string()),
         policy_revision: Some(call.authority_context.policy_revision),
         grants_revision: Some(call.authority_context.grants_revision),
         outcome,
@@ -1862,7 +1862,7 @@ fn wasm_observation(
         safe_message: safe_message.into(),
         detail_ref: Some(format!(
             "authorized_child_invocation:{}",
-            authorized.authorized_child_invocation_id
+            authorized.authorized_child_invocation_id()
         )),
     }
 }
@@ -1925,25 +1925,13 @@ mod tests {
     }
 
     fn authorized() -> AuthorizedChildInvocation {
-        AuthorizedChildInvocation {
-            authorized_child_invocation_id: AuthorizedChildInvocationId::new("auth-wasm")
+        crate::authority_test_fixture::authorized_child_for_call(
+            &call(),
+            "wasm-answer",
+            MctNodeId::new("mother-a")
                 .expect("string ID literal/generated value must be non-empty"),
-            call_id: CallId::new("call-wasm-component")
-                .expect("string ID literal/generated value must be non-empty"),
-            evaluation_id: ChildCallEvaluationId::new("eval-wasm")
-                .expect("string ID literal/generated value must be non-empty"),
-            assignment_id: ChildAssignmentId::new("assignment-wasm")
-                .expect("string ID literal/generated value must be non-empty"),
-            approval_id: ChildApprovalId::new("approval-wasm")
-                .expect("string ID literal/generated value must be non-empty"),
-            artifact_id: ComponentArtifactId::new("artifact-wasm")
-                .expect("string ID literal/generated value must be non-empty"),
-            child_instance_id: ChildInstanceId::new("instance-wasm")
-                .expect("string ID literal/generated value must be non-empty"),
-            child_name: "wasm-answer".into(),
-            authority_decision_id: DecisionId::new("decision-wasm")
-                .expect("string ID literal/generated value must be non-empty"),
-        }
+            "wasm",
+        )
     }
 
     fn toy_authorized() -> AuthorizedToyCall {
@@ -2430,7 +2418,7 @@ mod tests {
         assert!(imports.contains("patina:measure/measure@0.1.0"));
         let error = runtime
             .invoke_authorized_child_wit_export(
-                &authorized(),
+                authorized(),
                 &child,
                 &typed_call("double"),
                 &serde_json::json!([7]),
@@ -2454,7 +2442,7 @@ mod tests {
 
         let report = runtime
             .invoke_authorized_child_wit_export_with_host_adapters(
-                &authorized(),
+                authorized(),
                 &child,
                 &typed_call("run"),
                 &serde_json::json!([]),
@@ -2487,7 +2475,7 @@ mod tests {
 
         let report = runtime
             .invoke_authorized_child_wit_export_with_host_adapters(
-                &authorized(),
+                authorized(),
                 &child,
                 &typed_call("run"),
                 &serde_json::json!([]),
@@ -2517,7 +2505,7 @@ mod tests {
 
         let report = runtime
             .invoke_authorized_child_wit_export_with_host_adapters(
-                &authorized(),
+                authorized(),
                 &child,
                 &typed_call("double"),
                 &serde_json::json!([7]),
@@ -2542,7 +2530,7 @@ mod tests {
 
         let error = runtime
             .invoke_authorized_child_wit_export_with_host_adapters(
-                &authorized(),
+                authorized(),
                 &child,
                 &typed_call("double"),
                 &serde_json::json!([7]),
@@ -2568,7 +2556,7 @@ mod tests {
 
         let report = runtime
             .invoke_authorized_child_wit_export_with_host_adapters(
-                &authorized(),
+                authorized(),
                 &child,
                 &typed_call("run"),
                 &serde_json::json!([]),
@@ -2606,7 +2594,7 @@ mod tests {
 
         let error = runtime
             .invoke_authorized_child_wit_export_with_host_adapters(
-                &authorized(),
+                authorized(),
                 &child,
                 &typed_call("double"),
                 &serde_json::json!([7]),
@@ -2634,7 +2622,7 @@ mod tests {
 
         let report = runtime
             .invoke_authorized_child_wit_export(
-                &authorized(),
+                authorized(),
                 &child,
                 &typed_call("double"),
                 &serde_json::json!([7]),
@@ -2666,7 +2654,7 @@ mod tests {
 
         let report = runtime
             .invoke_authorized_child_wit_export(
-                &authorized(),
+                authorized(),
                 &child,
                 &typed_call("summarize"),
                 &serde_json::json!([{ "left": 4, "right": 5 }]),
@@ -2695,7 +2683,7 @@ mod tests {
 
         let report = runtime
             .invoke_authorized_child_wit_export(
-                &authorized(),
+                authorized(),
                 &child,
                 &slate_call("list-work"),
                 &serde_json::json!([{ "project": null, "status": "active", "kind": null }]),
@@ -2731,7 +2719,7 @@ mod tests {
 
         let error = runtime
             .invoke_authorized_child_wit_export(
-                &authorized(),
+                authorized(),
                 &child,
                 &typed_call("missing"),
                 &serde_json::json!([]),
@@ -2755,20 +2743,24 @@ mod tests {
             vec!["patina:demo/control@0.1.0.missing".into()],
         );
         let call = typed_call("missing");
-        let authorized = authorized();
+        let diagnostic_authorized = authorized();
 
         let error = runtime
             .invoke_authorized_child_wit_export(
-                &authorized,
+                authorized(),
                 &child,
                 &call,
                 &serde_json::json!([]),
                 ids(),
             )
             .unwrap_err();
-        let observation =
-            wasm_component_runtime_error_observation(&error, &call, &authorized, diagnostic_ids())
-                .unwrap();
+        let observation = wasm_component_runtime_error_observation(
+            &error,
+            &call,
+            &diagnostic_authorized,
+            diagnostic_ids(),
+        )
+        .unwrap();
 
         assert_eq!(observation.kind, ObservationKind::RuntimeExecutionFailed);
         assert_eq!(observation.safe_message, "wasm export missing");
@@ -2793,7 +2785,7 @@ mod tests {
 
         let error = runtime
             .invoke_authorized_child_wit_export(
-                &authorized(),
+                authorized(),
                 &child,
                 &typed_call("double"),
                 &serde_json::json!([7]),
@@ -2824,7 +2816,7 @@ mod tests {
         let runtime = runtime();
 
         let error = runtime
-            .invoke_authorized_s32_export(&authorized(), &call(), &component_path, "trap", ids())
+            .invoke_authorized_s32_export(authorized(), &call(), &component_path, "trap", ids())
             .unwrap_err();
         let observation = wasm_component_runtime_error_observation(
             &error,
@@ -2848,7 +2840,7 @@ mod tests {
         assert_eq!(
             observation.decision_id,
             Some(
-                DecisionId::new("decision-wasm")
+                DecisionId::new("decision-child-wasm")
                     .expect("string ID literal/generated value must be non-empty")
             )
         );
@@ -2883,7 +2875,7 @@ mod tests {
 
         let report = runtime
             .invoke_authorized_s32_export_with_toy_imports(
-                &authorized(),
+                authorized(),
                 &call(),
                 MctWasmComponentToyInvocation {
                     component_path: component_path.clone(),
@@ -2938,7 +2930,7 @@ mod tests {
 
         let report = runtime
             .invoke_authorized_s32_export_with_toy_imports(
-                &authorized(),
+                authorized(),
                 &call(),
                 MctWasmComponentToyInvocation {
                     component_path: component_path.clone(),
@@ -2980,7 +2972,7 @@ mod tests {
         let runtime = runtime();
 
         let report = runtime
-            .invoke_authorized_s32_export(&authorized(), &call(), &component_path, "answer", ids())
+            .invoke_authorized_s32_export(authorized(), &call(), &component_path, "answer", ids())
             .unwrap();
 
         assert_eq!(report.returned_s32, 42);

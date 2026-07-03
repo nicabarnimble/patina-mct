@@ -119,16 +119,16 @@ impl ChildInvocationProvenance {
         authority_observation_id: ObservationId,
     ) -> Self {
         Self {
-            authorized_child_invocation_id: authorized.authorized_child_invocation_id.clone(),
-            call_id: authorized.call_id.clone(),
-            evaluation_id: authorized.evaluation_id.clone(),
-            authority_decision_id: authorized.authority_decision_id.clone(),
+            authorized_child_invocation_id: authorized.authorized_child_invocation_id().clone(),
+            call_id: authorized.call_id().clone(),
+            evaluation_id: authorized.evaluation_id().clone(),
+            authority_decision_id: authorized.authority_decision_id().clone(),
             authority_observation_id,
-            assignment_id: authorized.assignment_id.clone(),
-            approval_id: authorized.approval_id.clone(),
-            artifact_id: authorized.artifact_id.clone(),
-            child_instance_id: authorized.child_instance_id.clone(),
-            child_name: authorized.child_name.clone(),
+            assignment_id: authorized.assignment_id().clone(),
+            approval_id: authorized.approval_id().clone(),
+            artifact_id: authorized.artifact_id().clone(),
+            child_instance_id: authorized.child_instance_id().clone(),
+            child_name: authorized.child_name().to_owned(),
         }
     }
 
@@ -1814,25 +1814,12 @@ mod tests {
     }
 
     fn authorized() -> AuthorizedChildInvocation {
-        AuthorizedChildInvocation {
-            authorized_child_invocation_id: AuthorizedChildInvocationId::new("auth-a")
-                .expect("string ID literal/generated value must be non-empty"),
-            call_id: CallId::new("call-a")
-                .expect("string ID literal/generated value must be non-empty"),
-            evaluation_id: ChildCallEvaluationId::new("eval-a")
-                .expect("string ID literal/generated value must be non-empty"),
-            assignment_id: ChildAssignmentId::new("assignment-a")
-                .expect("string ID literal/generated value must be non-empty"),
-            approval_id: ChildApprovalId::new("approval-a")
-                .expect("string ID literal/generated value must be non-empty"),
-            artifact_id: ComponentArtifactId::new("artifact-a")
-                .expect("string ID literal/generated value must be non-empty"),
-            child_instance_id: ChildInstanceId::new("instance-a")
-                .expect("string ID literal/generated value must be non-empty"),
-            child_name: "child-a".into(),
-            authority_decision_id: DecisionId::new("decision-a")
-                .expect("string ID literal/generated value must be non-empty"),
-        }
+        crate::authority_test_fixture::authorized_child_for_call(
+            &call(),
+            "child-a",
+            MctNodeId::new("node-a").expect("string ID literal/generated value must be non-empty"),
+            "a",
+        )
     }
 
     fn provenance() -> ChildInvocationProvenance {
@@ -2107,15 +2094,15 @@ mod tests {
         let call = call();
         let authorized = authorized();
         let legacy_authorized = LegacyAuthorizedChildInvocation {
-            authorized_child_invocation_id: authorized.authorized_child_invocation_id.clone(),
-            call_id: authorized.call_id.clone(),
-            evaluation_id: authorized.evaluation_id.clone(),
-            assignment_id: authorized.assignment_id.clone(),
-            approval_id: authorized.approval_id.clone(),
-            artifact_id: authorized.artifact_id.clone(),
-            child_instance_id: authorized.child_instance_id.clone(),
-            child_name: authorized.child_name.clone(),
-            authority_decision_id: authorized.authority_decision_id.clone(),
+            authorized_child_invocation_id: authorized.authorized_child_invocation_id().clone(),
+            call_id: authorized.call_id().clone(),
+            evaluation_id: authorized.evaluation_id().clone(),
+            assignment_id: authorized.assignment_id().clone(),
+            approval_id: authorized.approval_id().clone(),
+            artifact_id: authorized.artifact_id().clone(),
+            child_instance_id: authorized.child_instance_id().clone(),
+            child_name: authorized.child_name().to_owned(),
+            authority_decision_id: authorized.authority_decision_id().clone(),
         };
         conn.execute(
             r#"
@@ -2129,9 +2116,9 @@ mod tests {
                 "run-legacy",
                 call.call_id.as_str(),
                 json_atom(&RuntimeKind::Process).unwrap(),
-                authorized.child_name.as_str(),
-                authorized.child_instance_id.as_str(),
-                authorized.authority_decision_id.as_str(),
+                authorized.child_name(),
+                authorized.child_instance_id().as_str(),
+                authorized.authority_decision_id().as_str(),
                 call.trace_context.trace_id.as_str(),
                 json_atom(&MctRuntimeRunState::Running).unwrap(),
                 "2026-05-31T00:00:00Z",
@@ -2148,7 +2135,7 @@ mod tests {
         let provenance = run.child_invocation_provenance.unwrap();
         assert_eq!(
             provenance.authorized_child_invocation_id,
-            authorized.authorized_child_invocation_id
+            authorized.authorized_child_invocation_id().clone()
         );
         assert_eq!(
             provenance.authority_observation_id,

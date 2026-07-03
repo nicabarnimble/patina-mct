@@ -1,3 +1,6 @@
+#[path = "../src/authority_test_fixture.rs"]
+mod authority_test_fixture;
+
 use mct_daemon::{
     DEFAULT_WASM_MEMORY_LIMIT_BYTES, MctWasmComponentInvocationIds, MctWasmComponentRuntime,
     MctWasmComponentRuntimeError, MctWasmHostConfig,
@@ -50,26 +53,14 @@ fn call(deadline: Timestamp) -> MctCall {
     }
 }
 
-fn authorized() -> AuthorizedChildInvocation {
-    AuthorizedChildInvocation {
-        authorized_child_invocation_id: AuthorizedChildInvocationId::new("auth-wasm-limit")
-            .expect("string ID literal/generated value must be non-empty"),
-        call_id: CallId::new("call-wasm-limit")
-            .expect("string ID literal/generated value must be non-empty"),
-        evaluation_id: ChildCallEvaluationId::new("eval-wasm-limit")
-            .expect("string ID literal/generated value must be non-empty"),
-        assignment_id: ChildAssignmentId::new("assignment-wasm-limit")
-            .expect("string ID literal/generated value must be non-empty"),
-        approval_id: ChildApprovalId::new("approval-wasm-limit")
-            .expect("string ID literal/generated value must be non-empty"),
-        artifact_id: ComponentArtifactId::new("artifact-wasm-limit")
-            .expect("string ID literal/generated value must be non-empty"),
-        child_instance_id: ChildInstanceId::new("instance-wasm-limit")
-            .expect("string ID literal/generated value must be non-empty"),
-        child_name: "wasm-limit".into(),
-        authority_decision_id: DecisionId::new("decision-wasm-limit")
-            .expect("string ID literal/generated value must be non-empty"),
-    }
+fn authorized(deadline: Timestamp) -> AuthorizedChildInvocation {
+    let call = call(deadline);
+    authority_test_fixture::authorized_child_for_call(
+        &call,
+        "wasm-limit",
+        MctNodeId::new("mother-a").expect("string ID literal/generated value must be non-empty"),
+        "wasm-limit",
+    )
 }
 
 fn ids() -> MctWasmComponentInvocationIds {
@@ -113,9 +104,10 @@ fn looping_component_times_out_instead_of_hanging() {
             memory_limit_bytes: DEFAULT_WASM_MEMORY_LIMIT_BYTES,
         })
         .unwrap();
+        let invocation_call = call(timestamp_after_millis(100));
         let report = runtime.invoke_authorized_s32_export(
-            &authorized(),
-            &call(timestamp_after_millis(100)),
+            authorized(invocation_call.deadline.clone()),
+            &invocation_call,
             component_path,
             "spin",
             ids(),
@@ -159,9 +151,10 @@ fn component_allocation_over_memory_cap_fails() {
     })
     .unwrap();
 
+    let invocation_call = call(timestamp_after_millis(5_000));
     let result = runtime.invoke_authorized_s32_export(
-        &authorized(),
-        &call(timestamp_after_millis(5_000)),
+        authorized(invocation_call.deadline.clone()),
+        &invocation_call,
         component_path,
         "run",
         ids(),
