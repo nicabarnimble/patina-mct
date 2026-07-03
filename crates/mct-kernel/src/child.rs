@@ -2,19 +2,31 @@ use crate::{call::*, id::*};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// WIT export surface declared by a component artifact.
+///
+/// Child authority requires the artifact primary export to contain the requested operation.
 pub struct ComponentWitExport {
+    /// WIT namespace for the exported interface.
     pub namespace: String,
+    /// WIT interface name exported by the component.
     pub interface_name: String,
+    /// Version of the exported WIT interface.
     pub version: String,
+    /// Functions exported by this WIT interface.
     pub function_names: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Execution substrate class declared for a child artifact.
 pub enum ComponentRuntimeShape {
+    /// WASM component runtime.
     WasmComponent,
+    /// JVM-backed child runtime.
     JvmChild,
+    /// Process-backed child runtime.
     ProcessChild,
+    /// Remote peer child route.
     RemoteChild,
 }
 
@@ -32,43 +44,69 @@ impl From<RuntimeKind> for ComponentRuntimeShape {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// How a child accepts calls at its component boundary.
 pub enum ChildIngressMode {
+    /// Only WIT-shaped exports are used for ingress.
     WitOnly,
+    /// WIT ingress plus compatibility lifecycle/handle exports.
     Hybrid,
+    /// Legacy handle-style ingress.
     Handle,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Whether legacy lifecycle exports are expected from the child.
 pub enum LifecycleExports {
+    /// Lifecycle exports must be present.
     Required,
+    /// Lifecycle exports may be present.
     Optional,
+    /// Lifecycle exports are not required.
     AbsentAllowed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Integrity and manifest verification state for an artifact.
 pub enum VerificationStatus {
+    /// Artifact integrity and manifest checks passed.
     Verified,
+    /// Artifact verification failed.
     Rejected,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Immutable artifact identity and verified WIT export facts.
+///
+/// Child call authority requires a verified artifact matching the selected assignment, approval, and instance, and exporting the requested operation.
 pub struct ComponentArtifact {
+    /// Artifact identifier that must match approvals, assignments, and instances.
     pub artifact_id: ComponentArtifactId,
+    /// Stable child name used in authority matching.
     pub child_name: String,
+    /// Artifact version pinned by approval and assignment.
     pub artifact_version: String,
+    /// Digest of the artifact contents.
     pub content_hash: String,
+    /// Digest of the child manifest used for verification.
     pub manifest_hash: String,
+    /// Primary WIT export used to match call targets.
     pub primary_export: ComponentWitExport,
+    /// Runtime substrate declared for this artifact.
     pub runtime_shape: ComponentRuntimeShape,
+    /// Call ingress shape supported by this artifact.
     pub ingress_mode: ChildIngressMode,
+    /// Lifecycle export policy for this artifact.
     pub lifecycle_exports: LifecycleExports,
+    /// Verification result used by authority evaluation.
     pub verification_status: VerificationStatus,
+    /// Observation that recorded creation of this artifact fact.
     pub created_by_observation_id: ObservationId,
 }
 
 impl ComponentArtifact {
+    /// Returns true when the artifact primary export exposes the requested call target.
     pub fn exports_operation(&self, target: &OperationTarget) -> bool {
         let interface_with_version = format!(
             "{}@{}",
@@ -87,174 +125,301 @@ impl ComponentArtifact {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Lifecycle state of approval authority for an artifact.
 pub enum ChildApprovalState {
+    /// Approval exists but grants no execution authority yet.
     Candidate,
+    /// Artifact is approved for matching scoped calls.
     Approved,
+    /// Approval blocks use.
     Blocked,
+    /// Authority was revoked.
     Revoked,
+    /// Approval remains visible but should not authorize new use.
     Deprecated,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Authority record saying whether an artifact may be used in a scope.
+///
+/// Evaluation accepts only `Approved` records whose artifact, child, version, scope, and policy revision match the call and assignment.
 pub struct ChildApproval {
+    /// Approval considered by the evaluation.
     pub approval_id: ChildApprovalId,
+    /// Artifact identifier that must match approvals, assignments, and instances.
     pub artifact_id: ComponentArtifactId,
+    /// Stable child name used in authority matching.
     pub child_name: String,
+    /// Artifact version pinned by approval and assignment.
     pub artifact_version: String,
+    /// Vision scope in which approval is valid.
     pub scope_vision_id: Option<VisionId>,
+    /// Optional node scope; absent means any node in the Vision.
     pub scope_node_id: Option<MctNodeId>,
+    /// Optional project scope; absent means any project in the Vision.
     pub scope_project_id: Option<ProjectId>,
+    /// Approval lifecycle state used during child authority checks.
     pub approval_state: ChildApprovalState,
+    /// Policy revision under which this authority fact was issued.
     pub policy_revision: u64,
+    /// Observation that recorded this authority fact.
     pub authority_observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Lifecycle state of a child placement assignment.
 pub enum ChildAssignmentState {
+    /// Assignment or grant may authorize if other facts match.
     Active,
+    /// Authority was revoked.
     Revoked,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Placement record binding an approved artifact to a node, Vision, and optional project.
+///
+/// Assignment is not approval by itself; child call authority also requires a matching approval, artifact, and ready instance.
 pub struct ChildAssignment {
+    /// Assignment identifier referenced by instances and evaluations.
     pub assignment_id: ChildAssignmentId,
+    /// Approval considered by the evaluation.
     pub approval_id: ChildApprovalId,
+    /// Artifact identifier that must match approvals, assignments, and instances.
     pub artifact_id: ComponentArtifactId,
+    /// Stable child name used in authority matching.
     pub child_name: String,
+    /// Vision scope for placement or authority matching.
     pub vision_id: VisionId,
+    /// Node constraint or requested execution node.
     pub node_id: Option<MctNodeId>,
+    /// Optional project scope for placement or caller matching.
     pub project_id: Option<ProjectId>,
+    /// Assignment lifecycle state used during authority checks.
     pub assignment_state: ChildAssignmentState,
+    /// Artifact version this assignment is pinned to.
     pub pinned_artifact_version: String,
+    /// Observation that recorded this assignment.
     pub assignment_observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Runtime readiness state of one child generation.
 pub enum ChildInstanceState {
+    /// Instance is starting and not ready for calls.
     Loading,
+    /// Instance may serve calls if authority matches.
     Ready,
+    /// Instance is unhealthy but may transition.
     Degraded,
+    /// Instance is draining before stop.
     Draining,
+    /// Instance is stopped.
     Stopped,
+    /// Instance failed.
     Failed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Live runtime instance of an assigned child generation.
+///
+/// Only `Ready` instances on the requested node can produce an authorized child invocation.
 pub struct ChildInstance {
+    /// Child instance considered for execution.
     pub instance_id: ChildInstanceId,
+    /// Assignment identifier referenced by instances and evaluations.
     pub assignment_id: ChildAssignmentId,
+    /// Artifact identifier that must match approvals, assignments, and instances.
     pub artifact_id: ComponentArtifactId,
+    /// Stable child name used in authority matching.
     pub child_name: String,
+    /// Runtime generation number for replacement and drain flows.
     pub generation: u64,
+    /// Node constraint or requested execution node.
     pub node_id: MctNodeId,
+    /// Readiness state used during child authority checks.
     pub instance_state: ChildInstanceState,
+    /// Observation that marked the instance ready, if any.
     pub readiness_observation_id: Option<ObservationId>,
+    /// Most recent lifecycle transition observation for this instance.
     pub last_lifecycle_observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Reason a child instance state transition was accepted or rejected.
 pub enum ChildLifecycleTransitionReason {
+    /// Authority or transition succeeded.
     Allowed,
+    /// Requested lifecycle transition is not permitted.
     IllegalTransition,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Observation-ready record of an attempted child instance state transition.
 pub struct ChildLifecycleTransition {
+    /// Child instance considered for execution.
     pub instance_id: ChildInstanceId,
+    /// State before the attempted transition.
     pub from_state: ChildInstanceState,
+    /// State requested by the transition.
     pub to_state: ChildInstanceState,
+    /// Typed reason for the transition decision.
     pub reason: ChildLifecycleTransitionReason,
+    /// Whether the transition changed the instance state.
     pub allowed: bool,
+    /// Caller-safe or operator-safe message for projections.
     pub safe_message: String,
+    /// Observation recording this fact.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Verdict of child call authority evaluation.
 pub enum ChildCallVerdict {
+    /// Authority or transition succeeded.
     Allowed,
+    /// Authority check failed closed.
     Denied,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Typed reason produced by child call authority evaluation.
 pub enum ChildCallReasonCode {
+    /// Ready instance matched assignment, approval, artifact, scope, export, and policy.
     ReadyAuthorizedInstance,
+    /// Requested instance was not found.
     UnknownInstance,
+    /// Instance assignment was not found.
     MissingAssignment,
+    /// Assignment was not active.
     AssignmentRevoked,
+    /// Assignment approval was not found.
     MissingApproval,
+    /// Approval state was not approved.
     ApprovalNotApproved,
+    /// Approval or assignment scope did not match the call.
     ApprovalScopeMismatch,
+    /// Assigned artifact was not found.
     ArtifactMissing,
+    /// Artifact verification was not successful.
     ArtifactRejected,
+    /// Artifact does not export the requested operation.
     OperationNotExported,
+    /// Instance state was not ready.
     InstanceNotReady,
+    /// Instance or assignment node did not match the request.
     WrongNode,
+    /// Assignment project did not match the call project.
     WrongProject,
+    /// Approval policy revision did not match the call snapshot.
     StalePolicy,
+    /// Artifact, approval, assignment, or instance versions did not agree.
     VersionMismatch,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Decision produced by checking whether a ready child instance may handle a call.
+///
+/// Allowed evaluations cite instance, assignment, approval, and artifact evidence; denied evaluations preserve the first missing or mismatched authority fact.
 pub struct ChildCallAuthorityEvaluation {
+    /// Evaluation identifier for this authority decision.
     pub evaluation_id: ChildCallEvaluationId,
+    /// Call being evaluated or authorized.
     pub call_id: CallId,
+    /// Decision identifier for authority and observation linkage.
     pub decision_id: DecisionId,
+    /// Child instance considered for execution.
     pub instance_id: Option<ChildInstanceId>,
+    /// Assignment identifier referenced by instances and evaluations.
     pub assignment_id: Option<ChildAssignmentId>,
+    /// Approval considered by the evaluation.
     pub approval_id: Option<ChildApprovalId>,
+    /// Artifact identifier that must match approvals, assignments, and instances.
     pub artifact_id: Option<ComponentArtifactId>,
+    /// Stable child name used in authority matching.
     pub child_name: Option<String>,
+    /// Allowed or denied outcome.
     pub verdict: ChildCallVerdict,
+    /// Typed reason for the verdict.
     pub reason_code: ChildCallReasonCode,
+    /// Policy revision under which this authority fact was issued.
     pub policy_revision: u64,
+    /// Observation recording this fact.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Capability token allowing one child instance to execute one call.
+///
+/// Adapters should invoke children only when this token is present in an allowed authority result.
 pub struct AuthorizedChildInvocation {
+    /// Token identifier minted only when child authority succeeds.
     pub authorized_child_invocation_id: AuthorizedChildInvocationId,
+    /// Call being evaluated or authorized.
     pub call_id: CallId,
+    /// Evaluation identifier for this authority decision.
     pub evaluation_id: ChildCallEvaluationId,
+    /// Assignment identifier referenced by instances and evaluations.
     pub assignment_id: ChildAssignmentId,
+    /// Approval considered by the evaluation.
     pub approval_id: ChildApprovalId,
+    /// Artifact identifier that must match approvals, assignments, and instances.
     pub artifact_id: ComponentArtifactId,
+    /// Child instance authorized to execute the call.
     pub child_instance_id: ChildInstanceId,
+    /// Stable child name used in authority matching.
     pub child_name: String,
+    /// Decision that minted this authorization token.
     pub authority_decision_id: DecisionId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Identifiers supplied for child call authority evaluation and token minting.
 pub struct ChildCallAuthorityIds {
+    /// Evaluation identifier for this authority decision.
     pub evaluation_id: ChildCallEvaluationId,
+    /// Decision identifier for authority and observation linkage.
     pub decision_id: DecisionId,
+    /// Observation recording this fact.
     pub observation_id: ObservationId,
+    /// Token identifier minted only when child authority succeeds.
     pub authorized_child_invocation_id: AuthorizedChildInvocationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Adapter-supplied facts naming the child instance and node requested for execution.
 pub struct ChildCallAuthorityRequest {
+    /// Child instance considered for execution.
     pub instance_id: ChildInstanceId,
+    /// Node constraint or requested execution node.
     pub node_id: MctNodeId,
+    /// Identifiers to stamp on the produced evaluation and token.
     pub ids: ChildCallAuthorityIds,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Result of child call authority evaluation, including a token only on allow.
 pub struct ChildCallAuthorityResult {
+    /// Typed authority evaluation result.
     pub evaluation: ChildCallAuthorityEvaluation,
+    /// Executable child invocation token, present only on allow.
     pub authorized: Option<AuthorizedChildInvocation>,
 }
 
 impl ChildCallAuthorityResult {
+    /// Returns true only when the evaluation allowed and minted an invocation token.
     pub fn is_allowed(&self) -> bool {
         self.evaluation.verdict == ChildCallVerdict::Allowed && self.authorized.is_some()
     }
 }
 
+/// Attempts a child lifecycle transition and records whether it was allowed.
+///
+/// The instance state changes only for transitions accepted by [`is_allowed_instance_transition`]; illegal transitions return the original instance with a denial transition record.
 pub fn transition_child_instance(
     instance: &ChildInstance,
     to_state: ChildInstanceState,
@@ -292,6 +457,9 @@ pub fn transition_child_instance(
     (next, transition)
 }
 
+/// Returns whether a lifecycle state change is valid for child instances.
+///
+/// The transition graph permits restart from stopped/failed through loading, readiness changes from loading/degraded, and drain/stop/fail paths; all other changes fail closed.
 pub fn is_allowed_instance_transition(
     from_state: ChildInstanceState,
     to_state: ChildInstanceState,
@@ -310,6 +478,9 @@ pub fn is_allowed_instance_transition(
     }
 }
 
+/// Decides whether a child instance may execute one MCT call.
+///
+/// Authority facts are the call, requested instance/node, artifact catalog, approvals, assignments, and live instances. It allows only a ready instance on the requested node with an active assignment, approved matching approval, verified matching artifact, fresh policy revision, matching scope, and an exported target operation. Any absent, stale, revoked, mismatched, unready, or unexported fact returns a denied evaluation and no [`AuthorizedChildInvocation`].
 pub fn evaluate_child_call_authority(
     call: &MctCall,
     request: &ChildCallAuthorityRequest,
@@ -688,12 +859,18 @@ mod tests {
 
     fn call() -> MctCall {
         MctCall {
-            call_id: CallId::from("call-child-1"),
+            call_id: CallId::new("call-child-1")
+                .expect("string ID literal/generated value must be non-empty"),
             caller: CallerIdentity {
-                node_id: MctNodeId::from("caller-node"),
+                node_id: MctNodeId::new("caller-node")
+                    .expect("string ID literal/generated value must be non-empty"),
                 user_id: None,
-                vision_id: VisionId::from("vision-a"),
-                project_id: Some(ProjectId::from("project-a")),
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+                project_id: Some(
+                    ProjectId::new("project-a")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
             },
             target: OperationTarget {
                 namespace: "patina".into(),
@@ -710,10 +887,12 @@ mod tests {
                 grants_revision: 7,
                 vision_policy_revision: 11,
             },
-            deadline: Timestamp::from("2026-05-31T00:10:00Z"),
+            deadline: Timestamp::new("2026-05-31T00:10:00Z").unwrap(),
             trace_context: TraceContext {
-                trace_id: TraceId::from("trace-child-1"),
-                span_id: SpanId::from("span-child-1"),
+                trace_id: TraceId::new("trace-child-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                span_id: SpanId::new("span-child-1")
+                    .expect("string ID literal/generated value must be non-empty"),
             },
             origin: CallOrigin::Cli,
         }
@@ -721,7 +900,8 @@ mod tests {
 
     fn artifact() -> ComponentArtifact {
         ComponentArtifact {
-            artifact_id: ComponentArtifactId::from("artifact:slate-manager:0.2.0"),
+            artifact_id: ComponentArtifactId::new("artifact:slate-manager:0.2.0")
+                .expect("string ID literal/generated value must be non-empty"),
             child_name: "slate-manager".into(),
             artifact_version: "0.2.0".into(),
             content_hash: "sha256:wasm".into(),
@@ -736,69 +916,107 @@ mod tests {
             ingress_mode: ChildIngressMode::WitOnly,
             lifecycle_exports: LifecycleExports::AbsentAllowed,
             verification_status: VerificationStatus::Verified,
-            created_by_observation_id: ObservationId::from("obs-artifact"),
+            created_by_observation_id: ObservationId::new("obs-artifact")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
     fn approval(state: ChildApprovalState) -> ChildApproval {
         ChildApproval {
-            approval_id: ChildApprovalId::from("approval-slate-manager"),
-            artifact_id: ComponentArtifactId::from("artifact:slate-manager:0.2.0"),
+            approval_id: ChildApprovalId::new("approval-slate-manager")
+                .expect("string ID literal/generated value must be non-empty"),
+            artifact_id: ComponentArtifactId::new("artifact:slate-manager:0.2.0")
+                .expect("string ID literal/generated value must be non-empty"),
             child_name: "slate-manager".into(),
             artifact_version: "0.2.0".into(),
-            scope_vision_id: Some(VisionId::from("vision-a")),
-            scope_node_id: Some(MctNodeId::from("node-a")),
-            scope_project_id: Some(ProjectId::from("project-a")),
+            scope_vision_id: Some(
+                VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            scope_node_id: Some(
+                MctNodeId::new("node-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            scope_project_id: Some(
+                ProjectId::new("project-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             approval_state: state,
             policy_revision: 5,
-            authority_observation_id: ObservationId::from("obs-approval"),
+            authority_observation_id: ObservationId::new("obs-approval")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
     fn assignment(state: ChildAssignmentState) -> ChildAssignment {
         ChildAssignment {
-            assignment_id: ChildAssignmentId::from("assignment-slate-manager"),
-            approval_id: ChildApprovalId::from("approval-slate-manager"),
-            artifact_id: ComponentArtifactId::from("artifact:slate-manager:0.2.0"),
+            assignment_id: ChildAssignmentId::new("assignment-slate-manager")
+                .expect("string ID literal/generated value must be non-empty"),
+            approval_id: ChildApprovalId::new("approval-slate-manager")
+                .expect("string ID literal/generated value must be non-empty"),
+            artifact_id: ComponentArtifactId::new("artifact:slate-manager:0.2.0")
+                .expect("string ID literal/generated value must be non-empty"),
             child_name: "slate-manager".into(),
-            vision_id: VisionId::from("vision-a"),
-            node_id: Some(MctNodeId::from("node-a")),
-            project_id: Some(ProjectId::from("project-a")),
+            vision_id: VisionId::new("vision-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            node_id: Some(
+                MctNodeId::new("node-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            project_id: Some(
+                ProjectId::new("project-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             assignment_state: state,
             pinned_artifact_version: "0.2.0".into(),
-            assignment_observation_id: ObservationId::from("obs-assignment"),
+            assignment_observation_id: ObservationId::new("obs-assignment")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
     fn instance(state: ChildInstanceState) -> ChildInstance {
         ChildInstance {
-            instance_id: ChildInstanceId::from("instance-slate-manager-1"),
-            assignment_id: ChildAssignmentId::from("assignment-slate-manager"),
-            artifact_id: ComponentArtifactId::from("artifact:slate-manager:0.2.0"),
+            instance_id: ChildInstanceId::new("instance-slate-manager-1")
+                .expect("string ID literal/generated value must be non-empty"),
+            assignment_id: ChildAssignmentId::new("assignment-slate-manager")
+                .expect("string ID literal/generated value must be non-empty"),
+            artifact_id: ComponentArtifactId::new("artifact:slate-manager:0.2.0")
+                .expect("string ID literal/generated value must be non-empty"),
             child_name: "slate-manager".into(),
             generation: 1,
-            node_id: MctNodeId::from("node-a"),
+            node_id: MctNodeId::new("node-a")
+                .expect("string ID literal/generated value must be non-empty"),
             instance_state: state,
             readiness_observation_id: if state == ChildInstanceState::Ready {
-                Some(ObservationId::from("obs-instance-ready"))
+                Some(
+                    ObservationId::new("obs-instance-ready")
+                        .expect("string ID literal/generated value must be non-empty"),
+                )
             } else {
                 None
             },
-            last_lifecycle_observation_id: ObservationId::from("obs-instance-last"),
+            last_lifecycle_observation_id: ObservationId::new("obs-instance-last")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
     fn request() -> ChildCallAuthorityRequest {
         ChildCallAuthorityRequest {
-            instance_id: ChildInstanceId::from("instance-slate-manager-1"),
-            node_id: MctNodeId::from("node-a"),
+            instance_id: ChildInstanceId::new("instance-slate-manager-1")
+                .expect("string ID literal/generated value must be non-empty"),
+            node_id: MctNodeId::new("node-a")
+                .expect("string ID literal/generated value must be non-empty"),
             ids: ChildCallAuthorityIds {
-                evaluation_id: ChildCallEvaluationId::from("child-eval-1"),
-                decision_id: DecisionId::from("child-decision-1"),
-                observation_id: ObservationId::from("obs-child-eval-1"),
-                authorized_child_invocation_id: AuthorizedChildInvocationId::from(
+                evaluation_id: ChildCallEvaluationId::new("child-eval-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                decision_id: DecisionId::new("child-decision-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                observation_id: ObservationId::new("obs-child-eval-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                authorized_child_invocation_id: AuthorizedChildInvocationId::new(
                     "authorized-child-invocation-1",
-                ),
+                )
+                .expect("string ID literal/generated value must be non-empty"),
             },
         }
     }
@@ -822,11 +1040,13 @@ mod tests {
         let authorized = result.authorized.expect("authorized child invocation");
         assert_eq!(
             authorized.child_instance_id,
-            ChildInstanceId::from("instance-slate-manager-1")
+            ChildInstanceId::new("instance-slate-manager-1")
+                .expect("string ID literal/generated value must be non-empty")
         );
         assert_eq!(
             authorized.assignment_id,
-            ChildAssignmentId::from("assignment-slate-manager")
+            ChildAssignmentId::new("assignment-slate-manager")
+                .expect("string ID literal/generated value must be non-empty")
         );
         assert_eq!(authorized.child_name, "slate-manager");
     }
@@ -834,7 +1054,8 @@ mod tests {
     #[test]
     fn unknown_instance_denies_by_default() {
         let mut request = request();
-        request.instance_id = ChildInstanceId::from("unknown-instance");
+        request.instance_id = ChildInstanceId::new("unknown-instance")
+            .expect("string ID literal/generated value must be non-empty");
         let result = evaluate_child_call_authority(
             &call(),
             &request,
@@ -927,7 +1148,10 @@ mod tests {
     #[test]
     fn approval_scope_must_match_call() {
         let mut approval = approval(ChildApprovalState::Approved);
-        approval.scope_project_id = Some(ProjectId::from("other-project"));
+        approval.scope_project_id = Some(
+            ProjectId::new("other-project")
+                .expect("string ID literal/generated value must be non-empty"),
+        );
         let result = evaluate_child_call_authority(
             &call(),
             &request(),
@@ -990,19 +1214,24 @@ mod tests {
         let (ready, ready_transition) = transition_child_instance(
             &loading,
             ChildInstanceState::Ready,
-            ObservationId::from("obs-ready"),
+            ObservationId::new("obs-ready")
+                .expect("string ID literal/generated value must be non-empty"),
         );
         assert!(ready_transition.allowed);
         assert_eq!(ready.instance_state, ChildInstanceState::Ready);
         assert_eq!(
             ready.readiness_observation_id,
-            Some(ObservationId::from("obs-ready"))
+            Some(
+                ObservationId::new("obs-ready")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
         );
 
         let (draining, draining_transition) = transition_child_instance(
             &ready,
             ChildInstanceState::Draining,
-            ObservationId::from("obs-draining"),
+            ObservationId::new("obs-draining")
+                .expect("string ID literal/generated value must be non-empty"),
         );
         assert!(draining_transition.allowed);
         assert_eq!(draining.instance_state, ChildInstanceState::Draining);
@@ -1010,7 +1239,8 @@ mod tests {
         let (stopped, stopped_transition) = transition_child_instance(
             &draining,
             ChildInstanceState::Stopped,
-            ObservationId::from("obs-stopped"),
+            ObservationId::new("obs-stopped")
+                .expect("string ID literal/generated value must be non-empty"),
         );
         assert!(stopped_transition.allowed);
         assert_eq!(stopped.instance_state, ChildInstanceState::Stopped);
@@ -1018,7 +1248,8 @@ mod tests {
         let (still_stopped, illegal_transition) = transition_child_instance(
             &stopped,
             ChildInstanceState::Ready,
-            ObservationId::from("obs-illegal"),
+            ObservationId::new("obs-illegal")
+                .expect("string ID literal/generated value must be non-empty"),
         );
         assert!(!illegal_transition.allowed);
         assert_eq!(
@@ -1028,7 +1259,8 @@ mod tests {
         assert_eq!(still_stopped.instance_state, ChildInstanceState::Stopped);
         assert_eq!(
             still_stopped.last_lifecycle_observation_id,
-            ObservationId::from("obs-stopped")
+            ObservationId::new("obs-stopped")
+                .expect("string ID literal/generated value must be non-empty")
         );
     }
 

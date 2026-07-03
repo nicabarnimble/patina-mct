@@ -1,15 +1,18 @@
 use anyhow::{Context, Result, bail};
 use mct_daemon::{
-    MctChildIntegrityMode, MctChildLoadOptions, MctCompositionPlan, MctCompositionStep,
-    MctConfigChildAuthorityProjection, MctControlPlaneSnapshot, MctDaemonConfigStore,
-    MctLocalNodeIdentity, MctOperatorChildScope, MctOperatorNodeScope, MctPeerAddressBookEntry,
-    MctProcessChildHarness, MctProcessChildInvocationIds, MctRuntimeStateStore,
-    MctToyAdapterRegistry, MctToyBackend, MctWasiHostConfig, MctWasiPreopen, MctWasiPreopenAccess,
-    MctWasmComponentInvocationIds, MctWasmComponentRuntime, MctWitHostImportAdapters,
-    MctWitToyHostAdapter, build_federation_capability_view, build_metrics_snapshot, daemon_status,
+    DEFAULT_WASM_MEMORY_LIMIT_BYTES, MctChildIntegrityMode, MctChildLoadOptions,
+    MctCompositionPlan, MctCompositionStep, MctConfigChildAuthorityProjection,
+    MctControlPlaneSnapshot, MctControlPlaneSnapshotError, MctControlPlaneSnapshotResult,
+    MctDaemonConfigStore, MctLocalNodeIdentity, MctOperatorChildScope, MctOperatorNodeScope,
+    MctPeerAddressBookEntry, MctProcessChildHarness, MctProcessChildInvocationIds,
+    MctRuntimeStateStore, MctToyAdapterRegistry, MctToyBackend, MctWasiHostConfig, MctWasiPreopen,
+    MctWasiPreopenAccess, MctWasmComponentInvocationIds, MctWasmComponentRuntime,
+    MctWasmHostConfig, MctWitHostImportAdapters, MctWitToyHostAdapter,
+    build_federation_capability_view, build_metrics_snapshot, current_timestamp, daemon_status,
     default_config_path, default_state_path, install_verified_child_package,
     load_children_from_dir, record_composition_plan, reload_configured_child,
-    serve_http_control_once, sync_child_registry_source, warmup_configured_child,
+    serve_http_control_once_with_snapshot_result, sync_child_registry_source,
+    warmup_configured_child,
 };
 use mct_iroh::{
     MctIrohCallHandlerResult, MctIrohServeState, MctIrohServedProtocol, MotherIrohEndpoint,
@@ -21,6 +24,7 @@ use mct_observation::JsonlObservationLedger;
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tokio::net::TcpListener;
@@ -257,7 +261,8 @@ fn run_child_lifecycle(mut args: Vec<String>, action: &str) -> Result<()> {
             let report = warmup_configured_child(
                 &projection,
                 &child_name,
-                TraceId::from(format!("trace-warmup:{child_name}")),
+                TraceId::new(format!("trace-warmup:{child_name}"))
+                    .expect("string ID literal/generated value must be non-empty"),
             )?;
             state.upsert_child_instance(&report.instance)?;
             append_ledger_observations(&ledger_path, &report.observations)?;
@@ -274,7 +279,8 @@ fn run_child_lifecycle(mut args: Vec<String>, action: &str) -> Result<()> {
             let report = reload_configured_child(
                 &projection,
                 &child_name,
-                TraceId::from(format!("trace-reload:{child_name}")),
+                TraceId::new(format!("trace-reload:{child_name}"))
+                    .expect("string ID literal/generated value must be non-empty"),
             )?;
             state.upsert_child_instance(&report.previous_instance)?;
             state.upsert_child_instance(&report.next_instance)?;
@@ -339,7 +345,7 @@ fn run_process(mut args: Vec<String>) -> Result<()> {
         &call,
         RuntimeKind::Process,
         Some(&authorized),
-        mct_daemon::unix_timestamp_string(),
+        mct_daemon::current_timestamp_string(),
     )?;
     state.append_run_observations(&run_id, std::slice::from_ref(&authority_observation))?;
 
@@ -347,30 +353,39 @@ fn run_process(mut args: Vec<String>) -> Result<()> {
         executable,
         args: Vec::new(),
         timeout: Duration::from_secs(5),
-        local_node_id: MctNodeId::from("local-mct"),
+        local_node_id: MctNodeId::new("local-mct")
+            .expect("string ID literal/generated value must be non-empty"),
     };
     let report = harness.invoke_authorized_child(
         &authorized,
         &call,
         &payload,
         MctProcessChildInvocationIds {
-            started_observation_id: ObservationId::from(format!(
+            started_observation_id: ObservationId::new(format!(
                 "obs-cli-process-started:{}",
                 call.call_id
-            )),
-            completed_observation_id: ObservationId::from(format!(
+            ))
+            .expect("string ID literal/generated value must be non-empty"),
+            completed_observation_id: ObservationId::new(format!(
                 "obs-cli-process-completed:{}",
                 call.call_id
-            )),
-            result_ref: ResultRef::from(format!("result-cli-process:{}", call.call_id)),
-            audit_ref: AuditRef::from(format!("audit-cli-process:{}", call.call_id)),
-            started_at: Timestamp::from("2026-05-31T00:00:00Z"),
-            completed_at: Timestamp::from("2026-05-31T00:00:01Z"),
+            ))
+            .expect("string ID literal/generated value must be non-empty"),
+            result_ref: ResultRef::new(format!("result-cli-process:{}", call.call_id))
+                .expect("string ID literal/generated value must be non-empty"),
+            audit_ref: AuditRef::new(format!("audit-cli-process:{}", call.call_id))
+                .expect("string ID literal/generated value must be non-empty"),
+            started_at: current_timestamp(),
+            completed_at: current_timestamp(),
         },
     )?;
     append_ledger_observations(&ledger_path, &report.observations)?;
     state.append_run_observations(&run_id, &report.observations)?;
-    state.complete_run(&run_id, &report.result, mct_daemon::unix_timestamp_string())?;
+    state.complete_run(
+        &run_id,
+        &report.result,
+        mct_daemon::current_timestamp_string(),
+    )?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
@@ -426,33 +441,40 @@ fn run_wasm_call(mut args: Vec<String>) -> Result<()> {
         &call,
         RuntimeKind::WasmComponent,
         Some(&authorized),
-        mct_daemon::unix_timestamp_string(),
+        mct_daemon::current_timestamp_string(),
     )?;
     state.append_run_observations(&run_id, std::slice::from_ref(&authority_observation))?;
 
-    let runtime = MctWasmComponentRuntime::new()?;
+    let runtime = MctWasmComponentRuntime::new(default_wasm_host_config())?;
     let report = runtime.invoke_authorized_s32_export(
         &authorized,
         &call,
         component_path,
         &export_name,
         MctWasmComponentInvocationIds {
-            started_observation_id: ObservationId::from(format!(
+            started_observation_id: ObservationId::new(format!(
                 "obs-cli-wasm-started:{}",
                 call.call_id
-            )),
-            completed_observation_id: ObservationId::from(format!(
+            ))
+            .expect("string ID literal/generated value must be non-empty"),
+            completed_observation_id: ObservationId::new(format!(
                 "obs-cli-wasm-completed:{}",
                 call.call_id
-            )),
-            audit_ref: AuditRef::from(format!("audit-cli-wasm:{}", call.call_id)),
-            started_at: Timestamp::from("2026-05-31T00:00:00Z"),
-            completed_at: Timestamp::from("2026-05-31T00:00:01Z"),
+            ))
+            .expect("string ID literal/generated value must be non-empty"),
+            audit_ref: AuditRef::new(format!("audit-cli-wasm:{}", call.call_id))
+                .expect("string ID literal/generated value must be non-empty"),
+            started_at: current_timestamp(),
+            completed_at: current_timestamp(),
         },
     )?;
     append_ledger_observations(&ledger_path, &report.observations)?;
     state.append_run_observations(&run_id, &report.observations)?;
-    state.complete_run(&run_id, &report.result, mct_daemon::unix_timestamp_string())?;
+    state.complete_run(
+        &run_id,
+        &report.result,
+        mct_daemon::current_timestamp_string(),
+    )?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
@@ -502,13 +524,13 @@ fn run_wasm_call_wit(mut args: Vec<String>) -> Result<()> {
         &call,
         RuntimeKind::WasmComponent,
         Some(&authorized),
-        mct_daemon::unix_timestamp_string(),
+        mct_daemon::current_timestamp_string(),
     )?;
     state.append_run_observations(&run_id, std::slice::from_ref(&authority_observation))?;
 
     let import_component_path = child.wasm_path.clone();
     let imports = run_wit_runtime_on_blocking_thread(move || {
-        let runtime = MctWasmComponentRuntime::new()?;
+        let runtime = MctWasmComponentRuntime::new(default_wasm_host_config())?;
         Ok(runtime.discover_wit_imports(import_component_path)?)
     })?;
     let adapter_build = match build_wit_host_adapters_for_cli_call(CliWitAdapterRequest {
@@ -535,7 +557,7 @@ fn run_wasm_call_wit(mut args: Vec<String>) -> Result<()> {
     let invoke_child = child.clone();
     let invoke_call = call.clone();
     let report = run_wit_runtime_on_blocking_thread(move || {
-        let runtime = MctWasmComponentRuntime::new()?;
+        let runtime = MctWasmComponentRuntime::new(default_wasm_host_config())?;
         Ok(
             runtime.invoke_authorized_child_wit_export_with_host_adapters(
                 &invoke_authorized,
@@ -544,27 +566,31 @@ fn run_wasm_call_wit(mut args: Vec<String>) -> Result<()> {
                 &args_json,
                 adapter_build.adapters,
                 MctWasmComponentInvocationIds {
-                    started_observation_id: ObservationId::from(format!(
+                    started_observation_id: ObservationId::new(format!(
                         "obs-cli-wasm-wit-started:{}",
                         invoke_call.call_id
-                    )),
-                    completed_observation_id: ObservationId::from(format!(
+                    ))
+                    .expect("string ID literal/generated value must be non-empty"),
+                    completed_observation_id: ObservationId::new(format!(
                         "obs-cli-wasm-wit-completed:{}",
                         invoke_call.call_id
-                    )),
-                    audit_ref: AuditRef::from(format!(
-                        "audit-cli-wasm-wit:{}",
-                        invoke_call.call_id
-                    )),
-                    started_at: Timestamp::from("2026-05-31T00:00:00Z"),
-                    completed_at: Timestamp::from("2026-05-31T00:00:01Z"),
+                    ))
+                    .expect("string ID literal/generated value must be non-empty"),
+                    audit_ref: AuditRef::new(format!("audit-cli-wasm-wit:{}", invoke_call.call_id))
+                        .expect("string ID literal/generated value must be non-empty"),
+                    started_at: current_timestamp(),
+                    completed_at: current_timestamp(),
                 },
             )?,
         )
     })?;
     append_ledger_observations(&ledger_path, &report.observations)?;
     state.append_run_observations(&run_id, &report.observations)?;
-    state.complete_run(&run_id, &report.result, mct_daemon::unix_timestamp_string())?;
+    state.complete_run(
+        &run_id,
+        &report.result,
+        mct_daemon::current_timestamp_string(),
+    )?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
@@ -620,6 +646,7 @@ fn build_wit_host_adapters_for_cli_call(
         })?;
         observations.push(toy_grant_evaluation_observation(
             request.call.trace_context.trace_id.clone(),
+            current_timestamp(),
             &authorized.evaluation,
         ));
         toy_registry.register(slate_logging_toy_id(), MctToyBackend::EchoJson);
@@ -643,6 +670,7 @@ fn build_wit_host_adapters_for_cli_call(
         })?;
         observations.push(toy_grant_evaluation_observation(
             request.call.trace_context.trace_id.clone(),
+            current_timestamp(),
             &authorized.evaluation,
         ));
         toy_registry.register(slate_measure_toy_id(), MctToyBackend::EchoJson);
@@ -674,6 +702,7 @@ fn build_wit_host_adapters_for_cli_call(
         })?;
         observations.push(toy_grant_evaluation_observation(
             request.call.trace_context.trace_id.clone(),
+            current_timestamp(),
             &authorized.evaluation,
         ));
         toy_registry.register(
@@ -705,6 +734,7 @@ fn build_wit_host_adapters_for_cli_call(
         })?;
         observations.push(toy_grant_evaluation_observation(
             request.call.trace_context.trace_id.clone(),
+            current_timestamp(),
             &authorized.evaluation,
         ));
         wasi_preopens.push(MctWasiPreopen {
@@ -765,18 +795,19 @@ fn authorize_cli_toy(
             action: request.action.into(),
             resource_id: request.resource_id,
             node_id: request.call.caller.node_id.clone(),
-            now: Timestamp::from("2026-05-31T00:00:00Z"),
+            now: current_timestamp(),
             ids: ToyGrantEvaluationIds {
-                evaluation_id: ToyGrantEvaluationId::from(format!(
-                    "toy-eval-cli-{}",
-                    request.label
-                )),
-                decision_id: DecisionId::from(format!("decision-toy-cli-{}", request.label)),
-                observation_id: ObservationId::from(format!("obs-toy-grant-cli-{}", request.label)),
-                authorized_toy_call_id: AuthorizedToyCallId::from(format!(
+                evaluation_id: ToyGrantEvaluationId::new(format!("toy-eval-cli-{}", request.label))
+                    .expect("string ID literal/generated value must be non-empty"),
+                decision_id: DecisionId::new(format!("decision-toy-cli-{}", request.label))
+                    .expect("string ID literal/generated value must be non-empty"),
+                observation_id: ObservationId::new(format!("obs-toy-grant-cli-{}", request.label))
+                    .expect("string ID literal/generated value must be non-empty"),
+                authorized_toy_call_id: AuthorizedToyCallId::new(format!(
                     "authorized-toy-cli-{}",
                     request.label
-                )),
+                ))
+                .expect("string ID literal/generated value must be non-empty"),
             },
         },
         request.contracts,
@@ -785,6 +816,7 @@ fn authorize_cli_toy(
     let Some(authorized) = result.authorized else {
         let observation = toy_grant_evaluation_observation(
             request.call.trace_context.trace_id.clone(),
+            current_timestamp(),
             &result.evaluation,
         );
         return Err(CliToyAuthorizationError {
@@ -815,7 +847,7 @@ fn wit_toy_adapter(
     MctWitToyHostAdapter {
         authorized_toy_call,
         observation_id_prefix: observation_id_prefix.into(),
-        observed_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        observed_at: current_timestamp(),
     }
 }
 
@@ -883,19 +915,22 @@ fn canonical_dir(path: PathBuf, label: &str) -> Result<PathBuf> {
 }
 
 fn slate_logging_toy_id() -> ToyId {
-    ToyId::from("toy:slate:wasi-logging")
+    ToyId::new("toy:slate:wasi-logging")
+        .expect("string ID literal/generated value must be non-empty")
 }
 
 fn slate_measure_toy_id() -> ToyId {
-    ToyId::from("toy:slate:patina-measure")
+    ToyId::new("toy:slate:patina-measure")
+        .expect("string ID literal/generated value must be non-empty")
 }
 
 fn slate_git_toy_id() -> ToyId {
-    ToyId::from("toy:slate:patina-git")
+    ToyId::new("toy:slate:patina-git").expect("string ID literal/generated value must be non-empty")
 }
 
 fn slate_filesystem_toy_id() -> ToyId {
-    ToyId::from("toy:slate:wasi-filesystem-project")
+    ToyId::new("toy:slate:wasi-filesystem-project")
+        .expect("string ID literal/generated value must be non-empty")
 }
 
 fn run_slate(mut args: Vec<String>) -> Result<()> {
@@ -967,9 +1002,14 @@ async fn run_serve(mut args: Vec<String>) -> Result<()> {
 
 async fn serve_http_control_loop(state_path: &Path, addr: &str) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
+    let snapshot_source = ControlSnapshotSource::open(state_path);
     println!("mct daemon serving control http on {addr}");
     loop {
-        serve_http_control_once(&listener, control_snapshot(state_path)?).await?;
+        serve_http_control_once_with_snapshot_result(
+            &listener,
+            control_snapshot(&snapshot_source).await,
+        )
+        .await?;
     }
 }
 
@@ -1018,8 +1058,13 @@ async fn run_control_serve_uds_with_state(state_path: PathBuf, socket_path: Path
         "mct daemon serving control uds on {}",
         socket_path.display()
     );
+    let snapshot_source = ControlSnapshotSource::open(&state_path);
     loop {
-        mct_daemon::serve_uds_control_once(&listener, control_snapshot(&state_path)?).await?;
+        mct_daemon::serve_uds_control_once_with_snapshot_result(
+            &listener,
+            control_snapshot(&snapshot_source).await,
+        )
+        .await?;
     }
 }
 
@@ -1036,13 +1081,49 @@ async fn run_control_serve_uds_with_state(
     bail!("UDS control plane is only available on Unix platforms")
 }
 
-fn control_snapshot(state_path: &Path) -> Result<MctControlPlaneSnapshot> {
-    let state = MctRuntimeStateStore::open(state_path)?;
-    let summary = state.summary().ok();
-    let runs = state.list_runs(20).unwrap_or_default();
+#[derive(Clone)]
+enum ControlSnapshotSource {
+    Store(Arc<Mutex<MctRuntimeStateStore>>),
+    Unavailable(Arc<anyhow::Error>),
+}
+
+impl ControlSnapshotSource {
+    fn open(state_path: &Path) -> Self {
+        match MctRuntimeStateStore::open(state_path)
+            .with_context(|| format!("open control runtime state at {}", state_path.display()))
+        {
+            Ok(state) => Self::Store(Arc::new(Mutex::new(state))),
+            Err(error) => Self::Unavailable(Arc::new(error)),
+        }
+    }
+}
+
+async fn control_snapshot(source: &ControlSnapshotSource) -> MctControlPlaneSnapshotResult {
+    match source {
+        ControlSnapshotSource::Unavailable(_source) => {
+            Err(MctControlPlaneSnapshotError::runtime_state_unavailable())
+        }
+        ControlSnapshotSource::Store(state) => {
+            let state = Arc::clone(state);
+            tokio::task::spawn_blocking(move || {
+                let state = state
+                    .lock()
+                    .map_err(|_| MctControlPlaneSnapshotError::runtime_state_unavailable())?;
+                control_snapshot_from_state(&state)
+                    .map_err(|_source| MctControlPlaneSnapshotError::runtime_state_unavailable())
+            })
+            .await
+            .map_err(|_source| MctControlPlaneSnapshotError::runtime_state_unavailable())?
+        }
+    }
+}
+
+fn control_snapshot_from_state(state: &MctRuntimeStateStore) -> Result<MctControlPlaneSnapshot> {
+    let summary = state.summary()?;
+    let runs = state.list_runs(20)?;
     Ok(MctControlPlaneSnapshot::new(
         daemon_status(None),
-        summary,
+        Some(summary),
         runs,
     ))
 }
@@ -1142,8 +1223,8 @@ fn run_federation(mut args: Vec<String>) -> Result<()> {
     let view = build_federation_capability_view(
         &config,
         &summary,
-        MctNodeId::from("local-mct"),
-        VisionId::from("vision-local"),
+        MctNodeId::new("local-mct").expect("string ID literal/generated value must be non-empty"),
+        VisionId::new("vision-local").expect("string ID literal/generated value must be non-empty"),
     );
     if as_json {
         println!("{}", serde_json::to_string_pretty(&view)?);
@@ -1207,7 +1288,8 @@ fn run_pando(mut args: Vec<String>) -> Result<()> {
         &state,
         MctCompositionPlan {
             composition_id,
-            vision_id: VisionId::from("vision-local"),
+            vision_id: VisionId::new("vision-local")
+                .expect("string ID literal/generated value must be non-empty"),
             steps,
         },
     )?;
@@ -1229,16 +1311,16 @@ fn parse_composition_step(raw: &str) -> Result<MctCompositionStep> {
     }
     Ok(MctCompositionStep {
         step_id: parts[0].into(),
-        call_id: CallId::from(parts[1]),
+        call_id: CallId::new(parts[1])
+            .expect("string ID literal/generated value must be non-empty"),
         runtime_kind: parse_runtime_kind(parts[2])?,
         child_name: parts
             .get(3)
             .filter(|value| !value.is_empty())
             .map(|value| (*value).to_owned()),
-        authority_decision_id: parts
-            .get(4)
-            .filter(|value| !value.is_empty())
-            .map(|value| DecisionId::from(*value)),
+        authority_decision_id: parts.get(4).filter(|value| !value.is_empty()).map(|value| {
+            DecisionId::new(*value).expect("string ID literal/generated value must be non-empty")
+        }),
     })
 }
 
@@ -1384,7 +1466,8 @@ fn slate_toy_contracts() -> Vec<CanonicalToyContract> {
 
 fn slate_toy_contract(toy_id: ToyId, contract: ToyContractIdentity) -> CanonicalToyContract {
     CanonicalToyContract {
-        admitted_by_observation_id: ObservationId::from(format!("obs:toy-catalog:{toy_id}")),
+        admitted_by_observation_id: ObservationId::new(format!("obs:toy-catalog:{toy_id}"))
+            .expect("string ID literal/generated value must be non-empty"),
         toy_id,
         contract,
         authority_bearing: true,
@@ -1408,21 +1491,29 @@ fn slate_toy_grants_for_child(
     ]
     .into_iter()
     .map(|(toy_id, action, label)| ToyGrant {
-        grant_id: ToyGrantId::from(format!("grant:slate:{label}:{}", child.name)),
+        grant_id: ToyGrantId::new(format!("grant:slate:{label}:{}", child.name))
+            .expect("string ID literal/generated value must be non-empty"),
         toy_id,
         subject: ToyGrantSubject {
             child_name: child.name.clone(),
             artifact_id: child.artifact_id.clone(),
             artifact_version: child.version.clone(),
-            assignment_id: Some(ChildAssignmentId::from(format!(
-                "assignment:{}",
-                child.name
-            ))),
-            caller_node_id: Some(MctNodeId::from("local-mct")),
+            assignment_id: Some(
+                ChildAssignmentId::new(format!("assignment:{}", child.name))
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            caller_node_id: Some(
+                MctNodeId::new("local-mct")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
         },
         scope: ToyGrantScope {
-            vision_id: VisionId::from("vision-local"),
-            node_id: Some(MctNodeId::from("local-mct")),
+            vision_id: VisionId::new("vision-local")
+                .expect("string ID literal/generated value must be non-empty"),
+            node_id: Some(
+                MctNodeId::new("local-mct")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             project_id: None,
             data_classification: Some("public".into()),
             resource_id: Some(project_root.display().to_string()),
@@ -1439,10 +1530,11 @@ fn slate_toy_grants_for_child(
         issuer_id: "local-operator".into(),
         policy_revision: 1,
         grants_revision: 1,
-        authority_observation_id: ObservationId::from(format!(
+        authority_observation_id: ObservationId::new(format!(
             "obs:toy-grant:slate:{label}:{}",
             child.name
-        )),
+        ))
+        .expect("string ID literal/generated value must be non-empty"),
     })
     .collect()
 }
@@ -1537,10 +1629,14 @@ fn run_peers_add(mut args: Vec<String>) -> Result<()> {
             "expected: mct-daemon peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--config path]"
         );
     }
-    let peer_node_id = MctNodeId::from(args.remove(0));
-    let binding_id = PeerBindingId::from(args.remove(0));
-    let endpoint_id = EndpointIdText::from(args.remove(0));
-    let vision_id = VisionId::from(args.remove(0));
+    let peer_node_id = MctNodeId::new(args.remove(0))
+        .expect("string ID literal/generated value must be non-empty");
+    let binding_id = PeerBindingId::new(args.remove(0))
+        .expect("string ID literal/generated value must be non-empty");
+    let endpoint_id = EndpointIdText::new(args.remove(0))
+        .expect("string ID literal/generated value must be non-empty");
+    let vision_id =
+        VisionId::new(args.remove(0)).expect("string ID literal/generated value must be non-empty");
     let ticket = args
         .first()
         .map(PathBuf::from)
@@ -1554,7 +1650,7 @@ fn run_peers_add(mut args: Vec<String>) -> Result<()> {
         ticket,
         binding_state: BindingState::Admitted,
         policy_revision: 1,
-        updated_at: mct_daemon::unix_timestamp_string(),
+        updated_at: mct_daemon::current_timestamp_string(),
     })?;
     println!(
         "peer added={} config={} peers={}",
@@ -1596,7 +1692,8 @@ fn run_peers_revoke(mut args: Vec<String>) -> Result<()> {
     if args.is_empty() {
         bail!("expected: mct-daemon peers revoke <peer-node-id> [--config path]");
     }
-    let peer_node_id = MctNodeId::from(args.remove(0));
+    let peer_node_id = MctNodeId::new(args.remove(0))
+        .expect("string ID literal/generated value must be non-empty");
     let config = MctDaemonConfigStore::new(&config_path).revoke_peer(&peer_node_id)?;
     let peer = config
         .peers
@@ -1619,7 +1716,8 @@ fn run_peers_remove(mut args: Vec<String>) -> Result<()> {
     if args.is_empty() {
         bail!("expected: mct-daemon peers remove <peer-node-id> [--config path]");
     }
-    let peer_node_id = MctNodeId::from(args.remove(0));
+    let peer_node_id = MctNodeId::new(args.remove(0))
+        .expect("string ID literal/generated value must be non-empty");
     let config = MctDaemonConfigStore::new(&config_path).remove_peer(&peer_node_id)?;
     println!(
         "peer removed={} config={} peers={}",
@@ -1632,11 +1730,14 @@ fn run_peers_remove(mut args: Vec<String>) -> Result<()> {
 
 fn local_wasm_call(target: OperationTarget) -> MctCall {
     MctCall {
-        call_id: CallId::from("call-cli-wasm"),
+        call_id: CallId::new("call-cli-wasm")
+            .expect("string ID literal/generated value must be non-empty"),
         caller: CallerIdentity {
-            node_id: MctNodeId::from("local-mct"),
+            node_id: MctNodeId::new("local-mct")
+                .expect("string ID literal/generated value must be non-empty"),
             user_id: None,
-            vision_id: VisionId::from("vision-local"),
+            vision_id: VisionId::new("vision-local")
+                .expect("string ID literal/generated value must be non-empty"),
             project_id: None,
         },
         target,
@@ -1650,10 +1751,12 @@ fn local_wasm_call(target: OperationTarget) -> MctCall {
             grants_revision: 1,
             vision_policy_revision: 1,
         },
-        deadline: Timestamp::from("2026-05-31T00:01:00Z"),
+        deadline: current_timestamp_after(DEFAULT_CLI_CALL_DEADLINE),
         trace_context: TraceContext {
-            trace_id: TraceId::from("trace-cli-wasm"),
-            span_id: SpanId::from("span-cli-wasm"),
+            trace_id: TraceId::new("trace-cli-wasm")
+                .expect("string ID literal/generated value must be non-empty"),
+            span_id: SpanId::new("span-cli-wasm")
+                .expect("string ID literal/generated value must be non-empty"),
         },
         origin: CallOrigin::WasmHost,
     }
@@ -1661,11 +1764,14 @@ fn local_wasm_call(target: OperationTarget) -> MctCall {
 
 fn local_process_call(target: OperationTarget, payload_size_bytes: u64) -> MctCall {
     MctCall {
-        call_id: CallId::from("call-cli-process"),
+        call_id: CallId::new("call-cli-process")
+            .expect("string ID literal/generated value must be non-empty"),
         caller: CallerIdentity {
-            node_id: MctNodeId::from("local-mct"),
+            node_id: MctNodeId::new("local-mct")
+                .expect("string ID literal/generated value must be non-empty"),
             user_id: None,
-            vision_id: VisionId::from("vision-local"),
+            vision_id: VisionId::new("vision-local")
+                .expect("string ID literal/generated value must be non-empty"),
             project_id: None,
         },
         target,
@@ -1679,10 +1785,12 @@ fn local_process_call(target: OperationTarget, payload_size_bytes: u64) -> MctCa
             grants_revision: 1,
             vision_policy_revision: 1,
         },
-        deadline: Timestamp::from("2026-05-31T00:01:00Z"),
+        deadline: current_timestamp_after(DEFAULT_CLI_CALL_DEADLINE),
         trace_context: TraceContext {
-            trace_id: TraceId::from("trace-cli-process"),
-            span_id: SpanId::from("span-cli-process"),
+            trace_id: TraceId::new("trace-cli-process")
+                .expect("string ID literal/generated value must be non-empty"),
+            span_id: SpanId::new("span-cli-process")
+                .expect("string ID literal/generated value must be non-empty"),
         },
         origin: CallOrigin::ProcessHarness,
     }
@@ -1718,6 +1826,21 @@ async fn run_iroh(mut args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+const DEFAULT_CLI_CALL_DEADLINE: jiff::SignedDuration = jiff::SignedDuration::from_secs(60);
+
+fn current_timestamp_after(budget: jiff::SignedDuration) -> Timestamp {
+    let deadline = jiff::Timestamp::now()
+        .checked_add(budget)
+        .expect("CLI deadline budget is within jiff timestamp range");
+    Timestamp::new(deadline.to_string()).expect("jiff produced RFC3339 timestamp")
+}
+
+fn default_wasm_host_config() -> MctWasmHostConfig {
+    MctWasmHostConfig {
+        memory_limit_bytes: DEFAULT_WASM_MEMORY_LIMIT_BYTES,
+    }
+}
+
 async fn serve_iroh(mut args: Vec<String>) -> Result<()> {
     let relay_default = take_flag(&mut args, "--relay-default");
     if args.len() < 5 {
@@ -1726,10 +1849,14 @@ async fn serve_iroh(mut args: Vec<String>) -> Result<()> {
         );
     }
     let identity_path = PathBuf::from(&args[0]);
-    let binding_id = PeerBindingId::from(args[1].as_str());
-    let peer_endpoint_id = EndpointIdText::from(args[2].as_str());
-    let peer_node_id = MctNodeId::from(args[3].as_str());
-    let vision_id = VisionId::from(args[4].as_str());
+    let binding_id = PeerBindingId::new(args[1].as_str())
+        .expect("string ID literal/generated value must be non-empty");
+    let peer_endpoint_id = EndpointIdText::new(args[2].as_str())
+        .expect("string ID literal/generated value must be non-empty");
+    let peer_node_id = MctNodeId::new(args[3].as_str())
+        .expect("string ID literal/generated value must be non-empty");
+    let vision_id = VisionId::new(args[4].as_str())
+        .expect("string ID literal/generated value must be non-empty");
     let children_dir = args
         .get(5)
         .map(PathBuf::from)
@@ -1763,7 +1890,11 @@ async fn serve_iroh(mut args: Vec<String>) -> Result<()> {
             .serve_next(
                 &mut state,
                 std::slice::from_ref(&binding),
-                Some(ResultRef::from("result-mct-peer-call")),
+                current_timestamp(),
+                Some(
+                    ResultRef::new("result-mct-peer-call")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
             )
             .await
         {
@@ -1816,10 +1947,14 @@ async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
         );
     }
     let identity_path = PathBuf::from(&args[0]);
-    let binding_id = PeerBindingId::from(args[1].as_str());
-    let peer_endpoint_id = EndpointIdText::from(args[2].as_str());
-    let peer_node_id = MctNodeId::from(args[3].as_str());
-    let vision_id = VisionId::from(args[4].as_str());
+    let binding_id = PeerBindingId::new(args[1].as_str())
+        .expect("string ID literal/generated value must be non-empty");
+    let peer_endpoint_id = EndpointIdText::new(args[2].as_str())
+        .expect("string ID literal/generated value must be non-empty");
+    let peer_node_id = MctNodeId::new(args[3].as_str())
+        .expect("string ID literal/generated value must be non-empty");
+    let vision_id = VisionId::new(args[4].as_str())
+        .expect("string ID literal/generated value must be non-empty");
     let executable = PathBuf::from(&args[5]);
 
     let secret_key_hex = load_or_create_node_secret_key_hex(&identity_path)?;
@@ -1841,7 +1976,8 @@ async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
         executable,
         args: Vec::new(),
         timeout: Duration::from_secs(5),
-        local_node_id: MctNodeId::from("local-mct"),
+        local_node_id: MctNodeId::new("local-mct")
+            .expect("string ID literal/generated value must be non-empty"),
     };
     let projection = load_configured_child_projection(&config_path, &children_dir)?;
     let mut state = MctIrohServeState::new();
@@ -1856,6 +1992,7 @@ async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
             .serve_next_with_call_handler(
                 &mut state,
                 std::slice::from_ref(&binding),
+                current_timestamp(),
                 move |request, _evaluation| {
                     let (authorized, authority_observation) =
                         match authorize_configured_child_from_projection(
@@ -1888,7 +2025,7 @@ async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
                         &request.call,
                         RuntimeKind::Process,
                         Some(&authorized),
-                        mct_daemon::unix_timestamp_string(),
+                        mct_daemon::current_timestamp_string(),
                     ) {
                         return MctIrohCallHandlerResult::failed(format!(
                             "runtime run could not start: {error}"
@@ -1903,24 +2040,28 @@ async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
                         &request.call,
                         "{}",
                         MctProcessChildInvocationIds {
-                            started_observation_id: ObservationId::from(format!(
+                            started_observation_id: ObservationId::new(format!(
                                 "obs-iroh-process-started:{}",
                                 request.call.call_id
-                            )),
-                            completed_observation_id: ObservationId::from(format!(
+                            ))
+                            .expect("string ID literal/generated value must be non-empty"),
+                            completed_observation_id: ObservationId::new(format!(
                                 "obs-iroh-process-completed:{}",
                                 request.call.call_id
-                            )),
-                            result_ref: ResultRef::from(format!(
+                            ))
+                            .expect("string ID literal/generated value must be non-empty"),
+                            result_ref: ResultRef::new(format!(
                                 "result-iroh-process:{}",
                                 request.call.call_id
-                            )),
-                            audit_ref: AuditRef::from(format!(
+                            ))
+                            .expect("string ID literal/generated value must be non-empty"),
+                            audit_ref: AuditRef::new(format!(
                                 "audit-iroh-process:{}",
                                 request.call.call_id
-                            )),
-                            started_at: Timestamp::from("2026-05-31T00:00:00Z"),
-                            completed_at: Timestamp::from("2026-05-31T00:00:01Z"),
+                            ))
+                            .expect("string ID literal/generated value must be non-empty"),
+                            started_at: current_timestamp(),
+                            completed_at: current_timestamp(),
                         },
                     ) {
                         Ok(report) => report,
@@ -1935,15 +2076,13 @@ async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
                     let _ = runtime_state.complete_run(
                         &run_id,
                         &report.result,
-                        mct_daemon::unix_timestamp_string(),
+                        mct_daemon::current_timestamp_string(),
                     );
                     match report.result.outcome {
-                        ResultOutcome::Success => {
-                            MctIrohCallHandlerResult::completed(ResultRef::from(format!(
-                                "result-iroh-process:{}",
-                                request.call.call_id
-                            )))
-                        }
+                        ResultOutcome::Success => MctIrohCallHandlerResult::completed(
+                            ResultRef::new(format!("result-iroh-process:{}", request.call.call_id))
+                                .expect("string ID literal/generated value must be non-empty"),
+                        ),
                         ResultOutcome::TimedOut => MctIrohCallHandlerResult::timed_out(),
                         ResultOutcome::Failed
                         | ResultOutcome::Denied
@@ -1991,9 +2130,12 @@ async fn call_iroh(mut args: Vec<String>) -> Result<()> {
     }
     let identity_path = PathBuf::from(&args[0]);
     let peer_ticket_path = PathBuf::from(&args[1]);
-    let binding_id = PeerBindingId::from(args[2].as_str());
-    let local_node_id = MctNodeId::from(args[3].as_str());
-    let vision_id = VisionId::from(args[4].as_str());
+    let binding_id = PeerBindingId::new(args[2].as_str())
+        .expect("string ID literal/generated value must be non-empty");
+    let local_node_id = MctNodeId::new(args[3].as_str())
+        .expect("string ID literal/generated value must be non-empty");
+    let vision_id = VisionId::new(args[4].as_str())
+        .expect("string ID literal/generated value must be non-empty");
     let target = OperationTarget {
         namespace: args.get(5).cloned().unwrap_or_else(|| "patina".into()),
         interface_name: args.get(6).cloned().unwrap_or_else(|| "echo".into()),
@@ -2004,7 +2146,8 @@ async fn call_iroh(mut args: Vec<String>) -> Result<()> {
     let mut endpoint = MotherIrohEndpoint::bind(iroh_config(secret_key_hex, relay_default)).await?;
     let local_endpoint_id = endpoint.snapshot().endpoint_id;
     let peer_ticket = read_ticket(&peer_ticket_path)?;
-    let trace_id = TraceId::from("trace-cli-iroh-call");
+    let trace_id = TraceId::new("trace-cli-iroh-call")
+        .expect("string ID literal/generated value must be non-empty");
     let hello_request = cli_hello_request(
         &local_endpoint_id,
         &binding_id,
@@ -2041,7 +2184,8 @@ async fn call_iroh_peer(mut args: Vec<String>) -> Result<()> {
         );
     }
     let identity_path = PathBuf::from(args.remove(0));
-    let peer_node_id = MctNodeId::from(args.remove(0));
+    let peer_node_id = MctNodeId::new(args.remove(0))
+        .expect("string ID literal/generated value must be non-empty");
     let target = OperationTarget {
         namespace: args.first().cloned().unwrap_or_else(|| "patina".into()),
         interface_name: args.get(1).cloned().unwrap_or_else(|| "echo".into()),
@@ -2062,11 +2206,12 @@ async fn call_iroh_peer(mut args: Vec<String>) -> Result<()> {
     let secret_key_hex = load_or_create_node_secret_key_hex(&identity_path)?;
     let mut endpoint = MotherIrohEndpoint::bind(iroh_config(secret_key_hex, relay_default)).await?;
     let local_endpoint_id = endpoint.snapshot().endpoint_id;
-    let trace_id = TraceId::from("trace-cli-iroh-call-peer");
+    let trace_id = TraceId::new("trace-cli-iroh-call-peer")
+        .expect("string ID literal/generated value must be non-empty");
     let hello_request = cli_hello_request(
         &local_endpoint_id,
         &peer.binding_id,
-        &MctNodeId::from("local-mct"),
+        &MctNodeId::new("local-mct").expect("string ID literal/generated value must be non-empty"),
         &peer.vision_id,
         &trace_id,
     );
@@ -2076,7 +2221,7 @@ async fn call_iroh_peer(mut args: Vec<String>) -> Result<()> {
     let call_request = cli_call_request(
         &local_endpoint_id,
         &peer.binding_id,
-        &MctNodeId::from("local-mct"),
+        &MctNodeId::new("local-mct").expect("string ID literal/generated value must be non-empty"),
         &peer.vision_id,
         &trace_id,
         target,
@@ -2121,7 +2266,8 @@ fn cli_hello_request(
         capability_view: None,
         local_policy_revision_seen: Some(1),
         trace_id: trace_id.clone(),
-        received_observation_id: ObservationId::from("obs-cli-hello-received"),
+        received_observation_id: ObservationId::new("obs-cli-hello-received")
+            .expect("string ID literal/generated value must be non-empty"),
     }
 }
 
@@ -2135,7 +2281,8 @@ fn cli_call_request(
     hello: &MctHelloResponse,
 ) -> MctCallProtocolRequest {
     let call = MctCall {
-        call_id: CallId::from("call-cli-iroh"),
+        call_id: CallId::new("call-cli-iroh")
+            .expect("string ID literal/generated value must be non-empty"),
         caller: CallerIdentity {
             node_id: node_id.clone(),
             user_id: None,
@@ -2153,16 +2300,18 @@ fn cli_call_request(
             grants_revision: 1,
             vision_policy_revision: 1,
         },
-        deadline: Timestamp::from("2026-05-31T00:01:00Z"),
+        deadline: current_timestamp_after(DEFAULT_CLI_CALL_DEADLINE),
         trace_context: TraceContext {
             trace_id: trace_id.clone(),
-            span_id: SpanId::from("span-cli-call"),
+            span_id: SpanId::new("span-cli-call")
+                .expect("string ID literal/generated value must be non-empty"),
         },
         origin: CallOrigin::Iroh,
     };
 
     MctCallProtocolRequest {
-        protocol_request_id: ProtocolRequestId::from("proto-cli-call"),
+        protocol_request_id: ProtocolRequestId::new("proto-cli-call")
+            .expect("string ID literal/generated value must be non-empty"),
         authority: MctCallProtocolAuthority {
             hello_decision_id: hello.decision_id.clone(),
             peer_binding_id: binding_id.clone(),
@@ -2181,17 +2330,10 @@ fn cli_call_request(
             presented_capability_ref: None,
         },
         call,
-        payload: MctCallPayloadHandle {
-            payload_kind: PayloadKind::Empty,
-            content_type: None,
-            approximate_size_bytes: 0,
-            digest: None,
-            blob_ref: None,
-            external_ref: None,
-            inline_payload_ref: None,
-        },
+        payload: MctCallPayloadHandle::Empty,
         idempotency_key: Some("idem-cli-call".into()),
-        received_observation_id: ObservationId::from("obs-cli-call-received"),
+        received_observation_id: ObservationId::new("obs-cli-call-received")
+            .expect("string ID literal/generated value must be non-empty"),
     }
 }
 
@@ -2223,8 +2365,11 @@ fn authorize_configured_child_from_projection(
     call: &MctCall,
 ) -> Result<(AuthorizedChildInvocation, MctObservation)> {
     let result = projection.authorize_child_for_call(child_name, call);
-    let observation =
-        child_call_authority_observation(call.trace_context.trace_id.clone(), &result.evaluation);
+    let observation = child_call_authority_observation(
+        call.trace_context.trace_id.clone(),
+        current_timestamp(),
+        &result.evaluation,
+    );
     let authorized = result.authorized.ok_or_else(|| {
         anyhow::anyhow!(
             "child '{child_name}' not authorized for {}.{}.{}: {:?}",
@@ -2278,7 +2423,7 @@ fn append_ledger_observations(ledger_path: &Path, observations: &[MctObservation
     let mut ledger = JsonlObservationLedger::open(ledger_path, "ledger-local", "local-mct")?;
     ledger.append_batch_before_effect(
         observations.iter().cloned(),
-        mct_daemon::unix_timestamp_string(),
+        mct_daemon::current_timestamp_string(),
     )?;
     Ok(())
 }
@@ -2288,7 +2433,7 @@ fn run_id_for_call(prefix: &str, call: &MctCall) -> String {
         "run:{}:{}:{}",
         prefix,
         call.call_id,
-        mct_daemon::unix_timestamp_string()
+        mct_daemon::current_timestamp_string()
     )
 }
 
@@ -2313,12 +2458,14 @@ fn cli_peer_binding(
     local_endpoint_id: EndpointIdText,
 ) -> MctPeerBinding {
     let local_identity = MctLocalNodeIdentity {
-        node_id: MctNodeId::from("local-mct"),
-        vision_id: VisionId::from("vision-local"),
+        node_id: MctNodeId::new("local-mct")
+            .expect("string ID literal/generated value must be non-empty"),
+        vision_id: VisionId::new("vision-local")
+            .expect("string ID literal/generated value must be non-empty"),
         endpoint_id: local_endpoint_id,
         identity_path,
         policy_revision: 1,
-        updated_at: mct_daemon::unix_timestamp_string(),
+        updated_at: mct_daemon::current_timestamp_string(),
     };
     MctPeerAddressBookEntry {
         peer_node_id,
@@ -2331,6 +2478,7 @@ fn cli_peer_binding(
         updated_at: local_identity.updated_at.clone(),
     }
     .to_peer_binding(&local_identity)
+    .expect("CLI peer binding timestamp is generated as RFC3339")
 }
 
 fn read_ticket(path: &Path) -> Result<MotherIrohEndpointTicket> {
@@ -2373,4 +2521,217 @@ fn print_help() {
         "mct-daemon {version}\n\nCommands:\n  status\n  serve [--http addr | --uds socket-path] [--state path]\n  control serve-http [addr] [--state path]\n  control serve-uds [socket-path] [--state path]\n  registry install <verified-package-dir> [--children-dir path] [--replace] [--json]\n  registry sync <source-id> [children-dir] [--state path] [--strict-integrity] [--json]\n  federation view [--config path] [--state path] [--json]\n  metrics snapshot [--state path] [--json]\n  pando record <composition-id> [step-id,call-id,runtime,child,decision ...] [--state path] [--json]\n  children load [children-dir] [--strict-integrity] [--json]\n  process call <executable> [payload-json] [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  children approve <child-name> [children-dir] [--config path] [--strict-integrity]\n  children revoke <child-name> [--config path]\n  children approvals [--config path] [--json]\n  children warmup <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  children reload <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--config path]\n  peers list [--config path] [--json]\n  peers revoke <peer-node-id> [--config path]\n  peers remove <peer-node-id> [--config path]\n  state summary [--state path] [--json]\n  runs list [--state path] [--json] [--limit n]\n  slate list-work --project-root path [--status status] [--kind kind] [--children-dir path] [--config path] [--state path] [--ledger path]\n  toys authorize-slate <child-name> <project-root> [--children-dir path] [--config path] [--state path] [--json]\n  wasm call <component-file> <export-name> [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  wasm call-wit <child-name> <operation-id> <args-json> [--project-root path] [--guest-project /project] [--git-repo path] [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh identity [identity-file] [--config path]\n  iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir]\n  iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable> --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function]\n  iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path]",
         version = mct_daemon::version()
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_call() -> MctCall {
+        MctCall {
+            call_id: CallId::new("call-cli-toy-expiry")
+                .expect("string ID literal/generated value must be non-empty"),
+            caller: CallerIdentity {
+                node_id: MctNodeId::new("local-mct")
+                    .expect("string ID literal/generated value must be non-empty"),
+                user_id: None,
+                vision_id: VisionId::new("vision-local")
+                    .expect("string ID literal/generated value must be non-empty"),
+                project_id: None,
+            },
+            target: OperationTarget {
+                namespace: "patina:demo".into(),
+                interface_name: "control@0.1.0".into(),
+                function_name: "run".into(),
+            },
+            payload_metadata: PayloadMetadata {
+                data_classification: "public".into(),
+                approximate_size_bytes: 0,
+                contains_secret_scoped_material: false,
+            },
+            authority_context: AuthorityContextSnapshot {
+                policy_revision: 1,
+                grants_revision: 1,
+                vision_policy_revision: 1,
+            },
+            deadline: Timestamp::new("2026-07-02T00:01:00Z").unwrap(),
+            trace_context: TraceContext {
+                trace_id: TraceId::new("trace-cli-toy-expiry")
+                    .expect("string ID literal/generated value must be non-empty"),
+                span_id: SpanId::new("span-cli-toy-expiry")
+                    .expect("string ID literal/generated value must be non-empty"),
+            },
+            origin: CallOrigin::Cli,
+        }
+    }
+
+    fn test_child() -> mct_daemon::MctLoadedChild {
+        mct_daemon::MctLoadedChild {
+            child_id: ChildId::new("child-demo")
+                .expect("string ID literal/generated value must be non-empty"),
+            name: "child-demo".into(),
+            version: "0.1.0".into(),
+            description: None,
+            kind: "wasm".into(),
+            role: None,
+            wasm_path: PathBuf::from("child-demo.wasm"),
+            manifest_path: PathBuf::from("child.toml"),
+            wasm_digest: mct_daemon::MctChildFileDigest {
+                sha256: "wasm".into(),
+                sidecar_present: true,
+                verified: true,
+            },
+            manifest_digest: mct_daemon::MctChildFileDigest {
+                sha256: "manifest".into(),
+                sidecar_present: true,
+                verified: true,
+            },
+            artifact_id: "artifact-demo".into(),
+            ingress_mode: mct_daemon::MctChildIngressMode::WitOnly,
+            allowed_operations: vec!["patina:demo/control@0.1.0.run".into()],
+            requested_toys: Vec::new(),
+            subscribed_streams: Vec::new(),
+            relationship_listens: Vec::new(),
+            wasm_size_bytes: 1,
+            instance_state: mct_daemon::MctChildInstanceState::Ready,
+        }
+    }
+
+    fn test_authorized_child() -> AuthorizedChildInvocation {
+        AuthorizedChildInvocation {
+            authorized_child_invocation_id: AuthorizedChildInvocationId::new("auth-child")
+                .expect("string ID literal/generated value must be non-empty"),
+            call_id: CallId::new("call-cli-toy-expiry")
+                .expect("string ID literal/generated value must be non-empty"),
+            evaluation_id: ChildCallEvaluationId::new("eval-child")
+                .expect("string ID literal/generated value must be non-empty"),
+            assignment_id: ChildAssignmentId::new("assignment-child")
+                .expect("string ID literal/generated value must be non-empty"),
+            approval_id: ChildApprovalId::new("approval-child")
+                .expect("string ID literal/generated value must be non-empty"),
+            artifact_id: ComponentArtifactId::new("artifact-demo")
+                .expect("string ID literal/generated value must be non-empty"),
+            child_instance_id: ChildInstanceId::new("instance-child")
+                .expect("string ID literal/generated value must be non-empty"),
+            child_name: "child-demo".into(),
+            authority_decision_id: DecisionId::new("decision-child")
+                .expect("string ID literal/generated value must be non-empty"),
+        }
+    }
+
+    fn test_contract(toy_id: &ToyId) -> CanonicalToyContract {
+        CanonicalToyContract {
+            toy_id: toy_id.clone(),
+            contract: ToyContractIdentity {
+                namespace: "patina".into(),
+                interface_name: "demo-toy".into(),
+                version: "0.1.0".into(),
+                function_name: Some("read".into()),
+                resource_name: None,
+            },
+            authority_bearing: true,
+            catalog_revision: 1,
+            admitted_by_observation_id: ObservationId::new("obs-contract")
+                .expect("string ID literal/generated value must be non-empty"),
+        }
+    }
+
+    fn expired_grant(toy_id: &ToyId) -> ToyGrant {
+        ToyGrant {
+            grant_id: ToyGrantId::new("grant-expired")
+                .expect("string ID literal/generated value must be non-empty"),
+            toy_id: toy_id.clone(),
+            subject: ToyGrantSubject {
+                child_name: "child-demo".into(),
+                artifact_id: "artifact-demo".into(),
+                artifact_version: "0.1.0".into(),
+                assignment_id: Some(
+                    ChildAssignmentId::new("assignment-child")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
+                caller_node_id: Some(
+                    MctNodeId::new("local-mct")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
+            },
+            scope: ToyGrantScope {
+                vision_id: VisionId::new("vision-local")
+                    .expect("string ID literal/generated value must be non-empty"),
+                node_id: Some(
+                    MctNodeId::new("local-mct")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
+                project_id: None,
+                data_classification: Some("public".into()),
+                resource_id: Some("resource-a".into()),
+                allowed_actions: vec!["read".into()],
+            },
+            constraints: ToyGrantConstraints {
+                starts_at: None,
+                expires_at: Some(Timestamp::new("2026-06-01T00:00:00Z").unwrap()),
+                max_uses: None,
+                max_duration_ms: None,
+                locality_required: false,
+            },
+            grant_state: ToyGrantState::Active,
+            issuer_id: "issuer".into(),
+            policy_revision: 1,
+            grants_revision: 1,
+            authority_observation_id: ObservationId::new("obs-grant")
+                .expect("string ID literal/generated value must be non-empty"),
+        }
+    }
+
+    #[tokio::test]
+    async fn control_snapshot_unopenable_state_projects_error_response() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = ControlSnapshotSource::open(dir.path());
+
+        let snapshot = control_snapshot(&source).await;
+        let response = mct_daemon::handle_control_plane_path_result_with_auth(
+            "GET",
+            "/snapshot",
+            snapshot.as_ref(),
+            &mct_daemon::MctControlPlaneAuthPolicy::open_local(),
+            None,
+        );
+
+        assert!(matches!(
+            snapshot,
+            Err(MctControlPlaneSnapshotError::RuntimeStateUnavailable { .. })
+        ));
+        assert_eq!(response.status_code, 503);
+        assert!(response.body.contains("runtime state unavailable"));
+        assert!(response.body.contains("not_ready"));
+        assert!(!response.body.contains("\"ready\""));
+    }
+
+    #[test]
+    fn authorize_cli_toy_denies_expired_grant_against_current_time() {
+        let child = test_child();
+        let authorized_child = test_authorized_child();
+        let call = test_call();
+        let toy_id =
+            ToyId::new("toy-demo").expect("string ID literal/generated value must be non-empty");
+        let contracts = vec![test_contract(&toy_id)];
+        let grants = vec![expired_grant(&toy_id)];
+
+        let result = authorize_cli_toy(CliToyAuthorizationRequest {
+            child: &child,
+            authorized_child: &authorized_child,
+            call: &call,
+            contracts: &contracts,
+            grants: &grants,
+            toy_id,
+            action: "read",
+            resource_id: Some("resource-a".into()),
+            label: "expired",
+        });
+
+        let Err(error) = result else {
+            panic!("expired grant must deny");
+        };
+        assert!(error.safe_message.contains("ExpiredGrant"));
+        assert_eq!(error.observations[0].outcome, ObservationOutcome::Denied);
+    }
 }

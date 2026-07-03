@@ -15,6 +15,7 @@ use std::{
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ObservationLedgerError {
     #[error("observation ledger io error at {path}: {source}")]
     Io {
@@ -93,8 +94,7 @@ pub enum ExportStatus {
 #[derive(Debug)]
 pub struct JsonlObservationLedger {
     path: PathBuf,
-    lock_path: PathBuf,
-    _lock_file: File,
+    file: File,
     ledger_id: String,
     mother_node_id: String,
     next_sequence: u64,
@@ -118,29 +118,29 @@ impl JsonlObservationLedger {
             })?;
         }
 
-        if !path.exists() {
-            File::create(&path).map_err(|source| ObservationLedgerError::Io {
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(&path)
+            .map_err(|source| ObservationLedgerError::Io {
                 path: path.clone(),
                 source,
             })?;
-        }
 
-        let lock_path = lock_path_for(&path);
-        let lock_file = acquire_writer_lock(&lock_path)?;
+        let file = acquire_writer_lock(&path, file)?;
         let scan_result = scan_existing(&path, &ledger_id, &mother_node_id);
         let (next_sequence, previous_hash) = match scan_result {
             Ok(state) => state,
             Err(error) => {
-                drop(lock_file);
-                let _ = std::fs::remove_file(&lock_path);
+                drop(file);
                 return Err(error);
             }
         };
 
         Ok(Self {
             path,
-            lock_path,
-            _lock_file: lock_file,
+            file,
             ledger_id,
             mother_node_id,
             next_sequence,
@@ -180,8 +180,6 @@ impl JsonlObservationLedger {
         durability_class: DurabilityClass,
         export_status: ExportStatus,
     ) -> Result<MctObservationLedgerEntry> {
-        self.ensure_current_tip()?;
-
         let mut entry = MctObservationLedgerEntry {
             ledger_id: self.ledger_id.clone(),
             mother_node_id: self.mother_node_id.clone(),
@@ -200,18 +198,12 @@ impl JsonlObservationLedger {
                 path: self.path.clone(),
                 source,
             })?;
-        let mut file = OpenOptions::new()
-            .append(true)
-            .open(&self.path)
-            .map_err(|source| ObservationLedgerError::Io {
-                path: self.path.clone(),
-                source,
-            })?;
-        writeln!(file, "{line}").map_err(|source| ObservationLedgerError::Io {
+        writeln!(self.file, "{line}").map_err(|source| ObservationLedgerError::Io {
             path: self.path.clone(),
             source,
         })?;
-        file.sync_data()
+        self.file
+            .sync_data()
             .map_err(|source| ObservationLedgerError::Io {
                 path: self.path.clone(),
                 source,
@@ -222,46 +214,38 @@ impl JsonlObservationLedger {
         Ok(entry)
     }
 
+    pub fn iter_entries(&self) -> impl Iterator<Item = Result<MctObservationLedgerEntry>> {
+        LedgerEntryIter::open(
+            self.path.clone(),
+            self.ledger_id.clone(),
+            self.mother_node_id.clone(),
+        )
+    }
+
     pub fn entries(&self) -> Result<Vec<MctObservationLedgerEntry>> {
-        let entries = read_entries(&self.path)?;
-        validate_entries(&entries, &self.ledger_id, &self.mother_node_id)?;
-        Ok(entries)
+        self.iter_entries().collect()
     }
 
     pub fn by_trace(&self, trace_id: &TraceId) -> Result<Vec<MctObservationLedgerEntry>> {
-        Ok(self
-            .entries()?
-            .into_iter()
-            .filter(|entry| &entry.observation.trace.trace_id == trace_id)
-            .collect())
+        let mut entries = Vec::new();
+        for entry in self.iter_entries() {
+            let entry = entry?;
+            if &entry.observation.trace.trace_id == trace_id {
+                entries.push(entry);
+            }
+        }
+        Ok(entries)
     }
 
     pub fn by_call(&self, call_id: &CallId) -> Result<Vec<MctObservationLedgerEntry>> {
-        Ok(self
-            .entries()?
-            .into_iter()
-            .filter(|entry| entry.observation.call_id.as_ref() == Some(call_id))
-            .collect())
-    }
-
-    fn ensure_current_tip(&self) -> Result<()> {
-        let (actual_sequence, actual_hash) =
-            scan_existing(&self.path, &self.ledger_id, &self.mother_node_id)?;
-        if actual_sequence != self.next_sequence || actual_hash != self.previous_hash {
-            return Err(ObservationLedgerError::LedgerChanged {
-                path: self.path.clone(),
-                expected_sequence: self.next_sequence,
-                actual_sequence,
-            });
+        let mut entries = Vec::new();
+        for entry in self.iter_entries() {
+            let entry = entry?;
+            if entry.observation.call_id.as_ref() == Some(call_id) {
+                entries.push(entry);
+            }
         }
-
-        Ok(())
-    }
-}
-
-impl Drop for JsonlObservationLedger {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.lock_path);
+        Ok(entries)
     }
 }
 
@@ -270,97 +254,151 @@ fn scan_existing(
     ledger_id: &str,
     mother_node_id: &str,
 ) -> Result<(u64, Option<String>)> {
-    let entries = read_entries(path)?;
-    validate_entries(&entries, ledger_id, mother_node_id)
+    let mut next_sequence = 0;
+    let mut previous_hash = None;
+    for entry in LedgerEntryIter::open(
+        path.to_path_buf(),
+        ledger_id.to_owned(),
+        mother_node_id.to_owned(),
+    ) {
+        let entry = entry?;
+        next_sequence = entry.local_sequence + 1;
+        previous_hash = Some(entry.entry_hash);
+    }
+    Ok((next_sequence, previous_hash))
 }
 
-fn validate_entries(
-    entries: &[MctObservationLedgerEntry],
-    ledger_id: &str,
-    mother_node_id: &str,
-) -> Result<(u64, Option<String>)> {
-    let mut previous_hash = None;
-    let mut expected_sequence = 0;
-    for entry in entries {
-        if entry.local_sequence != expected_sequence {
+struct LedgerEntryIter {
+    path: PathBuf,
+    ledger_id: String,
+    mother_node_id: String,
+    lines: Option<std::io::Lines<BufReader<File>>>,
+    pending_error: Option<ObservationLedgerError>,
+    expected_sequence: u64,
+    previous_hash: Option<String>,
+}
+
+impl LedgerEntryIter {
+    fn open(path: PathBuf, ledger_id: String, mother_node_id: String) -> Self {
+        match File::open(&path) {
+            Ok(file) => Self {
+                path,
+                ledger_id,
+                mother_node_id,
+                lines: Some(BufReader::new(file).lines()),
+                pending_error: None,
+                expected_sequence: 0,
+                previous_hash: None,
+            },
+            Err(source) => Self {
+                path: path.clone(),
+                ledger_id,
+                mother_node_id,
+                lines: None,
+                pending_error: Some(ObservationLedgerError::Io { path, source }),
+                expected_sequence: 0,
+                previous_hash: None,
+            },
+        }
+    }
+
+    fn fail(&mut self, error: ObservationLedgerError) -> Option<Result<MctObservationLedgerEntry>> {
+        self.lines = None;
+        Some(Err(error))
+    }
+
+    fn validate_entry(
+        &mut self,
+        entry: MctObservationLedgerEntry,
+    ) -> Result<MctObservationLedgerEntry> {
+        if entry.local_sequence != self.expected_sequence {
             return Err(ObservationLedgerError::SequenceMismatch {
-                expected: expected_sequence,
+                expected: self.expected_sequence,
                 actual: entry.local_sequence,
             });
         }
 
-        if entry.ledger_id != ledger_id || entry.mother_node_id != mother_node_id {
+        if entry.ledger_id != self.ledger_id || entry.mother_node_id != self.mother_node_id {
             return Err(ObservationLedgerError::LedgerIdentityMismatch {
                 sequence: entry.local_sequence,
-                expected_ledger_id: ledger_id.to_owned(),
-                expected_mother_node_id: mother_node_id.to_owned(),
+                expected_ledger_id: self.ledger_id.clone(),
+                expected_mother_node_id: self.mother_node_id.clone(),
                 actual_ledger_id: entry.ledger_id.clone(),
                 actual_mother_node_id: entry.mother_node_id.clone(),
             });
         }
 
-        if entry.previous_entry_hash != previous_hash {
+        if entry.previous_entry_hash != self.previous_hash {
             return Err(ObservationLedgerError::BrokenHashChain {
                 sequence: entry.local_sequence,
             });
         }
-        let expected = entry_hash(entry)?;
+        let expected = entry_hash(&entry)?;
         if entry.entry_hash != expected {
             return Err(ObservationLedgerError::BrokenHashChain {
                 sequence: entry.local_sequence,
             });
         }
-        previous_hash = Some(entry.entry_hash.clone());
-        expected_sequence += 1;
+        self.previous_hash = Some(entry.entry_hash.clone());
+        self.expected_sequence += 1;
+        Ok(entry)
     }
-    Ok((expected_sequence, previous_hash))
 }
 
-fn read_entries(path: &Path) -> Result<Vec<MctObservationLedgerEntry>> {
-    let file = File::open(path).map_err(|source| ObservationLedgerError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    let reader = BufReader::new(file);
-    let mut entries = Vec::new();
-    for line in reader.lines() {
-        let line = line.map_err(|source| ObservationLedgerError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        if line.trim().is_empty() {
-            continue;
+impl Iterator for LedgerEntryIter {
+    type Item = Result<MctObservationLedgerEntry>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(error) = self.pending_error.take() {
+            return Some(Err(error));
         }
-        entries.push(serde_json::from_str(&line).map_err(|source| {
-            ObservationLedgerError::Json {
-                path: path.to_path_buf(),
-                source,
+        loop {
+            let line = match self.lines.as_mut()?.next()? {
+                Ok(line) => line,
+                Err(source) => {
+                    return self.fail(ObservationLedgerError::Io {
+                        path: self.path.clone(),
+                        source,
+                    });
+                }
+            };
+            if line.trim().is_empty() {
+                continue;
             }
-        })?);
-    }
-    Ok(entries)
-}
-
-fn lock_path_for(path: &Path) -> PathBuf {
-    match path.file_name() {
-        Some(file_name) => {
-            let mut lock_name = file_name.to_os_string();
-            lock_name.push(".lock");
-            path.with_file_name(lock_name)
+            let entry = match serde_json::from_str(&line) {
+                Ok(entry) => entry,
+                Err(source) => {
+                    return self.fail(ObservationLedgerError::Json {
+                        path: self.path.clone(),
+                        source,
+                    });
+                }
+            };
+            return match self.validate_entry(entry) {
+                Ok(entry) => Some(Ok(entry)),
+                Err(error) => self.fail(error),
+            };
         }
-        None => path.with_extension("lock"),
     }
 }
 
-fn acquire_writer_lock(lock_path: &Path) -> Result<File> {
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(lock_path)
+fn acquire_writer_lock(path: &Path, file: File) -> Result<File> {
+    file.try_lock()
         .map_err(|source| ObservationLedgerError::WriterLock {
-            path: lock_path.to_path_buf(),
-            source,
-        })
+            path: path.to_path_buf(),
+            source: lock_error_to_io(source),
+        })?;
+    Ok(file)
+}
+
+fn lock_error_to_io(error: std::fs::TryLockError) -> std::io::Error {
+    match error {
+        std::fs::TryLockError::WouldBlock => std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "observation ledger is already locked by another writer",
+        ),
+        std::fs::TryLockError::Error(source) => source,
+    }
 }
 
 fn entry_hash(entry: &MctObservationLedgerEntry) -> Result<String> {
@@ -381,17 +419,19 @@ pub fn version() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mct_kernel::{MctObservation, ObservationId, ObservationKind, Timestamp, TraceId};
+    use mct_kernel::{CallId, MctObservation, ObservationId, ObservationKind, Timestamp, TraceId};
 
     fn observation(id: &str, trace: &str, call: Option<&str>) -> MctObservation {
         let mut obs = MctObservation::informational(
-            ObservationId::from(id),
-            Timestamp::from("2026-05-31T00:00:00Z"),
+            ObservationId::new(id).expect("string ID literal/generated value must be non-empty"),
+            Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             ObservationKind::PeerHelloReceived,
-            TraceId::from(trace),
+            TraceId::new(trace).expect("string ID literal/generated value must be non-empty"),
             "hello received",
         );
-        obs.call_id = call.map(CallId::from);
+        obs.call_id = call.map(|call| {
+            CallId::new(call).expect("string ID literal/generated value must be non-empty")
+        });
         obs
     }
 
@@ -415,7 +455,9 @@ mod tests {
         assert!(entry.previous_entry_hash.is_none());
 
         let entries = ledger.entries().unwrap();
+        let streamed = ledger.iter_entries().collect::<Result<Vec<_>>>().unwrap();
         assert_eq!(entries.len(), 1);
+        assert_eq!(streamed, entries);
         assert_eq!(entries[0].entry_hash, entry.entry_hash);
     }
 
@@ -482,31 +524,22 @@ mod tests {
     }
 
     #[test]
-    fn append_fails_if_file_changes_behind_writer() {
+    fn stale_marker_lock_file_does_not_block_opening_writer() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("observations.jsonl");
+        let marker_lock_path = path.with_file_name("observations.jsonl.lock");
+        std::fs::write(&marker_lock_path, "stale marker from crashed writer").unwrap();
+
         let mut ledger = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
-        ledger
+        let entry = ledger
             .append_before_effect(
                 observation("obs-1", "trace-1", None),
                 "2026-05-31T00:00:01Z",
             )
             .unwrap();
-        std::fs::write(&path, "").unwrap();
 
-        let result = ledger.append_before_effect(
-            observation("obs-2", "trace-1", None),
-            "2026-05-31T00:00:02Z",
-        );
-
-        assert!(matches!(
-            result,
-            Err(ObservationLedgerError::LedgerChanged {
-                expected_sequence: 1,
-                actual_sequence: 0,
-                ..
-            })
-        ));
+        assert_eq!(entry.local_sequence, 0);
+        assert!(marker_lock_path.exists());
     }
 
     #[test]
@@ -526,8 +559,26 @@ mod tests {
                 "2026-05-31T00:00:02Z",
             )
             .unwrap();
-        assert_eq!(ledger.by_trace(&TraceId::from("trace-1")).unwrap().len(), 1);
-        assert_eq!(ledger.by_call(&CallId::from("call-2")).unwrap().len(), 1);
+        assert_eq!(
+            ledger
+                .by_trace(
+                    &TraceId::new("trace-1")
+                        .expect("string ID literal/generated value must be non-empty")
+                )
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            ledger
+                .by_call(
+                    &CallId::new("call-2")
+                        .expect("string ID literal/generated value must be non-empty")
+                )
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -557,7 +608,12 @@ mod tests {
             Some(entries[0].entry_hash.as_str())
         );
 
-        let trace_entries = ledger.by_trace(&TraceId::from("trace-1")).unwrap();
+        let trace_entries = ledger
+            .by_trace(
+                &TraceId::new("trace-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+            )
+            .unwrap();
         assert_eq!(trace_entries.len(), 2);
         assert_eq!(
             trace_entries[0].observation.kind,
@@ -567,7 +623,16 @@ mod tests {
             trace_entries[1].observation.kind,
             ObservationKind::CallAuthorized
         );
-        assert_eq!(ledger.by_call(&CallId::from("call-1")).unwrap().len(), 2);
+        assert_eq!(
+            ledger
+                .by_call(
+                    &CallId::new("call-1")
+                        .expect("string ID literal/generated value must be non-empty")
+                )
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[test]

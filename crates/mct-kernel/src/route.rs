@@ -3,134 +3,224 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Coarse path class used when comparing candidate routes.
 pub enum NetworkPathClass {
+    /// Peer is reachable directly.
     Direct,
+    /// Peer route traverses a relay.
     Relayed,
+    /// Work stays on the local Mother.
     Local,
+    /// Path class is not known to the adapter.
     Unknown,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Possible execution path before authority filtering.
+///
+/// A candidate is not executable authority; it must appear as admissible in a
+/// route decision and pass revalidation immediately before execution.
 pub struct CandidateRoute {
+    /// Planner-local identifier for this candidate.
     pub candidate_id: String,
+    /// Node that would execute or receive the call.
     pub node_id: MctNodeId,
+    /// Child selected by the route, when child execution is required.
     pub child_id: Option<ChildId>,
+    /// Runtime class for the candidate execution path.
     pub runtime_kind: RuntimeKind,
+    /// Network locality class for route planning and audit.
     pub network_path: NetworkPathClass,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Authority filtering outcome for one candidate route.
 pub enum CandidateAuthorityOutcome {
+    /// Candidate survived authority filtering.
     Admissible,
+    /// Candidate was removed from the feasible set.
     Eliminated,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Typed reason a candidate route was removed from consideration.
 pub enum CandidateEliminationReason {
+    /// Data classification or placement policy denied the route.
     DataPolicyDenied,
+    /// Vision policy denied the route.
     VisionPolicyDenied,
+    /// Remote peer was not admitted for this call.
     PeerNotAdmitted,
+    /// Child approval or assignment authority was absent.
     ChildNotApproved,
+    /// Required toy grant was absent or denied.
     ToyGrantMissing,
+    /// Secret-scoped payload was forbidden for this route.
     SecretScopeForbidden,
+    /// Policy revision did not match the call authority snapshot.
     PolicyRevisionStale,
+    /// Grants revision did not match the call authority snapshot.
     GrantsRevisionStale,
+    /// Revalidation facts did not match the selected route.
     RouteMismatch,
+    /// Required runtime or route capability was unavailable.
     CapabilityUnavailable,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Whether a route decision is initial planning or execution-time revalidation.
 pub enum RouteDecisionKind {
+    /// Initial two-phase route selection decision.
     Initial,
+    /// Decision made immediately before execution.
     Revalidation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Result reason for execution-time route revalidation.
 pub enum RouteRevalidationReason {
+    /// Selected route and all execution authorities still match.
     Revalidated,
+    /// Initial decision had no selected route.
     InitialDecisionNotSelected,
+    /// Initial decision was for a different call.
     CallIdMismatch,
+    /// Selected route was not recorded as admissible in the initial decision.
     SelectedRouteNotAdmissible,
+    /// Authorized child invocation did not match the selected child.
     SelectedChildMismatch,
+    /// Child authority token was absent or denied.
     ChildAuthorityDenied,
+    /// At least one required toy grant was absent or denied.
     ToyGrantDenied,
+    /// Policy revision did not match the call authority snapshot.
     PolicyRevisionStale,
+    /// Grants revision did not match the call authority snapshot.
     GrantsRevisionStale,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Authority result for one route candidate at one revision pair.
 pub struct CandidateAuthorityEvaluation {
+    /// Candidate route being judged.
     pub candidate: CandidateRoute,
+    /// Whether the candidate remains feasible.
     pub outcome: CandidateAuthorityOutcome,
+    /// Elimination reason, present only for eliminated candidates.
     pub reason: Option<CandidateEliminationReason>,
+    /// Caller-safe/operator-safe summary for projections.
     pub safe_message: String,
+    /// Policy revision used for the candidate judgment.
     pub policy_revision: u64,
+    /// Grants revision used for toy-related candidate judgment.
     pub grants_revision: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Final outcome of route selection or revalidation.
 pub enum RouteDecisionOutcome {
+    /// A route was selected and remains eligible.
     RouteSelected,
+    /// No route may be executed.
     NoRoute,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Two-phase routing authority decision for an MCT call.
+///
+/// Optimization may select only among candidates represented by admissible
+/// authority evaluations. `NoRoute` is the fail-closed default when no
+/// candidate remains or revalidation fails.
 pub struct RouteDecision {
+    /// Unique decision identifier.
     pub decision_id: DecisionId,
+    /// Call whose route is being selected or revalidated.
     pub call_id: CallId,
+    /// Initial planning or revalidation phase.
     pub decision_kind: RouteDecisionKind,
+    /// Initial decision referenced by revalidation decisions.
     pub initial_decision_id: Option<DecisionId>,
+    /// Per-candidate authority evidence used by this decision.
     pub authority_evaluations: Vec<CandidateAuthorityEvaluation>,
+    /// Selected route, present only when outcome is `RouteSelected`.
     pub selected_route: Option<CandidateRoute>,
+    /// Route decision outcome.
     pub outcome: RouteDecisionOutcome,
+    /// Reason no route exists, present only for no-route decisions.
     pub no_route_reason: Option<CandidateEliminationReason>,
+    /// Caller-safe message for result projection.
     pub safe_message: String,
+    /// Observation recording this route decision.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Identifiers assigned to an initial route decision.
 pub struct RouteDecisionIds {
+    /// Decision identifier to stamp on the route decision.
     pub decision_id: DecisionId,
+    /// Observation identifier to stamp on route evidence.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Identifiers assigned during execution-time route revalidation.
 pub struct RouteRevalidationIds {
+    /// Decision identifier to stamp on the route decision.
     pub decision_id: DecisionId,
+    /// Observation identifier to stamp on route evidence.
     pub observation_id: ObservationId,
+    /// Token identifier minted only when revalidation succeeds.
     pub authorized_route_execution_id: AuthorizedRouteExecutionId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Capability token proving a selected route passed execution-time revalidation.
+///
+/// Adapters should execute only when this record is present in a successful
+/// revalidation result.
 pub struct AuthorizedRouteExecution {
+    /// Unique identifier for this execution authorization.
     pub authorized_route_execution_id: AuthorizedRouteExecutionId,
+    /// Call authorized for execution.
     pub call_id: CallId,
+    /// Initial route decision being revalidated.
     pub initial_decision_id: DecisionId,
+    /// Revalidation decision that minted this token.
     pub revalidation_decision_id: DecisionId,
+    /// Route authorized for execution.
     pub route: CandidateRoute,
+    /// Child invocation token for the selected child.
     pub child_invocation: AuthorizedChildInvocation,
+    /// Toy call tokens that survived revalidation.
     pub toy_calls: Vec<AuthorizedToyCall>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Result of checking selected route authority immediately before execution.
 pub struct RouteRevalidationResult {
+    /// Revalidation route decision, selected or no-route.
     pub decision: RouteDecision,
+    /// Typed reason for authorization or denial.
     pub reason: RouteRevalidationReason,
+    /// Execution authorization token, present only when revalidated.
     pub authorized: Option<AuthorizedRouteExecution>,
 }
 
 impl RouteRevalidationResult {
+    /// Returns true only when revalidation minted an execution token.
     pub fn is_authorized(&self) -> bool {
         self.reason == RouteRevalidationReason::Revalidated && self.authorized.is_some()
     }
 }
 
 impl CandidateAuthorityEvaluation {
+    /// Builds an admissible candidate evaluation at the supplied revisions.
     pub fn admissible(
         candidate: CandidateRoute,
         policy_revision: u64,
@@ -146,6 +236,7 @@ impl CandidateAuthorityEvaluation {
         }
     }
 
+    /// Builds an eliminated candidate evaluation with a non-secret safe message.
     pub fn eliminated(
         candidate: CandidateRoute,
         reason: CandidateEliminationReason,
@@ -164,6 +255,7 @@ impl CandidateAuthorityEvaluation {
 }
 
 impl RouteDecision {
+    /// Builds an initial decision selecting one route from authority evaluations.
     pub fn selected(
         call: &MctCall,
         selected_route: CandidateRoute,
@@ -184,6 +276,7 @@ impl RouteDecision {
         }
     }
 
+    /// Builds an initial fail-closed no-route decision.
     pub fn no_route(
         call: &MctCall,
         authority_evaluations: Vec<CandidateAuthorityEvaluation>,
@@ -204,11 +297,20 @@ impl RouteDecision {
         }
     }
 
+    /// Returns true when this decision denies execution because no route remains.
     pub fn is_no_route(&self) -> bool {
         self.outcome == RouteDecisionOutcome::NoRoute
     }
 }
 
+/// Rechecks route, child, and toy authority immediately before execution.
+///
+/// Authority facts are the original call, initial route decision, child
+/// authority result, toy grant results, and caller-supplied IDs. It returns an
+/// execution token only when the initial decision selected an admissible route,
+/// the child invocation matches the selected child and call, all revisions match
+/// the call authority snapshot, and every toy grant is allowed. Any mismatch is
+/// a no-route decision with no token.
 pub fn revalidate_route_for_execution(
     call: &MctCall,
     initial: &RouteDecision,
@@ -424,6 +526,9 @@ fn revalidation_denied(
     }
 }
 
+/// Projects a no-route decision into a caller-safe denied result.
+///
+/// The result contains no route and preserves the decision ID for audit lookup.
 pub fn no_route_denied_result(
     call: &MctCall,
     decision: &RouteDecision,
@@ -452,11 +557,14 @@ mod tests {
 
     fn call() -> MctCall {
         MctCall {
-            call_id: CallId::from("call-route-1"),
+            call_id: CallId::new("call-route-1")
+                .expect("string ID literal/generated value must be non-empty"),
             caller: CallerIdentity {
-                node_id: MctNodeId::from("node-a"),
+                node_id: MctNodeId::new("node-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 user_id: None,
-                vision_id: VisionId::from("vision-a"),
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 project_id: None,
             },
             target: OperationTarget {
@@ -474,10 +582,12 @@ mod tests {
                 grants_revision: 1,
                 vision_policy_revision: 1,
             },
-            deadline: Timestamp::from("2026-05-31T00:01:00Z"),
+            deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
             trace_context: TraceContext {
-                trace_id: TraceId::from("trace-route-1"),
-                span_id: SpanId::from("span-route-1"),
+                trace_id: TraceId::new("trace-route-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                span_id: SpanId::new("span-route-1")
+                    .expect("string ID literal/generated value must be non-empty"),
             },
             origin: CallOrigin::Cli,
         }
@@ -486,8 +596,12 @@ mod tests {
     fn candidate(id: &str, runtime_kind: RuntimeKind) -> CandidateRoute {
         CandidateRoute {
             candidate_id: id.into(),
-            node_id: MctNodeId::from("node-b"),
-            child_id: Some(ChildId::from("child-echo")),
+            node_id: MctNodeId::new("node-b")
+                .expect("string ID literal/generated value must be non-empty"),
+            child_id: Some(
+                ChildId::new("child-echo")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             runtime_kind,
             network_path: NetworkPathClass::Local,
         }
@@ -495,16 +609,21 @@ mod tests {
 
     fn route_ids(decision: &str, observation: &str) -> RouteDecisionIds {
         RouteDecisionIds {
-            decision_id: DecisionId::from(decision),
-            observation_id: ObservationId::from(observation),
+            decision_id: DecisionId::new(decision)
+                .expect("string ID literal/generated value must be non-empty"),
+            observation_id: ObservationId::new(observation)
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
     fn revalidation_ids() -> RouteRevalidationIds {
         RouteRevalidationIds {
-            decision_id: DecisionId::from("route-revalidation-1"),
-            observation_id: ObservationId::from("obs-route-revalidation-1"),
-            authorized_route_execution_id: AuthorizedRouteExecutionId::from("authorized-route-1"),
+            decision_id: DecisionId::new("route-revalidation-1")
+                .expect("string ID literal/generated value must be non-empty"),
+            observation_id: ObservationId::new("obs-route-revalidation-1")
+                .expect("string ID literal/generated value must be non-empty"),
+            authorized_route_execution_id: AuthorizedRouteExecutionId::new("authorized-route-1")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
@@ -523,13 +642,28 @@ mod tests {
         child_name: &str,
     ) -> ChildCallAuthorityResult {
         let evaluation = ChildCallAuthorityEvaluation {
-            evaluation_id: ChildCallEvaluationId::from("child-eval-route-1"),
-            call_id: CallId::from("call-route-1"),
-            decision_id: DecisionId::from("child-decision-route-1"),
-            instance_id: Some(ChildInstanceId::from("child-instance-route-1")),
-            assignment_id: Some(ChildAssignmentId::from("assignment-route-1")),
-            approval_id: Some(ChildApprovalId::from("approval-route-1")),
-            artifact_id: Some(ComponentArtifactId::from("artifact-route-1")),
+            evaluation_id: ChildCallEvaluationId::new("child-eval-route-1")
+                .expect("string ID literal/generated value must be non-empty"),
+            call_id: CallId::new("call-route-1")
+                .expect("string ID literal/generated value must be non-empty"),
+            decision_id: DecisionId::new("child-decision-route-1")
+                .expect("string ID literal/generated value must be non-empty"),
+            instance_id: Some(
+                ChildInstanceId::new("child-instance-route-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            assignment_id: Some(
+                ChildAssignmentId::new("assignment-route-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            approval_id: Some(
+                ChildApprovalId::new("approval-route-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            artifact_id: Some(
+                ComponentArtifactId::new("artifact-route-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             child_name: Some(child_name.into()),
             verdict: if allowed {
                 ChildCallVerdict::Allowed
@@ -542,18 +676,25 @@ mod tests {
                 ChildCallReasonCode::AssignmentRevoked
             },
             policy_revision,
-            observation_id: ObservationId::from("obs-child-route-1"),
+            observation_id: ObservationId::new("obs-child-route-1")
+                .expect("string ID literal/generated value must be non-empty"),
         };
         let authorized = allowed.then(|| AuthorizedChildInvocation {
-            authorized_child_invocation_id: AuthorizedChildInvocationId::from(
+            authorized_child_invocation_id: AuthorizedChildInvocationId::new(
                 "authorized-child-route-1",
-            ),
-            call_id: CallId::from("call-route-1"),
+            )
+            .expect("string ID literal/generated value must be non-empty"),
+            call_id: CallId::new("call-route-1")
+                .expect("string ID literal/generated value must be non-empty"),
             evaluation_id: evaluation.evaluation_id.clone(),
-            assignment_id: ChildAssignmentId::from("assignment-route-1"),
-            approval_id: ChildApprovalId::from("approval-route-1"),
-            artifact_id: ComponentArtifactId::from("artifact-route-1"),
-            child_instance_id: ChildInstanceId::from("child-instance-route-1"),
+            assignment_id: ChildAssignmentId::new("assignment-route-1")
+                .expect("string ID literal/generated value must be non-empty"),
+            approval_id: ChildApprovalId::new("approval-route-1")
+                .expect("string ID literal/generated value must be non-empty"),
+            artifact_id: ComponentArtifactId::new("artifact-route-1")
+                .expect("string ID literal/generated value must be non-empty"),
+            child_instance_id: ChildInstanceId::new("child-instance-route-1")
+                .expect("string ID literal/generated value must be non-empty"),
             child_name: child_name.into(),
             authority_decision_id: evaluation.decision_id.clone(),
         });
@@ -570,11 +711,18 @@ mod tests {
         allowed: bool,
     ) -> ToyGrantEvaluationResult {
         let evaluation = ToyGrantEvaluation {
-            evaluation_id: ToyGrantEvaluationId::from("toy-eval-route-1"),
-            call_id: CallId::from("call-route-1"),
-            decision_id: DecisionId::from("toy-decision-route-1"),
-            grant_id: allowed.then(|| ToyGrantId::from("toy-grant-route-1")),
-            toy_id: ToyId::from("toy-echo"),
+            evaluation_id: ToyGrantEvaluationId::new("toy-eval-route-1")
+                .expect("string ID literal/generated value must be non-empty"),
+            call_id: CallId::new("call-route-1")
+                .expect("string ID literal/generated value must be non-empty"),
+            decision_id: DecisionId::new("toy-decision-route-1")
+                .expect("string ID literal/generated value must be non-empty"),
+            grant_id: allowed.then(|| {
+                ToyGrantId::new("toy-grant-route-1")
+                    .expect("string ID literal/generated value must be non-empty")
+            }),
+            toy_id: ToyId::new("toy-echo")
+                .expect("string ID literal/generated value must be non-empty"),
             subject_child_name: "child-echo".into(),
             verdict: if allowed {
                 ToyGrantVerdict::Allowed
@@ -588,17 +736,23 @@ mod tests {
             },
             policy_revision,
             grants_revision,
-            observation_id: ObservationId::from("obs-toy-route-1"),
+            observation_id: ObservationId::new("obs-toy-route-1")
+                .expect("string ID literal/generated value must be non-empty"),
         };
         let authorized = allowed.then(|| AuthorizedToyCall {
-            authorized_toy_call_id: AuthorizedToyCallId::from("authorized-toy-route-1"),
-            call_id: CallId::from("call-route-1"),
+            authorized_toy_call_id: AuthorizedToyCallId::new("authorized-toy-route-1")
+                .expect("string ID literal/generated value must be non-empty"),
+            call_id: CallId::new("call-route-1")
+                .expect("string ID literal/generated value must be non-empty"),
             evaluation_id: evaluation.evaluation_id.clone(),
-            grant_id: ToyGrantId::from("toy-grant-route-1"),
-            toy_id: ToyId::from("toy-echo"),
-            child_instance_id: ChildInstanceId::from("child-instance-route-1"),
+            grant_id: ToyGrantId::new("toy-grant-route-1")
+                .expect("string ID literal/generated value must be non-empty"),
+            toy_id: ToyId::new("toy-echo")
+                .expect("string ID literal/generated value must be non-empty"),
+            child_instance_id: ChildInstanceId::new("child-instance-route-1")
+                .expect("string ID literal/generated value must be non-empty"),
             authority_decision_id: evaluation.decision_id.clone(),
-            expires_at: Timestamp::from("2026-05-31T00:02:00Z"),
+            expires_at: Timestamp::new("2026-05-31T00:02:00Z").unwrap(),
         });
 
         ToyGrantEvaluationResult {
@@ -624,12 +778,18 @@ mod tests {
                 ),
             ],
             RouteDecisionIds {
-                decision_id: DecisionId::from("route-decision-1"),
-                observation_id: ObservationId::from("obs-route-decision-1"),
+                decision_id: DecisionId::new("route-decision-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                observation_id: ObservationId::new("obs-route-decision-1")
+                    .expect("string ID literal/generated value must be non-empty"),
             },
         );
 
-        assert_eq!(decision.call_id, CallId::from("call-route-1"));
+        assert_eq!(
+            decision.call_id,
+            CallId::new("call-route-1")
+                .expect("string ID literal/generated value must be non-empty")
+        );
         assert_eq!(decision.outcome, RouteDecisionOutcome::RouteSelected);
         assert_eq!(decision.selected_route, Some(selected));
         assert_eq!(decision.authority_evaluations.len(), 2);
@@ -744,11 +904,18 @@ mod tests {
             )],
             CandidateEliminationReason::PeerNotAdmitted,
             RouteDecisionIds {
-                decision_id: DecisionId::from("route-decision-denied"),
-                observation_id: ObservationId::from("obs-route-denied"),
+                decision_id: DecisionId::new("route-decision-denied")
+                    .expect("string ID literal/generated value must be non-empty"),
+                observation_id: ObservationId::new("obs-route-denied")
+                    .expect("string ID literal/generated value must be non-empty"),
             },
         );
-        let result = no_route_denied_result(&call, &decision, AuditRef::from("audit-route-denied"));
+        let result = no_route_denied_result(
+            &call,
+            &decision,
+            AuditRef::new("audit-route-denied")
+                .expect("string ID literal/generated value must be non-empty"),
+        );
 
         assert!(decision.is_no_route());
         assert_eq!(decision.selected_route, None);

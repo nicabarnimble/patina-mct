@@ -6,6 +6,7 @@ use std::{
     path::{Component, Path, PathBuf},
     process::Command,
 };
+use thiserror::Error;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MctToyBackend {
@@ -93,10 +94,10 @@ impl MctToyAdapterRegistry {
                             ObservationKind::ToyCallCompleted,
                             ObservationOutcome::Completed,
                         ),
-                        Err(safe_message) => (
+                        Err(error) => (
                             MctToyAdapterOutcome::Failed,
                             None,
-                            safe_message,
+                            error.safe_message(),
                             ObservationKind::ToyCallFailed,
                             ObservationOutcome::Failed,
                         ),
@@ -129,56 +130,47 @@ impl MctToyAdapterRegistry {
     }
 }
 
-fn call_git_toy(repo_root: &Path, input_json: &str) -> Result<String, String> {
+fn call_git_toy(repo_root: &Path, input_json: &str) -> Result<String, GitToyError> {
     if !repo_root.is_dir() {
-        return Err(format!(
-            "git toy repo root '{}' is not a directory",
-            repo_root.display()
-        ));
+        return Err(GitToyError::RepoRootNotDirectory {
+            repo_root: repo_root.to_path_buf(),
+        });
     }
-    let input: Value = serde_json::from_str(input_json)
-        .map_err(|error| format!("git toy input must be JSON: {error}"))?;
+    let input: Value =
+        serde_json::from_str(input_json).map_err(|source| GitToyError::InputJson { source })?;
     let interface = required_str(&input, "interface")?;
     if interface != "patina:git/git@0.1.0" {
-        return Err(format!(
-            "git toy received unsupported interface '{interface}'"
-        ));
+        return Err(GitToyError::UnsupportedInterface {
+            interface: interface.to_owned(),
+        });
     }
     let function = required_str(&input, "function")?;
     let output = match function {
         "create-tag" => {
-            let name = required_str(&input, "name")?;
-            run_git(
-                repo_root,
-                &["tag", "-a", name, "-m", &format!("mct git toy tag: {name}")],
-            )?;
+            let name = required_git_ref_arg(&input, "name")?;
+            let message = format!("mct git toy tag: {}", name.as_str());
+            run_git(repo_root, &["tag", "-a", name.as_str(), "-m", &message])?;
             serde_json::json!({"ok": null})
         }
         "create-tag-at" => {
-            let name = required_str(&input, "name")?;
-            let git_ref = required_str(&input, "git_ref")?;
+            let name = required_git_ref_arg(&input, "name")?;
+            let git_ref = required_git_ref_arg(&input, "git_ref")?;
+            let message = format!("mct git toy tag: {}", name.as_str());
             run_git(
                 repo_root,
-                &[
-                    "tag",
-                    "-a",
-                    name,
-                    "-m",
-                    &format!("mct git toy tag: {name}"),
-                    git_ref,
-                ],
+                &["tag", "-a", name.as_str(), "-m", &message, git_ref.as_str()],
             )?;
             serde_json::json!({"ok": null})
         }
         "delete-tag" => {
-            let name = required_str(&input, "name")?;
-            run_git(repo_root, &["tag", "-d", name])?;
+            let name = required_git_ref_arg(&input, "name")?;
+            run_git(repo_root, &["tag", "-d", name.as_str()])?;
             serde_json::json!({"ok": null})
         }
         "tag-exists" => {
-            let name = required_str(&input, "name")?;
-            let tags = run_git_capture(repo_root, &["tag", "--list", name])?;
-            serde_json::json!({"ok": tags.lines().any(|line| line.trim() == name)})
+            let name = required_git_ref_arg(&input, "name")?;
+            let tags = run_git_capture(repo_root, &["tag", "--list", name.as_str()])?;
+            serde_json::json!({"ok": tags.lines().any(|line| line.trim() == name.as_str())})
         }
         "commit" => {
             let message = required_str(&input, "message")?;
@@ -244,50 +236,148 @@ fn call_git_toy(repo_root: &Path, input_json: &str) -> Result<String, String> {
             };
             serde_json::json!({"ok": diverged})
         }
-        other => return Err(format!("unsupported git toy function '{other}'")),
+        other => {
+            return Err(GitToyError::UnsupportedFunction {
+                function: other.to_owned(),
+            });
+        }
     };
     Ok(output.to_string())
 }
 
-fn required_str<'a>(input: &'a Value, field: &str) -> Result<&'a str, String> {
+#[derive(Debug, Error)]
+enum GitToyError {
+    #[error("git toy repo root '{repo_root}' is not a directory", repo_root = repo_root.display())]
+    RepoRootNotDirectory { repo_root: PathBuf },
+    #[error("git toy input must be JSON: {source}")]
+    InputJson {
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("git toy received unsupported interface '{interface}'")]
+    UnsupportedInterface { interface: String },
+    #[error("unsupported git toy function '{function}'")]
+    UnsupportedFunction { function: String },
+    #[error("git toy input missing string field '{field}'")]
+    MissingStringField { field: &'static str },
+    #[error("git toy input missing u32 field '{field}'")]
+    MissingU32Field { field: &'static str },
+    #[error("git toy field '{field}' exceeds u32")]
+    U32FieldOverflow { field: &'static str },
+    #[error("git toy input missing path list field '{field}'")]
+    MissingPathListField { field: &'static str },
+    #[error("git toy path field '{field}' contains a non-string")]
+    NonStringPath { field: &'static str },
+    #[error("{source}")]
+    InvalidPath {
+        #[source]
+        source: GitToyPathError,
+    },
+    #[error("{source}")]
+    InvalidRef {
+        #[source]
+        source: GitRefArgError,
+    },
+    #[error("running git: {source}")]
+    RunGit {
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{stderr}")]
+    GitFailed { stderr: String },
+}
+
+impl GitToyError {
+    fn safe_message(&self) -> String {
+        self.to_string()
+    }
+}
+
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+enum GitToyPathError {
+    #[error("git toy path must not be empty")]
+    Empty,
+    #[error("git toy path must be repository-relative")]
+    NotRelative,
+    #[error("git toy path must not escape the repository")]
+    EscapesRepository,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GitRefArg<'a> {
+    value: &'a str,
+}
+
+impl<'a> GitRefArg<'a> {
+    fn new(field: &'static str, value: &'a str) -> Result<Self, GitRefArgError> {
+        if value.trim().is_empty() {
+            return Err(GitRefArgError::Empty { field });
+        }
+        if value.starts_with('-') {
+            return Err(GitRefArgError::LeadingDash { field });
+        }
+        Ok(Self { value })
+    }
+
+    fn as_str(&self) -> &'a str {
+        self.value
+    }
+}
+
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+enum GitRefArgError {
+    #[error("git ref argument '{field}' must not be empty")]
+    Empty { field: &'static str },
+    #[error("git ref argument '{field}' must not start with '-'")]
+    LeadingDash { field: &'static str },
+}
+
+fn required_git_ref_arg<'a>(
+    input: &'a Value,
+    field: &'static str,
+) -> Result<GitRefArg<'a>, GitToyError> {
+    let value = required_str(input, field)?;
+    GitRefArg::new(field, value).map_err(|source| GitToyError::InvalidRef { source })
+}
+
+fn required_str<'a>(input: &'a Value, field: &'static str) -> Result<&'a str, GitToyError> {
     input
         .get(field)
         .and_then(Value::as_str)
-        .ok_or_else(|| format!("git toy input missing string field '{field}'"))
+        .ok_or(GitToyError::MissingStringField { field })
 }
 
-fn required_u32(input: &Value, field: &str) -> Result<u32, String> {
+fn required_u32(input: &Value, field: &'static str) -> Result<u32, GitToyError> {
     let value = input
         .get(field)
         .and_then(Value::as_u64)
-        .ok_or_else(|| format!("git toy input missing u32 field '{field}'"))?;
-    u32::try_from(value).map_err(|_| format!("git toy field '{field}' exceeds u32"))
+        .ok_or(GitToyError::MissingU32Field { field })?;
+    u32::try_from(value).map_err(|_| GitToyError::U32FieldOverflow { field })
 }
 
-fn required_paths(input: &Value, field: &str) -> Result<Vec<String>, String> {
+fn required_paths(input: &Value, field: &'static str) -> Result<Vec<String>, GitToyError> {
     let values = input
         .get(field)
         .and_then(Value::as_array)
-        .ok_or_else(|| format!("git toy input missing path list field '{field}'"))?;
+        .ok_or(GitToyError::MissingPathListField { field })?;
     values
         .iter()
         .map(|value| {
-            let path = value
-                .as_str()
-                .ok_or_else(|| format!("git toy path field '{field}' contains a non-string"))?;
-            validate_repo_relative_path(path)?;
+            let path = value.as_str().ok_or(GitToyError::NonStringPath { field })?;
+            validate_repo_relative_path(path)
+                .map_err(|source| GitToyError::InvalidPath { source })?;
             Ok(path.to_owned())
         })
         .collect()
 }
 
-fn validate_repo_relative_path(path: &str) -> Result<(), String> {
+fn validate_repo_relative_path(path: &str) -> Result<(), GitToyPathError> {
     if path.trim().is_empty() {
-        return Err("git toy path must not be empty".into());
+        return Err(GitToyPathError::Empty);
     }
     let path = Path::new(path);
     if !path.is_relative() {
-        return Err("git toy path must be repository-relative".into());
+        return Err(GitToyPathError::NotRelative);
     }
     for component in path.components() {
         match component {
@@ -296,18 +386,18 @@ fn validate_repo_relative_path(path: &str) -> Result<(), String> {
             | Component::ParentDir
             | Component::RootDir
             | Component::Prefix(_) => {
-                return Err("git toy path must not escape the repository".into());
+                return Err(GitToyPathError::EscapesRepository);
             }
         }
     }
     Ok(())
 }
 
-fn run_git(repo_root: &Path, args: &[&str]) -> Result<(), String> {
+fn run_git(repo_root: &Path, args: &[&str]) -> Result<(), GitToyError> {
     let output = git_command(repo_root)
         .args(args)
         .output()
-        .map_err(|error| format!("running git: {error}"))?;
+        .map_err(|source| GitToyError::RunGit { source })?;
     if output.status.success() {
         Ok(())
     } else {
@@ -315,11 +405,11 @@ fn run_git(repo_root: &Path, args: &[&str]) -> Result<(), String> {
     }
 }
 
-fn run_git_owned(repo_root: &Path, args: &[String]) -> Result<(), String> {
+fn run_git_owned(repo_root: &Path, args: &[String]) -> Result<(), GitToyError> {
     let output = git_command(repo_root)
         .args(args)
         .output()
-        .map_err(|error| format!("running git: {error}"))?;
+        .map_err(|source| GitToyError::RunGit { source })?;
     if output.status.success() {
         Ok(())
     } else {
@@ -327,11 +417,11 @@ fn run_git_owned(repo_root: &Path, args: &[String]) -> Result<(), String> {
     }
 }
 
-fn run_git_capture(repo_root: &Path, args: &[&str]) -> Result<String, String> {
+fn run_git_capture(repo_root: &Path, args: &[&str]) -> Result<String, GitToyError> {
     let output = git_command(repo_root)
         .args(args)
         .output()
-        .map_err(|error| format!("running git: {error}"))?;
+        .map_err(|source| GitToyError::RunGit { source })?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
@@ -339,11 +429,11 @@ fn run_git_capture(repo_root: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
-fn run_git_capture_allow_failure(repo_root: &Path, args: &[&str]) -> Result<String, String> {
+fn run_git_capture_allow_failure(repo_root: &Path, args: &[&str]) -> Result<String, GitToyError> {
     let output = git_command(repo_root)
         .args(args)
         .output()
-        .map_err(|error| format!("running git: {error}"))?;
+        .map_err(|source| GitToyError::RunGit { source })?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
@@ -362,12 +452,14 @@ fn git_command(repo_root: &Path) -> Command {
     command
 }
 
-fn git_stderr(output: &std::process::Output) -> String {
+fn git_stderr(output: &std::process::Output) -> GitToyError {
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    if stderr.is_empty() {
-        "git command failed".into()
-    } else {
-        stderr
+    GitToyError::GitFailed {
+        stderr: if stderr.is_empty() {
+            "git command failed".into()
+        } else {
+            stderr
+        },
     }
 }
 
@@ -413,11 +505,14 @@ mod tests {
 
     fn call() -> MctCall {
         MctCall {
-            call_id: CallId::from("call-toy-adapter"),
+            call_id: CallId::new("call-toy-adapter")
+                .expect("string ID literal/generated value must be non-empty"),
             caller: CallerIdentity {
-                node_id: MctNodeId::from("mother-a"),
+                node_id: MctNodeId::new("mother-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 user_id: None,
-                vision_id: VisionId::from("vision-a"),
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 project_id: None,
             },
             target: OperationTarget {
@@ -435,10 +530,12 @@ mod tests {
                 grants_revision: 2,
                 vision_policy_revision: 1,
             },
-            deadline: Timestamp::from("2026-05-31T00:01:00Z"),
+            deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
             trace_context: TraceContext {
-                trace_id: TraceId::from("trace-toy-adapter"),
-                span_id: SpanId::from("span-toy-adapter"),
+                trace_id: TraceId::new("trace-toy-adapter")
+                    .expect("string ID literal/generated value must be non-empty"),
+                span_id: SpanId::new("span-toy-adapter")
+                    .expect("string ID literal/generated value must be non-empty"),
             },
             origin: CallOrigin::Cli,
         }
@@ -446,23 +543,32 @@ mod tests {
 
     fn authorized(toy_id: &str) -> AuthorizedToyCall {
         AuthorizedToyCall {
-            authorized_toy_call_id: AuthorizedToyCallId::from("authorized-toy-adapter"),
-            call_id: CallId::from("call-toy-adapter"),
-            evaluation_id: ToyGrantEvaluationId::from("toy-eval-adapter"),
-            grant_id: ToyGrantId::from("grant-toy-adapter"),
-            toy_id: ToyId::from(toy_id),
-            child_instance_id: ChildInstanceId::from("instance-toy-adapter"),
-            authority_decision_id: DecisionId::from("decision-toy-adapter"),
-            expires_at: Timestamp::from("2026-05-31T00:10:00Z"),
+            authorized_toy_call_id: AuthorizedToyCallId::new("authorized-toy-adapter")
+                .expect("string ID literal/generated value must be non-empty"),
+            call_id: CallId::new("call-toy-adapter")
+                .expect("string ID literal/generated value must be non-empty"),
+            evaluation_id: ToyGrantEvaluationId::new("toy-eval-adapter")
+                .expect("string ID literal/generated value must be non-empty"),
+            grant_id: ToyGrantId::new("grant-toy-adapter")
+                .expect("string ID literal/generated value must be non-empty"),
+            toy_id: ToyId::new(toy_id)
+                .expect("string ID literal/generated value must be non-empty"),
+            child_instance_id: ChildInstanceId::new("instance-toy-adapter")
+                .expect("string ID literal/generated value must be non-empty"),
+            authority_decision_id: DecisionId::new("decision-toy-adapter")
+                .expect("string ID literal/generated value must be non-empty"),
+            expires_at: Timestamp::new("2026-05-31T00:10:00Z").unwrap(),
         }
     }
 
     fn ids(stem: &str) -> MctToyCallIds {
         MctToyCallIds {
-            started_observation_id: ObservationId::from(format!("obs-{stem}-started")),
-            completed_observation_id: ObservationId::from(format!("obs-{stem}-completed")),
-            started_at: Timestamp::from("2026-05-31T00:00:00Z"),
-            completed_at: Timestamp::from("2026-05-31T00:00:01Z"),
+            started_observation_id: ObservationId::new(format!("obs-{stem}-started"))
+                .expect("string ID literal/generated value must be non-empty"),
+            completed_observation_id: ObservationId::new(format!("obs-{stem}-completed"))
+                .expect("string ID literal/generated value must be non-empty"),
+            started_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+            completed_at: Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
         }
     }
 
@@ -490,7 +596,10 @@ mod tests {
     #[test]
     fn toy_adapter_requires_authorized_toy_call_and_records_success() {
         let mut registry = MctToyAdapterRegistry::new();
-        registry.register(ToyId::from("toy-echo"), MctToyBackend::EchoJson);
+        registry.register(
+            ToyId::new("toy-echo").expect("string ID literal/generated value must be non-empty"),
+            MctToyBackend::EchoJson,
+        );
 
         let report = registry.call_authorized_toy(
             &authorized("toy-echo"),
@@ -509,7 +618,10 @@ mod tests {
         assert_eq!(report.observations[1].source_plane, SourcePlane::Toy);
         assert_eq!(
             report.observations[1].decision_id,
-            Some(DecisionId::from("decision-toy-adapter"))
+            Some(
+                DecisionId::new("decision-toy-adapter")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
         );
     }
 
@@ -518,7 +630,7 @@ mod tests {
         let repo = init_git_repo();
         let mut registry = MctToyAdapterRegistry::new();
         registry.register(
-            ToyId::from("toy-git"),
+            ToyId::new("toy-git").expect("string ID literal/generated value must be non-empty"),
             MctToyBackend::GitCommand {
                 repo_root: repo.path().to_path_buf(),
             },
@@ -541,12 +653,79 @@ mod tests {
         assert!(tags.contains("mct-toy-test"));
     }
 
+    fn git_report(repo: &Path, input_json: &str, stem: &str) -> MctToyCallReport {
+        let mut registry = MctToyAdapterRegistry::new();
+        registry.register(
+            ToyId::new("toy-git").expect("string ID literal/generated value must be non-empty"),
+            MctToyBackend::GitCommand {
+                repo_root: repo.to_path_buf(),
+            },
+        );
+        registry.call_authorized_toy(&authorized("toy-git"), &call(), input_json, ids(stem))
+    }
+
+    #[test]
+    fn git_toy_rejects_option_like_untrusted_refs_before_invoking_git() {
+        let repo = init_git_repo();
+        let cases = [
+            (
+                "create-tag-name",
+                r#"{"interface":"patina:git/git@0.1.0","function":"create-tag","name":"--force"}"#,
+            ),
+            (
+                "create-tag-at-name",
+                r#"{"interface":"patina:git/git@0.1.0","function":"create-tag-at","name":"--force","git_ref":"HEAD"}"#,
+            ),
+            (
+                "create-tag-at-ref",
+                r#"{"interface":"patina:git/git@0.1.0","function":"create-tag-at","name":"safe-tag","git_ref":"--all"}"#,
+            ),
+            (
+                "delete-tag-name",
+                r#"{"interface":"patina:git/git@0.1.0","function":"delete-tag","name":"--force"}"#,
+            ),
+            (
+                "tag-exists-name",
+                r#"{"interface":"patina:git/git@0.1.0","function":"tag-exists","name":"--force"}"#,
+            ),
+        ];
+
+        for (stem, input_json) in cases {
+            let report = git_report(repo.path(), input_json, stem);
+            assert_eq!(report.outcome, MctToyAdapterOutcome::Failed, "{stem}");
+            assert!(
+                report.safe_message.contains("git ref argument"),
+                "{stem}: {}",
+                report.safe_message
+            );
+            assert_eq!(report.observations[1].kind, ObservationKind::ToyCallFailed);
+        }
+    }
+
+    #[test]
+    fn git_toy_ref_validation_remains_typed_before_safe_message_projection() {
+        let repo = init_git_repo();
+
+        let error = call_git_toy(
+            repo.path(),
+            r#"{"interface":"patina:git/git@0.1.0","function":"create-tag","name":"--force"}"#,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            GitToyError::InvalidRef {
+                source: GitRefArgError::LeadingDash { field: "name" }
+            }
+        ));
+    }
+
     #[test]
     fn git_toy_backend_rejects_paths_that_escape_repo() {
         let repo = init_git_repo();
         let mut registry = MctToyAdapterRegistry::new();
         registry.register(
-            ToyId::from("toy-git"),
+            ToyId::new("toy-git").expect("string ID literal/generated value must be non-empty"),
             MctToyBackend::GitCommand {
                 repo_root: repo.path().to_path_buf(),
             },
@@ -581,7 +760,10 @@ mod tests {
         assert_eq!(report.observations[1].outcome, ObservationOutcome::Failed);
         assert_eq!(
             report.observations[1].call_id,
-            Some(CallId::from("call-toy-adapter"))
+            Some(
+                CallId::new("call-toy-adapter")
+                    .expect("string ID literal/generated value must be non-empty")
+            )
         );
     }
 }

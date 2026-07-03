@@ -41,7 +41,8 @@ pub(crate) async fn run_local_iroh_echo_roundtrip() -> Result<LocalIrohEchoRepor
         .bind()
         .await
         .context("bind client Iroh endpoint")?;
-    let client_endpoint_id = EndpointIdText::from(client.id().to_string());
+    let client_endpoint_id = EndpointIdText::new(client.id().to_string())
+        .expect("string ID literal/generated value must be non-empty");
     let binding = local_binding_for(&client_endpoint_id);
     let state = Arc::new(Mutex::new(LocalProtocolState::default()));
 
@@ -51,7 +52,8 @@ pub(crate) async fn run_local_iroh_echo_roundtrip() -> Result<LocalIrohEchoRepor
         state.clone(),
     ));
 
-    let trace_id = TraceId::from("trace-local-iroh-echo");
+    let trace_id = TraceId::new("trace-local-iroh-echo")
+        .expect("string ID literal/generated value must be non-empty");
     let hello_request = local_hello_request(&client_endpoint_id, &trace_id);
     let hello_response: MctHelloResponse =
         roundtrip_json(&client, server_addr.clone(), MCT_HELLO_ALPN, &hello_request)
@@ -97,7 +99,8 @@ pub(crate) async fn run_unknown_peer_denial_roundtrip() -> Result<LocalIrohDenie
         .bind()
         .await
         .context("bind client Iroh endpoint")?;
-    let client_endpoint_id = EndpointIdText::from(client.id().to_string());
+    let client_endpoint_id = EndpointIdText::new(client.id().to_string())
+        .expect("string ID literal/generated value must be non-empty");
     let state = Arc::new(Mutex::new(LocalProtocolState::default()));
 
     let server_task = tokio::spawn(serve_two_local_connections(
@@ -106,7 +109,8 @@ pub(crate) async fn run_unknown_peer_denial_roundtrip() -> Result<LocalIrohDenie
         state.clone(),
     ));
 
-    let trace_id = TraceId::from("trace-local-iroh-unknown-peer");
+    let trace_id = TraceId::new("trace-local-iroh-unknown-peer")
+        .expect("string ID literal/generated value must be non-empty");
     let hello_request = local_hello_request(&client_endpoint_id, &trace_id);
     let hello_response: MctHelloResponse =
         roundtrip_json(&client, server_addr.clone(), MCT_HELLO_ALPN, &hello_request)
@@ -173,17 +177,20 @@ async fn serve_two_local_connections(
                     &HelloPolicy::default(),
                     HelloEvaluationContext {
                         ids: EvaluationIds {
-                            decision_id: DecisionId::from("decision-iroh-hello"),
-                            observation_id: ObservationId::from("obs-iroh-hello-decision"),
+                            decision_id: DecisionId::new("decision-iroh-hello")
+                                .expect("string ID literal/generated value must be non-empty"),
+                            observation_id: ObservationId::new("obs-iroh-hello-decision")
+                                .expect("string ID literal/generated value must be non-empty"),
                         },
-                        now: Timestamp::from("2026-05-31T00:00:01Z"),
+                        now: Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
                     },
                 );
                 state.lock().await.last_hello = Some(evaluation.clone());
                 serde_json::to_vec(&hello_response(
                     "reply-iroh-hello",
                     &evaluation,
-                    ObservationId::from("obs-iroh-hello-reply"),
+                    ObservationId::new("obs-iroh-hello-reply")
+                        .expect("string ID literal/generated value must be non-empty"),
                 ))
                 .context("encode mct/hello/0 response")?
             }
@@ -200,19 +207,24 @@ async fn serve_two_local_connections(
                     &request,
                     &hello,
                     CallEvaluationIds {
-                        decision_id: DecisionId::from("decision-iroh-call"),
-                        observation_id: ObservationId::from("obs-iroh-call-decision"),
+                        decision_id: DecisionId::new("decision-iroh-call")
+                            .expect("string ID literal/generated value must be non-empty"),
+                        observation_id: ObservationId::new("obs-iroh-call-decision")
+                            .expect("string ID literal/generated value must be non-empty"),
                     },
                 );
                 state.lock().await.last_call = Some(evaluation.clone());
-                let result_ref = evaluation
-                    .is_accepted_for_routing()
-                    .then(|| ResultRef::from("result-iroh-echo"));
+                let result_ref = evaluation.is_accepted_for_routing().then(|| {
+                    ResultRef::new("result-iroh-echo")
+                        .expect("string ID literal/generated value must be non-empty")
+                });
                 serde_json::to_vec(&call_reply_from_evaluation(
-                    ReplyId::from("reply-iroh-call"),
+                    ReplyId::new("reply-iroh-call")
+                        .expect("string ID literal/generated value must be non-empty"),
                     &evaluation,
                     result_ref,
-                    ObservationId::from("obs-iroh-call-reply"),
+                    ObservationId::new("obs-iroh-call-reply")
+                        .expect("string ID literal/generated value must be non-empty"),
                 ))
                 .context("encode mct/call/0 response")?
             }
@@ -264,21 +276,26 @@ where
 
 fn local_binding_for(endpoint_id: &EndpointIdText) -> MctPeerBinding {
     MctPeerBinding {
-        binding_id: PeerBindingId::from("binding-local-iroh"),
+        binding_id: PeerBindingId::new("binding-local-iroh")
+            .expect("string ID literal/generated value must be non-empty"),
         iroh_endpoint_id: endpoint_id.clone(),
         scope: MctPeerBindingScope {
-            mct_node_id: MctNodeId::from("mother-client"),
-            vision_id: VisionId::from("vision-local"),
+            mct_node_id: MctNodeId::new("mother-client")
+                .expect("string ID literal/generated value must be non-empty"),
+            vision_id: VisionId::new("vision-local")
+                .expect("string ID literal/generated value must be non-empty"),
             allowed_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
             data_scope: None,
             observation_scope: None,
         },
-        issuer_node_id: MctNodeId::from("mother-server"),
+        issuer_node_id: MctNodeId::new("mother-server")
+            .expect("string ID literal/generated value must be non-empty"),
         policy_revision: 1,
         binding_state: BindingState::Admitted,
-        issued_at: Timestamp::from("2026-05-31T00:00:00Z"),
+        issued_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
         expires_at: None,
-        created_by_observation_id: ObservationId::from("obs-binding-local-iroh"),
+        created_by_observation_id: ObservationId::new("obs-binding-local-iroh")
+            .expect("string ID literal/generated value must be non-empty"),
         superseded_by_observation_id: None,
     }
 }
@@ -295,13 +312,25 @@ fn local_hello_request(endpoint_id: &EndpointIdText, trace_id: &TraceId) -> MctH
             presented_capability_ref: None,
         },
         requested_protocol: HelloPolicy::default().protocol,
-        requested_vision_id: Some(VisionId::from("vision-local")),
+        requested_vision_id: Some(
+            VisionId::new("vision-local")
+                .expect("string ID literal/generated value must be non-empty"),
+        ),
         requested_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
         presented_binding: MctPeerBindingPresentation {
-            binding_id: Some(PeerBindingId::from("binding-local-iroh")),
+            binding_id: Some(
+                PeerBindingId::new("binding-local-iroh")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             endpoint_id: endpoint_id.clone(),
-            mct_node_id: Some(MctNodeId::from("mother-client")),
-            vision_id: Some(VisionId::from("vision-local")),
+            mct_node_id: Some(
+                MctNodeId::new("mother-client")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            vision_id: Some(
+                VisionId::new("vision-local")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             policy_revision: Some(1),
             allowed_alpns_claim: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
             signature_ref: None,
@@ -310,7 +339,8 @@ fn local_hello_request(endpoint_id: &EndpointIdText, trace_id: &TraceId) -> MctH
         capability_view: None,
         local_policy_revision_seen: Some(1),
         trace_id: trace_id.clone(),
-        received_observation_id: ObservationId::from("obs-local-hello-received"),
+        received_observation_id: ObservationId::new("obs-local-hello-received")
+            .expect("string ID literal/generated value must be non-empty"),
     }
 }
 
@@ -320,11 +350,14 @@ fn local_call_request(
     hello: &MctHelloResponse,
 ) -> MctCallProtocolRequest {
     let call = MctCall {
-        call_id: CallId::from("call-local-iroh-echo"),
+        call_id: CallId::new("call-local-iroh-echo")
+            .expect("string ID literal/generated value must be non-empty"),
         caller: CallerIdentity {
-            node_id: MctNodeId::from("mother-client"),
+            node_id: MctNodeId::new("mother-client")
+                .expect("string ID literal/generated value must be non-empty"),
             user_id: None,
-            vision_id: VisionId::from("vision-local"),
+            vision_id: VisionId::new("vision-local")
+                .expect("string ID literal/generated value must be non-empty"),
             project_id: None,
         },
         target: OperationTarget {
@@ -342,20 +375,24 @@ fn local_call_request(
             grants_revision: 1,
             vision_policy_revision: 1,
         },
-        deadline: Timestamp::from("2026-05-31T00:01:00Z"),
+        deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
         trace_context: TraceContext {
             trace_id: trace_id.clone(),
-            span_id: SpanId::from("span-local-call"),
+            span_id: SpanId::new("span-local-call")
+                .expect("string ID literal/generated value must be non-empty"),
         },
         origin: CallOrigin::Iroh,
     };
 
     MctCallProtocolRequest {
-        protocol_request_id: ProtocolRequestId::from("proto-local-call"),
+        protocol_request_id: ProtocolRequestId::new("proto-local-call")
+            .expect("string ID literal/generated value must be non-empty"),
         authority: MctCallProtocolAuthority {
             hello_decision_id: hello.decision_id.clone(),
-            peer_binding_id: PeerBindingId::from("binding-local-iroh"),
-            vision_id: VisionId::from("vision-local"),
+            peer_binding_id: PeerBindingId::new("binding-local-iroh")
+                .expect("string ID literal/generated value must be non-empty"),
+            vision_id: VisionId::new("vision-local")
+                .expect("string ID literal/generated value must be non-empty"),
             accepted_alpn: MCT_CALL_ALPN.into(),
             endpoint_id: endpoint_id.clone(),
             policy_revision: 1,
@@ -370,16 +407,13 @@ fn local_call_request(
             presented_capability_ref: None,
         },
         call,
-        payload: MctCallPayloadHandle {
-            payload_kind: PayloadKind::InlinePayload,
-            content_type: Some("text/plain".into()),
+        payload: MctCallPayloadHandle::InlinePayload {
+            inline_payload_ref: "payload-local-echo".into(),
+            content_type: "text/plain".into(),
             approximate_size_bytes: 5,
-            digest: None,
-            blob_ref: None,
-            external_ref: None,
-            inline_payload_ref: Some("payload-local-echo".into()),
         },
         idempotency_key: Some("idem-local-call".into()),
-        received_observation_id: ObservationId::from("obs-local-call-received"),
+        received_observation_id: ObservationId::new("obs-local-call-received")
+            .expect("string ID literal/generated value must be non-empty"),
     }
 }

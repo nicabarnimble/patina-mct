@@ -1,6 +1,6 @@
 use crate::{
     MctDaemonConfig, MctLoadedChild, MctOperatorChildScope, MctPeerAddressBookEntry,
-    unix_timestamp_string,
+    current_timestamp_string,
 };
 use anyhow::{Context, Result, bail};
 use mct_kernel::*;
@@ -550,7 +550,7 @@ impl MctRuntimeStateStore {
                 json_atom(&artifact.lifecycle_exports)?,
                 json_atom(&artifact.verification_status)?,
                 artifact.created_by_observation_id.as_str(),
-                unix_timestamp_string(),
+                current_timestamp_string(),
             ],
         )?;
         Ok(())
@@ -606,7 +606,7 @@ impl MctRuntimeStateStore {
                 json_atom(&approval.approval_state)?,
                 approval.policy_revision,
                 approval.authority_observation_id.as_str(),
-                unix_timestamp_string(),
+                current_timestamp_string(),
             ],
         )?;
         Ok(())
@@ -643,7 +643,7 @@ impl MctRuntimeStateStore {
                 json_atom(&assignment.assignment_state)?,
                 assignment.pinned_artifact_version,
                 assignment.assignment_observation_id.as_str(),
-                unix_timestamp_string(),
+                current_timestamp_string(),
             ],
         )?;
         Ok(())
@@ -680,7 +680,7 @@ impl MctRuntimeStateStore {
                     .as_ref()
                     .map(ObservationId::as_str),
                 instance.last_lifecycle_observation_id.as_str(),
-                unix_timestamp_string(),
+                current_timestamp_string(),
             ],
         )?;
         Ok(())
@@ -729,7 +729,8 @@ impl MctRuntimeStateStore {
         scope: MctOperatorChildScope,
     ) -> Result<ComponentArtifact> {
         let artifact = ComponentArtifact {
-            artifact_id: ComponentArtifactId::from(child.artifact_id.clone()),
+            artifact_id: ComponentArtifactId::new(child.artifact_id.clone())
+                .expect("string ID literal/generated value must be non-empty"),
             child_name: child.name.clone(),
             artifact_version: child.version.clone(),
             content_hash: format!("sha256:{}", child.wasm_digest.sha256),
@@ -747,11 +748,13 @@ impl MctRuntimeStateStore {
             } else {
                 VerificationStatus::Rejected
             },
-            created_by_observation_id: ObservationId::from(format!("obs:artifact:{}", child.name)),
+            created_by_observation_id: ObservationId::new(format!("obs:artifact:{}", child.name))
+                .expect("string ID literal/generated value must be non-empty"),
         };
         self.upsert_artifact(&artifact)?;
         let candidate = ChildApproval {
-            approval_id: ChildApprovalId::from(format!("candidate:{}", child.name)),
+            approval_id: ChildApprovalId::new(format!("candidate:{}", child.name))
+                .expect("string ID literal/generated value must be non-empty"),
             artifact_id: artifact.artifact_id.clone(),
             child_name: child.name.clone(),
             artifact_version: child.version.clone(),
@@ -760,7 +763,8 @@ impl MctRuntimeStateStore {
             scope_project_id: scope.project_id,
             approval_state: ChildApprovalState::Candidate,
             policy_revision: scope.policy_revision,
-            authority_observation_id: ObservationId::from(format!("obs:candidate:{}", child.name)),
+            authority_observation_id: ObservationId::new(format!("obs:candidate:{}", child.name))
+                .expect("string ID literal/generated value must be non-empty"),
         };
         self.upsert_child_approval(&candidate)?;
         Ok(artifact)
@@ -890,7 +894,7 @@ impl MctRuntimeStateStore {
                 value_json = excluded.value_json,
                 updated_at = excluded.updated_at
             "#,
-            params![child_name, key, value_json, unix_timestamp_string()],
+            params![child_name, key, value_json, current_timestamp_string()],
         )?;
         Ok(())
     }
@@ -938,7 +942,12 @@ impl MctRuntimeStateStore {
                 checkpoint_json = excluded.checkpoint_json,
                 updated_at = excluded.updated_at
             "#,
-            params![child_name, stream, checkpoint_json, unix_timestamp_string()],
+            params![
+                child_name,
+                stream,
+                checkpoint_json,
+                current_timestamp_string()
+            ],
         )?;
         Ok(())
     }
@@ -960,7 +969,7 @@ impl MctRuntimeStateStore {
             INSERT OR IGNORE INTO child_subscriptions(child_name, stream, created_at)
             VALUES (?1, ?2, ?3)
             "#,
-            params![child_name, stream, unix_timestamp_string()],
+            params![child_name, stream, current_timestamp_string()],
         )?;
         Ok(())
     }
@@ -983,7 +992,12 @@ impl MctRuntimeStateStore {
                 acked_offset = MAX(child_offsets.acked_offset, excluded.acked_offset),
                 updated_at = excluded.updated_at
             "#,
-            params![child_name, stream, offset as i64, unix_timestamp_string()],
+            params![
+                child_name,
+                stream,
+                offset as i64,
+                current_timestamp_string()
+            ],
         )?;
         Ok(())
     }
@@ -1015,10 +1029,10 @@ impl MctRuntimeStateStore {
                     "task:{}:{}:{}",
                     child_name,
                     intent.kind,
-                    unix_timestamp_string()
+                    current_timestamp_string()
                 )
             });
-        let now = unix_timestamp_string();
+        let now = current_timestamp_string();
         self.conn.execute(
             r#"
             INSERT OR IGNORE INTO runtime_tasks(
@@ -1074,7 +1088,7 @@ impl MctRuntimeStateStore {
             params![
                 lease_owner,
                 lease_until,
-                unix_timestamp_string(),
+                current_timestamp_string(),
                 task.task_id
             ],
         )?;
@@ -1137,7 +1151,12 @@ impl MctRuntimeStateStore {
             SET status = ?1, last_error = ?2, updated_at = ?3
             WHERE task_id = ?4
             "#,
-            params![json_atom(&status)?, error, unix_timestamp_string(), task_id],
+            params![
+                json_atom(&status)?,
+                error,
+                current_timestamp_string(),
+                task_id
+            ],
         )?;
         Ok(())
     }
@@ -1244,7 +1263,7 @@ impl MctRuntimeStateStore {
                 },
                 contract.catalog_revision,
                 contract.admitted_by_observation_id.as_str(),
-                unix_timestamp_string(),
+                current_timestamp_string(),
             ],
         )?;
         Ok(())
@@ -1294,7 +1313,7 @@ impl MctRuntimeStateStore {
                 grant.policy_revision,
                 grant.grants_revision,
                 grant.authority_observation_id.as_str(),
-                unix_timestamp_string(),
+                current_timestamp_string(),
             ],
         )?;
         Ok(())
@@ -1353,7 +1372,8 @@ fn artifact_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ComponentArtif
     let lifecycle_exports: String = row.get(8)?;
     let verification_status: String = row.get(9)?;
     Ok(ComponentArtifact {
-        artifact_id: ComponentArtifactId::from(row.get::<_, String>(0)?),
+        artifact_id: ComponentArtifactId::new(row.get::<_, String>(0)?)
+            .expect("string ID literal/generated value must be non-empty"),
         child_name: row.get(1)?,
         artifact_version: row.get(2)?,
         content_hash: row.get(3)?,
@@ -1363,7 +1383,8 @@ fn artifact_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ComponentArtif
         ingress_mode: from_json_atom(&ingress_mode).map_err(to_sql_error)?,
         lifecycle_exports: from_json_atom(&lifecycle_exports).map_err(to_sql_error)?,
         verification_status: from_json_atom(&verification_status).map_err(to_sql_error)?,
-        created_by_observation_id: ObservationId::from(row.get::<_, String>(10)?),
+        created_by_observation_id: ObservationId::new(row.get::<_, String>(10)?)
+            .expect("string ID literal/generated value must be non-empty"),
     })
 }
 
@@ -1377,12 +1398,20 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MctRuntimeRunRecord
     let result_json: Option<String> = row.get(12)?;
     Ok(MctRuntimeRunRecord {
         run_id: row.get(0)?,
-        call_id: CallId::from(row.get::<_, String>(1)?),
+        call_id: CallId::new(row.get::<_, String>(1)?)
+            .expect("string ID literal/generated value must be non-empty"),
         runtime_kind: from_json_atom(&runtime_kind).map_err(to_sql_error)?,
         child_name: row.get(3)?,
-        child_instance_id: child_instance_id.map(ChildInstanceId::from),
-        authority_decision_id: authority_decision_id.map(DecisionId::from),
-        trace_id: TraceId::from(row.get::<_, String>(6)?),
+        child_instance_id: child_instance_id
+            .map(|value| ChildInstanceId::new(value).context("decode child_instance_id"))
+            .transpose()
+            .map_err(to_sql_error)?,
+        authority_decision_id: authority_decision_id
+            .map(|value| DecisionId::new(value).context("decode authority_decision_id"))
+            .transpose()
+            .map_err(to_sql_error)?,
+        trace_id: TraceId::new(row.get::<_, String>(6)?)
+            .expect("string ID literal/generated value must be non-empty"),
         state: from_json_atom(&state).map_err(to_sql_error)?,
         started_at: row.get(8)?,
         completed_at: row.get(9)?,
@@ -1423,11 +1452,13 @@ fn toy_contract_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CanonicalT
     let contract_json: String = row.get(1)?;
     let authority_bearing: i64 = row.get(2)?;
     Ok(CanonicalToyContract {
-        toy_id: ToyId::from(row.get::<_, String>(0)?),
+        toy_id: ToyId::new(row.get::<_, String>(0)?)
+            .expect("string ID literal/generated value must be non-empty"),
         contract: from_json_cell(&contract_json).map_err(to_sql_error)?,
         authority_bearing: authority_bearing != 0,
         catalog_revision: row.get::<_, i64>(3)?.max(0) as u64,
-        admitted_by_observation_id: ObservationId::from(row.get::<_, String>(4)?),
+        admitted_by_observation_id: ObservationId::new(row.get::<_, String>(4)?)
+            .expect("string ID literal/generated value must be non-empty"),
     })
 }
 
@@ -1437,8 +1468,10 @@ fn toy_grant_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToyGrant> {
     let constraints_json: String = row.get(4)?;
     let grant_state: String = row.get(5)?;
     Ok(ToyGrant {
-        grant_id: ToyGrantId::from(row.get::<_, String>(0)?),
-        toy_id: ToyId::from(row.get::<_, String>(1)?),
+        grant_id: ToyGrantId::new(row.get::<_, String>(0)?)
+            .expect("string ID literal/generated value must be non-empty"),
+        toy_id: ToyId::new(row.get::<_, String>(1)?)
+            .expect("string ID literal/generated value must be non-empty"),
         subject: from_json_cell(&subject_json).map_err(to_sql_error)?,
         scope: from_json_cell(&scope_json).map_err(to_sql_error)?,
         constraints: from_json_cell(&constraints_json).map_err(to_sql_error)?,
@@ -1446,7 +1479,8 @@ fn toy_grant_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToyGrant> {
         issuer_id: row.get(6)?,
         policy_revision: row.get::<_, i64>(7)?.max(0) as u64,
         grants_revision: row.get::<_, i64>(8)?.max(0) as u64,
-        authority_observation_id: ObservationId::from(row.get::<_, String>(9)?),
+        authority_observation_id: ObservationId::new(row.get::<_, String>(9)?)
+            .expect("string ID literal/generated value must be non-empty"),
     })
 }
 
@@ -1472,11 +1506,7 @@ fn from_json_atom<T: DeserializeOwned>(value: &str) -> Result<T> {
 }
 
 fn to_sql_error(error: anyhow::Error) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(
-        0,
-        rusqlite::types::Type::Text,
-        Box::new(std::io::Error::other(error.to_string())),
-    )
+    rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, error.into())
 }
 
 fn component_export_from_allowed_operations(allowed_operations: &[String]) -> ComponentWitExport {
@@ -1535,7 +1565,8 @@ mod tests {
 
     fn artifact() -> ComponentArtifact {
         ComponentArtifact {
-            artifact_id: ComponentArtifactId::from("artifact-a"),
+            artifact_id: ComponentArtifactId::new("artifact-a")
+                .expect("string ID literal/generated value must be non-empty"),
             child_name: "child-a".into(),
             artifact_version: "0.1.0".into(),
             content_hash: "sha256:wasm".into(),
@@ -1550,61 +1581,90 @@ mod tests {
             ingress_mode: ChildIngressMode::WitOnly,
             lifecycle_exports: LifecycleExports::AbsentAllowed,
             verification_status: VerificationStatus::Verified,
-            created_by_observation_id: ObservationId::from("obs-artifact"),
+            created_by_observation_id: ObservationId::new("obs-artifact")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
     fn approval(state: ChildApprovalState) -> ChildApproval {
         ChildApproval {
-            approval_id: ChildApprovalId::from("approval-a"),
-            artifact_id: ComponentArtifactId::from("artifact-a"),
+            approval_id: ChildApprovalId::new("approval-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            artifact_id: ComponentArtifactId::new("artifact-a")
+                .expect("string ID literal/generated value must be non-empty"),
             child_name: "child-a".into(),
             artifact_version: "0.1.0".into(),
-            scope_vision_id: Some(VisionId::from("vision-a")),
-            scope_node_id: Some(MctNodeId::from("node-a")),
+            scope_vision_id: Some(
+                VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            scope_node_id: Some(
+                MctNodeId::new("node-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             scope_project_id: None,
             approval_state: state,
             policy_revision: 1,
-            authority_observation_id: ObservationId::from("obs-approval"),
+            authority_observation_id: ObservationId::new("obs-approval")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
     fn assignment(state: ChildAssignmentState) -> ChildAssignment {
         ChildAssignment {
-            assignment_id: ChildAssignmentId::from("assignment-a"),
-            approval_id: ChildApprovalId::from("approval-a"),
-            artifact_id: ComponentArtifactId::from("artifact-a"),
+            assignment_id: ChildAssignmentId::new("assignment-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            approval_id: ChildApprovalId::new("approval-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            artifact_id: ComponentArtifactId::new("artifact-a")
+                .expect("string ID literal/generated value must be non-empty"),
             child_name: "child-a".into(),
-            vision_id: VisionId::from("vision-a"),
-            node_id: Some(MctNodeId::from("node-a")),
+            vision_id: VisionId::new("vision-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            node_id: Some(
+                MctNodeId::new("node-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
             project_id: None,
             assignment_state: state,
             pinned_artifact_version: "0.1.0".into(),
-            assignment_observation_id: ObservationId::from("obs-assignment"),
+            assignment_observation_id: ObservationId::new("obs-assignment")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
     fn instance(state: ChildInstanceState) -> ChildInstance {
         ChildInstance {
-            instance_id: ChildInstanceId::from("instance-a"),
-            assignment_id: ChildAssignmentId::from("assignment-a"),
-            artifact_id: ComponentArtifactId::from("artifact-a"),
+            instance_id: ChildInstanceId::new("instance-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            assignment_id: ChildAssignmentId::new("assignment-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            artifact_id: ComponentArtifactId::new("artifact-a")
+                .expect("string ID literal/generated value must be non-empty"),
             child_name: "child-a".into(),
             generation: 1,
-            node_id: MctNodeId::from("node-a"),
+            node_id: MctNodeId::new("node-a")
+                .expect("string ID literal/generated value must be non-empty"),
             instance_state: state,
-            readiness_observation_id: Some(ObservationId::from("obs-ready")),
-            last_lifecycle_observation_id: ObservationId::from("obs-ready"),
+            readiness_observation_id: Some(
+                ObservationId::new("obs-ready")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            last_lifecycle_observation_id: ObservationId::new("obs-ready")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
     fn call() -> MctCall {
         MctCall {
-            call_id: CallId::from("call-a"),
+            call_id: CallId::new("call-a")
+                .expect("string ID literal/generated value must be non-empty"),
             caller: CallerIdentity {
-                node_id: MctNodeId::from("node-a"),
+                node_id: MctNodeId::new("node-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 user_id: None,
-                vision_id: VisionId::from("vision-a"),
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 project_id: None,
             },
             target: OperationTarget {
@@ -1622,10 +1682,12 @@ mod tests {
                 grants_revision: 1,
                 vision_policy_revision: 1,
             },
-            deadline: Timestamp::from("2026-05-31T00:01:00Z"),
+            deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
             trace_context: TraceContext {
-                trace_id: TraceId::from("trace-a"),
-                span_id: SpanId::from("span-a"),
+                trace_id: TraceId::new("trace-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+                span_id: SpanId::new("span-a")
+                    .expect("string ID literal/generated value must be non-empty"),
             },
             origin: CallOrigin::Cli,
         }
@@ -1633,21 +1695,30 @@ mod tests {
 
     fn authorized() -> AuthorizedChildInvocation {
         AuthorizedChildInvocation {
-            authorized_child_invocation_id: AuthorizedChildInvocationId::from("auth-a"),
-            call_id: CallId::from("call-a"),
-            evaluation_id: ChildCallEvaluationId::from("eval-a"),
-            assignment_id: ChildAssignmentId::from("assignment-a"),
-            approval_id: ChildApprovalId::from("approval-a"),
-            artifact_id: ComponentArtifactId::from("artifact-a"),
-            child_instance_id: ChildInstanceId::from("instance-a"),
+            authorized_child_invocation_id: AuthorizedChildInvocationId::new("auth-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            call_id: CallId::new("call-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            evaluation_id: ChildCallEvaluationId::new("eval-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            assignment_id: ChildAssignmentId::new("assignment-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            approval_id: ChildApprovalId::new("approval-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            artifact_id: ComponentArtifactId::new("artifact-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            child_instance_id: ChildInstanceId::new("instance-a")
+                .expect("string ID literal/generated value must be non-empty"),
             child_name: "child-a".into(),
-            authority_decision_id: DecisionId::from("decision-a"),
+            authority_decision_id: DecisionId::new("decision-a")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
     fn toy_contract(authority_bearing: bool) -> CanonicalToyContract {
         CanonicalToyContract {
-            toy_id: ToyId::from("toy-state"),
+            toy_id: ToyId::new("toy-state")
+                .expect("string ID literal/generated value must be non-empty"),
             contract: ToyContractIdentity {
                 namespace: "patina".into(),
                 interface_name: "state".into(),
@@ -1657,24 +1728,37 @@ mod tests {
             },
             authority_bearing,
             catalog_revision: 3,
-            admitted_by_observation_id: ObservationId::from("obs-toy-catalog"),
+            admitted_by_observation_id: ObservationId::new("obs-toy-catalog")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
     fn toy_grant(state: ToyGrantState) -> ToyGrant {
         ToyGrant {
-            grant_id: ToyGrantId::from("grant-state"),
-            toy_id: ToyId::from("toy-state"),
+            grant_id: ToyGrantId::new("grant-state")
+                .expect("string ID literal/generated value must be non-empty"),
+            toy_id: ToyId::new("toy-state")
+                .expect("string ID literal/generated value must be non-empty"),
             subject: ToyGrantSubject {
                 child_name: "child-a".into(),
                 artifact_id: "artifact-a".into(),
                 artifact_version: "0.1.0".into(),
-                assignment_id: Some(ChildAssignmentId::from("assignment-a")),
-                caller_node_id: Some(MctNodeId::from("node-a")),
+                assignment_id: Some(
+                    ChildAssignmentId::new("assignment-a")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
+                caller_node_id: Some(
+                    MctNodeId::new("node-a")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
             },
             scope: ToyGrantScope {
-                vision_id: VisionId::from("vision-a"),
-                node_id: Some(MctNodeId::from("node-a")),
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+                node_id: Some(
+                    MctNodeId::new("node-a")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
                 project_id: None,
                 data_classification: Some("public".into()),
                 resource_id: Some("bucket-a".into()),
@@ -1682,7 +1766,7 @@ mod tests {
             },
             constraints: ToyGrantConstraints {
                 starts_at: None,
-                expires_at: Some(Timestamp::from("2026-05-31T00:10:00Z")),
+                expires_at: Some(Timestamp::new("2026-05-31T00:10:00Z").unwrap()),
                 max_uses: None,
                 max_duration_ms: Some(1000),
                 locality_required: true,
@@ -1691,7 +1775,8 @@ mod tests {
             issuer_id: "issuer-a".into(),
             policy_revision: 1,
             grants_revision: 2,
-            authority_observation_id: ObservationId::from("obs-toy-grant"),
+            authority_observation_id: ObservationId::new("obs-toy-grant")
+                .expect("string ID literal/generated value must be non-empty"),
         }
     }
 
@@ -1804,24 +1889,31 @@ mod tests {
             )
             .unwrap();
         let observation = MctObservation::informational(
-            ObservationId::from("obs-run"),
-            Timestamp::from("2026-05-31T00:00:00Z"),
+            ObservationId::new("obs-run")
+                .expect("string ID literal/generated value must be non-empty"),
+            Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             ObservationKind::RuntimeExecutionStarted,
-            TraceId::from("trace-a"),
+            TraceId::new("trace-a").expect("string ID literal/generated value must be non-empty"),
             "started",
         );
         store
             .append_run_observations("run-a", std::slice::from_ref(&observation))
             .unwrap();
         let result = MctResult {
-            call_id: CallId::from("call-a"),
+            call_id: CallId::new("call-a")
+                .expect("string ID literal/generated value must be non-empty"),
             outcome: ResultOutcome::Success,
             route_taken: Some(RouteTaken {
-                node_id: MctNodeId::from("node-a"),
-                child_id: Some(ChildId::from("child-a")),
+                node_id: MctNodeId::new("node-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+                child_id: Some(
+                    ChildId::new("child-a")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
                 runtime_kind: RuntimeKind::Process,
             }),
-            authority_decision_ref: DecisionId::from("decision-a"),
+            authority_decision_ref: DecisionId::new("decision-a")
+                .expect("string ID literal/generated value must be non-empty"),
             execution_summary: ExecutionSummary {
                 wall_time_ms: 1,
                 execution_time_ms: Some(1),
@@ -1830,7 +1922,8 @@ mod tests {
                 output_size_bytes: Some(2),
             },
             requester_message: "ok".into(),
-            audit_ref: AuditRef::from("audit-a"),
+            audit_ref: AuditRef::new("audit-a")
+                .expect("string ID literal/generated value must be non-empty"),
         };
         let run = store
             .complete_run("run-a", &result, "2026-05-31T00:00:01Z")

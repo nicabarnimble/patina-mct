@@ -43,16 +43,21 @@ pub use config::{
     MctConfigChildAuthorityProjection, MctDaemonConfig, MctDaemonConfigStore, MctLocalNodeIdentity,
     MctOperatorChildScope, MctOperatorNodeScope, MctPeerAddressBookEntry,
     MctPeerAuthorityProjection, MctStoredChildApproval, MctStoredChildAssignment,
-    default_config_path, unix_timestamp_string,
+    current_timestamp, current_timestamp_string, default_config_path,
 };
 pub use control::{
     MctControlPlaneAuthPolicy, MctControlPlaneResponse, MctControlPlaneSnapshot,
-    MctDaemonLocalControlFacts, MctDaemonLocalControlRequest, MctDaemonLocalControlResponse,
-    handle_control_plane_path, handle_control_plane_path_with_auth, handle_local_control_request,
-    serve_http_control_once, serve_http_control_once_with_auth,
+    MctControlPlaneSnapshotError, MctControlPlaneSnapshotResult, MctDaemonLocalControlFacts,
+    MctDaemonLocalControlRequest, MctDaemonLocalControlResponse, handle_control_plane_path,
+    handle_control_plane_path_result_with_auth, handle_control_plane_path_with_auth,
+    handle_local_control_request, serve_http_control_once, serve_http_control_once_with_auth,
+    serve_http_control_once_with_snapshot_result,
 };
 #[cfg(unix)]
-pub use control::{serve_uds_control_once, serve_uds_control_once_with_auth};
+pub use control::{
+    serve_uds_control_once, serve_uds_control_once_with_auth,
+    serve_uds_control_once_with_snapshot_result,
+};
 pub use cycle::{
     MctChildTaskCycleReport, MctDrainedEvent, MctTaskCycleChild, run_child_task_cycle,
 };
@@ -89,11 +94,12 @@ pub use toy::{
     MctToyAdapterOutcome, MctToyAdapterRegistry, MctToyBackend, MctToyCallIds, MctToyCallReport,
 };
 pub use wasm::{
-    MctWasiHostConfig, MctWasiPreopen, MctWasiPreopenAccess, MctWasmComponentDiagnosticIds,
-    MctWasmComponentInvocationIds, MctWasmComponentInvocationReport, MctWasmComponentRuntime,
-    MctWasmComponentRuntimeError, MctWasmComponentToyInvocation, MctWasmToyHostImport,
-    MctWitComponentInvocationReport, MctWitHostImportAdapters, MctWitResolvedOperation,
-    MctWitToyHostAdapter, resolve_wit_operation_target, wasm_component_runtime_error_observation,
+    DEFAULT_WASM_MEMORY_LIMIT_BYTES, MctWasiHostConfig, MctWasiPreopen, MctWasiPreopenAccess,
+    MctWasmComponentDiagnosticIds, MctWasmComponentInvocationIds, MctWasmComponentInvocationReport,
+    MctWasmComponentRuntime, MctWasmComponentRuntimeError, MctWasmComponentToyInvocation,
+    MctWasmHostConfig, MctWasmToyHostImport, MctWitComponentInvocationReport,
+    MctWitHostImportAdapters, MctWitResolvedOperation, MctWitToyHostAdapter,
+    resolve_wit_operation_target, wasm_component_runtime_error_observation,
     wit_operation_id_from_target,
 };
 
@@ -112,7 +118,8 @@ mod tests {
 
     fn iroh_snapshot(lifecycle: MotherIrohEndpointLifecycle) -> MotherIrohEndpointSnapshot {
         MotherIrohEndpointSnapshot {
-            endpoint_id: EndpointIdText::from("endpoint-daemon"),
+            endpoint_id: EndpointIdText::new("endpoint-daemon")
+                .expect("string ID literal/generated value must be non-empty"),
             lifecycle,
             accepted_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
             direct_addresses: vec!["127.0.0.1:0".into()],
@@ -188,7 +195,12 @@ mod tests {
         assert_eq!(report.trace_observation_count, 6);
 
         let ledger = JsonlObservationLedger::open(&ledger_path, "ledger-dev", "mother-a").unwrap();
-        let call_entries = ledger.by_call(&CallId::from("call-fake-echo")).unwrap();
+        let call_entries = ledger
+            .by_call(
+                &CallId::new("call-fake-echo")
+                    .expect("string ID literal/generated value must be non-empty"),
+            )
+            .unwrap();
         assert_eq!(call_entries.len(), 4);
     }
 }

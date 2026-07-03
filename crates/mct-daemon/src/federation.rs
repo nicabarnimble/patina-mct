@@ -1,4 +1,4 @@
-use crate::{MctDaemonConfig, MctRuntimeStateSummary, unix_timestamp_string};
+use crate::{MctDaemonConfig, MctRuntimeStateSummary, current_timestamp_string};
 use mct_kernel::{MctNodeId, VisionId};
 use serde::{Deserialize, Serialize};
 
@@ -46,7 +46,7 @@ pub fn build_federation_capability_view(
     MctFederationCapabilityView {
         node_id,
         vision_id,
-        published_at: unix_timestamp_string(),
+        published_at: current_timestamp_string(),
         artifacts: summary.artifacts,
         approved_children: summary.approved_children,
         ready_instances: summary.ready_instances,
@@ -67,10 +67,14 @@ mod tests {
         config.peers.insert(
             "peer-a".into(),
             MctPeerAddressBookEntry {
-                peer_node_id: MctNodeId::from("peer-a"),
-                binding_id: PeerBindingId::from("binding-a"),
-                endpoint_id: EndpointIdText::from("endpoint-a"),
-                vision_id: VisionId::from("vision-a"),
+                peer_node_id: MctNodeId::new("peer-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+                binding_id: PeerBindingId::new("binding-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+                endpoint_id: EndpointIdText::new("endpoint-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
                 ticket: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
@@ -80,10 +84,14 @@ mod tests {
         config.peers.insert(
             "peer-b".into(),
             MctPeerAddressBookEntry {
-                peer_node_id: MctNodeId::from("peer-b"),
-                binding_id: PeerBindingId::from("binding-b"),
-                endpoint_id: EndpointIdText::from("endpoint-b"),
-                vision_id: VisionId::from("vision-b"),
+                peer_node_id: MctNodeId::new("peer-b")
+                    .expect("string ID literal/generated value must be non-empty"),
+                binding_id: PeerBindingId::new("binding-b")
+                    .expect("string ID literal/generated value must be non-empty"),
+                endpoint_id: EndpointIdText::new("endpoint-b")
+                    .expect("string ID literal/generated value must be non-empty"),
+                vision_id: VisionId::new("vision-b")
+                    .expect("string ID literal/generated value must be non-empty"),
                 ticket: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
@@ -109,10 +117,13 @@ mod tests {
                 toy_catalog_contracts: 0,
                 toy_grant_snapshots: 0,
             },
-            MctNodeId::from("node-a"),
-            VisionId::from("vision-a"),
+            MctNodeId::new("node-a").expect("string ID literal/generated value must be non-empty"),
+            VisionId::new("vision-a").expect("string ID literal/generated value must be non-empty"),
         );
         assert_eq!(view.peers.len(), 1);
-        assert_eq!(view.peers[0].peer_node_id, MctNodeId::from("peer-a"));
+        assert_eq!(
+            view.peers[0].peer_node_id,
+            MctNodeId::new("peer-a").expect("string ID literal/generated value must be non-empty")
+        );
     }
 }
