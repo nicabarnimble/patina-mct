@@ -44,11 +44,11 @@ exit_criteria:
     verify: cargo test -p mct-daemon mct_wit_runtime_rejects_unimplemented_host_import
   - id: slate-fixture
     text: A Slate-like WIT component fixture executes list-work through the MCT runtime path using the Slate WIT contract shape.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon slate_manager_list_work_runs_through_mct_wit_runtime
   - id: kernel-boundary
     text: mct-kernel remains free of concrete Wasmtime, WASI, WIT-bindgen, filesystem, and HTTP runtime types.
-    checked: false
+    checked: true
     verify: rg -n "wasmtime|wasmtime_wasi|wit_bindgen|wasi_" crates/mct-kernel/src returns no matches
 ---
 
