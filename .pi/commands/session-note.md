@@ -1,0 +1,27 @@
+<!-- PATINA:START -->
+<!-- PATINA:START -->
+Add a human note to the current Patina session with Git context:
+
+1. Run the bundled session note wrapper with your insight:
+   - Execute: `.pi/bin/session-note.sh "$ARGUMENTS"`
+   - Example: `.pi/bin/session-note.sh "discovered dual session architecture is key"`
+
+2. The command will add Git context [branch@sha] to the note
+
+3. Confirm the note was added:
+   - Say: "Note added [branch@sha]: [what user said]"
+
+4. If the note contains keywords (breakthrough, discovered, solved, fixed):
+   - The command will suggest a checkpoint commit
+   - Consider: `git commit -am "checkpoint: [discovery]"`
+
+5. Purpose of Git-linked notes:
+   - Create searchable memory tied to specific code states
+   - Enable future queries like "when did we solve X?"
+   - Build knowledge graph through Git history
+
+Note: These notes are written to the durable live session artifact and are prioritized during session-end distillation.
+
+<!-- PATINA:END -->
+
+<!-- PATINA:END -->
