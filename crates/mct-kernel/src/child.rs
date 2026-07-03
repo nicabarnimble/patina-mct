@@ -377,6 +377,8 @@ pub struct AuthorizedChildInvocation {
     child_name: String,
     /// Decision that minted this authorization token.
     authority_decision_id: DecisionId,
+    /// Policy revision under which this capability was minted.
+    policy_revision: u64,
 }
 
 impl AuthorizedChildInvocation {
@@ -423,6 +425,11 @@ impl AuthorizedChildInvocation {
     /// Returns the decision that minted this capability.
     pub fn authority_decision_id(&self) -> &DecisionId {
         &self.authority_decision_id
+    }
+
+    /// Returns the policy revision under which this capability was minted.
+    pub fn policy_revision(&self) -> u64 {
+        self.policy_revision
     }
 }
 
@@ -796,6 +803,7 @@ pub fn evaluate_child_call_authority(
         child_instance_id: instance.instance_id.clone(),
         child_name: instance.child_name.clone(),
         authority_decision_id: evaluation.decision_id.clone(),
+        policy_revision: evaluation.policy_revision,
     };
 
     ChildCallAuthorityResult {

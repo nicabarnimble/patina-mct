@@ -227,6 +227,10 @@ pub struct AuthorizedToyCall {
     authority_decision_id: DecisionId,
     /// Token expiry, using grant expiry or call deadline when the grant has none.
     expires_at: Timestamp,
+    /// Policy revision under which this capability was minted.
+    policy_revision: u64,
+    /// Grants revision under which this capability was minted.
+    grants_revision: u64,
 }
 
 impl AuthorizedToyCall {
@@ -268,6 +272,16 @@ impl AuthorizedToyCall {
     /// Token expiry, using grant expiry or call deadline when the grant has none.
     pub fn expires_at(&self) -> &Timestamp {
         &self.expires_at
+    }
+
+    /// Returns the policy revision under which this capability was minted.
+    pub fn policy_revision(&self) -> u64 {
+        self.policy_revision
+    }
+
+    /// Returns the grants revision under which this capability was minted.
+    pub fn grants_revision(&self) -> u64 {
+        self.grants_revision
     }
 }
 
@@ -460,6 +474,8 @@ pub fn evaluate_toy_grant_for_call(
                 .expires_at
                 .clone()
                 .unwrap_or_else(|| call.deadline.clone()),
+            policy_revision: grant.policy_revision,
+            grants_revision: grant.grants_revision,
         };
 
         return ToyGrantEvaluationResult {

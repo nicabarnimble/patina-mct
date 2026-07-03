@@ -5,7 +5,7 @@
 - [x] Task T2 — Seal `AuthorizedChildInvocation` (single-effect capability)
 - [x] Task T3 — Seal `AuthorizedToyCall` (session-scoped capability)
 - [x] Task T4 — Seal `AuthorizedRouteExecution` (single-effect capability)
-- [ ] Task T5 — Staleness guard at the effect boundary
+- [x] Task T5 — Staleness guard at the effect boundary
 
 ---
 
@@ -191,6 +191,15 @@ exists.
 - Final summary: commits landed, grep-audit results (zero out-of-kernel
   constructions of the three sealed types), tasks completed/remaining per
   PHASE3.md, full validation results.
+
+## Task T5 notes
+
+`AuthorizedRouteExecution` now exposes the policy and grants revisions it was
+minted under. There is currently no daemon adapter that consumes
+`AuthorizedRouteExecution` directly; the route revalidation evaluator remains
+the route boundary and already compares current call revisions before minting.
+If a future route-execution adapter begins consuming the route capability, it
+must perform the same equality guard at that effect boundary.
 
 ## Flake log
 
