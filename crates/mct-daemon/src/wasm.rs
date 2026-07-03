@@ -596,7 +596,7 @@ fn wasm_invocation_result(
     MctResult {
         call_id: call.call_id.clone(),
         outcome,
-        route_taken: Some(RouteTaken {
+        route_taken: (!matches!(outcome, ResultOutcome::Denied)).then(|| RouteTaken {
             node_id: MctNodeId::new("local-mct")
                 .expect("string ID literal/generated value must be non-empty"),
             child_id: Some(
@@ -632,6 +632,64 @@ fn wasm_timeout_observation(
         authorized,
         "wasm component execution timed out",
     )
+}
+
+fn wasm_stale_authority_observation(
+    ids: &MctWasmComponentInvocationIds,
+    call: &MctCall,
+    authorized: &AuthorizedChildInvocation,
+) -> MctObservation {
+    wasm_observation(
+        ids.started_observation_id.clone(),
+        ids.started_at.clone(),
+        ObservationKind::RuntimeExecutionFailed,
+        ObservationOutcome::Denied,
+        call,
+        authorized,
+        "wasm component authority stale",
+    )
+}
+
+fn s32_stale_authority_report(
+    ids: MctWasmComponentInvocationIds,
+    call: &MctCall,
+    authorized: &AuthorizedChildInvocation,
+) -> MctWasmComponentInvocationReport {
+    let observation = wasm_stale_authority_observation(&ids, call, authorized);
+    let result = wasm_invocation_result(
+        call,
+        authorized,
+        ids.audit_ref,
+        ResultOutcome::Denied,
+        "not authorized",
+        None,
+    );
+    MctWasmComponentInvocationReport {
+        result,
+        returned_s32: 0,
+        observations: vec![observation],
+    }
+}
+
+fn wit_stale_authority_report(
+    ids: MctWasmComponentInvocationIds,
+    call: &MctCall,
+    authorized: &AuthorizedChildInvocation,
+) -> MctWitComponentInvocationReport {
+    let observation = wasm_stale_authority_observation(&ids, call, authorized);
+    let result = wasm_invocation_result(
+        call,
+        authorized,
+        ids.audit_ref,
+        ResultOutcome::Denied,
+        "not authorized",
+        None,
+    );
+    MctWitComponentInvocationReport {
+        result,
+        output_json: Value::Null,
+        observations: vec![observation],
+    }
 }
 
 fn s32_timeout_report(
@@ -885,6 +943,9 @@ impl MctWasmComponentRuntime {
     ) -> Result<MctWitComponentInvocationReport, MctWasmComponentRuntimeError> {
         let component_path = component_path.as_ref().to_path_buf();
         let operation = resolve_wit_operation_target(&call.target)?;
+        if authorized.policy_revision() != call.authority_context.policy_revision {
+            return Ok(wit_stale_authority_report(ids, call, &authorized));
+        }
         let started = wasm_observation(
             ids.started_observation_id.clone(),
             ids.started_at.clone(),
@@ -1027,6 +1088,9 @@ impl MctWasmComponentRuntime {
         ids: MctWasmComponentInvocationIds,
     ) -> Result<MctWasmComponentInvocationReport, MctWasmComponentRuntimeError> {
         let component_path = component_path.as_ref().to_path_buf();
+        if authorized.policy_revision() != call.authority_context.policy_revision {
+            return Ok(s32_stale_authority_report(ids, call, &authorized));
+        }
         let started = wasm_observation(
             ids.started_observation_id.clone(),
             ids.started_at.clone(),
@@ -1115,6 +1179,9 @@ impl MctWasmComponentRuntime {
         let component_path = invocation.component_path;
         let export_name = invocation.export_name;
         let ids = invocation.ids;
+        if authorized.policy_revision() != call.authority_context.policy_revision {
+            return Ok(s32_stale_authority_report(ids, call, &authorized));
+        }
         let started = wasm_observation(
             ids.started_observation_id.clone(),
             ids.started_at.clone(),
@@ -2954,6 +3021,32 @@ mod tests {
         assert_eq!(
             report.observations[2].kind,
             ObservationKind::ToyCallCompleted
+        );
+    }
+
+    #[test]
+    fn wasm_component_runtime_denies_stale_child_capability_before_load() {
+        let runtime = runtime();
+        let mut stale_call = call();
+        stale_call.authority_context.policy_revision += 1;
+
+        let report = runtime
+            .invoke_authorized_s32_export(
+                authorized(),
+                &stale_call,
+                PathBuf::from("/definitely/not/a/component.wasm"),
+                "answer",
+                ids(),
+            )
+            .unwrap();
+
+        assert_eq!(report.result.outcome, ResultOutcome::Denied);
+        assert_eq!(report.result.route_taken, None);
+        assert_eq!(report.observations.len(), 1);
+        assert_eq!(report.observations[0].outcome, ObservationOutcome::Denied);
+        assert_eq!(
+            report.observations[0].kind,
+            ObservationKind::RuntimeExecutionFailed
         );
     }
 

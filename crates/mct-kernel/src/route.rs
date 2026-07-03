@@ -199,6 +199,10 @@ pub struct AuthorizedRouteExecution {
     child_invocation: AuthorizedChildInvocation,
     /// Toy call tokens that survived revalidation.
     toy_calls: Vec<AuthorizedToyCall>,
+    /// Policy revision under which this capability was minted.
+    policy_revision: u64,
+    /// Grants revision under which this capability was minted.
+    grants_revision: u64,
 }
 
 impl AuthorizedRouteExecution {
@@ -235,6 +239,16 @@ impl AuthorizedRouteExecution {
     /// Toy call tokens that survived revalidation.
     pub fn toy_calls(&self) -> &[AuthorizedToyCall] {
         &self.toy_calls
+    }
+
+    /// Returns the policy revision under which this capability was minted.
+    pub fn policy_revision(&self) -> u64 {
+        self.policy_revision
+    }
+
+    /// Returns the grants revision under which this capability was minted.
+    pub fn grants_revision(&self) -> u64 {
+        self.grants_revision
     }
 }
 
@@ -499,6 +513,8 @@ pub fn revalidate_route_for_execution(
         route: selected_route.clone(),
         child_invocation,
         toy_calls: authorized_toys,
+        policy_revision: call.authority_context.policy_revision,
+        grants_revision: call.authority_context.grants_revision,
     };
 
     RouteRevalidationResult {
