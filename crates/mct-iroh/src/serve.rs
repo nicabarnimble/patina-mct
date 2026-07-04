@@ -257,13 +257,46 @@ impl MotherIrohEndpoint {
         Fut: Future<Output = MctIrohCallHandlerResult> + Send + 'static,
         N: Fn() -> Timestamp + Clone + Send + Sync + 'static,
     {
+        let bindings = Arc::new(bindings);
+        self.serve_concurrent_with_binding_provider(
+            state,
+            config,
+            now,
+            move || {
+                let bindings = Arc::clone(&bindings);
+                async move { Ok((*bindings).clone()) }
+            },
+            call_handler,
+        )
+        .await
+    }
+
+    pub async fn serve_concurrent_with_binding_provider<H, Fut, N, B, BindingsFut>(
+        &self,
+        state: MctIrohServeState,
+        config: MctIrohConcurrentServeConfig,
+        now: N,
+        bindings_provider: B,
+        call_handler: H,
+    ) -> MotherIrohEndpointResult<()>
+    where
+        H: Fn(MctCallProtocolRequest, MctCallProtocolEvaluation) -> Fut
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        Fut: Future<Output = MctIrohCallHandlerResult> + Send + 'static,
+        N: Fn() -> Timestamp + Clone + Send + Sync + 'static,
+        B: Fn() -> BindingsFut + Clone + Send + Sync + 'static,
+        BindingsFut:
+            Future<Output = MotherIrohEndpointResult<Vec<MctPeerBinding>>> + Send + 'static,
+    {
         let endpoint = self
             .endpoint
             .as_ref()
             .ok_or(MotherIrohEndpointError::EndpointClosed)?
             .clone();
         let state = Arc::new(Mutex::new(state));
-        let bindings = Arc::new(bindings);
         let semaphore = Arc::new(Semaphore::new(config.max_concurrent_connections));
         let active_tasks = Arc::new(AtomicU64::new(0));
 
@@ -284,7 +317,7 @@ impl MotherIrohEndpoint {
             }
 
             let state = Arc::clone(&state);
-            let bindings = Arc::clone(&bindings);
+            let bindings_provider = bindings_provider.clone();
             let call_handler = call_handler.clone();
             let now = now.clone();
             let events = config.events.clone();
@@ -328,6 +361,8 @@ impl MotherIrohEndpoint {
                             source: boxed_source(source),
                         }
                     })?;
+
+                    let bindings = bindings_provider().await?;
 
                     let (response_bytes, served) =
                         match alpn.as_slice() {
