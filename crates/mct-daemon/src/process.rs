@@ -52,18 +52,22 @@ pub enum MctProcessChildError {
 impl MctProcessChildHarness {
     pub fn invoke_authorized_child(
         &self,
-        authorized: &AuthorizedChildInvocation,
+        authorized: AuthorizedChildInvocation,
         call: &MctCall,
         stdin_json: &str,
         ids: MctProcessChildInvocationIds,
     ) -> Result<MctProcessChildInvocationReport, MctProcessChildError> {
+        if authorized.policy_revision() != call.authority_context.policy_revision {
+            return Ok(process_stale_authority_report(&authorized, call, ids));
+        }
+
         let started = process_observation(
             ids.started_observation_id.clone(),
             ids.started_at.clone(),
             ObservationKind::RuntimeExecutionStarted,
             ObservationOutcome::Started,
             call,
-            authorized,
+            &authorized,
             "process child execution started",
         );
 
@@ -104,7 +108,7 @@ impl MctProcessChildHarness {
                     ResultOutcome::Failed
                 };
                 return Ok(self.report(
-                    authorized,
+                    &authorized,
                     call,
                     ids,
                     started,
@@ -137,7 +141,7 @@ impl MctProcessChildHarness {
                 let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
                 let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
                 return Ok(self.report(
-                    authorized,
+                    &authorized,
                     call,
                     ids,
                     started,
@@ -183,12 +187,12 @@ impl MctProcessChildHarness {
             route_taken: Some(RouteTaken {
                 node_id: self.local_node_id.clone(),
                 child_id: Some(
-                    ChildId::new(authorized.child_name.clone())
+                    ChildId::new(authorized.child_name().to_owned())
                         .expect("string ID literal/generated value must be non-empty"),
                 ),
                 runtime_kind: RuntimeKind::Process,
             }),
-            authority_decision_ref: authorized.authority_decision_id.clone(),
+            authority_decision_ref: authorized.authority_decision_id().clone(),
             execution_summary: ExecutionSummary {
                 wall_time_ms: 0,
                 execution_time_ms: None,
@@ -216,6 +220,42 @@ impl MctProcessChildHarness {
     }
 }
 
+fn process_stale_authority_report(
+    authorized: &AuthorizedChildInvocation,
+    call: &MctCall,
+    ids: MctProcessChildInvocationIds,
+) -> MctProcessChildInvocationReport {
+    let observation = process_observation(
+        ids.started_observation_id,
+        ids.started_at,
+        ObservationKind::RuntimeExecutionFailed,
+        ObservationOutcome::Denied,
+        call,
+        authorized,
+        "process child authority stale",
+    );
+    MctProcessChildInvocationReport {
+        result: MctResult {
+            call_id: call.call_id.clone(),
+            outcome: ResultOutcome::Denied,
+            route_taken: None,
+            authority_decision_ref: authorized.authority_decision_id().clone(),
+            execution_summary: ExecutionSummary {
+                wall_time_ms: 0,
+                execution_time_ms: None,
+                queue_wait_ms: None,
+                input_size_bytes: call.payload_metadata.approximate_size_bytes,
+                output_size_bytes: None,
+            },
+            requester_message: "not authorized".into(),
+            audit_ref: ids.audit_ref,
+        },
+        stdout: String::new(),
+        stderr: String::new(),
+        observations: vec![observation],
+    }
+}
+
 fn process_observation(
     observation_id: ObservationId,
     observed_at: Timestamp,
@@ -237,9 +277,9 @@ fn process_observation(
             external_trace_id: None,
         },
         call_id: Some(call.call_id.clone()),
-        decision_id: Some(authorized.authority_decision_id.clone()),
-        subject_id: Some(authorized.child_name.clone()),
-        resource_id: Some(authorized.child_instance_id.to_string()),
+        decision_id: Some(authorized.authority_decision_id().clone()),
+        subject_id: Some(authorized.child_name().to_owned()),
+        resource_id: Some(authorized.child_instance_id().to_string()),
         policy_revision: Some(call.authority_context.policy_revision),
         grants_revision: Some(call.authority_context.grants_revision),
         outcome,
@@ -247,7 +287,7 @@ fn process_observation(
         safe_message: safe_message.into(),
         detail_ref: Some(format!(
             "authorized_child_invocation:{}",
-            authorized.authorized_child_invocation_id
+            authorized.authorized_child_invocation_id()
         )),
     }
 }
@@ -299,25 +339,13 @@ mod tests {
     }
 
     fn authorized() -> AuthorizedChildInvocation {
-        AuthorizedChildInvocation {
-            authorized_child_invocation_id: AuthorizedChildInvocationId::new("auth-process-1")
+        crate::authority_test_fixture::authorized_child_for_call(
+            &call(),
+            "process-echo",
+            MctNodeId::new("mother-a")
                 .expect("string ID literal/generated value must be non-empty"),
-            call_id: CallId::new("call-process-echo")
-                .expect("string ID literal/generated value must be non-empty"),
-            evaluation_id: ChildCallEvaluationId::new("child-eval-process")
-                .expect("string ID literal/generated value must be non-empty"),
-            assignment_id: ChildAssignmentId::new("assignment-process")
-                .expect("string ID literal/generated value must be non-empty"),
-            approval_id: ChildApprovalId::new("approval-process")
-                .expect("string ID literal/generated value must be non-empty"),
-            artifact_id: ComponentArtifactId::new("artifact-process")
-                .expect("string ID literal/generated value must be non-empty"),
-            child_instance_id: ChildInstanceId::new("instance-process")
-                .expect("string ID literal/generated value must be non-empty"),
-            child_name: "process-echo".into(),
-            authority_decision_id: DecisionId::new("decision-child-process")
-                .expect("string ID literal/generated value must be non-empty"),
-        }
+            "process",
+        )
     }
 
     fn ids(stem: &str) -> MctProcessChildInvocationIds {
@@ -363,7 +391,7 @@ mod tests {
         };
 
         let report = harness
-            .invoke_authorized_child(&authorized(), &call(), "{\"input\":\"hi\"}", ids("echo"))
+            .invoke_authorized_child(authorized(), &call(), "{\"input\":\"hi\"}", ids("echo"))
             .unwrap();
 
         assert_eq!(report.result.outcome, ResultOutcome::Success);
@@ -392,6 +420,37 @@ mod tests {
     }
 
     #[test]
+    fn process_harness_denies_stale_child_capability_before_spawn() {
+        let harness = MctProcessChildHarness {
+            executable: PathBuf::from("/definitely/not/a/child"),
+            args: Vec::new(),
+            timeout: Duration::from_secs(2),
+            local_node_id: MctNodeId::new("mother-a")
+                .expect("string ID literal/generated value must be non-empty"),
+        };
+        let mut stale_call = call();
+        stale_call.authority_context.policy_revision += 1;
+
+        let report = harness
+            .invoke_authorized_child(
+                authorized(),
+                &stale_call,
+                "{\"input\":\"hi\"}",
+                ids("stale"),
+            )
+            .unwrap();
+
+        assert_eq!(report.result.outcome, ResultOutcome::Denied);
+        assert_eq!(report.result.route_taken, None);
+        assert_eq!(report.observations.len(), 1);
+        assert_eq!(report.observations[0].outcome, ObservationOutcome::Denied);
+        assert_eq!(
+            report.observations[0].kind,
+            ObservationKind::RuntimeExecutionFailed
+        );
+    }
+
+    #[test]
     fn process_harness_timeout_returns_typed_result_and_observation() {
         let (_dir, script) = write_script("slow-child.sh", "#!/bin/sh\nsleep 2\nprintf slow\n");
         let harness = MctProcessChildHarness {
@@ -403,7 +462,7 @@ mod tests {
         };
 
         let report = harness
-            .invoke_authorized_child(&authorized(), &call(), "{}", ids("timeout"))
+            .invoke_authorized_child(authorized(), &call(), "{}", ids("timeout"))
             .unwrap();
 
         assert_eq!(report.result.outcome, ResultOutcome::TimedOut);

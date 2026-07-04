@@ -5,6 +5,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
+mod authority_test_fixture;
 mod children;
 mod composition;
 mod config;
@@ -80,9 +82,9 @@ pub use registry::{
     sync_child_registry_source,
 };
 pub use state::{
-    MctCompositionRunRecord, MctMetricPoint, MctQueuedTaskRecord, MctRegistrySourceRecord,
-    MctRuntimeRunRecord, MctRuntimeRunState, MctRuntimeStateStore, MctRuntimeStateSummary,
-    MctTaskIntentRecord, MctTaskStatus, default_state_path,
+    ChildInvocationProvenance, MctCompositionRunRecord, MctMetricPoint, MctQueuedTaskRecord,
+    MctRegistrySourceRecord, MctRuntimeRunRecord, MctRuntimeRunState, MctRuntimeStateStore,
+    MctRuntimeStateSummary, MctTaskIntentRecord, MctTaskStatus, default_state_path,
 };
 pub use status::{MctDaemonHealth, MctDaemonReadiness, MctDaemonStatus, daemon_status};
 pub use supervisor::{
@@ -194,7 +196,8 @@ mod tests {
         );
         assert_eq!(report.trace_observation_count, 6);
 
-        let ledger = JsonlObservationLedger::open(&ledger_path, "ledger-dev", "mother-a").unwrap();
+        let ledger =
+            JsonlObservationLedger::open_read_only(&ledger_path, "ledger-dev", "mother-a").unwrap();
         let call_entries = ledger
             .by_call(
                 &CallId::new("call-fake-echo")

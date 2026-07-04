@@ -71,16 +71,18 @@ Example:
 
 ```text
 crates/mct-kernel/src/peer/
-├── mod.rs          # MctPeerBinding, PeerAdmission, evaluate_peer_admission
+├── mod.rs          # MctPeerBinding, MctHelloRequest, evaluate_hello
 └── internal.rs     # matching, expiry checks, reason construction
 ```
 
 Example:
 
 ```text
-crates/mct-iroh/src/hello/
-├── mod.rs          # run_hello_protocol in MCT terms
-└── internal.rs     # stream framing, Iroh read/write, timeout details
+crates/mct-iroh/src/
+├── endpoint.rs          # endpoint lifecycle, configuration, and snapshots
+├── identity.rs          # node secret key loading/creation and hex codecs
+├── serve.rs             # MCT ALPN serving and call-handler dispatch
+└── serve/internal.rs    # stream framing, address helpers, and timeouts
 ```
 
 ## Public Interface Rules
@@ -97,29 +99,28 @@ crates/mct-iroh/src/hello/
 ### Good: explicit authority inputs
 
 ```rust
-pub fn evaluate_call_submission(
-    call: &MctCall,
-    peer: Option<&MctPeerAdmission>,
-    grants: &GrantSnapshot,
-    children: &ChildAssignmentSnapshot,
-    policy: &PolicySnapshot,
-) -> CallAuthorization;
+pub fn evaluate_call_protocol(
+    request: &MctCallProtocolRequest,
+    hello: &MctHelloAdmissionEvaluation,
+    ids: CallEvaluationIds,
+) -> MctCallProtocolEvaluation;
 ```
 
 ### Bad: hidden authority through a context bag
 
 ```rust
-pub fn evaluate_call_submission(ctx: &DaemonContext, call: &MctCall) -> bool;
+pub fn evaluate_call_protocol(ctx: &DaemonContext, call: &MctCall) -> bool;
 ```
 
-The second signature hides policy, grants, child assignment, and peer state. That makes review harder and authority easier to bypass.
+The second signature hides the hello admission, call envelope, and minted IDs. That makes review harder and authority easier to bypass.
 
 ### Good: adapter extracts facts
 
 ```rust
 // mct-iroh
-let presentation = IrohConnectionPresentation::from_connection_info(info);
-let decision = kernel.evaluate_peer_presentation(presentation);
+let presentation = IrohConnectionPresentation { /* adapter facts */ };
+let request = MctHelloRequest { /* peer claims */ };
+let decision = evaluate_hello(&request, bindings, policy, context);
 ```
 
 ### Bad: kernel imports substrate

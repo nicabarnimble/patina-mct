@@ -201,25 +201,88 @@ pub struct ToyGrantEvaluation {
     pub observation_id: ObservationId,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Capability token allowing one child toy effect after grant evaluation.
+#[derive(Debug, PartialEq, Eq)]
+/// Session-scoped capability token allowing a child to use one toy during one
+/// authorized component invocation.
+///
+/// This token is minted only by [`evaluate_toy_grant_for_call`]. It is
+/// intentionally borrowed for each toy host call made during the invocation:
+/// `next_toy_call_index`/`MctToyCallIds` provide per-use receipts, while this
+/// non-`Clone` token remains the session authority and cannot be copied into a
+/// later session.
 pub struct AuthorizedToyCall {
     /// Unique token identifier for the authorized toy effect.
-    pub authorized_toy_call_id: AuthorizedToyCallId,
+    authorized_toy_call_id: AuthorizedToyCallId,
     /// Call during which the toy may be used.
-    pub call_id: CallId,
+    call_id: CallId,
     /// Evaluation that minted this token.
-    pub evaluation_id: ToyGrantEvaluationId,
+    evaluation_id: ToyGrantEvaluationId,
     /// Grant that authorized the toy effect.
-    pub grant_id: ToyGrantId,
+    grant_id: ToyGrantId,
     /// Toy the token authorizes.
-    pub toy_id: ToyId,
+    toy_id: ToyId,
     /// Child instance allowed to exercise the toy.
-    pub child_instance_id: ChildInstanceId,
+    child_instance_id: ChildInstanceId,
     /// Authority decision tied to this token.
-    pub authority_decision_id: DecisionId,
+    authority_decision_id: DecisionId,
     /// Token expiry, using grant expiry or call deadline when the grant has none.
-    pub expires_at: Timestamp,
+    expires_at: Timestamp,
+    /// Policy revision under which this capability was minted.
+    policy_revision: u64,
+    /// Grants revision under which this capability was minted.
+    grants_revision: u64,
+}
+
+impl AuthorizedToyCall {
+    /// Unique token identifier for the authorized toy effect.
+    pub fn authorized_toy_call_id(&self) -> &AuthorizedToyCallId {
+        &self.authorized_toy_call_id
+    }
+
+    /// Call during which the toy may be used.
+    pub fn call_id(&self) -> &CallId {
+        &self.call_id
+    }
+
+    /// Evaluation that minted this token.
+    pub fn evaluation_id(&self) -> &ToyGrantEvaluationId {
+        &self.evaluation_id
+    }
+
+    /// Grant that authorized the toy effect.
+    pub fn grant_id(&self) -> &ToyGrantId {
+        &self.grant_id
+    }
+
+    /// Toy the token authorizes.
+    pub fn toy_id(&self) -> &ToyId {
+        &self.toy_id
+    }
+
+    /// Child instance allowed to exercise the toy.
+    pub fn child_instance_id(&self) -> &ChildInstanceId {
+        &self.child_instance_id
+    }
+
+    /// Authority decision tied to this token.
+    pub fn authority_decision_id(&self) -> &DecisionId {
+        &self.authority_decision_id
+    }
+
+    /// Token expiry, using grant expiry or call deadline when the grant has none.
+    pub fn expires_at(&self) -> &Timestamp {
+        &self.expires_at
+    }
+
+    /// Returns the policy revision under which this capability was minted.
+    pub fn policy_revision(&self) -> u64 {
+        self.policy_revision
+    }
+
+    /// Returns the grants revision under which this capability was minted.
+    pub fn grants_revision(&self) -> u64 {
+        self.grants_revision
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -256,7 +319,7 @@ pub struct ToyGrantEvaluationRequest {
     pub ids: ToyGrantEvaluationIds,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 /// Result of toy grant evaluation, including token only on allow.
 pub struct ToyGrantEvaluationResult {
     /// Typed evaluation recording verdict and reason.
@@ -411,6 +474,8 @@ pub fn evaluate_toy_grant_for_call(
                 .expires_at
                 .clone()
                 .unwrap_or_else(|| call.deadline.clone()),
+            policy_revision: grant.policy_revision,
+            grants_revision: grant.grants_revision,
         };
 
         return ToyGrantEvaluationResult {
@@ -658,18 +723,18 @@ mod tests {
         );
         let authorized = result.authorized.expect("authorized toy call");
         assert_eq!(
-            authorized.grant_id,
-            ToyGrantId::new("grant-logging")
+            authorized.grant_id(),
+            &ToyGrantId::new("grant-logging")
                 .expect("string ID literal/generated value must be non-empty")
         );
         assert_eq!(
-            authorized.child_instance_id,
-            ChildInstanceId::new("instance-a")
+            authorized.child_instance_id(),
+            &ChildInstanceId::new("instance-a")
                 .expect("string ID literal/generated value must be non-empty")
         );
         assert_eq!(
-            authorized.expires_at,
-            Timestamp::new("2026-05-31T00:05:00Z").unwrap()
+            authorized.expires_at(),
+            &Timestamp::new("2026-05-31T00:05:00Z").unwrap()
         );
     }
 

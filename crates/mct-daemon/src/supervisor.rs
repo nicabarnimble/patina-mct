@@ -98,9 +98,9 @@ impl MctProcessSupervisor {
         observation_id: ObservationId,
         observed_at: Timestamp,
     ) -> Result<MctProcessSupervisorEvent, MctProcessSupervisorError> {
-        if self.processes.contains_key(&authorized.child_instance_id) {
+        if self.processes.contains_key(authorized.child_instance_id()) {
             return Err(MctProcessSupervisorError::AlreadyRunning(
-                authorized.child_instance_id,
+                authorized.child_instance_id().clone(),
             ));
         }
         let mut command = Command::new(&config.executable);
@@ -116,8 +116,8 @@ impl MctProcessSupervisor {
                 source,
             })?;
         let status = MctSupervisedProcessStatus {
-            instance_id: authorized.child_instance_id.clone(),
-            child_name: authorized.child_name.clone(),
+            instance_id: authorized.child_instance_id().clone(),
+            child_name: authorized.child_name().to_owned(),
             pid: child.id(),
             state: MctSupervisedProcessState::Running,
             exit_code: None,
@@ -133,7 +133,7 @@ impl MctProcessSupervisor {
             "supervised process started",
         );
         self.processes.insert(
-            authorized.child_instance_id.clone(),
+            authorized.child_instance_id().clone(),
             SupervisedProcess {
                 child,
                 authorized,
@@ -307,9 +307,9 @@ fn supervisor_observation(
             external_trace_id: None,
         },
         call_id: Some(call.call_id.clone()),
-        decision_id: Some(authorized.authority_decision_id.clone()),
-        subject_id: Some(authorized.child_name.clone()),
-        resource_id: Some(authorized.child_instance_id.to_string()),
+        decision_id: Some(authorized.authority_decision_id().clone()),
+        subject_id: Some(authorized.child_name().to_owned()),
+        resource_id: Some(authorized.child_instance_id().to_string()),
         policy_revision: Some(call.authority_context.policy_revision),
         grants_revision: Some(call.authority_context.grants_revision),
         outcome,
@@ -317,7 +317,8 @@ fn supervisor_observation(
         safe_message: safe_message.into(),
         detail_ref: Some(format!(
             "authorized_child_invocation:{};node:{}",
-            authorized.authorized_child_invocation_id, local_node_id
+            authorized.authorized_child_invocation_id(),
+            local_node_id
         )),
     }
 }
@@ -369,25 +370,13 @@ mod tests {
     }
 
     fn authorized() -> AuthorizedChildInvocation {
-        AuthorizedChildInvocation {
-            authorized_child_invocation_id: AuthorizedChildInvocationId::new("auth-supervisor")
+        crate::authority_test_fixture::authorized_child_for_call(
+            &call(),
+            "supervised-process",
+            MctNodeId::new("mother-a")
                 .expect("string ID literal/generated value must be non-empty"),
-            call_id: CallId::new("call-supervisor")
-                .expect("string ID literal/generated value must be non-empty"),
-            evaluation_id: ChildCallEvaluationId::new("eval-supervisor")
-                .expect("string ID literal/generated value must be non-empty"),
-            assignment_id: ChildAssignmentId::new("assignment-supervisor")
-                .expect("string ID literal/generated value must be non-empty"),
-            approval_id: ChildApprovalId::new("approval-supervisor")
-                .expect("string ID literal/generated value must be non-empty"),
-            artifact_id: ComponentArtifactId::new("artifact-supervisor")
-                .expect("string ID literal/generated value must be non-empty"),
-            child_instance_id: ChildInstanceId::new("instance-supervisor")
-                .expect("string ID literal/generated value must be non-empty"),
-            child_name: "supervised-process".into(),
-            authority_decision_id: DecisionId::new("decision-supervisor")
-                .expect("string ID literal/generated value must be non-empty"),
-        }
+            "supervisor",
+        )
     }
 
     fn write_script(name: &str, body: &str) -> (tempfile::TempDir, PathBuf) {
