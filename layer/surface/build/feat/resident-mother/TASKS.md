@@ -2,7 +2,7 @@
 
 - [x] Task R0 — Housekeeping
 - [x] Task R1 — SPEC first
-- [ ] Task R2 — Concurrent peer serving in mct-iroh
+- [x] Task R2 — Concurrent peer serving in mct-iroh
 - [ ] Task R3 — The resident `mct-daemon serve`
 - [ ] Task R4 — Resident call execution
 - [ ] Task R5 — Operational surface
@@ -148,4 +148,103 @@ daemon and a shut-down one.
 
 ## Flake log
 
-None yet.
+### 2026-07-04 — R2 compile failure during concurrent serve refactor
+
+Command:
+
+```bash
+cargo test -p mct-iroh --lib
+```
+
+Failure output:
+
+```text
+   Compiling mct-iroh v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-iroh)
+error[E0599]: no method named `lock` found for struct `tokio::sync::MutexGuard<'_, serve::MctIrohServeState>` in the current scope
+   --> crates/mct-iroh/src/serve.rs:415:51
+    |
+415 | ...                   let mut state = state.lock().await;
+    |                                             ^^^^ private field, not a method
+...
+error[E0282]: type annotations needed
+   --> crates/mct-iroh/src/serve.rs:415:33
+...
+error[E0382]: borrow of moved value: `remote_endpoint_id`
+   --> crates/mct-iroh/src/serve.rs:595:42
+...
+error[E0382]: borrow of moved value: `remote_endpoint_id`
+   --> crates/mct-iroh/src/serve.rs:635:45
+...
+warning: variable does not need to be mutable
+   --> crates/mct-iroh/src/lib.rs:482:13
+...
+error: could not compile `mct-iroh` (lib test) due to 4 previous errors; 1 warning emitted
+```
+
+Assessment: deterministic compile errors from shadowing the shared serve-state handle with a mutex guard and moving endpoint IDs before storing/looking them up; not an intermittent flake.
+
+### 2026-07-04 — R2 concurrent hello test assertion failure
+
+Command:
+
+```bash
+cargo test -p mct-iroh --lib
+```
+
+Failure output:
+
+```text
+running 17 tests
+...
+test tests::concurrent_serve_keeps_peer_hello_state_separate ... FAILED
+...
+---- tests::concurrent_serve_keeps_peer_hello_state_separate stdout ----
+
+thread 'tests::concurrent_serve_keeps_peer_hello_state_separate' (3306037) panicked at crates/mct-iroh/src/lib.rs:423:9:
+assertion `left == right` failed
+  left: Denied
+ right: Admitted
+...
+test result: FAILED. 16 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.78s
+error: test failed, to rerun pass `-p mct-iroh --lib`
+```
+
+Assessment: deterministic test fixture mismatch while adding the second peer; the failing path is an authority denial, not an intermittent runtime flake.
+
+### 2026-07-04 — R2 clippy large enum variant
+
+Command:
+
+```bash
+cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh
+```
+
+Failure output:
+
+```text
+    Checking mct-iroh v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-iroh)
+error: large size difference between variants
+   --> crates/mct-iroh/src/serve.rs:159:1
+    |
+159 | / pub enum MctIrohServeEvent {
+160 | |     AcceptedConnection,
+    | |     ------------------ the second-largest variant carries no data at all
+161 | |     Served(MctIrohServedProtocol),
+    | |     ----------------------------- the largest variant contains at least 1104 bytes
+162 | |     RefusedConnection,
+163 | | }
+    | |_^ the entire enum is at least 1104 bytes
+    |
+    = note: `-D clippy::large-enum-variant` implied by `-D warnings`
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+    |
+161 -     Served(MctIrohServedProtocol),
+161 +     Served(Box<MctIrohServedProtocol>),
+    |
+
+error: could not compile `mct-iroh` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `mct-iroh` (lib test) due to 1 previous error
+```
+
+Assessment: deterministic clippy issue from adding an event enum with a large served-protocol payload; fixed by boxing the event payload rather than allowing the lint.
