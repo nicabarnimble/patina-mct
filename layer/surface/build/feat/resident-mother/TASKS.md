@@ -4,7 +4,7 @@
 - [x] Task R1 — SPEC first
 - [x] Task R2 — Concurrent peer serving in mct-iroh
 - [x] Task R3 — The resident `mct-daemon serve`
-- [ ] Task R4 — Resident call execution
+- [x] Task R4 — Resident call execution
 - [ ] Task R5 — Operational surface
 
 ---
@@ -288,3 +288,216 @@ error: could not compile `mct-daemon` (bin "mct-daemon") due to 5 previous error
 ```
 
 Assessment: deterministic compile issue from using Tokio signal APIs without enabling the `signal` feature and from boxing `anyhow::Error` directly for an adapter provider source; fixed by enabling the feature and preserving a typed provider error as `std::io::Error::other` at the public adapter boundary.
+
+### 2026-07-04 — R4 resident execution compile failure
+
+Command:
+
+```bash
+cargo test -p mct-iroh --lib && cargo test -p mct-daemon --bin mct-daemon
+```
+
+Failure output:
+
+```text
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0277]: the trait bound `mct_kernel::AuthorizedChildInvocation: Clone` is not satisfied
+    --> crates/mct-daemon/src/main.rs:1397:5
+     |
+1394 | #[derive(Clone, Debug)]
+     |          ----- in this derive macro expansion
+...
+1397 |     authorized: AuthorizedChildInvocation,
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `Clone` is not implemented for `mct_kernel::AuthorizedChildInvocation`
+
+error[E0609]: no field `result_id` on type `&mct_kernel::MctResult`
+    --> crates/mct-daemon/src/main.rs:1670:58
+     |
+1670 |             ResultRef::new(format!("{prefix}:{}", result.result_id))
+     |                                                          ^^^^^^^^^ unknown field
+     |
+     = note: available fields are: `call_id`, `outcome`, `route_taken`, `authority_decision_ref`, `execution_summary` ... and 2 others
+
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 2 previous errors
+```
+
+Assessment: deterministic compile issue from deriving `Clone` over sealed executable authority and guessing a non-existent result id field; fixed by keeping resident authorization non-clone and deriving reply result refs from the call id.
+
+### 2026-07-04 — R4 resident integration expected execution child
+
+Command:
+
+```bash
+cargo fmt --all && cargo test -p mct-daemon --bin mct-daemon
+```
+
+Failure output:
+
+```text
+running 3 tests
+test tests::authorize_cli_toy_denies_expired_grant_against_current_time ... ok
+test tests::control_snapshot_unopenable_state_projects_error_response ... ok
+test tests::resident_mother_serves_peer_control_and_shutdown ... FAILED
+
+failures:
+
+---- tests::resident_mother_serves_peer_control_and_shutdown stdout ----
+mct resident mother endpoint_id=570540d6f066c56ee8f4ed2d6e90d91c02c143c8032b70427d1358764a5ea575
+ticket={  "endpoint_id": "570540d6f066c56ee8f4ed2d6e90d91c02c143c8032b70427d1358764a5ea575",  "direct_addresses": [    "10.10.10.182:54712",    "10.10.10.209:54712",    "100.114.124.29:54712"  ],  "relay_urls": []}
+mct resident mother children loaded=0 failed=0 bindings=1 max_connections=8
+mct daemon serving control uds on /var/folders/6h/329275913d1d3k1lfvvvryp40000gn/T/.tmpWzhaBa/control.sock
+
+thread 'tests::resident_mother_serves_peer_control_and_shutdown' (3370763) panicked at crates/mct-daemon/src/main.rs:3433:9:
+assertion `left == right` failed
+  left: Denied
+ right: Success
+...
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.89s
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
+Assessment: deterministic test fixture drift after resident calls started executing real configured children; fixed by making the integration test provision and approve a real handle child rather than expecting success with no child loaded.
+
+### 2026-07-04 — R4 test assertion used nonexistent observation kind
+
+Command:
+
+```bash
+cargo fmt --all && cargo test -p mct-daemon --bin mct-daemon resident_mother_serves_peer_control_and_shutdown -- --nocapture
+```
+
+Failure output:
+
+```text
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0599]: no variant or associated item named `ChildCallAuthorized` found for enum `mct_kernel::ObservationKind` in the current scope
+    --> crates/mct-daemon/src/main.rs:3470:73
+     |
+3470 |                 .any(|entry| entry.observation.kind == ObservationKind::ChildCallAuthorized),
+     |                                                                         ^^^^^^^^^^^^^^^^^^^ variant or associated item not found in `mct_kernel::ObservationKind`
+     |
+help: there is a variant with a similar name
+     |
+3470 -                 .any(|entry| entry.observation.kind == ObservationKind::ChildCallAuthorized),
+3470 +                 .any(|entry| entry.observation.kind == ObservationKind::CallAuthorized),
+     |
+
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 1 previous error
+```
+
+Assessment: deterministic test assertion error; child authority observations currently project allowed child calls as `RouteRevalidated`, so the trace reconstruction assertion was corrected to the implemented taxonomy.
+
+### 2026-07-04 — R4 test moved ledger path before ledger assertion
+
+Command:
+
+```bash
+cargo fmt --all && cargo test -p mct-daemon --bin mct-daemon resident_mother_serves_peer_control_and_shutdown -- --nocapture
+```
+
+Failure output:
+
+```text
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0382]: borrow of moved value: `ledger_path`
+    --> crates/mct-daemon/src/main.rs:3459:52
+     |
+3353 |         let ledger_path = dir.path().join("observations.jsonl");
+     |             ----------- move occurs because `ledger_path` has type `std::path::PathBuf`, which does not implement the `Copy` trait
+...
+3393 |                 ledger_path,
+     |                 ----------- value moved here
+...
+3459 |             JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
+     |                                                    ^^^^^^^^^^^^ value borrowed here after move
+     |
+help: consider cloning the value if the performance cost is acceptable
+     |
+3393 |                 ledger_path: ledger_path.clone(),
+     |                            +++++++++++++++++++++
+
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 1 previous error
+```
+
+Assessment: deterministic test ownership issue after adding ledger reconstruction assertions; fixed by cloning the path into the resident config.
+
+### 2026-07-04 — R4 clippy obfuscated if/else in hello-state test helper
+
+Command:
+
+```bash
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+Failure output:
+
+```text
+    Checking mct-iroh v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-iroh)
+    Checking mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error: this method chain can be written more clearly with `if .. else ..`
+   --> crates/mct-iroh/src/serve.rs:194:29
+    |
+194 |               accepted_alpns: admitted
+    |  _____________________________^
+195 | |                 .then(|| vec![MCT_CALL_ALPN.into()])
+196 | |                 .unwrap_or_default(),
+    | |____________________________________^ help: try: `if admitted { vec![MCT_CALL_ALPN.into()] } else { Default::default() }`
+    |
+    = note: `-D clippy::obfuscated-if-else` implied by `-D warnings`
+
+error: could not compile `mct-iroh` (lib test) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+```
+
+Assessment: deterministic clippy style issue in a test helper; fixed by using an explicit `if` expression.
+
+### 2026-07-04 — R4 clippy resident authorization enum and nested denial write
+
+Command:
+
+```bash
+cargo fmt --all && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh
+```
+
+Failure output:
+
+```text
+    Checking mct-iroh v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-iroh)
+    Checking mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error: large size difference between variants
+    --> crates/mct-daemon/src/main.rs:1402:1
+     |
+1402 | / enum ResidentAuthorizationOutcome {
+1403 | |     Authorized(Box<ResidentAuthorizedExecution>),
+     | |     -------------------------------------------- the second-largest variant contains at least 8 bytes
+1404 | |     Denied { observation: MctObservation },
+     | |     -------------------------------------- the largest variant contains at least 352 bytes
+1405 | | }
+     | |_^ the entire enum is at least 352 bytes
+     |
+     = note: `-D clippy::large-enum-variant` implied by `-D warnings`
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+     |
+1404 -     Denied { observation: MctObservation },
+1404 +     Denied { observation: Box<MctObservation> },
+     |
+
+error: this `if` statement can be collapsed
+    --> crates/mct-daemon/src/main.rs:1427:9
+     |
+1427 | /         if let ResidentAuthorizationOutcome::Denied { observation } = authorization {
+1428 | |             if let Err(error) = ledger.append(vec![observation]).await {
+1429 | |                 eprintln!("resident authority denial ledger write failed: {error}");
+1430 | |                 return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+1431 | |             }
+1432 | |         }
+     | |_________^
+     |
+     = note: `-D clippy::collapsible-if` implied by `-D warnings`
+
+error: could not compile `mct-daemon` (bin "mct-daemon") due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 2 previous errors
+```
+
+Assessment: deterministic clippy issues from an internal enum carrying a large denial observation and a nested denial-write branch; fixed with boxed denial observations and a collapsed condition.

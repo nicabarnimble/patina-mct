@@ -28,7 +28,7 @@ Inputs are explicit CLI/config facts, not ambient state:
 ## Concurrency model
 
 - Iroh accepting and connection handling are separated. The accept loop owns admission capacity and spawns one task per accepted connection.
-- Hello/call authority state is keyed by peer endpoint id. A peer's accepted hello evaluation cannot be evicted by another peer, and call evaluation still rechecks the presented endpoint and hello decision.
+- Hello/call authority state is keyed by peer endpoint id. Only admitted hellos are retained; denied hellos leave no per-peer state. Retained admissions use a fixed-size oldest-first cap, and call evaluation still rechecks the presented endpoint and hello decision.
 - Each connection task supplies its own adapter `now` to kernel evaluators.
 - Observations are sent to a single ledger-writer task over an mpsc channel. Authority-critical observations await writer ack before the protected effect proceeds; fsync never blocks the async executor.
 - SQLite access follows the existing `spawn_blocking` pattern. Control snapshots and per-call state mutations open or lock the store inside blocking work; no `rusqlite` handle is shared across async tasks.
