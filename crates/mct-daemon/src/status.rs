@@ -22,10 +22,27 @@ pub struct MctDaemonStatus {
     pub health: MctDaemonHealth,
     pub readiness: MctDaemonReadiness,
     pub iroh_endpoint: Option<MotherIrohEndpointSnapshot>,
+    pub resident: Option<MctResidentStatus>,
     pub safe_message: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctResidentStatus {
+    pub accepted_connection_count: u64,
+    pub loaded_child_count: usize,
+    pub approved_child_count: usize,
+    pub binding_count: usize,
+    pub ledger_sequence_tip: u64,
+}
+
 pub fn daemon_status(iroh_endpoint: Option<MotherIrohEndpointSnapshot>) -> MctDaemonStatus {
+    daemon_status_with_resident(iroh_endpoint, None)
+}
+
+pub fn daemon_status_with_resident(
+    iroh_endpoint: Option<MotherIrohEndpointSnapshot>,
+    resident: Option<MctResidentStatus>,
+) -> MctDaemonStatus {
     let readiness = match iroh_endpoint.as_ref() {
         Some(snapshot) if snapshot.lifecycle == MotherIrohEndpointLifecycle::Bound => {
             MctDaemonReadiness::Ready
@@ -43,6 +60,7 @@ pub fn daemon_status(iroh_endpoint: Option<MotherIrohEndpointSnapshot>) -> MctDa
         health: MctDaemonHealth::Healthy,
         readiness,
         iroh_endpoint,
+        resident,
         safe_message,
     }
 }

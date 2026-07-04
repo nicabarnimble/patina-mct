@@ -5,7 +5,7 @@
 - [x] Task R2 — Concurrent peer serving in mct-iroh
 - [x] Task R3 — The resident `mct-daemon serve`
 - [x] Task R4 — Resident call execution
-- [ ] Task R5 — Operational surface
+- [x] Task R5 — Operational surface
 
 ---
 
@@ -501,3 +501,92 @@ error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 2 previous 
 ```
 
 Assessment: deterministic clippy issues from an internal enum carrying a large denial observation and a nested denial-write branch; fixed with boxed denial observations and a collapsed condition.
+
+### 2026-07-04 — R5 status compile failure during operational surface wiring
+
+Command:
+
+```bash
+cargo fmt --all && cargo test -p mct-daemon --bin mct-daemon -- --nocapture
+```
+
+Failure output:
+
+```text
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0425]: cannot find type `MctDaemonStatus` in this scope
+    --> crates/mct-daemon/src/main.rs:1081:25
+     |
+1081 |     fn status(&self) -> MctDaemonStatus {
+     |                         ^^^^^^^^^^^^^^^ not found in this scope
+...
+error[E0433]: failed to resolve: use of undeclared type `MctDaemonReadiness`
+    --> crates/mct-daemon/src/main.rs:3809:36
+     |
+3809 |         assert_eq!(live.readiness, MctDaemonReadiness::Ready);
+     |                                    ^^^^^^^^^^^^^^^^^^ use of undeclared type `MctDaemonReadiness`
+...
+error[E0282]: type annotations needed
+    --> crates/mct-daemon/src/main.rs:3567:9
+     |
+3567 | /         tokio::time::timeout(Duration::from_secs(10), resident)
+3568 | |             .await
+     | |__________________^ cannot infer type
+
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 7 previous errors
+```
+
+Assessment: deterministic compile issue while adding resident status types to the binary; fixed by importing the newly exported status types and by letting the resident join result bind before nested unwraps.
+
+### 2026-07-04 — R5 live status assertion raced event projection
+
+Command:
+
+```bash
+cargo fmt --all && cargo test -p mct-daemon --bin mct-daemon -- --nocapture
+```
+
+Failure output:
+
+```text
+running 5 tests
+...
+mct resident mother endpoint_id=2b33c52faf64cc067aa0c55408011ca2faed2fa1ff8ca9e7305c7fe79b034447
+ticket={  "endpoint_id": "2b33c52faf64cc067aa0c55408011ca2faed2fa1ff8ca9e7305c7fe79b034447",  "direct_addresses": [    "10.10.10.182:65090",    "10.10.10.209:65090",    "100.114.124.29:65090"  ],  "relay_urls": []}
+mct resident mother children loaded=1 failed=0 bindings=1 max_connections=8
+mct daemon serving control uds on /var/folders/6h/329275913d1d3k1lfvvvryp40000gn/T/.tmp8VzQwW/control.sock
+
+thread 'tests::resident_mother_serves_peer_control_and_shutdown' (3399008) panicked at crates/mct-daemon/src/main.rs:3561:9:
+MctResidentStatus { accepted_connection_count: 0, loaded_child_count: 1, approved_child_count: 1, binding_count: 1, ledger_sequence_tip: 0 }
+...
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.48s
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
+Assessment: deterministic test race against the asynchronous resident event projection that updates operational counters and ledger tip; fixed by polling the control plane until the live status reflects processed peer events.
+
+### 2026-07-04 — R5 clippy unused readiness import outside tests
+
+Command:
+
+```bash
+cargo fmt --all && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh
+```
+
+Failure output:
+
+```text
+    Checking mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error: unused import: `MctDaemonReadiness`
+ --> crates/mct-daemon/src/main.rs:6:27
+  |
+6 |     MctDaemonConfigStore, MctDaemonReadiness, MctDaemonStatus, MctLocalNodeIdentity,
+  |                           ^^^^^^^^^^^^^^^^^^
+  |
+  = note: `-D unused-imports` implied by `-D warnings`
+
+error: could not compile `mct-daemon` (bin "mct-daemon") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+```
+
+Assessment: deterministic target-specific unused import; fixed by removing the binary import and qualifying readiness in test-only assertions.
