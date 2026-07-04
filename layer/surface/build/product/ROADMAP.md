@@ -67,11 +67,12 @@ after-the-fact inspection.
 
 Dependency-ordered; each item assumes the ones before it.
 
-- [ ] **1. Resident Mother daemon** — one `mct-daemon serve` process
+- [x] **1. Resident Mother daemon** — one `mct-daemon serve` process
       composing Iroh endpoint + peer serving + control plane + state +
       ledger + child supervision, with config-driven bindings, concurrent
       per-connection authority state, and graceful shutdown.
       Task file: `layer/surface/build/feat/resident-mother/TASKS.md`.
+      Completed 2026-07-04; closeout recorded in `layer/surface/build/feat/resident-mother/TASKS.md`.
       Forcing functions: fixes single-slot hello state; forces the
       single-writer ledger and `!Sync` SQLite store into a concurrent
       architecture.

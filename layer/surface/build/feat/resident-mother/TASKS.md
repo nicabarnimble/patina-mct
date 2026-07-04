@@ -590,3 +590,13 @@ warning: build failed, waiting for other jobs to finish...
 ```
 
 Assessment: deterministic target-specific unused import; fixed by removing the binary import and qualifying readiness in test-only assertions.
+
+## Phase complete
+
+Date: 2026-07-04.
+
+Final implementation commit before closeout: `6098e00 feat: report resident mother operational status`.
+
+Summary: Phase 4 turns `mct-daemon serve` into the resident Mother process: it owns the persisted identity, binds and serves the Iroh endpoint concurrently, refreshes peer bindings from persisted config, executes configured and approved process or wasm-WIT children through kernel-minted per-call authority, writes observations through a single acknowledged ledger writer, exposes HTTP/UDS control status, tracks live endpoint/connection/child/binding/ledger counters, and shuts down cleanly with UDS socket cleanup.
+
+Scoped out: payload byte/data-plane transfer, routing-engine consumption of `AuthorizedRouteExecution`, binding signature verification, broader toy catalog work, and multi-Vision capability publication remain ROADMAP items 2–6.
