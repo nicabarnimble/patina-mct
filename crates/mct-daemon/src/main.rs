@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use mct_daemon::{
-    DEFAULT_WASM_MEMORY_LIMIT_BYTES, MctChildIntegrityMode, MctChildLoadOptions,
-    MctCompositionPlan, MctCompositionStep, MctConfigChildAuthorityProjection,
+    ChildInvocationProvenance, DEFAULT_WASM_MEMORY_LIMIT_BYTES, MctChildIntegrityMode,
+    MctChildLoadOptions, MctCompositionPlan, MctCompositionStep, MctConfigChildAuthorityProjection,
     MctControlPlaneSnapshot, MctControlPlaneSnapshotError, MctControlPlaneSnapshotResult,
     MctDaemonConfigStore, MctLocalNodeIdentity, MctOperatorChildScope, MctOperatorNodeScope,
     MctPeerAddressBookEntry, MctProcessChildHarness, MctProcessChildInvocationIds,
@@ -340,11 +340,15 @@ fn run_process(mut args: Vec<String>) -> Result<()> {
 
     let state = MctRuntimeStateStore::open(&state_path)?;
     let run_id = run_id_for_call("process", &call);
+    let child_invocation_provenance = ChildInvocationProvenance::from_authorized(
+        &authorized,
+        authority_observation.observation_id.clone(),
+    );
     state.insert_run_started(
         &run_id,
         &call,
         RuntimeKind::Process,
-        Some(&authorized),
+        Some(&child_invocation_provenance),
         mct_daemon::current_timestamp_string(),
     )?;
     state.append_run_observations(&run_id, std::slice::from_ref(&authority_observation))?;
@@ -357,7 +361,7 @@ fn run_process(mut args: Vec<String>) -> Result<()> {
             .expect("string ID literal/generated value must be non-empty"),
     };
     let report = harness.invoke_authorized_child(
-        &authorized,
+        authorized,
         &call,
         &payload,
         MctProcessChildInvocationIds {
@@ -436,18 +440,22 @@ fn run_wasm_call(mut args: Vec<String>) -> Result<()> {
 
     let state = MctRuntimeStateStore::open(&state_path)?;
     let run_id = run_id_for_call("wasm", &call);
+    let child_invocation_provenance = ChildInvocationProvenance::from_authorized(
+        &authorized,
+        authority_observation.observation_id.clone(),
+    );
     state.insert_run_started(
         &run_id,
         &call,
         RuntimeKind::WasmComponent,
-        Some(&authorized),
+        Some(&child_invocation_provenance),
         mct_daemon::current_timestamp_string(),
     )?;
     state.append_run_observations(&run_id, std::slice::from_ref(&authority_observation))?;
 
     let runtime = MctWasmComponentRuntime::new(default_wasm_host_config())?;
     let report = runtime.invoke_authorized_s32_export(
-        &authorized,
+        authorized,
         &call,
         component_path,
         &export_name,
@@ -519,11 +527,15 @@ fn run_wasm_call_wit(mut args: Vec<String>) -> Result<()> {
 
     let state = MctRuntimeStateStore::open(&state_path)?;
     let run_id = run_id_for_call("wasm-wit", &call);
+    let child_invocation_provenance = ChildInvocationProvenance::from_authorized(
+        &authorized,
+        authority_observation.observation_id.clone(),
+    );
     state.insert_run_started(
         &run_id,
         &call,
         RuntimeKind::WasmComponent,
-        Some(&authorized),
+        Some(&child_invocation_provenance),
         mct_daemon::current_timestamp_string(),
     )?;
     state.append_run_observations(&run_id, std::slice::from_ref(&authority_observation))?;
@@ -553,14 +565,14 @@ fn run_wasm_call_wit(mut args: Vec<String>) -> Result<()> {
     append_ledger_observations(&ledger_path, &adapter_build.observations)?;
     state.append_run_observations(&run_id, &adapter_build.observations)?;
 
-    let invoke_authorized = authorized.clone();
+    let invoke_authorized = authorized;
     let invoke_child = child.clone();
     let invoke_call = call.clone();
     let report = run_wit_runtime_on_blocking_thread(move || {
         let runtime = MctWasmComponentRuntime::new(default_wasm_host_config())?;
         Ok(
             runtime.invoke_authorized_child_wit_export_with_host_adapters(
-                &invoke_authorized,
+                invoke_authorized,
                 &invoke_child,
                 &invoke_call,
                 &args_json,
@@ -788,10 +800,10 @@ fn authorize_cli_toy(
                 child_name: request.child.name.clone(),
                 artifact_id: request.child.artifact_id.clone(),
                 artifact_version: request.child.version.clone(),
-                assignment_id: Some(request.authorized_child.assignment_id.clone()),
+                assignment_id: Some(request.authorized_child.assignment_id().clone()),
                 caller_node_id: Some(request.call.caller.node_id.clone()),
             },
-            child_instance_id: request.authorized_child.child_instance_id.clone(),
+            child_instance_id: request.authorized_child.child_instance_id().clone(),
             action: request.action.into(),
             resource_id: request.resource_id,
             node_id: request.call.caller.node_id.clone(),
@@ -2020,11 +2032,15 @@ async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
                         }
                     };
                     let run_id = run_id_for_call("iroh-process", &request.call);
+                    let child_invocation_provenance = ChildInvocationProvenance::from_authorized(
+                        &authorized,
+                        authority_observation.observation_id.clone(),
+                    );
                     if let Err(error) = runtime_state.insert_run_started(
                         &run_id,
                         &request.call,
                         RuntimeKind::Process,
-                        Some(&authorized),
+                        Some(&child_invocation_provenance),
                         mct_daemon::current_timestamp_string(),
                     ) {
                         return MctIrohCallHandlerResult::failed(format!(
@@ -2036,7 +2052,7 @@ async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
                         std::slice::from_ref(&authority_observation),
                     );
                     let report = match harness.invoke_authorized_child(
-                        &authorized,
+                        authorized,
                         &request.call,
                         "{}",
                         MctProcessChildInvocationIds {
@@ -2524,6 +2540,10 @@ fn print_help() {
 }
 
 #[cfg(test)]
+#[path = "authority_test_fixture.rs"]
+mod authority_test_fixture;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2598,25 +2618,13 @@ mod tests {
     }
 
     fn test_authorized_child() -> AuthorizedChildInvocation {
-        AuthorizedChildInvocation {
-            authorized_child_invocation_id: AuthorizedChildInvocationId::new("auth-child")
+        authority_test_fixture::authorized_child_for_call(
+            &test_call(),
+            "child-demo",
+            MctNodeId::new("local-mct")
                 .expect("string ID literal/generated value must be non-empty"),
-            call_id: CallId::new("call-cli-toy-expiry")
-                .expect("string ID literal/generated value must be non-empty"),
-            evaluation_id: ChildCallEvaluationId::new("eval-child")
-                .expect("string ID literal/generated value must be non-empty"),
-            assignment_id: ChildAssignmentId::new("assignment-child")
-                .expect("string ID literal/generated value must be non-empty"),
-            approval_id: ChildApprovalId::new("approval-child")
-                .expect("string ID literal/generated value must be non-empty"),
-            artifact_id: ComponentArtifactId::new("artifact-demo")
-                .expect("string ID literal/generated value must be non-empty"),
-            child_instance_id: ChildInstanceId::new("instance-child")
-                .expect("string ID literal/generated value must be non-empty"),
-            child_name: "child-demo".into(),
-            authority_decision_id: DecisionId::new("decision-child")
-                .expect("string ID literal/generated value must be non-empty"),
-        }
+            "child",
+        )
     }
 
     fn test_contract(toy_id: &ToyId) -> CanonicalToyContract {

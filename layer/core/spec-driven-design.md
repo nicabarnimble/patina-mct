@@ -53,11 +53,12 @@ If any of these are missing for non-trivial work, update the design surface firs
 The next implementation should start only where the design is already locked:
 
 ```text
-mct-kernel domain records
-MctObservation ledger basics
+mct-kernel domain records and evaluations
+MctObservation ledger validation and projections
 MctPeerBinding evaluation
 mct/hello/0 admission gate
 mct/call/0 peer call envelope
+typed WIT/process child invocation with toy-gated host effects
 ```
 
 Do not jump straight to:
@@ -65,7 +66,7 @@ Do not jump straight to:
 - full thought mesh replication;
 - arbitrary plugin framework;
 - generalized storage abstraction;
-- full WASM runtime;
+- additional runtime breadth beyond the current typed WIT/process slices;
 - relay fleet orchestration;
 - privacy/ECH architecture;
 - raw Iroh handles exposed to children.

@@ -1,67 +1,76 @@
 # Patina MCT
 
-Patina MCT is a clean Mother/Child/Toy runtime for Patina.
+MCT is a local-first application runtime in which **no code has ambient
+power**. A node runs sandboxed components (WASM or processes) that start with
+zero access to the filesystem, network, secrets, or each other — every effect
+a component performs must trace back to an explicit, inspectable, revocable
+authority record. Nodes connect to each other over [Iroh](https://iroh.computer)
+public-key networking, and there is no cloud control plane: each node is
+sovereign and holds its own complete state.
 
-MCT is a local-first authority runtime: a Mother owns local identity, child approval, toy grants, routing decisions, runtime execution, and observations. Children are approved components or processes. Toys are host capabilities such as logging, metrics, git, filesystem preopens, or future secrets/network/storage adapters. The kernel decides authority; adapters perform effects.
+The name is the model:
 
-This repository is intentionally standalone. Existing Patina Mother is useful prior art, but it is not the ontology for this codebase.
-
-## Core invariants
-
-- **Authority before effects.** Child calls, toy calls, peer admission, and filesystem access are authorized before adapter effects run.
-- **Kernel decides; adapters perform.** `mct-kernel` exposes typed domain records and decisions. Wasmtime, WASI, SQLite, git, process, HTTP, and Iroh details stay outside the kernel.
-- **Observations are runtime truth.** Important decisions and adapter effects produce `MctObservation` facts; logs and metrics are projections.
-- **No ambient child host power.** Children do not get raw filesystem roots, raw Iroh endpoints, raw secrets, raw process handles, or raw database handles by default.
-- **No generic WIT host stubs.** WIT imports require concrete configured adapters or fail closed before instantiation.
-- **Verified packages before approval.** MCT will not persist approved/active child config unless the child manifest and wasm artifact hashes are verified.
-- **Optimization cannot grant authority.** Routing may rank only candidates that already passed authority checks.
-
-## Workspace
-
-| Crate | Role |
-| --- | --- |
-| `mct-kernel` | Authority domain types and pure decisions for calls, children, peers, routes, toys, and observations. |
-| `mct-observation` | Append-only JSONL observation ledger with hash chaining and writer safety. |
-| `mct-iroh` | Mother-owned Iroh endpoint and MCT ALPN protocol adapter. |
-| `mct-daemon` | Composition layer: config, child loading, process/WASM runtimes, toy adapters, SQLite state, local control, metrics, registry, and CLI. |
-
-## Current runtime capabilities
-
-MCT currently supports:
-
-- child package loading through the SDK-owned `child.toml` contract;
-- strict child integrity mode using `.sha256` sidecars;
-- durable child approvals and assignments;
-- process child invocation after child authority;
-- typed WIT component invocation;
-- concrete WIT host adapters for:
-  - `wasi:logging/logging@0.1.0`,
-  - `patina:measure/measure@0.1.0`,
-  - `patina:git/git@0.1.0`,
-  - selected WASI p2 imports with explicit project-root preopens;
-- local git toy execution scoped to a configured repo root;
-- JSONL observations and private SQLite runtime state;
-- local HTTP/UDS control snapshots;
-- local Iroh hello/call protocol slices.
-
-## Quick checks
-
-```bash
-cargo test -p mct-daemon mct_wit_runtime
-cargo test -p mct-kernel -p mct-daemon
-cargo clippy -p mct-daemon -- -D warnings
-./scripts/ci-tier0.sh
+```text
+Mother = the authority of one node   (decides everything, owns the ledger)
+Child  = an application component    (computes; identified by its WIT contract)
+Toy    = a host capability           (the only way a child touches the world)
 ```
 
-## Basic CLI flow
+Mother decides; children compute; toys effect. When a child wants to write a
+file, tag a git repo, or emit a metric, it calls a toy — and the toy runs only
+if a persisted grant, evaluated against the current call, says it may.
 
-Load children:
+## Status
+
+Early and under active development. The local slices work — loading and
+approving verified child packages, invoking typed WIT exports with
+capability-scoped host access, recording the audit trail — and the
+peer-to-peer protocol is a functional early slice. APIs and CLI surfaces are
+still evolving; nothing here is stable yet.
+
+## What works today
+
+- **Verified child packages** — children ship as packages with a `child.toml`
+  manifest and SHA-256 sidecars; approval is refused unless both manifest and
+  wasm artifact hashes verify.
+- **Durable approvals and assignments** — which children may run, and where,
+  is persisted authority data, not runtime state.
+- **Typed WIT invocation** — call a component's WIT export with JSON
+  arguments; results lift back to JSON. Process-backed children are also
+  supported.
+- **Capability-scoped host access** — concrete host adapters for
+  `wasi:logging`, `patina:measure` (metrics), `patina:git`, and selected WASI
+  filesystem imports with explicit directory preopens. A WIT import with no
+  configured adapter fails closed before instantiation.
+- **Execution limits** — WASM component invocations run under wall-clock
+  deadlines and memory caps; process-backed children run under harness
+  timeouts.
+- **Audit trail** — every decision and effect emits a typed observation into
+  an append-only, hash-chained ledger with exclusive writer locking and
+  lock-free read-only validation. Logs and metrics are projections of this
+  ledger, never the truth themselves.
+- **Local control plane** — HTTP or Unix-socket status/state snapshots.
+- **Peer protocols (early)** — Iroh-based hello/call slices: a peer Mother is
+  admitted only against a persisted binding, and admission never pre-
+  authorizes calls.
+
+## Quick start
+
+Build and check the workspace:
+
+```bash
+cargo test -p mct-kernel -p mct-daemon
+```
+
+Load child packages from a directory (strict integrity requires the
+`.sha256` sidecars to verify):
 
 ```bash
 cargo run -p mct-daemon -- children load .mct/children --strict-integrity
 ```
 
-Approve a verified child package:
+Approve a verified child package (`slate-manager`, a work-tracking component,
+is the reference child used throughout):
 
 ```bash
 cargo run -p mct-daemon -- \
@@ -69,7 +78,7 @@ cargo run -p mct-daemon -- \
   --strict-integrity
 ```
 
-Persist the narrow local Slate toy authority for a project root:
+Grant the child a narrow toy authority scoped to one project directory:
 
 ```bash
 cargo run -p mct-daemon -- \
@@ -77,7 +86,7 @@ cargo run -p mct-daemon -- \
   --children-dir /path/to/slate-release-bundle
 ```
 
-Invoke a typed WIT export with `/project` explicitly preopened:
+Invoke a typed WIT export, with `/project` explicitly preopened:
 
 ```bash
 cargo run -p mct-daemon -- \
@@ -88,34 +97,79 @@ cargo run -p mct-daemon -- \
   --children-dir /path/to/slate-release-bundle
 ```
 
-`--project-root` supplies a concrete path; it does not create authority. The call path still evaluates persisted child approval and persisted toy grants before linking host imports.
+Note that `--project-root` supplies a path; it does not create authority. The
+call still evaluates the persisted approval and toy grants before any host
+import is linked.
 
-## Slate/WIT package contract
+## Security model
 
-A package-backed WIT child is expected to provide:
+The guarantees MCT is built to give you:
 
-- `child.toml`;
-- `[child.artifact].wasm` pointing to the package-relative wasm path;
-- the declared wasm artifact at that path;
-- `child.toml.sha256` containing the manifest hash;
-- `<artifact>.sha256` containing the wasm hash.
+- **Authority before effects.** Child calls, toy calls, peer admission, and
+  filesystem access are authorized before any adapter effect runs. Executable
+  child, toy, and route authority is carried by private, kernel-minted
+  capability tokens and checked for stale revisions at effect boundaries —
+  earlier admission is never treated as permanent permission.
+- **Nothing is ambient.** Children receive no raw filesystem roots, network
+  endpoints, secrets, process handles, or database handles by default. A
+  manifest `needs` entry is a request; it grants nothing.
+- **Fail closed.** Unknown, expired, revoked, mismatched, or malformed state
+  becomes a typed denial — never a permissive default. Unconfigured WIT
+  imports refuse to instantiate.
+- **Verified before approved.** Approval cannot persist unless the child's
+  manifest and artifact hashes verify against their sidecars.
+- **Optimization cannot grant authority.** Routing ranks only candidates that
+  already passed authority checks.
+- **Everything is auditable.** Decisions and effects are recorded in the
+  hash-chained observation ledger before effects proceed. Denials carry a
+  precise internal reason in the ledger and a deliberately vague external
+  message ("not authorized") to the caller.
 
-MCT strict approval rejects missing or mismatched sidecars. Release tooling should preserve the package-relative artifact path rather than flattening the wasm file into the release root.
+## Workspace
 
-## Design notes
+| Crate | Role |
+| --- | --- |
+| `mct-kernel` | Pure authority domain: typed records and decisions for calls, children, peers, routes, toys, and observations. No I/O. |
+| `mct-observation` | Append-only JSONL observation ledger with hash chaining, single-writer locking, and read-only validated access. |
+| `mct-iroh` | Mother-owned Iroh endpoint and the MCT hello/call protocol adapters. |
+| `mct-daemon` | Composition: config, child loading, WASM/process runtimes, toy adapters, SQLite state, control plane, and the CLI. |
 
-The important boundary is not “can the adapter do it?” but “which authority fact permits it?”
+The kernel decides; the other crates gather facts for it and perform effects
+it has authorized. Wasmtime, Iroh, SQLite, and filesystem details never
+appear in kernel APIs.
 
-For protected effects, review the path in this order:
+## Building child packages
 
-1. domain fact or grant that allows the action;
-2. observation proving the decision;
-3. adapter performing the effect;
-4. observation or typed result for completion/failure;
-5. caller-safe disclosure.
+A package-backed WIT child provides:
 
-If any step is unclear, the correct default is deny or fail closed.
+- `child.toml` — the manifest (SDK-owned contract);
+- `[child.artifact].wasm` in the manifest, pointing to the package-relative
+  wasm path;
+- the wasm artifact at that path;
+- `child.toml.sha256` and `<artifact>.sha256` sidecars containing the
+  respective hashes.
 
-## Status
+Strict approval rejects missing or mismatched sidecars. A common packaging
+mistake is flattening the wasm file into the release root — keep the
+artifact at its package-relative path so the digests verify.
 
-MCT is under active development. It is usable for local authority/runtime slices and Slate-like WIT child execution, but APIs and CLI surfaces are still evolving.
+## Development
+
+```bash
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+./scripts/ci-tier0.sh
+```
+
+All three must pass before a change lands.
+
+## Learn more
+
+The `layer/` directory is the project's knowledge base:
+
+- [What is MCT](layer/core/what-is-mct.md) — the full narrative: the model,
+  the anatomy of a peer call, multi-node Visions, and what MCT is not.
+- [Dependable Rust](layer/core/dependable-rust.md) — the code discipline this
+  workspace is built under.
+- `layer/allium/mct-product-map.allium` — the semantic specification; where
+  prose and spec disagree, the spec wins.

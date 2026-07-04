@@ -8,14 +8,14 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// Project-local durable runtime state for one standalone MCT node.
 ///
 /// This is an adapter: it enforces storage invariants and persists facts, but it
-/// does not create authority. Callers still need kernel authorization records
-/// such as `ChildApproval`, `ChildAssignment`, `ChildInstance`,
-/// `AuthorizedChildInvocation`, and `AuthorizedToyCall` before effects run.
+/// does not create authority. Callers still need kernel authorization facts such
+/// as `ChildApproval`, `ChildAssignment`, and `ChildInstance`, plus freshly
+/// evaluated invocation and toy-call capabilities before effects run.
 #[derive(Debug)]
 pub struct MctRuntimeStateStore {
     path: PathBuf,
@@ -100,6 +100,71 @@ pub struct MctQueuedTaskRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChildInvocationProvenance {
+    pub authorized_child_invocation_id: AuthorizedChildInvocationId,
+    pub call_id: CallId,
+    pub evaluation_id: ChildCallEvaluationId,
+    pub authority_decision_id: DecisionId,
+    pub authority_observation_id: ObservationId,
+    pub assignment_id: ChildAssignmentId,
+    pub approval_id: ChildApprovalId,
+    pub artifact_id: ComponentArtifactId,
+    pub child_instance_id: ChildInstanceId,
+    pub child_name: String,
+}
+
+impl ChildInvocationProvenance {
+    pub fn from_authorized(
+        authorized: &AuthorizedChildInvocation,
+        authority_observation_id: ObservationId,
+    ) -> Self {
+        Self {
+            authorized_child_invocation_id: authorized.authorized_child_invocation_id().clone(),
+            call_id: authorized.call_id().clone(),
+            evaluation_id: authorized.evaluation_id().clone(),
+            authority_decision_id: authorized.authority_decision_id().clone(),
+            authority_observation_id,
+            assignment_id: authorized.assignment_id().clone(),
+            approval_id: authorized.approval_id().clone(),
+            artifact_id: authorized.artifact_id().clone(),
+            child_instance_id: authorized.child_instance_id().clone(),
+            child_name: authorized.child_name().to_owned(),
+        }
+    }
+
+    fn from_legacy_authorized(
+        authorized: LegacyAuthorizedChildInvocation,
+        authority_observation_id: ObservationId,
+    ) -> Self {
+        Self {
+            authorized_child_invocation_id: authorized.authorized_child_invocation_id,
+            call_id: authorized.call_id,
+            evaluation_id: authorized.evaluation_id,
+            authority_decision_id: authorized.authority_decision_id,
+            authority_observation_id,
+            assignment_id: authorized.assignment_id,
+            approval_id: authorized.approval_id,
+            artifact_id: authorized.artifact_id,
+            child_instance_id: authorized.child_instance_id,
+            child_name: authorized.child_name,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct LegacyAuthorizedChildInvocation {
+    authorized_child_invocation_id: AuthorizedChildInvocationId,
+    call_id: CallId,
+    evaluation_id: ChildCallEvaluationId,
+    assignment_id: ChildAssignmentId,
+    approval_id: ChildApprovalId,
+    artifact_id: ComponentArtifactId,
+    child_instance_id: ChildInstanceId,
+    child_name: String,
+    authority_decision_id: DecisionId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MctRuntimeRunRecord {
     pub run_id: String,
     pub call_id: CallId,
@@ -113,7 +178,7 @@ pub struct MctRuntimeRunRecord {
     pub completed_at: Option<String>,
     pub result: Option<MctResult>,
     pub call: MctCall,
-    pub authorized_child_invocation: Option<AuthorizedChildInvocation>,
+    pub child_invocation_provenance: Option<ChildInvocationProvenance>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,7 +317,7 @@ impl MctRuntimeStateStore {
                 started_at TEXT NOT NULL,
                 completed_at TEXT,
                 call_json TEXT NOT NULL,
-                authorized_child_invocation_json TEXT,
+                child_invocation_provenance_json TEXT,
                 result_json TEXT
             );
 
@@ -473,11 +538,66 @@ impl MctRuntimeStateStore {
             END;
             "#,
         )?;
+        self.migrate_runtime_run_child_invocation_provenance()?;
         self.conn.execute(
             "INSERT OR REPLACE INTO mct_state_meta(key, value) VALUES('schema_version', ?1)",
             params![SCHEMA_VERSION.to_string()],
         )?;
         Ok(())
+    }
+
+    fn migrate_runtime_run_child_invocation_provenance(&self) -> Result<()> {
+        if !self.column_exists("runtime_runs", "child_invocation_provenance_json")? {
+            self.conn.execute(
+                "ALTER TABLE runtime_runs ADD COLUMN child_invocation_provenance_json TEXT",
+                [],
+            )?;
+        }
+        if !self.column_exists("runtime_runs", "authorized_child_invocation_json")? {
+            return Ok(());
+        }
+
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT run_id, authorized_child_invocation_json
+            FROM runtime_runs
+            WHERE authorized_child_invocation_json IS NOT NULL
+              AND child_invocation_provenance_json IS NULL
+            "#,
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for (run_id, authorized_json) in rows {
+            let authorized: LegacyAuthorizedChildInvocation = from_json_cell(&authorized_json)
+                .with_context(|| {
+                    format!("decode legacy authorized child invocation for {run_id}")
+                })?;
+            let provenance = ChildInvocationProvenance::from_legacy_authorized(
+                authorized,
+                ObservationId::new(format!("obs:migrated-child-authority:{run_id}"))
+                    .expect("generated migration observation id must be non-empty"),
+            );
+            self.conn.execute(
+                r#"
+                UPDATE runtime_runs
+                SET child_invocation_provenance_json = ?1
+                WHERE run_id = ?2
+                "#,
+                params![json_string(&provenance)?, run_id],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn column_exists(&self, table: &str, column: &str) -> Result<bool> {
+        let mut stmt = self.conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(columns.iter().any(|name| name == column))
     }
 
     pub fn summary(&self) -> Result<MctRuntimeStateSummary> {
@@ -775,20 +895,20 @@ impl MctRuntimeStateStore {
         run_id: impl Into<String>,
         call: &MctCall,
         runtime_kind: RuntimeKind,
-        authorized: Option<&AuthorizedChildInvocation>,
+        provenance: Option<&ChildInvocationProvenance>,
         started_at: impl Into<String>,
     ) -> Result<MctRuntimeRunRecord> {
         let run_id = run_id.into();
         let started_at = started_at.into();
-        let child_name = authorized.map(|auth| auth.child_name.clone());
-        let child_instance_id = authorized.map(|auth| auth.child_instance_id.clone());
-        let authority_decision_id = authorized.map(|auth| auth.authority_decision_id.clone());
+        let child_name = provenance.map(|auth| auth.child_name.clone());
+        let child_instance_id = provenance.map(|auth| auth.child_instance_id.clone());
+        let authority_decision_id = provenance.map(|auth| auth.authority_decision_id.clone());
         self.conn.execute(
             r#"
             INSERT INTO runtime_runs(
                 run_id, call_id, runtime_kind, child_name, child_instance_id,
                 authority_decision_id, trace_id, state, started_at, completed_at,
-                call_json, authorized_child_invocation_json, result_json
+                call_json, child_invocation_provenance_json, result_json
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'running', ?8, NULL, ?9, ?10, NULL)
             "#,
             params![
@@ -801,7 +921,7 @@ impl MctRuntimeStateStore {
                 call.trace_context.trace_id.as_str(),
                 started_at,
                 json_string(call)?,
-                authorized.map(json_string).transpose()?,
+                provenance.map(json_string).transpose()?,
             ],
         )?;
         self.get_run(&run_id)?
@@ -861,7 +981,7 @@ impl MctRuntimeStateStore {
                 r#"
                 SELECT run_id, call_id, runtime_kind, child_name, child_instance_id,
                        authority_decision_id, trace_id, state, started_at, completed_at,
-                       call_json, authorized_child_invocation_json, result_json
+                       call_json, child_invocation_provenance_json, result_json
                 FROM runtime_runs WHERE run_id = ?1
                 "#,
                 params![run_id],
@@ -876,7 +996,7 @@ impl MctRuntimeStateStore {
             r#"
             SELECT run_id, call_id, runtime_kind, child_name, child_instance_id,
                    authority_decision_id, trace_id, state, started_at, completed_at,
-                   call_json, authorized_child_invocation_json, result_json
+                   call_json, child_invocation_provenance_json, result_json
             FROM runtime_runs ORDER BY started_at DESC, run_id DESC LIMIT ?1
             "#,
         )?;
@@ -1394,7 +1514,7 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MctRuntimeRunRecord
     let authority_decision_id: Option<String> = row.get(5)?;
     let state: String = row.get(7)?;
     let call_json: String = row.get(10)?;
-    let authorized_json: Option<String> = row.get(11)?;
+    let provenance_json: Option<String> = row.get(11)?;
     let result_json: Option<String> = row.get(12)?;
     Ok(MctRuntimeRunRecord {
         run_id: row.get(0)?,
@@ -1416,7 +1536,7 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MctRuntimeRunRecord
         started_at: row.get(8)?,
         completed_at: row.get(9)?,
         call: from_json_cell(&call_json).map_err(to_sql_error)?,
-        authorized_child_invocation: authorized_json
+        child_invocation_provenance: provenance_json
             .as_deref()
             .map(from_json_cell)
             .transpose()
@@ -1694,25 +1814,20 @@ mod tests {
     }
 
     fn authorized() -> AuthorizedChildInvocation {
-        AuthorizedChildInvocation {
-            authorized_child_invocation_id: AuthorizedChildInvocationId::new("auth-a")
+        crate::authority_test_fixture::authorized_child_for_call(
+            &call(),
+            "child-a",
+            MctNodeId::new("node-a").expect("string ID literal/generated value must be non-empty"),
+            "a",
+        )
+    }
+
+    fn provenance() -> ChildInvocationProvenance {
+        ChildInvocationProvenance::from_authorized(
+            &authorized(),
+            ObservationId::new("obs-child-authority")
                 .expect("string ID literal/generated value must be non-empty"),
-            call_id: CallId::new("call-a")
-                .expect("string ID literal/generated value must be non-empty"),
-            evaluation_id: ChildCallEvaluationId::new("eval-a")
-                .expect("string ID literal/generated value must be non-empty"),
-            assignment_id: ChildAssignmentId::new("assignment-a")
-                .expect("string ID literal/generated value must be non-empty"),
-            approval_id: ChildApprovalId::new("approval-a")
-                .expect("string ID literal/generated value must be non-empty"),
-            artifact_id: ComponentArtifactId::new("artifact-a")
-                .expect("string ID literal/generated value must be non-empty"),
-            child_instance_id: ChildInstanceId::new("instance-a")
-                .expect("string ID literal/generated value must be non-empty"),
-            child_name: "child-a".into(),
-            authority_decision_id: DecisionId::new("decision-a")
-                .expect("string ID literal/generated value must be non-empty"),
-        }
+        )
     }
 
     fn toy_contract(authority_bearing: bool) -> CanonicalToyContract {
@@ -1878,13 +1993,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = MctRuntimeStateStore::open(dir.path().join("state.sqlite")).unwrap();
         let call = call();
-        let auth = authorized();
+        let provenance = provenance();
         store
             .insert_run_started(
                 "run-a",
                 &call,
                 RuntimeKind::Process,
-                Some(&auth),
+                Some(&provenance),
                 "2026-05-31T00:00:00Z",
             )
             .unwrap();
@@ -1939,9 +2054,94 @@ mod tests {
                 observed_at: "2026-05-31T00:00:01Z".into(),
             })
             .unwrap();
-        assert_eq!(store.list_runs(10).unwrap().len(), 1);
+        let listed = store.list_runs(10).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            listed[0].child_invocation_provenance,
+            Some(provenance.clone())
+        );
         assert_eq!(store.metric_points().unwrap().len(), 1);
         assert_eq!(store.summary().unwrap().completed_runs, 1);
+    }
+
+    #[test]
+    fn state_store_migrates_legacy_child_invocation_records_to_provenance() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.sqlite");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE mct_state_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO mct_state_meta(key, value) VALUES('schema_version', '3');
+            CREATE TABLE runtime_runs (
+                run_id TEXT PRIMARY KEY,
+                call_id TEXT NOT NULL,
+                runtime_kind TEXT NOT NULL,
+                child_name TEXT,
+                child_instance_id TEXT,
+                authority_decision_id TEXT,
+                trace_id TEXT NOT NULL,
+                state TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                call_json TEXT NOT NULL,
+                authorized_child_invocation_json TEXT,
+                result_json TEXT
+            );
+            "#,
+        )
+        .unwrap();
+        let call = call();
+        let authorized = authorized();
+        let legacy_authorized = LegacyAuthorizedChildInvocation {
+            authorized_child_invocation_id: authorized.authorized_child_invocation_id().clone(),
+            call_id: authorized.call_id().clone(),
+            evaluation_id: authorized.evaluation_id().clone(),
+            assignment_id: authorized.assignment_id().clone(),
+            approval_id: authorized.approval_id().clone(),
+            artifact_id: authorized.artifact_id().clone(),
+            child_instance_id: authorized.child_instance_id().clone(),
+            child_name: authorized.child_name().to_owned(),
+            authority_decision_id: authorized.authority_decision_id().clone(),
+        };
+        conn.execute(
+            r#"
+            INSERT INTO runtime_runs(
+                run_id, call_id, runtime_kind, child_name, child_instance_id,
+                authority_decision_id, trace_id, state, started_at, completed_at,
+                call_json, authorized_child_invocation_json, result_json
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11, NULL)
+            "#,
+            params![
+                "run-legacy",
+                call.call_id.as_str(),
+                json_atom(&RuntimeKind::Process).unwrap(),
+                authorized.child_name(),
+                authorized.child_instance_id().as_str(),
+                authorized.authority_decision_id().as_str(),
+                call.trace_context.trace_id.as_str(),
+                json_atom(&MctRuntimeRunState::Running).unwrap(),
+                "2026-05-31T00:00:00Z",
+                json_string(&call).unwrap(),
+                json_string(&legacy_authorized).unwrap(),
+            ],
+        )
+        .unwrap();
+        drop(conn);
+
+        let store = MctRuntimeStateStore::open(&path).unwrap();
+        assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+        let run = store.get_run("run-legacy").unwrap().unwrap();
+        let provenance = run.child_invocation_provenance.unwrap();
+        assert_eq!(
+            provenance.authorized_child_invocation_id,
+            authorized.authorized_child_invocation_id().clone()
+        );
+        assert_eq!(
+            provenance.authority_observation_id,
+            ObservationId::new("obs:migrated-child-authority:run-legacy")
+                .expect("string ID literal/generated value must be non-empty")
+        );
     }
 
     #[test]

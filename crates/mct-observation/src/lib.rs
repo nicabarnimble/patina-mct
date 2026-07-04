@@ -101,6 +101,51 @@ pub struct JsonlObservationLedger {
     previous_hash: Option<String>,
 }
 
+#[derive(Debug)]
+pub struct JsonlObservationLedgerReader {
+    path: PathBuf,
+    ledger_id: String,
+    mother_node_id: String,
+}
+
+impl JsonlObservationLedgerReader {
+    pub fn open(
+        path: impl AsRef<Path>,
+        ledger_id: impl Into<String>,
+        mother_node_id: impl Into<String>,
+    ) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let ledger_id = ledger_id.into();
+        let mother_node_id = mother_node_id.into();
+        scan_existing(&path, &ledger_id, &mother_node_id)?;
+        Ok(Self {
+            path,
+            ledger_id,
+            mother_node_id,
+        })
+    }
+
+    pub fn iter_entries(&self) -> impl Iterator<Item = Result<MctObservationLedgerEntry>> {
+        LedgerEntryIter::open(
+            self.path.clone(),
+            self.ledger_id.clone(),
+            self.mother_node_id.clone(),
+        )
+    }
+
+    pub fn entries(&self) -> Result<Vec<MctObservationLedgerEntry>> {
+        self.iter_entries().collect()
+    }
+
+    pub fn by_trace(&self, trace_id: &TraceId) -> Result<Vec<MctObservationLedgerEntry>> {
+        entries_by_trace(self.iter_entries(), trace_id)
+    }
+
+    pub fn by_call(&self, call_id: &CallId) -> Result<Vec<MctObservationLedgerEntry>> {
+        entries_by_call(self.iter_entries(), call_id)
+    }
+}
+
 impl JsonlObservationLedger {
     pub fn open(
         path: impl AsRef<Path>,
@@ -146,6 +191,14 @@ impl JsonlObservationLedger {
             next_sequence,
             previous_hash,
         })
+    }
+
+    pub fn open_read_only(
+        path: impl AsRef<Path>,
+        ledger_id: impl Into<String>,
+        mother_node_id: impl Into<String>,
+    ) -> Result<JsonlObservationLedgerReader> {
+        JsonlObservationLedgerReader::open(path, ledger_id, mother_node_id)
     }
 
     pub fn append_before_effect(
@@ -227,26 +280,48 @@ impl JsonlObservationLedger {
     }
 
     pub fn by_trace(&self, trace_id: &TraceId) -> Result<Vec<MctObservationLedgerEntry>> {
-        let mut entries = Vec::new();
-        for entry in self.iter_entries() {
-            let entry = entry?;
-            if &entry.observation.trace.trace_id == trace_id {
-                entries.push(entry);
-            }
-        }
-        Ok(entries)
+        entries_by_trace(self.iter_entries(), trace_id)
     }
 
     pub fn by_call(&self, call_id: &CallId) -> Result<Vec<MctObservationLedgerEntry>> {
-        let mut entries = Vec::new();
-        for entry in self.iter_entries() {
-            let entry = entry?;
-            if entry.observation.call_id.as_ref() == Some(call_id) {
-                entries.push(entry);
-            }
-        }
-        Ok(entries)
+        entries_by_call(self.iter_entries(), call_id)
     }
+}
+
+pub fn read_ledger_entries(
+    path: impl AsRef<Path>,
+    ledger_id: impl Into<String>,
+    mother_node_id: impl Into<String>,
+) -> Result<Vec<MctObservationLedgerEntry>> {
+    JsonlObservationLedgerReader::open(path, ledger_id, mother_node_id)?.entries()
+}
+
+fn entries_by_trace(
+    iter: impl Iterator<Item = Result<MctObservationLedgerEntry>>,
+    trace_id: &TraceId,
+) -> Result<Vec<MctObservationLedgerEntry>> {
+    let mut entries = Vec::new();
+    for entry in iter {
+        let entry = entry?;
+        if &entry.observation.trace.trace_id == trace_id {
+            entries.push(entry);
+        }
+    }
+    Ok(entries)
+}
+
+fn entries_by_call(
+    iter: impl Iterator<Item = Result<MctObservationLedgerEntry>>,
+    call_id: &CallId,
+) -> Result<Vec<MctObservationLedgerEntry>> {
+    let mut entries = Vec::new();
+    for entry in iter {
+        let entry = entry?;
+        if entry.observation.call_id.as_ref() == Some(call_id) {
+            entries.push(entry);
+        }
+    }
+    Ok(entries)
 }
 
 fn scan_existing(
@@ -520,6 +595,50 @@ mod tests {
         assert!(matches!(
             result,
             Err(ObservationLedgerError::WriterLock { .. })
+        ));
+    }
+
+    #[test]
+    fn read_only_open_does_not_contend_for_writer_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let mut ledger = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+        ledger
+            .append_before_effect(
+                observation("obs-1", "trace-1", Some("call-1")),
+                "2026-05-31T00:00:01Z",
+            )
+            .unwrap();
+
+        let reader = JsonlObservationLedger::open_read_only(&path, "ledger-a", "mother-a")
+            .expect("read-only ledger access must not acquire the writer lock");
+        let call_entries = reader
+            .by_call(
+                &CallId::new("call-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+            )
+            .unwrap();
+
+        assert_eq!(call_entries.len(), 1);
+    }
+
+    #[test]
+    fn read_only_open_enforces_identity_fail_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let mut ledger = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+        ledger
+            .append_before_effect(
+                observation("obs-1", "trace-1", None),
+                "2026-05-31T00:00:01Z",
+            )
+            .unwrap();
+
+        let result = JsonlObservationLedger::open_read_only(&path, "ledger-b", "mother-a");
+
+        assert!(matches!(
+            result,
+            Err(ObservationLedgerError::LedgerIdentityMismatch { sequence: 0, .. })
         ));
     }
 
