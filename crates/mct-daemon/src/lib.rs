@@ -86,7 +86,10 @@ pub use state::{
     MctRegistrySourceRecord, MctRuntimeRunRecord, MctRuntimeRunState, MctRuntimeStateStore,
     MctRuntimeStateSummary, MctTaskIntentRecord, MctTaskStatus, default_state_path,
 };
-pub use status::{MctDaemonHealth, MctDaemonReadiness, MctDaemonStatus, daemon_status};
+pub use status::{
+    MctDaemonHealth, MctDaemonReadiness, MctDaemonStatus, MctResidentStatus, daemon_status,
+    daemon_status_with_resident,
+};
 pub use supervisor::{
     MctProcessSpawnConfig, MctProcessSupervisor, MctProcessSupervisorError,
     MctProcessSupervisorEvent, MctProcessSupervisorRecoveryReport, MctSupervisedProcessState,

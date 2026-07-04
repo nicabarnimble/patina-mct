@@ -3,20 +3,22 @@ use mct_daemon::{
     ChildInvocationProvenance, DEFAULT_WASM_MEMORY_LIMIT_BYTES, MctChildIntegrityMode,
     MctChildLoadOptions, MctCompositionPlan, MctCompositionStep, MctConfigChildAuthorityProjection,
     MctControlPlaneSnapshot, MctControlPlaneSnapshotError, MctControlPlaneSnapshotResult,
-    MctDaemonConfigStore, MctLocalNodeIdentity, MctOperatorChildScope, MctOperatorNodeScope,
-    MctPeerAddressBookEntry, MctProcessChildHarness, MctProcessChildInvocationIds,
-    MctRuntimeStateStore, MctToyAdapterRegistry, MctToyBackend, MctWasiHostConfig, MctWasiPreopen,
-    MctWasiPreopenAccess, MctWasmComponentInvocationIds, MctWasmComponentRuntime,
-    MctWasmHostConfig, MctWitHostImportAdapters, MctWitToyHostAdapter,
-    build_federation_capability_view, build_metrics_snapshot, current_timestamp, daemon_status,
+    MctDaemonConfigStore, MctDaemonStatus, MctLocalNodeIdentity, MctOperatorChildScope,
+    MctOperatorNodeScope, MctPeerAddressBookEntry, MctProcessChildHarness,
+    MctProcessChildInvocationIds, MctResidentStatus, MctRuntimeStateStore, MctToyAdapterRegistry,
+    MctToyBackend, MctWasiHostConfig, MctWasiPreopen, MctWasiPreopenAccess,
+    MctWasmComponentInvocationIds, MctWasmComponentRuntime, MctWasmHostConfig,
+    MctWitHostImportAdapters, MctWitToyHostAdapter, build_federation_capability_view,
+    build_metrics_snapshot, current_timestamp, daemon_status, daemon_status_with_resident,
     default_config_path, default_state_path, install_verified_child_package,
     load_children_from_dir, record_composition_plan, reload_configured_child,
     serve_http_control_once_with_snapshot_result, sync_child_registry_source,
     warmup_configured_child,
 };
 use mct_iroh::{
-    MctIrohCallHandlerResult, MctIrohServeState, MctIrohServedProtocol, MotherIrohEndpoint,
-    MotherIrohEndpointConfig, MotherIrohEndpointTicket, MotherIrohRelayMode,
+    MctIrohCallHandlerResult, MctIrohConcurrentServeConfig, MctIrohServeEvent, MctIrohServeState,
+    MctIrohServedProtocol, MotherIrohEndpoint, MotherIrohEndpointConfig, MotherIrohEndpointError,
+    MotherIrohEndpointSnapshot, MotherIrohEndpointTicket, MotherIrohRelayMode,
     load_or_create_node_secret_key_hex,
 };
 use mct_kernel::*;
@@ -24,10 +26,13 @@ use mct_observation::JsonlObservationLedger;
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::broadcast};
 
 #[cfg(unix)]
 use tokio::net::UnixListener;
@@ -996,19 +1001,298 @@ fn run_slate_list_work(mut args: Vec<String>) -> Result<()> {
 }
 
 async fn run_serve(mut args: Vec<String>) -> Result<()> {
+    let relay_default = take_flag(&mut args, "--relay-default");
+    let config_path = take_option(&mut args, "--config")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_config_path);
+    let identity_path = take_option(&mut args, "--identity")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_identity_path);
+    let children_dir = take_option(&mut args, "--children-dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_children_dir);
     let state_path = take_option(&mut args, "--state")
         .map(PathBuf::from)
         .unwrap_or_else(default_state_path);
+    let ledger_path = take_option(&mut args, "--ledger")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_observation_ledger_path);
+    let max_concurrent_connections = take_option(&mut args, "--max-connections")
+        .map(|value| value.parse::<usize>())
+        .transpose()
+        .context("parse --max-connections")?
+        .unwrap_or(64);
     let http_addr = take_option(&mut args, "--http");
     let uds_path = take_option(&mut args, "--uds").map(PathBuf::from);
     if !args.is_empty() {
         bail!("unexpected serve arguments: {}", args.join(" "));
     }
-    match (http_addr, uds_path) {
-        (Some(addr), None) => serve_http_control_loop(&state_path, &addr).await,
-        (None, Some(path)) => run_control_serve_uds_with_state(state_path, path).await,
-        (None, None) => serve_http_control_loop(&state_path, "127.0.0.1:9173").await,
+    let control = match (http_addr, uds_path) {
+        (Some(addr), None) => ResidentControlTransport::Http(addr),
+        (None, Some(path)) => ResidentControlTransport::Uds(path),
+        (None, None) => ResidentControlTransport::Http("127.0.0.1:9173".into()),
         (Some(_), Some(_)) => bail!("serve accepts only one control transport: --http or --uds"),
+    };
+    run_resident_mother(
+        ResidentMotherConfig {
+            config_path,
+            identity_path,
+            children_dir,
+            state_path,
+            ledger_path,
+            control,
+            relay_default,
+            max_concurrent_connections,
+        },
+        resident_shutdown_signal(),
+        None,
+    )
+    .await
+}
+
+#[derive(Clone, Debug)]
+enum ResidentControlTransport {
+    Http(String),
+    Uds(PathBuf),
+}
+
+#[derive(Clone, Debug)]
+struct ResidentMotherConfig {
+    config_path: PathBuf,
+    identity_path: PathBuf,
+    children_dir: PathBuf,
+    state_path: PathBuf,
+    ledger_path: PathBuf,
+    control: ResidentControlTransport,
+    relay_default: bool,
+    max_concurrent_connections: usize,
+}
+
+#[derive(Clone, Debug)]
+struct ResidentStatusSource {
+    endpoint: Arc<Mutex<MotherIrohEndpointSnapshot>>,
+    accepted_connection_count: Arc<AtomicU64>,
+    loaded_child_count: usize,
+    approved_child_count: usize,
+    binding_count: usize,
+    ledger_path: PathBuf,
+}
+
+impl ResidentStatusSource {
+    fn status(&self) -> MctDaemonStatus {
+        daemon_status_with_resident(
+            Some(
+                self.endpoint
+                    .lock()
+                    .expect("resident endpoint status lock must not be poisoned")
+                    .clone(),
+            ),
+            Some(MctResidentStatus {
+                accepted_connection_count: self.accepted_connection_count.load(Ordering::SeqCst),
+                loaded_child_count: self.loaded_child_count,
+                approved_child_count: self.approved_child_count,
+                binding_count: self.binding_count,
+                ledger_sequence_tip: ledger_sequence_tip(&self.ledger_path),
+            }),
+        )
+    }
+}
+
+fn ledger_sequence_tip(path: &Path) -> u64 {
+    JsonlObservationLedger::open_read_only(path, "ledger-local", "local-mct")
+        .and_then(|reader| reader.entries())
+        .ok()
+        .and_then(|entries| entries.last().map(|entry| entry.local_sequence))
+        .unwrap_or(0)
+}
+
+async fn run_resident_mother<S>(
+    config: ResidentMotherConfig,
+    shutdown: S,
+    ready: Option<tokio::sync::oneshot::Sender<MotherIrohEndpointTicket>>,
+) -> Result<()>
+where
+    S: std::future::Future<Output = ()> + Send,
+{
+    if config.max_concurrent_connections == 0 {
+        bail!("--max-connections must be greater than zero");
+    }
+
+    let config_store = MctDaemonConfigStore::new(&config.config_path);
+    let identity = config_store.ensure_local_identity(
+        MctOperatorNodeScope::default(),
+        config.identity_path.clone(),
+    )?;
+    let secret_key_hex = load_or_create_node_secret_key_hex(&config.identity_path)?;
+    let mut endpoint = MotherIrohEndpoint::bind(iroh_config(secret_key_hex, config.relay_default))
+        .await
+        .context("bind resident Mother Iroh endpoint")?;
+    let snapshot = endpoint.snapshot();
+    if snapshot.endpoint_id != identity.endpoint_id {
+        bail!(
+            "identity endpoint mismatch: config has {}, bound endpoint is {}",
+            identity.endpoint_id,
+            snapshot.endpoint_id
+        );
+    }
+    let ticket = endpoint.ticket();
+    let load_report = load_children_from_dir(MctChildLoadOptions::new(config.children_dir.clone()));
+    let _state = MctRuntimeStateStore::open(&config.state_path)
+        .with_context(|| format!("open runtime state {}", config.state_path.display()))?;
+    drop(_state);
+    let ledger = ResidentLedgerWriter::spawn(config.ledger_path.clone())?;
+
+    let loaded_child_count = load_report.loaded;
+    let resident_config = config_store.load()?;
+    let approved_child_count = resident_config
+        .child_approvals
+        .values()
+        .filter(|approval| approval.approval_state == ChildApprovalState::Approved)
+        .count();
+    let binding_count = resident_config.peers.len();
+    let accepted_connection_count = Arc::new(AtomicU64::new(0));
+    let endpoint_status = Arc::new(Mutex::new(snapshot.clone()));
+    let status_source = Arc::new(ResidentStatusSource {
+        endpoint: Arc::clone(&endpoint_status),
+        accepted_connection_count: Arc::clone(&accepted_connection_count),
+        loaded_child_count,
+        approved_child_count,
+        binding_count,
+        ledger_path: config.ledger_path.clone(),
+    });
+
+    let (events, event_rx) = tokio::sync::mpsc::channel(256);
+    let event_ledger = ledger.clone();
+    let event_accepted_count = Arc::clone(&accepted_connection_count);
+    let event_task = tokio::spawn(async move {
+        record_iroh_serve_events(event_rx, event_ledger, event_accepted_count).await
+    });
+
+    let (shutdown_tx, _) = broadcast::channel(4);
+    let control_task = spawn_resident_control_task(
+        config.control.clone(),
+        config.state_path.clone(),
+        shutdown_tx.subscribe(),
+        Some(status_source),
+    )?;
+
+    println!("mct resident mother endpoint_id={}", snapshot.endpoint_id);
+    println!("ticket={}", ticket.to_json()?.replace('\n', ""));
+    eprintln!(
+        "mct resident mother children loaded={} failed={} bindings={} max_connections={}",
+        loaded_child_count, load_report.failed, binding_count, config.max_concurrent_connections
+    );
+    if let Some(ready) = ready {
+        let _ = ready.send(ticket.clone());
+    }
+
+    let config_path = config.config_path.clone();
+    let execution_paths = ResidentExecutionPaths {
+        config_path: config.config_path.clone(),
+        children_dir: config.children_dir.clone(),
+        state_path: config.state_path.clone(),
+    };
+    let execution_ledger = ledger.clone();
+    let serve_result = tokio::select! {
+        result = endpoint.serve_concurrent_with_binding_provider(
+            MctIrohServeState::new(),
+            MctIrohConcurrentServeConfig {
+                max_concurrent_connections: config.max_concurrent_connections,
+                events: Some(events),
+                ..MctIrohConcurrentServeConfig::default()
+            },
+            current_timestamp,
+            move || {
+                let config_path = config_path.clone();
+                async move { load_peer_bindings_for_iroh(config_path).await }
+            },
+            move |request, _evaluation| {
+                let execution_paths = execution_paths.clone();
+                let execution_ledger = execution_ledger.clone();
+                async move { execute_resident_call(execution_paths, execution_ledger, request).await }
+            },
+        ) => result.map_err(anyhow::Error::from),
+        _ = shutdown => Ok(()),
+    };
+
+    let _ = shutdown_tx.send(());
+    endpoint.close().await;
+    if let Ok(mut endpoint_status) = endpoint_status.lock() {
+        *endpoint_status = endpoint.snapshot();
+    }
+    if let Err(error) = ledger
+        .append(vec![resident_endpoint_observation(
+            "obs-resident-mother-endpoint-closed",
+            snapshot.endpoint_id.clone(),
+            ObservationOutcome::Completed,
+            "resident Mother endpoint closed",
+        )])
+        .await
+    {
+        eprintln!("ledger shutdown observation failed: {error}");
+    }
+    let _ = tokio::time::timeout(Duration::from_secs(2), event_task).await;
+    control_task.abort();
+    ledger.close().await;
+    if let ResidentControlTransport::Uds(path) = &config.control {
+        let _ = std::fs::remove_file(path);
+    }
+    serve_result
+}
+
+fn spawn_resident_control_task(
+    control: ResidentControlTransport,
+    state_path: PathBuf,
+    shutdown: broadcast::Receiver<()>,
+    status_source: Option<Arc<ResidentStatusSource>>,
+) -> Result<tokio::task::JoinHandle<Result<()>>> {
+    match control {
+        ResidentControlTransport::Http(addr) => Ok(tokio::spawn(async move {
+            serve_http_control_loop_until(state_path, addr, shutdown, status_source).await
+        })),
+        ResidentControlTransport::Uds(path) => Ok(tokio::spawn(async move {
+            run_control_serve_uds_with_state_until(state_path, path, shutdown, status_source).await
+        })),
+    }
+}
+
+async fn load_peer_bindings_for_iroh(
+    path: PathBuf,
+) -> mct_iroh::MotherIrohEndpointResult<Vec<MctPeerBinding>> {
+    tokio::task::spawn_blocking(move || {
+        MctDaemonConfigStore::new(path)
+            .load()
+            .and_then(|config| config.peer_authority_projection())
+    })
+    .await
+    .map_err(|source| MotherIrohEndpointError::ProtocolProvider {
+        action: "join peer binding load",
+        source: Box::new(source),
+    })?
+    .map(|projection| projection.bindings)
+    .map_err(|source| MotherIrohEndpointError::ProtocolProvider {
+        action: "load peer bindings",
+        source: Box::new(std::io::Error::other(source.to_string())),
+    })
+}
+
+async fn resident_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut interrupt =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+                .expect("install SIGINT handler");
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("install SIGTERM handler");
+        tokio::select! {
+            _ = interrupt.recv() => {}
+            _ = terminate.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
     }
 }
 
@@ -1022,6 +1306,447 @@ async fn serve_http_control_loop(state_path: &Path, addr: &str) -> Result<()> {
             control_snapshot(&snapshot_source).await,
         )
         .await?;
+    }
+}
+
+async fn serve_http_control_loop_until(
+    state_path: PathBuf,
+    addr: String,
+    mut shutdown: broadcast::Receiver<()>,
+    status_source: Option<Arc<ResidentStatusSource>>,
+) -> Result<()> {
+    let listener = TcpListener::bind(&addr).await?;
+    let snapshot_source = ControlSnapshotSource::open_with_status(&state_path, status_source);
+    println!("mct daemon serving control http on {addr}");
+    loop {
+        tokio::select! {
+            _ = shutdown.recv() => break,
+            result = serve_http_control_once_with_snapshot_result(
+                &listener,
+                control_snapshot(&snapshot_source).await,
+            ) => result?,
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+struct ResidentLedgerWriter {
+    sender: tokio::sync::mpsc::Sender<ResidentLedgerWrite>,
+}
+
+struct ResidentLedgerWrite {
+    observations: Vec<MctObservation>,
+    ack: tokio::sync::oneshot::Sender<std::result::Result<(), String>>,
+}
+
+impl ResidentLedgerWriter {
+    fn spawn(path: PathBuf) -> Result<Self> {
+        let mut ledger = JsonlObservationLedger::open(&path, "ledger-local", "local-mct")
+            .with_context(|| format!("open observation ledger {}", path.display()))?;
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<ResidentLedgerWrite>(256);
+        tokio::task::spawn_blocking(move || {
+            while let Some(write) = receiver.blocking_recv() {
+                let result = ledger
+                    .append_batch_before_effect(
+                        write.observations,
+                        mct_daemon::current_timestamp_string(),
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string());
+                let _ = write.ack.send(result);
+            }
+        });
+        Ok(Self { sender })
+    }
+
+    async fn append(&self, observations: Vec<MctObservation>) -> Result<()> {
+        if observations.is_empty() {
+            return Ok(());
+        }
+        let (ack, rx) = tokio::sync::oneshot::channel();
+        self.sender
+            .send(ResidentLedgerWrite { observations, ack })
+            .await
+            .context("send observations to resident ledger writer")?;
+        rx.await
+            .context("receive resident ledger writer acknowledgement")?
+            .map_err(anyhow::Error::msg)
+    }
+
+    async fn close(self) {
+        drop(self.sender);
+    }
+}
+
+async fn record_iroh_serve_events(
+    mut events: tokio::sync::mpsc::Receiver<MctIrohServeEvent>,
+    ledger: ResidentLedgerWriter,
+    accepted_connection_count: Arc<AtomicU64>,
+) {
+    while let Some(event) = events.recv().await {
+        let observations = match event {
+            MctIrohServeEvent::AcceptedConnection => {
+                accepted_connection_count.fetch_add(1, Ordering::SeqCst);
+                Vec::new()
+            }
+            MctIrohServeEvent::Served(served) => resident_observations_for_served_protocol(*served),
+            MctIrohServeEvent::RefusedConnection => Vec::new(),
+        };
+        if let Err(error) = ledger.append(observations).await {
+            eprintln!("resident ledger event write failed: {error}");
+        }
+    }
+}
+
+fn resident_observations_for_served_protocol(served: MctIrohServedProtocol) -> Vec<MctObservation> {
+    match served {
+        MctIrohServedProtocol::Hello {
+            request,
+            evaluation,
+            ..
+        } => vec![hello_evaluation_observation(
+            request.trace_id,
+            current_timestamp(),
+            &evaluation,
+        )],
+        MctIrohServedProtocol::Call {
+            request,
+            evaluation,
+            ..
+        } => vec![call_protocol_evaluation_observation(
+            request.call.trace_context.trace_id,
+            current_timestamp(),
+            &evaluation,
+        )],
+    }
+}
+
+fn resident_endpoint_observation(
+    observation_id: &'static str,
+    endpoint_id: EndpointIdText,
+    outcome: ObservationOutcome,
+    safe_message: &'static str,
+) -> MctObservation {
+    MctObservation {
+        observation_id: ObservationId::new(observation_id)
+            .expect("string ID literal/generated value must be non-empty"),
+        observed_at: current_timestamp(),
+        kind: ObservationKind::AdapterEffectCompleted,
+        source_plane: SourcePlane::Adapter,
+        trace: ObservationTraceRef {
+            trace_id: TraceId::new("trace-resident-mother")
+                .expect("string ID literal/generated value must be non-empty"),
+            span_id: None,
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: None,
+        decision_id: None,
+        subject_id: Some(endpoint_id.to_string()),
+        resource_id: Some("mct-iroh-endpoint".into()),
+        policy_revision: Some(1),
+        grants_revision: Some(1),
+        outcome,
+        visibility: ObservationVisibility::InternalOnly,
+        safe_message: safe_message.into(),
+        detail_ref: None,
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ResidentExecutionPaths {
+    config_path: PathBuf,
+    children_dir: PathBuf,
+    state_path: PathBuf,
+}
+
+#[derive(Debug)]
+struct ResidentAuthorizedExecution {
+    child: mct_daemon::MctLoadedChild,
+    authorized: AuthorizedChildInvocation,
+    authority_observation: MctObservation,
+}
+
+#[derive(Debug)]
+enum ResidentAuthorizationOutcome {
+    Authorized(Box<ResidentAuthorizedExecution>),
+    Denied { observation: Box<MctObservation> },
+}
+
+#[derive(Clone, Debug)]
+struct ResidentExecutionReport {
+    result: MctResult,
+    observations: Vec<MctObservation>,
+}
+
+async fn execute_resident_call(
+    paths: ResidentExecutionPaths,
+    ledger: ResidentLedgerWriter,
+    request: MctCallProtocolRequest,
+) -> MctIrohCallHandlerResult {
+    let authorization = match authorize_resident_child(paths.clone(), request.call.clone()).await {
+        Ok(authorization) => authorization,
+        Err(error) => {
+            eprintln!("resident child authorization unavailable: {error}");
+            return MctIrohCallHandlerResult::failed("runtime unavailable");
+        }
+    };
+
+    let ResidentAuthorizationOutcome::Authorized(authorized) = authorization else {
+        if let ResidentAuthorizationOutcome::Denied { observation } = authorization
+            && let Err(error) = ledger.append(vec![*observation]).await
+        {
+            eprintln!("resident authority denial ledger write failed: {error}");
+            return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+        }
+        return MctIrohCallHandlerResult::denied();
+    };
+
+    if let Err(error) = ledger
+        .append(vec![authorized.authority_observation.clone()])
+        .await
+    {
+        eprintln!("resident authority ledger write failed: {error}");
+        return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+    }
+
+    let execution = match tokio::task::spawn_blocking(move || {
+        execute_authorized_resident_child(paths, *authorized, request.call)
+    })
+    .await
+    {
+        Ok(Ok(report)) => report,
+        Ok(Err(error)) => {
+            eprintln!("resident child execution failed: {error}");
+            return MctIrohCallHandlerResult::failed("runtime execution failed");
+        }
+        Err(error) => {
+            eprintln!("resident child execution task failed: {error}");
+            return MctIrohCallHandlerResult::failed("runtime execution failed");
+        }
+    };
+
+    if let Err(error) = ledger.append(execution.observations.clone()).await {
+        eprintln!("resident execution ledger write failed: {error}");
+        return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+    }
+
+    result_to_call_handler_result("result-resident", &execution.result)
+}
+
+async fn authorize_resident_child(
+    paths: ResidentExecutionPaths,
+    call: MctCall,
+) -> Result<ResidentAuthorizationOutcome> {
+    tokio::task::spawn_blocking(move || authorize_resident_child_blocking(&paths, &call))
+        .await
+        .context("join resident child authorization")?
+}
+
+fn authorize_resident_child_blocking(
+    paths: &ResidentExecutionPaths,
+    call: &MctCall,
+) -> Result<ResidentAuthorizationOutcome> {
+    let config = MctDaemonConfigStore::new(&paths.config_path).load()?;
+    let load_report = load_children_from_dir(MctChildLoadOptions::new(paths.children_dir.clone()));
+    let projection = config.authority_projection_for_loaded_children(
+        load_report.children.iter(),
+        MctOperatorChildScope::default(),
+    );
+    let mut authorized = Vec::new();
+    let mut first_denial = None;
+
+    for child in load_report
+        .children
+        .into_iter()
+        .filter(|child| resident_child_accepts_call(child, call))
+    {
+        let result = projection.authorize_child_for_call(&child.name, call);
+        let observation = child_call_authority_observation(
+            call.trace_context.trace_id.clone(),
+            current_timestamp(),
+            &result.evaluation,
+        );
+        if let Some(authorized_child) = result.authorized {
+            authorized.push(ResidentAuthorizedExecution {
+                child,
+                authorized: authorized_child,
+                authority_observation: observation,
+            });
+        } else if first_denial.is_none() {
+            first_denial = Some(observation);
+        }
+    }
+
+    match authorized.len() {
+        1 => Ok(ResidentAuthorizationOutcome::Authorized(Box::new(
+            authorized.remove(0),
+        ))),
+        0 => {
+            let observation = first_denial.unwrap_or_else(|| {
+                let result = projection.authorize_child_for_call("resident-dispatch-missing", call);
+                child_call_authority_observation(
+                    call.trace_context.trace_id.clone(),
+                    current_timestamp(),
+                    &result.evaluation,
+                )
+            });
+            Ok(ResidentAuthorizationOutcome::Denied {
+                observation: Box::new(observation),
+            })
+        }
+        _ => bail!("multiple approved resident children match call target"),
+    }
+}
+
+fn resident_child_accepts_call(child: &mct_daemon::MctLoadedChild, call: &MctCall) -> bool {
+    let operation_id = mct_daemon::operation_id_from_target(&call.target);
+    match child.ingress_mode {
+        mct_daemon::MctChildIngressMode::Handle => {
+            child.allowed_operations.is_empty()
+                || child
+                    .allowed_operations
+                    .iter()
+                    .any(|allowed| allowed == &operation_id)
+        }
+        mct_daemon::MctChildIngressMode::Hybrid | mct_daemon::MctChildIngressMode::WitOnly => {
+            child.allows_operation_target(&call.target)
+        }
+    }
+}
+
+fn execute_authorized_resident_child(
+    paths: ResidentExecutionPaths,
+    execution: ResidentAuthorizedExecution,
+    call: MctCall,
+) -> Result<ResidentExecutionReport> {
+    let state = MctRuntimeStateStore::open(&paths.state_path)?;
+    let runtime_kind = match execution.child.ingress_mode {
+        mct_daemon::MctChildIngressMode::Handle => RuntimeKind::Process,
+        mct_daemon::MctChildIngressMode::Hybrid | mct_daemon::MctChildIngressMode::WitOnly => {
+            RuntimeKind::WasmComponent
+        }
+    };
+    let run_id = run_id_for_call("resident", &call);
+    let provenance = ChildInvocationProvenance::from_authorized(
+        &execution.authorized,
+        execution.authority_observation.observation_id.clone(),
+    );
+    state.insert_run_started(
+        &run_id,
+        &call,
+        runtime_kind,
+        Some(&provenance),
+        mct_daemon::current_timestamp_string(),
+    )?;
+    state.append_run_observations(
+        &run_id,
+        std::slice::from_ref(&execution.authority_observation),
+    )?;
+
+    let report = match execution.child.ingress_mode {
+        mct_daemon::MctChildIngressMode::Handle => {
+            execute_resident_process_child(execution, &call)?
+        }
+        mct_daemon::MctChildIngressMode::Hybrid | mct_daemon::MctChildIngressMode::WitOnly => {
+            execute_resident_wit_child(execution, &call)?
+        }
+    };
+    state.append_run_observations(&run_id, &report.observations)?;
+    state.complete_run(
+        &run_id,
+        &report.result,
+        mct_daemon::current_timestamp_string(),
+    )?;
+    Ok(report)
+}
+
+fn execute_resident_process_child(
+    execution: ResidentAuthorizedExecution,
+    call: &MctCall,
+) -> Result<ResidentExecutionReport> {
+    let harness = MctProcessChildHarness {
+        executable: execution.child.wasm_path.clone(),
+        args: Vec::new(),
+        timeout: Duration::from_secs(5),
+        local_node_id: MctNodeId::new("local-mct")
+            .expect("string ID literal/generated value must be non-empty"),
+    };
+    let report = harness.invoke_authorized_child(
+        execution.authorized,
+        call,
+        "{}",
+        MctProcessChildInvocationIds {
+            started_observation_id: ObservationId::new(format!(
+                "obs-resident-process-started:{}",
+                call.call_id
+            ))
+            .expect("string ID literal/generated value must be non-empty"),
+            completed_observation_id: ObservationId::new(format!(
+                "obs-resident-process-completed:{}",
+                call.call_id
+            ))
+            .expect("string ID literal/generated value must be non-empty"),
+            result_ref: ResultRef::new(format!("result-resident-process:{}", call.call_id))
+                .expect("string ID literal/generated value must be non-empty"),
+            audit_ref: AuditRef::new(format!("audit-resident-process:{}", call.call_id))
+                .expect("string ID literal/generated value must be non-empty"),
+            started_at: current_timestamp(),
+            completed_at: current_timestamp(),
+        },
+    )?;
+    Ok(ResidentExecutionReport {
+        result: report.result,
+        observations: report.observations,
+    })
+}
+
+fn execute_resident_wit_child(
+    execution: ResidentAuthorizedExecution,
+    call: &MctCall,
+) -> Result<ResidentExecutionReport> {
+    let runtime = MctWasmComponentRuntime::new(default_wasm_host_config())?;
+    let report = runtime.invoke_authorized_child_wit_export_with_host_adapters(
+        execution.authorized,
+        &execution.child,
+        call,
+        &serde_json::json!([]),
+        MctWitHostImportAdapters::none(),
+        MctWasmComponentInvocationIds {
+            started_observation_id: ObservationId::new(format!(
+                "obs-resident-wasm-wit-started:{}",
+                call.call_id
+            ))
+            .expect("string ID literal/generated value must be non-empty"),
+            completed_observation_id: ObservationId::new(format!(
+                "obs-resident-wasm-wit-completed:{}",
+                call.call_id
+            ))
+            .expect("string ID literal/generated value must be non-empty"),
+            audit_ref: AuditRef::new(format!("audit-resident-wasm-wit:{}", call.call_id))
+                .expect("string ID literal/generated value must be non-empty"),
+            started_at: current_timestamp(),
+            completed_at: current_timestamp(),
+        },
+    )?;
+    Ok(ResidentExecutionReport {
+        result: report.result,
+        observations: report.observations,
+    })
+}
+
+fn result_to_call_handler_result(prefix: &str, result: &MctResult) -> MctIrohCallHandlerResult {
+    match result.outcome {
+        ResultOutcome::Success => MctIrohCallHandlerResult::completed(
+            ResultRef::new(format!("{prefix}:{}", result.call_id))
+                .expect("string ID literal/generated value must be non-empty"),
+        ),
+        ResultOutcome::TimedOut => MctIrohCallHandlerResult::timed_out(),
+        ResultOutcome::Denied => MctIrohCallHandlerResult::denied(),
+        ResultOutcome::Failed | ResultOutcome::Cancelled => {
+            MctIrohCallHandlerResult::failed(result.requester_message.clone())
+        }
     }
 }
 
@@ -1080,6 +1805,36 @@ async fn run_control_serve_uds_with_state(state_path: PathBuf, socket_path: Path
     }
 }
 
+#[cfg(unix)]
+async fn run_control_serve_uds_with_state_until(
+    state_path: PathBuf,
+    socket_path: PathBuf,
+    mut shutdown: broadcast::Receiver<()>,
+    status_source: Option<Arc<ResidentStatusSource>>,
+) -> Result<()> {
+    if let Some(parent) = socket_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let _ = std::fs::remove_file(&socket_path);
+    let listener = UnixListener::bind(&socket_path)?;
+    println!(
+        "mct daemon serving control uds on {}",
+        socket_path.display()
+    );
+    let snapshot_source = ControlSnapshotSource::open_with_status(&state_path, status_source);
+    loop {
+        tokio::select! {
+            _ = shutdown.recv() => break,
+            result = mct_daemon::serve_uds_control_once_with_snapshot_result(
+                &listener,
+                control_snapshot(&snapshot_source).await,
+            ) => result?,
+        }
+    }
+    let _ = std::fs::remove_file(&socket_path);
+    Ok(())
+}
+
 #[cfg(not(unix))]
 async fn run_control_serve_uds(_args: Vec<String>) -> Result<()> {
     bail!("UDS control plane is only available on Unix platforms")
@@ -1093,35 +1848,62 @@ async fn run_control_serve_uds_with_state(
     bail!("UDS control plane is only available on Unix platforms")
 }
 
+#[cfg(not(unix))]
+async fn run_control_serve_uds_with_state_until(
+    _state_path: PathBuf,
+    _socket_path: PathBuf,
+    _shutdown: broadcast::Receiver<()>,
+    _status_source: Option<Arc<ResidentStatusSource>>,
+) -> Result<()> {
+    bail!("UDS control plane is only available on Unix platforms")
+}
+
 #[derive(Clone)]
 enum ControlSnapshotSource {
-    Store(Arc<Mutex<MctRuntimeStateStore>>),
-    Unavailable(Arc<anyhow::Error>),
+    Store {
+        state: Arc<Mutex<MctRuntimeStateStore>>,
+        status_source: Option<Arc<ResidentStatusSource>>,
+    },
+    Unavailable,
 }
 
 impl ControlSnapshotSource {
     fn open(state_path: &Path) -> Self {
+        Self::open_with_status(state_path, None)
+    }
+
+    fn open_with_status(
+        state_path: &Path,
+        status_source: Option<Arc<ResidentStatusSource>>,
+    ) -> Self {
         match MctRuntimeStateStore::open(state_path)
             .with_context(|| format!("open control runtime state at {}", state_path.display()))
         {
-            Ok(state) => Self::Store(Arc::new(Mutex::new(state))),
-            Err(error) => Self::Unavailable(Arc::new(error)),
+            Ok(state) => Self::Store {
+                state: Arc::new(Mutex::new(state)),
+                status_source,
+            },
+            Err(_error) => Self::Unavailable,
         }
     }
 }
 
 async fn control_snapshot(source: &ControlSnapshotSource) -> MctControlPlaneSnapshotResult {
     match source {
-        ControlSnapshotSource::Unavailable(_source) => {
+        ControlSnapshotSource::Unavailable => {
             Err(MctControlPlaneSnapshotError::runtime_state_unavailable())
         }
-        ControlSnapshotSource::Store(state) => {
+        ControlSnapshotSource::Store {
+            state,
+            status_source,
+        } => {
             let state = Arc::clone(state);
+            let status = resident_or_default_status(status_source.as_ref());
             tokio::task::spawn_blocking(move || {
                 let state = state
                     .lock()
                     .map_err(|_| MctControlPlaneSnapshotError::runtime_state_unavailable())?;
-                control_snapshot_from_state(&state)
+                control_snapshot_from_state(&state, status)
                     .map_err(|_source| MctControlPlaneSnapshotError::runtime_state_unavailable())
             })
             .await
@@ -1130,14 +1912,19 @@ async fn control_snapshot(source: &ControlSnapshotSource) -> MctControlPlaneSnap
     }
 }
 
-fn control_snapshot_from_state(state: &MctRuntimeStateStore) -> Result<MctControlPlaneSnapshot> {
+fn resident_or_default_status(
+    status_source: Option<&Arc<ResidentStatusSource>>,
+) -> MctDaemonStatus {
+    status_source.map_or_else(|| daemon_status(None), |source| source.status())
+}
+
+fn control_snapshot_from_state(
+    state: &MctRuntimeStateStore,
+    status: MctDaemonStatus,
+) -> Result<MctControlPlaneSnapshot> {
     let summary = state.summary()?;
     let runs = state.list_runs(20)?;
-    Ok(MctControlPlaneSnapshot::new(
-        daemon_status(None),
-        Some(summary),
-        runs,
-    ))
+    Ok(MctControlPlaneSnapshot::new(status, Some(summary), runs))
 }
 
 fn run_registry(mut args: Vec<String>) -> Result<()> {
@@ -1895,45 +2682,26 @@ async fn serve_iroh(mut args: Vec<String>) -> Result<()> {
         identity_path,
         local_endpoint_id.clone(),
     );
-    let mut state = MctIrohServeState::new();
-
-    loop {
-        match endpoint
-            .serve_next(
-                &mut state,
-                std::slice::from_ref(&binding),
-                current_timestamp(),
-                Some(
+    let result = endpoint
+        .serve_concurrent_with_call_handler(
+            MctIrohServeState::new(),
+            vec![binding],
+            MctIrohConcurrentServeConfig::default(),
+            current_timestamp,
+            |_, _| async {
+                MctIrohCallHandlerResult::accepted_for_routing(Some(
                     ResultRef::new("result-mct-peer-call")
                         .expect("string ID literal/generated value must be non-empty"),
-                ),
-            )
-            .await
-        {
-            Ok(MctIrohServedProtocol::Hello { evaluation, .. }) => {
-                println!(
-                    "hello outcome={:?} reason={:?} decision={}",
-                    evaluation.hello_outcome, evaluation.reason, evaluation.decision_id
-                );
-            }
-            Ok(MctIrohServedProtocol::Call {
-                evaluation, reply, ..
-            }) => {
-                println!(
-                    "call outcome={:?} reason={:?} reply={:?} decision={}",
-                    evaluation.outcome,
-                    evaluation.reason,
-                    reply.reply_outcome,
-                    evaluation.decision_id
-                );
-            }
-            Err(error) => {
-                eprintln!("iroh serve error: {error}");
-                endpoint.close().await;
-                return Err(error.into());
-            }
-        }
+                ))
+            },
+        )
+        .await;
+    if let Err(error) = result {
+        eprintln!("iroh serve error: {error}");
+        endpoint.close().await;
+        return Err(error.into());
     }
+    Ok(())
 }
 
 async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
@@ -1992,20 +2760,19 @@ async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
             .expect("string ID literal/generated value must be non-empty"),
     };
     let projection = load_configured_child_projection(&config_path, &children_dir)?;
-    let mut state = MctIrohServeState::new();
-
-    loop {
-        let harness = harness.clone();
-        let projection = projection.clone();
-        let child_name = child_name.clone();
-        let ledger_path = ledger_path.clone();
-        let state_path = state_path.clone();
-        match endpoint
-            .serve_next_with_call_handler(
-                &mut state,
-                std::slice::from_ref(&binding),
-                current_timestamp(),
-                move |request, _evaluation| {
+    let result = endpoint
+        .serve_concurrent_with_call_handler(
+            MctIrohServeState::new(),
+            vec![binding],
+            MctIrohConcurrentServeConfig::default(),
+            current_timestamp,
+            move |request, _evaluation| {
+                let harness = harness.clone();
+                let projection = projection.clone();
+                let child_name = child_name.clone();
+                let ledger_path = ledger_path.clone();
+                let state_path = state_path.clone();
+                async move {
                     let (authorized, authority_observation) =
                         match authorize_configured_child_from_projection(
                             &projection,
@@ -2106,35 +2873,16 @@ async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
                             MctIrohCallHandlerResult::failed(report.result.requester_message)
                         }
                     }
-                },
-            )
-            .await
-        {
-            Ok(MctIrohServedProtocol::Hello { evaluation, .. }) => {
-                println!(
-                    "hello outcome={:?} reason={:?} decision={}",
-                    evaluation.hello_outcome, evaluation.reason, evaluation.decision_id
-                );
-            }
-            Ok(MctIrohServedProtocol::Call {
-                evaluation, reply, ..
-            }) => {
-                println!(
-                    "call outcome={:?} reason={:?} reply={:?} result_ref={:?} decision={}",
-                    evaluation.outcome,
-                    evaluation.reason,
-                    reply.reply_outcome,
-                    reply.result_ref,
-                    evaluation.decision_id
-                );
-            }
-            Err(error) => {
-                eprintln!("iroh process serve error: {error}");
-                endpoint.close().await;
-                return Err(error.into());
-            }
-        }
+                }
+            },
+        )
+        .await;
+    if let Err(error) = result {
+        eprintln!("iroh process serve error: {error}");
+        endpoint.close().await;
+        return Err(error.into());
     }
+    Ok(())
 }
 
 async fn call_iroh(mut args: Vec<String>) -> Result<()> {
@@ -2534,7 +3282,7 @@ fn default_identity_path() -> PathBuf {
 
 fn print_help() {
     println!(
-        "mct-daemon {version}\n\nCommands:\n  status\n  serve [--http addr | --uds socket-path] [--state path]\n  control serve-http [addr] [--state path]\n  control serve-uds [socket-path] [--state path]\n  registry install <verified-package-dir> [--children-dir path] [--replace] [--json]\n  registry sync <source-id> [children-dir] [--state path] [--strict-integrity] [--json]\n  federation view [--config path] [--state path] [--json]\n  metrics snapshot [--state path] [--json]\n  pando record <composition-id> [step-id,call-id,runtime,child,decision ...] [--state path] [--json]\n  children load [children-dir] [--strict-integrity] [--json]\n  process call <executable> [payload-json] [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  children approve <child-name> [children-dir] [--config path] [--strict-integrity]\n  children revoke <child-name> [--config path]\n  children approvals [--config path] [--json]\n  children warmup <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  children reload <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--config path]\n  peers list [--config path] [--json]\n  peers revoke <peer-node-id> [--config path]\n  peers remove <peer-node-id> [--config path]\n  state summary [--state path] [--json]\n  runs list [--state path] [--json] [--limit n]\n  slate list-work --project-root path [--status status] [--kind kind] [--children-dir path] [--config path] [--state path] [--ledger path]\n  toys authorize-slate <child-name> <project-root> [--children-dir path] [--config path] [--state path] [--json]\n  wasm call <component-file> <export-name> [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  wasm call-wit <child-name> <operation-id> <args-json> [--project-root path] [--guest-project /project] [--git-repo path] [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh identity [identity-file] [--config path]\n  iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir]\n  iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable> --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function]\n  iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path]",
+        "mct-daemon {version}\n\nCommands:\n  status\n  serve [--identity path] [--config path] [--children-dir path] [--state path] [--ledger path] [--max-connections n] [--relay-default] [--http addr | --uds socket-path]\n  control serve-http [addr] [--state path]\n  control serve-uds [socket-path] [--state path]\n  registry install <verified-package-dir> [--children-dir path] [--replace] [--json]\n  registry sync <source-id> [children-dir] [--state path] [--strict-integrity] [--json]\n  federation view [--config path] [--state path] [--json]\n  metrics snapshot [--state path] [--json]\n  pando record <composition-id> [step-id,call-id,runtime,child,decision ...] [--state path] [--json]\n  children load [children-dir] [--strict-integrity] [--json]\n  process call <executable> [payload-json] [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  children approve <child-name> [children-dir] [--config path] [--strict-integrity]\n  children revoke <child-name> [--config path]\n  children approvals [--config path] [--json]\n  children warmup <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  children reload <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--config path]\n  peers list [--config path] [--json]\n  peers revoke <peer-node-id> [--config path]\n  peers remove <peer-node-id> [--config path]\n  state summary [--state path] [--json]\n  runs list [--state path] [--json] [--limit n]\n  slate list-work --project-root path [--status status] [--kind kind] [--children-dir path] [--config path] [--state path] [--ledger path]\n  toys authorize-slate <child-name> <project-root> [--children-dir path] [--config path] [--state path] [--json]\n  wasm call <component-file> <export-name> [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  wasm call-wit <child-name> <operation-id> <args-json> [--project-root path] [--guest-project /project] [--git-repo path] [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh identity [identity-file] [--config path]\n  iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir]\n  iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable> --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function]\n  iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path]",
         version = mct_daemon::version()
     );
 }
@@ -2688,6 +3436,406 @@ mod tests {
             authority_observation_id: ObservationId::new("obs-grant")
                 .expect("string ID literal/generated value must be non-empty"),
         }
+    }
+
+    #[tokio::test]
+    async fn resident_mother_serves_peer_control_and_shutdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let identity_path = dir.path().join("identity").join("iroh-secret.hex");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let socket_path = dir.path().join("control.sock");
+        let children_dir = dir.path().join("children");
+        write_resident_process_child(&children_dir);
+
+        let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let client_endpoint_id = client.snapshot().endpoint_id;
+        let store = MctDaemonConfigStore::new(&config_path);
+        store
+            .ensure_local_identity(MctOperatorNodeScope::default(), &identity_path)
+            .unwrap();
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        assert_eq!(loaded.loaded, 1, "{loaded:?}");
+        store
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+        store
+            .upsert_peer(MctPeerAddressBookEntry {
+                peer_node_id: MctNodeId::new("mother-client")
+                    .expect("string ID literal/generated value must be non-empty"),
+                binding_id: PeerBindingId::new("binding-resident-client")
+                    .expect("string ID literal/generated value must be non-empty"),
+                endpoint_id: client_endpoint_id.clone(),
+                vision_id: VisionId::new("vision-local")
+                    .expect("string ID literal/generated value must be non-empty"),
+                ticket: None,
+                binding_state: BindingState::Admitted,
+                policy_revision: 1,
+                updated_at: mct_daemon::current_timestamp_string(),
+            })
+            .unwrap();
+
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let resident = tokio::spawn(run_resident_mother(
+            ResidentMotherConfig {
+                config_path,
+                identity_path,
+                children_dir,
+                state_path,
+                ledger_path: ledger_path.clone(),
+                control: ResidentControlTransport::Uds(socket_path.clone()),
+                relay_default: false,
+                max_concurrent_connections: 8,
+            },
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            Some(ready_tx),
+        ));
+        let ticket = tokio::time::timeout(Duration::from_secs(10), ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let trace_id = TraceId::new("trace-resident-mother-test")
+            .expect("string ID literal/generated value must be non-empty");
+        let binding_id = PeerBindingId::new("binding-resident-client")
+            .expect("string ID literal/generated value must be non-empty");
+        let client_node_id = MctNodeId::new("mother-client")
+            .expect("string ID literal/generated value must be non-empty");
+        let vision_id = VisionId::new("vision-local")
+            .expect("string ID literal/generated value must be non-empty");
+        let hello = cli_hello_request(
+            &client_endpoint_id,
+            &binding_id,
+            &client_node_id,
+            &vision_id,
+            &trace_id,
+        );
+        let hello_response = client.send_hello(&ticket, &hello).await.unwrap();
+        assert_eq!(hello_response.hello_outcome, HelloOutcome::Admitted);
+        let call = cli_call_request(
+            &client_endpoint_id,
+            &binding_id,
+            &client_node_id,
+            &vision_id,
+            &trace_id,
+            OperationTarget {
+                namespace: "patina:demo".into(),
+                interface_name: "control@0.1.0".into(),
+                function_name: "run".into(),
+            },
+            &hello_response,
+        );
+        let reply = client.send_call(&ticket, &call).await.unwrap();
+        assert_eq!(reply.reply_outcome, CallProtocolReplyOutcome::Success);
+
+        let status = poll_resident_status(&socket_path, |status| {
+            status
+                .resident
+                .as_ref()
+                .is_some_and(|resident| resident.accepted_connection_count >= 2)
+        })
+        .await;
+        assert_eq!(
+            status.iroh_endpoint.as_ref().unwrap().endpoint_id,
+            ticket.endpoint_id
+        );
+        let resident_status = status.resident.expect("resident status is present");
+        assert!(
+            resident_status.accepted_connection_count >= 2,
+            "{resident_status:?}"
+        );
+        assert_eq!(resident_status.loaded_child_count, 1);
+        assert_eq!(resident_status.approved_child_count, 1);
+        assert_eq!(resident_status.binding_count, 1);
+        assert!(
+            resident_status.ledger_sequence_tip >= 2,
+            "{resident_status:?}"
+        );
+
+        let _ = shutdown_tx.send(());
+        tokio::time::timeout(Duration::from_secs(10), resident)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(!socket_path.exists());
+        let entries =
+            JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
+                .unwrap()
+                .entries()
+                .unwrap();
+        let trace_entries = entries
+            .iter()
+            .filter(|entry| entry.observation.trace.trace_id == trace_id)
+            .collect::<Vec<_>>();
+        assert!(
+            trace_entries
+                .iter()
+                .any(|entry| entry.observation.kind == ObservationKind::RouteRevalidated),
+            "{trace_entries:?}"
+        );
+        assert!(
+            trace_entries.iter().any(|entry| {
+                entry.observation.kind == ObservationKind::RuntimeExecutionCompleted
+            }),
+            "{trace_entries:?}"
+        );
+        client.close().await;
+    }
+
+    #[tokio::test]
+    async fn resident_execution_runs_wit_child_and_records_trace() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        write_resident_wit_child(&children_dir);
+
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        assert_eq!(loaded.loaded, 1, "{loaded:?}");
+        MctDaemonConfigStore::new(&config_path)
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let trace_id = TraceId::new("trace-resident-wit-test")
+            .expect("string ID literal/generated value must be non-empty");
+        let call = resident_test_call(trace_id.clone());
+        let request = resident_test_protocol_request(call);
+
+        let result = execute_resident_call(
+            ResidentExecutionPaths {
+                config_path,
+                children_dir,
+                state_path,
+            },
+            ledger.clone(),
+            request,
+        )
+        .await;
+        assert_eq!(result.outcome, CallProtocolOutcome::Completed);
+        ledger.close().await;
+
+        let entries =
+            JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
+                .unwrap()
+                .entries()
+                .unwrap();
+        let trace_entries = entries
+            .iter()
+            .filter(|entry| entry.observation.trace.trace_id == trace_id)
+            .collect::<Vec<_>>();
+        assert!(
+            trace_entries
+                .iter()
+                .any(|entry| entry.observation.kind == ObservationKind::RouteRevalidated),
+            "{trace_entries:?}"
+        );
+        assert!(
+            trace_entries.iter().any(|entry| {
+                entry.observation.kind == ObservationKind::RuntimeExecutionCompleted
+            }),
+            "{trace_entries:?}"
+        );
+    }
+
+    async fn poll_resident_status(
+        socket_path: &Path,
+        ready: impl Fn(&MctDaemonStatus) -> bool,
+    ) -> MctDaemonStatus {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut last = None;
+        for _ in 0..40 {
+            let mut control = tokio::net::UnixStream::connect(socket_path).await.unwrap();
+            control
+                .write_all(b"GET /status HTTP/1.1\r\nHost: local\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = vec![0; 4096];
+            let read = control.read(&mut response).await.unwrap();
+            let response = String::from_utf8_lossy(&response[..read]);
+            assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+            let (_, body) = response
+                .split_once("\r\n\r\n")
+                .expect("HTTP response separates headers from body");
+            let status: MctDaemonStatus = serde_json::from_str(body).unwrap();
+            if ready(&status) {
+                return status;
+            }
+            last = Some(status);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("resident status did not become ready: {last:?}");
+    }
+
+    fn resident_test_call(trace_id: TraceId) -> MctCall {
+        let mut call = local_wasm_call(OperationTarget {
+            namespace: "patina:demo".into(),
+            interface_name: "control@0.1.0".into(),
+            function_name: "run".into(),
+        });
+        call.call_id = CallId::new("call-resident-wit")
+            .expect("string ID literal/generated value must be non-empty");
+        call.trace_context.trace_id = trace_id;
+        call.origin = CallOrigin::Iroh;
+        call
+    }
+
+    fn resident_test_protocol_request(call: MctCall) -> MctCallProtocolRequest {
+        MctCallProtocolRequest {
+            protocol_request_id: ProtocolRequestId::new("proto-resident-wit")
+                .expect("string ID literal/generated value must be non-empty"),
+            authority: MctCallProtocolAuthority {
+                hello_decision_id: DecisionId::new("decision-resident-wit-hello")
+                    .expect("string ID literal/generated value must be non-empty"),
+                peer_binding_id: PeerBindingId::new("binding-resident-wit")
+                    .expect("string ID literal/generated value must be non-empty"),
+                vision_id: VisionId::new("vision-local")
+                    .expect("string ID literal/generated value must be non-empty"),
+                accepted_alpn: MCT_CALL_ALPN.into(),
+                endpoint_id: EndpointIdText::new("endpoint-resident-wit")
+                    .expect("string ID literal/generated value must be non-empty"),
+                policy_revision: 1,
+                grants_revision: 1,
+            },
+            received_over: IrohConnectionPresentation {
+                endpoint_id: EndpointIdText::new("endpoint-resident-wit")
+                    .expect("string ID literal/generated value must be non-empty"),
+                alpn: MCT_CALL_ALPN.into(),
+                connection_side: ConnectionSide::Incoming,
+                path_class: PathClass::Direct,
+                relay_url: None,
+                presented_capability_ref: None,
+            },
+            call,
+            payload: MctCallPayloadHandle::Empty,
+            idempotency_key: None,
+            received_observation_id: ObservationId::new("obs-resident-wit-received")
+                .expect("string ID literal/generated value must be non-empty"),
+        }
+    }
+
+    fn write_resident_process_child(children_dir: &Path) {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+
+        let child_dir = children_dir.join("resident-echo");
+        std::fs::create_dir_all(&child_dir).unwrap();
+        let artifact_path = child_dir.join("resident-echo.wasm");
+        let manifest_path = child_dir.join("child.toml");
+        let script = b"#!/bin/sh\ncat >/dev/null\nprintf '{\\\"ok\\\":true}'\n";
+        std::fs::write(&artifact_path, script).unwrap();
+        #[cfg(unix)]
+        {
+            let mut permissions = std::fs::metadata(&artifact_path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&artifact_path, permissions).unwrap();
+        }
+        write_resident_child_manifest(&manifest_path, "resident-echo", "handle");
+        write_sha256_sidecar(&artifact_path, script);
+        let manifest_bytes = std::fs::read(&manifest_path).unwrap();
+        write_sha256_sidecar(&manifest_path, &manifest_bytes);
+    }
+
+    fn write_resident_wit_child(children_dir: &Path) {
+        let child_dir = children_dir.join("resident-wit");
+        std::fs::create_dir_all(&child_dir).unwrap();
+        let artifact_path = child_dir.join("resident-wit.wasm");
+        let manifest_path = child_dir.join("child.toml");
+        let component_wat = r#"
+(component
+  (core module $m
+    (func $run (export "run") (result i32)
+      i32.const 7))
+  (core instance $i (instantiate $m))
+  (func $run (result s32) (canon lift (core func $i "run")))
+  (instance $control (export "run" (func $run)))
+  (export "patina:demo/control@0.1.0" (instance $control)))
+"#;
+        let component = wat::parse_str(component_wat).unwrap();
+        std::fs::write(&artifact_path, &component).unwrap();
+        write_resident_child_manifest(&manifest_path, "resident-wit", "wit-only");
+        write_sha256_sidecar(&artifact_path, &component);
+        let manifest_bytes = std::fs::read(&manifest_path).unwrap();
+        write_sha256_sidecar(&manifest_path, &manifest_bytes);
+    }
+
+    fn write_resident_child_manifest(manifest_path: &Path, name: &str, mode: &str) {
+        std::fs::write(
+            manifest_path,
+            format!(
+                r#"[child]
+name = "{name}"
+version = "0.1.0"
+description = "resident test child"
+kind = "child"
+role = "app"
+
+[child.ingress]
+mode = "{mode}"
+
+[child.artifact]
+wasm = "{name}.wasm"
+
+[child.contract]
+allow = ["patina:demo/control@0.1.0.run"]
+
+[needs]
+toys = []
+
+[relationships]
+listens = []
+"#
+            ),
+        )
+        .unwrap();
+    }
+
+    fn write_sha256_sidecar(path: &Path, bytes: &[u8]) {
+        use sha2::{Digest, Sha256};
+
+        let mut sidecar = path.as_os_str().to_os_string();
+        sidecar.push(".sha256");
+        std::fs::write(
+            PathBuf::from(sidecar),
+            format!("{:x}", Sha256::digest(bytes)),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn resident_status_source_reflects_closed_endpoint() {
+        let endpoint = Arc::new(Mutex::new(MotherIrohEndpointSnapshot {
+            endpoint_id: EndpointIdText::new("endpoint-resident-status")
+                .expect("string ID literal/generated value must be non-empty"),
+            lifecycle: mct_iroh::MotherIrohEndpointLifecycle::Bound,
+            accepted_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
+            direct_addresses: Vec::new(),
+            relay_urls: Vec::new(),
+            relay_mode: MotherIrohRelayMode::Disabled,
+        }));
+        let source = ResidentStatusSource {
+            endpoint: Arc::clone(&endpoint),
+            accepted_connection_count: Arc::new(AtomicU64::new(3)),
+            loaded_child_count: 2,
+            approved_child_count: 1,
+            binding_count: 4,
+            ledger_path: PathBuf::from("/path/that/does/not/exist.jsonl"),
+        };
+
+        let live = source.status();
+        assert_eq!(live.readiness, mct_daemon::MctDaemonReadiness::Ready);
+        assert_eq!(live.resident.unwrap().accepted_connection_count, 3);
+
+        endpoint.lock().unwrap().lifecycle = mct_iroh::MotherIrohEndpointLifecycle::Closed;
+        let closed = source.status();
+        assert_eq!(closed.readiness, mct_daemon::MctDaemonReadiness::NotReady);
+        assert_eq!(closed.safe_message, "iroh endpoint not ready");
     }
 
     #[tokio::test]
