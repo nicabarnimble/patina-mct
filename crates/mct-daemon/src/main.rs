@@ -3,12 +3,13 @@ use mct_daemon::{
     ChildInvocationProvenance, DEFAULT_WASM_MEMORY_LIMIT_BYTES, MctChildIntegrityMode,
     MctChildLoadOptions, MctCompositionPlan, MctCompositionStep, MctConfigChildAuthorityProjection,
     MctControlPlaneSnapshot, MctControlPlaneSnapshotError, MctControlPlaneSnapshotResult,
-    MctDaemonConfigStore, MctLocalNodeIdentity, MctOperatorChildScope, MctOperatorNodeScope,
-    MctPeerAddressBookEntry, MctProcessChildHarness, MctProcessChildInvocationIds,
-    MctRuntimeStateStore, MctToyAdapterRegistry, MctToyBackend, MctWasiHostConfig, MctWasiPreopen,
-    MctWasiPreopenAccess, MctWasmComponentInvocationIds, MctWasmComponentRuntime,
-    MctWasmHostConfig, MctWitHostImportAdapters, MctWitToyHostAdapter,
-    build_federation_capability_view, build_metrics_snapshot, current_timestamp, daemon_status,
+    MctDaemonConfigStore, MctDaemonStatus, MctLocalNodeIdentity, MctOperatorChildScope,
+    MctOperatorNodeScope, MctPeerAddressBookEntry, MctProcessChildHarness,
+    MctProcessChildInvocationIds, MctResidentStatus, MctRuntimeStateStore, MctToyAdapterRegistry,
+    MctToyBackend, MctWasiHostConfig, MctWasiPreopen, MctWasiPreopenAccess,
+    MctWasmComponentInvocationIds, MctWasmComponentRuntime, MctWasmHostConfig,
+    MctWitHostImportAdapters, MctWitToyHostAdapter, build_federation_capability_view,
+    build_metrics_snapshot, current_timestamp, daemon_status, daemon_status_with_resident,
     default_config_path, default_state_path, install_verified_child_package,
     load_children_from_dir, record_composition_plan, reload_configured_child,
     serve_http_control_once_with_snapshot_result, sync_child_registry_source,
@@ -17,14 +18,18 @@ use mct_daemon::{
 use mct_iroh::{
     MctIrohCallHandlerResult, MctIrohConcurrentServeConfig, MctIrohServeEvent, MctIrohServeState,
     MctIrohServedProtocol, MotherIrohEndpoint, MotherIrohEndpointConfig, MotherIrohEndpointError,
-    MotherIrohEndpointTicket, MotherIrohRelayMode, load_or_create_node_secret_key_hex,
+    MotherIrohEndpointSnapshot, MotherIrohEndpointTicket, MotherIrohRelayMode,
+    load_or_create_node_secret_key_hex,
 };
 use mct_kernel::*;
 use mct_observation::JsonlObservationLedger;
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 use tokio::{net::TcpListener, sync::broadcast};
@@ -1063,6 +1068,44 @@ struct ResidentMotherConfig {
     max_concurrent_connections: usize,
 }
 
+#[derive(Clone, Debug)]
+struct ResidentStatusSource {
+    endpoint: Arc<Mutex<MotherIrohEndpointSnapshot>>,
+    accepted_connection_count: Arc<AtomicU64>,
+    loaded_child_count: usize,
+    approved_child_count: usize,
+    binding_count: usize,
+    ledger_path: PathBuf,
+}
+
+impl ResidentStatusSource {
+    fn status(&self) -> MctDaemonStatus {
+        daemon_status_with_resident(
+            Some(
+                self.endpoint
+                    .lock()
+                    .expect("resident endpoint status lock must not be poisoned")
+                    .clone(),
+            ),
+            Some(MctResidentStatus {
+                accepted_connection_count: self.accepted_connection_count.load(Ordering::SeqCst),
+                loaded_child_count: self.loaded_child_count,
+                approved_child_count: self.approved_child_count,
+                binding_count: self.binding_count,
+                ledger_sequence_tip: ledger_sequence_tip(&self.ledger_path),
+            }),
+        )
+    }
+}
+
+fn ledger_sequence_tip(path: &Path) -> u64 {
+    JsonlObservationLedger::open_read_only(path, "ledger-local", "local-mct")
+        .and_then(|reader| reader.entries())
+        .ok()
+        .and_then(|entries| entries.last().map(|entry| entry.local_sequence))
+        .unwrap_or(0)
+}
+
 async fn run_resident_mother<S>(
     config: ResidentMotherConfig,
     shutdown: S,
@@ -1099,26 +1142,45 @@ where
     drop(_state);
     let ledger = ResidentLedgerWriter::spawn(config.ledger_path.clone())?;
 
+    let loaded_child_count = load_report.loaded;
+    let resident_config = config_store.load()?;
+    let approved_child_count = resident_config
+        .child_approvals
+        .values()
+        .filter(|approval| approval.approval_state == ChildApprovalState::Approved)
+        .count();
+    let binding_count = resident_config.peers.len();
+    let accepted_connection_count = Arc::new(AtomicU64::new(0));
+    let endpoint_status = Arc::new(Mutex::new(snapshot.clone()));
+    let status_source = Arc::new(ResidentStatusSource {
+        endpoint: Arc::clone(&endpoint_status),
+        accepted_connection_count: Arc::clone(&accepted_connection_count),
+        loaded_child_count,
+        approved_child_count,
+        binding_count,
+        ledger_path: config.ledger_path.clone(),
+    });
+
     let (events, event_rx) = tokio::sync::mpsc::channel(256);
     let event_ledger = ledger.clone();
-    let event_task =
-        tokio::spawn(async move { record_iroh_serve_events(event_rx, event_ledger).await });
+    let event_accepted_count = Arc::clone(&accepted_connection_count);
+    let event_task = tokio::spawn(async move {
+        record_iroh_serve_events(event_rx, event_ledger, event_accepted_count).await
+    });
 
     let (shutdown_tx, _) = broadcast::channel(4);
     let control_task = spawn_resident_control_task(
         config.control.clone(),
         config.state_path.clone(),
         shutdown_tx.subscribe(),
+        Some(status_source),
     )?;
 
     println!("mct resident mother endpoint_id={}", snapshot.endpoint_id);
     println!("ticket={}", ticket.to_json()?.replace('\n', ""));
     eprintln!(
         "mct resident mother children loaded={} failed={} bindings={} max_connections={}",
-        load_report.loaded,
-        load_report.failed,
-        config_store.load()?.peers.len(),
-        config.max_concurrent_connections
+        loaded_child_count, load_report.failed, binding_count, config.max_concurrent_connections
     );
     if let Some(ready) = ready {
         let _ = ready.send(ticket.clone());
@@ -1155,6 +1217,9 @@ where
 
     let _ = shutdown_tx.send(());
     endpoint.close().await;
+    if let Ok(mut endpoint_status) = endpoint_status.lock() {
+        *endpoint_status = endpoint.snapshot();
+    }
     if let Err(error) = ledger
         .append(vec![resident_endpoint_observation(
             "obs-resident-mother-endpoint-closed",
@@ -1179,13 +1244,14 @@ fn spawn_resident_control_task(
     control: ResidentControlTransport,
     state_path: PathBuf,
     shutdown: broadcast::Receiver<()>,
+    status_source: Option<Arc<ResidentStatusSource>>,
 ) -> Result<tokio::task::JoinHandle<Result<()>>> {
     match control {
         ResidentControlTransport::Http(addr) => Ok(tokio::spawn(async move {
-            serve_http_control_loop_until(state_path, addr, shutdown).await
+            serve_http_control_loop_until(state_path, addr, shutdown, status_source).await
         })),
         ResidentControlTransport::Uds(path) => Ok(tokio::spawn(async move {
-            run_control_serve_uds_with_state_until(state_path, path, shutdown).await
+            run_control_serve_uds_with_state_until(state_path, path, shutdown, status_source).await
         })),
     }
 }
@@ -1247,9 +1313,10 @@ async fn serve_http_control_loop_until(
     state_path: PathBuf,
     addr: String,
     mut shutdown: broadcast::Receiver<()>,
+    status_source: Option<Arc<ResidentStatusSource>>,
 ) -> Result<()> {
     let listener = TcpListener::bind(&addr).await?;
-    let snapshot_source = ControlSnapshotSource::open(&state_path);
+    let snapshot_source = ControlSnapshotSource::open_with_status(&state_path, status_source);
     println!("mct daemon serving control http on {addr}");
     loop {
         tokio::select! {
@@ -1315,13 +1382,16 @@ impl ResidentLedgerWriter {
 async fn record_iroh_serve_events(
     mut events: tokio::sync::mpsc::Receiver<MctIrohServeEvent>,
     ledger: ResidentLedgerWriter,
+    accepted_connection_count: Arc<AtomicU64>,
 ) {
     while let Some(event) = events.recv().await {
         let observations = match event {
-            MctIrohServeEvent::Served(served) => resident_observations_for_served_protocol(*served),
-            MctIrohServeEvent::AcceptedConnection | MctIrohServeEvent::RefusedConnection => {
+            MctIrohServeEvent::AcceptedConnection => {
+                accepted_connection_count.fetch_add(1, Ordering::SeqCst);
                 Vec::new()
             }
+            MctIrohServeEvent::Served(served) => resident_observations_for_served_protocol(*served),
+            MctIrohServeEvent::RefusedConnection => Vec::new(),
         };
         if let Err(error) = ledger.append(observations).await {
             eprintln!("resident ledger event write failed: {error}");
@@ -1740,6 +1810,7 @@ async fn run_control_serve_uds_with_state_until(
     state_path: PathBuf,
     socket_path: PathBuf,
     mut shutdown: broadcast::Receiver<()>,
+    status_source: Option<Arc<ResidentStatusSource>>,
 ) -> Result<()> {
     if let Some(parent) = socket_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -1750,7 +1821,7 @@ async fn run_control_serve_uds_with_state_until(
         "mct daemon serving control uds on {}",
         socket_path.display()
     );
-    let snapshot_source = ControlSnapshotSource::open(&state_path);
+    let snapshot_source = ControlSnapshotSource::open_with_status(&state_path, status_source);
     loop {
         tokio::select! {
             _ = shutdown.recv() => break,
@@ -1782,39 +1853,57 @@ async fn run_control_serve_uds_with_state_until(
     _state_path: PathBuf,
     _socket_path: PathBuf,
     _shutdown: broadcast::Receiver<()>,
+    _status_source: Option<Arc<ResidentStatusSource>>,
 ) -> Result<()> {
     bail!("UDS control plane is only available on Unix platforms")
 }
 
 #[derive(Clone)]
 enum ControlSnapshotSource {
-    Store(Arc<Mutex<MctRuntimeStateStore>>),
-    Unavailable(Arc<anyhow::Error>),
+    Store {
+        state: Arc<Mutex<MctRuntimeStateStore>>,
+        status_source: Option<Arc<ResidentStatusSource>>,
+    },
+    Unavailable,
 }
 
 impl ControlSnapshotSource {
     fn open(state_path: &Path) -> Self {
+        Self::open_with_status(state_path, None)
+    }
+
+    fn open_with_status(
+        state_path: &Path,
+        status_source: Option<Arc<ResidentStatusSource>>,
+    ) -> Self {
         match MctRuntimeStateStore::open(state_path)
             .with_context(|| format!("open control runtime state at {}", state_path.display()))
         {
-            Ok(state) => Self::Store(Arc::new(Mutex::new(state))),
-            Err(error) => Self::Unavailable(Arc::new(error)),
+            Ok(state) => Self::Store {
+                state: Arc::new(Mutex::new(state)),
+                status_source,
+            },
+            Err(_error) => Self::Unavailable,
         }
     }
 }
 
 async fn control_snapshot(source: &ControlSnapshotSource) -> MctControlPlaneSnapshotResult {
     match source {
-        ControlSnapshotSource::Unavailable(_source) => {
+        ControlSnapshotSource::Unavailable => {
             Err(MctControlPlaneSnapshotError::runtime_state_unavailable())
         }
-        ControlSnapshotSource::Store(state) => {
+        ControlSnapshotSource::Store {
+            state,
+            status_source,
+        } => {
             let state = Arc::clone(state);
+            let status = resident_or_default_status(status_source.as_ref());
             tokio::task::spawn_blocking(move || {
                 let state = state
                     .lock()
                     .map_err(|_| MctControlPlaneSnapshotError::runtime_state_unavailable())?;
-                control_snapshot_from_state(&state)
+                control_snapshot_from_state(&state, status)
                     .map_err(|_source| MctControlPlaneSnapshotError::runtime_state_unavailable())
             })
             .await
@@ -1823,14 +1912,19 @@ async fn control_snapshot(source: &ControlSnapshotSource) -> MctControlPlaneSnap
     }
 }
 
-fn control_snapshot_from_state(state: &MctRuntimeStateStore) -> Result<MctControlPlaneSnapshot> {
+fn resident_or_default_status(
+    status_source: Option<&Arc<ResidentStatusSource>>,
+) -> MctDaemonStatus {
+    status_source.map_or_else(|| daemon_status(None), |source| source.status())
+}
+
+fn control_snapshot_from_state(
+    state: &MctRuntimeStateStore,
+    status: MctDaemonStatus,
+) -> Result<MctControlPlaneSnapshot> {
     let summary = state.summary()?;
     let runs = state.list_runs(20)?;
-    Ok(MctControlPlaneSnapshot::new(
-        daemon_status(None),
-        Some(summary),
-        runs,
-    ))
+    Ok(MctControlPlaneSnapshot::new(status, Some(summary), runs))
 }
 
 fn run_registry(mut args: Vec<String>) -> Result<()> {
@@ -3346,8 +3440,6 @@ mod tests {
 
     #[tokio::test]
     async fn resident_mother_serves_peer_control_and_shutdown() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.json");
         let identity_path = dir.path().join("identity").join("iroh-secret.hex");
@@ -3440,15 +3532,29 @@ mod tests {
         let reply = client.send_call(&ticket, &call).await.unwrap();
         assert_eq!(reply.reply_outcome, CallProtocolReplyOutcome::Success);
 
-        let mut control = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
-        control
-            .write_all(b"GET /status HTTP/1.1\r\nHost: local\r\n\r\n")
-            .await
-            .unwrap();
-        let mut response = vec![0; 4096];
-        let read = control.read(&mut response).await.unwrap();
-        let response = String::from_utf8_lossy(&response[..read]);
-        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let status = poll_resident_status(&socket_path, |status| {
+            status
+                .resident
+                .as_ref()
+                .is_some_and(|resident| resident.accepted_connection_count >= 2)
+        })
+        .await;
+        assert_eq!(
+            status.iroh_endpoint.as_ref().unwrap().endpoint_id,
+            ticket.endpoint_id
+        );
+        let resident_status = status.resident.expect("resident status is present");
+        assert!(
+            resident_status.accepted_connection_count >= 2,
+            "{resident_status:?}"
+        );
+        assert_eq!(resident_status.loaded_child_count, 1);
+        assert_eq!(resident_status.approved_child_count, 1);
+        assert_eq!(resident_status.binding_count, 1);
+        assert!(
+            resident_status.ledger_sequence_tip >= 2,
+            "{resident_status:?}"
+        );
 
         let _ = shutdown_tx.send(());
         tokio::time::timeout(Duration::from_secs(10), resident)
@@ -3535,6 +3641,36 @@ mod tests {
             }),
             "{trace_entries:?}"
         );
+    }
+
+    async fn poll_resident_status(
+        socket_path: &Path,
+        ready: impl Fn(&MctDaemonStatus) -> bool,
+    ) -> MctDaemonStatus {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut last = None;
+        for _ in 0..40 {
+            let mut control = tokio::net::UnixStream::connect(socket_path).await.unwrap();
+            control
+                .write_all(b"GET /status HTTP/1.1\r\nHost: local\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = vec![0; 4096];
+            let read = control.read(&mut response).await.unwrap();
+            let response = String::from_utf8_lossy(&response[..read]);
+            assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+            let (_, body) = response
+                .split_once("\r\n\r\n")
+                .expect("HTTP response separates headers from body");
+            let status: MctDaemonStatus = serde_json::from_str(body).unwrap();
+            if ready(&status) {
+                return status;
+            }
+            last = Some(status);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("resident status did not become ready: {last:?}");
     }
 
     fn resident_test_call(trace_id: TraceId) -> MctCall {
@@ -3670,6 +3806,36 @@ listens = []
             format!("{:x}", Sha256::digest(bytes)),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn resident_status_source_reflects_closed_endpoint() {
+        let endpoint = Arc::new(Mutex::new(MotherIrohEndpointSnapshot {
+            endpoint_id: EndpointIdText::new("endpoint-resident-status")
+                .expect("string ID literal/generated value must be non-empty"),
+            lifecycle: mct_iroh::MotherIrohEndpointLifecycle::Bound,
+            accepted_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
+            direct_addresses: Vec::new(),
+            relay_urls: Vec::new(),
+            relay_mode: MotherIrohRelayMode::Disabled,
+        }));
+        let source = ResidentStatusSource {
+            endpoint: Arc::clone(&endpoint),
+            accepted_connection_count: Arc::new(AtomicU64::new(3)),
+            loaded_child_count: 2,
+            approved_child_count: 1,
+            binding_count: 4,
+            ledger_path: PathBuf::from("/path/that/does/not/exist.jsonl"),
+        };
+
+        let live = source.status();
+        assert_eq!(live.readiness, mct_daemon::MctDaemonReadiness::Ready);
+        assert_eq!(live.resident.unwrap().accepted_connection_count, 3);
+
+        endpoint.lock().unwrap().lifecycle = mct_iroh::MotherIrohEndpointLifecycle::Closed;
+        let closed = source.status();
+        assert_eq!(closed.readiness, mct_daemon::MctDaemonReadiness::NotReady);
+        assert_eq!(closed.safe_message, "iroh endpoint not ready");
     }
 
     #[tokio::test]

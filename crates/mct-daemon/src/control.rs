@@ -78,6 +78,7 @@ impl MctControlPlaneSnapshotError {
             health: MctDaemonHealth::Unhealthy,
             readiness: MctDaemonReadiness::NotReady,
             iroh_endpoint: None,
+            resident: None,
             safe_message: self.safe_message().into(),
         }
     }
@@ -401,6 +402,7 @@ mod tests {
                 health: MctDaemonHealth::Healthy,
                 readiness: MctDaemonReadiness::Ready,
                 iroh_endpoint: None,
+                resident: None,
                 safe_message: "ready".into(),
             },
             Some(MctRuntimeStateSummary {
