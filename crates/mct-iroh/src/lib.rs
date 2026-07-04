@@ -21,7 +21,8 @@ pub use endpoint::{
 };
 pub use identity::{endpoint_id_for_secret_key_hex, load_or_create_node_secret_key_hex};
 pub use serve::{
-    MctIrohCallHandlerResult, MctIrohPeerCallReport, MctIrohServeState, MctIrohServedProtocol,
+    MctIrohCallHandlerResult, MctIrohConcurrentServeConfig, MctIrohPeerCallReport,
+    MctIrohServeEvent, MctIrohServeState, MctIrohServedProtocol,
 };
 
 /// Returns the crate version for health and smoke tests.
@@ -375,6 +376,128 @@ mod tests {
 
         server.close().await;
         client.close().await;
+    }
+
+    #[tokio::test]
+    async fn concurrent_serve_keeps_peer_hello_state_separate() {
+        let server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let mut first_client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let mut second_client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let server_ticket = server.ticket();
+        let first_endpoint_id = first_client.snapshot().endpoint_id;
+        let second_endpoint_id = second_client.snapshot().endpoint_id;
+        let first_binding = test_peer_binding(&first_endpoint_id);
+        let second_binding = test_peer_binding(&second_endpoint_id);
+        let serve_task = tokio::spawn(async move {
+            server
+                .serve_concurrent_with_call_handler(
+                    MctIrohServeState::new(),
+                    vec![first_binding, second_binding],
+                    MctIrohConcurrentServeConfig::default(),
+                    || Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
+                    |_, _| async {
+                        MctIrohCallHandlerResult::completed(
+                            ResultRef::new("result-concurrent-iroh")
+                                .expect("string ID literal/generated value must be non-empty"),
+                        )
+                    },
+                )
+                .await
+        });
+
+        let first_trace = TraceId::new("trace-concurrent-first")
+            .expect("string ID literal/generated value must be non-empty");
+        let second_trace = TraceId::new("trace-concurrent-second")
+            .expect("string ID literal/generated value must be non-empty");
+        let first_hello = test_hello_request(&first_endpoint_id, &first_trace);
+        let second_hello = test_hello_request(&second_endpoint_id, &second_trace);
+        let (first_hello_response, second_hello_response) = tokio::join!(
+            first_client.send_hello(&server_ticket, &first_hello),
+            second_client.send_hello(&server_ticket, &second_hello),
+        );
+        let first_hello_response = first_hello_response.unwrap();
+        let second_hello_response = second_hello_response.unwrap();
+        assert_eq!(first_hello_response.hello_outcome, HelloOutcome::Admitted);
+        assert_eq!(second_hello_response.hello_outcome, HelloOutcome::Admitted);
+
+        let first_call = test_call_request(&first_endpoint_id, &first_trace, &first_hello_response);
+        let second_call =
+            test_call_request(&second_endpoint_id, &second_trace, &second_hello_response);
+        let (first_reply, second_reply) = tokio::join!(
+            first_client.send_call(&server_ticket, &first_call),
+            second_client.send_call(&server_ticket, &second_call),
+        );
+        let first_reply = first_reply.unwrap();
+        let second_reply = second_reply.unwrap();
+        assert_eq!(first_reply.reply_outcome, CallProtocolReplyOutcome::Success);
+        assert_eq!(
+            second_reply.reply_outcome,
+            CallProtocolReplyOutcome::Success
+        );
+
+        first_client.close().await;
+        second_client.close().await;
+        serve_task.abort();
+    }
+
+    #[tokio::test]
+    async fn concurrent_serve_refuses_connections_beyond_bound() {
+        let server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let server_ticket = server.ticket();
+        let server_addr = endpoint_addr_from_ticket(&server_ticket).unwrap();
+        let (events, mut received_events) = tokio::sync::mpsc::channel(8);
+        let serve_task = tokio::spawn(async move {
+            server
+                .serve_concurrent_with_call_handler(
+                    MctIrohServeState::new(),
+                    Vec::new(),
+                    MctIrohConcurrentServeConfig {
+                        max_concurrent_connections: 1,
+                        events: Some(events),
+                        ..MctIrohConcurrentServeConfig::default()
+                    },
+                    || Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
+                    |_, _| async { MctIrohCallHandlerResult::accepted_for_routing(None) },
+                )
+                .await
+        });
+        let raw_client = Endpoint::builder(presets::N0)
+            .relay_mode(RelayMode::Disabled)
+            .alpns(mct_alpn_bytes())
+            .bind()
+            .await
+            .unwrap();
+        let raw_task = tokio::spawn(async move {
+            let connection = raw_client
+                .connect(server_addr, MCT_HELLO_ALPN.as_bytes())
+                .await
+                .unwrap();
+            let (_send, _recv) = connection.open_bi().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        assert!(matches!(
+            received_events.recv().await,
+            Some(MctIrohServeEvent::AcceptedConnection)
+        ));
+
+        let refused_client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let refused_endpoint_id = refused_client.snapshot().endpoint_id;
+        let refused_trace = TraceId::new("trace-refused-concurrent")
+            .expect("string ID literal/generated value must be non-empty");
+        let refused_hello = test_hello_request(&refused_endpoint_id, &refused_trace);
+        let refused_call = tokio::spawn(async move {
+            refused_client
+                .send_hello(&server_ticket, &refused_hello)
+                .await
+        });
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(5), received_events.recv()).await,
+            Ok(Some(MctIrohServeEvent::RefusedConnection))
+        ));
+
+        raw_task.abort();
+        refused_call.abort();
+        serve_task.abort();
     }
 
     #[tokio::test]
