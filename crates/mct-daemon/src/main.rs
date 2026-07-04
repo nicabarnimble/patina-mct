@@ -1349,7 +1349,7 @@ impl ResidentLedgerWriter {
             while let Some(write) = receiver.blocking_recv() {
                 let result = ledger
                     .append_batch_before_effect(
-                        write.observations.into_iter(),
+                        write.observations,
                         mct_daemon::current_timestamp_string(),
                     )
                     .map(|_| ())
