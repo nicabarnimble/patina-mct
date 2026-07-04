@@ -14,7 +14,7 @@ use iroh::SecretKey;
 use mct_kernel::*;
 use serde::{Serialize, de::DeserializeOwned};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     future::Future,
     sync::{
         Arc,
@@ -23,6 +23,8 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{Mutex, Semaphore, mpsc};
+
+const MAX_REMEMBERED_HELLOS: usize = 1024;
 
 /// Mutable state for serving MCT protocols over one Mother-owned endpoint.
 ///
@@ -33,6 +35,7 @@ use tokio::sync::{Mutex, Semaphore, mpsc};
 pub struct MctIrohServeState {
     pub last_hello: Option<MctHelloAdmissionEvaluation>,
     hello_by_endpoint: BTreeMap<EndpointIdText, MctHelloAdmissionEvaluation>,
+    hello_insertion_order: VecDeque<EndpointIdText>,
     id_prefix: String,
     next_sequence: u64,
 }
@@ -48,6 +51,7 @@ impl MctIrohServeState {
         Self {
             last_hello: None,
             hello_by_endpoint: BTreeMap::new(),
+            hello_insertion_order: VecDeque::new(),
             id_prefix: random_id_prefix(),
             next_sequence: 0,
         }
@@ -75,7 +79,24 @@ impl MctIrohServeState {
         evaluation: MctHelloAdmissionEvaluation,
     ) {
         self.last_hello = Some(evaluation.clone());
+        if !evaluation.is_admitted() {
+            self.hello_by_endpoint.remove(&endpoint_id);
+            self.hello_insertion_order
+                .retain(|remembered| remembered != &endpoint_id);
+            return;
+        }
+
+        if !self.hello_by_endpoint.contains_key(&endpoint_id) {
+            self.hello_insertion_order.push_back(endpoint_id.clone());
+        }
         self.hello_by_endpoint.insert(endpoint_id, evaluation);
+        while self.hello_by_endpoint.len() > MAX_REMEMBERED_HELLOS {
+            if let Some(oldest) = self.hello_insertion_order.pop_front() {
+                self.hello_by_endpoint.remove(&oldest);
+            } else {
+                break;
+            }
+        }
     }
 
     fn hello_for_endpoint(
@@ -83,6 +104,11 @@ impl MctIrohServeState {
         endpoint_id: &EndpointIdText,
     ) -> Option<MctHelloAdmissionEvaluation> {
         self.hello_by_endpoint.get(endpoint_id).cloned()
+    }
+
+    #[cfg(test)]
+    fn remembered_hello_count(&self) -> usize {
+        self.hello_by_endpoint.len()
     }
 }
 
@@ -108,6 +134,82 @@ mod tests {
             first.next_observation_id("hello"),
             second.next_observation_id("hello")
         );
+    }
+
+    #[test]
+    fn denied_hellos_leave_no_per_peer_state() {
+        let endpoint_id = endpoint_id("endpoint-denied");
+        let mut state = MctIrohServeState::new();
+
+        state.remember_hello(endpoint_id.clone(), hello_evaluation(HelloOutcome::Denied));
+
+        assert_eq!(state.remembered_hello_count(), 0);
+        assert_eq!(state.hello_for_endpoint(&endpoint_id), None);
+    }
+
+    #[test]
+    fn admitted_hello_state_is_capped_oldest_first() {
+        let mut state = MctIrohServeState::new();
+        for index in 0..=MAX_REMEMBERED_HELLOS {
+            state.remember_hello(
+                endpoint_id(format!("endpoint-{index}")),
+                hello_evaluation(HelloOutcome::Admitted),
+            );
+        }
+
+        assert_eq!(state.remembered_hello_count(), MAX_REMEMBERED_HELLOS);
+        assert_eq!(state.hello_for_endpoint(&endpoint_id("endpoint-0")), None);
+        assert!(
+            state
+                .hello_for_endpoint(&endpoint_id(format!("endpoint-{MAX_REMEMBERED_HELLOS}")))
+                .is_some()
+        );
+    }
+
+    fn endpoint_id(value: impl Into<String>) -> EndpointIdText {
+        EndpointIdText::new(value.into())
+            .expect("string ID literal/generated value must be non-empty")
+    }
+
+    fn hello_evaluation(outcome: HelloOutcome) -> MctHelloAdmissionEvaluation {
+        let admitted = outcome == HelloOutcome::Admitted;
+        MctHelloAdmissionEvaluation {
+            decision_id: DecisionId::new("decision-test-hello")
+                .expect("string ID literal/generated value must be non-empty"),
+            request_id: "hello-test".into(),
+            peer_admission_decision_id: None,
+            selected_binding_id: admitted.then(|| {
+                PeerBindingId::new("binding-test")
+                    .expect("string ID literal/generated value must be non-empty")
+            }),
+            selected_node_id: admitted.then(|| {
+                MctNodeId::new("node-test")
+                    .expect("string ID literal/generated value must be non-empty")
+            }),
+            selected_vision_id: admitted.then(|| {
+                VisionId::new("vision-test")
+                    .expect("string ID literal/generated value must be non-empty")
+            }),
+            negotiated_protocol: admitted.then_some(HelloPolicy::default().protocol),
+            accepted_alpns: if admitted {
+                vec![MCT_CALL_ALPN.into()]
+            } else {
+                Vec::new()
+            },
+            hello_outcome: outcome,
+            reason: if admitted {
+                HelloReason::ActiveBinding
+            } else {
+                HelloReason::MissingBinding
+            },
+            safe_reason: if admitted {
+                SafeHelloReason::Admitted
+            } else {
+                SafeHelloReason::NotAuthorized
+            },
+            observation_id: ObservationId::new("obs-test-hello")
+                .expect("string ID literal/generated value must be non-empty"),
+        }
     }
 }
 
@@ -184,6 +286,14 @@ impl MctIrohCallHandlerResult {
             result_ref: None,
             outcome: CallProtocolOutcome::Failed,
             safe_message: safe_message.into(),
+        }
+    }
+
+    pub fn denied() -> Self {
+        Self {
+            result_ref: None,
+            outcome: CallProtocolOutcome::Denied,
+            safe_message: "not authorized".into(),
         }
     }
 
