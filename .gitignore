@@ -18,7 +18,7 @@ __pycache__/
 
 # Build outputs
 dist/
-build/
+/build/
 *.o
 *.so
 *.dylib
