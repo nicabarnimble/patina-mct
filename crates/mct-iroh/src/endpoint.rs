@@ -76,6 +76,13 @@ pub enum MotherIrohEndpointError {
         source: serde_json::Error,
     },
 
+    #[error("Mother Iroh protocol {action} provider failed: {source}")]
+    ProtocolProvider {
+        action: &'static str,
+        #[source]
+        source: Box<dyn StdError + Send + Sync + 'static>,
+    },
+
     #[error("Mother Iroh protocol {action} kernel validation failed: {source}")]
     ProtocolKernel {
         action: &'static str,

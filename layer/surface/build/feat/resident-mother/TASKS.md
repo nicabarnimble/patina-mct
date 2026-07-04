@@ -3,7 +3,7 @@
 - [x] Task R0 — Housekeeping
 - [x] Task R1 — SPEC first
 - [x] Task R2 — Concurrent peer serving in mct-iroh
-- [ ] Task R3 — The resident `mct-daemon serve`
+- [x] Task R3 — The resident `mct-daemon serve`
 - [ ] Task R4 — Resident call execution
 - [ ] Task R5 — Operational surface
 
@@ -248,3 +248,43 @@ error: could not compile `mct-iroh` (lib test) due to 1 previous error
 ```
 
 Assessment: deterministic clippy issue from adding an event enum with a large served-protocol payload; fixed by boxing the event payload rather than allowing the lint.
+
+### 2026-07-04 — R3 main binary compile failure during resident composition
+
+Command:
+
+```bash
+cargo test -p mct-daemon
+```
+
+Failure output:
+
+```text
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0433]: failed to resolve: could not find `signal` in `tokio`
+    --> crates/mct-daemon/src/main.rs:1216:36
+     |
+1216 |         let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+     |                                    ^^^^^^ could not find `signal` in `tokio`
+...
+error[E0433]: failed to resolve: could not find `signal` in `tokio`
+    --> crates/mct-daemon/src/main.rs:1218:64
+     |
+1218 |         let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+     |                                                                ^^^^^^ could not find `signal` in `tokio`
+...
+error[E0277]: the trait bound `anyhow::Error: std::error::Error` is not satisfied
+    --> crates/mct-daemon/src/main.rs:1209:17
+     |
+1209 |         source: Box::new(source),
+     |                 ^^^^^^^^^^^^^^^^ the trait `std::error::Error` is not implemented for `anyhow::Error`
+     |
+     = note: required for the cast from `Box<anyhow::Error>` to `Box<(dyn std::error::Error + Send + Sync + 'static)>`
+
+Some errors have detailed explanations: E0277, E0433.
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 5 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `mct-daemon` (bin "mct-daemon") due to 5 previous errors
+```
+
+Assessment: deterministic compile issue from using Tokio signal APIs without enabling the `signal` feature and from boxing `anyhow::Error` directly for an adapter provider source; fixed by enabling the feature and preserving a typed provider error as `std::io::Error::other` at the public adapter boundary.
