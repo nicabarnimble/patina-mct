@@ -1,7 +1,7 @@
 # Resident Mother Phase 4 tasks
 
 - [x] Task R0 — Housekeeping
-- [ ] Task R1 — SPEC first
+- [x] Task R1 — SPEC first
 - [ ] Task R2 — Concurrent peer serving in mct-iroh
 - [ ] Task R3 — The resident `mct-daemon serve`
 - [ ] Task R4 — Resident call execution
