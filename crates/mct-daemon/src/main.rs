@@ -16,10 +16,10 @@ use mct_daemon::{
     warmup_configured_child,
 };
 use mct_iroh::{
-    MctIrohCallHandlerResult, MctIrohConcurrentServeConfig, MctIrohServeEvent, MctIrohServeState,
-    MctIrohServedProtocol, MotherIrohEndpoint, MotherIrohEndpointConfig, MotherIrohEndpointError,
-    MotherIrohEndpointSnapshot, MotherIrohEndpointTicket, MotherIrohRelayMode,
-    load_or_create_node_secret_key_hex,
+    MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES, MctIrohCallHandlerResult, MctIrohConcurrentServeConfig,
+    MctIrohServeEvent, MctIrohServeState, MctIrohServedProtocol, MotherIrohEndpoint,
+    MotherIrohEndpointConfig, MotherIrohEndpointError, MotherIrohEndpointSnapshot,
+    MotherIrohEndpointTicket, MotherIrohRelayMode, load_or_create_node_secret_key_hex,
 };
 use mct_kernel::*;
 use mct_observation::JsonlObservationLedger;
@@ -1478,13 +1478,78 @@ enum ResidentAuthorizationOutcome {
 struct ResidentExecutionReport {
     result: MctResult,
     observations: Vec<MctObservation>,
+    inline_result_payload: Option<Vec<u8>>,
+}
+
+fn blake3_hex(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_hex().to_string()
+}
+
+fn inline_payload_content_type(handle: &MctCallPayloadHandle) -> Option<&str> {
+    match handle {
+        MctCallPayloadHandle::InlinePayload { content_type, .. }
+        | MctCallPayloadHandle::ContentAddressedBlob { content_type, .. } => Some(content_type),
+        MctCallPayloadHandle::ExternalReference { content_type, .. } => content_type.as_deref(),
+        MctCallPayloadHandle::Empty => None,
+    }
+}
+
+fn inline_result_payload_handle(
+    reference: impl Into<String>,
+    content_type: impl Into<String>,
+    bytes: &[u8],
+) -> MctCallPayloadHandle {
+    MctCallPayloadHandle::InlinePayload {
+        inline_payload_ref: reference.into(),
+        content_type: content_type.into(),
+        size_bytes: bytes.len() as u64,
+        blake3_digest_hex: blake3_hex(bytes),
+    }
+}
+
+fn resident_payload_fact_observation(
+    call: &MctCall,
+    direction: &str,
+    bytes: &[u8],
+    classification: &str,
+) -> MctObservation {
+    let digest = blake3_hex(bytes);
+    MctObservation {
+        observation_id: ObservationId::new(format!(
+            "obs-resident-payload-{direction}:{}",
+            call.call_id
+        ))
+        .expect("string ID literal/generated value must be non-empty"),
+        observed_at: current_timestamp(),
+        kind: ObservationKind::AdapterEffectCompleted,
+        source_plane: SourcePlane::Adapter,
+        trace: ObservationTraceRef {
+            trace_id: call.trace_context.trace_id.clone(),
+            span_id: Some(call.trace_context.span_id.clone()),
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: Some(call.call_id.clone()),
+        decision_id: None,
+        subject_id: Some(direction.into()),
+        resource_id: Some(format!(
+            "payload:{direction}:size={}:digest={digest}:class={classification}",
+            bytes.len()
+        )),
+        policy_revision: Some(call.authority_context.policy_revision),
+        grants_revision: Some(call.authority_context.grants_revision),
+        outcome: ObservationOutcome::Completed,
+        visibility: ObservationVisibility::InternalOnly,
+        safe_message: format!("{direction} payload integrity facts recorded"),
+        detail_ref: None,
+    }
 }
 
 async fn execute_resident_call(
     paths: ResidentExecutionPaths,
     ledger: ResidentLedgerWriter,
     request: MctCallProtocolRequest,
-    _inline_payload: Option<Vec<u8>>,
+    inline_payload: Option<Vec<u8>>,
 ) -> MctIrohCallHandlerResult {
     let authorization = match authorize_resident_child(paths.clone(), request.call.clone()).await {
         Ok(authorization) => authorization,
@@ -1513,7 +1578,7 @@ async fn execute_resident_call(
     }
 
     let execution = match tokio::task::spawn_blocking(move || {
-        execute_authorized_resident_child(paths, *authorized, request.call)
+        execute_authorized_resident_child(paths, *authorized, request, inline_payload)
     })
     .await
     {
@@ -1533,7 +1598,11 @@ async fn execute_resident_call(
         return MctIrohCallHandlerResult::failed("observation ledger unavailable");
     }
 
-    result_to_call_handler_result("result-resident", &execution.result)
+    result_to_call_handler_result(
+        "result-resident",
+        &execution.result,
+        execution.inline_result_payload,
+    )
 }
 
 async fn authorize_resident_child(
@@ -1620,8 +1689,10 @@ fn resident_child_accepts_call(child: &mct_daemon::MctLoadedChild, call: &MctCal
 fn execute_authorized_resident_child(
     paths: ResidentExecutionPaths,
     execution: ResidentAuthorizedExecution,
-    call: MctCall,
+    request: MctCallProtocolRequest,
+    inline_payload: Option<Vec<u8>>,
 ) -> Result<ResidentExecutionReport> {
+    let call = request.call.clone();
     let state = MctRuntimeStateStore::open(&paths.state_path)?;
     let runtime_kind = match execution.child.ingress_mode {
         mct_daemon::MctChildIngressMode::Handle => RuntimeKind::Process,
@@ -1646,14 +1717,30 @@ fn execute_authorized_resident_child(
         std::slice::from_ref(&execution.authority_observation),
     )?;
 
-    let report = match execution.child.ingress_mode {
+    let mut report = match execution.child.ingress_mode {
         mct_daemon::MctChildIngressMode::Handle => {
-            execute_resident_process_child(execution, &call)?
+            execute_resident_process_child(execution, &request, inline_payload.as_deref())?
         }
         mct_daemon::MctChildIngressMode::Hybrid | mct_daemon::MctChildIngressMode::WitOnly => {
-            execute_resident_wit_child(execution, &call)?
+            execute_resident_wit_child(execution, &request, inline_payload.as_deref())?
         }
     };
+    if let Some(bytes) = inline_payload.as_deref() {
+        report.observations.push(resident_payload_fact_observation(
+            &call,
+            "request",
+            bytes,
+            &call.payload_metadata.data_classification,
+        ));
+    }
+    if let Some(bytes) = report.inline_result_payload.as_deref() {
+        report.observations.push(resident_payload_fact_observation(
+            &call,
+            "result",
+            bytes,
+            &call.payload_metadata.data_classification,
+        ));
+    }
     state.append_run_observations(&run_id, &report.observations)?;
     state.complete_run(
         &run_id,
@@ -1665,8 +1752,10 @@ fn execute_authorized_resident_child(
 
 fn execute_resident_process_child(
     execution: ResidentAuthorizedExecution,
-    call: &MctCall,
+    request: &MctCallProtocolRequest,
+    inline_payload: Option<&[u8]>,
 ) -> Result<ResidentExecutionReport> {
+    let call = &request.call;
     let harness = MctProcessChildHarness {
         executable: execution.child.wasm_path.clone(),
         args: Vec::new(),
@@ -1674,10 +1763,11 @@ fn execute_resident_process_child(
         local_node_id: MctNodeId::new("local-mct")
             .expect("string ID literal/generated value must be non-empty"),
     };
-    let report = harness.invoke_authorized_child(
+    let payload_bytes = inline_payload.unwrap_or_default();
+    let report = harness.invoke_authorized_child_bytes(
         execution.authorized,
         call,
-        "{}",
+        payload_bytes,
         MctProcessChildInvocationIds {
             started_observation_id: ObservationId::new(format!(
                 "obs-resident-process-started:{}",
@@ -1697,22 +1787,46 @@ fn execute_resident_process_child(
             completed_at: current_timestamp(),
         },
     )?;
+    let result_bytes = report.stdout.as_bytes().to_vec();
+    let mut result = report.result;
+    let inline_result_payload = apply_inline_result_payload(
+        &mut result,
+        format!("result-resident-process:{}", call.call_id),
+        "text/plain",
+        result_bytes,
+    );
     Ok(ResidentExecutionReport {
-        result: report.result,
+        result,
         observations: report.observations,
+        inline_result_payload,
     })
 }
 
 fn execute_resident_wit_child(
     execution: ResidentAuthorizedExecution,
-    call: &MctCall,
+    request: &MctCallProtocolRequest,
+    inline_payload: Option<&[u8]>,
 ) -> Result<ResidentExecutionReport> {
+    let call = &request.call;
+    let content_type = inline_payload_content_type(&request.payload).unwrap_or("application/json");
+    if content_type != "application/json" {
+        return Ok(resident_delivery_failure_report(
+            call,
+            execution.authorized.authority_decision_id().clone(),
+            CallProtocolReason::ChildPayloadContentTypeUnsupported,
+            "unsupported child payload",
+        ));
+    }
+    let args_json = match inline_payload {
+        Some(bytes) => serde_json::from_slice::<serde_json::Value>(bytes)?,
+        None => serde_json::json!([]),
+    };
     let runtime = MctWasmComponentRuntime::new(default_wasm_host_config())?;
     let report = runtime.invoke_authorized_child_wit_export_with_host_adapters(
         execution.authorized,
         &execution.child,
         call,
-        &serde_json::json!([]),
+        &args_json,
         MctWitHostImportAdapters::none(),
         MctWasmComponentInvocationIds {
             started_observation_id: ObservationId::new(format!(
@@ -1731,18 +1845,112 @@ fn execute_resident_wit_child(
             completed_at: current_timestamp(),
         },
     )?;
+    let result_bytes = serde_json::to_vec(&report.output_json)?;
+    let mut result = report.result;
+    let inline_result_payload = apply_inline_result_payload(
+        &mut result,
+        format!("result-resident-wit:{}", call.call_id),
+        "application/json",
+        result_bytes,
+    );
     Ok(ResidentExecutionReport {
-        result: report.result,
+        result,
         observations: report.observations,
+        inline_result_payload,
     })
 }
 
-fn result_to_call_handler_result(prefix: &str, result: &MctResult) -> MctIrohCallHandlerResult {
-    match result.outcome {
-        ResultOutcome::Success => MctIrohCallHandlerResult::completed(
-            ResultRef::new(format!("{prefix}:{}", result.call_id))
+fn apply_inline_result_payload(
+    result: &mut MctResult,
+    reference: impl Into<String>,
+    content_type: impl Into<String>,
+    bytes: Vec<u8>,
+) -> Option<Vec<u8>> {
+    result.execution_summary.output_size_bytes = Some(bytes.len() as u64);
+    if bytes.len() > MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES {
+        result.outcome = ResultOutcome::Failed;
+        result.result_payload = MctCallPayloadHandle::Empty;
+        result.requester_message = "result payload too large".into();
+        return None;
+    }
+    result.result_payload = inline_result_payload_handle(reference, content_type, &bytes);
+    Some(bytes)
+}
+
+fn resident_delivery_failure_report(
+    call: &MctCall,
+    authority_decision_ref: DecisionId,
+    reason: CallProtocolReason,
+    safe_message: &str,
+) -> ResidentExecutionReport {
+    let observation = MctObservation {
+        observation_id: ObservationId::new(format!(
+            "obs-resident-delivery-failed:{}",
+            call.call_id
+        ))
+        .expect("string ID literal/generated value must be non-empty"),
+        observed_at: current_timestamp(),
+        kind: ObservationKind::RuntimeExecutionFailed,
+        source_plane: SourcePlane::Adapter,
+        trace: ObservationTraceRef {
+            trace_id: call.trace_context.trace_id.clone(),
+            span_id: Some(call.trace_context.span_id.clone()),
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: Some(call.call_id.clone()),
+        decision_id: Some(authority_decision_ref.clone()),
+        subject_id: None,
+        resource_id: Some(format!("{:?}", reason)),
+        policy_revision: Some(call.authority_context.policy_revision),
+        grants_revision: Some(call.authority_context.grants_revision),
+        outcome: ObservationOutcome::Failed,
+        visibility: ObservationVisibility::InternalOnly,
+        safe_message: safe_message.into(),
+        detail_ref: None,
+    };
+    ResidentExecutionReport {
+        result: MctResult {
+            call_id: call.call_id.clone(),
+            outcome: ResultOutcome::Failed,
+            route_taken: None,
+            authority_decision_ref,
+            execution_summary: ExecutionSummary {
+                wall_time_ms: 0,
+                execution_time_ms: None,
+                queue_wait_ms: None,
+                input_size_bytes: call.payload_metadata.approximate_size_bytes,
+                output_size_bytes: None,
+            },
+            result_payload: MctCallPayloadHandle::Empty,
+            requester_message: safe_message.into(),
+            audit_ref: AuditRef::new(format!("audit-resident-delivery-failed:{}", call.call_id))
                 .expect("string ID literal/generated value must be non-empty"),
-        ),
+        },
+        observations: vec![observation],
+        inline_result_payload: None,
+    }
+}
+
+fn result_to_call_handler_result(
+    prefix: &str,
+    result: &MctResult,
+    inline_result_payload: Option<Vec<u8>>,
+) -> MctIrohCallHandlerResult {
+    match result.outcome {
+        ResultOutcome::Success => {
+            let result_ref = ResultRef::new(format!("{prefix}:{}", result.call_id))
+                .expect("string ID literal/generated value must be non-empty");
+            if let Some(bytes) = inline_result_payload {
+                MctIrohCallHandlerResult::completed_with_inline_payload(
+                    result_ref,
+                    result.result_payload.clone(),
+                    bytes,
+                )
+            } else {
+                MctIrohCallHandlerResult::completed(result_ref)
+            }
+        }
         ResultOutcome::TimedOut => MctIrohCallHandlerResult::timed_out(),
         ResultOutcome::Denied => MctIrohCallHandlerResult::denied(),
         ResultOutcome::Failed | ResultOutcome::Cancelled => {
@@ -3589,6 +3797,111 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resident_process_payload_delivery_returns_digest_and_keeps_ledger_byte_free() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        write_resident_payload_process_child(&children_dir);
+
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        assert_eq!(loaded.loaded, 1, "{loaded:?}");
+        MctDaemonConfigStore::new(&config_path)
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let trace_id = TraceId::new("trace-resident-process-payload")
+            .expect("string ID literal/generated value must be non-empty");
+        let mut call = resident_test_call(trace_id);
+        call.call_id = CallId::new("call-resident-process-payload")
+            .expect("string ID literal/generated value must be non-empty");
+        let payload = br#"{"secret":"payload-marker"}"#.to_vec();
+        call.payload_metadata.approximate_size_bytes = payload.len() as u64;
+        let mut request = resident_test_protocol_request(call);
+        request.payload = MctCallPayloadHandle::InlinePayload {
+            inline_payload_ref: "payload-resident-process".into(),
+            content_type: "application/json".into(),
+            size_bytes: payload.len() as u64,
+            blake3_digest_hex: blake3_hex(&payload),
+        };
+
+        let result = execute_resident_call(
+            ResidentExecutionPaths {
+                config_path,
+                children_dir,
+                state_path,
+            },
+            ledger.clone(),
+            request,
+            Some(payload),
+        )
+        .await;
+        assert_eq!(result.outcome, CallProtocolOutcome::Completed);
+        let result_payload = result
+            .inline_result_payload
+            .expect("result payload returned");
+        let expected_result = r#"processed:{"secret":"payload-marker"}"#;
+        assert_eq!(String::from_utf8(result_payload).unwrap(), expected_result);
+        assert_eq!(
+            result.result_payload.declared_size_bytes(),
+            expected_result.len() as u64
+        );
+        ledger.close().await;
+
+        let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
+        assert!(ledger_text.contains("call-resident-process-payload"));
+        assert!(ledger_text.contains("payload:request:size="));
+        assert!(ledger_text.contains("payload:result:size="));
+        assert!(ledger_text.contains("digest="));
+        assert!(!ledger_text.contains("payload-marker"));
+        assert!(!ledger_text.contains("processed:"));
+    }
+
+    #[tokio::test]
+    async fn resident_wit_rejects_non_json_payload_before_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        write_resident_wit_child(&children_dir);
+
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        MctDaemonConfigStore::new(&config_path)
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+        let ledger = ResidentLedgerWriter::spawn(ledger_path).unwrap();
+        let trace_id = TraceId::new("trace-resident-wit-content-type")
+            .expect("string ID literal/generated value must be non-empty");
+        let mut call = resident_test_call(trace_id);
+        let payload = b"not-json".to_vec();
+        call.payload_metadata.approximate_size_bytes = payload.len() as u64;
+        let mut request = resident_test_protocol_request(call);
+        request.payload = MctCallPayloadHandle::InlinePayload {
+            inline_payload_ref: "payload-resident-wit-text".into(),
+            content_type: "text/plain".into(),
+            size_bytes: payload.len() as u64,
+            blake3_digest_hex: blake3_hex(&payload),
+        };
+
+        let result = execute_resident_call(
+            ResidentExecutionPaths {
+                config_path,
+                children_dir,
+                state_path,
+            },
+            ledger.clone(),
+            request,
+            Some(payload),
+        )
+        .await;
+        assert_eq!(result.outcome, CallProtocolOutcome::Failed);
+        assert_eq!(result.safe_message, "unsupported child payload");
+        ledger.close().await;
+    }
+
+    #[tokio::test]
     async fn resident_execution_runs_wit_child_and_records_trace() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.json");
@@ -3723,14 +4036,29 @@ mod tests {
     }
 
     fn write_resident_process_child(children_dir: &Path) {
+        write_resident_process_child_script(
+            children_dir,
+            "resident-echo",
+            b"#!/bin/sh\ncat >/dev/null\nprintf '{\\\"ok\\\":true}'\n",
+        );
+    }
+
+    fn write_resident_payload_process_child(children_dir: &Path) {
+        write_resident_process_child_script(
+            children_dir,
+            "resident-payload-echo",
+            b"#!/bin/sh\npayload=$(cat)\nprintf 'processed:%s' \"$payload\"\n",
+        );
+    }
+
+    fn write_resident_process_child_script(children_dir: &Path, name: &str, script: &[u8]) {
         #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
 
-        let child_dir = children_dir.join("resident-echo");
+        let child_dir = children_dir.join(name);
         std::fs::create_dir_all(&child_dir).unwrap();
-        let artifact_path = child_dir.join("resident-echo.wasm");
+        let artifact_path = child_dir.join(format!("{name}.wasm"));
         let manifest_path = child_dir.join("child.toml");
-        let script = b"#!/bin/sh\ncat >/dev/null\nprintf '{\\\"ok\\\":true}'\n";
         std::fs::write(&artifact_path, script).unwrap();
         #[cfg(unix)]
         {
@@ -3738,7 +4066,7 @@ mod tests {
             permissions.set_mode(0o755);
             std::fs::set_permissions(&artifact_path, permissions).unwrap();
         }
-        write_resident_child_manifest(&manifest_path, "resident-echo", "handle");
+        write_resident_child_manifest(&manifest_path, name, "handle");
         write_sha256_sidecar(&artifact_path, script);
         let manifest_bytes = std::fs::read(&manifest_path).unwrap();
         write_sha256_sidecar(&manifest_path, &manifest_bytes);
