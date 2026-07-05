@@ -2344,6 +2344,8 @@ name = "mct-iroh"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
+ "blake3",
  "iroh",
  "mct-kernel",
  "serde",
