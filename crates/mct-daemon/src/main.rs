@@ -3797,6 +3797,148 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resident_mother_payload_roundtrip_verifies_result_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let identity_path = dir.path().join("identity").join("iroh-secret.hex");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let socket_path = dir.path().join("control.sock");
+        let children_dir = dir.path().join("children");
+        write_resident_payload_process_child(&children_dir);
+
+        let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let client_endpoint_id = client.snapshot().endpoint_id;
+        let store = MctDaemonConfigStore::new(&config_path);
+        store
+            .ensure_local_identity(MctOperatorNodeScope::default(), &identity_path)
+            .unwrap();
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        assert_eq!(loaded.loaded, 1, "{loaded:?}");
+        store
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+        store
+            .upsert_peer(MctPeerAddressBookEntry {
+                peer_node_id: MctNodeId::new("mother-payload-client")
+                    .expect("string ID literal/generated value must be non-empty"),
+                binding_id: PeerBindingId::new("binding-resident-payload-client")
+                    .expect("string ID literal/generated value must be non-empty"),
+                endpoint_id: client_endpoint_id.clone(),
+                vision_id: VisionId::new("vision-local")
+                    .expect("string ID literal/generated value must be non-empty"),
+                ticket: None,
+                binding_state: BindingState::Admitted,
+                policy_revision: 1,
+                updated_at: mct_daemon::current_timestamp_string(),
+            })
+            .unwrap();
+
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let resident = tokio::spawn(run_resident_mother(
+            ResidentMotherConfig {
+                config_path,
+                identity_path,
+                children_dir,
+                state_path,
+                ledger_path: ledger_path.clone(),
+                control: ResidentControlTransport::Uds(socket_path),
+                relay_default: false,
+                max_concurrent_connections: 8,
+            },
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            Some(ready_tx),
+        ));
+        let ticket = tokio::time::timeout(Duration::from_secs(10), ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let trace_id = TraceId::new("trace-resident-payload-e2e")
+            .expect("string ID literal/generated value must be non-empty");
+        let binding_id = PeerBindingId::new("binding-resident-payload-client")
+            .expect("string ID literal/generated value must be non-empty");
+        let client_node_id = MctNodeId::new("mother-payload-client")
+            .expect("string ID literal/generated value must be non-empty");
+        let vision_id = VisionId::new("vision-local")
+            .expect("string ID literal/generated value must be non-empty");
+        let hello = cli_hello_request(
+            &client_endpoint_id,
+            &binding_id,
+            &client_node_id,
+            &vision_id,
+            &trace_id,
+        );
+        let hello_response = client.send_hello(&ticket, &hello).await.unwrap();
+        assert_eq!(hello_response.hello_outcome, HelloOutcome::Admitted);
+
+        let payload = br#"{"secret":"payload-marker"}"#.to_vec();
+        let mut call = cli_call_request(
+            &client_endpoint_id,
+            &binding_id,
+            &client_node_id,
+            &vision_id,
+            &trace_id,
+            OperationTarget {
+                namespace: "patina:demo".into(),
+                interface_name: "control@0.1.0".into(),
+                function_name: "run".into(),
+            },
+            &hello_response,
+        );
+        call.call.call_id = CallId::new("call-resident-payload-e2e")
+            .expect("string ID literal/generated value must be non-empty");
+        call.call.payload_metadata.approximate_size_bytes = payload.len() as u64;
+        call.payload = MctCallPayloadHandle::InlinePayload {
+            inline_payload_ref: "payload-resident-e2e".into(),
+            content_type: "application/json".into(),
+            size_bytes: payload.len() as u64,
+            blake3_digest_hex: blake3_hex(&payload),
+        };
+
+        let call_reply = client
+            .send_call_with_inline_payload(&ticket, &call, payload)
+            .await
+            .unwrap();
+        let result_payload = call_reply
+            .inline_result_payload
+            .expect("verified result payload bytes returned");
+        let expected_result = br#"processed:{"secret":"payload-marker"}"#.to_vec();
+        assert_eq!(result_payload, expected_result);
+        assert_eq!(
+            call_reply.reply.reply_outcome,
+            CallProtocolReplyOutcome::Success
+        );
+        assert_eq!(
+            call_reply.reply.result_payload.declared_size_bytes(),
+            expected_result.len() as u64
+        );
+        assert!(matches!(
+            call_reply.reply.result_payload,
+            MctCallPayloadHandle::InlinePayload { ref blake3_digest_hex, .. }
+                if blake3_digest_hex == &blake3_hex(&expected_result)
+        ));
+
+        let _ = shutdown_tx.send(());
+        tokio::time::timeout(Duration::from_secs(10), resident)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        client.close().await;
+
+        let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
+        assert!(ledger_text.contains("call-resident-payload-e2e"));
+        assert!(ledger_text.contains("payload:request:size="));
+        assert!(ledger_text.contains("payload:result:size="));
+        assert!(!ledger_text.contains("payload-marker"));
+        assert!(!ledger_text.contains("processed:"));
+    }
+
+    #[tokio::test]
     async fn resident_process_payload_delivery_returns_digest_and_keeps_ledger_byte_free() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.json");
