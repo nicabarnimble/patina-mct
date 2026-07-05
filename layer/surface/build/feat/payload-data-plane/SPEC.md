@@ -25,7 +25,7 @@ The current 64 KiB total read budget becomes 96 KiB. That budget covers the JSON
 
 ## Payload handles and integrity facts
 
-`MctCallPayloadHandle::InlinePayload` gains a `blake3_digest_hex` field. `ContentAddressedBlob` keeps its digest field and remains a declared handle only until slice 2 supplies local storage. `ExternalReference` remains size-only because MCT does not dereference it in this phase; it is not accepted for inline byte delivery.
+`MctCallPayloadHandle::InlinePayload` gains a `blake3_digest_hex` field and renames its byte count to `size_bytes` because inline integrity validation is exact, not approximate. `ContentAddressedBlob` keeps its digest field and also uses `size_bytes` because the optional D6 local-CAS ingest path verifies exact digest and size before a blob handle is consumable. `ExternalReference` keeps `approximate_size_bytes` because MCT does not dereference it in this phase; it is not accepted for inline byte delivery.
 
 Updated variant shapes:
 
@@ -33,14 +33,14 @@ Updated variant shapes:
 InlinePayload {
     inline_payload_ref: String,
     content_type: String,
-    approximate_size_bytes: u64,
+    size_bytes: u64,
     blake3_digest_hex: String,
 }
 ContentAddressedBlob {
     digest: String,
     blob_ref: String,
     content_type: String,
-    approximate_size_bytes: u64,
+    size_bytes: u64,
 }
 ExternalReference {
     external_ref: String,
@@ -54,9 +54,11 @@ Hashing remains adapter-side. The kernel receives declared handle facts plus obs
 
 ## Delivery mapping
 
-For WIT children, a verified request payload with `content_type = "application/json"` is parsed as the call argument JSON and lowered through the existing `wit_values` path. Non-JSON WIT payloads are malformed for slice 1. The lifted WIT result JSON is serialized to bytes, capped by `MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES`, hashed, and returned as the inline result payload.
+For WIT children, a verified request payload with `content_type = "application/json"` is parsed as the call argument JSON and lowered through the existing `wit_values` path. The child-kind/content-type check happens at resident delivery preflight after child authorization identifies the runtime kind and before effect execution. A non-JSON payload for a WIT child fails closed with typed reason `ChildPayloadContentTypeUnsupported`, outcome `Failed`, and caller-safe text `unsupported child payload`; it is not a malformed protocol outcome because the protocol bytes and integrity facts were valid.
 
-For process children, the verified request payload bytes are written verbatim to stdin. Stdout bytes are the result payload; they are capped, hashed, and returned inline. Stderr remains adapter diagnostics only and never becomes a caller payload.
+The lifted WIT result JSON is serialized to bytes, checked against `MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES`, hashed, and returned as the inline result payload. If the serialized result exceeds the cap, the call fails closed with typed execution-failure reason `ResultPayloadTooLarge`, outcome `Failed`, and caller-safe text `result payload too large`. Silent truncation is forbidden.
+
+For process children, the verified request payload bytes are written verbatim to stdin. Stdout bytes are the result payload; they are checked against `MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES`, hashed, and returned inline. If stdout exceeds the result cap, the call fails closed with typed execution-failure reason `ResultPayloadTooLarge`, outcome `Failed`, and caller-safe text `result payload too large`. Silent truncation is forbidden. Stderr remains adapter diagnostics only and never becomes a caller payload.
 
 `MctResult` gains a result payload handle mirroring the reply handle so local execution and remote replies describe the same bytes. Execution summaries continue to record input/output byte counts.
 
@@ -73,13 +75,23 @@ The order is fixed:
 7. kernel integrity decision compares declared and observed facts;
 8. existing hello/call authority evaluation;
 9. resident child authorization;
-10. effect execution.
+10. resident delivery preflight, including child-kind/content-type compatibility;
+11. effect execution;
+12. result payload serialization/capture, result cap check, hashing, and reply-handle construction.
 
 Failures in steps 1-7 are malformed protocol outcomes and never execute. They map to `CallProtocolOutcome::Malformed` with typed reasons `MalformedCall`, `PayloadMetadataMismatch`, `PayloadDeclaredTooLarge`, `PayloadActualTooLarge`, `PayloadSizeMismatch`, `PayloadDigestMismatch`, `PayloadMissingInlineBytes`, or `PayloadUnexpectedInlineBytes`; caller-safe text is `malformed call payload`. Authority failures after integrity keep the existing denied outcomes and safe `not authorized` projection.
 
+Delivery preflight failures in step 10 happen after a child kind is known but before child code runs. The slice-1 WIT content-type failure maps to typed reason `ChildPayloadContentTypeUnsupported`, `CallProtocolOutcome::Failed` / `ResultOutcome::Failed`, and caller-safe text `unsupported child payload`.
+
+Oversized result payload failures in step 12 happen after authority and child execution, so they are execution failures, not malformed protocol outcomes. They map to typed reason `ResultPayloadTooLarge`, `CallProtocolOutcome::Failed` / `ResultOutcome::Failed`, and caller-safe text `result payload too large`. Result bytes are never truncated to fit the cap.
+
+## Caller-side result verification
+
+The caller verifies replies symmetrically inside `MCT_CALL_FRAME_READ_BUDGET_BYTES`: bounded response read, JSON decode, inline result base64 decode when present, result handle validation, exact size check, cap check, adapter-computed blake3 digest, and digest comparison. A result size or digest mismatch is a typed client-side error `ResultPayloadIntegrityMismatch`; an oversized inline result or oversized response frame is a typed client-side error `ResultPayloadTooLarge`. The caller never silently accepts mismatched result bytes, and D3 tests must cover reply-side digest mismatch and oversized reply handling.
+
 ## Observability invariant
 
-Adapter observations for malformed payloads include call id when available, size, digest, classification, and the typed reason in references/details. They never include base64 or raw payload bytes. The no-bytes invariant is tested against the JSONL ledger.
+Adapter observations for malformed request payloads, delivery failures, and result-payload failures include call id when available, size, digest, classification, and the typed reason in references/details. They never include base64 or raw request/result payload bytes. The no-bytes invariant is tested against the JSONL ledger for both request and result payloads.
 
 ## Non-goals
 

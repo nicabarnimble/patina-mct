@@ -2,6 +2,7 @@
 
 - [x] Task D0 — Housekeeping
 - [x] Task D1 — SPEC first
+- [x] Task D1.1 — SPEC amendments at operator gate
 - [ ] Task D2 — Kernel: payload integrity decisions
 - [ ] Task D3 — Transport: bytes over mct/call/0
 - [ ] Task D4 — Daemon: delivery and result path
