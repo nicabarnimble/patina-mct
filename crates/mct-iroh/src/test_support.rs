@@ -410,7 +410,8 @@ fn local_call_request(
         payload: MctCallPayloadHandle::InlinePayload {
             inline_payload_ref: "payload-local-echo".into(),
             content_type: "text/plain".into(),
-            approximate_size_bytes: 5,
+            size_bytes: 5,
+            blake3_digest_hex: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
         },
         idempotency_key: Some("idem-local-call".into()),
         received_observation_id: ObservationId::new("obs-local-call-received")
