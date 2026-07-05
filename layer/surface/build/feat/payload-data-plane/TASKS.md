@@ -6,7 +6,7 @@
 - [x] Task D2 — Kernel: payload integrity decisions
 - [x] Task D3 — Transport: bytes over mct/call/0
 - [x] Task D4 — Daemon: delivery and result path
-- [ ] Task D5 — End-to-end proof
+- [x] Task D5 — End-to-end proof
 - [ ] Task D6 — Slice 2: local content-addressed blob store
 
 ---
