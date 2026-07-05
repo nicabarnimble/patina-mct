@@ -57,6 +57,16 @@ impl MctProcessChildHarness {
         stdin_json: &str,
         ids: MctProcessChildInvocationIds,
     ) -> Result<MctProcessChildInvocationReport, MctProcessChildError> {
+        self.invoke_authorized_child_bytes(authorized, call, stdin_json.as_bytes(), ids)
+    }
+
+    pub fn invoke_authorized_child_bytes(
+        &self,
+        authorized: AuthorizedChildInvocation,
+        call: &MctCall,
+        stdin_bytes: &[u8],
+        ids: MctProcessChildInvocationIds,
+    ) -> Result<MctProcessChildInvocationReport, MctProcessChildError> {
         if authorized.policy_revision() != call.authority_context.policy_revision {
             return Ok(process_stale_authority_report(&authorized, call, ids));
         }
@@ -86,7 +96,7 @@ impl MctProcessChildHarness {
 
         if let Some(mut stdin) = child.stdin.take() {
             stdin
-                .write_all(stdin_json.as_bytes())
+                .write_all(stdin_bytes)
                 .map_err(MctProcessChildError::WriteStdin)?;
         }
 
