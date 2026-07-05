@@ -4,7 +4,7 @@
 - [x] Task D1 — SPEC first
 - [x] Task D1.1 — SPEC amendments at operator gate
 - [x] Task D2 — Kernel: payload integrity decisions
-- [ ] Task D3 — Transport: bytes over mct/call/0
+- [x] Task D3 — Transport: bytes over mct/call/0
 - [ ] Task D4 — Daemon: delivery and result path
 - [ ] Task D5 — End-to-end proof
 - [ ] Task D6 — Slice 2: local content-addressed blob store
@@ -163,4 +163,21 @@ anything discovered that belongs in ROADMAP rather than this phase.
 
 ## Flake log
 
-None yet.
+- 2026-07-05 D3 validation failed before commit with compile error after adding the resident call payload parameter:
+
+```text
+error[E0061]: this function takes 4 arguments but 3 arguments were supplied
+    --> crates/mct-daemon/src/main.rs:3611:22
+     |
+3611 |           let result = execute_resident_call(
+     |  ______________________^^^^^^^^^^^^^^^^^^^^^-
+...
+note: function defined here
+    --> crates/mct-daemon/src/main.rs:1483:10
+     |
+1483 | async fn execute_resident_call(
+     |          ^^^^^^^^^^^^^^^^^^^^^
+...
+1487 |     _inline_payload: Option<Vec<u8>>,
+     |     --------------------------------
+```

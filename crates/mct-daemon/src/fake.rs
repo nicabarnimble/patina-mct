@@ -304,7 +304,7 @@ fn fake_call_request(
         },
         payload_metadata: PayloadMetadata {
             data_classification: "public".into(),
-            approximate_size_bytes: 5,
+            approximate_size_bytes: 0,
             contains_secret_scoped_material: false,
         },
         authority_context: AuthorityContextSnapshot {
@@ -346,13 +346,7 @@ fn fake_call_request(
             presented_capability_ref: None,
         },
         call,
-        payload: MctCallPayloadHandle::InlinePayload {
-            inline_payload_ref: "payload-hello".into(),
-            content_type: "text/plain".into(),
-            size_bytes: 5,
-            blake3_digest_hex: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                .into(),
-        },
+        payload: MctCallPayloadHandle::Empty,
         idempotency_key: Some("idem-fake".into()),
         received_observation_id: ObservationId::new("obs-peer-call-received")
             .expect("string ID literal/generated value must be non-empty"),

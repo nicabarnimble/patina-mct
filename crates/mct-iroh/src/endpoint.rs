@@ -90,6 +90,13 @@ pub enum MotherIrohEndpointError {
         source: MctKernelError,
     },
 
+    #[error("Mother Iroh protocol {action} payload failed: {reason:?}: {safe_message}")]
+    ProtocolPayload {
+        action: &'static str,
+        reason: mct_kernel::PayloadIntegrityReason,
+        safe_message: String,
+    },
+
     #[error("Mother Iroh protocol {action} timed out")]
     ProtocolTimeout { action: &'static str },
 
