@@ -101,8 +101,10 @@ Dependency-ordered; each item assumes the ones before it.
 - [ ] `main.rs` CLI decomposition (2,600+ lines of subcommand dispatch).
 - [ ] Property-based tests for ALPN intersection and payload validation.
 - [ ] Per-connection hello state (subsumed by item 1).
-- [ ] Child SDK / packaging tooling in-repo (children currently built in
-      the integrated Patina repo).
+- [x] Child SDK / packaging tooling in-repo (children currently built in
+      the integrated Patina repo). Completed 2026-07-04 in the integrated
+      Patina repo: `patina child init/build/package/verify`, canonical WIT
+      world `patina:mct@0.1.0` at `wit/mct/`, oracle-verified.
 
 ---
 
