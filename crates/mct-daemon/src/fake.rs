@@ -349,7 +349,8 @@ fn fake_call_request(
         payload: MctCallPayloadHandle::InlinePayload {
             inline_payload_ref: "payload-hello".into(),
             content_type: "text/plain".into(),
-            approximate_size_bytes: 5,
+            size_bytes: 5,
+            blake3_digest_hex: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
         },
         idempotency_key: Some("idem-fake".into()),
         received_observation_id: ObservationId::new("obs-peer-call-received")
@@ -376,6 +377,7 @@ fn fake_echo_result(call: &MctCall) -> MctResult {
             input_size_bytes: call.payload_metadata.approximate_size_bytes,
             output_size_bytes: Some(call.payload_metadata.approximate_size_bytes),
         },
+        result_payload: MctCallPayloadHandle::Empty,
         requester_message: "echo ok".into(),
         audit_ref: AuditRef::new("audit-call-fake")
             .expect("string ID literal/generated value must be non-empty"),

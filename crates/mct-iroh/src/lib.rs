@@ -723,7 +723,8 @@ mod tests {
             payload: MctCallPayloadHandle::InlinePayload {
                 inline_payload_ref: "payload-public-echo".into(),
                 content_type: "text/plain".into(),
-                approximate_size_bytes: 5,
+                size_bytes: 5,
+                blake3_digest_hex: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             },
             idempotency_key: Some("idem-public-call".into()),
             received_observation_id: ObservationId::new("obs-public-call-received")

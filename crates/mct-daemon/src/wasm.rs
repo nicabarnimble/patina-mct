@@ -613,6 +613,7 @@ fn wasm_invocation_result(
             input_size_bytes: call.payload_metadata.approximate_size_bytes,
             output_size_bytes,
         },
+        result_payload: MctCallPayloadHandle::Empty,
         requester_message: requester_message.into(),
         audit_ref,
     }
@@ -1066,6 +1067,7 @@ impl MctWasmComponentRuntime {
                 input_size_bytes: call.payload_metadata.approximate_size_bytes,
                 output_size_bytes,
             },
+            result_payload: MctCallPayloadHandle::Empty,
             requester_message: "wasm component completed".into(),
             audit_ref: ids.audit_ref,
         };

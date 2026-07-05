@@ -200,6 +200,7 @@ impl MctProcessChildHarness {
                 input_size_bytes: call.payload_metadata.approximate_size_bytes,
                 output_size_bytes: Some(stdout.len() as u64),
             },
+            result_payload: MctCallPayloadHandle::Empty,
             requester_message: match outcome {
                 ResultOutcome::Success => "process child completed",
                 ResultOutcome::TimedOut => "process child timed out",
@@ -247,6 +248,7 @@ fn process_stale_authority_report(
                 input_size_bytes: call.payload_metadata.approximate_size_bytes,
                 output_size_bytes: None,
             },
+            result_payload: MctCallPayloadHandle::Empty,
             requester_message: "not authorized".into(),
             audit_ref: ids.audit_ref,
         },

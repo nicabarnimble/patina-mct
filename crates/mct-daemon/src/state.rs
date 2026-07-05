@@ -2036,6 +2036,7 @@ mod tests {
                 input_size_bytes: 0,
                 output_size_bytes: Some(2),
             },
+            result_payload: MctCallPayloadHandle::Empty,
             requester_message: "ok".into(),
             audit_ref: AuditRef::new("audit-a")
                 .expect("string ID literal/generated value must be non-empty"),

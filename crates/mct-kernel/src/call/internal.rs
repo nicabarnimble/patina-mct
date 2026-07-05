@@ -1,6 +1,139 @@
 use super::*;
 use crate::peer::{MCT_CALL_ALPN, MctHelloAdmissionEvaluation};
 
+pub(super) fn evaluate_payload_integrity_internal(
+    subject: PayloadIntegritySubject,
+    handle: &MctCallPayloadHandle,
+    observed: &MctPayloadIntegrityObservation,
+    max_inline_size_bytes: u64,
+) -> MctPayloadIntegrityDecision {
+    let reason = payload_integrity_reason(subject, handle, observed, max_inline_size_bytes);
+    let outcome = if reason == PayloadIntegrityReason::IntegrityMatched {
+        PayloadIntegrityOutcome::Matched
+    } else {
+        PayloadIntegrityOutcome::Mismatch
+    };
+    MctPayloadIntegrityDecision {
+        subject,
+        outcome,
+        reason,
+        safe_message: payload_integrity_safe_message(reason).into(),
+    }
+}
+
+fn payload_integrity_reason(
+    subject: PayloadIntegritySubject,
+    handle: &MctCallPayloadHandle,
+    observed: &MctPayloadIntegrityObservation,
+    max_inline_size_bytes: u64,
+) -> PayloadIntegrityReason {
+    if !handle_declares_inline_bytes(handle) {
+        return if observed.inline_bytes_present {
+            if subject == PayloadIntegritySubject::ReplyResult {
+                PayloadIntegrityReason::ResultPayloadIntegrityMismatch
+            } else {
+                PayloadIntegrityReason::PayloadUnexpectedInlineBytes
+            }
+        } else {
+            PayloadIntegrityReason::IntegrityMatched
+        };
+    }
+
+    if !observed.inline_bytes_present
+        || observed.observed_size_bytes.is_none()
+        || observed.observed_blake3_digest_hex.is_none()
+    {
+        return if subject == PayloadIntegritySubject::ReplyResult {
+            PayloadIntegrityReason::ResultPayloadIntegrityMismatch
+        } else {
+            PayloadIntegrityReason::PayloadMissingInlineBytes
+        };
+    }
+
+    let declared_digest = declared_digest_hex(handle);
+    let observed_digest = observed
+        .observed_blake3_digest_hex
+        .as_deref()
+        .expect("observed digest presence checked above");
+    if !is_valid_blake3_hex(declared_digest) || !is_valid_blake3_hex(observed_digest) {
+        return PayloadIntegrityReason::InvalidPayloadDigest;
+    }
+
+    let declared_size = handle.declared_size_bytes();
+    let observed_size = observed
+        .observed_size_bytes
+        .expect("observed size presence checked above");
+    if declared_size > max_inline_size_bytes {
+        return if subject == PayloadIntegritySubject::ReplyResult {
+            PayloadIntegrityReason::ResultPayloadTooLarge
+        } else {
+            PayloadIntegrityReason::PayloadDeclaredTooLarge
+        };
+    }
+    if observed_size > max_inline_size_bytes {
+        return if subject == PayloadIntegritySubject::ReplyResult {
+            PayloadIntegrityReason::ResultPayloadTooLarge
+        } else {
+            PayloadIntegrityReason::PayloadActualTooLarge
+        };
+    }
+    if declared_size != observed_size {
+        return mismatch_reason(subject, true);
+    }
+    if declared_digest != observed_digest {
+        return mismatch_reason(subject, false);
+    }
+
+    PayloadIntegrityReason::IntegrityMatched
+}
+
+fn handle_declares_inline_bytes(handle: &MctCallPayloadHandle) -> bool {
+    matches!(handle, MctCallPayloadHandle::InlinePayload { .. })
+}
+
+fn declared_digest_hex(handle: &MctCallPayloadHandle) -> &str {
+    match handle {
+        MctCallPayloadHandle::InlinePayload {
+            blake3_digest_hex, ..
+        } => blake3_digest_hex,
+        MctCallPayloadHandle::ContentAddressedBlob { digest, .. } => digest,
+        MctCallPayloadHandle::ExternalReference { .. } | MctCallPayloadHandle::Empty => "",
+    }
+}
+
+fn mismatch_reason(subject: PayloadIntegritySubject, size_mismatch: bool) -> PayloadIntegrityReason {
+    match subject {
+        PayloadIntegritySubject::Request if size_mismatch => {
+            PayloadIntegrityReason::PayloadSizeMismatch
+        }
+        PayloadIntegritySubject::Request => PayloadIntegrityReason::PayloadDigestMismatch,
+        PayloadIntegritySubject::ReplyResult => {
+            PayloadIntegrityReason::ResultPayloadIntegrityMismatch
+        }
+    }
+}
+
+fn payload_integrity_safe_message(reason: PayloadIntegrityReason) -> &'static str {
+    match reason {
+        PayloadIntegrityReason::IntegrityMatched => "payload integrity verified",
+        PayloadIntegrityReason::ResultPayloadTooLarge => "result payload too large",
+        PayloadIntegrityReason::ResultPayloadIntegrityMismatch => {
+            "result payload integrity mismatch"
+        }
+        PayloadIntegrityReason::PayloadDeclaredTooLarge
+        | PayloadIntegrityReason::PayloadActualTooLarge
+        | PayloadIntegrityReason::PayloadSizeMismatch
+        | PayloadIntegrityReason::PayloadDigestMismatch
+        | PayloadIntegrityReason::PayloadMissingInlineBytes
+        | PayloadIntegrityReason::PayloadUnexpectedInlineBytes
+        | PayloadIntegrityReason::InvalidPayloadDigest => "malformed call payload",
+    }
+}
+
+fn is_valid_blake3_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 pub(super) fn evaluate_call_protocol_internal(
     request: &MctCallProtocolRequest,
     hello: &MctHelloAdmissionEvaluation,
@@ -110,9 +243,20 @@ fn denied(
         route_decision_id: None,
         result_ref: None,
         outcome: match reason {
-            CallProtocolReason::MalformedCall | CallProtocolReason::PayloadMetadataMismatch => {
-                CallProtocolOutcome::Malformed
-            }
+            CallProtocolReason::MalformedCall
+            | CallProtocolReason::PayloadMetadataMismatch
+            | CallProtocolReason::PayloadDeclaredTooLarge
+            | CallProtocolReason::PayloadActualTooLarge
+            | CallProtocolReason::PayloadSizeMismatch
+            | CallProtocolReason::PayloadDigestMismatch
+            | CallProtocolReason::PayloadMissingInlineBytes
+            | CallProtocolReason::PayloadUnexpectedInlineBytes
+            | CallProtocolReason::InvalidPayloadDigest => CallProtocolOutcome::Malformed,
+            CallProtocolReason::ChildPayloadContentTypeUnsupported
+            | CallProtocolReason::ResultPayloadTooLarge
+            | CallProtocolReason::ResultPayloadIntegrityMismatch
+            | CallProtocolReason::ExecutionFailed => CallProtocolOutcome::Failed,
+            CallProtocolReason::ExecutionTimedOut => CallProtocolOutcome::TimedOut,
             _ => CallProtocolOutcome::Denied,
         },
         reason,

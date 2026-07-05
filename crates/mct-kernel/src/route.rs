@@ -592,6 +592,7 @@ pub fn no_route_denied_result(
             input_size_bytes: call.payload_metadata.approximate_size_bytes,
             output_size_bytes: None,
         },
+        result_payload: MctCallPayloadHandle::Empty,
         requester_message: decision.safe_message.clone(),
         audit_ref,
     }

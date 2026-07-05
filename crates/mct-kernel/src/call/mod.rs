@@ -280,6 +280,8 @@ pub struct MctResult {
     pub authority_decision_ref: DecisionId,
     /// Timing and size facts safe for result consumers.
     pub execution_summary: ExecutionSummary,
+    /// Declared result payload handle; empty for denied/no-payload results.
+    pub result_payload: MctCallPayloadHandle,
     /// Caller-safe message; privileged denial reasons live in observations.
     pub requester_message: String,
     /// Opaque reference for audit lookup outside the caller response.
@@ -339,8 +341,10 @@ pub enum MctCallPayloadHandle {
         inline_payload_ref: String,
         /// Non-blank media type or schema label for the bytes.
         content_type: String,
-        /// Claimed byte size used for validation against call metadata.
-        approximate_size_bytes: u64,
+        /// Exact byte size declared for inline integrity validation.
+        size_bytes: u64,
+        /// Declared BLAKE3 digest of the inline bytes, encoded as lowercase hex.
+        blake3_digest_hex: String,
     },
     /// Payload stored in content-addressed storage.
     ContentAddressedBlob {
@@ -350,8 +354,8 @@ pub enum MctCallPayloadHandle {
         blob_ref: String,
         /// Non-blank media type or schema label for the blob.
         content_type: String,
-        /// Claimed byte size used for validation against call metadata.
-        approximate_size_bytes: u64,
+        /// Exact byte size verified when the content-addressed blob is ingested.
+        size_bytes: u64,
     },
     /// Payload held outside MCT-managed storage.
     ExternalReference {
@@ -368,22 +372,21 @@ pub enum MctCallPayloadHandle {
 
 impl MctCallPayloadHandle {
     /// Returns the byte-size claim carried by this handle, or zero for empty payloads.
-    pub fn approximate_size_bytes(&self) -> u64 {
+    pub fn declared_size_bytes(&self) -> u64 {
         match self {
-            Self::InlinePayload {
-                approximate_size_bytes,
-                ..
-            }
-            | Self::ContentAddressedBlob {
-                approximate_size_bytes,
-                ..
-            }
-            | Self::ExternalReference {
+            Self::InlinePayload { size_bytes, .. }
+            | Self::ContentAddressedBlob { size_bytes, .. } => *size_bytes,
+            Self::ExternalReference {
                 approximate_size_bytes,
                 ..
             } => *approximate_size_bytes,
             Self::Empty => 0,
         }
+    }
+
+    /// Returns the byte-size claim carried by this handle, or zero for empty payloads.
+    pub fn approximate_size_bytes(&self) -> u64 {
+        self.declared_size_bytes()
     }
 
     /// Validates that every WIT identity segment is present.
@@ -397,6 +400,7 @@ impl MctCallPayloadHandle {
             Self::InlinePayload {
                 inline_payload_ref,
                 content_type,
+                blake3_digest_hex,
                 ..
             } => {
                 ensure_non_blank(
@@ -405,6 +409,11 @@ impl MctCallPayloadHandle {
                     inline_payload_ref,
                 )?;
                 ensure_non_blank("MctCallPayloadHandle", "content_type", content_type)?;
+                ensure_non_blank(
+                    "MctCallPayloadHandle",
+                    "blake3_digest_hex",
+                    blake3_digest_hex,
+                )?;
             }
             Self::ContentAddressedBlob {
                 digest,
@@ -432,6 +441,125 @@ impl MctCallPayloadHandle {
         }
 
         Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// Protocol side whose payload integrity is being evaluated.
+pub enum PayloadIntegritySubject {
+    /// Request payload bytes received before authority evaluation.
+    Request,
+    /// Reply result payload bytes received by the caller.
+    ReplyResult,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// Pure kernel outcome for declared-versus-observed payload integrity facts.
+pub enum PayloadIntegrityOutcome {
+    /// Declared facts match observed adapter facts.
+    Matched,
+    /// Declared or observed facts failed closed.
+    Mismatch,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// Typed reason for a payload integrity decision.
+pub enum PayloadIntegrityReason {
+    /// Declared facts match observed facts.
+    IntegrityMatched,
+    /// Declared request payload size exceeds the fixed inline cap.
+    PayloadDeclaredTooLarge,
+    /// Observed request payload size exceeds the fixed inline cap.
+    PayloadActualTooLarge,
+    /// Declared and observed request payload sizes differ.
+    PayloadSizeMismatch,
+    /// Declared and observed request payload digests differ.
+    PayloadDigestMismatch,
+    /// Inline bytes were required by the handle but absent at the adapter edge.
+    PayloadMissingInlineBytes,
+    /// Inline bytes were supplied where the handle did not declare inline bytes.
+    PayloadUnexpectedInlineBytes,
+    /// A declared or observed BLAKE3 digest was not valid hex syntax.
+    InvalidPayloadDigest,
+    /// Result payload size exceeds the fixed inline result cap.
+    ResultPayloadTooLarge,
+    /// Declared and observed result payload integrity facts differ.
+    ResultPayloadIntegrityMismatch,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Adapter-observed payload facts supplied to the pure kernel integrity check.
+pub struct MctPayloadIntegrityObservation {
+    /// Whether inline bytes were actually present at the adapter edge.
+    pub inline_bytes_present: bool,
+    /// Byte count observed by the adapter after decoding/fetching bytes.
+    pub observed_size_bytes: Option<u64>,
+    /// BLAKE3 digest observed by the adapter, encoded as lowercase hex.
+    pub observed_blake3_digest_hex: Option<String>,
+}
+
+impl MctPayloadIntegrityObservation {
+    /// Builds an observation for a handle that did not have required inline bytes.
+    pub fn missing_inline_bytes() -> Self {
+        Self {
+            inline_bytes_present: false,
+            observed_size_bytes: None,
+            observed_blake3_digest_hex: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Pure decision comparing declared payload-handle facts with adapter-observed facts.
+pub struct MctPayloadIntegrityDecision {
+    /// Request or reply side evaluated.
+    pub subject: PayloadIntegritySubject,
+    /// Closed decision outcome.
+    pub outcome: PayloadIntegrityOutcome,
+    /// Typed reason for audit and caller-safe projection.
+    pub reason: PayloadIntegrityReason,
+    /// Caller-safe projection of the decision.
+    pub safe_message: String,
+}
+
+/// Compares declared payload-handle facts against adapter-observed size/digest facts.
+///
+/// The kernel does not decode bytes, hash bytes, or dereference handles. Adapters
+/// perform those effects first and pass only the observed facts here.
+pub fn evaluate_payload_integrity(
+    subject: PayloadIntegritySubject,
+    handle: &MctCallPayloadHandle,
+    observed: &MctPayloadIntegrityObservation,
+    max_inline_size_bytes: u64,
+) -> MctPayloadIntegrityDecision {
+    internal::evaluate_payload_integrity_internal(
+        subject,
+        handle,
+        observed,
+        max_inline_size_bytes,
+    )
+}
+
+impl PayloadIntegrityReason {
+    /// Projects a payload integrity reason into the call-protocol reason vocabulary.
+    pub fn to_call_protocol_reason(self) -> CallProtocolReason {
+        match self {
+            Self::IntegrityMatched => CallProtocolReason::ResultRecorded,
+            Self::PayloadDeclaredTooLarge => CallProtocolReason::PayloadDeclaredTooLarge,
+            Self::PayloadActualTooLarge => CallProtocolReason::PayloadActualTooLarge,
+            Self::PayloadSizeMismatch => CallProtocolReason::PayloadSizeMismatch,
+            Self::PayloadDigestMismatch => CallProtocolReason::PayloadDigestMismatch,
+            Self::PayloadMissingInlineBytes => CallProtocolReason::PayloadMissingInlineBytes,
+            Self::PayloadUnexpectedInlineBytes => CallProtocolReason::PayloadUnexpectedInlineBytes,
+            Self::InvalidPayloadDigest => CallProtocolReason::InvalidPayloadDigest,
+            Self::ResultPayloadTooLarge => CallProtocolReason::ResultPayloadTooLarge,
+            Self::ResultPayloadIntegrityMismatch => {
+                CallProtocolReason::ResultPayloadIntegrityMismatch
+            }
+        }
     }
 }
 
@@ -531,6 +659,26 @@ pub enum CallProtocolReason {
     MalformedCall,
     /// Payload handle size disagrees with call payload metadata.
     PayloadMetadataMismatch,
+    /// Declared request payload size exceeds the fixed inline cap.
+    PayloadDeclaredTooLarge,
+    /// Observed request payload size exceeds the fixed inline cap.
+    PayloadActualTooLarge,
+    /// Declared and observed request payload sizes differ.
+    PayloadSizeMismatch,
+    /// Declared and observed request payload digests differ.
+    PayloadDigestMismatch,
+    /// Inline bytes required by the handle were absent.
+    PayloadMissingInlineBytes,
+    /// Inline bytes were supplied where the handle did not declare them.
+    PayloadUnexpectedInlineBytes,
+    /// A declared or observed payload digest had invalid syntax.
+    InvalidPayloadDigest,
+    /// The authorized child runtime cannot accept the verified payload content type.
+    ChildPayloadContentTypeUnsupported,
+    /// Result payload exceeded the fixed inline result cap.
+    ResultPayloadTooLarge,
+    /// Caller-side result payload size or digest verification failed.
+    ResultPayloadIntegrityMismatch,
     /// Later authority checks denied the call after protocol admission.
     AuthorityDenied,
     /// No authorized route remained for the admitted call.
@@ -601,6 +749,8 @@ pub struct MctCallProtocolReply {
     pub decision_id: DecisionId,
     /// Opaque result lookup reference, present only when one is safe to return.
     pub result_ref: Option<ResultRef>,
+    /// Declared result payload handle returned with this reply.
+    pub result_payload: MctCallPayloadHandle,
     /// Caller-facing outcome class.
     pub reply_outcome: CallProtocolReplyOutcome,
     /// Caller-safe message derived from the evaluation or execution path.
@@ -618,6 +768,7 @@ impl MctCallProtocolReply {
     /// namespace, interface, or function.
     pub fn validate(&self) -> MctKernelResult<()> {
         ensure_non_blank("MctCallProtocolReply", "safe_message", &self.safe_message)?;
+        self.result_payload.validate()?;
         Ok(())
     }
 }
@@ -725,6 +876,23 @@ pub fn call_reply_from_evaluation(
     result_ref: Option<ResultRef>,
     reply_observation_id: ObservationId,
 ) -> MctCallProtocolReply {
+    call_reply_from_evaluation_with_result_payload(
+        reply_id,
+        evaluation,
+        result_ref,
+        MctCallPayloadHandle::Empty,
+        reply_observation_id,
+    )
+}
+
+/// Projects a protocol evaluation and result payload handle into a caller-safe reply shape.
+pub fn call_reply_from_evaluation_with_result_payload(
+    reply_id: ReplyId,
+    evaluation: &MctCallProtocolEvaluation,
+    result_ref: Option<ResultRef>,
+    result_payload: MctCallPayloadHandle,
+    reply_observation_id: ObservationId,
+) -> MctCallProtocolReply {
     let reply_outcome = match evaluation.outcome {
         CallProtocolOutcome::AcceptedForRouting | CallProtocolOutcome::Completed => {
             CallProtocolReplyOutcome::Success
@@ -740,6 +908,7 @@ pub fn call_reply_from_evaluation(
         protocol_request_id: evaluation.protocol_request_id.clone(),
         decision_id: evaluation.decision_id.clone(),
         result_ref,
+        result_payload,
         reply_outcome,
         safe_message: evaluation.safe_message.clone(),
         reply_observation_id,
@@ -856,7 +1025,8 @@ mod tests {
             payload: MctCallPayloadHandle::InlinePayload {
                 inline_payload_ref: "payload-1".into(),
                 content_type: "text/plain".into(),
-                approximate_size_bytes: 5,
+                size_bytes: 5,
+                blake3_digest_hex: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             },
             idempotency_key: Some("idem-1".into()),
             received_observation_id: ObservationId::new("obs-call-received")
@@ -976,6 +1146,8 @@ mod tests {
         assert_eq!(encoded_json["payload_kind"], "inline_payload");
         assert_eq!(encoded_json["inline_payload_ref"], "payload-1");
         assert_eq!(encoded_json["content_type"], "text/plain");
+        assert_eq!(encoded_json["size_bytes"], 5);
+        assert!(encoded_json.get("approximate_size_bytes").is_none());
         assert!(encoded_json.get("blob_ref").is_none());
 
         let evaluation = evaluate_call_protocol(&decoded_request, &admitted_hello(), eval_ids());
@@ -1112,6 +1284,170 @@ mod tests {
         assert_eq!(reply.reply_outcome, CallProtocolReplyOutcome::Malformed);
     }
 
+    fn digest_hex(ch: char) -> String {
+        std::iter::repeat_n(ch, 64).collect()
+    }
+
+    fn observed_payload(size_bytes: u64, digest: String) -> MctPayloadIntegrityObservation {
+        MctPayloadIntegrityObservation {
+            inline_bytes_present: true,
+            observed_size_bytes: Some(size_bytes),
+            observed_blake3_digest_hex: Some(digest),
+        }
+    }
+
+    #[test]
+    fn payload_integrity_decisions_cover_request_mismatch_classes() {
+        let handle = MctCallPayloadHandle::InlinePayload {
+            inline_payload_ref: "payload-1".into(),
+            content_type: "application/json".into(),
+            size_bytes: 5,
+            blake3_digest_hex: digest_hex('a'),
+        };
+
+        let matched = evaluate_payload_integrity(
+            PayloadIntegritySubject::Request,
+            &handle,
+            &observed_payload(5, digest_hex('a')),
+            32,
+        );
+        assert_eq!(matched.outcome, PayloadIntegrityOutcome::Matched);
+        assert_eq!(matched.reason, PayloadIntegrityReason::IntegrityMatched);
+
+        let size_mismatch = evaluate_payload_integrity(
+            PayloadIntegritySubject::Request,
+            &handle,
+            &observed_payload(4, digest_hex('a')),
+            32,
+        );
+        assert_eq!(size_mismatch.outcome, PayloadIntegrityOutcome::Mismatch);
+        assert_eq!(size_mismatch.reason, PayloadIntegrityReason::PayloadSizeMismatch);
+
+        let digest_mismatch = evaluate_payload_integrity(
+            PayloadIntegritySubject::Request,
+            &handle,
+            &observed_payload(5, digest_hex('b')),
+            32,
+        );
+        assert_eq!(digest_mismatch.reason, PayloadIntegrityReason::PayloadDigestMismatch);
+
+        let missing = evaluate_payload_integrity(
+            PayloadIntegritySubject::Request,
+            &handle,
+            &MctPayloadIntegrityObservation::missing_inline_bytes(),
+            32,
+        );
+        assert_eq!(missing.reason, PayloadIntegrityReason::PayloadMissingInlineBytes);
+
+        let unexpected = evaluate_payload_integrity(
+            PayloadIntegritySubject::Request,
+            &MctCallPayloadHandle::Empty,
+            &observed_payload(1, digest_hex('c')),
+            32,
+        );
+        assert_eq!(unexpected.reason, PayloadIntegrityReason::PayloadUnexpectedInlineBytes);
+
+        let invalid_digest = evaluate_payload_integrity(
+            PayloadIntegritySubject::Request,
+            &MctCallPayloadHandle::InlinePayload {
+                inline_payload_ref: "payload-invalid-digest".into(),
+                content_type: "application/json".into(),
+                size_bytes: 5,
+                blake3_digest_hex: "not-a-blake3-hex".into(),
+            },
+            &observed_payload(5, digest_hex('a')),
+            32,
+        );
+        assert_eq!(invalid_digest.reason, PayloadIntegrityReason::InvalidPayloadDigest);
+
+        let declared_too_large = evaluate_payload_integrity(
+            PayloadIntegritySubject::Request,
+            &MctCallPayloadHandle::InlinePayload {
+                inline_payload_ref: "payload-large".into(),
+                content_type: "application/json".into(),
+                size_bytes: 33,
+                blake3_digest_hex: digest_hex('a'),
+            },
+            &observed_payload(33, digest_hex('a')),
+            32,
+        );
+        assert_eq!(
+            declared_too_large.reason,
+            PayloadIntegrityReason::PayloadDeclaredTooLarge
+        );
+
+        let actual_too_large = evaluate_payload_integrity(
+            PayloadIntegritySubject::Request,
+            &handle,
+            &observed_payload(33, digest_hex('a')),
+            32,
+        );
+        assert_eq!(
+            actual_too_large.reason,
+            PayloadIntegrityReason::PayloadActualTooLarge
+        );
+    }
+
+    #[test]
+    fn payload_integrity_decisions_cover_reply_result_mismatch_classes() {
+        let handle = MctCallPayloadHandle::InlinePayload {
+            inline_payload_ref: "result-1".into(),
+            content_type: "application/json".into(),
+            size_bytes: 5,
+            blake3_digest_hex: digest_hex('a'),
+        };
+
+        let digest_mismatch = evaluate_payload_integrity(
+            PayloadIntegritySubject::ReplyResult,
+            &handle,
+            &observed_payload(5, digest_hex('b')),
+            32,
+        );
+        assert_eq!(
+            digest_mismatch.reason,
+            PayloadIntegrityReason::ResultPayloadIntegrityMismatch
+        );
+        assert_eq!(digest_mismatch.safe_message, "result payload integrity mismatch");
+
+        let oversized = evaluate_payload_integrity(
+            PayloadIntegritySubject::ReplyResult,
+            &handle,
+            &observed_payload(33, digest_hex('a')),
+            32,
+        );
+        assert_eq!(oversized.reason, PayloadIntegrityReason::ResultPayloadTooLarge);
+        assert_eq!(oversized.safe_message, "result payload too large");
+    }
+
+    #[test]
+    fn call_protocol_reply_roundtrips_result_payload_handle() {
+        let evaluation = evaluate_call_protocol(&protocol_request(), &admitted_hello(), eval_ids());
+        let reply = call_reply_from_evaluation_with_result_payload(
+            ReplyId::new("reply-result-payload")
+                .expect("string ID literal/generated value must be non-empty"),
+            &evaluation,
+            Some(
+                ResultRef::new("result-call-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            MctCallPayloadHandle::InlinePayload {
+                inline_payload_ref: "result-1".into(),
+                content_type: "application/json".into(),
+                size_bytes: 5,
+                blake3_digest_hex: digest_hex('a'),
+            },
+            ObservationId::new("obs-reply-result-payload")
+                .expect("string ID literal/generated value must be non-empty"),
+        );
+
+        let decoded = decode_call_protocol_reply_json(
+            &encode_call_protocol_reply_json(&reply).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decoded.result_payload, reply.result_payload);
+        assert_eq!(decoded.result_payload.declared_size_bytes(), 5);
+    }
+
     #[test]
     fn denied_result_has_no_route_taken() {
         let result = MctResult {
@@ -1128,6 +1464,7 @@ mod tests {
                 input_size_bytes: 0,
                 output_size_bytes: None,
             },
+            result_payload: MctCallPayloadHandle::Empty,
             requester_message: "not authorized".into(),
             audit_ref: AuditRef::new("audit-1")
                 .expect("string ID literal/generated value must be non-empty"),
