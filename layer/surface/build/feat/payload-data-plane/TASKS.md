@@ -1,7 +1,7 @@
 # Payload data plane Phase 5 tasks
 
 - [x] Task D0 — Housekeeping
-- [ ] Task D1 — SPEC first
+- [x] Task D1 — SPEC first
 - [ ] Task D2 — Kernel: payload integrity decisions
 - [ ] Task D3 — Transport: bytes over mct/call/0
 - [ ] Task D4 — Daemon: delivery and result path
