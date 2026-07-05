@@ -8,6 +8,8 @@ repository.workspace = true
 
 [dependencies]
 mct-kernel = { path = "../mct-kernel" }
+base64.workspace = true
+blake3.workspace = true
 iroh = "1.0.0-rc.1"
 serde.workspace = true
 serde_json.workspace = true

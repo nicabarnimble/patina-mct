@@ -1206,10 +1206,10 @@ where
                 let config_path = config_path.clone();
                 async move { load_peer_bindings_for_iroh(config_path).await }
             },
-            move |request, _evaluation| {
+            move |request, _evaluation, inline_payload| {
                 let execution_paths = execution_paths.clone();
                 let execution_ledger = execution_ledger.clone();
-                async move { execute_resident_call(execution_paths, execution_ledger, request).await }
+                async move { execute_resident_call(execution_paths, execution_ledger, request, inline_payload).await }
             },
         ) => result.map_err(anyhow::Error::from),
         _ = shutdown => Ok(()),
@@ -1484,6 +1484,7 @@ async fn execute_resident_call(
     paths: ResidentExecutionPaths,
     ledger: ResidentLedgerWriter,
     request: MctCallProtocolRequest,
+    _inline_payload: Option<Vec<u8>>,
 ) -> MctIrohCallHandlerResult {
     let authorization = match authorize_resident_child(paths.clone(), request.call.clone()).await {
         Ok(authorization) => authorization,
@@ -2688,7 +2689,7 @@ async fn serve_iroh(mut args: Vec<String>) -> Result<()> {
             vec![binding],
             MctIrohConcurrentServeConfig::default(),
             current_timestamp,
-            |_, _| async {
+            |_, _, _| async {
                 MctIrohCallHandlerResult::accepted_for_routing(Some(
                     ResultRef::new("result-mct-peer-call")
                         .expect("string ID literal/generated value must be non-empty"),
@@ -2766,7 +2767,7 @@ async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
             vec![binding],
             MctIrohConcurrentServeConfig::default(),
             current_timestamp,
-            move |request, _evaluation| {
+            move |request, _evaluation, _inline_payload| {
                 let harness = harness.clone();
                 let projection = projection.clone();
                 let child_name = child_name.clone();
@@ -3615,6 +3616,7 @@ mod tests {
             },
             ledger.clone(),
             request,
+            None,
         )
         .await;
         assert_eq!(result.outcome, CallProtocolOutcome::Completed);

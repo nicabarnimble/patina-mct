@@ -27,10 +27,13 @@ pub use call::{
     AuthorityContextSnapshot, CallEvaluationIds, CallOrigin, CallProtocolOutcome,
     CallProtocolReason, CallProtocolReplyOutcome, CallerIdentity, ExecutionSummary, MctCall,
     MctCallPayloadHandle, MctCallProtocolAuthority, MctCallProtocolEvaluation,
-    MctCallProtocolReply, MctCallProtocolRequest, MctResult, OperationTarget, PayloadMetadata,
-    ResultOutcome, RouteTaken, RuntimeKind, TraceContext, call_reply_from_evaluation,
-    decode_call_protocol_reply_json, decode_call_protocol_request_json,
-    encode_call_protocol_reply_json, encode_call_protocol_request_json, evaluate_call_protocol,
+    MctCallProtocolReply, MctCallProtocolRequest, MctPayloadIntegrityDecision,
+    MctPayloadIntegrityObservation, MctResult, OperationTarget, PayloadIntegrityOutcome,
+    PayloadIntegrityReason, PayloadIntegritySubject, PayloadMetadata, ResultOutcome, RouteTaken,
+    RuntimeKind, TraceContext, call_reply_from_evaluation,
+    call_reply_from_evaluation_with_result_payload, decode_call_protocol_reply_json,
+    decode_call_protocol_request_json, encode_call_protocol_reply_json,
+    encode_call_protocol_request_json, evaluate_call_protocol, evaluate_payload_integrity,
 };
 pub use child::{
     AuthorizedChildInvocation, ChildApproval, ChildApprovalState, ChildAssignment,

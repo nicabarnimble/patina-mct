@@ -21,8 +21,10 @@ pub use endpoint::{
 };
 pub use identity::{endpoint_id_for_secret_key_hex, load_or_create_node_secret_key_hex};
 pub use serve::{
-    MctIrohCallHandlerResult, MctIrohConcurrentServeConfig, MctIrohPeerCallReport,
-    MctIrohServeEvent, MctIrohServeState, MctIrohServedProtocol,
+    MCT_CALL_FRAME_READ_BUDGET_BYTES, MCT_INLINE_PAYLOAD_MAX_BYTES,
+    MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES, MctIrohCallHandlerResult, MctIrohCallPayloadReply,
+    MctIrohConcurrentServeConfig, MctIrohPeerCallReport, MctIrohServeEvent, MctIrohServeState,
+    MctIrohServedProtocol,
 };
 
 /// Returns the crate version for health and smoke tests.
@@ -238,7 +240,7 @@ mod tests {
                 &[],
                 Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
                 Duration::from_secs(2),
-                |_, _| MctIrohCallHandlerResult::accepted_for_routing(None),
+                |_, _, _| MctIrohCallHandlerResult::accepted_for_routing(None),
             )
             .await;
 
@@ -246,6 +248,54 @@ mod tests {
         assert!(matches!(
             served,
             Err(MotherIrohEndpointError::ProtocolTimeout {
+                action: "serve incoming MCT connection"
+            })
+        ));
+        server.close().await;
+    }
+
+    #[tokio::test]
+    async fn call_frame_budget_refuses_oversized_request() {
+        let mut server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let server_ticket = server.ticket();
+        let raw_client = Endpoint::builder(presets::N0)
+            .relay_mode(RelayMode::Disabled)
+            .alpns(mct_alpn_bytes())
+            .bind()
+            .await
+            .unwrap();
+        let server_addr = endpoint_addr_from_ticket(&server_ticket).unwrap();
+        let raw_client_task = tokio::spawn(async move {
+            let connection = raw_client
+                .connect(server_addr, MCT_CALL_ALPN.as_bytes())
+                .await
+                .unwrap();
+            let (mut send, _recv) = connection.open_bi().await.unwrap();
+            send.write_all(&vec![b'x'; MCT_CALL_FRAME_READ_BUDGET_BYTES + 1])
+                .await
+                .unwrap();
+            send.finish().unwrap();
+            drop(send);
+            connection.close(0u32.into(), b"oversized request sent");
+        });
+        let mut state = MctIrohServeState::new();
+        let served = server
+            .serve_next_with_call_handler_timeout(
+                &mut state,
+                &[],
+                Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
+                Duration::from_secs(2),
+                |_, _, _| MctIrohCallHandlerResult::accepted_for_routing(None),
+            )
+            .await;
+
+        let _ = raw_client_task.await;
+        assert!(matches!(
+            served,
+            Err(MotherIrohEndpointError::ProtocolIo {
+                action: "read request stream",
+                ..
+            }) | Err(MotherIrohEndpointError::ProtocolTimeout {
                 action: "serve incoming MCT connection"
             })
         ));
@@ -347,7 +397,7 @@ mod tests {
                 &mut state,
                 std::slice::from_ref(&binding),
                 Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
-                |_, evaluation| {
+                |_, evaluation, _| {
                     assert!(evaluation.is_accepted_for_routing());
                     MctIrohCallHandlerResult::completed(
                         ResultRef::new("result-runtime-child")
@@ -395,7 +445,7 @@ mod tests {
                     vec![first_binding, second_binding],
                     MctIrohConcurrentServeConfig::default(),
                     || Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
-                    |_, _| async {
+                    |_, _, _| async {
                         MctIrohCallHandlerResult::completed(
                             ResultRef::new("result-concurrent-iroh")
                                 .expect("string ID literal/generated value must be non-empty"),
@@ -457,7 +507,7 @@ mod tests {
                         ..MctIrohConcurrentServeConfig::default()
                     },
                     || Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
-                    |_, _| async { MctIrohCallHandlerResult::accepted_for_routing(None) },
+                    |_, _, _| async { MctIrohCallHandlerResult::accepted_for_routing(None) },
                 )
                 .await
         });
@@ -680,7 +730,7 @@ mod tests {
             },
             payload_metadata: PayloadMetadata {
                 data_classification: "public".into(),
-                approximate_size_bytes: 5,
+                approximate_size_bytes: 0,
                 contains_secret_scoped_material: false,
             },
             authority_context: AuthorityContextSnapshot {
@@ -720,16 +770,320 @@ mod tests {
                 presented_capability_ref: None,
             },
             call,
-            payload: MctCallPayloadHandle::InlinePayload {
-                inline_payload_ref: "payload-public-echo".into(),
-                content_type: "text/plain".into(),
-                size_bytes: 5,
-                blake3_digest_hex:
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            },
+            payload: MctCallPayloadHandle::Empty,
             idempotency_key: Some("idem-public-call".into()),
             received_observation_id: ObservationId::new("obs-public-call-received")
                 .expect("string ID literal/generated value must be non-empty"),
         }
+    }
+
+    fn fake_hello_response() -> MctHelloResponse {
+        MctHelloResponse {
+            response_id: "reply-fake-hello".into(),
+            request_id: "hello-fake".into(),
+            decision_id: DecisionId::new("decision-fake-hello")
+                .expect("string ID literal/generated value must be non-empty"),
+            hello_outcome: HelloOutcome::Admitted,
+            negotiated_protocol: None,
+            accepted_alpns: vec![MCT_CALL_ALPN.into()],
+            safe_message: "admitted".into(),
+            retry_after: None,
+            response_observation_id: ObservationId::new("obs-fake-hello-reply")
+                .expect("string ID literal/generated value must be non-empty"),
+        }
+    }
+
+    fn blake3_hex(bytes: &[u8]) -> String {
+        blake3::hash(bytes).to_hex().to_string()
+    }
+
+    fn inline_payload_handle(reference: &str, bytes: &[u8]) -> MctCallPayloadHandle {
+        MctCallPayloadHandle::InlinePayload {
+            inline_payload_ref: reference.into(),
+            content_type: "application/json".into(),
+            size_bytes: bytes.len() as u64,
+            blake3_digest_hex: blake3_hex(bytes),
+        }
+    }
+
+    fn inline_call_request(
+        endpoint_id: &EndpointIdText,
+        trace_id: &TraceId,
+        hello: &MctHelloResponse,
+        bytes: &[u8],
+    ) -> MctCallProtocolRequest {
+        let mut request = test_call_request(endpoint_id, trace_id, hello);
+        request.call.payload_metadata.approximate_size_bytes = bytes.len() as u64;
+        request.payload = inline_payload_handle("payload-public-inline", bytes);
+        request
+    }
+
+    #[tokio::test]
+    async fn call_payload_roundtrip_carries_request_and_result_bytes() {
+        let mut server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let client_endpoint_id = client.snapshot().endpoint_id;
+        let server_ticket = server.ticket();
+        let binding = test_peer_binding(&client_endpoint_id);
+        let mut state = MctIrohServeState::new();
+        let trace_id = TraceId::new("trace-payload-roundtrip")
+            .expect("string ID literal/generated value must be non-empty");
+        let hello_request = test_hello_request(&client_endpoint_id, &trace_id);
+        let (_served_hello, hello_response) = tokio::join!(
+            server.serve_next(
+                &mut state,
+                std::slice::from_ref(&binding),
+                Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
+                None,
+            ),
+            client.send_hello(&server_ticket, &hello_request),
+        );
+        let hello_response = hello_response.unwrap();
+        let request_payload = br#"["hello"]"#.to_vec();
+        let expected_request_payload = request_payload.clone();
+        let sent_request_payload = request_payload.clone();
+        let result_payload = br#"["hello-result"]"#.to_vec();
+        let returned_result_payload = result_payload.clone();
+        let call_request = inline_call_request(
+            &client_endpoint_id,
+            &trace_id,
+            &hello_response,
+            &request_payload,
+        );
+        let (served_call, call_reply) = tokio::join!(
+            server.serve_next_with_call_handler(
+                &mut state,
+                std::slice::from_ref(&binding),
+                Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
+                |_, evaluation, payload| {
+                    assert!(evaluation.is_accepted_for_routing());
+                    assert_eq!(payload, Some(expected_request_payload.as_slice()));
+                    MctIrohCallHandlerResult::completed_with_inline_payload(
+                        ResultRef::new("result-payload-roundtrip")
+                            .expect("string ID literal/generated value must be non-empty"),
+                        inline_payload_handle("result-payload-roundtrip", &returned_result_payload),
+                        returned_result_payload.clone(),
+                    )
+                }
+            ),
+            client.send_call_with_inline_payload(
+                &server_ticket,
+                &call_request,
+                sent_request_payload
+            ),
+        );
+        let served_call = served_call.unwrap();
+        let call_reply = call_reply.unwrap();
+        assert_eq!(
+            call_reply.reply.reply_outcome,
+            CallProtocolReplyOutcome::Success
+        );
+        assert_eq!(
+            call_reply.inline_result_payload,
+            Some(br#"["hello-result"]"#.to_vec())
+        );
+        assert!(matches!(
+            served_call,
+            MctIrohServedProtocol::Call { evaluation, .. }
+                if evaluation.outcome == CallProtocolOutcome::Completed
+        ));
+        server.close().await;
+        client.close().await;
+    }
+
+    #[tokio::test]
+    async fn call_payload_integrity_failures_are_malformed_before_authority() {
+        let mut server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let server_ticket = server.ticket();
+        let endpoint_id = EndpointIdText::new("endpoint-malicious")
+            .expect("string ID literal/generated value must be non-empty");
+        let trace_id = TraceId::new("trace-payload-malformed")
+            .expect("string ID literal/generated value must be non-empty");
+        let declared = b"abc";
+        let actual = b"xyz";
+        let call_request =
+            inline_call_request(&endpoint_id, &trace_id, &fake_hello_response(), declared);
+        let mut state = MctIrohServeState::new();
+        let (served, reply) = tokio::join!(
+            server.serve_next(
+                &mut state,
+                &[],
+                Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
+                None,
+            ),
+            client.send_call_with_unchecked_inline_payload(
+                &server_ticket,
+                &call_request,
+                actual.to_vec(),
+            ),
+        );
+        let served = served.unwrap();
+        assert_eq!(
+            reply.unwrap().reply.reply_outcome,
+            CallProtocolReplyOutcome::Malformed
+        );
+        assert!(matches!(
+            served,
+            MctIrohServedProtocol::Call { evaluation, .. }
+                if evaluation.reason == CallProtocolReason::PayloadDigestMismatch
+                    && evaluation.outcome == CallProtocolOutcome::Malformed
+        ));
+        server.close().await;
+        client.close().await;
+    }
+
+    #[tokio::test]
+    async fn call_payload_caps_fail_closed() {
+        let mut server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let server_ticket = server.ticket();
+        let endpoint_id = EndpointIdText::new("endpoint-oversize")
+            .expect("string ID literal/generated value must be non-empty");
+        let trace_id = TraceId::new("trace-payload-oversize")
+            .expect("string ID literal/generated value must be non-empty");
+        let actual = b"x";
+        let mut declared_request =
+            inline_call_request(&endpoint_id, &trace_id, &fake_hello_response(), actual);
+        declared_request
+            .call
+            .payload_metadata
+            .approximate_size_bytes = (MCT_INLINE_PAYLOAD_MAX_BYTES + 1) as u64;
+        declared_request.payload = MctCallPayloadHandle::InlinePayload {
+            inline_payload_ref: "payload-declared-too-large".into(),
+            content_type: "application/json".into(),
+            size_bytes: (MCT_INLINE_PAYLOAD_MAX_BYTES + 1) as u64,
+            blake3_digest_hex: blake3_hex(actual),
+        };
+        let mut state = MctIrohServeState::new();
+        let (served_declared, reply_declared) = tokio::join!(
+            server.serve_next(
+                &mut state,
+                &[],
+                Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
+                None,
+            ),
+            client.send_call_with_unchecked_inline_payload(
+                &server_ticket,
+                &declared_request,
+                actual.to_vec(),
+            ),
+        );
+        assert!(matches!(
+            served_declared.unwrap(),
+            MctIrohServedProtocol::Call { evaluation, .. }
+                if evaluation.reason == CallProtocolReason::PayloadDeclaredTooLarge
+        ));
+        assert_eq!(
+            reply_declared.unwrap().reply.reply_outcome,
+            CallProtocolReplyOutcome::Malformed
+        );
+
+        let actual_too_large = vec![b'x'; MCT_INLINE_PAYLOAD_MAX_BYTES + 1];
+        let mut actual_request =
+            inline_call_request(&endpoint_id, &trace_id, &fake_hello_response(), b"x");
+        actual_request.payload = MctCallPayloadHandle::InlinePayload {
+            inline_payload_ref: "payload-actual-too-large".into(),
+            content_type: "application/json".into(),
+            size_bytes: 1,
+            blake3_digest_hex: blake3_hex(&actual_too_large),
+        };
+        let mut state = MctIrohServeState::new();
+        let (served_actual, reply_actual) = tokio::join!(
+            server.serve_next(
+                &mut state,
+                &[],
+                Timestamp::new("2026-05-31T00:00:03Z").unwrap(),
+                None,
+            ),
+            client.send_call_with_unchecked_inline_payload(
+                &server_ticket,
+                &actual_request,
+                actual_too_large.clone(),
+            ),
+        );
+        assert!(matches!(
+            served_actual.unwrap(),
+            MctIrohServedProtocol::Call { evaluation, .. }
+                if evaluation.reason == CallProtocolReason::PayloadActualTooLarge
+        ));
+        assert_eq!(
+            reply_actual.unwrap().reply.reply_outcome,
+            CallProtocolReplyOutcome::Malformed
+        );
+        server.close().await;
+        client.close().await;
+    }
+
+    #[test]
+    fn caller_rejects_reply_digest_mismatch_and_oversized_result() {
+        fn reply_envelope(reply: MctCallProtocolReply, inline_result_payload: &[u8]) -> Vec<u8> {
+            let mut envelope = serde_json::to_value(reply).unwrap();
+            envelope["inline_result_payload_base64"] = serde_json::json!(base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                inline_result_payload,
+            ));
+            serde_json::to_vec(&envelope).unwrap()
+        }
+
+        let protocol_request_id = ProtocolRequestId::new("proto-reply-integrity")
+            .expect("string ID literal/generated value must be non-empty");
+        let reply = MctCallProtocolReply {
+            reply_id: ReplyId::new("reply-digest-mismatch")
+                .expect("string ID literal/generated value must be non-empty"),
+            protocol_request_id: protocol_request_id.clone(),
+            decision_id: DecisionId::new("decision-reply-digest")
+                .expect("string ID literal/generated value must be non-empty"),
+            result_ref: Some(
+                ResultRef::new("result-digest-mismatch")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            result_payload: MctCallPayloadHandle::InlinePayload {
+                inline_payload_ref: "result-digest-mismatch".into(),
+                content_type: "application/json".into(),
+                size_bytes: 3,
+                blake3_digest_hex: blake3_hex(b"abc"),
+            },
+            reply_outcome: CallProtocolReplyOutcome::Success,
+            safe_message: "call completed".into(),
+            reply_observation_id: ObservationId::new("obs-reply-digest")
+                .expect("string ID literal/generated value must be non-empty"),
+        };
+        let error =
+            crate::serve::decode_call_reply_envelope(&reply_envelope(reply, b"xyz")).unwrap_err();
+        assert!(matches!(
+            error,
+            MotherIrohEndpointError::ProtocolPayload {
+                reason: PayloadIntegrityReason::ResultPayloadIntegrityMismatch,
+                ..
+            }
+        ));
+
+        let oversized = vec![b'x'; MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES + 1];
+        let reply = MctCallProtocolReply {
+            reply_id: ReplyId::new("reply-oversized-result")
+                .expect("string ID literal/generated value must be non-empty"),
+            protocol_request_id,
+            decision_id: DecisionId::new("decision-reply-oversized")
+                .expect("string ID literal/generated value must be non-empty"),
+            result_ref: Some(
+                ResultRef::new("result-oversized")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            result_payload: inline_payload_handle("result-oversized", &oversized),
+            reply_outcome: CallProtocolReplyOutcome::Success,
+            safe_message: "call completed".into(),
+            reply_observation_id: ObservationId::new("obs-reply-oversized")
+                .expect("string ID literal/generated value must be non-empty"),
+        };
+        let error = crate::serve::decode_call_reply_envelope(&reply_envelope(reply, &oversized))
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            MotherIrohEndpointError::ProtocolPayload {
+                reason: PayloadIntegrityReason::ResultPayloadTooLarge,
+                ..
+            }
+        ));
     }
 }

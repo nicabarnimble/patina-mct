@@ -15,6 +15,7 @@ repository = "https://github.com/nicabarnimble/patina-mct"
 
 [workspace.dependencies]
 anyhow = "1.0.100"
+base64 = "0.22.1"
 blake3 = "1.8.3"
 jiff = "0.2.15"
 serde = { version = "1.0.228", features = ["derive"] }
