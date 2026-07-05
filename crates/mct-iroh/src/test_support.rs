@@ -367,7 +367,7 @@ fn local_call_request(
         },
         payload_metadata: PayloadMetadata {
             data_classification: "public".into(),
-            approximate_size_bytes: 5,
+            approximate_size_bytes: 0,
             contains_secret_scoped_material: false,
         },
         authority_context: AuthorityContextSnapshot {
@@ -407,13 +407,7 @@ fn local_call_request(
             presented_capability_ref: None,
         },
         call,
-        payload: MctCallPayloadHandle::InlinePayload {
-            inline_payload_ref: "payload-local-echo".into(),
-            content_type: "text/plain".into(),
-            size_bytes: 5,
-            blake3_digest_hex: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                .into(),
-        },
+        payload: MctCallPayloadHandle::Empty,
         idempotency_key: Some("idem-local-call".into()),
         received_observation_id: ObservationId::new("obs-local-call-received")
             .expect("string ID literal/generated value must be non-empty"),
