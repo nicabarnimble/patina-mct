@@ -101,7 +101,10 @@ fn declared_digest_hex(handle: &MctCallPayloadHandle) -> &str {
     }
 }
 
-fn mismatch_reason(subject: PayloadIntegritySubject, size_mismatch: bool) -> PayloadIntegrityReason {
+fn mismatch_reason(
+    subject: PayloadIntegritySubject,
+    size_mismatch: bool,
+) -> PayloadIntegrityReason {
     match subject {
         PayloadIntegritySubject::Request if size_mismatch => {
             PayloadIntegrityReason::PayloadSizeMismatch

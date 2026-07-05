@@ -535,12 +535,7 @@ pub fn evaluate_payload_integrity(
     observed: &MctPayloadIntegrityObservation,
     max_inline_size_bytes: u64,
 ) -> MctPayloadIntegrityDecision {
-    internal::evaluate_payload_integrity_internal(
-        subject,
-        handle,
-        observed,
-        max_inline_size_bytes,
-    )
+    internal::evaluate_payload_integrity_internal(subject, handle, observed, max_inline_size_bytes)
 }
 
 impl PayloadIntegrityReason {
@@ -1026,7 +1021,8 @@ mod tests {
                 inline_payload_ref: "payload-1".into(),
                 content_type: "text/plain".into(),
                 size_bytes: 5,
-                blake3_digest_hex: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                blake3_digest_hex:
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             },
             idempotency_key: Some("idem-1".into()),
             received_observation_id: ObservationId::new("obs-call-received")
@@ -1321,7 +1317,10 @@ mod tests {
             32,
         );
         assert_eq!(size_mismatch.outcome, PayloadIntegrityOutcome::Mismatch);
-        assert_eq!(size_mismatch.reason, PayloadIntegrityReason::PayloadSizeMismatch);
+        assert_eq!(
+            size_mismatch.reason,
+            PayloadIntegrityReason::PayloadSizeMismatch
+        );
 
         let digest_mismatch = evaluate_payload_integrity(
             PayloadIntegritySubject::Request,
@@ -1329,7 +1328,10 @@ mod tests {
             &observed_payload(5, digest_hex('b')),
             32,
         );
-        assert_eq!(digest_mismatch.reason, PayloadIntegrityReason::PayloadDigestMismatch);
+        assert_eq!(
+            digest_mismatch.reason,
+            PayloadIntegrityReason::PayloadDigestMismatch
+        );
 
         let missing = evaluate_payload_integrity(
             PayloadIntegritySubject::Request,
@@ -1337,7 +1339,10 @@ mod tests {
             &MctPayloadIntegrityObservation::missing_inline_bytes(),
             32,
         );
-        assert_eq!(missing.reason, PayloadIntegrityReason::PayloadMissingInlineBytes);
+        assert_eq!(
+            missing.reason,
+            PayloadIntegrityReason::PayloadMissingInlineBytes
+        );
 
         let unexpected = evaluate_payload_integrity(
             PayloadIntegritySubject::Request,
@@ -1345,7 +1350,10 @@ mod tests {
             &observed_payload(1, digest_hex('c')),
             32,
         );
-        assert_eq!(unexpected.reason, PayloadIntegrityReason::PayloadUnexpectedInlineBytes);
+        assert_eq!(
+            unexpected.reason,
+            PayloadIntegrityReason::PayloadUnexpectedInlineBytes
+        );
 
         let invalid_digest = evaluate_payload_integrity(
             PayloadIntegritySubject::Request,
@@ -1358,7 +1366,10 @@ mod tests {
             &observed_payload(5, digest_hex('a')),
             32,
         );
-        assert_eq!(invalid_digest.reason, PayloadIntegrityReason::InvalidPayloadDigest);
+        assert_eq!(
+            invalid_digest.reason,
+            PayloadIntegrityReason::InvalidPayloadDigest
+        );
 
         let declared_too_large = evaluate_payload_integrity(
             PayloadIntegritySubject::Request,
@@ -1407,7 +1418,10 @@ mod tests {
             digest_mismatch.reason,
             PayloadIntegrityReason::ResultPayloadIntegrityMismatch
         );
-        assert_eq!(digest_mismatch.safe_message, "result payload integrity mismatch");
+        assert_eq!(
+            digest_mismatch.safe_message,
+            "result payload integrity mismatch"
+        );
 
         let oversized = evaluate_payload_integrity(
             PayloadIntegritySubject::ReplyResult,
@@ -1415,7 +1429,10 @@ mod tests {
             &observed_payload(33, digest_hex('a')),
             32,
         );
-        assert_eq!(oversized.reason, PayloadIntegrityReason::ResultPayloadTooLarge);
+        assert_eq!(
+            oversized.reason,
+            PayloadIntegrityReason::ResultPayloadTooLarge
+        );
         assert_eq!(oversized.safe_message, "result payload too large");
     }
 
@@ -1440,10 +1457,9 @@ mod tests {
                 .expect("string ID literal/generated value must be non-empty"),
         );
 
-        let decoded = decode_call_protocol_reply_json(
-            &encode_call_protocol_reply_json(&reply).unwrap(),
-        )
-        .unwrap();
+        let decoded =
+            decode_call_protocol_reply_json(&encode_call_protocol_reply_json(&reply).unwrap())
+                .unwrap();
         assert_eq!(decoded.result_payload, reply.result_payload);
         assert_eq!(decoded.result_payload.declared_size_bytes(), 5);
     }

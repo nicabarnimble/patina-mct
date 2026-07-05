@@ -350,7 +350,8 @@ fn fake_call_request(
             inline_payload_ref: "payload-hello".into(),
             content_type: "text/plain".into(),
             size_bytes: 5,
-            blake3_digest_hex: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            blake3_digest_hex: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .into(),
         },
         idempotency_key: Some("idem-fake".into()),
         received_observation_id: ObservationId::new("obs-peer-call-received")
