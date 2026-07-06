@@ -3503,6 +3503,7 @@ mod authority_test_fixture;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 
     fn test_call() -> MctCall {
         MctCall {
@@ -3876,6 +3877,7 @@ mod tests {
         assert_eq!(hello_response.hello_outcome, HelloOutcome::Admitted);
 
         let payload = br#"{"secret":"payload-marker"}"#.to_vec();
+        let payload_base64 = BASE64_STANDARD.encode(&payload);
         let mut call = cli_call_request(
             &client_endpoint_id,
             &binding_id,
@@ -3907,6 +3909,7 @@ mod tests {
             .inline_result_payload
             .expect("verified result payload bytes returned");
         let expected_result = br#"processed:{"secret":"payload-marker"}"#.to_vec();
+        let expected_result_base64 = BASE64_STANDARD.encode(&expected_result);
         assert_eq!(result_payload, expected_result);
         assert_eq!(
             call_reply.reply.reply_outcome,
@@ -3936,6 +3939,8 @@ mod tests {
         assert!(ledger_text.contains("payload:result:size="));
         assert!(!ledger_text.contains("payload-marker"));
         assert!(!ledger_text.contains("processed:"));
+        assert!(!ledger_text.contains(&payload_base64));
+        assert!(!ledger_text.contains(&expected_result_base64));
     }
 
     #[tokio::test]
@@ -3959,6 +3964,7 @@ mod tests {
         call.call_id = CallId::new("call-resident-process-payload")
             .expect("string ID literal/generated value must be non-empty");
         let payload = br#"{"secret":"payload-marker"}"#.to_vec();
+        let payload_base64 = BASE64_STANDARD.encode(&payload);
         call.payload_metadata.approximate_size_bytes = payload.len() as u64;
         let mut request = resident_test_protocol_request(call);
         request.payload = MctCallPayloadHandle::InlinePayload {
@@ -3984,6 +3990,7 @@ mod tests {
             .inline_result_payload
             .expect("result payload returned");
         let expected_result = r#"processed:{"secret":"payload-marker"}"#;
+        let expected_result_base64 = BASE64_STANDARD.encode(expected_result.as_bytes());
         assert_eq!(String::from_utf8(result_payload).unwrap(), expected_result);
         assert_eq!(
             result.result_payload.declared_size_bytes(),
@@ -3998,6 +4005,8 @@ mod tests {
         assert!(ledger_text.contains("digest="));
         assert!(!ledger_text.contains("payload-marker"));
         assert!(!ledger_text.contains("processed:"));
+        assert!(!ledger_text.contains(&payload_base64));
+        assert!(!ledger_text.contains(&expected_result_base64));
     }
 
     #[tokio::test]
