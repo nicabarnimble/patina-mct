@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+base64.workspace = true
 blake3.workspace = true
 jiff.workspace = true
 mct-iroh = { path = "../mct-iroh" }
@@ -25,7 +26,6 @@ wasmtime.workspace = true
 wasmtime-wasi.workspace = true
 
 [dev-dependencies]
-base64.workspace = true
 mct-observation = { path = "../mct-observation" }
 tempfile.workspace = true
 wat.workspace = true
