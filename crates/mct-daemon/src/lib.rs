@@ -7,6 +7,7 @@
 
 #[cfg(test)]
 mod authority_test_fixture;
+mod blob_store;
 mod children;
 mod composition;
 mod config;
@@ -27,6 +28,10 @@ mod toy;
 mod wasm;
 mod wit_values;
 
+pub use blob_store::{
+    MCT_BLOB_MAX_BYTES, MctLocalBlobStore, MctLocalBlobStoreError,
+    content_addressed_blob_handle, ingest_blob_from_path, local_blob_store_for_state_path,
+};
 pub use children::{
     MctChildFileDigest, MctChildIngressMode, MctChildInstanceState, MctChildIntegrityMode,
     MctChildLoadFailure, MctChildLoadOptions, MctChildLoadReport, MctChildRegistry, MctLoadedChild,
