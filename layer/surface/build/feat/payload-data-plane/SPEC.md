@@ -99,6 +99,63 @@ The caller verifies replies symmetrically inside `MCT_CALL_FRAME_READ_BUDGET_BYT
 
 Adapter observations for malformed request payloads, delivery failures, and result-payload failures include call id when available, size, digest, classification, and the typed reason in references/details. They never include base64 or raw request/result payload bytes. The no-bytes invariant is tested against the JSONL ledger for both request and result payloads.
 
+## Slice 2: local content-addressed blob store
+
+Slice 2 adds a local-only content-addressed store under the daemon state directory. The store is an adapter concern: it performs file I/O, bounded reads, atomic writes, and hashing; the kernel continues to decide from declared versus observed size/digest facts through `evaluate_payload_integrity`.
+
+### Store invariant and layout
+
+A blob visible in the CAS is valid by construction. Ingest decodes the request body, rejects oversized input before reading past the cap, writes bytes to a private temporary path, verifies exact byte size and BLAKE3 digest before visibility, then atomically renames into the digest-keyed final path. A failed ingest removes the temp path and leaves no digest-visible blob.
+
+The store root is the parent directory of the configured state database plus `blobs/`, so the default layout is:
+
+```text
+.mct/
+  state.sqlite
+  blobs/
+    tmp/
+      ingest-<unique>.tmp
+    blake3/
+      <first-two-hex>/<64-char-blake3-hex>.blob
+```
+
+The two-character fanout keeps a single directory from growing without introducing a database index. The final filename is keyed only by lowercase BLAKE3 hex; `blob_ref` may repeat the digest-qualified local path label, but authority and integrity use the digest and `size_bytes` facts, not path trust.
+
+### Blob cap
+
+`MCT_BLOB_MAX_BYTES = 8 * 1024 * 1024`. This intentionally exceeds the 32 KiB inline wire cap so real local workloads can avoid inline envelopes, while still bounding memory and disk reads to a small single-digit MiB budget.
+
+### Ingest surface
+
+The ingest surface is a local-only control UDS command: `POST /blobs` with JSON `{ "digest": "<blake3-hex>", "size_bytes": <u64>, "content_type": "...", "bytes_base64": "..." }`. UDS keeps the surface off the network, reuses the existing local-control operational path, and is sufficient for node-local tooling to stage payloads before a local call. HTTP control remains read-only for this slice.
+
+Successful ingest returns a `ContentAddressedBlob` handle. Digest mismatch, size mismatch, invalid digest syntax, invalid base64, and oversize are typed failures; no blob becomes visible.
+
+### Local consumption
+
+`ContentAddressedBlob` request payloads become consumable for local calls only. Before authority evaluation for a local call, the daemon adapter fetches the declared digest from the local CAS, bounded by `MCT_BLOB_MAX_BYTES`, hashes the bytes, records observed size/digest facts, and asks the kernel to compare those facts with the declared handle through the existing payload-integrity path.
+
+An absent declared blob fails closed before authority with typed reason `PayloadBlobUnavailable`, outcome classification `Malformed`, and caller-safe text `payload blob unavailable`. If a visible blob is tampered with after ingest, the fetch still hashes what is on disk and the existing digest-mismatch decision fails closed with `PayloadDigestMismatch` / `malformed call payload`; wrong bytes are never delivered.
+
+Remote `mct/call/0` continues to carry inline bytes only. A remote request declaring `ContentAddressedBlob` is not dereferenced over Iroh in this phase and behaves as it does after slice 1: the handle is validated as a declaration but no remote blob transfer occurs. Iroh blob transfer between Mothers is the ROADMAP follow-on after local CAS.
+
+### Slice 2 result scope
+
+Results stay inline-only. There are no CAS result handles, no result blob ingest, and no remote blob reply transfer in this phase.
+
+### Slice 2 observability
+
+CAS ingest, fetch, and local consumption observations record digest, size, classification/content type, and typed outcome only. They never record raw blob bytes or base64-encoded blob bytes. Ledger no-byte tests cover ingest/fetch/consumption paths using both raw and standard-base64 assertions.
+
+### Slice 2 non-goals
+
+- No Iroh blob transfer.
+- No CAS result handles.
+- No garbage collection or eviction.
+- No compression.
+- No cross-Mother fetch.
+- No policy-based per-grant CAS size limits.
+
 ## Non-goals
 
 - No Iroh blob transfer.
