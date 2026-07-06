@@ -1919,7 +1919,7 @@ fn resident_delivery_failure_report(
                 wall_time_ms: 0,
                 execution_time_ms: None,
                 queue_wait_ms: None,
-                input_size_bytes: call.payload_metadata.approximate_size_bytes,
+                input_size_bytes: call.payload_metadata.size_bytes,
                 output_size_bytes: None,
             },
             result_payload: MctCallPayloadHandle::Empty,
@@ -2751,7 +2751,7 @@ fn local_wasm_call(target: OperationTarget) -> MctCall {
         target,
         payload_metadata: PayloadMetadata {
             data_classification: "public".into(),
-            approximate_size_bytes: 0,
+            size_bytes: 0,
             contains_secret_scoped_material: false,
         },
         authority_context: AuthorityContextSnapshot {
@@ -2785,7 +2785,7 @@ fn local_process_call(target: OperationTarget, payload_size_bytes: u64) -> MctCa
         target,
         payload_metadata: PayloadMetadata {
             data_classification: "public".into(),
-            approximate_size_bytes: payload_size_bytes,
+            size_bytes: payload_size_bytes,
             contains_secret_scoped_material: false,
         },
         authority_context: AuthorityContextSnapshot {
@@ -3265,7 +3265,7 @@ fn cli_call_request(
         target,
         payload_metadata: PayloadMetadata {
             data_classification: "public".into(),
-            approximate_size_bytes: 0,
+            size_bytes: 0,
             contains_secret_scoped_material: false,
         },
         authority_context: AuthorityContextSnapshot {
@@ -3524,7 +3524,7 @@ mod tests {
             },
             payload_metadata: PayloadMetadata {
                 data_classification: "public".into(),
-                approximate_size_bytes: 0,
+                size_bytes: 0,
                 contains_secret_scoped_material: false,
             },
             authority_context: AuthorityContextSnapshot {
@@ -3893,7 +3893,7 @@ mod tests {
         );
         call.call.call_id = CallId::new("call-resident-payload-e2e")
             .expect("string ID literal/generated value must be non-empty");
-        call.call.payload_metadata.approximate_size_bytes = payload.len() as u64;
+        call.call.payload_metadata.size_bytes = payload.len() as u64;
         call.payload = MctCallPayloadHandle::InlinePayload {
             inline_payload_ref: "payload-resident-e2e".into(),
             content_type: "application/json".into(),
@@ -3965,7 +3965,7 @@ mod tests {
             .expect("string ID literal/generated value must be non-empty");
         let payload = br#"{"secret":"payload-marker"}"#.to_vec();
         let payload_base64 = BASE64_STANDARD.encode(&payload);
-        call.payload_metadata.approximate_size_bytes = payload.len() as u64;
+        call.payload_metadata.size_bytes = payload.len() as u64;
         let mut request = resident_test_protocol_request(call);
         request.payload = MctCallPayloadHandle::InlinePayload {
             inline_payload_ref: "payload-resident-process".into(),
@@ -4027,7 +4027,7 @@ mod tests {
             .expect("string ID literal/generated value must be non-empty");
         let mut call = resident_test_call(trace_id);
         let payload = b"not-json".to_vec();
-        call.payload_metadata.approximate_size_bytes = payload.len() as u64;
+        call.payload_metadata.size_bytes = payload.len() as u64;
         let mut request = resident_test_protocol_request(call);
         request.payload = MctCallPayloadHandle::InlinePayload {
             inline_payload_ref: "payload-resident-wit-text".into(),

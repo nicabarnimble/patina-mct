@@ -79,8 +79,8 @@ impl OperationTarget {
 pub struct PayloadMetadata {
     /// Policy label used for data-placement and toy-grant matching.
     pub data_classification: String,
-    /// Size claim that must match the protocol payload handle size.
-    pub approximate_size_bytes: u64,
+    /// Exact byte size that must match the protocol payload handle size.
+    pub size_bytes: u64,
     /// Whether the adapter says the payload contains secret-scoped material.
     pub contains_secret_scoped_material: bool,
 }
@@ -332,8 +332,8 @@ impl MctCallProtocolAuthority {
 /// Adapter-neutral reference to call payload bytes.
 ///
 /// Each non-empty variant carries a size that must equal
-/// [`MctCall::payload_metadata`].`approximate_size_bytes`; the kernel validates
-/// the handle shape but never dereferences payload storage.
+/// [`MctCall::payload_metadata`].`size_bytes`; the kernel validates the handle
+/// shape but never dereferences payload storage.
 pub enum MctCallPayloadHandle {
     /// Payload stored inline or in an adapter-local inline buffer.
     InlinePayload {
@@ -363,7 +363,7 @@ pub enum MctCallPayloadHandle {
         external_ref: String,
         /// Optional media type; if present it must not be blank.
         content_type: Option<String>,
-        /// Claimed byte size used for validation against call metadata.
+        /// Approximate byte size for payloads MCT does not dereference.
         approximate_size_bytes: u64,
     },
     /// No payload bytes are associated with the call.
@@ -382,11 +382,6 @@ impl MctCallPayloadHandle {
             } => *approximate_size_bytes,
             Self::Empty => 0,
         }
-    }
-
-    /// Returns the byte-size claim carried by this handle, or zero for empty payloads.
-    pub fn approximate_size_bytes(&self) -> u64 {
-        self.declared_size_bytes()
     }
 
     /// Validates that every WIT identity segment is present.
@@ -597,12 +592,10 @@ impl MctCallProtocolRequest {
             "idempotency_key",
             &self.idempotency_key,
         )?;
-        if self.payload.approximate_size_bytes()
-            != self.call.payload_metadata.approximate_size_bytes
-        {
+        if self.payload.declared_size_bytes() != self.call.payload_metadata.size_bytes {
             return Err(MctKernelError::PayloadSizeMismatch {
-                call_size_bytes: self.call.payload_metadata.approximate_size_bytes,
-                handle_size_bytes: self.payload.approximate_size_bytes(),
+                call_size_bytes: self.call.payload_metadata.size_bytes,
+                handle_size_bytes: self.payload.declared_size_bytes(),
             });
         }
 
@@ -938,7 +931,7 @@ mod tests {
             },
             payload_metadata: PayloadMetadata {
                 data_classification: "public".into(),
-                approximate_size_bytes: 5,
+                size_bytes: 5,
                 contains_secret_scoped_material: false,
             },
             authority_context: AuthorityContextSnapshot {
@@ -1135,8 +1128,8 @@ mod tests {
         assert_eq!(decoded_request.call.target.interface_name, "echo");
         assert_eq!(decoded_request.call.target.function_name, "echo");
         assert_eq!(
-            decoded_request.payload.approximate_size_bytes(),
-            decoded_request.call.payload_metadata.approximate_size_bytes
+            decoded_request.payload.declared_size_bytes(),
+            decoded_request.call.payload_metadata.size_bytes
         );
         let encoded_json = serde_json::to_value(&request.payload).unwrap();
         assert_eq!(encoded_json["payload_kind"], "inline_payload");

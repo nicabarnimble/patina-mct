@@ -610,7 +610,7 @@ fn wasm_invocation_result(
             wall_time_ms: 0,
             execution_time_ms: None,
             queue_wait_ms: None,
-            input_size_bytes: call.payload_metadata.approximate_size_bytes,
+            input_size_bytes: call.payload_metadata.size_bytes,
             output_size_bytes,
         },
         result_payload: MctCallPayloadHandle::Empty,
@@ -1064,7 +1064,7 @@ impl MctWasmComponentRuntime {
                 wall_time_ms: 0,
                 execution_time_ms: None,
                 queue_wait_ms: None,
-                input_size_bytes: call.payload_metadata.approximate_size_bytes,
+                input_size_bytes: call.payload_metadata.size_bytes,
                 output_size_bytes,
             },
             result_payload: MctCallPayloadHandle::Empty,
@@ -1977,7 +1977,7 @@ mod tests {
             },
             payload_metadata: PayloadMetadata {
                 data_classification: "public".into(),
-                approximate_size_bytes: 0,
+                size_bytes: 0,
                 contains_secret_scoped_material: false,
             },
             authority_context: AuthorityContextSnapshot {

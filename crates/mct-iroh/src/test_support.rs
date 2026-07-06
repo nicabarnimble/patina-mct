@@ -367,7 +367,7 @@ fn local_call_request(
         },
         payload_metadata: PayloadMetadata {
             data_classification: "public".into(),
-            approximate_size_bytes: 0,
+            size_bytes: 0,
             contains_secret_scoped_material: false,
         },
         authority_context: AuthorityContextSnapshot {

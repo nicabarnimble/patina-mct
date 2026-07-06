@@ -1153,7 +1153,7 @@ mod tests {
             },
             payload_metadata: PayloadMetadata {
                 data_classification: "public".into(),
-                approximate_size_bytes: 5,
+                size_bytes: 5,
                 contains_secret_scoped_material: false,
             },
             authority_context: AuthorityContextSnapshot {
