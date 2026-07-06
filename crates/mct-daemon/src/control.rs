@@ -116,7 +116,7 @@ struct MctBlobIngestRequest {
     bytes_base64: String,
 }
 
-const MCT_UDS_CONTROL_READ_BUDGET_BYTES: usize = ((MCT_BLOB_MAX_BYTES + 2) / 3) * 4 + 4096;
+const MCT_UDS_CONTROL_READ_BUDGET_BYTES: usize = MCT_BLOB_MAX_BYTES.div_ceil(3) * 4 + 4096;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MctControlPlaneAuthPolicy {

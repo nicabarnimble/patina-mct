@@ -198,6 +198,27 @@ For more information, try '--help'.
 Command exited with code 1
 ```
 
+- 2026-07-06 D6b post-commit validation failed during clippy because the UDS blob read-budget constant manually implemented `div_ceil`:
+
+```text
+error: manually reimplementing `div_ceil`
+   --> crates/mct-daemon/src/control.rs:119:50
+    |
+119 | const MCT_UDS_CONTROL_READ_BUDGET_BYTES: usize = ((MCT_BLOB_MAX_BYTES + 2) / 3) * 4 + 4096;
+    |                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `.div_ceil()`: `MCT_BLOB_MAX_BYTES.div_ceil(3)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#manual_div_ceil
+    = note: `-D clippy::manual-div-ceil` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::manual_div_ceil)]`
+
+error: could not compile `mct-daemon` (lib test) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `mct-daemon` (lib) due to 1 previous error
+
+
+Command exited with code 101
+```
+
 - 2026-07-06 D6b targeted daemon/control test invocation used two positional `cargo test` filters and failed before rerun:
 
 ```text
