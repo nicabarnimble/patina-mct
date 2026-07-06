@@ -866,9 +866,10 @@ impl MotherIrohEndpoint {
                             if let Some(handled) = handled.as_ref() {
                                 evaluation.outcome = handled.outcome;
                                 evaluation.safe_message = handled.safe_message.clone();
+                                evaluation.route_decision_id = handled.route_decision_id.clone();
                             }
                             let mut state_guard = state.lock().await;
-                            let reply = call_reply_from_evaluation_with_result_payload(
+                            let reply = call_reply_from_evaluation_with_result_payload_and_route(
                                 ReplyId::new(format!(
                                     "reply-iroh-call-{}",
                                     state_guard.next_suffix()
@@ -882,6 +883,9 @@ impl MotherIrohEndpoint {
                                     .as_ref()
                                     .map(|handled| handled.result_payload.clone())
                                     .unwrap_or(MctCallPayloadHandle::Empty),
+                                handled
+                                    .as_ref()
+                                    .and_then(|handled| handled.route_taken.clone()),
                                 state_guard.next_observation_id("call-reply"),
                             );
                             drop(state_guard);
@@ -1144,8 +1148,9 @@ impl MotherIrohEndpoint {
                     if let Some(handled) = handled.as_ref() {
                         evaluation.outcome = handled.outcome;
                         evaluation.safe_message = handled.safe_message.clone();
+                        evaluation.route_decision_id = handled.route_decision_id.clone();
                     }
-                    let reply = call_reply_from_evaluation_with_result_payload(
+                    let reply = call_reply_from_evaluation_with_result_payload_and_route(
                         ReplyId::new(format!("reply-iroh-call-{}", state.next_suffix()))
                             .expect("string ID literal/generated value must be non-empty"),
                         &evaluation,
@@ -1156,6 +1161,9 @@ impl MotherIrohEndpoint {
                             .as_ref()
                             .map(|handled| handled.result_payload.clone())
                             .unwrap_or(MctCallPayloadHandle::Empty),
+                        handled
+                            .as_ref()
+                            .and_then(|handled| handled.route_taken.clone()),
                         state.next_observation_id("call-reply"),
                     );
                     let response_bytes = encode_call_reply_envelope(

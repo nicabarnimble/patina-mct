@@ -4335,6 +4335,7 @@ mod tests {
         );
         let reply = client.send_call(&ticket, &call).await.unwrap();
         assert_eq!(reply.reply_outcome, CallProtocolReplyOutcome::Success);
+        assert!(reply.route_taken.is_some());
 
         let status = poll_resident_status(&socket_path, |status| {
             status

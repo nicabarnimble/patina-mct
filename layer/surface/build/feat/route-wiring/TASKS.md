@@ -5,7 +5,7 @@
 - [x] Task D1.1 — Operator gate amendments
 - [x] Task D2 — Kernel gaps only if the SPEC found any
 - [x] Task D3 — Daemon routing for local calls
-- [ ] Task D4 — Remote serve-path integration
+- [x] Task D4 — Remote serve-path integration
 - [ ] Task D5 — End-to-end proof and PHASE3 T5 discharge
 
 ## Flake log
@@ -332,6 +332,83 @@ Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon/src/main.rs:
 +        }
      }
  }
+```
+
+### 2026-07-06 — D4 failing test before serve reply route projection
+
+Command:
+
+```bash
+cargo test -p mct-daemon resident_mother_serves_peer_control_and_shutdown -- --nocapture
+```
+
+Failure output:
+
+```text
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.68s
+     Running unittests src/lib.rs (target/debug/deps/mct_daemon-5682d471ecfb696f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 95 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/mct_daemon-701d058281c133f0)
+
+running 1 test
+mct resident mother endpoint_id=f269c164facd78a8e7c71a7ac893b339cbdfb6afa255ac9dea3c1bfce2814497
+ticket={  "endpoint_id": "f269c164facd78a8e7c71a7ac893b339cbdfb6afa255ac9dea3c1bfce2814497",  "direct_addresses": [    "10.10.10.182:56477",    "10.10.10.209:56477",    "100.114.124.29:56477"  ],  "relay_urls": []}
+mct daemon serving control uds on /var/folders/6h/329275913d1d3k1lfvvvryp40000gn/T/.tmpqhZKn0/control.sock
+mct resident mother children loaded=1 failed=0 bindings=1 max_connections=8
+
+thread 'tests::resident_mother_serves_peer_control_and_shutdown' (6629263) panicked at crates/mct-daemon/src/main.rs:4338:9:
+assertion failed: reply.route_taken.is_some()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test tests::resident_mother_serves_peer_control_and_shutdown ... FAILED
+
+failures:
+
+failures:
+    tests::resident_mother_serves_peer_control_and_shutdown
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 1.90s
+
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
+### 2026-07-06 — D4 rustfmt check reported formatting diffs
+
+Command:
+
+```bash
+cargo fmt --check
+```
+
+Failure output:
+
+```text
+Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-iroh/src/serve.rs:883:
+                                     .as_ref()
+                                     .map(|handled| handled.result_payload.clone())
+                                     .unwrap_or(MctCallPayloadHandle::Empty),
+-                                handled.as_ref().and_then(|handled| handled.route_taken.clone()),
++                                handled
++                                    .as_ref()
++                                    .and_then(|handled| handled.route_taken.clone()),
+                                 state_guard.next_observation_id("call-reply"),
+                             );
+                             drop(state_guard);
+Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-iroh/src/serve.rs:1159:
+                             .as_ref()
+                             .map(|handled| handled.result_payload.clone())
+                             .unwrap_or(MctCallPayloadHandle::Empty),
+-                        handled.as_ref().and_then(|handled| handled.route_taken.clone()),
++                        handled
++                            .as_ref()
++                            .and_then(|handled| handled.route_taken.clone()),
+                         state.next_observation_id("call-reply"),
+                     );
+                     let response_bytes = encode_call_reply_envelope(
 ```
 
 ## Verbatim task prompt
