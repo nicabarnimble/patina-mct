@@ -85,27 +85,17 @@ impl MctLocalBlobStore {
 
         fs::create_dir_all(self.root.join("tmp")).map_err(io_error)?;
         let tmp_path = self.temp_path();
-        let ingest_result = self.write_verify_and_publish(
-            &tmp_path,
-            digest,
-            size_bytes,
-            content_type,
-            &mut reader,
-        );
+        let ingest_result =
+            self.write_verify_and_publish(&tmp_path, digest, size_bytes, content_type, &mut reader);
         if ingest_result.is_err() {
             let _ = fs::remove_file(&tmp_path);
         }
         ingest_result
     }
 
-    pub fn fetch(
-        &self,
-        handle: &MctCallPayloadHandle,
-    ) -> Result<Vec<u8>, MctLocalBlobStoreError> {
+    pub fn fetch(&self, handle: &MctCallPayloadHandle) -> Result<Vec<u8>, MctLocalBlobStoreError> {
         let MctCallPayloadHandle::ContentAddressedBlob {
-            digest,
-            size_bytes,
-            ..
+            digest, size_bytes, ..
         } = handle
         else {
             return Ok(Vec::new());

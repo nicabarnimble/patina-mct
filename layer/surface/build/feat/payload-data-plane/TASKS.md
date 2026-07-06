@@ -231,6 +231,58 @@ error: could not compile `mct-daemon` (lib test) due to 1 previous error
 Command exited with code 101
 ```
 
+- 2026-07-06 D6b post-commit validation failed in `./scripts/ci-tier0.sh` because rustfmt reported formatting diffs for the new blob store exports and methods:
+
+```text
+Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon/src/blob_store.rs:85:
+ 
+         fs::create_dir_all(self.root.join("tmp")).map_err(io_error)?;
+         let tmp_path = self.temp_path();
+-        let ingest_result = self.write_verify_and_publish(
+-            &tmp_path,
+-            digest,
+-            size_bytes,
+-            content_type,
+-            &mut reader,
+-        );
++        let ingest_result =
++            self.write_verify_and_publish(&tmp_path, digest, size_bytes, content_type, &mut reader);
+         if ingest_result.is_err() {
+             let _ = fs::remove_file(&tmp_path);
+         }
+Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon/src/blob_store.rs:98:
+         ingest_result
+     }
+ 
+-    pub fn fetch(
+-        &self,
+-        handle: &MctCallPayloadHandle,
+-    ) -> Result<Vec<u8>, MctLocalBlobStoreError> {
++    pub fn fetch(&self, handle: &MctCallPayloadHandle) -> Result<Vec<u8>, MctLocalBlobStoreError> {
+         let MctCallPayloadHandle::ContentAddressedBlob {
+-            digest,
+-            size_bytes,
+-            ..
++            digest, size_bytes, ..
+         } = handle
+         else {
+             return Ok(Vec::new());
+Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon/src/lib.rs:29:
+ mod wit_values;
+ 
+ pub use blob_store::{
+-    MCT_BLOB_MAX_BYTES, MctLocalBlobStore, MctLocalBlobStoreError,
+-    content_addressed_blob_handle, ingest_blob_from_path, local_blob_store_for_state_path,
++    MCT_BLOB_MAX_BYTES, MctLocalBlobStore, MctLocalBlobStoreError, content_addressed_blob_handle,
++    ingest_blob_from_path, local_blob_store_for_state_path,
+ };
+ pub use children::{
+     MctChildFileDigest, MctChildIngressMode, MctChildInstanceState, MctChildIntegrityMode,
+
+
+Command exited with code 1
+```
+
 ## Slice 1 close-out
 
 ### Commit list (D3-D5 plus D5.2-D5.3)
