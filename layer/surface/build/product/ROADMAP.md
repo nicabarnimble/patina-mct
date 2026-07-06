@@ -76,14 +76,14 @@ Dependency-ordered; each item assumes the ones before it.
       Forcing functions: fixes single-slot hello state; forces the
       single-writer ledger and `!Sync` SQLite store into a concurrent
       architecture.
-- [ ] **2. Payload data plane** — inline payload bytes over `mct/call/0`
+- [x] **2. Payload data plane** — inline payload bytes over `mct/call/0`
       first (bounded, validated against declared size/digest), content-
       addressed blob storage second (Iroh blobs are the natural adapter).
-      Slice 1 (inline request/result payloads) completed through D5;
-      slice 2 (local content-addressed blob store) is pending operator
-      decision. Follow-on after slice 2: Iroh blob transfer between
-      Mothers. Unblocks: real workloads, result payloads,
-      `ContentAddressedBlob` variant becomes consumable.
+      Completed 2026-07-06 through slice 2: bounded inline request/result
+      payloads plus a local content-addressed blob store under the node
+      state dir. Follow-on remains Iroh blob transfer between Mothers.
+      Unblocks: real workloads, result payloads, and local
+      `ContentAddressedBlob` consumption.
 - [ ] **3. Routing wired end-to-end** — incoming calls flow through the
       two-phase route decision; the daemon consumes
       `AuthorizedRouteExecution` (must apply the same stale-revision guard

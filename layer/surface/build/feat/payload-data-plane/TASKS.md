@@ -7,10 +7,10 @@
 - [x] Task D3 — Transport: bytes over mct/call/0
 - [x] Task D4 — Daemon: delivery and result path
 - [x] Task D5 — End-to-end proof
-- [ ] Task D6 — Slice 2: local content-addressed blob store
+- [x] Task D6 — Slice 2: local content-addressed blob store
   - [x] Task D6a — SPEC amendment: local blob store contract
-  - [ ] Task D6b — Implementation: store, local consumption, ingest surface
-  - [ ] Task D6c — Phase close-out
+  - [x] Task D6b — Implementation: store, local consumption, ingest surface
+  - [x] Task D6c — Phase close-out
 
 ---
 
@@ -384,3 +384,80 @@ Concrete proof assertions in `resident_mother_payload_roundtrip_verifies_result_
 ### ROADMAP follow-on
 
 Recorded in `layer/surface/build/product/ROADMAP.md`: after slice 2 (local content-addressed blob store), the follow-on is Iroh blob transfer between Mothers. D6 remains pending operator decision; slice 1 stops at D5.
+
+## Slice 2 close-out
+
+### Commit list (D6)
+
+- `0945508 docs: specify local blob store`
+- `0f356ba feat(daemon): add local blob store`
+- `e02c015 style: format local blob store`
+- `2770aa7 feat(kernel): decide local blob payload facts`
+- `722a2c5 feat(daemon): consume local blob payloads`
+- `ed3e243 style: satisfy blob control clippy`
+
+### Flake log status
+
+Recorded failures before rerun:
+
+- 2026-07-05 D3 validation failed before commit with Rust compile error `E0061` after adding the resident call payload parameter; fixed by passing `None` at the affected test call site, then full validation passed.
+- 2026-07-06 D5.2 targeted test invocation used two positional `cargo test` filters and failed with `unexpected argument 'resident_process_payload_delivery_returns_digest_and_keeps_ledger_byte_free'`; rerun with valid filters passed.
+- 2026-07-06 D6b targeted daemon/control test invocation used two positional `cargo test` filters and failed with `unexpected argument 'uds_blob_ingest_request_writes_visible_blob'`; rerun with valid filters passed.
+- 2026-07-06 D6b targeted blob-store test failed with Rust compile error `E0034` for ambiguous `File::by_ref`; fixed by disambiguating `Read::by_ref`, then targeted tests passed.
+- 2026-07-06 D6b post-commit validation failed in `./scripts/ci-tier0.sh` because rustfmt reported formatting diffs in the new blob-store code; fixed in `e02c015`, then full validation passed.
+- 2026-07-06 D6b post-commit validation failed during clippy because the UDS blob read-budget constant manually implemented `div_ceil`; fixed in `ed3e243`, then full validation passed.
+
+No unresolved flakes remain.
+
+### End-to-end CAS test transcript
+
+Command run from disk:
+
+```text
+cargo test -p mct-daemon resident_local_blob_payload_delivery_returns_digest_and_keeps_ledger_byte_free -- --nocapture
+```
+
+Transcript:
+
+```text
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running unittests src/lib.rs (target/debug/deps/mct_daemon-5682d471ecfb696f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 95 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/mct_daemon-701d058281c133f0)
+
+running 1 test
+test tests::resident_local_blob_payload_delivery_returns_digest_and_keeps_ledger_byte_free ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.19s
+
+     Running tests/wasm_limits.rs (target/debug/deps/wasm_limits-bcd386531140659e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+```
+
+Concrete proof assertions in `resident_local_blob_payload_delivery_returns_digest_and_keeps_ledger_byte_free`:
+
+- the test ingests bytes into the local CAS under the daemon state directory and receives a `ContentAddressedBlob` handle keyed by BLAKE3 digest and exact `size_bytes`;
+- a local resident process call declares that handle with no inline request bytes;
+- the daemon fetches the blob locally, computes observed size/digest facts, asks the kernel to compare them, then delivers the verified bytes to the process child;
+- the child output is `processed:{"secret":"blob-marker"}`, proving output depends on the blob bytes;
+- the result still returns inline with a digest-stamped `InlinePayload` handle;
+- the ledger contains the call id plus request/result size-and-digest facts and excludes raw request bytes, raw result bytes, base64 request bytes, and base64 result bytes.
+
+Additional D6 coverage:
+
+- `ingest_rejects_digest_mismatch_without_visible_blob` proves digest mismatch leaves no visible CAS path.
+- `ingest_rejects_oversized_input_before_visibility` proves oversize is rejected under `MCT_BLOB_MAX_BYTES` without publishing a blob.
+- `fetch_absent_digest_is_typed_unavailable` and `resident_local_blob_absent_fails_closed_before_delivery` prove absent blobs fail closed with `PayloadBlobUnavailable` / `payload blob unavailable`.
+- `resident_local_blob_tamper_fails_closed_via_digest_mismatch` proves on-disk tamper fails through kernel `PayloadDigestMismatch` before delivery.
+- `uds_blob_ingest_request_writes_visible_blob` proves the local UDS ingest surface writes a visible blob and keeps response text byte-free.
+
+### ROADMAP follow-on
+
+Updated `layer/surface/build/product/ROADMAP.md`: payload data plane item 2 is complete through slice 2, and the follow-on remains Iroh blob transfer between Mothers. No garbage collection, eviction, compression, cross-Mother fetch, CAS result handles, or policy-scoped CAS limits were added in this phase.
