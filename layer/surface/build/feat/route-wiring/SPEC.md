@@ -73,10 +73,12 @@ Both entry paths use the same route execution function:
 `MctResult.route_taken` follows the product-map rule:
 
 - present for `success`, `failed`, and `timed_out` outcomes because execution was attempted on a route;
-- absent for `denied` and `cancelled` before execution;
+- absent for `denied` and `cancelled` outcomes, unconditionally;
 - malformed adapter input is not an `MctResult`.
 
-The peer reply surface carries the same caller-safe route projection as the result. `MctCallProtocolReply` gains `route_taken: Option<RouteTaken>` populated from the handler result: present for success/failed/timed-out replies, absent for denied/cancelled/malformed replies. Full route reasoning, eliminations, topology, and stale-revision details remain ledger-only.
+If a call is cancelled after execution began on a route, the selected route remains reconstructible from the ledger's `RouteSelected` observation, not from the caller-safe result projection.
+
+The peer reply surface carries the same caller-safe route projection as the result. `MctCallProtocolReply` gains `route_taken: Option<RouteTaken>` populated from the handler result: present for success/failed/timed-out replies, absent for denied/cancelled/malformed replies. This is a 0.x wire-format change because the reply JSON gains an optional route projection field. Full route reasoning, eliminations, topology, and stale-revision details remain ledger-only.
 
 ## Denial classification
 
