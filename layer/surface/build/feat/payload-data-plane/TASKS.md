@@ -198,6 +198,39 @@ For more information, try '--help'.
 Command exited with code 1
 ```
 
+- 2026-07-06 D6b targeted blob-store test failed before the implementation commit with ambiguous `File::by_ref` after adding bounded fetch reads:
+
+```text
+error[E0034]: multiple applicable items in scope
+   --> crates/mct-daemon/src/blob_store.rs:127:14
+    |
+127 |             .by_ref()
+    |              ^^^^^^ multiple `by_ref` found
+    |
+    = note: candidate #1 is defined in an impl of the trait `std::io::Read` for the type `std::fs::File`
+    = note: candidate #2 is defined in an impl of the trait `std::io::Write` for the type `std::fs::File`
+help: disambiguate the method for candidate #1
+    |
+126 -         let read = file
+127 -             .by_ref()
+126 +         let read = std::io::Read::by_ref(&mut file)
+    |
+help: disambiguate the method for candidate #2
+    |
+126 -         let read = file
+127 -             .by_ref()
+126 +         let read = std::io::Write::by_ref(&mut file)
+    |
+
+For more information about this error, try `rustc --explain E0034`.
+error: could not compile `mct-daemon` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `mct-daemon` (lib test) due to 1 previous error
+
+
+Command exited with code 101
+```
+
 ## Slice 1 close-out
 
 ### Commit list (D3-D5 plus D5.2-D5.3)
