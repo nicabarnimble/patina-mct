@@ -8,6 +8,9 @@
 - [x] Task D4 — Daemon: delivery and result path
 - [x] Task D5 — End-to-end proof
 - [ ] Task D6 — Slice 2: local content-addressed blob store
+  - [x] Task D6a — SPEC amendment: local blob store contract
+  - [ ] Task D6b — Implementation: store, local consumption, ingest surface
+  - [ ] Task D6c — Phase close-out
 
 ---
 
