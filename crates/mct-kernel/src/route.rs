@@ -279,6 +279,11 @@ impl AuthorizedRouteExecution {
         &self.toy_calls
     }
 
+    /// Consumes this route capability and returns the selected child invocation token.
+    pub fn into_child_invocation(self) -> AuthorizedChildInvocation {
+        self.child_invocation
+    }
+
     /// Returns the policy revision under which this capability was minted.
     pub fn policy_revision(&self) -> u64 {
         self.policy_revision

@@ -1495,14 +1495,28 @@ impl ResidentRequestPayload {
 #[derive(Debug)]
 struct ResidentAuthorizedExecution {
     child: mct_daemon::MctLoadedChild,
+    authorized_route: AuthorizedRouteExecution,
+    route_taken: RouteTaken,
+    child_authority_observation_id: ObservationId,
+    route_observations: Vec<MctObservation>,
+}
+
+#[derive(Debug)]
+struct ResidentChildExecution {
+    child: mct_daemon::MctLoadedChild,
     authorized: AuthorizedChildInvocation,
-    authority_observation: MctObservation,
+    child_authority_observation_id: ObservationId,
+    route_taken: RouteTaken,
+    route_decision_id: DecisionId,
 }
 
 #[derive(Debug)]
 enum ResidentAuthorizationOutcome {
     Authorized(Box<ResidentAuthorizedExecution>),
-    Denied { observation: Box<MctObservation> },
+    Denied {
+        route_decision_id: DecisionId,
+        observations: Vec<MctObservation>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -1763,25 +1777,40 @@ async fn execute_resident_call(
     };
 
     let ResidentAuthorizationOutcome::Authorized(authorized) = authorization else {
-        if let ResidentAuthorizationOutcome::Denied { observation } = authorization
-            && let Err(error) = ledger.append(vec![*observation]).await
+        if let ResidentAuthorizationOutcome::Denied {
+            route_decision_id,
+            observations,
+        } = authorization
         {
-            eprintln!("resident authority denial ledger write failed: {error}");
-            return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+            if let Err(error) = ledger.append(observations).await {
+                eprintln!("resident route denial ledger write failed: {error}");
+                return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+            }
+            return MctIrohCallHandlerResult::denied().with_route(Some(route_decision_id), None);
         }
-        return MctIrohCallHandlerResult::denied();
+        unreachable!("resident authorization outcome was already matched as non-authorized")
     };
 
-    if let Err(error) = ledger
-        .append(vec![authorized.authority_observation.clone()])
-        .await
-    {
-        eprintln!("resident authority ledger write failed: {error}");
+    if let Err(error) = ledger.append(authorized.route_observations.clone()).await {
+        eprintln!("resident route ledger write failed: {error}");
         return MctIrohCallHandlerResult::failed("observation ledger unavailable");
     }
 
+    let current_revisions = match current_resident_route_revisions(&paths, &request.call) {
+        Ok(revisions) => revisions,
+        Err(error) => {
+            eprintln!("resident route revision read failed: {error}");
+            return MctIrohCallHandlerResult::failed("runtime unavailable");
+        }
+    };
     let execution = match tokio::task::spawn_blocking(move || {
-        execute_authorized_resident_child(paths, *authorized, request, inline_payload)
+        execute_authorized_resident_child(
+            paths,
+            *authorized,
+            request,
+            inline_payload,
+            current_revisions,
+        )
     })
     .await
     {
@@ -1817,60 +1846,296 @@ async fn authorize_resident_child(
         .context("join resident child authorization")?
 }
 
+struct ResidentCandidatePlan {
+    child: mct_daemon::MctLoadedChild,
+    candidate: CandidateRoute,
+    authority: CandidateAuthorityEvaluation,
+    child_authority: ChildCallAuthorityResult,
+}
+
 fn authorize_resident_child_blocking(
     paths: &ResidentExecutionPaths,
     call: &MctCall,
 ) -> Result<ResidentAuthorizationOutcome> {
     let config = MctDaemonConfigStore::new(&paths.config_path).load()?;
     let load_report = load_children_from_dir(MctChildLoadOptions::new(paths.children_dir.clone()));
-    let projection = config.authority_projection_for_loaded_children(
-        load_report.children.iter(),
-        MctOperatorChildScope::default(),
-    );
-    let mut authorized = Vec::new();
-    let mut first_denial = None;
+    let scope = resident_child_scope(&config);
+    let projection =
+        config.authority_projection_for_loaded_children(load_report.children.iter(), scope);
+    let mut plans = Vec::new();
 
     for child in load_report
         .children
         .into_iter()
         .filter(|child| resident_child_accepts_call(child, call))
     {
-        let result = projection.authorize_child_for_call(&child.name, call);
-        let observation = child_call_authority_observation(
-            call.trace_context.trace_id.clone(),
-            current_timestamp(),
-            &result.evaluation,
-        );
-        if let Some(authorized_child) = result.authorized {
-            authorized.push(ResidentAuthorizedExecution {
-                child,
-                authorized: authorized_child,
-                authority_observation: observation,
-            });
-        } else if first_denial.is_none() {
-            first_denial = Some(observation);
-        }
+        let child_authority = projection.authorize_child_for_call(&child.name, call);
+        let candidate = resident_candidate_for_child(&projection, &child);
+        let authority = if child_authority.is_allowed() {
+            CandidateAuthorityEvaluation::admissible(
+                candidate.clone(),
+                child_authority.evaluation.policy_revision,
+                call.authority_context.grants_revision,
+            )
+        } else {
+            CandidateAuthorityEvaluation::eliminated(
+                candidate.clone(),
+                child_elimination_reason(child_authority.evaluation.reason_code),
+                child_authority.evaluation.policy_revision,
+                call.authority_context.grants_revision,
+            )
+        };
+        plans.push(ResidentCandidatePlan {
+            child,
+            candidate,
+            authority,
+            child_authority,
+        });
     }
 
-    match authorized.len() {
-        1 => Ok(ResidentAuthorizationOutcome::Authorized(Box::new(
-            authorized.remove(0),
-        ))),
-        0 => {
-            let observation = first_denial.unwrap_or_else(|| {
-                let result = projection.authorize_child_for_call("resident-dispatch-missing", call);
-                child_call_authority_observation(
-                    call.trace_context.trace_id.clone(),
-                    current_timestamp(),
-                    &result.evaluation,
-                )
-            });
-            Ok(ResidentAuthorizationOutcome::Denied {
-                observation: Box::new(observation),
-            })
-        }
-        _ => bail!("multiple approved resident children match call target"),
+    let mut observations = resident_candidate_observations(call, &plans);
+    let authority_evaluations = plans
+        .iter()
+        .map(|plan| plan.authority.clone())
+        .collect::<Vec<_>>();
+    let mut admissible = plans
+        .into_iter()
+        .filter(|plan| plan.authority.outcome == CandidateAuthorityOutcome::Admissible)
+        .collect::<Vec<_>>();
+
+    if admissible.is_empty() {
+        let no_route_reason = authority_evaluations
+            .iter()
+            .find_map(|evaluation| evaluation.reason)
+            .unwrap_or(CandidateEliminationReason::ChildNotApproved);
+        let decision = RouteDecision::no_route(
+            call,
+            authority_evaluations,
+            no_route_reason,
+            resident_route_decision_ids("initial", call),
+        );
+        observations.push(route_decision_observation(
+            call.trace_context.trace_id.clone(),
+            current_timestamp(),
+            &decision,
+        ));
+        return Ok(ResidentAuthorizationOutcome::Denied {
+            route_decision_id: decision.decision_id,
+            observations,
+        });
     }
+
+    admissible.sort_by_key(|plan| resident_route_rank_key(&plan.candidate));
+    let selected = admissible.remove(0);
+    let initial = RouteDecision::selected(
+        call,
+        selected.candidate.clone(),
+        authority_evaluations,
+        resident_route_decision_ids("initial", call),
+    );
+    observations.push(child_call_authority_observation(
+        call.trace_context.trace_id.clone(),
+        current_timestamp(),
+        &selected.child_authority.evaluation,
+    ));
+    observations.push(route_decision_observation(
+        call.trace_context.trace_id.clone(),
+        current_timestamp(),
+        &initial,
+    ));
+
+    let revalidated_child = projection.authorize_child_for_call(&selected.child.name, call);
+    let child_authority_observation_id = revalidated_child.evaluation.observation_id.clone();
+    observations.push(child_call_authority_observation(
+        call.trace_context.trace_id.clone(),
+        current_timestamp(),
+        &revalidated_child.evaluation,
+    ));
+    let revalidation = revalidate_route_for_execution(
+        call,
+        &initial,
+        revalidated_child,
+        Vec::new(),
+        resident_route_revalidation_ids(call),
+    );
+    observations.push(route_decision_observation(
+        call.trace_context.trace_id.clone(),
+        current_timestamp(),
+        &revalidation.decision,
+    ));
+
+    let Some(authorized_route) = revalidation.authorized else {
+        return Ok(ResidentAuthorizationOutcome::Denied {
+            route_decision_id: revalidation.decision.decision_id,
+            observations,
+        });
+    };
+    let route_taken = RouteTaken {
+        node_id: selected.candidate.node_id.clone(),
+        child_id: selected.candidate.child_id.clone(),
+        runtime_kind: selected.candidate.runtime_kind,
+    };
+    Ok(ResidentAuthorizationOutcome::Authorized(Box::new(
+        ResidentAuthorizedExecution {
+            child: selected.child,
+            authorized_route,
+            route_taken,
+            child_authority_observation_id,
+            route_observations: observations,
+        },
+    )))
+}
+
+fn resident_child_scope(config: &mct_daemon::MctDaemonConfig) -> MctOperatorChildScope {
+    config
+        .local_identity
+        .as_ref()
+        .map(|identity| MctOperatorChildScope {
+            vision_id: identity.vision_id.clone(),
+            node_id: identity.node_id.clone(),
+            project_id: None,
+            policy_revision: identity.policy_revision,
+        })
+        .unwrap_or_default()
+}
+
+fn resident_candidate_for_child(
+    projection: &MctConfigChildAuthorityProjection,
+    child: &mct_daemon::MctLoadedChild,
+) -> CandidateRoute {
+    let child_id = ChildId::new(child.name.clone())
+        .expect("string ID literal/generated value must be non-empty");
+    CandidateRoute {
+        candidate_id: format!("child:{}", child.name),
+        node_id: projection.local_node_id.clone(),
+        child_id: Some(child_id),
+        runtime_kind: match child.ingress_mode {
+            mct_daemon::MctChildIngressMode::Handle => RuntimeKind::Process,
+            mct_daemon::MctChildIngressMode::Hybrid | mct_daemon::MctChildIngressMode::WitOnly => {
+                RuntimeKind::WasmComponent
+            }
+        },
+        network_path: NetworkPathClass::Local,
+    }
+}
+
+fn child_elimination_reason(reason: ChildCallReasonCode) -> CandidateEliminationReason {
+    match reason {
+        ChildCallReasonCode::ReadyAuthorizedInstance => CandidateEliminationReason::RouteMismatch,
+        ChildCallReasonCode::InstanceNotReady => CandidateEliminationReason::CapabilityUnavailable,
+        ChildCallReasonCode::StalePolicy => CandidateEliminationReason::PolicyRevisionStale,
+        ChildCallReasonCode::OperationNotExported
+        | ChildCallReasonCode::UnknownInstance
+        | ChildCallReasonCode::MissingAssignment
+        | ChildCallReasonCode::AssignmentRevoked
+        | ChildCallReasonCode::MissingApproval
+        | ChildCallReasonCode::ApprovalNotApproved
+        | ChildCallReasonCode::ApprovalScopeMismatch
+        | ChildCallReasonCode::ArtifactMissing
+        | ChildCallReasonCode::ArtifactRejected
+        | ChildCallReasonCode::WrongNode
+        | ChildCallReasonCode::WrongProject
+        | ChildCallReasonCode::VersionMismatch => CandidateEliminationReason::ChildNotApproved,
+    }
+}
+
+fn resident_candidate_observations(
+    call: &MctCall,
+    plans: &[ResidentCandidatePlan],
+) -> Vec<MctObservation> {
+    let mut observations = Vec::new();
+    for plan in plans {
+        observations.push(candidate_considered_observation(
+            call.trace_context.trace_id.clone(),
+            current_timestamp(),
+            call,
+            &plan.candidate,
+            ObservationId::new(format!(
+                "obs-route-candidate-considered:{}:{}",
+                call.call_id, plan.candidate.candidate_id
+            ))
+            .expect("string ID literal/generated value must be non-empty"),
+            plan.authority.policy_revision,
+            plan.authority.grants_revision,
+        ));
+        if plan.authority.outcome == CandidateAuthorityOutcome::Eliminated {
+            observations.push(candidate_eliminated_observation(
+                call.trace_context.trace_id.clone(),
+                current_timestamp(),
+                call,
+                &plan.authority,
+                ObservationId::new(format!(
+                    "obs-route-candidate-eliminated:{}:{}",
+                    call.call_id, plan.candidate.candidate_id
+                ))
+                .expect("string ID literal/generated value must be non-empty"),
+            ));
+            observations.push(child_call_authority_observation(
+                call.trace_context.trace_id.clone(),
+                current_timestamp(),
+                &plan.child_authority.evaluation,
+            ));
+        }
+    }
+    observations
+}
+
+fn resident_route_rank_key(candidate: &CandidateRoute) -> (u8, u8, String, String) {
+    let network = match candidate.network_path {
+        NetworkPathClass::Local => 0,
+        NetworkPathClass::Direct => 1,
+        NetworkPathClass::Relayed => 2,
+        NetworkPathClass::Unknown => 3,
+    };
+    let runtime = match candidate.runtime_kind {
+        RuntimeKind::WasmComponent => 0,
+        RuntimeKind::Process => 1,
+        RuntimeKind::JvmChild => 2,
+        RuntimeKind::RemotePeer => 3,
+        RuntimeKind::Internal => 4,
+    };
+    let child_id = candidate
+        .child_id
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    (network, runtime, child_id, candidate.candidate_id.clone())
+}
+
+fn resident_route_decision_ids(kind: &str, call: &MctCall) -> RouteDecisionIds {
+    RouteDecisionIds {
+        decision_id: DecisionId::new(format!("route-{kind}:{}", call.call_id))
+            .expect("string ID literal/generated value must be non-empty"),
+        observation_id: ObservationId::new(format!("obs-route-{kind}:{}", call.call_id))
+            .expect("string ID literal/generated value must be non-empty"),
+    }
+}
+
+fn resident_route_revalidation_ids(call: &MctCall) -> RouteRevalidationIds {
+    RouteRevalidationIds {
+        decision_id: DecisionId::new(format!("route-revalidation:{}", call.call_id))
+            .expect("string ID literal/generated value must be non-empty"),
+        observation_id: ObservationId::new(format!("obs-route-revalidation:{}", call.call_id))
+            .expect("string ID literal/generated value must be non-empty"),
+        authorized_route_execution_id: AuthorizedRouteExecutionId::new(format!(
+            "authorized-route:{}",
+            call.call_id
+        ))
+        .expect("string ID literal/generated value must be non-empty"),
+    }
+}
+
+fn current_resident_route_revisions(
+    paths: &ResidentExecutionPaths,
+    call: &MctCall,
+) -> Result<AuthorityContextSnapshot> {
+    let config = MctDaemonConfigStore::new(&paths.config_path).load()?;
+    let scope = resident_child_scope(&config);
+    Ok(AuthorityContextSnapshot {
+        policy_revision: scope.policy_revision,
+        grants_revision: call.authority_context.grants_revision,
+        vision_policy_revision: call.authority_context.vision_policy_revision,
+    })
 }
 
 fn resident_child_accepts_call(child: &mct_daemon::MctLoadedChild, call: &MctCall) -> bool {
@@ -1894,19 +2159,62 @@ fn execute_authorized_resident_child(
     execution: ResidentAuthorizedExecution,
     request: MctCallProtocolRequest,
     inline_payload: Option<Vec<u8>>,
+    current_revisions: AuthorityContextSnapshot,
 ) -> Result<ResidentExecutionReport> {
     let call = request.call.clone();
     let state = MctRuntimeStateStore::open(&paths.state_path)?;
-    let runtime_kind = match execution.child.ingress_mode {
-        mct_daemon::MctChildIngressMode::Handle => RuntimeKind::Process,
-        mct_daemon::MctChildIngressMode::Hybrid | mct_daemon::MctChildIngressMode::WitOnly => {
-            RuntimeKind::WasmComponent
-        }
-    };
+    let runtime_kind = execution.route_taken.runtime_kind;
     let run_id = run_id_for_call("resident", &call);
+
+    if execution.authorized_route.policy_revision() != current_revisions.policy_revision {
+        let report = resident_route_revision_denial_report(
+            &call,
+            execution.authorized_route.route(),
+            execution
+                .authorized_route
+                .revalidation_decision_id()
+                .clone(),
+            CandidateEliminationReason::PolicyRevisionStale,
+            &current_revisions,
+            execution.authorized_route.policy_revision(),
+            execution.authorized_route.grants_revision(),
+        );
+        state.append_run_observations(&run_id, &report.observations)?;
+        return Ok(report);
+    }
+    if execution.authorized_route.grants_revision() != current_revisions.grants_revision {
+        let report = resident_route_revision_denial_report(
+            &call,
+            execution.authorized_route.route(),
+            execution
+                .authorized_route
+                .revalidation_decision_id()
+                .clone(),
+            CandidateEliminationReason::GrantsRevisionStale,
+            &current_revisions,
+            execution.authorized_route.policy_revision(),
+            execution.authorized_route.grants_revision(),
+        );
+        state.append_run_observations(&run_id, &report.observations)?;
+        return Ok(report);
+    }
+
+    let route_decision_id = execution
+        .authorized_route
+        .revalidation_decision_id()
+        .clone();
+    let route_taken = execution.route_taken.clone();
+    let child_invocation = execution.authorized_route.into_child_invocation();
+    let child_execution = ResidentChildExecution {
+        child: execution.child,
+        authorized: child_invocation,
+        child_authority_observation_id: execution.child_authority_observation_id,
+        route_taken,
+        route_decision_id,
+    };
     let provenance = ChildInvocationProvenance::from_authorized(
-        &execution.authorized,
-        execution.authority_observation.observation_id.clone(),
+        &child_execution.authorized,
+        child_execution.child_authority_observation_id.clone(),
     );
     state.insert_run_started(
         &run_id,
@@ -1915,17 +2223,13 @@ fn execute_authorized_resident_child(
         Some(&provenance),
         mct_daemon::current_timestamp_string(),
     )?;
-    state.append_run_observations(
-        &run_id,
-        std::slice::from_ref(&execution.authority_observation),
-    )?;
 
-    let mut report = match execution.child.ingress_mode {
+    let mut report = match child_execution.child.ingress_mode {
         mct_daemon::MctChildIngressMode::Handle => {
-            execute_resident_process_child(execution, &request, inline_payload.as_deref())?
+            execute_resident_process_child(child_execution, &request, inline_payload.as_deref())?
         }
         mct_daemon::MctChildIngressMode::Hybrid | mct_daemon::MctChildIngressMode::WitOnly => {
-            execute_resident_wit_child(execution, &request, inline_payload.as_deref())?
+            execute_resident_wit_child(child_execution, &request, inline_payload.as_deref())?
         }
     };
     if let Some(bytes) = inline_payload.as_deref() {
@@ -1954,7 +2258,7 @@ fn execute_authorized_resident_child(
 }
 
 fn execute_resident_process_child(
-    execution: ResidentAuthorizedExecution,
+    execution: ResidentChildExecution,
     request: &MctCallProtocolRequest,
     inline_payload: Option<&[u8]>,
 ) -> Result<ResidentExecutionReport> {
@@ -1992,6 +2296,8 @@ fn execute_resident_process_child(
     )?;
     let result_bytes = report.stdout.as_bytes().to_vec();
     let mut result = report.result;
+    result.authority_decision_ref = execution.route_decision_id;
+    result.route_taken = route_taken_for_outcome(result.outcome, execution.route_taken);
     let inline_result_payload = apply_inline_result_payload(
         &mut result,
         format!("result-resident-process:{}", call.call_id),
@@ -2006,7 +2312,7 @@ fn execute_resident_process_child(
 }
 
 fn execute_resident_wit_child(
-    execution: ResidentAuthorizedExecution,
+    execution: ResidentChildExecution,
     request: &MctCallProtocolRequest,
     inline_payload: Option<&[u8]>,
 ) -> Result<ResidentExecutionReport> {
@@ -2015,7 +2321,8 @@ fn execute_resident_wit_child(
     if content_type != "application/json" {
         return Ok(resident_delivery_failure_report(
             call,
-            execution.authorized.authority_decision_id().clone(),
+            execution.route_decision_id,
+            execution.route_taken,
             CallProtocolReason::ChildPayloadContentTypeUnsupported,
             "unsupported child payload",
         ));
@@ -2050,6 +2357,8 @@ fn execute_resident_wit_child(
     )?;
     let result_bytes = serde_json::to_vec(&report.output_json)?;
     let mut result = report.result;
+    result.authority_decision_ref = execution.route_decision_id;
+    result.route_taken = route_taken_for_outcome(result.outcome, execution.route_taken);
     let inline_result_payload = apply_inline_result_payload(
         &mut result,
         format!("result-resident-wit:{}", call.call_id),
@@ -2080,9 +2389,79 @@ fn apply_inline_result_payload(
     Some(bytes)
 }
 
+fn resident_route_revision_denial_report(
+    call: &MctCall,
+    route: &CandidateRoute,
+    decision_id: DecisionId,
+    reason: CandidateEliminationReason,
+    current: &AuthorityContextSnapshot,
+    minted_policy_revision: u64,
+    minted_grants_revision: u64,
+) -> ResidentExecutionReport {
+    let observation = MctObservation {
+        observation_id: ObservationId::new(format!("obs-route-revision-denied:{}", call.call_id))
+            .expect("string ID literal/generated value must be non-empty"),
+        observed_at: current_timestamp(),
+        kind: ObservationKind::NoRouteRecorded,
+        source_plane: SourcePlane::Adapter,
+        trace: ObservationTraceRef {
+            trace_id: call.trace_context.trace_id.clone(),
+            span_id: Some(call.trace_context.span_id.clone()),
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: Some(call.call_id.clone()),
+        decision_id: Some(decision_id.clone()),
+        subject_id: route.child_id.as_ref().map(ToString::to_string),
+        resource_id: Some(route.candidate_id.clone()),
+        policy_revision: Some(current.policy_revision),
+        grants_revision: Some(current.grants_revision),
+        outcome: ObservationOutcome::Denied,
+        visibility: ObservationVisibility::InternalOnly,
+        safe_message: "not authorized".into(),
+        detail_ref: Some(format!(
+            "elimination_reason:{reason:?};denial_class:{};minted_policy_revision={minted_policy_revision};current_policy_revision={};minted_grants_revision={minted_grants_revision};current_grants_revision={}",
+            reason.denial_class().as_str(),
+            current.policy_revision,
+            current.grants_revision
+        )),
+    };
+    ResidentExecutionReport {
+        result: MctResult {
+            call_id: call.call_id.clone(),
+            outcome: ResultOutcome::Denied,
+            route_taken: None,
+            authority_decision_ref: decision_id,
+            execution_summary: ExecutionSummary {
+                wall_time_ms: 0,
+                execution_time_ms: None,
+                queue_wait_ms: None,
+                input_size_bytes: call.payload_metadata.size_bytes,
+                output_size_bytes: None,
+            },
+            result_payload: MctCallPayloadHandle::Empty,
+            requester_message: "not authorized".into(),
+            audit_ref: AuditRef::new(format!("audit-route-revision-denied:{}", call.call_id))
+                .expect("string ID literal/generated value must be non-empty"),
+        },
+        observations: vec![observation],
+        inline_result_payload: None,
+    }
+}
+
+fn route_taken_for_outcome(outcome: ResultOutcome, route_taken: RouteTaken) -> Option<RouteTaken> {
+    match outcome {
+        ResultOutcome::Success | ResultOutcome::Failed | ResultOutcome::TimedOut => {
+            Some(route_taken)
+        }
+        ResultOutcome::Denied | ResultOutcome::Cancelled => None,
+    }
+}
+
 fn resident_delivery_failure_report(
     call: &MctCall,
     authority_decision_ref: DecisionId,
+    route_taken: RouteTaken,
     reason: CallProtocolReason,
     safe_message: &str,
 ) -> ResidentExecutionReport {
@@ -2116,7 +2495,7 @@ fn resident_delivery_failure_report(
         result: MctResult {
             call_id: call.call_id.clone(),
             outcome: ResultOutcome::Failed,
-            route_taken: None,
+            route_taken: Some(route_taken),
             authority_decision_ref,
             execution_summary: ExecutionSummary {
                 wall_time_ms: 0,
@@ -2140,6 +2519,8 @@ fn result_to_call_handler_result(
     result: &MctResult,
     inline_result_payload: Option<Vec<u8>>,
 ) -> MctIrohCallHandlerResult {
+    let route_decision_id = Some(result.authority_decision_ref.clone());
+    let route_taken = result.route_taken.clone();
     match result.outcome {
         ResultOutcome::Success => {
             let result_ref = ResultRef::new(format!("{prefix}:{}", result.call_id))
@@ -2153,11 +2534,19 @@ fn result_to_call_handler_result(
             } else {
                 MctIrohCallHandlerResult::completed(result_ref)
             }
+            .with_route(route_decision_id, route_taken)
         }
-        ResultOutcome::TimedOut => MctIrohCallHandlerResult::timed_out(),
-        ResultOutcome::Denied => MctIrohCallHandlerResult::denied(),
-        ResultOutcome::Failed | ResultOutcome::Cancelled => {
+        ResultOutcome::TimedOut => {
+            MctIrohCallHandlerResult::timed_out().with_route(route_decision_id, route_taken)
+        }
+        ResultOutcome::Denied => {
+            MctIrohCallHandlerResult::denied().with_route(route_decision_id, None)
+        }
+        ResultOutcome::Failed => MctIrohCallHandlerResult::failed(result.requester_message.clone())
+            .with_route(route_decision_id, route_taken),
+        ResultOutcome::Cancelled => {
             MctIrohCallHandlerResult::failed(result.requester_message.clone())
+                .with_route(route_decision_id, None)
         }
     }
 }
@@ -4468,6 +4857,8 @@ mod tests {
         )
         .await;
         assert_eq!(result.outcome, CallProtocolOutcome::Completed);
+        assert!(result.route_decision_id.is_some());
+        assert!(result.route_taken.is_some());
         ledger.close().await;
 
         let entries =
