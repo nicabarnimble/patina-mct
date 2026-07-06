@@ -97,7 +97,9 @@ Dependency-ordered; each item assumes the ones before it.
       toys as WIT contract identities in the closed catalog, each behind
       grant evaluation like the existing toys.
 - [ ] **6. Multi-Vision publication** — per-Vision capability publication
-      and cross-Vision grants; the federation product.
+      and cross-Vision grants; the federation product. Route item 3 is
+      local-candidate only; remote route candidates and cross-Mother call
+      forwarding remain follow-on work here.
 
 ### Standing backlog (from the audit arc, non-blocking)
 

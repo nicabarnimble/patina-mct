@@ -1,7 +1,7 @@
 # Route wiring phase tasks
 
 - [x] Task D0 — Housekeeping
-- [ ] Task D1 — SPEC first (gate: operator reads this before D2 proceeds)
+- [x] Task D1 — SPEC first (gate: operator reads this before D2 proceeds)
 - [ ] Task D2 — Kernel gaps only if the SPEC found any
 - [ ] Task D3 — Daemon routing for local calls
 - [ ] Task D4 — Remote serve-path integration
