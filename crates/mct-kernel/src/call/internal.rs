@@ -27,7 +27,7 @@ fn payload_integrity_reason(
     observed: &MctPayloadIntegrityObservation,
     max_inline_size_bytes: u64,
 ) -> PayloadIntegrityReason {
-    if !handle_declares_inline_bytes(handle) {
+    if !handle_declares_observed_bytes(handle, observed) {
         return if observed.inline_bytes_present {
             if subject == PayloadIntegritySubject::ReplyResult {
                 PayloadIntegrityReason::ResultPayloadIntegrityMismatch
@@ -45,6 +45,8 @@ fn payload_integrity_reason(
     {
         return if subject == PayloadIntegritySubject::ReplyResult {
             PayloadIntegrityReason::ResultPayloadIntegrityMismatch
+        } else if observed.content_addressed_blob_fetch_attempted {
+            PayloadIntegrityReason::PayloadBlobUnavailable
         } else {
             PayloadIntegrityReason::PayloadMissingInlineBytes
         };
@@ -87,8 +89,13 @@ fn payload_integrity_reason(
     PayloadIntegrityReason::IntegrityMatched
 }
 
-fn handle_declares_inline_bytes(handle: &MctCallPayloadHandle) -> bool {
+fn handle_declares_observed_bytes(
+    handle: &MctCallPayloadHandle,
+    observed: &MctPayloadIntegrityObservation,
+) -> bool {
     matches!(handle, MctCallPayloadHandle::InlinePayload { .. })
+        || (observed.content_addressed_blob_fetch_attempted
+            && matches!(handle, MctCallPayloadHandle::ContentAddressedBlob { .. }))
 }
 
 fn declared_digest_hex(handle: &MctCallPayloadHandle) -> &str {
@@ -130,6 +137,7 @@ fn payload_integrity_safe_message(reason: PayloadIntegrityReason) -> &'static st
         | PayloadIntegrityReason::PayloadMissingInlineBytes
         | PayloadIntegrityReason::PayloadUnexpectedInlineBytes
         | PayloadIntegrityReason::InvalidPayloadDigest => "malformed call payload",
+        PayloadIntegrityReason::PayloadBlobUnavailable => "payload blob unavailable",
     }
 }
 

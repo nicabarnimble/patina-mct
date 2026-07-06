@@ -477,6 +477,8 @@ pub enum PayloadIntegrityReason {
     PayloadMissingInlineBytes,
     /// Inline bytes were supplied where the handle did not declare inline bytes.
     PayloadUnexpectedInlineBytes,
+    /// A declared local content-addressed blob was absent from the adapter store.
+    PayloadBlobUnavailable,
     /// A declared or observed BLAKE3 digest was not valid hex syntax.
     InvalidPayloadDigest,
     /// Result payload size exceeds the fixed inline result cap.
@@ -488,8 +490,11 @@ pub enum PayloadIntegrityReason {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Adapter-observed payload facts supplied to the pure kernel integrity check.
 pub struct MctPayloadIntegrityObservation {
-    /// Whether inline bytes were actually present at the adapter edge.
+    /// Whether payload bytes were actually present at the adapter edge.
     pub inline_bytes_present: bool,
+    /// Whether the adapter attempted to dereference a local content-addressed blob.
+    #[serde(default)]
+    pub content_addressed_blob_fetch_attempted: bool,
     /// Byte count observed by the adapter after decoding/fetching bytes.
     pub observed_size_bytes: Option<u64>,
     /// BLAKE3 digest observed by the adapter, encoded as lowercase hex.
@@ -501,6 +506,17 @@ impl MctPayloadIntegrityObservation {
     pub fn missing_inline_bytes() -> Self {
         Self {
             inline_bytes_present: false,
+            content_addressed_blob_fetch_attempted: false,
+            observed_size_bytes: None,
+            observed_blake3_digest_hex: None,
+        }
+    }
+
+    /// Builds an observation for a local content-addressed blob that was absent.
+    pub fn missing_content_addressed_blob() -> Self {
+        Self {
+            inline_bytes_present: false,
+            content_addressed_blob_fetch_attempted: true,
             observed_size_bytes: None,
             observed_blake3_digest_hex: None,
         }
@@ -544,6 +560,7 @@ impl PayloadIntegrityReason {
             Self::PayloadDigestMismatch => CallProtocolReason::PayloadDigestMismatch,
             Self::PayloadMissingInlineBytes => CallProtocolReason::PayloadMissingInlineBytes,
             Self::PayloadUnexpectedInlineBytes => CallProtocolReason::PayloadUnexpectedInlineBytes,
+            Self::PayloadBlobUnavailable => CallProtocolReason::PayloadBlobUnavailable,
             Self::InvalidPayloadDigest => CallProtocolReason::InvalidPayloadDigest,
             Self::ResultPayloadTooLarge => CallProtocolReason::ResultPayloadTooLarge,
             Self::ResultPayloadIntegrityMismatch => {
@@ -659,6 +676,8 @@ pub enum CallProtocolReason {
     PayloadMissingInlineBytes,
     /// Inline bytes were supplied where the handle did not declare them.
     PayloadUnexpectedInlineBytes,
+    /// A declared local content-addressed blob was absent from the adapter store.
+    PayloadBlobUnavailable,
     /// A declared or observed payload digest had invalid syntax.
     InvalidPayloadDigest,
     /// The authorized child runtime cannot accept the verified payload content type.
@@ -1280,6 +1299,7 @@ mod tests {
     fn observed_payload(size_bytes: u64, digest: String) -> MctPayloadIntegrityObservation {
         MctPayloadIntegrityObservation {
             inline_bytes_present: true,
+            content_addressed_blob_fetch_attempted: false,
             observed_size_bytes: Some(size_bytes),
             observed_blake3_digest_hex: Some(digest),
         }
@@ -1389,6 +1409,68 @@ mod tests {
         assert_eq!(
             actual_too_large.reason,
             PayloadIntegrityReason::PayloadActualTooLarge
+        );
+    }
+
+    #[test]
+    fn payload_integrity_decisions_cover_local_content_addressed_blob() {
+        let handle = MctCallPayloadHandle::ContentAddressedBlob {
+            digest: digest_hex('a'),
+            blob_ref: "blake3:aaaaaaaa".into(),
+            content_type: "application/octet-stream".into(),
+            size_bytes: 5,
+        };
+
+        let remote_declaration_only = evaluate_payload_integrity(
+            PayloadIntegritySubject::Request,
+            &handle,
+            &MctPayloadIntegrityObservation::missing_inline_bytes(),
+            32,
+        );
+        assert_eq!(
+            remote_declaration_only.reason,
+            PayloadIntegrityReason::IntegrityMatched
+        );
+
+        let missing = evaluate_payload_integrity(
+            PayloadIntegritySubject::Request,
+            &handle,
+            &MctPayloadIntegrityObservation::missing_content_addressed_blob(),
+            32,
+        );
+        assert_eq!(
+            missing.reason,
+            PayloadIntegrityReason::PayloadBlobUnavailable
+        );
+        assert_eq!(missing.safe_message, "payload blob unavailable");
+
+        let matched = evaluate_payload_integrity(
+            PayloadIntegritySubject::Request,
+            &handle,
+            &MctPayloadIntegrityObservation {
+                inline_bytes_present: true,
+                content_addressed_blob_fetch_attempted: true,
+                observed_size_bytes: Some(5),
+                observed_blake3_digest_hex: Some(digest_hex('a')),
+            },
+            32,
+        );
+        assert_eq!(matched.reason, PayloadIntegrityReason::IntegrityMatched);
+
+        let tampered = evaluate_payload_integrity(
+            PayloadIntegritySubject::Request,
+            &handle,
+            &MctPayloadIntegrityObservation {
+                inline_bytes_present: true,
+                content_addressed_blob_fetch_attempted: true,
+                observed_size_bytes: Some(5),
+                observed_blake3_digest_hex: Some(digest_hex('b')),
+            },
+            32,
+        );
+        assert_eq!(
+            tampered.reason,
+            PayloadIntegrityReason::PayloadDigestMismatch
         );
     }
 

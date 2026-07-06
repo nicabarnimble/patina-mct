@@ -367,6 +367,7 @@ fn observed_inline_payload(bytes: Option<&[u8]>) -> MctPayloadIntegrityObservati
     match bytes {
         Some(bytes) => MctPayloadIntegrityObservation {
             inline_bytes_present: true,
+            content_addressed_blob_fetch_attempted: false,
             observed_size_bytes: Some(bytes.len() as u64),
             observed_blake3_digest_hex: Some(blake3_hex(bytes)),
         },

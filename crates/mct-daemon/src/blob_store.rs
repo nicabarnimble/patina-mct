@@ -120,12 +120,6 @@ impl MctLocalBlobStore {
         if read > MCT_BLOB_MAX_BYTES {
             return Err(MctLocalBlobStoreError::BlobTooLarge);
         }
-        if bytes.len() as u64 != *size_bytes {
-            return Err(MctLocalBlobStoreError::BlobSizeMismatch);
-        }
-        if blake3_hex(&bytes) != *digest {
-            return Err(MctLocalBlobStoreError::BlobDigestMismatch);
-        }
         Ok(bytes)
     }
 
@@ -204,10 +198,6 @@ fn ensure_blake3_digest_hex(value: &str) -> Result<(), MctLocalBlobStoreError> {
     } else {
         Err(MctLocalBlobStoreError::InvalidDigest)
     }
-}
-
-fn blake3_hex(bytes: &[u8]) -> String {
-    blake3::hash(bytes).to_hex().to_string()
 }
 
 fn io_error(source: io::Error) -> MctLocalBlobStoreError {
@@ -307,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn fetch_detects_on_disk_tamper_by_digest() {
+    fn fetch_returns_tampered_bytes_for_kernel_integrity_decision() {
         let dir = tempfile::tempdir().unwrap();
         let store = MctLocalBlobStore::for_state_path(dir.path().join("state.sqlite"));
         let bytes = b"trusted blob";
@@ -321,10 +311,7 @@ mod tests {
             )
             .unwrap();
         fs::write(store.visible_path(&declared).unwrap(), b"tampered!!!!").unwrap();
-        let result = store.fetch(&handle);
-        assert!(matches!(
-            result,
-            Err(MctLocalBlobStoreError::BlobDigestMismatch)
-        ));
+        let fetched = store.fetch(&handle).unwrap();
+        assert_eq!(fetched, b"tampered!!!!");
     }
 }
