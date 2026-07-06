@@ -198,6 +198,19 @@ For more information, try '--help'.
 Command exited with code 1
 ```
 
+- 2026-07-06 D6b targeted daemon/control test invocation used two positional `cargo test` filters and failed before rerun:
+
+```text
+error: unexpected argument 'uds_blob_ingest_request_writes_visible_blob' found
+
+Usage: cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]
+
+For more information, try '--help'.
+
+
+Command exited with code 1
+```
+
 - 2026-07-06 D6b targeted blob-store test failed before the implementation commit with ambiguous `File::by_ref` after adding bounded fetch reads:
 
 ```text

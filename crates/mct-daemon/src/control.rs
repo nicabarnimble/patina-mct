@@ -1,10 +1,13 @@
 use crate::{
-    MctRuntimeRunRecord, MctRuntimeStateSummary,
+    MCT_BLOB_MAX_BYTES, MctRuntimeRunRecord, MctRuntimeStateSummary,
+    local_blob_store_for_state_path,
     status::{MctDaemonHealth, MctDaemonReadiness, MctDaemonStatus, daemon_status},
 };
 use anyhow::{Context, Result, bail};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use mct_iroh::MotherIrohEndpointSnapshot;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -104,6 +107,16 @@ pub struct MctControlPlaneResponse {
     pub content_type: String,
     pub body: String,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+struct MctBlobIngestRequest {
+    digest: String,
+    size_bytes: u64,
+    content_type: String,
+    bytes_base64: String,
+}
+
+const MCT_UDS_CONTROL_READ_BUDGET_BYTES: usize = ((MCT_BLOB_MAX_BYTES + 2) / 3) * 4 + 4096;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MctControlPlaneAuthPolicy {
@@ -284,22 +297,36 @@ pub async fn serve_uds_control_once_with_snapshot_result(
     listener: &UnixListener,
     snapshot: MctControlPlaneSnapshotResult,
 ) -> Result<()> {
+    serve_uds_control_once_with_snapshot_result_and_blob_store(listener, snapshot, None).await
+}
+
+#[cfg(unix)]
+pub async fn serve_uds_control_once_with_snapshot_result_and_blob_store(
+    listener: &UnixListener,
+    snapshot: MctControlPlaneSnapshotResult,
+    blob_state_path: Option<&Path>,
+) -> Result<()> {
     let (mut stream, _) = listener.accept().await.context("accept uds control")?;
-    let mut buffer = [0_u8; 4096];
-    let read = stream
-        .read(&mut buffer)
+    let request_bytes = read_http_request_bounded(&mut stream, MCT_UDS_CONTROL_READ_BUDGET_BYTES)
         .await
         .context("read uds control request")?;
-    let request = String::from_utf8_lossy(&buffer[..read]);
+    let request = String::from_utf8_lossy(&request_bytes);
     let (method, path) = parse_http_request_line(&request)?;
     let authorization_header = parse_authorization_header(&request);
-    let response = handle_control_plane_path_result_with_auth(
-        method,
-        path,
-        snapshot.as_ref(),
-        &MctControlPlaneAuthPolicy::open_local(),
-        authorization_header,
-    );
+    let response = if method == "POST" && path == "/blobs" {
+        match blob_state_path {
+            Some(state_path) => handle_blob_ingest_request(&request_bytes, state_path),
+            None => json_response(404, serde_json::json!({"error": "not found"})),
+        }
+    } else {
+        handle_control_plane_path_result_with_auth(
+            method,
+            path,
+            snapshot.as_ref(),
+            &MctControlPlaneAuthPolicy::open_local(),
+            authorization_header,
+        )
+    };
     stream
         .write_all(http_response_bytes(&response).as_bytes())
         .await
@@ -352,13 +379,104 @@ fn parse_authorization_header(request: &str) -> Option<&str> {
     })
 }
 
+fn parse_content_length(request: &str) -> Result<Option<usize>> {
+    request
+        .lines()
+        .skip(1)
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>())
+        })
+        .transpose()
+        .context("parse content-length")
+}
+
+async fn read_http_request_bounded<S>(stream: &mut S, budget: usize) -> Result<Vec<u8>>
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let read = stream
+            .read(&mut buffer)
+            .await
+            .context("read control request chunk")?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+        if bytes.len() > budget {
+            bail!("control request exceeds bounded read budget");
+        }
+        if let Some((headers_len, content_length)) = request_frame_shape(&bytes)?
+            && bytes.len() >= headers_len + content_length
+        {
+            break;
+        }
+    }
+    if bytes.is_empty() {
+        bail!("empty control request");
+    }
+    Ok(bytes)
+}
+
+fn request_frame_shape(bytes: &[u8]) -> Result<Option<(usize, usize)>> {
+    let Some(headers_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return Ok(None);
+    };
+    let headers_len = headers_end + 4;
+    let headers = String::from_utf8_lossy(&bytes[..headers_len]);
+    let content_length = parse_content_length(&headers)?.unwrap_or(0);
+    Ok(Some((headers_len, content_length)))
+}
+
+fn request_body(bytes: &[u8]) -> Result<&[u8]> {
+    let Some(headers_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") else {
+        bail!("missing HTTP request body separator");
+    };
+    Ok(&bytes[headers_end + 4..])
+}
+
+fn handle_blob_ingest_request(request_bytes: &[u8], state_path: &Path) -> MctControlPlaneResponse {
+    let body = match request_body(request_bytes) {
+        Ok(body) => body,
+        Err(error) => return json_response(400, serde_json::json!({"error": error.to_string()})),
+    };
+    let request = match serde_json::from_slice::<MctBlobIngestRequest>(body) {
+        Ok(request) => request,
+        Err(error) => return json_response(400, serde_json::json!({"error": error.to_string()})),
+    };
+    if request.size_bytes > MCT_BLOB_MAX_BYTES as u64 {
+        return json_response(413, serde_json::json!({"error": "blob too large"}));
+    }
+    let bytes = match BASE64_STANDARD.decode(request.bytes_base64.as_bytes()) {
+        Ok(bytes) => bytes,
+        Err(error) => return json_response(400, serde_json::json!({"error": error.to_string()})),
+    };
+    let store = local_blob_store_for_state_path(state_path);
+    match store.ingest_reader(
+        &request.digest,
+        request.size_bytes,
+        &request.content_type,
+        std::io::Cursor::new(bytes),
+    ) {
+        Ok(handle) => json_response(201, serde_json::json!({"payload": handle})),
+        Err(error) => json_response(400, serde_json::json!({"error": error.safe_message()})),
+    }
+}
+
 fn http_response_bytes(response: &MctControlPlaneResponse) -> String {
     let reason = match response.status_code {
         200 => "OK",
+        201 => "Created",
+        400 => "Bad Request",
         401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        413 => "Payload Too Large",
         503 => "Service Unavailable",
         _ => "OK",
     };
@@ -449,6 +567,37 @@ mod tests {
             handle_control_plane_path("POST", "/status", &snapshot()).status_code,
             405
         );
+    }
+
+    #[test]
+    fn uds_blob_ingest_request_writes_visible_blob() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("state.sqlite");
+        let bytes = b"control blob bytes";
+        let digest = blake3::hash(bytes).to_hex().to_string();
+        let body = serde_json::json!({
+            "digest": digest,
+            "size_bytes": bytes.len(),
+            "content_type": "application/octet-stream",
+            "bytes_base64": BASE64_STANDARD.encode(bytes),
+        })
+        .to_string();
+        let request = format!(
+            "POST /blobs HTTP/1.1\r\nHost: local\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+
+        let response = handle_blob_ingest_request(request.as_bytes(), &state_path);
+        assert_eq!(response.status_code, 201, "{}", response.body);
+        assert!(
+            local_blob_store_for_state_path(&state_path)
+                .visible_path(&digest)
+                .unwrap()
+                .exists()
+        );
+        assert!(!response.body.contains("control blob bytes"));
+        assert!(!response.body.contains(&BASE64_STANDARD.encode(bytes)));
     }
 
     #[test]
