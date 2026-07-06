@@ -1042,6 +1042,7 @@ mod tests {
                 size_bytes: 3,
                 blake3_digest_hex: blake3_hex(b"abc"),
             },
+            route_taken: None,
             reply_outcome: CallProtocolReplyOutcome::Success,
             safe_message: "call completed".into(),
             reply_observation_id: ObservationId::new("obs-reply-digest")
@@ -1069,6 +1070,7 @@ mod tests {
                     .expect("string ID literal/generated value must be non-empty"),
             ),
             result_payload: inline_payload_handle("result-oversized", &oversized),
+            route_taken: None,
             reply_outcome: CallProtocolReplyOutcome::Success,
             safe_message: "call completed".into(),
             reply_observation_id: ObservationId::new("obs-reply-oversized")

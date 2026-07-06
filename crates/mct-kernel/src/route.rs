@@ -71,6 +71,44 @@ pub enum CandidateEliminationReason {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Product-map denial class for candidate elimination audit records.
+pub enum CandidateEliminationClass {
+    /// Authority structure/policy denied the route until authority changes.
+    Structural,
+    /// Route was authorized in principle but unavailable at planning/execution time.
+    Temporal,
+}
+
+impl CandidateEliminationClass {
+    /// Stable text used in observation detail references.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Structural => "structural",
+            Self::Temporal => "temporal",
+        }
+    }
+}
+
+impl CandidateEliminationReason {
+    /// Classifies elimination reasons according to the product-map denial taxonomy.
+    pub fn denial_class(self) -> CandidateEliminationClass {
+        match self {
+            Self::CapabilityUnavailable => CandidateEliminationClass::Temporal,
+            Self::DataPolicyDenied
+            | Self::VisionPolicyDenied
+            | Self::PeerNotAdmitted
+            | Self::ChildNotApproved
+            | Self::ToyGrantMissing
+            | Self::SecretScopeForbidden
+            | Self::PolicyRevisionStale
+            | Self::GrantsRevisionStale
+            | Self::RouteMismatch => CandidateEliminationClass::Structural,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 /// Whether a route decision is initial planning or execution-time revalidation.
 pub enum RouteDecisionKind {
     /// Initial two-phase route selection decision.
@@ -917,6 +955,24 @@ mod tests {
         assert_eq!(
             decision.authority_evaluations[1].reason,
             Some(CandidateEliminationReason::PeerNotAdmitted)
+        );
+    }
+
+    #[test]
+    fn candidate_elimination_reasons_expose_denial_class() {
+        assert_eq!(
+            CandidateEliminationReason::CapabilityUnavailable.denial_class(),
+            CandidateEliminationClass::Temporal
+        );
+        assert_eq!(
+            CandidateEliminationReason::PolicyRevisionStale.denial_class(),
+            CandidateEliminationClass::Structural
+        );
+        assert_eq!(
+            CandidateEliminationReason::ToyGrantMissing
+                .denial_class()
+                .as_str(),
+            "structural"
         );
     }
 
