@@ -249,6 +249,8 @@ pub struct MctIrohCallHandlerResult {
     pub result_ref: Option<ResultRef>,
     pub result_payload: MctCallPayloadHandle,
     pub inline_result_payload: Option<Vec<u8>>,
+    pub route_decision_id: Option<DecisionId>,
+    pub route_taken: Option<RouteTaken>,
     pub outcome: CallProtocolOutcome,
     pub safe_message: String,
 }
@@ -299,6 +301,8 @@ impl MctIrohCallHandlerResult {
             result_ref,
             result_payload: MctCallPayloadHandle::Empty,
             inline_result_payload: None,
+            route_decision_id: None,
+            route_taken: None,
             outcome: CallProtocolOutcome::AcceptedForRouting,
             safe_message: "accepted for routing".into(),
         }
@@ -309,6 +313,8 @@ impl MctIrohCallHandlerResult {
             result_ref: Some(result_ref),
             result_payload: MctCallPayloadHandle::Empty,
             inline_result_payload: None,
+            route_decision_id: None,
+            route_taken: None,
             outcome: CallProtocolOutcome::Completed,
             safe_message: "call completed".into(),
         }
@@ -323,6 +329,8 @@ impl MctIrohCallHandlerResult {
             result_ref: Some(result_ref),
             result_payload,
             inline_result_payload: Some(inline_result_payload),
+            route_decision_id: None,
+            route_taken: None,
             outcome: CallProtocolOutcome::Completed,
             safe_message: "call completed".into(),
         }
@@ -333,6 +341,8 @@ impl MctIrohCallHandlerResult {
             result_ref: None,
             result_payload: MctCallPayloadHandle::Empty,
             inline_result_payload: None,
+            route_decision_id: None,
+            route_taken: None,
             outcome: CallProtocolOutcome::Failed,
             safe_message: safe_message.into(),
         }
@@ -343,6 +353,8 @@ impl MctIrohCallHandlerResult {
             result_ref: None,
             result_payload: MctCallPayloadHandle::Empty,
             inline_result_payload: None,
+            route_decision_id: None,
+            route_taken: None,
             outcome: CallProtocolOutcome::Denied,
             safe_message: "not authorized".into(),
         }
@@ -353,9 +365,21 @@ impl MctIrohCallHandlerResult {
             result_ref: None,
             result_payload: MctCallPayloadHandle::Empty,
             inline_result_payload: None,
+            route_decision_id: None,
+            route_taken: None,
             outcome: CallProtocolOutcome::TimedOut,
             safe_message: "call timed out".into(),
         }
+    }
+
+    pub fn with_route(
+        mut self,
+        route_decision_id: Option<DecisionId>,
+        route_taken: Option<RouteTaken>,
+    ) -> Self {
+        self.route_decision_id = route_decision_id;
+        self.route_taken = route_taken;
+        self
     }
 }
 

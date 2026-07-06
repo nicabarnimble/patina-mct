@@ -4,7 +4,7 @@
 - [x] Task D1 — SPEC first (gate: operator reads this before D2 proceeds)
 - [x] Task D1.1 — Operator gate amendments
 - [x] Task D2 — Kernel gaps only if the SPEC found any
-- [ ] Task D3 — Daemon routing for local calls
+- [x] Task D3 — Daemon routing for local calls
 - [ ] Task D4 — Remote serve-path integration
 - [ ] Task D5 — End-to-end proof and PHASE3 T5 discharge
 
@@ -145,6 +145,193 @@ Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-kernel/src/route.rs
              "structural"
          );
      }
+```
+
+### 2026-07-06 — D3 failing test before handler route projection
+
+Command:
+
+```bash
+cargo test -p mct-daemon resident_execution_runs_wit_child_and_records_trace -- --nocapture
+```
+
+Failure output:
+
+```text
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0609]: no field `route_decision_id` on type `MctIrohCallHandlerResult`
+    --> crates/mct-daemon/src/main.rs:4471:24
+     |
+4471 |         assert!(result.route_decision_id.is_some());
+     |                        ^^^^^^^^^^^^^^^^^ unknown field
+     |
+     = note: available fields are: `result_ref`, `result_payload`, `inline_result_payload`, `outcome`, `safe_message`
+
+error[E0609]: no field `route_taken` on type `MctIrohCallHandlerResult`
+    --> crates/mct-daemon/src/main.rs:4472:24
+     |
+4472 |         assert!(result.route_taken.is_some());
+     |                        ^^^^^^^^^^^ unknown field
+     |
+     = note: available fields are: `result_ref`, `result_payload`, `inline_result_payload`, `outcome`, `safe_message`
+
+For more information about this error, try `rustc --explain E0609`.
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+```
+
+### 2026-07-06 — D3 compile failure after route execution wiring
+
+Command:
+
+```bash
+cargo test -p mct-daemon resident_execution_runs_wit_child_and_records_trace -- --nocapture
+```
+
+Failure output:
+
+```text
+   Compiling mct-kernel v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-kernel)
+   Compiling mct-iroh v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-iroh)
+   Compiling mct-observation v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-observation)
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0308]: mismatched types
+    --> crates/mct-daemon/src/main.rs:2201:9
+     |
+2199 |     let provenance = ChildInvocationProvenance::from_authorized(
+     |                      ------------------------------------------ arguments to this function are incorrect
+2200 |         &child_execution.authorized,
+2201 |         child_execution.route_decision_id.clone(),
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `ObservationId`, found `DecisionId`
+     |
+note: associated function defined here
+    --> crates/mct-daemon/src/state.rs:117:12
+     |
+ 117 |     pub fn from_authorized(
+     |            ^^^^^^^^^^^^^^^
+
+error[E0004]: non-exhaustive patterns: `mct_kernel::RuntimeKind::JvmChild` not covered
+    --> crates/mct-daemon/src/main.rs:2085:25
+     |
+2085 |     let runtime = match candidate.runtime_kind {
+     |                         ^^^^^^^^^^^^^^^^^^^^^^ pattern `mct_kernel::RuntimeKind::JvmChild` not covered
+     |
+note: `mct_kernel::RuntimeKind` defined here
+    --> crates/mct-kernel/src/call/mod.rs:212:1
+     |
+ 212 | pub enum RuntimeKind {
+     | ^^^^^^^^^^^^^^^^^^^^
+...
+ 216 |     JvmChild,
+     |     -------- not covered
+     = note: the matched value is of type `mct_kernel::RuntimeKind`
+help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
+     |
+2089 ~         RuntimeKind::Internal => 3,
+2090 ~         mct_kernel::RuntimeKind::JvmChild => todo!(),
+     |
+
+Some errors have detailed explanations: E0004, E0308.
+For more information about an error, try `rustc --explain E0004`.
+error: could not compile `mct-daemon` (bin "mct-daemon") due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 2 previous errors
+```
+
+### 2026-07-06 — D3 rustfmt check reported formatting diffs
+
+Command:
+
+```bash
+cargo fmt --check
+```
+
+Failure output:
+
+```text
+Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon/src/main.rs:1860:
+     let config = MctDaemonConfigStore::new(&paths.config_path).load()?;
+     let load_report = load_children_from_dir(MctChildLoadOptions::new(paths.children_dir.clone()));
+     let scope = resident_child_scope(&config);
+-    let projection = config.authority_projection_for_loaded_children(load_report.children.iter(), scope);
++    let projection =
++        config.authority_projection_for_loaded_children(load_report.children.iter(), scope);
+     let mut plans = Vec::new();
+ 
+     for child in load_report
+Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon/src/main.rs:2169:
+         let report = resident_route_revision_denial_report(
+             &call,
+             execution.authorized_route.route(),
+-            execution.authorized_route.revalidation_decision_id().clone(),
++            execution
++                .authorized_route
++                .revalidation_decision_id()
++                .clone(),
+             CandidateEliminationReason::PolicyRevisionStale,
+             &current_revisions,
+             execution.authorized_route.policy_revision(),
+Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon/src/main.rs:2182:
+         let report = resident_route_revision_denial_report(
+             &call,
+             execution.authorized_route.route(),
+-            execution.authorized_route.revalidation_decision_id().clone(),
++            execution
++                .authorized_route
++                .revalidation_decision_id()
++                .clone(),
+             CandidateEliminationReason::GrantsRevisionStale,
+             &current_revisions,
+             execution.authorized_route.policy_revision(),
+Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon/src/main.rs:2192:
+         return Ok(report);
+     }
+ 
+-    let route_decision_id = execution.authorized_route.revalidation_decision_id().clone();
++    let route_decision_id = execution
++        .authorized_route
++        .revalidation_decision_id()
++        .clone();
+     let route_taken = execution.route_taken.clone();
+     let child_invocation = execution.authorized_route.into_child_invocation();
+     let child_execution = ResidentChildExecution {
+Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon/src/main.rs:2389:
+     minted_grants_revision: u64,
+ ) -> ResidentExecutionReport {
+     let observation = MctObservation {
+-        observation_id: ObservationId::new(format!(
+-            "obs-route-revision-denied:{}",
+-            call.call_id
+-        ))
+-        .expect("string ID literal/generated value must be non-empty"),
++        observation_id: ObservationId::new(format!("obs-route-revision-denied:{}", call.call_id))
++            .expect("string ID literal/generated value must be non-empty"),
+         observed_at: current_timestamp(),
+         kind: ObservationKind::NoRouteRecorded,
+         source_plane: SourcePlane::Adapter,
+Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon/src/main.rs:2529:
+             }
+             .with_route(route_decision_id, route_taken)
+         }
+-        ResultOutcome::TimedOut => MctIrohCallHandlerResult::timed_out()
+-            .with_route(route_decision_id, route_taken),
+-        ResultOutcome::Denied => MctIrohCallHandlerResult::denied().with_route(route_decision_id, None),
++        ResultOutcome::TimedOut => {
++            MctIrohCallHandlerResult::timed_out().with_route(route_decision_id, route_taken)
++        }
++        ResultOutcome::Denied => {
++            MctIrohCallHandlerResult::denied().with_route(route_decision_id, None)
++        }
+         ResultOutcome::Failed => MctIrohCallHandlerResult::failed(result.requester_message.clone())
+             .with_route(route_decision_id, route_taken),
+-        ResultOutcome::Cancelled => MctIrohCallHandlerResult::failed(result.requester_message.clone())
+-            .with_route(route_decision_id, None),
++        ResultOutcome::Cancelled => {
++            MctIrohCallHandlerResult::failed(result.requester_message.clone())
++                .with_route(route_decision_id, None)
++        }
+     }
+ }
 ```
 
 ## Verbatim task prompt
