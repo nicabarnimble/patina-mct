@@ -181,3 +181,16 @@ note: function defined here
 1487 |     _inline_payload: Option<Vec<u8>>,
      |     --------------------------------
 ```
+
+- 2026-07-06 D5.2 targeted test invocation failed because `cargo test` accepts only one positional test filter:
+
+```text
+error: unexpected argument 'resident_process_payload_delivery_returns_digest_and_keeps_ledger_byte_free' found
+
+Usage: cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]
+
+For more information, try '--help'.
+
+
+Command exited with code 1
+```

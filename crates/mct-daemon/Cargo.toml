@@ -25,6 +25,7 @@ wasmtime.workspace = true
 wasmtime-wasi.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
 mct-observation = { path = "../mct-observation" }
 tempfile.workspace = true
 wat.workspace = true
