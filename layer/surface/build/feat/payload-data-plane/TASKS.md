@@ -194,3 +194,71 @@ For more information, try '--help'.
 
 Command exited with code 1
 ```
+
+## Slice 1 close-out
+
+### Commit list (D3-D5 plus D5.2-D5.3)
+
+- `0d5f67f feat(iroh): carry inline call payloads`
+- `cfcd319 test(iroh): update payload fixtures`
+- `2a53e31 feat(daemon): deliver inline call payloads`
+- `a28ec60 test(daemon): prove payload roundtrip`
+- `d10851f test(daemon): assert ledger excludes encoded bytes`
+- `c538f7a refactor(kernel): one exact size name`
+
+### Flake log status
+
+Recorded failures before rerun:
+
+- 2026-07-05 D3 validation failed before commit with Rust compile error `E0061` after adding the resident call payload parameter; fixed by passing `None` at the affected test call site, then full validation passed.
+- 2026-07-06 D5.2 targeted test invocation used two positional `cargo test` filters and failed with `unexpected argument 'resident_process_payload_delivery_returns_digest_and_keeps_ledger_byte_free'`; rerun with valid filters passed.
+
+No unresolved flakes remain.
+
+### D5 proof transcript
+
+Command run from disk:
+
+```text
+cargo test -p mct-daemon resident_mother_payload_roundtrip_verifies_result_digest -- --nocapture
+```
+
+Transcript:
+
+```text
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
+     Running unittests src/lib.rs (target/debug/deps/mct_daemon-5682d471ecfb696f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/mct_daemon-bafc4e92ac572023)
+
+running 1 test
+mct resident mother endpoint_id=78a59746a6bf12bb1812397dfc1b50a488536f2c9f074c32b9fe1b5a7cbfd87f
+ticket={  "endpoint_id": "78a59746a6bf12bb1812397dfc1b50a488536f2c9f074c32b9fe1b5a7cbfd87f",  "direct_addresses": [    "10.10.10.182:55392",    "10.10.10.209:55392",    "100.114.124.29:55392"  ],  "relay_urls": []}
+mct resident mother children loaded=1 failed=0 bindings=1 max_connections=8
+mct daemon serving control uds on /var/folders/6h/329275913d1d3k1lfvvvryp40000gn/T/.tmpWmuWDU/control.sock
+test tests::resident_mother_payload_roundtrip_verifies_result_digest ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 1.10s
+
+     Running tests/wasm_limits.rs (target/debug/deps/wasm_limits-1c1e86fd6c6a1343)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+```
+
+Concrete proof assertions in `resident_mother_payload_roundtrip_verifies_result_digest`:
+
+- the caller establishes `mct/hello/0` with an admitted binding;
+- the request sends inline JSON bytes `{"secret":"payload-marker"}` over `mct/call/0` with exact `size_bytes` and BLAKE3 digest;
+- the resident process child reads stdin and returns `processed:{"secret":"payload-marker"}`, proving output depends on input payload;
+- the caller receives verified inline result bytes, `CallProtocolReplyOutcome::Success`, exact result `size_bytes`, and matching result BLAKE3 digest;
+- the ledger contains the call id plus request/result size-and-digest facts, and excludes raw request bytes, raw result bytes, base64 request bytes, and base64 result bytes.
+
+### ROADMAP follow-on
+
+Recorded in `layer/surface/build/product/ROADMAP.md`: after slice 2 (local content-addressed blob store), the follow-on is Iroh blob transfer between Mothers. D6 remains pending operator decision; slice 1 stops at D5.
