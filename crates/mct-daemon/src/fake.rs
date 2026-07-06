@@ -304,7 +304,7 @@ fn fake_call_request(
         },
         payload_metadata: PayloadMetadata {
             data_classification: "public".into(),
-            approximate_size_bytes: 0,
+            size_bytes: 0,
             contains_secret_scoped_material: false,
         },
         authority_context: AuthorityContextSnapshot {
@@ -369,8 +369,8 @@ fn fake_echo_result(call: &MctCall) -> MctResult {
             wall_time_ms: 1,
             execution_time_ms: Some(1),
             queue_wait_ms: Some(0),
-            input_size_bytes: call.payload_metadata.approximate_size_bytes,
-            output_size_bytes: Some(call.payload_metadata.approximate_size_bytes),
+            input_size_bytes: call.payload_metadata.size_bytes,
+            output_size_bytes: Some(call.payload_metadata.size_bytes),
         },
         result_payload: MctCallPayloadHandle::Empty,
         requester_message: "echo ok".into(),

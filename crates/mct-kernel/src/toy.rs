@@ -590,7 +590,7 @@ mod tests {
             },
             payload_metadata: PayloadMetadata {
                 data_classification: "project".into(),
-                approximate_size_bytes: 12,
+                size_bytes: 12,
                 contains_secret_scoped_material: false,
             },
             authority_context: AuthorityContextSnapshot {

@@ -27,9 +27,15 @@ The current 64 KiB total read budget becomes 96 KiB. That budget covers the JSON
 
 `MctCallPayloadHandle::InlinePayload` gains a `blake3_digest_hex` field and renames its byte count to `size_bytes` because inline integrity validation is exact, not approximate. `ContentAddressedBlob` keeps its digest field and also uses `size_bytes` because the optional D6 local-CAS ingest path verifies exact digest and size before a blob handle is consumable. `ExternalReference` keeps `approximate_size_bytes` because MCT does not dereference it in this phase; it is not accepted for inline byte delivery.
 
-Updated variant shapes:
+Updated variant and metadata shapes:
 
 ```rust
+PayloadMetadata {
+    data_classification: String,
+    size_bytes: u64,
+    contains_secret_scoped_material: bool,
+}
+
 InlinePayload {
     inline_payload_ref: String,
     content_type: String,

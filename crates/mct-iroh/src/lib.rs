@@ -730,7 +730,7 @@ mod tests {
             },
             payload_metadata: PayloadMetadata {
                 data_classification: "public".into(),
-                approximate_size_bytes: 0,
+                size_bytes: 0,
                 contains_secret_scoped_material: false,
             },
             authority_context: AuthorityContextSnapshot {
@@ -813,7 +813,7 @@ mod tests {
         bytes: &[u8],
     ) -> MctCallProtocolRequest {
         let mut request = test_call_request(endpoint_id, trace_id, hello);
-        request.call.payload_metadata.approximate_size_bytes = bytes.len() as u64;
+        request.call.payload_metadata.size_bytes = bytes.len() as u64;
         request.payload = inline_payload_handle("payload-public-inline", bytes);
         request
     }
@@ -945,10 +945,8 @@ mod tests {
         let actual = b"x";
         let mut declared_request =
             inline_call_request(&endpoint_id, &trace_id, &fake_hello_response(), actual);
-        declared_request
-            .call
-            .payload_metadata
-            .approximate_size_bytes = (MCT_INLINE_PAYLOAD_MAX_BYTES + 1) as u64;
+        declared_request.call.payload_metadata.size_bytes =
+            (MCT_INLINE_PAYLOAD_MAX_BYTES + 1) as u64;
         declared_request.payload = MctCallPayloadHandle::InlinePayload {
             inline_payload_ref: "payload-declared-too-large".into(),
             content_type: "application/json".into(),
