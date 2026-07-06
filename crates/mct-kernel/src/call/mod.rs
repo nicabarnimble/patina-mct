@@ -742,6 +742,19 @@ pub enum CallProtocolReplyOutcome {
     Malformed,
 }
 
+impl CallProtocolReplyOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Denied => "denied",
+            Self::Failed => "failed",
+            Self::TimedOut => "timed_out",
+            Self::Cancelled => "cancelled",
+            Self::Malformed => "malformed",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Wire-edge response for `mct/call/0`.
 ///
@@ -758,6 +771,8 @@ pub struct MctCallProtocolReply {
     pub result_ref: Option<ResultRef>,
     /// Declared result payload handle returned with this reply.
     pub result_payload: MctCallPayloadHandle,
+    /// Caller-safe route projection for outcomes whose execution attempted a route.
+    pub route_taken: Option<RouteTaken>,
     /// Caller-facing outcome class.
     pub reply_outcome: CallProtocolReplyOutcome,
     /// Caller-safe message derived from the evaluation or execution path.
@@ -776,6 +791,19 @@ impl MctCallProtocolReply {
     pub fn validate(&self) -> MctKernelResult<()> {
         ensure_non_blank("MctCallProtocolReply", "safe_message", &self.safe_message)?;
         self.result_payload.validate()?;
+        if self.route_taken.is_some()
+            && matches!(
+                self.reply_outcome,
+                CallProtocolReplyOutcome::Denied
+                    | CallProtocolReplyOutcome::Cancelled
+                    | CallProtocolReplyOutcome::Malformed
+            )
+        {
+            return Err(MctKernelError::InvalidRouteTakenPresence {
+                record: "MctCallProtocolReply",
+                outcome: self.reply_outcome.as_str(),
+            });
+        }
         Ok(())
     }
 }
@@ -900,6 +928,25 @@ pub fn call_reply_from_evaluation_with_result_payload(
     result_payload: MctCallPayloadHandle,
     reply_observation_id: ObservationId,
 ) -> MctCallProtocolReply {
+    call_reply_from_evaluation_with_result_payload_and_route(
+        reply_id,
+        evaluation,
+        result_ref,
+        result_payload,
+        None,
+        reply_observation_id,
+    )
+}
+
+/// Projects a protocol evaluation, result payload, and caller-safe route into a reply.
+pub fn call_reply_from_evaluation_with_result_payload_and_route(
+    reply_id: ReplyId,
+    evaluation: &MctCallProtocolEvaluation,
+    result_ref: Option<ResultRef>,
+    result_payload: MctCallPayloadHandle,
+    route_taken: Option<RouteTaken>,
+    reply_observation_id: ObservationId,
+) -> MctCallProtocolReply {
     let reply_outcome = match evaluation.outcome {
         CallProtocolOutcome::AcceptedForRouting | CallProtocolOutcome::Completed => {
             CallProtocolReplyOutcome::Success
@@ -916,6 +963,7 @@ pub fn call_reply_from_evaluation_with_result_payload(
         decision_id: evaluation.decision_id.clone(),
         result_ref,
         result_payload,
+        route_taken,
         reply_outcome,
         safe_message: evaluation.safe_message.clone(),
         reply_observation_id,
@@ -1537,6 +1585,70 @@ mod tests {
                 .unwrap();
         assert_eq!(decoded.result_payload, reply.result_payload);
         assert_eq!(decoded.result_payload.declared_size_bytes(), 5);
+    }
+
+    #[test]
+    fn call_protocol_reply_roundtrips_route_taken_wire_field() {
+        let evaluation = evaluate_call_protocol(&protocol_request(), &admitted_hello(), eval_ids());
+        let route_taken = RouteTaken {
+            node_id: MctNodeId::new("node-route")
+                .expect("string ID literal/generated value must be non-empty"),
+            child_id: Some(
+                ChildId::new("child-echo")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            runtime_kind: RuntimeKind::Process,
+        };
+        let reply = call_reply_from_evaluation_with_result_payload_and_route(
+            ReplyId::new("reply-route-taken")
+                .expect("string ID literal/generated value must be non-empty"),
+            &evaluation,
+            Some(
+                ResultRef::new("result-call-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            MctCallPayloadHandle::Empty,
+            Some(route_taken.clone()),
+            ObservationId::new("obs-reply-route-taken")
+                .expect("string ID literal/generated value must be non-empty"),
+        );
+
+        let decoded =
+            decode_call_protocol_reply_json(&encode_call_protocol_reply_json(&reply).unwrap())
+                .unwrap();
+        assert_eq!(decoded.route_taken, Some(route_taken));
+    }
+
+    #[test]
+    fn reply_validation_enforces_route_taken_presence_rule() {
+        let evaluation = evaluate_call_protocol(&protocol_request(), &admitted_hello(), eval_ids());
+        let route_taken = RouteTaken {
+            node_id: MctNodeId::new("node-route")
+                .expect("string ID literal/generated value must be non-empty"),
+            child_id: None,
+            runtime_kind: RuntimeKind::Process,
+        };
+        let cancelled_with_route = MctCallProtocolReply {
+            reply_id: ReplyId::new("reply-cancelled-route")
+                .expect("string ID literal/generated value must be non-empty"),
+            protocol_request_id: evaluation.protocol_request_id.clone(),
+            decision_id: evaluation.decision_id.clone(),
+            result_ref: None,
+            result_payload: MctCallPayloadHandle::Empty,
+            route_taken: Some(route_taken.clone()),
+            reply_outcome: CallProtocolReplyOutcome::Cancelled,
+            safe_message: "cancelled".into(),
+            reply_observation_id: ObservationId::new("obs-reply-cancelled-route")
+                .expect("string ID literal/generated value must be non-empty"),
+        };
+        assert!(cancelled_with_route.validate().is_err());
+
+        let cancelled_without_route = MctCallProtocolReply {
+            route_taken: None,
+            reply_outcome: CallProtocolReplyOutcome::Cancelled,
+            ..cancelled_with_route
+        };
+        assert!(cancelled_without_route.validate().is_ok());
     }
 
     #[test]

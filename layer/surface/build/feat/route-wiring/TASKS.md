@@ -3,14 +3,149 @@
 - [x] Task D0 — Housekeeping
 - [x] Task D1 — SPEC first (gate: operator reads this before D2 proceeds)
 - [x] Task D1.1 — Operator gate amendments
-- [ ] Task D2 — Kernel gaps only if the SPEC found any
+- [x] Task D2 — Kernel gaps only if the SPEC found any
 - [ ] Task D3 — Daemon routing for local calls
 - [ ] Task D4 — Remote serve-path integration
 - [ ] Task D5 — End-to-end proof and PHASE3 T5 discharge
 
 ## Flake log
 
-No flakes recorded yet.
+### 2026-07-06 — D2 failing test before route reply wire field
+
+Command:
+
+```bash
+cargo test -p mct-kernel call_protocol_reply_roundtrips_route_taken_wire_field -- --nocapture
+```
+
+Failure output:
+
+```text
+   Compiling mct-kernel v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-kernel)
+error[E0425]: cannot find function `call_reply_from_evaluation_with_result_payload_and_route` in this scope
+    --> crates/mct-kernel/src/call/mod.rs:1554:21
+     |
+ 896 | / pub fn call_reply_from_evaluation_with_result_payload(
+ 897 | |     reply_id: ReplyId,
+ 898 | |     evaluation: &MctCallProtocolEvaluation,
+ 899 | |     result_ref: Option<ResultRef>,
+...    |
+ 923 | | }
+     | |_- similarly named function `call_reply_from_evaluation_with_result_payload` defined here
+...
+1554 |           let reply = call_reply_from_evaluation_with_result_payload_and_route(
+     |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: a function with a similar name exists
+     |
+1554 -         let reply = call_reply_from_evaluation_with_result_payload_and_route(
+1554 +         let reply = call_reply_from_evaluation_with_result_payload(
+     |
+
+error[E0609]: no field `route_taken` on type `call::MctCallProtocolReply`
+    --> crates/mct-kernel/src/call/mod.rs:1571:28
+     |
+1571 |         assert_eq!(decoded.route_taken, Some(route_taken));
+     |                            ^^^^^^^^^^^ unknown field
+     |
+     = note: available fields are: `reply_id`, `protocol_request_id`, `decision_id`, `result_ref`, `result_payload` ... and 3 others
+
+error[E0560]: struct `call::MctCallProtocolReply` has no field named `route_taken`
+    --> crates/mct-kernel/src/call/mod.rs:1590:13
+     |
+1590 |             route_taken: Some(route_taken.clone()),
+     |             ^^^^^^^^^^^ `call::MctCallProtocolReply` does not have this field
+     |
+     = note: all struct fields are already assigned
+
+error[E0560]: struct `call::MctCallProtocolReply` has no field named `route_taken`
+    --> crates/mct-kernel/src/call/mod.rs:1605:13
+     |
+1605 |             route_taken: None,
+     |             ^^^^^^^^^^^ `call::MctCallProtocolReply` does not have this field
+     |
+     = note: all struct fields are already assigned
+
+error[E0560]: struct `call::MctCallProtocolReply` has no field named `route_taken`
+    --> crates/mct-kernel/src/call/mod.rs:1614:13
+     |
+1614 |             route_taken: None,
+     |             ^^^^^^^^^^^ `call::MctCallProtocolReply` does not have this field
+     |
+     = note: available fields are: `reply_id`, `protocol_request_id`, `decision_id`, `result_ref`, `result_payload` ... and 2 others
+
+Some errors have detailed explanations: E0425, E0560, E0609.
+For more information about an error, try `rustc --explain E0425`.
+error: could not compile `mct-kernel` (lib test) due to 5 previous errors
+```
+
+### 2026-07-06 — D2 targeted test invocation used multiple cargo filters
+
+Command:
+
+```bash
+cargo test -p mct-kernel call_protocol_reply_roundtrips_route_taken_wire_field candidate_observations_record_specific_elimination_class candidate_elimination_reasons_expose_denial_class -- --nocapture
+```
+
+Failure output:
+
+```text
+error: unexpected argument 'candidate_observations_record_specific_elimination_class' found
+
+Usage: cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]
+
+For more information, try '--help'.
+```
+
+### 2026-07-06 — D2 rustfmt check reported formatting diffs
+
+Command:
+
+```bash
+cargo fmt --check
+```
+
+Failure output:
+
+```text
+Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-kernel/src/lib.rs:72:
+ };
+ pub use route::{
+     AuthorizedRouteExecution, CandidateAuthorityEvaluation, CandidateAuthorityOutcome,
+-    CandidateEliminationClass, CandidateEliminationReason, CandidateRoute, NetworkPathClass, RouteDecision, RouteDecisionIds,
+-    RouteDecisionKind, RouteDecisionOutcome, RouteRevalidationIds, RouteRevalidationReason,
+-    RouteRevalidationResult, no_route_denied_result, revalidate_route_for_execution,
++    CandidateEliminationClass, CandidateEliminationReason, CandidateRoute, NetworkPathClass,
++    RouteDecision, RouteDecisionIds, RouteDecisionKind, RouteDecisionOutcome, RouteRevalidationIds,
++    RouteRevalidationReason, RouteRevalidationResult, no_route_denied_result,
++    revalidate_route_for_execution,
+ };
+ pub use toy::{
+     AuthorizedToyCall, CanonicalToyContract, ToyContractIdentity, ToyGrant, ToyGrantConstraints,
+Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-kernel/src/observation.rs:545:
+         safe_message: "candidate considered".into(),
+         detail_ref: Some(format!(
+             "candidate:{};node:{};runtime:{:?};network:{:?}",
+-            candidate.candidate_id, candidate.node_id, candidate.runtime_kind, candidate.network_path
++            candidate.candidate_id,
++            candidate.node_id,
++            candidate.runtime_kind,
++            candidate.network_path
+         )),
+     }
+ }
+Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-kernel/src/route.rs:969:
+             CandidateEliminationClass::Structural
+         );
+         assert_eq!(
+-            CandidateEliminationReason::ToyGrantMissing.denial_class().as_str(),
++            CandidateEliminationReason::ToyGrantMissing
++                .denial_class()
++                .as_str(),
+             "structural"
+         );
+     }
+```
 
 ## Verbatim task prompt
 

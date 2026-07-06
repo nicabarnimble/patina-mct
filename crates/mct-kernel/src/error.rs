@@ -68,6 +68,15 @@ pub enum MctKernelError {
         source: serde_json::Error,
     },
 
+    #[error("invalid {record}.route_taken for {outcome} reply outcome")]
+    /// A caller-safe reply carried a route projection for an outcome that must hide it.
+    InvalidRouteTakenPresence {
+        /// Name of the kernel record being validated.
+        record: &'static str,
+        /// Reply outcome whose route projection invariant was violated.
+        outcome: &'static str,
+    },
+
     #[error("failed to decode MCT call protocol JSON edge value: {source}")]
     /// Deserialization failed before a call protocol edge value could be validated.
     DecodeCallProtocolJson {

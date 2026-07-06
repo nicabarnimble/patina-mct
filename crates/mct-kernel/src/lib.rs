@@ -31,7 +31,8 @@ pub use call::{
     MctPayloadIntegrityObservation, MctResult, OperationTarget, PayloadIntegrityOutcome,
     PayloadIntegrityReason, PayloadIntegritySubject, PayloadMetadata, ResultOutcome, RouteTaken,
     RuntimeKind, TraceContext, call_reply_from_evaluation,
-    call_reply_from_evaluation_with_result_payload, decode_call_protocol_reply_json,
+    call_reply_from_evaluation_with_result_payload,
+    call_reply_from_evaluation_with_result_payload_and_route, decode_call_protocol_reply_json,
     decode_call_protocol_request_json, encode_call_protocol_reply_json,
     encode_call_protocol_request_json, evaluate_call_protocol, evaluate_payload_integrity,
 };
@@ -56,9 +57,10 @@ pub use observation::{
     AdapterDiagnosticKind, AdapterDiagnosticObservationInput, MctObservation, ObservationKind,
     ObservationOutcome, ObservationTraceRef, ObservationVisibility, SourcePlane,
     adapter_diagnostic_observation, call_protocol_evaluation_observation,
-    child_approval_observation, child_assignment_observation, child_call_authority_observation,
-    child_instance_observation, hello_evaluation_observation, peer_binding_state_observation,
-    route_decision_observation, toy_grant_evaluation_observation,
+    candidate_considered_observation, candidate_eliminated_observation, child_approval_observation,
+    child_assignment_observation, child_call_authority_observation, child_instance_observation,
+    hello_evaluation_observation, peer_binding_state_observation, route_decision_observation,
+    toy_grant_evaluation_observation,
 };
 pub use peer::{
     BindingState, ConnectionSide, EvaluationIds, HelloEvaluationContext, HelloOutcome, HelloPolicy,
@@ -70,9 +72,10 @@ pub use peer::{
 };
 pub use route::{
     AuthorizedRouteExecution, CandidateAuthorityEvaluation, CandidateAuthorityOutcome,
-    CandidateEliminationReason, CandidateRoute, NetworkPathClass, RouteDecision, RouteDecisionIds,
-    RouteDecisionKind, RouteDecisionOutcome, RouteRevalidationIds, RouteRevalidationReason,
-    RouteRevalidationResult, no_route_denied_result, revalidate_route_for_execution,
+    CandidateEliminationClass, CandidateEliminationReason, CandidateRoute, NetworkPathClass,
+    RouteDecision, RouteDecisionIds, RouteDecisionKind, RouteDecisionOutcome, RouteRevalidationIds,
+    RouteRevalidationReason, RouteRevalidationResult, no_route_denied_result,
+    revalidate_route_for_execution,
 };
 pub use toy::{
     AuthorizedToyCall, CanonicalToyContract, ToyContractIdentity, ToyGrant, ToyGrantConstraints,

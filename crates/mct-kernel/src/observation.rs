@@ -513,6 +513,88 @@ pub fn peer_binding_state_observation(
     }
 }
 
+/// Projects candidate consideration into an observation fact.
+pub fn candidate_considered_observation(
+    trace_id: TraceId,
+    observed_at: Timestamp,
+    call: &MctCall,
+    candidate: &CandidateRoute,
+    observation_id: ObservationId,
+    policy_revision: u64,
+    grants_revision: u64,
+) -> MctObservation {
+    MctObservation {
+        observation_id,
+        observed_at,
+        kind: ObservationKind::CandidateConsidered,
+        source_plane: SourcePlane::Kernel,
+        trace: ObservationTraceRef {
+            trace_id,
+            span_id: Some(call.trace_context.span_id.clone()),
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: Some(call.call_id.clone()),
+        decision_id: None,
+        subject_id: candidate.child_id.as_ref().map(ToString::to_string),
+        resource_id: Some(candidate.candidate_id.clone()),
+        policy_revision: Some(policy_revision),
+        grants_revision: Some(grants_revision),
+        outcome: ObservationOutcome::Informational,
+        visibility: ObservationVisibility::InternalOnly,
+        safe_message: "candidate considered".into(),
+        detail_ref: Some(format!(
+            "candidate:{};node:{};runtime:{:?};network:{:?}",
+            candidate.candidate_id,
+            candidate.node_id,
+            candidate.runtime_kind,
+            candidate.network_path
+        )),
+    }
+}
+
+/// Projects candidate elimination into an observation fact with the specific rule class.
+pub fn candidate_eliminated_observation(
+    trace_id: TraceId,
+    observed_at: Timestamp,
+    call: &MctCall,
+    evaluation: &CandidateAuthorityEvaluation,
+    observation_id: ObservationId,
+) -> MctObservation {
+    let reason = evaluation
+        .reason
+        .unwrap_or(CandidateEliminationReason::RouteMismatch);
+    MctObservation {
+        observation_id,
+        observed_at,
+        kind: ObservationKind::CandidateEliminated,
+        source_plane: SourcePlane::Kernel,
+        trace: ObservationTraceRef {
+            trace_id,
+            span_id: Some(call.trace_context.span_id.clone()),
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: Some(call.call_id.clone()),
+        decision_id: None,
+        subject_id: evaluation
+            .candidate
+            .child_id
+            .as_ref()
+            .map(ToString::to_string),
+        resource_id: Some(evaluation.candidate.candidate_id.clone()),
+        policy_revision: Some(evaluation.policy_revision),
+        grants_revision: Some(evaluation.grants_revision),
+        outcome: ObservationOutcome::Denied,
+        visibility: ObservationVisibility::InternalOnly,
+        safe_message: evaluation.safe_message.clone(),
+        detail_ref: Some(format!(
+            "elimination_reason:{reason:?};denial_class:{}",
+            reason.denial_class().as_str()
+        )),
+    }
+}
+
 /// Projects a route decision into an observation fact, preserving safe no-route detail.
 pub fn route_decision_observation(
     trace_id: TraceId,
@@ -1221,6 +1303,94 @@ mod tests {
         assert_eq!(observation.policy_revision, Some(3));
         assert_eq!(observation.grants_revision, Some(4));
         assert_eq!(observation.observed_at, supplied_observed_at());
+    }
+
+    #[test]
+    fn candidate_observations_record_specific_elimination_class() {
+        let call = MctCall {
+            call_id: CallId::new("call-candidate-eliminated")
+                .expect("string ID literal/generated value must be non-empty"),
+            caller: CallerIdentity {
+                node_id: MctNodeId::new("node-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+                user_id: None,
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+                project_id: None,
+            },
+            target: OperationTarget {
+                namespace: "patina".into(),
+                interface_name: "echo".into(),
+                function_name: "echo".into(),
+            },
+            payload_metadata: PayloadMetadata {
+                data_classification: "public".into(),
+                size_bytes: 5,
+                contains_secret_scoped_material: false,
+            },
+            authority_context: AuthorityContextSnapshot {
+                policy_revision: 3,
+                grants_revision: 4,
+                vision_policy_revision: 5,
+            },
+            deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
+            trace_context: TraceContext {
+                trace_id: TraceId::new("trace-candidate-eliminated")
+                    .expect("string ID literal/generated value must be non-empty"),
+                span_id: SpanId::new("span-candidate-eliminated")
+                    .expect("string ID literal/generated value must be non-empty"),
+            },
+            origin: CallOrigin::Cli,
+        };
+        let candidate = CandidateRoute {
+            candidate_id: "candidate-unavailable".into(),
+            node_id: MctNodeId::new("node-b")
+                .expect("string ID literal/generated value must be non-empty"),
+            child_id: Some(
+                ChildId::new("child-echo")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            runtime_kind: RuntimeKind::Process,
+            network_path: NetworkPathClass::Local,
+        };
+        let considered = candidate_considered_observation(
+            call.trace_context.trace_id.clone(),
+            supplied_observed_at(),
+            &call,
+            &candidate,
+            ObservationId::new("obs-candidate-considered")
+                .expect("string ID literal/generated value must be non-empty"),
+            3,
+            4,
+        );
+        assert_eq!(considered.kind, ObservationKind::CandidateConsidered);
+        assert_eq!(considered.outcome, ObservationOutcome::Informational);
+        assert_eq!(considered.resource_id, Some("candidate-unavailable".into()));
+
+        let eliminated = CandidateAuthorityEvaluation::eliminated(
+            candidate,
+            CandidateEliminationReason::CapabilityUnavailable,
+            3,
+            4,
+        );
+        let observation = candidate_eliminated_observation(
+            call.trace_context.trace_id.clone(),
+            supplied_observed_at(),
+            &call,
+            &eliminated,
+            ObservationId::new("obs-candidate-eliminated")
+                .expect("string ID literal/generated value must be non-empty"),
+        );
+
+        assert_eq!(observation.kind, ObservationKind::CandidateEliminated);
+        assert_eq!(observation.outcome, ObservationOutcome::Denied);
+        assert_eq!(observation.safe_message, "not authorized");
+        assert_eq!(observation.policy_revision, Some(3));
+        assert_eq!(observation.grants_revision, Some(4));
+        assert_eq!(
+            observation.detail_ref,
+            Some("elimination_reason:CapabilityUnavailable;denial_class:temporal".into())
+        );
     }
 
     #[test]
