@@ -5063,6 +5063,33 @@ mod tests {
     }
 
     #[test]
+    fn route_taken_projection_follows_outcome_matrix() {
+        let route = RouteTaken {
+            node_id: MctNodeId::new("local-mct")
+                .expect("string ID literal/generated value must be non-empty"),
+            child_id: Some(
+                ChildId::new("resident-echo")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            runtime_kind: RuntimeKind::Process,
+        };
+
+        for outcome in [
+            ResultOutcome::Success,
+            ResultOutcome::Failed,
+            ResultOutcome::TimedOut,
+        ] {
+            assert_eq!(
+                route_taken_for_outcome(outcome, route.clone()),
+                Some(route.clone())
+            );
+        }
+        for outcome in [ResultOutcome::Denied, ResultOutcome::Cancelled] {
+            assert_eq!(route_taken_for_outcome(outcome, route.clone()), None);
+        }
+    }
+
+    #[test]
     fn cancelled_result_and_reply_hide_route_while_ledger_keeps_selection() {
         let call = resident_test_call(
             TraceId::new("trace-route-cancelled-mid-execution")
