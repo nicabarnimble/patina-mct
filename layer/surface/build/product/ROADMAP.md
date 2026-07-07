@@ -84,12 +84,15 @@ Dependency-ordered; each item assumes the ones before it.
       state dir. Follow-on remains Iroh blob transfer between Mothers.
       Unblocks: real workloads, result payloads, and local
       `ContentAddressedBlob` consumption.
-- [ ] **3. Routing wired end-to-end** — incoming calls flow through the
+- [x] **3. Routing wired end-to-end** — incoming calls flow through the
       two-phase route decision; the daemon consumes
       `AuthorizedRouteExecution` (must apply the same stale-revision guard
       as the other capabilities — obligation recorded in
       audit-remediation/PHASE3.md); local dispatch is just the
       single-candidate case.
+      Completed 2026-07-06 for local candidates only; PHASE3 T5 stale-
+      revision effect-boundary guard is discharged. Remote candidates and
+      cross-Mother call forwarding remain recorded under item 6.
 - [ ] **4. Binding signature verification** — verify `signature_ref`
       against the issuer's key material at hello time; required before
       admitting peers you don't operate.

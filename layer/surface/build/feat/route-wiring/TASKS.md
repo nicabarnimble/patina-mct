@@ -7,6 +7,7 @@
 - [x] Task D3 — Daemon routing for local calls
 - [x] Task D4 — Remote serve-path integration
 - [x] Task D5 — End-to-end proof and PHASE3 T5 discharge
+- [x] Task D6 — Phase close-out
 
 ## Flake log
 
@@ -718,3 +719,66 @@ Validation green per commit; hard invariants tested, not just stated;
 TASKS.md checked off as you go; final summary: commits, SPEC decisions
 made, flake log (or none), D5 transcript, and anything discovered that
 belongs in ROADMAP rather than this phase.
+
+## Close-out
+
+Route wiring closed on 2026-07-06.
+
+### Commits D0-D5
+
+- `336bd0b docs: start route wiring phase` — D0 task file and phase prompt captured.
+- `da56c32 docs: specify route wiring` — D1 route wiring SPEC and ROADMAP follow-on note.
+- `39fa3f2 docs: amend route wiring spec at operator gate` — D1.1 operator-gate amendments.
+- `6216f81 feat(kernel): expose route wiring facts` — D2 kernel reply projection, candidate classification, observation helpers, and validation.
+- `fc9fc85 feat(daemon): route resident calls` — D3 local resident calls through route decision, revalidation, by-value route authority consumption, and effect-boundary stale guards.
+- `a78107a feat(iroh): return route projections` — D4 remote `mct/call/0` reply path with route decision and `route_taken` projection.
+- `a5fc496 test(daemon): prove route wiring behavior` — D5 end-to-end proofs and PHASE3 T5 discharge note.
+- `ab6e187 test(daemon): cover route outcome projection` — D5 outcome-matrix proof for `route_taken`.
+
+### Flake log status
+
+The flake log above is complete through close-out. All recorded failures were deterministic failing-first, compile, formatting, or invalid-invocation issues; each is fixed. No unresolved flakes remain.
+
+### D5 transcript
+
+Route proof suite rerun at close-out:
+
+```bash
+cargo test -p mct-daemon --bin mct-daemon -- --nocapture
+```
+
+```text
+running 17 tests
+test tests::cancelled_result_and_reply_hide_route_while_ledger_keeps_selection ... ok
+test tests::authorize_cli_toy_denies_expired_grant_against_current_time ... ok
+test tests::control_snapshot_unopenable_state_projects_error_response ... ok
+test tests::resident_status_source_reflects_closed_endpoint ... ok
+test tests::resident_authorized_unavailable_is_temporal_no_route ... ok
+test tests::route_taken_projection_follows_outcome_matrix ... ok
+test tests::resident_local_blob_absent_fails_closed_before_delivery ... ok
+test tests::resident_no_route_records_specific_elimination ... ok
+test tests::resident_local_blob_tamper_fails_closed_via_digest_mismatch ... ok
+test tests::resident_route_revision_guard_denies_before_effect ... ok
+test tests::resident_wit_rejects_non_json_payload_before_execution ... ok
+test tests::resident_execution_runs_wit_child_and_records_trace ... ok
+test tests::resident_process_payload_delivery_returns_digest_and_keeps_ledger_byte_free ... ok
+test tests::resident_route_optimization_cannot_grant_authority ... ok
+test tests::resident_local_blob_payload_delivery_returns_digest_and_keeps_ledger_byte_free ... ok
+test tests::resident_mother_payload_roundtrip_verifies_result_digest ... ok
+test tests::resident_mother_serves_peer_control_and_shutdown ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.51s
+```
+
+Six route-specific D5 proofs covered:
+
+1. `resident_route_optimization_cannot_grant_authority`: a ranking-preferred WIT candidate lacking approval is eliminated with `ChildNotApproved`; the less-preferred admissible process candidate executes and records `route_selected`.
+2. `resident_route_revision_guard_denies_before_effect`: a policy revision mismatch between mint and execution returns `ResultOutcome::Denied`, records `PolicyRevisionStale` plus minted/current revisions, and never creates the child execution marker.
+3. `resident_no_route_records_specific_elimination`: no approved candidate fails closed with caller-safe `not authorized`, no `route_taken`, `candidate_eliminated`/`ChildNotApproved`, and `no_route_recorded` ledger evidence.
+4. `resident_authorized_unavailable_is_temporal_no_route`: an approved but `Loading` child is denied as `CapabilityUnavailable` with `denial_class:temporal`.
+5. `route_taken_projection_follows_outcome_matrix` and `cancelled_result_and_reply_hide_route_while_ledger_keeps_selection`: `route_taken` is present for success/failed/timed_out, absent for denied/cancelled, and mid-execution cancellation keeps route evidence reconstructible through `RouteSelected` while result/reply hide `route_taken`.
+6. `resident_execution_runs_wit_child_and_records_trace`: a successful WIT call ledger trace contains `RouteRevalidated` and `RuntimeExecutionCompleted`, proving the executed path is reconstructible.
+
+### ROADMAP follow-on
+
+ROADMAP item 3 is complete for local candidates only and records PHASE3 T5 as discharged. Remote route candidates and cross-Mother call forwarding are confirmed as follow-on work under ROADMAP item 6. No additional ROADMAP items were discovered during close-out.
