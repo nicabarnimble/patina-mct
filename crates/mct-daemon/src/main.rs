@@ -1859,13 +1859,19 @@ fn authorize_resident_child_blocking(
 ) -> Result<ResidentAuthorizationOutcome> {
     let config = MctDaemonConfigStore::new(&paths.config_path).load()?;
     let load_report = load_children_from_dir(MctChildLoadOptions::new(paths.children_dir.clone()));
-    let scope = resident_child_scope(&config);
-    let projection =
-        config.authority_projection_for_loaded_children(load_report.children.iter(), scope);
+    authorize_resident_child_from_loaded(&config, load_report.children, call)
+}
+
+fn authorize_resident_child_from_loaded(
+    config: &mct_daemon::MctDaemonConfig,
+    children: Vec<mct_daemon::MctLoadedChild>,
+    call: &MctCall,
+) -> Result<ResidentAuthorizationOutcome> {
+    let scope = resident_child_scope(config);
+    let projection = config.authority_projection_for_loaded_children(children.iter(), scope);
     let mut plans = Vec::new();
 
-    for child in load_report
-        .children
+    for child in children
         .into_iter()
         .filter(|child| resident_child_accepts_call(child, call))
     {
@@ -2179,7 +2185,6 @@ fn execute_authorized_resident_child(
             execution.authorized_route.policy_revision(),
             execution.authorized_route.grants_revision(),
         );
-        state.append_run_observations(&run_id, &report.observations)?;
         return Ok(report);
     }
     if execution.authorized_route.grants_revision() != current_revisions.grants_revision {
@@ -2195,7 +2200,6 @@ fn execute_authorized_resident_child(
             execution.authorized_route.policy_revision(),
             execution.authorized_route.grants_revision(),
         );
-        state.append_run_observations(&run_id, &report.observations)?;
         return Ok(report);
     }
 
@@ -4883,6 +4887,246 @@ mod tests {
             }),
             "{trace_entries:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn resident_route_optimization_cannot_grant_authority() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        write_resident_wit_child(&children_dir);
+        write_resident_process_child(&children_dir);
+
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        let process_child = loaded
+            .children
+            .iter()
+            .find(|child| child.name == "resident-echo")
+            .unwrap();
+        MctDaemonConfigStore::new(&config_path)
+            .approve_and_assign_loaded_child(process_child, MctOperatorChildScope::default())
+            .unwrap();
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let trace_id = TraceId::new("trace-route-optimization-cannot-grant")
+            .expect("string ID literal/generated value must be non-empty");
+        let request = resident_test_protocol_request(resident_test_call(trace_id));
+
+        let result = execute_resident_call(
+            ResidentExecutionPaths {
+                config_path,
+                children_dir,
+                state_path,
+            },
+            ledger.clone(),
+            request,
+            ResidentRequestPayload::remote(None),
+        )
+        .await;
+        assert_eq!(result.outcome, CallProtocolOutcome::Completed);
+        assert!(matches!(
+            result.route_taken,
+            Some(RouteTaken {
+                runtime_kind: RuntimeKind::Process,
+                ..
+            })
+        ));
+        ledger.close().await;
+
+        let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
+        assert!(ledger_text.contains("child:resident-wit"));
+        assert!(ledger_text.contains("candidate_eliminated"));
+        assert!(ledger_text.contains("ChildNotApproved"));
+        assert!(ledger_text.contains("child:resident-echo"));
+        assert!(ledger_text.contains("route_selected"));
+    }
+
+    #[tokio::test]
+    async fn resident_no_route_records_specific_elimination() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        write_resident_process_child(&children_dir);
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let trace_id = TraceId::new("trace-route-no-route-specific")
+            .expect("string ID literal/generated value must be non-empty");
+        let request = resident_test_protocol_request(resident_test_call(trace_id));
+
+        let result = execute_resident_call(
+            ResidentExecutionPaths {
+                config_path,
+                children_dir,
+                state_path,
+            },
+            ledger.clone(),
+            request,
+            ResidentRequestPayload::remote(None),
+        )
+        .await;
+        assert_eq!(result.outcome, CallProtocolOutcome::Denied);
+        assert_eq!(result.safe_message, "not authorized");
+        assert!(result.route_taken.is_none());
+        ledger.close().await;
+
+        let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
+        assert!(ledger_text.contains("candidate_eliminated"));
+        assert!(ledger_text.contains("ChildNotApproved"));
+        assert!(ledger_text.contains("no_route_recorded"));
+    }
+
+    #[test]
+    fn resident_authorized_unavailable_is_temporal_no_route() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        write_resident_process_child(&children_dir);
+        let mut loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir));
+        MctDaemonConfigStore::new(&config_path)
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+        loaded.children[0].instance_state = mct_daemon::MctChildInstanceState::Loading;
+        let config = MctDaemonConfigStore::new(&config_path).load().unwrap();
+        let call = resident_test_call(
+            TraceId::new("trace-route-unavailable")
+                .expect("string ID literal/generated value must be non-empty"),
+        );
+
+        let outcome =
+            authorize_resident_child_from_loaded(&config, loaded.children, &call).unwrap();
+        let ResidentAuthorizationOutcome::Denied { observations, .. } = outcome else {
+            panic!("loading child should produce temporal no-route")
+        };
+        let text = serde_json::to_string(&observations).unwrap();
+        assert!(text.contains("CapabilityUnavailable"));
+        assert!(text.contains("denial_class:temporal"));
+    }
+
+    #[test]
+    fn resident_route_revision_guard_denies_before_effect() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let marker_path = dir.path().join("executed-marker");
+        write_resident_process_child_script(
+            &children_dir,
+            "resident-echo",
+            format!(
+                "#!/bin/sh\necho executed > {}\nprintf '{{\"ok\":true}}'\n",
+                marker_path.display()
+            )
+            .as_bytes(),
+        );
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        MctDaemonConfigStore::new(&config_path)
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+        let config = MctDaemonConfigStore::new(&config_path).load().unwrap();
+        let call = resident_test_call(
+            TraceId::new("trace-route-stale-effect-guard")
+                .expect("string ID literal/generated value must be non-empty"),
+        );
+        let request = resident_test_protocol_request(call.clone());
+        let ResidentAuthorizationOutcome::Authorized(authorized) =
+            authorize_resident_child_from_loaded(&config, loaded.children, &call).unwrap()
+        else {
+            panic!("approved child should authorize")
+        };
+        let stale_revisions = AuthorityContextSnapshot {
+            policy_revision: call.authority_context.policy_revision + 1,
+            grants_revision: call.authority_context.grants_revision,
+            vision_policy_revision: call.authority_context.vision_policy_revision,
+        };
+
+        let report = execute_authorized_resident_child(
+            ResidentExecutionPaths {
+                config_path,
+                children_dir,
+                state_path,
+            },
+            *authorized,
+            request,
+            None,
+            stale_revisions,
+        )
+        .unwrap();
+
+        assert_eq!(report.result.outcome, ResultOutcome::Denied);
+        assert!(report.result.route_taken.is_none());
+        assert!(!marker_path.exists());
+        let text = serde_json::to_string(&report.observations).unwrap();
+        assert!(text.contains("PolicyRevisionStale"));
+        assert!(text.contains("minted_policy_revision"));
+    }
+
+    #[test]
+    fn cancelled_result_and_reply_hide_route_while_ledger_keeps_selection() {
+        let call = resident_test_call(
+            TraceId::new("trace-route-cancelled-mid-execution")
+                .expect("string ID literal/generated value must be non-empty"),
+        );
+        let route = CandidateRoute {
+            candidate_id: "child:resident-echo".into(),
+            node_id: MctNodeId::new("local-mct")
+                .expect("string ID literal/generated value must be non-empty"),
+            child_id: Some(
+                ChildId::new("resident-echo")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            runtime_kind: RuntimeKind::Process,
+            network_path: NetworkPathClass::Local,
+        };
+        let decision = RouteDecision::selected(
+            &call,
+            route.clone(),
+            vec![CandidateAuthorityEvaluation::admissible(route, 1, 1)],
+            resident_route_decision_ids("cancelled", &call),
+        );
+        let observation = route_decision_observation(
+            call.trace_context.trace_id.clone(),
+            current_timestamp(),
+            &decision,
+        );
+        let result = MctResult {
+            call_id: call.call_id.clone(),
+            outcome: ResultOutcome::Cancelled,
+            route_taken: None,
+            authority_decision_ref: decision.decision_id.clone(),
+            execution_summary: ExecutionSummary {
+                wall_time_ms: 0,
+                execution_time_ms: None,
+                queue_wait_ms: None,
+                input_size_bytes: 0,
+                output_size_bytes: None,
+            },
+            result_payload: MctCallPayloadHandle::Empty,
+            requester_message: "cancelled".into(),
+            audit_ref: AuditRef::new("audit-cancelled-route")
+                .expect("string ID literal/generated value must be non-empty"),
+        };
+        let reply = MctCallProtocolReply {
+            reply_id: ReplyId::new("reply-cancelled-route")
+                .expect("string ID literal/generated value must be non-empty"),
+            protocol_request_id: ProtocolRequestId::new("proto-cancelled-route")
+                .expect("string ID literal/generated value must be non-empty"),
+            decision_id: decision.decision_id,
+            result_ref: None,
+            result_payload: MctCallPayloadHandle::Empty,
+            route_taken: None,
+            reply_outcome: CallProtocolReplyOutcome::Cancelled,
+            safe_message: "cancelled".into(),
+            reply_observation_id: ObservationId::new("obs-reply-cancelled-route")
+                .expect("string ID literal/generated value must be non-empty"),
+        };
+
+        assert!(result.route_taken.is_none());
+        assert!(reply.validate().is_ok());
+        assert!(reply.route_taken.is_none());
+        assert_eq!(observation.kind, ObservationKind::RouteSelected);
+        assert_eq!(observation.resource_id, Some("child:resident-echo".into()));
     }
 
     async fn poll_resident_status(
