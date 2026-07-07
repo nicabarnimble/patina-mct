@@ -518,6 +518,30 @@ Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon/src/main.rs:
          };
 ```
 
+### 2026-07-06 — D5 outcome-matrix test used a non-existent RouteTaken field
+
+Command:
+
+```bash
+cargo test -p mct-daemon --bin mct-daemon route_taken_projection_follows_outcome_matrix -- --nocapture
+```
+
+Failure output:
+
+```text
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0560]: struct `mct_kernel::RouteTaken` has no field named `network_path`
+    --> crates/mct-daemon/src/main.rs:5075:13
+     |
+5075 |             network_path: NetworkPathClass::Local,
+     |             ^^^^^^^^^^^^ `mct_kernel::RouteTaken` does not have this field
+     |
+     = note: all struct fields are already assigned
+
+For more information about this error, try `rustc --explain E0560`.
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 1 previous error
+```
+
 ## Verbatim task prompt
 
 You are starting ROADMAP item 3 in `patina-mct`: routing wired
