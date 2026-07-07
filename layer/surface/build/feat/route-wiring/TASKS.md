@@ -6,7 +6,7 @@
 - [x] Task D2 — Kernel gaps only if the SPEC found any
 - [x] Task D3 — Daemon routing for local calls
 - [x] Task D4 — Remote serve-path integration
-- [ ] Task D5 — End-to-end proof and PHASE3 T5 discharge
+- [x] Task D5 — End-to-end proof and PHASE3 T5 discharge
 
 ## Flake log
 
@@ -409,6 +409,113 @@ Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-iroh/src/serve.rs:1
                          state.next_observation_id("call-reply"),
                      );
                      let response_bytes = encode_call_reply_envelope(
+```
+
+### 2026-07-06 — D5 targeted test invocation used multiple cargo filters
+
+Command:
+
+```bash
+cargo test -p mct-daemon resident_route_ resident_no_route_records_specific_elimination resident_authorized_unavailable_is_temporal_no_route resident_route_revision_guard_denies_before_effect cancelled_result_and_reply_hide_route_while_ledger_keeps_selection -- --nocapture
+```
+
+Failure output:
+
+```text
+error: unexpected argument 'resident_no_route_records_specific_elimination' found
+
+Usage: cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]
+
+For more information, try '--help'.
+```
+
+### 2026-07-06 — D5 proof tests exposed ledger text and stale-run issues
+
+Command:
+
+```bash
+cargo test -p mct-daemon --bin mct-daemon -- --nocapture
+```
+
+Failure output:
+
+```text
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.82s
+     Running unittests src/main.rs (target/debug/deps/mct_daemon-701d058281c133f0)
+
+running 16 tests
+test tests::cancelled_result_and_reply_hide_route_while_ledger_keeps_selection ... ok
+test tests::authorize_cli_toy_denies_expired_grant_against_current_time ... ok
+test tests::control_snapshot_unopenable_state_projects_error_response ... ok
+test tests::resident_status_source_reflects_closed_endpoint ... ok
+test tests::resident_authorized_unavailable_is_temporal_no_route ... ok
+test tests::resident_local_blob_absent_fails_closed_before_delivery ... ok
+
+thread 'tests::resident_no_route_records_specific_elimination' (6644025) panicked at crates/mct-daemon/src/main.rs:4977:9:
+assertion failed: ledger_text.contains("CandidateEliminated")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test tests::resident_no_route_records_specific_elimination ... FAILED
+test tests::resident_local_blob_tamper_fails_closed_via_digest_mismatch ... ok
+
+thread 'tests::resident_route_revision_guard_denies_before_effect' (6644028) panicked at crates/mct-daemon/src/main.rs:5056:10:
+called `Result::unwrap()` on an `Err` value: FOREIGN KEY constraint failed
+
+Caused by:
+    Error code 787: Foreign key constraint failed
+test tests::resident_route_revision_guard_denies_before_effect ... FAILED
+test tests::resident_wit_rejects_non_json_payload_before_execution ... ok
+test tests::resident_execution_runs_wit_child_and_records_trace ... ok
+test tests::resident_process_payload_delivery_returns_digest_and_keeps_ledger_byte_free ... ok
+test tests::resident_local_blob_payload_delivery_returns_digest_and_keeps_ledger_byte_free ... ok
+
+thread 'tests::resident_route_optimization_cannot_grant_authority' (6644027) panicked at crates/mct-daemon/src/main.rs:4941:9:
+assertion failed: ledger_text.contains("CandidateEliminated")
+test tests::resident_route_optimization_cannot_grant_authority ... FAILED
+mct resident mother endpoint_id=3ee3f6c4fbe546ce942ea4f81c590f322e248ec9d98a4ca84b9bd7bd2e21e071
+mct resident mother endpoint_id=176b5289df998d807aa2e099db779a800d748725edcce5408ba8d7e9c7f47e6f
+ticket={  "endpoint_id": "3ee3f6c4fbe546ce942ea4f81c590f322e248ec9d98a4ca84b9bd7bd2e21e071",  "direct_addresses": [    "10.10.10.182:53922",    "10.10.10.209:53922",    "100.114.124.29:53922"  ],  "relay_urls": []}
+ticket={  "endpoint_id": "176b5289df998d807aa2e099db779a800d748725edcce5408ba8d7e9c7f47e6f",  "direct_addresses": [    "10.10.10.182:63729",    "10.10.10.209:63729",    "100.114.124.29:63729"  ],  "relay_urls": []}
+mct resident mother children loaded=1 failed=0 bindings=1 max_connections=8
+mct resident mother children loaded=1 failed=0 bindings=1 max_connections=8
+mct daemon serving control uds on /var/folders/6h/329275913d1d3k1lfvvvryp40000gn/T/.tmp9ZRplI/control.sock
+mct daemon serving control uds on /var/folders/6h/329275913d1d3k1lfvvvryp40000gn/T/.tmprWS68k/control.sock
+test tests::resident_mother_payload_roundtrip_verifies_result_digest ... ok
+test tests::resident_mother_serves_peer_control_and_shutdown ... ok
+
+failures:
+
+failures:
+    tests::resident_no_route_records_specific_elimination
+    tests::resident_route_optimization_cannot_grant_authority
+    tests::resident_route_revision_guard_denies_before_effect
+
+test result: FAILED. 13 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.05s
+
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
+### 2026-07-06 — D5 rustfmt check reported formatting diff
+
+Command:
+
+```bash
+cargo fmt --check
+```
+
+Failure output:
+
+```text
+Diff in /Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon/src/main.rs:4994:
+                 .expect("string ID literal/generated value must be non-empty"),
+         );
+ 
+-        let outcome = authorize_resident_child_from_loaded(&config, loaded.children, &call).unwrap();
++        let outcome =
++            authorize_resident_child_from_loaded(&config, loaded.children, &call).unwrap();
+         let ResidentAuthorizationOutcome::Denied { observations, .. } = outcome else {
+             panic!("loading child should produce temporal no-route")
+         };
 ```
 
 ## Verbatim task prompt

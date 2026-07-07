@@ -222,12 +222,12 @@ verification code opens writers it never writes with.
 
 ## Task T5 notes
 
-`AuthorizedRouteExecution` now exposes the policy and grants revisions it was
-minted under. There is currently no daemon adapter that consumes
-`AuthorizedRouteExecution` directly; the route revalidation evaluator remains
-the route boundary and already compares current call revisions before minting.
-If a future route-execution adapter begins consuming the route capability, it
-must perform the same equality guard at that effect boundary.
+`AuthorizedRouteExecution` exposes the policy and grants revisions it was
+minted under. The route-wiring phase now consumes `AuthorizedRouteExecution`
+by value in resident child execution and performs the effect-boundary equality
+guard against current policy/grants revisions before any child process or WIT
+component runs. A mismatch records a typed no-route denial and never executes
+the child, discharging the future-work obligation originally recorded here.
 
 ## Task T6 notes
 
