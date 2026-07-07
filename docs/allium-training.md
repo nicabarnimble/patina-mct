@@ -1,11 +1,10 @@
 # Allium Training
 
-The team's Allium training curriculum lives in the **patina** repo:
+The team's Allium training curriculum now lives in the standalone learning repo:
 
-> `patina/docs/training/allium/README.md`
+> `/Users/nicabar/Projects/Patina/learn-allium`
 
-Six sessions (basics → language deep dive → internals → integration →
-contributing) with labs, cheat sheets, and validated exercise specs.
+Use that repo for session guides, slides, exercises, cheat sheets, and facilitator material.
 
 ## Why this pointer is here
 
@@ -23,5 +22,5 @@ Several patina-mct artifacts are first-class course material:
   beliefs/evidence say why; code executes inside that boundary.*
 
 Capstone projects scoped to MCT slices (`layer/slate/work/`) should nest
-under `mct-product-map.allium` rather than contradict it — see the
-capstone brief in the curriculum.
+under `mct-product-map.allium` rather than contradict it — see the capstone
+brief in `learn-allium`.
