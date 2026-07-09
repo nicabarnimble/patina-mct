@@ -70,7 +70,8 @@ pub use cycle::{
     MctChildTaskCycleReport, MctDrainedEvent, MctTaskCycleChild, run_child_task_cycle,
 };
 pub use federation::{
-    MctFederationCapabilityView, MctFederationPeerView, build_federation_capability_view,
+    MctFederationCallableSurfaceView, MctFederationCapabilityView, MctFederationPeerView,
+    build_federation_capability_view, build_federation_capability_view_with_children,
 };
 pub use inspector::{
     MctInspectorObservationQuery, MctInspectorObservationView, inspect_observation_entries,

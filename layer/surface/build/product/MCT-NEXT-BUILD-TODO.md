@@ -32,8 +32,11 @@ The hard part is authority. A remote Mother is not trusted just because it conne
 - [x] Replace: HTTP `/child/{child}/{action}` as the trust model for cross-Mother runtime calls.
 - [x] Replace: graph/federation knowledge routing as a substitute for runtime route authority.
 - [x] Replace: local native-job `patina:peer/peer` enqueue as the remote execution path.
-- [ ] Build: remote `CandidateRoute` generation from admitted signed peers.
+- [x] Build: remote `CandidateRoute` generation from admitted signed peers.
+  - Implemented as observed `RuntimeKind::RemotePeer` candidates; they remain fail-closed with `CapabilityUnavailable` until scoped publication and forwarding are implemented.
 - [ ] Build: scoped publication of callable surfaces from one Mother to another.
+  - [x] Local federation capability view publishes Vision-scoped callable child operations.
+  - [ ] Carry/consume callable surface views across peer exchange so remote route authority can use them.
 - [ ] Build: route-forward execution over Iroh `mct/hello/0` + `mct/call/0`.
 - [ ] Build: route-chain observations on both Mothers.
 
