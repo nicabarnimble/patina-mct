@@ -1732,6 +1732,134 @@ fn inline_result_payload_handle(
     }
 }
 
+fn resident_forwarded_call_sent_observation(
+    call: &MctCall,
+    candidate: &CandidateRoute,
+    forwarded_from: &MctNodeId,
+    forwarded_to: &MctNodeId,
+) -> MctObservation {
+    let operation_id = mct_daemon::operation_id_from_target(&call.target);
+    MctObservation {
+        observation_id: ObservationId::new(format!("obs-peer-call-sent:{}", call.call_id))
+            .expect("string ID literal/generated value must be non-empty"),
+        observed_at: current_timestamp(),
+        kind: ObservationKind::PeerCallSent,
+        source_plane: SourcePlane::Adapter,
+        trace: ObservationTraceRef {
+            trace_id: call.trace_context.trace_id.clone(),
+            span_id: Some(call.trace_context.span_id.clone()),
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: Some(call.call_id.clone()),
+        decision_id: None,
+        subject_id: Some(forwarded_from.to_string()),
+        resource_id: Some(candidate.candidate_id.clone()),
+        policy_revision: Some(call.authority_context.policy_revision),
+        grants_revision: Some(call.authority_context.grants_revision),
+        outcome: ObservationOutcome::Started,
+        visibility: ObservationVisibility::InternalOnly,
+        safe_message: "forwarding call to remote Mother".into(),
+        detail_ref: Some(format!(
+            "forwarded_from:{forwarded_from};forwarded_to:{forwarded_to};candidate:{};operation:{operation_id}",
+            candidate.candidate_id
+        )),
+    }
+}
+
+fn resident_remote_reply_observation(
+    call: &MctCall,
+    candidate: &CandidateRoute,
+    forwarded_from: &MctNodeId,
+    forwarded_to: &MctNodeId,
+    reply: &MctCallProtocolReply,
+) -> MctObservation {
+    let outcome = match reply.reply_outcome {
+        CallProtocolReplyOutcome::Success => ObservationOutcome::Completed,
+        CallProtocolReplyOutcome::Denied | CallProtocolReplyOutcome::Malformed => {
+            ObservationOutcome::Denied
+        }
+        CallProtocolReplyOutcome::Failed => ObservationOutcome::Failed,
+        CallProtocolReplyOutcome::TimedOut => ObservationOutcome::TimedOut,
+        CallProtocolReplyOutcome::Cancelled => ObservationOutcome::Cancelled,
+    };
+    MctObservation {
+        observation_id: ObservationId::new(format!("obs-peer-call-replied:{}", call.call_id))
+            .expect("string ID literal/generated value must be non-empty"),
+        observed_at: current_timestamp(),
+        kind: ObservationKind::PeerCallReplied,
+        source_plane: SourcePlane::Adapter,
+        trace: ObservationTraceRef {
+            trace_id: call.trace_context.trace_id.clone(),
+            span_id: Some(call.trace_context.span_id.clone()),
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: Some(call.call_id.clone()),
+        decision_id: Some(reply.decision_id.clone()),
+        subject_id: Some(forwarded_to.to_string()),
+        resource_id: Some(candidate.candidate_id.clone()),
+        policy_revision: Some(call.authority_context.policy_revision),
+        grants_revision: Some(call.authority_context.grants_revision),
+        outcome,
+        visibility: ObservationVisibility::InternalOnly,
+        safe_message: reply.safe_message.clone(),
+        detail_ref: Some(format!(
+            "forwarded_from:{forwarded_from};forwarded_to:{forwarded_to};candidate:{};remote_reply:{:?};remote_decision:{};remote_reply_id:{}",
+            candidate.candidate_id, reply.reply_outcome, reply.decision_id, reply.reply_id
+        )),
+    }
+}
+
+fn resident_executed_on_observation(
+    call: &MctCall,
+    route: &RouteTaken,
+    outcome: ResultOutcome,
+) -> MctObservation {
+    let operation_id = mct_daemon::operation_id_from_target(&call.target);
+    MctObservation {
+        observation_id: ObservationId::new(format!("obs-executed-on:{}", call.call_id))
+            .expect("string ID literal/generated value must be non-empty"),
+        observed_at: current_timestamp(),
+        kind: match outcome {
+            ResultOutcome::Success => ObservationKind::RuntimeExecutionCompleted,
+            ResultOutcome::TimedOut => ObservationKind::RuntimeExecutionTimedOut,
+            ResultOutcome::Failed | ResultOutcome::Denied | ResultOutcome::Cancelled => {
+                ObservationKind::RuntimeExecutionFailed
+            }
+        },
+        source_plane: SourcePlane::Child,
+        trace: ObservationTraceRef {
+            trace_id: call.trace_context.trace_id.clone(),
+            span_id: Some(call.trace_context.span_id.clone()),
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: Some(call.call_id.clone()),
+        decision_id: None,
+        subject_id: route.child_id.as_ref().map(ToString::to_string),
+        resource_id: Some(format!(
+            "node:{};runtime:{:?}",
+            route.node_id, route.runtime_kind
+        )),
+        policy_revision: Some(call.authority_context.policy_revision),
+        grants_revision: Some(call.authority_context.grants_revision),
+        outcome: match outcome {
+            ResultOutcome::Success => ObservationOutcome::Completed,
+            ResultOutcome::Denied => ObservationOutcome::Denied,
+            ResultOutcome::Failed => ObservationOutcome::Failed,
+            ResultOutcome::TimedOut => ObservationOutcome::TimedOut,
+            ResultOutcome::Cancelled => ObservationOutcome::Cancelled,
+        },
+        visibility: ObservationVisibility::InternalOnly,
+        safe_message: "runtime execution observed".into(),
+        detail_ref: Some(format!(
+            "executed_on:{};forwarded_from:{};operation:{operation_id}",
+            route.node_id, call.caller.node_id
+        )),
+    }
+}
+
 fn resident_payload_fact_observation(
     call: &MctCall,
     direction: &str,
@@ -2716,6 +2844,19 @@ async fn execute_authorized_resident_remote_call(
         endpoint.close().await;
         return MctIrohCallHandlerResult::failed("runtime unavailable");
     }
+    if let Err(error) = ledger
+        .append(vec![resident_forwarded_call_sent_observation(
+            &request.call,
+            &execution.candidate,
+            &authorized.local_identity.node_id,
+            &authorized.peer.peer_node_id,
+        )])
+        .await
+    {
+        endpoint.close().await;
+        eprintln!("resident remote sent-observation ledger write failed: {error}");
+        return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+    }
 
     let hello_request = resident_forwarding_hello_request(
         &local_endpoint_id,
@@ -2777,11 +2918,26 @@ async fn execute_authorized_resident_remote_call(
     };
     endpoint.close().await;
     match call_reply {
-        Ok(reply) => remote_reply_to_call_handler_result(
-            reply,
-            authorized.decision.decision_id,
-            authorized.route_taken,
-        ),
+        Ok(reply) => {
+            if let Err(error) = ledger
+                .append(vec![resident_remote_reply_observation(
+                    &request.call,
+                    &execution.candidate,
+                    &authorized.local_identity.node_id,
+                    &authorized.peer.peer_node_id,
+                    &reply.reply,
+                )])
+                .await
+            {
+                eprintln!("resident remote reply-observation ledger write failed: {error}");
+                return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+            }
+            remote_reply_to_call_handler_result(
+                reply,
+                authorized.decision.decision_id,
+                authorized.route_taken,
+            )
+        }
         Err(MotherIrohEndpointError::ProtocolPayload { safe_message, .. }) => {
             MctIrohCallHandlerResult::failed(safe_message).with_route(
                 Some(authorized.decision.decision_id),
@@ -3182,6 +3338,13 @@ fn execute_authorized_resident_child(
             execute_resident_wit_child(child_execution, &request, inline_payload.as_deref())?
         }
     };
+    if let Some(route) = report.result.route_taken.as_ref() {
+        report.observations.push(resident_executed_on_observation(
+            &call,
+            route,
+            report.result.outcome,
+        ));
+    }
     if let Some(bytes) = inline_payload.as_deref() {
         report.observations.push(resident_payload_fact_observation(
             &call,
@@ -6199,7 +6362,7 @@ mod tests {
                 identity_path: mother_b_identity_path.clone(),
                 children_dir: mother_b_children_dir.clone(),
                 state_path: mother_b_state_path.clone(),
-                ledger_path: mother_b_ledger_path,
+                ledger_path: mother_b_ledger_path.clone(),
                 control: ResidentControlTransport::Uds(mother_b_socket_path),
                 relay_default: false,
                 max_concurrent_connections: 8,
@@ -6392,6 +6555,14 @@ mod tests {
                 ..
             })
         ));
+        let mother_a_ledger = std::fs::read_to_string(&mother_a_ledger_path).unwrap();
+        let mother_b_ledger = std::fs::read_to_string(&mother_b_ledger_path).unwrap();
+        assert!(mother_a_ledger.contains("forwarded_from:mother-a;forwarded_to:mother-b"));
+        assert!(mother_b_ledger.contains("executed_on:mother-b;forwarded_from:mother-a"));
+        assert!(!mother_a_ledger.contains("{\"hello\":\"remote\"}"));
+        assert!(!mother_b_ledger.contains("{\"hello\":\"remote\"}"));
+        assert!(!mother_a_ledger.contains("processed:"));
+        assert!(!mother_b_ledger.contains("processed:"));
     }
 
     #[tokio::test]
