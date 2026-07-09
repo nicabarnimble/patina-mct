@@ -20,8 +20,8 @@ use mct_daemon::{
     sync_child_registry_source, warmup_configured_child,
 };
 use mct_iroh::{
-    MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES, MctIrohCallHandlerResult, MctIrohConcurrentServeConfig,
-    MctIrohServeEvent, MctIrohServeState, MctIrohServedProtocol,
+    MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES, MctIrohCallHandlerResult, MctIrohCallPayloadReply,
+    MctIrohConcurrentServeConfig, MctIrohServeEvent, MctIrohServeState, MctIrohServedProtocol,
     MctPeerBindingSignatureVerification, MotherIrohEndpoint, MotherIrohEndpointConfig,
     MotherIrohEndpointError, MotherIrohEndpointSnapshot, MotherIrohEndpointTicket,
     MotherIrohRelayMode, load_or_create_node_secret_key_hex, verify_peer_binding_signature_ref,
@@ -1234,10 +1234,18 @@ where
     }
 
     let config_store = MctDaemonConfigStore::new(&config.config_path);
-    let identity = config_store.ensure_local_identity(
-        MctOperatorNodeScope::default(),
-        config.identity_path.clone(),
-    )?;
+    let existing_config = config_store.load()?;
+    let identity_scope = existing_config
+        .local_identity
+        .as_ref()
+        .map(|identity| MctOperatorNodeScope {
+            node_id: identity.node_id.clone(),
+            vision_id: identity.vision_id.clone(),
+            policy_revision: identity.policy_revision,
+        })
+        .unwrap_or_default();
+    let identity =
+        config_store.ensure_local_identity(identity_scope, config.identity_path.clone())?;
     let secret_key_hex = load_or_create_node_secret_key_hex(&config.identity_path)?;
     let mut endpoint = MotherIrohEndpoint::bind(iroh_config(secret_key_hex, config.relay_default))
         .await
@@ -1651,6 +1659,28 @@ struct ResidentAuthorizedExecution {
 }
 
 #[derive(Debug)]
+struct ResidentAuthorizedRemoteExecution {
+    candidate: CandidateRoute,
+    initial_decision: RouteDecision,
+    route_observations: Vec<MctObservation>,
+}
+
+#[derive(Debug)]
+enum ResidentSelectedCandidate {
+    Local(Box<ResidentCandidatePlan>),
+    Remote(ResidentRemoteCandidatePlan),
+}
+
+impl ResidentSelectedCandidate {
+    fn candidate(&self) -> &CandidateRoute {
+        match self {
+            Self::Local(plan) => &plan.candidate,
+            Self::Remote(plan) => &plan.candidate,
+        }
+    }
+}
+
+#[derive(Debug)]
 struct ResidentChildExecution {
     child: mct_daemon::MctLoadedChild,
     authorized: AuthorizedChildInvocation,
@@ -1662,6 +1692,7 @@ struct ResidentChildExecution {
 #[derive(Debug)]
 enum ResidentAuthorizationOutcome {
     Authorized(Box<ResidentAuthorizedExecution>),
+    RemoteAuthorized(Box<ResidentAuthorizedRemoteExecution>),
     Denied {
         route_decision_id: DecisionId,
         observations: Vec<MctObservation>,
@@ -1925,65 +1956,78 @@ async fn execute_resident_call(
         }
     };
 
-    let ResidentAuthorizationOutcome::Authorized(authorized) = authorization else {
-        if let ResidentAuthorizationOutcome::Denied {
+    match authorization {
+        ResidentAuthorizationOutcome::Denied {
             route_decision_id,
             observations,
-        } = authorization
-        {
+        } => {
             if let Err(error) = ledger.append(observations).await {
                 eprintln!("resident route denial ledger write failed: {error}");
                 return MctIrohCallHandlerResult::failed("observation ledger unavailable");
             }
-            return MctIrohCallHandlerResult::denied().with_route(Some(route_decision_id), None);
+            MctIrohCallHandlerResult::denied().with_route(Some(route_decision_id), None)
         }
-        unreachable!("resident authorization outcome was already matched as non-authorized")
-    };
+        ResidentAuthorizationOutcome::Authorized(authorized) => {
+            if let Err(error) = ledger.append(authorized.route_observations.clone()).await {
+                eprintln!("resident route ledger write failed: {error}");
+                return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+            }
 
-    if let Err(error) = ledger.append(authorized.route_observations.clone()).await {
-        eprintln!("resident route ledger write failed: {error}");
-        return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+            let current_revisions = match current_resident_route_revisions(&paths, &request.call) {
+                Ok(revisions) => revisions,
+                Err(error) => {
+                    eprintln!("resident route revision read failed: {error}");
+                    return MctIrohCallHandlerResult::failed("runtime unavailable");
+                }
+            };
+            let execution = match tokio::task::spawn_blocking(move || {
+                execute_authorized_resident_child(
+                    paths,
+                    *authorized,
+                    request,
+                    inline_payload,
+                    current_revisions,
+                )
+            })
+            .await
+            {
+                Ok(Ok(report)) => report,
+                Ok(Err(error)) => {
+                    eprintln!("resident child execution failed: {error}");
+                    return MctIrohCallHandlerResult::failed("runtime execution failed");
+                }
+                Err(error) => {
+                    eprintln!("resident child execution task failed: {error}");
+                    return MctIrohCallHandlerResult::failed("runtime execution failed");
+                }
+            };
+
+            if let Err(error) = ledger.append(execution.observations.clone()).await {
+                eprintln!("resident execution ledger write failed: {error}");
+                return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+            }
+
+            result_to_call_handler_result(
+                "result-resident",
+                &execution.result,
+                execution.inline_result_payload,
+            )
+        }
+        ResidentAuthorizationOutcome::RemoteAuthorized(authorized) => {
+            if let Err(error) = ledger.append(authorized.route_observations.clone()).await {
+                eprintln!("resident remote route ledger write failed: {error}");
+                return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+            }
+            execute_authorized_resident_remote_call(
+                paths,
+                *authorized,
+                request,
+                inline_payload,
+                ledger,
+            )
+            .await
+        }
     }
-
-    let current_revisions = match current_resident_route_revisions(&paths, &request.call) {
-        Ok(revisions) => revisions,
-        Err(error) => {
-            eprintln!("resident route revision read failed: {error}");
-            return MctIrohCallHandlerResult::failed("runtime unavailable");
-        }
-    };
-    let execution = match tokio::task::spawn_blocking(move || {
-        execute_authorized_resident_child(
-            paths,
-            *authorized,
-            request,
-            inline_payload,
-            current_revisions,
-        )
-    })
-    .await
-    {
-        Ok(Ok(report)) => report,
-        Ok(Err(error)) => {
-            eprintln!("resident child execution failed: {error}");
-            return MctIrohCallHandlerResult::failed("runtime execution failed");
-        }
-        Err(error) => {
-            eprintln!("resident child execution task failed: {error}");
-            return MctIrohCallHandlerResult::failed("runtime execution failed");
-        }
-    };
-
-    if let Err(error) = ledger.append(execution.observations.clone()).await {
-        eprintln!("resident execution ledger write failed: {error}");
-        return MctIrohCallHandlerResult::failed("observation ledger unavailable");
-    }
-
-    result_to_call_handler_result(
-        "result-resident",
-        &execution.result,
-        execution.inline_result_payload,
-    )
 }
 
 async fn authorize_resident_child(
@@ -1995,6 +2039,7 @@ async fn authorize_resident_child(
         .context("join resident child authorization")?
 }
 
+#[derive(Debug)]
 struct ResidentCandidatePlan {
     child: mct_daemon::MctLoadedChild,
     candidate: CandidateRoute,
@@ -2002,6 +2047,7 @@ struct ResidentCandidatePlan {
     child_authority: ChildCallAuthorityResult,
 }
 
+#[derive(Debug)]
 struct ResidentRemoteCandidatePlan {
     candidate: CandidateRoute,
     authority: CandidateAuthorityEvaluation,
@@ -2088,7 +2134,14 @@ fn authorize_resident_child_from_loaded_with_state(
     let mut admissible = plans
         .into_iter()
         .filter(|plan| plan.authority.outcome == CandidateAuthorityOutcome::Admissible)
+        .map(|plan| ResidentSelectedCandidate::Local(Box::new(plan)))
         .collect::<Vec<_>>();
+    admissible.extend(
+        remote_plans
+            .into_iter()
+            .filter(|plan| plan.authority.outcome == CandidateAuthorityOutcome::Admissible)
+            .map(ResidentSelectedCandidate::Remote),
+    );
 
     if admissible.is_empty() {
         let no_route_reason = authority_evaluations
@@ -2112,65 +2165,89 @@ fn authorize_resident_child_from_loaded_with_state(
         });
     }
 
-    admissible.sort_by_key(|plan| resident_route_rank_key(&plan.candidate));
-    let selected = admissible.remove(0);
-    let initial = RouteDecision::selected(
-        call,
-        selected.candidate.clone(),
-        authority_evaluations,
-        resident_route_decision_ids("initial", call),
-    );
-    observations.push(child_call_authority_observation(
-        call.trace_context.trace_id.clone(),
-        current_timestamp(),
-        &selected.child_authority.evaluation,
-    ));
-    observations.push(route_decision_observation(
-        call.trace_context.trace_id.clone(),
-        current_timestamp(),
-        &initial,
-    ));
+    admissible.sort_by_key(|plan| resident_route_rank_key(plan.candidate()));
+    match admissible.remove(0) {
+        ResidentSelectedCandidate::Local(selected) => {
+            let initial = RouteDecision::selected(
+                call,
+                selected.candidate.clone(),
+                authority_evaluations,
+                resident_route_decision_ids("initial", call),
+            );
+            observations.push(child_call_authority_observation(
+                call.trace_context.trace_id.clone(),
+                current_timestamp(),
+                &selected.child_authority.evaluation,
+            ));
+            observations.push(route_decision_observation(
+                call.trace_context.trace_id.clone(),
+                current_timestamp(),
+                &initial,
+            ));
 
-    let revalidated_child = projection.authorize_child_for_call(&selected.child.name, call);
-    let child_authority_observation_id = revalidated_child.evaluation.observation_id.clone();
-    observations.push(child_call_authority_observation(
-        call.trace_context.trace_id.clone(),
-        current_timestamp(),
-        &revalidated_child.evaluation,
-    ));
-    let revalidation = revalidate_route_for_execution(
-        call,
-        &initial,
-        revalidated_child,
-        Vec::new(),
-        resident_route_revalidation_ids(call),
-    );
-    observations.push(route_decision_observation(
-        call.trace_context.trace_id.clone(),
-        current_timestamp(),
-        &revalidation.decision,
-    ));
+            let revalidated_child = projection.authorize_child_for_call(&selected.child.name, call);
+            let child_authority_observation_id =
+                revalidated_child.evaluation.observation_id.clone();
+            observations.push(child_call_authority_observation(
+                call.trace_context.trace_id.clone(),
+                current_timestamp(),
+                &revalidated_child.evaluation,
+            ));
+            let revalidation = revalidate_route_for_execution(
+                call,
+                &initial,
+                revalidated_child,
+                Vec::new(),
+                resident_route_revalidation_ids(call),
+            );
+            observations.push(route_decision_observation(
+                call.trace_context.trace_id.clone(),
+                current_timestamp(),
+                &revalidation.decision,
+            ));
 
-    let Some(authorized_route) = revalidation.authorized else {
-        return Ok(ResidentAuthorizationOutcome::Denied {
-            route_decision_id: revalidation.decision.decision_id,
-            observations,
-        });
-    };
-    let route_taken = RouteTaken {
-        node_id: selected.candidate.node_id.clone(),
-        child_id: selected.candidate.child_id.clone(),
-        runtime_kind: selected.candidate.runtime_kind,
-    };
-    Ok(ResidentAuthorizationOutcome::Authorized(Box::new(
-        ResidentAuthorizedExecution {
-            child: selected.child,
-            authorized_route,
-            route_taken,
-            child_authority_observation_id,
-            route_observations: observations,
-        },
-    )))
+            let Some(authorized_route) = revalidation.authorized else {
+                return Ok(ResidentAuthorizationOutcome::Denied {
+                    route_decision_id: revalidation.decision.decision_id,
+                    observations,
+                });
+            };
+            let route_taken = RouteTaken {
+                node_id: selected.candidate.node_id.clone(),
+                child_id: selected.candidate.child_id.clone(),
+                runtime_kind: selected.candidate.runtime_kind,
+            };
+            Ok(ResidentAuthorizationOutcome::Authorized(Box::new(
+                ResidentAuthorizedExecution {
+                    child: selected.child,
+                    authorized_route,
+                    route_taken,
+                    child_authority_observation_id,
+                    route_observations: observations,
+                },
+            )))
+        }
+        ResidentSelectedCandidate::Remote(selected) => {
+            let initial = RouteDecision::selected(
+                call,
+                selected.candidate.clone(),
+                authority_evaluations,
+                resident_route_decision_ids("initial", call),
+            );
+            observations.push(route_decision_observation(
+                call.trace_context.trace_id.clone(),
+                current_timestamp(),
+                &initial,
+            ));
+            Ok(ResidentAuthorizationOutcome::RemoteAuthorized(Box::new(
+                ResidentAuthorizedRemoteExecution {
+                    candidate: selected.candidate,
+                    initial_decision: initial,
+                    route_observations: observations,
+                },
+            )))
+        }
+    }
 }
 
 fn resident_child_scope(config: &mct_daemon::MctDaemonConfig) -> MctOperatorChildScope {
@@ -2561,6 +2638,456 @@ fn current_resident_route_revisions(
         grants_revision: call.authority_context.grants_revision,
         vision_policy_revision: call.authority_context.vision_policy_revision,
     })
+}
+
+struct ResidentRemoteRevalidationAuthorized {
+    decision: RouteDecision,
+    peer: MctPeerAddressBookEntry,
+    local_identity: MctLocalNodeIdentity,
+    capability_view: Option<MctHelloCapabilityView>,
+    route_taken: RouteTaken,
+}
+
+enum ResidentRemoteRevalidation {
+    Authorized(Box<ResidentRemoteRevalidationAuthorized>),
+    Denied(Box<RouteDecision>),
+}
+
+async fn execute_authorized_resident_remote_call(
+    paths: ResidentExecutionPaths,
+    execution: ResidentAuthorizedRemoteExecution,
+    request: MctCallProtocolRequest,
+    inline_payload: Option<Vec<u8>>,
+    ledger: ResidentLedgerWriter,
+) -> MctIrohCallHandlerResult {
+    let revalidation = match revalidate_resident_remote_route(&paths, &execution, &request.call) {
+        Ok(revalidation) => revalidation,
+        Err(error) => {
+            eprintln!("resident remote route revalidation failed: {error}");
+            return MctIrohCallHandlerResult::failed("runtime unavailable");
+        }
+    };
+    let revalidation_decision = match &revalidation {
+        ResidentRemoteRevalidation::Authorized(authorized) => &authorized.decision,
+        ResidentRemoteRevalidation::Denied(decision) => decision.as_ref(),
+    };
+    if let Err(error) = ledger
+        .append(vec![route_decision_observation(
+            request.call.trace_context.trace_id.clone(),
+            current_timestamp(),
+            revalidation_decision,
+        )])
+        .await
+    {
+        eprintln!("resident remote revalidation ledger write failed: {error}");
+        return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+    }
+
+    let ResidentRemoteRevalidation::Authorized(authorized) = revalidation else {
+        return MctIrohCallHandlerResult::denied()
+            .with_route(Some(revalidation_decision.decision_id.clone()), None);
+    };
+
+    let Some(peer_ticket) = authorized.peer.ticket.clone() else {
+        return MctIrohCallHandlerResult::failed("remote peer unavailable");
+    };
+    let Some(outbound_binding) = authorized.peer.outbound_binding.clone() else {
+        return MctIrohCallHandlerResult::denied()
+            .with_route(Some(authorized.decision.decision_id.clone()), None);
+    };
+
+    let secret_key_hex =
+        match load_or_create_node_secret_key_hex(&authorized.local_identity.identity_path) {
+            Ok(secret_key_hex) => secret_key_hex,
+            Err(error) => {
+                eprintln!("resident remote identity load failed: {error}");
+                return MctIrohCallHandlerResult::failed("runtime unavailable");
+            }
+        };
+    let mut endpoint = match MotherIrohEndpoint::bind(iroh_config(secret_key_hex, false)).await {
+        Ok(endpoint) => endpoint,
+        Err(error) => {
+            eprintln!("resident remote endpoint bind failed: {error}");
+            return MctIrohCallHandlerResult::failed("remote peer unavailable");
+        }
+    };
+    let local_endpoint_id = endpoint.snapshot().endpoint_id;
+    if local_endpoint_id != authorized.local_identity.endpoint_id {
+        endpoint.close().await;
+        return MctIrohCallHandlerResult::failed("runtime unavailable");
+    }
+
+    let hello_request = resident_forwarding_hello_request(
+        &local_endpoint_id,
+        &authorized.local_identity,
+        &authorized.peer,
+        &outbound_binding,
+        &request.call.trace_context.trace_id,
+        authorized.capability_view,
+    );
+    let hello_response = match endpoint.send_hello(&peer_ticket, &hello_request).await {
+        Ok(response) => response,
+        Err(error) => {
+            eprintln!("resident remote hello failed: {error}");
+            endpoint.close().await;
+            return MctIrohCallHandlerResult::failed("remote peer unavailable");
+        }
+    };
+    if let Err(error) = refresh_remote_surfaces_from_admitted_hello_response(
+        &paths.state_path,
+        &authorized.peer,
+        &hello_response,
+        current_timestamp(),
+    ) {
+        eprintln!("resident remote hello response surface refresh failed: {error}");
+    }
+    if hello_response.hello_outcome != HelloOutcome::Admitted
+        || !hello_response
+            .accepted_alpns
+            .iter()
+            .any(|alpn| alpn == MCT_CALL_ALPN)
+    {
+        endpoint.close().await;
+        return MctIrohCallHandlerResult::denied()
+            .with_route(Some(authorized.decision.decision_id.clone()), None);
+    }
+
+    let forwarded_request = resident_forwarded_call_request(
+        &request,
+        &authorized.local_identity,
+        &authorized.peer,
+        &outbound_binding,
+        &local_endpoint_id,
+        &hello_response,
+        inline_payload.as_deref(),
+    );
+    let call_reply = match inline_payload {
+        Some(bytes) => {
+            endpoint
+                .send_call_with_inline_payload(&peer_ticket, &forwarded_request, bytes)
+                .await
+        }
+        None => endpoint
+            .send_call(&peer_ticket, &forwarded_request)
+            .await
+            .map(|reply| MctIrohCallPayloadReply {
+                reply,
+                inline_result_payload: None,
+            }),
+    };
+    endpoint.close().await;
+    match call_reply {
+        Ok(reply) => remote_reply_to_call_handler_result(
+            reply,
+            authorized.decision.decision_id,
+            authorized.route_taken,
+        ),
+        Err(MotherIrohEndpointError::ProtocolPayload { safe_message, .. }) => {
+            MctIrohCallHandlerResult::failed(safe_message).with_route(
+                Some(authorized.decision.decision_id),
+                Some(authorized.route_taken),
+            )
+        }
+        Err(error) => {
+            eprintln!("resident remote call failed: {error}");
+            MctIrohCallHandlerResult::failed("remote peer unavailable").with_route(
+                Some(authorized.decision.decision_id),
+                Some(authorized.route_taken),
+            )
+        }
+    }
+}
+
+fn revalidate_resident_remote_route(
+    paths: &ResidentExecutionPaths,
+    execution: &ResidentAuthorizedRemoteExecution,
+    call: &MctCall,
+) -> Result<ResidentRemoteRevalidation> {
+    let config = MctDaemonConfigStore::new(&paths.config_path).load()?;
+    let Some(local_identity) = config.local_identity.clone() else {
+        return Ok(ResidentRemoteRevalidation::Denied(Box::new(
+            remote_revalidation_denied_decision(
+                call,
+                &execution.initial_decision,
+                execution.candidate.clone(),
+                CandidateEliminationReason::PeerNotAdmitted,
+            ),
+        )));
+    };
+    let Some(peer) = config
+        .peers
+        .get(execution.candidate.node_id.as_str())
+        .cloned()
+    else {
+        return Ok(ResidentRemoteRevalidation::Denied(Box::new(
+            remote_revalidation_denied_decision(
+                call,
+                &execution.initial_decision,
+                execution.candidate.clone(),
+                CandidateEliminationReason::PeerNotAdmitted,
+            ),
+        )));
+    };
+    let state = MctRuntimeStateStore::open(&paths.state_path)?;
+    let now = current_timestamp();
+    let operation_id = mct_daemon::operation_id_from_target(&call.target);
+    let surfaces = state.fresh_remote_callable_surfaces_for_operation(
+        &call.caller.vision_id,
+        &operation_id,
+        &now,
+    )?;
+    let Some(surface) = surfaces.into_iter().find(|surface| {
+        surface.peer_node_id == peer.peer_node_id
+            && resident_candidate_for_remote_surface(&peer, surface) == execution.candidate
+    }) else {
+        return Ok(ResidentRemoteRevalidation::Denied(Box::new(
+            remote_revalidation_denied_decision(
+                call,
+                &execution.initial_decision,
+                execution.candidate.clone(),
+                CandidateEliminationReason::CapabilityUnavailable,
+            ),
+        )));
+    };
+    let candidate = resident_candidate_for_remote_surface(&peer, &surface);
+    let authority = resident_remote_candidate_authority(
+        &local_identity,
+        &peer,
+        &surface,
+        candidate.clone(),
+        call,
+        &now,
+    )?;
+    if authority.outcome != CandidateAuthorityOutcome::Admissible {
+        return Ok(ResidentRemoteRevalidation::Denied(Box::new(
+            remote_revalidation_decision(
+                call,
+                &execution.initial_decision,
+                None,
+                authority
+                    .reason
+                    .unwrap_or(CandidateEliminationReason::CapabilityUnavailable),
+                authority,
+            ),
+        )));
+    }
+    let decision = remote_revalidation_decision(
+        call,
+        &execution.initial_decision,
+        Some(candidate.clone()),
+        CandidateEliminationReason::CapabilityUnavailable,
+        authority,
+    );
+    let route_taken = RouteTaken {
+        node_id: candidate.node_id,
+        child_id: candidate.child_id,
+        runtime_kind: candidate.runtime_kind,
+    };
+    let capability_view =
+        local_hello_capability_view_from_config(&config, &paths.state_path, &paths.children_dir)?;
+    Ok(ResidentRemoteRevalidation::Authorized(Box::new(
+        ResidentRemoteRevalidationAuthorized {
+            decision,
+            peer,
+            local_identity,
+            capability_view,
+            route_taken,
+        },
+    )))
+}
+
+fn remote_revalidation_denied_decision(
+    call: &MctCall,
+    initial: &RouteDecision,
+    candidate: CandidateRoute,
+    reason: CandidateEliminationReason,
+) -> RouteDecision {
+    let authority = CandidateAuthorityEvaluation::eliminated(
+        candidate,
+        reason,
+        call.authority_context.policy_revision,
+        call.authority_context.grants_revision,
+    );
+    remote_revalidation_decision(call, initial, None, reason, authority)
+}
+
+fn remote_revalidation_decision(
+    call: &MctCall,
+    initial: &RouteDecision,
+    selected_route: Option<CandidateRoute>,
+    no_route_reason: CandidateEliminationReason,
+    authority: CandidateAuthorityEvaluation,
+) -> RouteDecision {
+    let ids = resident_route_revalidation_ids(call);
+    let outcome = if selected_route.is_some() {
+        RouteDecisionOutcome::RouteSelected
+    } else {
+        RouteDecisionOutcome::NoRoute
+    };
+    RouteDecision {
+        decision_id: ids.decision_id,
+        call_id: call.call_id.clone(),
+        decision_kind: RouteDecisionKind::Revalidation,
+        initial_decision_id: Some(initial.decision_id.clone()),
+        authority_evaluations: vec![authority],
+        selected_route,
+        outcome,
+        no_route_reason: (outcome == RouteDecisionOutcome::NoRoute).then_some(no_route_reason),
+        safe_message: if outcome == RouteDecisionOutcome::RouteSelected {
+            "route revalidated".into()
+        } else {
+            "no route available".into()
+        },
+        observation_id: ids.observation_id,
+    }
+}
+
+fn resident_forwarding_hello_request(
+    endpoint_id: &EndpointIdText,
+    local_identity: &MctLocalNodeIdentity,
+    peer: &MctPeerAddressBookEntry,
+    outbound_binding: &MctOutboundPeerBindingPresentation,
+    trace_id: &TraceId,
+    capability_view: Option<MctHelloCapabilityView>,
+) -> MctHelloRequest {
+    MctHelloRequest {
+        hello_id: format!("hello-forward:{}", trace_id),
+        received_over: IrohConnectionPresentation {
+            endpoint_id: endpoint_id.clone(),
+            alpn: MCT_HELLO_ALPN.into(),
+            connection_side: ConnectionSide::Outgoing,
+            path_class: PathClass::Direct,
+            relay_url: None,
+            presented_capability_ref: None,
+        },
+        requested_protocol: HelloPolicy::default().protocol,
+        requested_vision_id: Some(peer.vision_id.clone()),
+        requested_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
+        presented_binding: MctPeerBindingPresentation {
+            binding_id: Some(outbound_binding.binding_id.clone()),
+            endpoint_id: endpoint_id.clone(),
+            mct_node_id: Some(local_identity.node_id.clone()),
+            vision_id: Some(peer.vision_id.clone()),
+            policy_revision: Some(outbound_binding.policy_revision),
+            allowed_alpns_claim: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
+            signature_ref: Some(outbound_binding.signature_ref.clone()),
+            expires_at: outbound_binding.expires_at.clone(),
+        },
+        capability_view,
+        local_policy_revision_seen: Some(local_identity.policy_revision),
+        trace_id: trace_id.clone(),
+        received_observation_id: ObservationId::new(format!("obs-hello-forward:{trace_id}"))
+            .expect("string ID literal/generated value must be non-empty"),
+    }
+}
+
+fn resident_forwarded_call_request(
+    original: &MctCallProtocolRequest,
+    local_identity: &MctLocalNodeIdentity,
+    peer: &MctPeerAddressBookEntry,
+    outbound_binding: &MctOutboundPeerBindingPresentation,
+    endpoint_id: &EndpointIdText,
+    hello: &MctHelloResponse,
+    inline_payload: Option<&[u8]>,
+) -> MctCallProtocolRequest {
+    let mut call = original.call.clone();
+    call.caller = CallerIdentity {
+        node_id: local_identity.node_id.clone(),
+        user_id: None,
+        vision_id: peer.vision_id.clone(),
+        project_id: original.call.caller.project_id.clone(),
+    };
+    call.origin = CallOrigin::Iroh;
+    let payload =
+        forwarded_request_payload_handle(&original.payload, &call.call_id, inline_payload);
+    MctCallProtocolRequest {
+        protocol_request_id: ProtocolRequestId::new(format!("proto-forwarded:{}", call.call_id))
+            .expect("string ID literal/generated value must be non-empty"),
+        authority: MctCallProtocolAuthority {
+            hello_decision_id: hello.decision_id.clone(),
+            peer_binding_id: outbound_binding.binding_id.clone(),
+            vision_id: peer.vision_id.clone(),
+            accepted_alpn: MCT_CALL_ALPN.into(),
+            endpoint_id: endpoint_id.clone(),
+            policy_revision: outbound_binding.policy_revision,
+            grants_revision: original.call.authority_context.grants_revision,
+        },
+        received_over: IrohConnectionPresentation {
+            endpoint_id: endpoint_id.clone(),
+            alpn: MCT_CALL_ALPN.into(),
+            connection_side: ConnectionSide::Outgoing,
+            path_class: PathClass::Direct,
+            relay_url: None,
+            presented_capability_ref: None,
+        },
+        call,
+        payload,
+        idempotency_key: original.idempotency_key.clone(),
+        received_observation_id: ObservationId::new(format!(
+            "obs-call-forwarded:{}",
+            original.call.call_id
+        ))
+        .expect("string ID literal/generated value must be non-empty"),
+    }
+}
+
+fn forwarded_request_payload_handle(
+    original: &MctCallPayloadHandle,
+    call_id: &CallId,
+    inline_payload: Option<&[u8]>,
+) -> MctCallPayloadHandle {
+    if let Some(bytes) = inline_payload {
+        return inline_result_payload_handle(
+            format!("payload-forwarded:{call_id}"),
+            inline_payload_content_type(original).unwrap_or("application/octet-stream"),
+            bytes,
+        );
+    }
+    original.clone()
+}
+
+fn remote_reply_to_call_handler_result(
+    reply: MctIrohCallPayloadReply,
+    route_decision_id: DecisionId,
+    route_taken: RouteTaken,
+) -> MctIrohCallHandlerResult {
+    match reply.reply.reply_outcome {
+        CallProtocolReplyOutcome::Success => {
+            let result_ref = reply.reply.result_ref.unwrap_or_else(|| {
+                ResultRef::new(format!("result-forwarded:{}", reply.reply.reply_id))
+                    .expect("string ID literal/generated value must be non-empty")
+            });
+            let mut result = match reply.inline_result_payload {
+                Some(bytes) => MctIrohCallHandlerResult::completed_with_inline_payload(
+                    result_ref,
+                    reply.reply.result_payload,
+                    bytes,
+                ),
+                None => {
+                    let mut result = MctIrohCallHandlerResult::completed(result_ref);
+                    result.result_payload = reply.reply.result_payload;
+                    result
+                }
+            };
+            result.safe_message = reply.reply.safe_message;
+            result.with_route(Some(route_decision_id), Some(route_taken))
+        }
+        CallProtocolReplyOutcome::Denied => {
+            MctIrohCallHandlerResult::denied().with_route(Some(route_decision_id), None)
+        }
+        CallProtocolReplyOutcome::Failed => {
+            MctIrohCallHandlerResult::failed(reply.reply.safe_message)
+                .with_route(Some(route_decision_id), Some(route_taken))
+        }
+        CallProtocolReplyOutcome::TimedOut => MctIrohCallHandlerResult::timed_out()
+            .with_route(Some(route_decision_id), Some(route_taken)),
+        CallProtocolReplyOutcome::Cancelled => MctIrohCallHandlerResult::failed("call cancelled")
+            .with_route(Some(route_decision_id), None),
+        CallProtocolReplyOutcome::Malformed => {
+            MctIrohCallHandlerResult::failed(reply.reply.safe_message)
+                .with_route(Some(route_decision_id), None)
+        }
+    }
 }
 
 fn resident_child_accepts_call(child: &mct_daemon::MctLoadedChild, call: &MctCall) -> bool {
@@ -5576,6 +6103,295 @@ mod tests {
             .unwrap()
             .unwrap();
         client.close().await;
+    }
+
+    #[tokio::test]
+    async fn two_mother_forwards_selected_call_over_iroh_and_maps_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let mother_a_config_path = dir.path().join("mother-a").join("config.json");
+        let mother_a_identity_path = dir
+            .path()
+            .join("mother-a")
+            .join("identity")
+            .join("iroh-secret.hex");
+        let mother_a_state_path = dir.path().join("mother-a").join("state.sqlite");
+        let mother_a_ledger_path = dir.path().join("mother-a").join("observations.jsonl");
+        let mother_a_socket_path = dir.path().join("mother-a").join("control.sock");
+        let mother_a_children_dir = dir.path().join("mother-a").join("children");
+        let mother_b_config_path = dir.path().join("mother-b").join("config.json");
+        let mother_b_identity_path = dir
+            .path()
+            .join("mother-b")
+            .join("identity")
+            .join("iroh-secret.hex");
+        let mother_b_state_path = dir.path().join("mother-b").join("state.sqlite");
+        let mother_b_ledger_path = dir.path().join("mother-b").join("observations.jsonl");
+        let mother_b_socket_path = dir.path().join("mother-b").join("control.sock");
+        let mother_b_children_dir = dir.path().join("mother-b").join("children");
+        write_resident_payload_process_child(&mother_b_children_dir);
+
+        let mother_a_node_id = MctNodeId::new("mother-a")
+            .expect("string ID literal/generated value must be non-empty");
+        let mother_b_node_id = MctNodeId::new("mother-b")
+            .expect("string ID literal/generated value must be non-empty");
+        let vision_id = VisionId::new("vision-local")
+            .expect("string ID literal/generated value must be non-empty");
+        let mother_a_store = MctDaemonConfigStore::new(&mother_a_config_path);
+        let mother_b_store = MctDaemonConfigStore::new(&mother_b_config_path);
+        let mother_a_identity = mother_a_store
+            .ensure_local_identity(
+                MctOperatorNodeScope {
+                    node_id: mother_a_node_id.clone(),
+                    vision_id: vision_id.clone(),
+                    policy_revision: 1,
+                },
+                &mother_a_identity_path,
+            )
+            .unwrap();
+        let mother_b_identity = mother_b_store
+            .ensure_local_identity(
+                MctOperatorNodeScope {
+                    node_id: mother_b_node_id.clone(),
+                    vision_id: vision_id.clone(),
+                    policy_revision: 1,
+                },
+                &mother_b_identity_path,
+            )
+            .unwrap();
+        let loaded_b =
+            load_children_from_dir(MctChildLoadOptions::new(mother_b_children_dir.clone()));
+        mother_b_store
+            .approve_and_assign_loaded_child(
+                &loaded_b.children[0],
+                MctOperatorChildScope {
+                    vision_id: vision_id.clone(),
+                    node_id: mother_b_node_id.clone(),
+                    project_id: None,
+                    policy_revision: 1,
+                },
+            )
+            .unwrap();
+        mother_b_store
+            .upsert_peer(MctPeerAddressBookEntry {
+                peer_node_id: mother_a_node_id.clone(),
+                binding_id: PeerBindingId::new("binding-b-admits-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+                endpoint_id: mother_a_identity.endpoint_id.clone(),
+                vision_id: vision_id.clone(),
+                ticket: None,
+                binding_signature_ref: None,
+                outbound_binding: None,
+                binding_state: BindingState::Admitted,
+                policy_revision: 1,
+                updated_at: mct_daemon::current_timestamp_string(),
+            })
+            .unwrap();
+        let mother_b_proof_for_a = mother_b_store.load().unwrap().peers["mother-a"]
+            .binding_signature_ref
+            .clone()
+            .unwrap();
+
+        let (mother_b_ready_tx, mother_b_ready_rx) = tokio::sync::oneshot::channel();
+        let (mother_b_shutdown_tx, mother_b_shutdown_rx) = tokio::sync::oneshot::channel();
+        let mother_b = tokio::spawn(run_resident_mother(
+            ResidentMotherConfig {
+                config_path: mother_b_config_path.clone(),
+                identity_path: mother_b_identity_path.clone(),
+                children_dir: mother_b_children_dir.clone(),
+                state_path: mother_b_state_path.clone(),
+                ledger_path: mother_b_ledger_path,
+                control: ResidentControlTransport::Uds(mother_b_socket_path),
+                relay_default: false,
+                max_concurrent_connections: 8,
+            },
+            async move {
+                let _ = mother_b_shutdown_rx.await;
+            },
+            Some(mother_b_ready_tx),
+        ));
+        let mother_b_ticket = tokio::time::timeout(Duration::from_secs(10), mother_b_ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let client_endpoint_id = client.snapshot().endpoint_id;
+        let client_node_id = MctNodeId::new("mother-client")
+            .expect("string ID literal/generated value must be non-empty");
+        mother_a_store
+            .upsert_peer(MctPeerAddressBookEntry {
+                peer_node_id: mother_b_node_id.clone(),
+                binding_id: PeerBindingId::new("binding-a-admits-b")
+                    .expect("string ID literal/generated value must be non-empty"),
+                endpoint_id: mother_b_identity.endpoint_id.clone(),
+                vision_id: vision_id.clone(),
+                ticket: Some(mother_b_ticket.clone()),
+                binding_signature_ref: None,
+                outbound_binding: None,
+                binding_state: BindingState::Admitted,
+                policy_revision: 1,
+                updated_at: mct_daemon::current_timestamp_string(),
+            })
+            .unwrap();
+        mother_a_store
+            .set_peer_outbound_proof(
+                &mother_b_node_id,
+                MctOutboundPeerBindingPresentation {
+                    binding_id: PeerBindingId::new("binding-b-admits-a")
+                        .expect("string ID literal/generated value must be non-empty"),
+                    policy_revision: 1,
+                    signature_ref: mother_b_proof_for_a,
+                    expires_at: None,
+                },
+            )
+            .unwrap();
+        mother_a_store
+            .upsert_peer(MctPeerAddressBookEntry {
+                peer_node_id: client_node_id.clone(),
+                binding_id: PeerBindingId::new("binding-a-admits-client")
+                    .expect("string ID literal/generated value must be non-empty"),
+                endpoint_id: client_endpoint_id.clone(),
+                vision_id: vision_id.clone(),
+                ticket: None,
+                binding_signature_ref: None,
+                outbound_binding: None,
+                binding_state: BindingState::Admitted,
+                policy_revision: 1,
+                updated_at: mct_daemon::current_timestamp_string(),
+            })
+            .unwrap();
+        let client_proof_for_a = mother_a_store.load().unwrap().peers["mother-client"]
+            .binding_signature_ref
+            .clone();
+        let mother_a_peer_b = mother_a_store.load().unwrap().peers["mother-b"].clone();
+        let received_at = current_timestamp();
+        let stale_at = remote_surface_stale_at(&received_at).unwrap();
+        let surface_view = MctHelloCapabilityView {
+            node_id: mother_b_node_id.clone(),
+            vision_id: vision_id.clone(),
+            published_at: received_at.clone(),
+            policy_revision: 1,
+            supported_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
+            supported_wit_worlds: vec!["patina:demo/control@0.1.0".into()],
+            supported_observation_modes: vec!["local-ledger".into()],
+            callable_surfaces: vec![MctHelloCallableSurface {
+                child_name: "resident-payload-echo".into(),
+                operation_id: "patina:demo/control@0.1.0.run".into(),
+                runtime_kind: RuntimeKind::Process,
+                vision_id: vision_id.clone(),
+                policy_revision: 1,
+                visibility: "vision_scoped".into(),
+            }],
+            capability_view_ref: None,
+        };
+        MctRuntimeStateStore::open(&mother_a_state_path)
+            .unwrap()
+            .refresh_remote_callable_surfaces(MctRemoteSurfaceRefresh {
+                peer_node_id: &mother_b_node_id,
+                binding_id: &mother_a_peer_b.binding_id,
+                endpoint_id: &mother_a_peer_b.endpoint_id,
+                view: &surface_view,
+                received_at: &received_at,
+                stale_at: &stale_at,
+                view_observation_id: &ObservationId::new("obs-test-mother-b-surface")
+                    .expect("string ID literal/generated value must be non-empty"),
+            })
+            .unwrap();
+
+        let (mother_a_ready_tx, mother_a_ready_rx) = tokio::sync::oneshot::channel();
+        let (mother_a_shutdown_tx, mother_a_shutdown_rx) = tokio::sync::oneshot::channel();
+        let mother_a = tokio::spawn(run_resident_mother(
+            ResidentMotherConfig {
+                config_path: mother_a_config_path.clone(),
+                identity_path: mother_a_identity_path.clone(),
+                children_dir: mother_a_children_dir,
+                state_path: mother_a_state_path,
+                ledger_path: mother_a_ledger_path.clone(),
+                control: ResidentControlTransport::Uds(mother_a_socket_path),
+                relay_default: false,
+                max_concurrent_connections: 8,
+            },
+            async move {
+                let _ = mother_a_shutdown_rx.await;
+            },
+            Some(mother_a_ready_tx),
+        ));
+        let mother_a_ticket = tokio::time::timeout(Duration::from_secs(10), mother_a_ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let trace_id = TraceId::new("trace-two-mother-forward")
+            .expect("string ID literal/generated value must be non-empty");
+        let hello = cli_hello_request(
+            &client_endpoint_id,
+            &PeerBindingId::new("binding-a-admits-client")
+                .expect("string ID literal/generated value must be non-empty"),
+            &client_node_id,
+            &vision_id,
+            &trace_id,
+            client_proof_for_a,
+        );
+        let hello_response = client.send_hello(&mother_a_ticket, &hello).await.unwrap();
+        let payload = br#"{"hello":"remote"}"#.to_vec();
+        let mut call = cli_call_request(
+            &client_endpoint_id,
+            &PeerBindingId::new("binding-a-admits-client")
+                .expect("string ID literal/generated value must be non-empty"),
+            &client_node_id,
+            &vision_id,
+            &trace_id,
+            OperationTarget {
+                namespace: "patina:demo".into(),
+                interface_name: "control@0.1.0".into(),
+                function_name: "run".into(),
+            },
+            &hello_response,
+        );
+        call.call.call_id = CallId::new("call-two-mother-forward")
+            .expect("string ID literal/generated value must be non-empty");
+        call.call.payload_metadata.size_bytes = payload.len() as u64;
+        call.payload = MctCallPayloadHandle::InlinePayload {
+            inline_payload_ref: "payload-two-mother-forward".into(),
+            content_type: "application/json".into(),
+            size_bytes: payload.len() as u64,
+            blake3_digest_hex: blake3_hex(&payload),
+        };
+
+        let call_reply = client
+            .send_call_with_inline_payload(&mother_a_ticket, &call, payload)
+            .await
+            .unwrap();
+        let reply_outcome = call_reply.reply.reply_outcome;
+        let inline_result_payload = call_reply.inline_result_payload;
+        let route_taken = call_reply.reply.route_taken;
+
+        let _ = mother_a_shutdown_tx.send(());
+        let _ = mother_b_shutdown_tx.send(());
+        tokio::time::timeout(Duration::from_secs(10), mother_a)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), mother_b)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        client.close().await;
+
+        assert_eq!(reply_outcome, CallProtocolReplyOutcome::Success);
+        assert_eq!(
+            inline_result_payload.expect("forwarded result payload"),
+            br#"processed:{"hello":"remote"}"#.to_vec()
+        );
+        assert!(matches!(
+            route_taken,
+            Some(RouteTaken {
+                runtime_kind: RuntimeKind::RemotePeer,
+                ..
+            })
+        ));
     }
 
     #[tokio::test]
