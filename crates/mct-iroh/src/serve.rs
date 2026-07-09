@@ -7,7 +7,9 @@ use crate::{
         MotherIrohEndpoint, MotherIrohEndpointError, MotherIrohEndpointResult,
         MotherIrohEndpointTicket, boxed_source,
     },
-    identity::encode_hex,
+    identity::{
+        MctPeerBindingSignatureVerification, encode_hex, verify_peer_binding_signature_ref,
+    },
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use internal::{ROUNDTRIP_CONNECTION_TIMEOUT, SERVE_CONNECTION_TIMEOUT};
@@ -276,6 +278,7 @@ pub struct MctIrohConcurrentServeConfig {
     pub max_concurrent_connections: usize,
     pub connection_timeout: Duration,
     pub events: Option<mpsc::Sender<MctIrohServeEvent>>,
+    pub require_binding_signature: bool,
 }
 
 impl Default for MctIrohConcurrentServeConfig {
@@ -284,6 +287,7 @@ impl Default for MctIrohConcurrentServeConfig {
             max_concurrent_connections: 64,
             connection_timeout: SERVE_CONNECTION_TIMEOUT,
             events: None,
+            require_binding_signature: false,
         }
     }
 }
@@ -438,6 +442,58 @@ fn verify_inline_result_payload(
             reason: decision.reason,
             safe_message: decision.safe_message,
         })
+    }
+}
+
+fn enforce_hello_binding_signature(
+    request: &MctHelloRequest,
+    bindings: &[MctPeerBinding],
+    issuer_endpoint_id: &EndpointIdText,
+    evaluation: MctHelloAdmissionEvaluation,
+) -> MctHelloAdmissionEvaluation {
+    if !evaluation.is_admitted() {
+        return evaluation;
+    }
+    let Some(selected_binding_id) = evaluation.selected_binding_id.as_ref() else {
+        return deny_hello_for_invalid_signature(request, evaluation);
+    };
+    let Some(binding) = bindings
+        .iter()
+        .find(|binding| &binding.binding_id == selected_binding_id)
+    else {
+        return deny_hello_for_invalid_signature(request, evaluation);
+    };
+    match verify_peer_binding_signature_ref(
+        request.presented_binding.signature_ref.as_deref(),
+        binding,
+        issuer_endpoint_id,
+    ) {
+        MctPeerBindingSignatureVerification::Valid => evaluation,
+        MctPeerBindingSignatureVerification::Missing
+        | MctPeerBindingSignatureVerification::Malformed
+        | MctPeerBindingSignatureVerification::Invalid => {
+            deny_hello_for_invalid_signature(request, evaluation)
+        }
+    }
+}
+
+fn deny_hello_for_invalid_signature(
+    request: &MctHelloRequest,
+    evaluation: MctHelloAdmissionEvaluation,
+) -> MctHelloAdmissionEvaluation {
+    MctHelloAdmissionEvaluation {
+        decision_id: evaluation.decision_id,
+        request_id: request.hello_id.clone(),
+        peer_admission_decision_id: evaluation.peer_admission_decision_id,
+        selected_binding_id: None,
+        selected_node_id: None,
+        selected_vision_id: None,
+        negotiated_protocol: None,
+        accepted_alpns: Vec::new(),
+        hello_outcome: HelloOutcome::Denied,
+        reason: HelloReason::CapabilityInvalid,
+        safe_reason: SafeHelloReason::NotAuthorized,
+        observation_id: evaluation.observation_id,
     }
 }
 
@@ -685,6 +741,8 @@ impl MotherIrohEndpoint {
             .as_ref()
             .ok_or(MotherIrohEndpointError::EndpointClosed)?
             .clone();
+        let issuer_endpoint_id = self.snapshot().endpoint_id;
+        let require_binding_signature = config.require_binding_signature;
         let state = Arc::new(Mutex::new(state));
         let semaphore = Arc::new(Semaphore::new(config.max_concurrent_connections));
         let active_tasks = Arc::new(AtomicU64::new(0));
@@ -711,6 +769,7 @@ impl MotherIrohEndpoint {
             let now = now.clone();
             let events = config.events.clone();
             let connection_timeout = config.connection_timeout;
+            let issuer_endpoint_id = issuer_endpoint_id.clone();
             let active_tasks = Arc::clone(&active_tasks);
             active_tasks.fetch_add(1, Ordering::SeqCst);
 
@@ -768,7 +827,7 @@ impl MotherIrohEndpoint {
                             request.received_over.connection_side = ConnectionSide::Incoming;
 
                             let mut state = state.lock().await;
-                            let evaluation = evaluate_hello(
+                            let mut evaluation = evaluate_hello(
                                 &request,
                                 &bindings,
                                 &HelloPolicy::default(),
@@ -780,6 +839,14 @@ impl MotherIrohEndpoint {
                                     now: now(),
                                 },
                             );
+                            if require_binding_signature {
+                                evaluation = enforce_hello_binding_signature(
+                                    &request,
+                                    &bindings,
+                                    &issuer_endpoint_id,
+                                    evaluation,
+                                );
+                            }
                             state.remember_hello(remote_endpoint_id, evaluation.clone());
                             let response = hello_response(
                                 format!("reply-iroh-hello-{}", state.next_suffix()),
