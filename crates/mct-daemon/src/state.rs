@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 /// Project-local durable runtime state for one standalone MCT node.
 ///
@@ -39,6 +39,33 @@ pub struct MctRuntimeStateSummary {
     pub child_subscriptions: u64,
     pub toy_catalog_contracts: u64,
     pub toy_grant_snapshots: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctRemoteCallableSurfaceRecord {
+    pub peer_node_id: MctNodeId,
+    pub binding_id: PeerBindingId,
+    pub endpoint_id: EndpointIdText,
+    pub vision_id: VisionId,
+    pub publisher_policy_revision: u64,
+    pub child_name: String,
+    pub operation_id: String,
+    pub runtime_kind: RuntimeKind,
+    pub surface_policy_revision: u64,
+    pub visibility: String,
+    pub received_at: Timestamp,
+    pub stale_at: Timestamp,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MctRemoteSurfaceRefresh<'a> {
+    pub peer_node_id: &'a MctNodeId,
+    pub binding_id: &'a PeerBindingId,
+    pub endpoint_id: &'a EndpointIdText,
+    pub view: &'a MctHelloCapabilityView,
+    pub received_at: &'a Timestamp,
+    pub stale_at: &'a Timestamp,
+    pub view_observation_id: &'a ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -304,6 +331,43 @@ impl MctRuntimeStateStore {
                 policy_revision INTEGER NOT NULL,
                 updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS remote_surface_views (
+                peer_node_id TEXT NOT NULL,
+                vision_id TEXT NOT NULL,
+                binding_id TEXT NOT NULL,
+                endpoint_id TEXT NOT NULL,
+                publisher_policy_revision INTEGER NOT NULL,
+                published_at TEXT NOT NULL,
+                received_at TEXT NOT NULL,
+                stale_at TEXT NOT NULL,
+                view_observation_id TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (peer_node_id, vision_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS remote_callable_surfaces (
+                peer_node_id TEXT NOT NULL,
+                vision_id TEXT NOT NULL,
+                child_name TEXT NOT NULL,
+                operation_id TEXT NOT NULL,
+                binding_id TEXT NOT NULL,
+                endpoint_id TEXT NOT NULL,
+                publisher_policy_revision INTEGER NOT NULL,
+                runtime_kind TEXT NOT NULL,
+                surface_policy_revision INTEGER NOT NULL,
+                visibility TEXT NOT NULL,
+                received_at TEXT NOT NULL,
+                stale_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (peer_node_id, vision_id, child_name, operation_id),
+                FOREIGN KEY(peer_node_id, vision_id)
+                    REFERENCES remote_surface_views(peer_node_id, vision_id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_remote_callable_surfaces_operation
+            ON remote_callable_surfaces(vision_id, operation_id, stale_at);
 
             CREATE TABLE IF NOT EXISTS runtime_runs (
                 run_id TEXT PRIMARY KEY,
@@ -841,6 +905,130 @@ impl MctRuntimeStateStore {
             self.upsert_peer(peer)?;
         }
         Ok(())
+    }
+
+    pub fn refresh_remote_callable_surfaces(
+        &self,
+        refresh: MctRemoteSurfaceRefresh<'_>,
+    ) -> Result<()> {
+        let MctRemoteSurfaceRefresh {
+            peer_node_id,
+            binding_id,
+            endpoint_id,
+            view,
+            received_at,
+            stale_at,
+            view_observation_id,
+        } = refresh;
+        validate_remote_capability_view(peer_node_id, view)?;
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM remote_callable_surfaces WHERE peer_node_id = ?1 AND vision_id = ?2",
+            params![peer_node_id.as_str(), view.vision_id.as_str()],
+        )?;
+        tx.execute(
+            r#"
+            INSERT INTO remote_surface_views(
+                peer_node_id, vision_id, binding_id, endpoint_id, publisher_policy_revision,
+                published_at, received_at, stale_at, view_observation_id, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ON CONFLICT(peer_node_id, vision_id) DO UPDATE SET
+                binding_id = excluded.binding_id,
+                endpoint_id = excluded.endpoint_id,
+                publisher_policy_revision = excluded.publisher_policy_revision,
+                published_at = excluded.published_at,
+                received_at = excluded.received_at,
+                stale_at = excluded.stale_at,
+                view_observation_id = excluded.view_observation_id,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                peer_node_id.as_str(),
+                view.vision_id.as_str(),
+                binding_id.as_str(),
+                endpoint_id.as_str(),
+                view.policy_revision,
+                view.published_at.as_str(),
+                received_at.as_str(),
+                stale_at.as_str(),
+                view_observation_id.as_str(),
+                current_timestamp_string(),
+            ],
+        )?;
+        for surface in &view.callable_surfaces {
+            tx.execute(
+                r#"
+                INSERT INTO remote_callable_surfaces(
+                    peer_node_id, vision_id, child_name, operation_id, binding_id, endpoint_id,
+                    publisher_policy_revision, runtime_kind, surface_policy_revision, visibility,
+                    received_at, stale_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                "#,
+                params![
+                    peer_node_id.as_str(),
+                    view.vision_id.as_str(),
+                    surface.child_name.as_str(),
+                    surface.operation_id.as_str(),
+                    binding_id.as_str(),
+                    endpoint_id.as_str(),
+                    view.policy_revision,
+                    json_atom(&surface.runtime_kind)?,
+                    surface.policy_revision,
+                    surface.visibility.as_str(),
+                    received_at.as_str(),
+                    stale_at.as_str(),
+                    current_timestamp_string(),
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn remote_callable_surfaces(
+        &self,
+        peer_node_id: &MctNodeId,
+        vision_id: &VisionId,
+    ) -> Result<Vec<MctRemoteCallableSurfaceRecord>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT peer_node_id, binding_id, endpoint_id, vision_id, publisher_policy_revision,
+                   child_name, operation_id, runtime_kind, surface_policy_revision, visibility,
+                   received_at, stale_at
+            FROM remote_callable_surfaces
+            WHERE peer_node_id = ?1 AND vision_id = ?2
+            ORDER BY operation_id, child_name
+            "#,
+        )?;
+        stmt.query_map(params![peer_node_id.as_str(), vision_id.as_str()], |row| {
+            remote_callable_surface_from_row(row)
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("read remote callable surfaces")
+    }
+
+    pub fn fresh_remote_callable_surfaces_for_operation(
+        &self,
+        vision_id: &VisionId,
+        operation_id: &str,
+        now: &Timestamp,
+    ) -> Result<Vec<MctRemoteCallableSurfaceRecord>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT peer_node_id, binding_id, endpoint_id, vision_id, publisher_policy_revision,
+                   child_name, operation_id, runtime_kind, surface_policy_revision, visibility,
+                   received_at, stale_at
+            FROM remote_callable_surfaces
+            WHERE vision_id = ?1 AND operation_id = ?2 AND stale_at > ?3
+            ORDER BY peer_node_id, child_name
+            "#,
+        )?;
+        stmt.query_map(
+            params![vision_id.as_str(), operation_id, now.as_str()],
+            remote_callable_surface_from_row,
+        )?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("read fresh remote callable surfaces")
     }
 
     pub fn record_loaded_child_candidate(
@@ -1483,6 +1671,56 @@ fn is_known_count_table(table: &str) -> bool {
             | "toy_catalog_contracts"
             | "toy_grant_snapshots"
     )
+}
+
+fn validate_remote_capability_view(
+    peer_node_id: &MctNodeId,
+    view: &MctHelloCapabilityView,
+) -> Result<()> {
+    if &view.node_id != peer_node_id {
+        bail!("remote capability view node does not match admitted peer");
+    }
+    for surface in &view.callable_surfaces {
+        if surface.child_name.trim().is_empty() {
+            bail!("remote callable surface child_name must not be empty");
+        }
+        if surface.operation_id.trim().is_empty() {
+            bail!("remote callable surface operation_id must not be empty");
+        }
+        if surface.vision_id != view.vision_id {
+            bail!("remote callable surface vision does not match view vision");
+        }
+        if surface.visibility != "vision_scoped" {
+            bail!("remote callable surface visibility must be vision_scoped");
+        }
+    }
+    Ok(())
+}
+
+fn remote_callable_surface_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<MctRemoteCallableSurfaceRecord> {
+    let runtime_kind: String = row.get(7)?;
+    Ok(MctRemoteCallableSurfaceRecord {
+        peer_node_id: MctNodeId::new(row.get::<_, String>(0)?)
+            .expect("string ID literal/generated value must be non-empty"),
+        binding_id: PeerBindingId::new(row.get::<_, String>(1)?)
+            .expect("string ID literal/generated value must be non-empty"),
+        endpoint_id: EndpointIdText::new(row.get::<_, String>(2)?)
+            .expect("string ID literal/generated value must be non-empty"),
+        vision_id: VisionId::new(row.get::<_, String>(3)?)
+            .expect("string ID literal/generated value must be non-empty"),
+        publisher_policy_revision: row.get::<_, i64>(4)?.max(0) as u64,
+        child_name: row.get(5)?,
+        operation_id: row.get(6)?,
+        runtime_kind: from_json_atom(&runtime_kind).map_err(to_sql_error)?,
+        surface_policy_revision: row.get::<_, i64>(8)?.max(0) as u64,
+        visibility: row.get(9)?,
+        received_at: Timestamp::new(row.get::<_, String>(10)?)
+            .expect("stored received_at timestamp is RFC3339"),
+        stale_at: Timestamp::new(row.get::<_, String>(11)?)
+            .expect("stored stale_at timestamp is RFC3339"),
+    })
 }
 
 fn artifact_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ComponentArtifact> {

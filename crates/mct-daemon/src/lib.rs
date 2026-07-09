@@ -91,8 +91,9 @@ pub use registry::{
 };
 pub use state::{
     ChildInvocationProvenance, MctCompositionRunRecord, MctMetricPoint, MctQueuedTaskRecord,
-    MctRegistrySourceRecord, MctRuntimeRunRecord, MctRuntimeRunState, MctRuntimeStateStore,
-    MctRuntimeStateSummary, MctTaskIntentRecord, MctTaskStatus, default_state_path,
+    MctRegistrySourceRecord, MctRemoteCallableSurfaceRecord, MctRemoteSurfaceRefresh,
+    MctRuntimeRunRecord, MctRuntimeRunState, MctRuntimeStateStore, MctRuntimeStateSummary,
+    MctTaskIntentRecord, MctTaskStatus, default_state_path,
 };
 pub use status::{
     MctDaemonHealth, MctDaemonReadiness, MctDaemonStatus, MctResidentStatus, daemon_status,
