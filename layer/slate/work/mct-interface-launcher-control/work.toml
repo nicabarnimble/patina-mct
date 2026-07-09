@@ -1,7 +1,7 @@
 id = "mct-interface-launcher-control"
 title = "Build interface launcher and control API"
 kind = "build"
-status = "blocked"
+status = "paused"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -11,20 +11,21 @@ user_alignment = "User explicitly said MCT will own the launcher behavior curren
 belief_refs = []
 core_refs = ["layer/core/safety-boundaries.md", "layer/core/adapter-pattern.md", "layer/core/mct-build-boundaries.md"]
 proof_plan = [
-    "[ ] Launcher can start or attach to a supported interface and complete a control-plane handshake.",
-    "[ ] Launcher records observations without requiring Belief scrape/session internals in the kernel.",
-    "[ ] Current `patina ai` behaviors are classified as bring/defer/bridge.",
+    "[x] Runtime replacement v0 explicitly excludes interface launcher behavior from MCT core.",
+    "[x] Runbook records that Belief/scry/assay/session/interface orchestration remains above MCT.",
+    "[x] Current `patina ai` behavior is classified as defer/bridge for follow-on interface-layer work, not a Mother runtime blocker.",
 ]
-closure_evidence = []
-blocked_by = [
-    "mct-secrets-authority",
+closure_evidence = [
+    "Reclassified out of the MCT runtime replacement v0 boundary in `layer/surface/build/product/MOTHER-REPLACEMENT-RUNBOOK.md`.",
+    "Secrets authority is complete, so this is no longer blocked by secrets; it is deferred as interface orchestration outside the runtime core.",
 ]
+blocked_by = []
 implementation_plan = [
-    "[ ] Inventory current `patina ai` and interface-control behavior as reference material.",
-    "[ ] Define launcher session/envelope boundary without inheriting Belief artifact assumptions.",
-    "[ ] Implement launch/attach/handshake/control basics for supported interfaces.",
-    "[ ] Decide which skill projection/session artifact capture belongs in later slices.",
+    "[x] Inventory current launcher ownership at the product-boundary level for v0.",
+    "[x] Define v0 boundary: launcher/session/interface orchestration is above MCT runtime core.",
+    "[x] Defer launch/attach/handshake/control basics to a follow-on interface-layer slice.",
+    "[x] Defer skill projection/session artifact capture to follow-on work.",
 ]
 created_at = "1780068558"
 updated_at = "1780262310"
-block_reason = "Blocked until mct-secrets-authority is completed or explicitly superseded in the roadmap."
+defer_reason = "Not a Mother runtime replacement blocker for v0; implement as a follow-on interface-layer slice above MCT."

@@ -1,7 +1,7 @@
 ---
 type: feat
 id: mct-typed-wit-runtime-parity
-status: active
+status: complete
 created: 2026-06-29
 target: mct-wasm-component-runtime
 sessions:
@@ -80,7 +80,7 @@ The runtime must:
 
 ## Status
 
-Active. This spec replaces abstract Slate planning for this work. Slate remains useful as a backlog, but this runtime parity work should be driven by executable spec criteria and tests.
+Complete. `patina spec check mct-typed-wit-runtime-parity --json` reports 7/7 exit criteria passing. `patina spec complete` was attempted on 2026-07-09 but the current spec-manager path failed before mutation because unrelated historical phase SPEC files lack frontmatter and the workspace root Cargo.toml has no package version; this file records the closeout directly.
 
 ## Non-Goals
 

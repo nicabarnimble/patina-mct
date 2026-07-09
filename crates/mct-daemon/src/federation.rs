@@ -76,6 +76,7 @@ mod tests {
                 vision_id: VisionId::new("vision-a")
                     .expect("string ID literal/generated value must be non-empty"),
                 ticket: None,
+                binding_signature_ref: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
                 updated_at: "1".into(),
@@ -93,6 +94,7 @@ mod tests {
                 vision_id: VisionId::new("vision-b")
                     .expect("string ID literal/generated value must be non-empty"),
                 ticket: None,
+                binding_signature_ref: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
                 updated_at: "1".into(),

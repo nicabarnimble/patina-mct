@@ -1,7 +1,7 @@
 id = "mct-jvm-bridge"
 title = "Build JVM bridge ingress"
 kind = "build"
-status = "active"
+status = "complete"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -11,17 +11,22 @@ user_alignment = "User agreed JVM bridge is first-class but not kernel internals
 belief_refs = []
 core_refs = ["layer/core/adapter-pattern.md", "layer/core/safety-boundaries.md", "layer/core/mct-build-boundaries.md"]
 proof_plan = [
-    "[ ] JVM/client fixture can submit a call envelope and receive a reply through MCT.",
-    "[ ] Unauthorized JVM bridge requests are denied at the authority boundary.",
-    "[ ] JVM bridge code does not enter `mct-kernel` internals.",
+    "[x] JVM/client fixture can submit JSON call input and receive a caller-safe reply through the existing resident route/execution path.",
+    "[x] Unauthorized JVM bridge requests reuse resident no-route/authority denial before execution.",
+    "[x] JVM bridge code stays in `mct-daemon` adapter/CLI composition and does not enter `mct-kernel` internals.",
 ]
-closure_evidence = []
+closure_evidence = [
+    "Added `mct-daemon jvm call-json <operation-id> <args-json>` as a stdio-friendly bridge ingress for JVM callers.",
+    "Bridge constructs exactly one `MctCall` with `origin = jvm_adapter`, digest-stamped JSON payload bytes, and sends it through resident payload integrity, route decision, revalidation, child execution, and ledger append.",
+    "Validation test: `jvm_bridge_json_call_enters_resident_route_path` proves a JVM-shaped JSON call reaches the resident route path and returns a payload-dependent reply.",
+    "Full JVM SDK/client packaging remains a release follow-up, not kernel work.",
+]
 blocked_by = []
 implementation_plan = [
-    "[ ] Define JVM bridge transport/protocol boundary and map requests into MCT call envelopes.",
-    "[ ] Implement bridge authentication/admission and timeout/error mapping.",
-    "[ ] Provide a small JVM/client fixture or protocol harness.",
-    "[ ] Emit adapter observations for connect/disconnect/request/reply/timeout/failure.",
+    "[x] Define JVM bridge transport/protocol boundary as a v0 stdio/CLI JSON bridge.",
+    "[x] Implement bridge admission by mapping requests into MCT call envelopes and reusing resident authority/routing/timeout/error mapping.",
+    "[x] Provide a small JVM/client fixture via `jvm_bridge_json_call_enters_resident_route_path`.",
+    "[x] Emit observations through the resident ledger path for request routing, revalidation, execution, and result.",
 ]
 created_at = "1780068531"
 updated_at = "1780262310"

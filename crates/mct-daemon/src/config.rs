@@ -2,6 +2,7 @@ use crate::children::{MctLoadedChild, component_artifact_from_loaded_child};
 use anyhow::{Context, Result, bail};
 use mct_iroh::{
     MotherIrohEndpointTicket, endpoint_id_for_secret_key_hex, load_or_create_node_secret_key_hex,
+    sign_peer_binding_signature_ref,
 };
 use mct_kernel::*;
 use serde::{Deserialize, Serialize};
@@ -56,6 +57,8 @@ pub struct MctPeerAddressBookEntry {
     pub endpoint_id: EndpointIdText,
     pub vision_id: VisionId,
     pub ticket: Option<MotherIrohEndpointTicket>,
+    #[serde(default)]
+    pub binding_signature_ref: Option<String>,
     pub binding_state: BindingState,
     pub policy_revision: u64,
     pub updated_at: String,
@@ -434,8 +437,19 @@ impl MctDaemonConfigStore {
         Ok(config)
     }
 
-    pub fn upsert_peer(&self, entry: MctPeerAddressBookEntry) -> Result<MctDaemonConfig> {
+    pub fn upsert_peer(&self, mut entry: MctPeerAddressBookEntry) -> Result<MctDaemonConfig> {
         let mut config = self.load()?;
+        if entry.binding_signature_ref.is_none()
+            && let Some(identity) = config.local_identity.as_ref()
+        {
+            let binding = entry.to_peer_binding(identity)?;
+            let secret_key_hex = load_or_create_node_secret_key_hex(&identity.identity_path)?;
+            entry.binding_signature_ref = Some(sign_peer_binding_signature_ref(
+                &secret_key_hex,
+                &binding,
+                &identity.endpoint_id,
+            )?);
+        }
         config.peers.insert(entry.peer_node_id.to_string(), entry);
         self.save(&config)?;
         Ok(config)
@@ -706,9 +720,10 @@ mod tests {
                 direct_addresses: vec!["127.0.0.1:12345".into()],
                 relay_urls: Vec::new(),
             }),
+            binding_signature_ref: None,
             binding_state: state,
             policy_revision: 1,
-            updated_at: "1".into(),
+            updated_at: "2026-07-09T00:00:00Z".into(),
         }
     }
 
