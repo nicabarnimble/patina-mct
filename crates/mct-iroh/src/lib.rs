@@ -855,6 +855,7 @@ mod tests {
             accepted_alpns: vec![MCT_CALL_ALPN.into()],
             safe_message: "admitted".into(),
             retry_after: None,
+            capability_view: None,
             response_observation_id: ObservationId::new("obs-fake-hello-reply")
                 .expect("string ID literal/generated value must be non-empty"),
         }

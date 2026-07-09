@@ -1,4 +1,5 @@
 use crate::{
+    call::RuntimeKind,
     error::{MctKernelResult, ensure_non_blank},
     id::*,
 };
@@ -182,14 +183,41 @@ pub struct MctPeerBindingPresentation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One Vision-scoped callable child operation advertised during hello.
+pub struct MctHelloCallableSurface {
+    /// Publisher-local child name that can execute the operation.
+    pub child_name: String,
+    /// Canonical WIT operation ID, for example `patina:demo/control@0.1.0.run`.
+    pub operation_id: String,
+    /// Runtime class used locally by the publishing Mother.
+    pub runtime_kind: RuntimeKind,
+    /// Vision boundary in which this operation is published.
+    pub vision_id: VisionId,
+    /// Publisher-local policy revision that produced this surface evidence.
+    pub policy_revision: u64,
+    /// Surface visibility label; this phase expects `vision_scoped`.
+    pub visibility: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Peer-advertised capability summary attached to hello for audit/planning.
 pub struct MctHelloCapabilityView {
+    /// Publishing MCT node.
+    pub node_id: MctNodeId,
+    /// Vision boundary in which this view is valid.
+    pub vision_id: VisionId,
+    /// Publisher timestamp for this view.
+    pub published_at: Timestamp,
+    /// Publisher-local policy revision used for change detection only.
+    pub policy_revision: u64,
     /// ALPNs the peer says it can speak.
     pub supported_alpns: Vec<String>,
     /// WIT worlds the peer says it can host or route.
     pub supported_wit_worlds: Vec<String>,
     /// Observation sharing modes advertised by the peer.
     pub supported_observation_modes: Vec<String>,
+    /// Vision-scoped callable operations published by the peer.
+    pub callable_surfaces: Vec<MctHelloCallableSurface>,
     /// Optional external reference to a fuller capability document.
     pub capability_view_ref: Option<String>,
 }
@@ -334,6 +362,8 @@ pub struct MctHelloResponse {
     pub safe_message: String,
     /// Optional retry time for retry-later responses.
     pub retry_after: Option<Timestamp>,
+    /// Optional capability summary published by the admitting Mother.
+    pub capability_view: Option<MctHelloCapabilityView>,
     /// Observation recording response emission.
     pub response_observation_id: ObservationId,
 }
@@ -413,9 +443,9 @@ impl Default for HelloPolicy {
         Self {
             protocol: MctProtocolVersion {
                 protocol_name: MCT_HELLO_ALPN.into(),
-                major: 0,
-                minor: 1,
-                compatibility_floor: Some(0),
+                major: 1,
+                minor: 0,
+                compatibility_floor: Some(1),
             },
             current_policy_revision: 1,
             supported_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
@@ -494,6 +524,7 @@ pub fn hello_response(
         accepted_alpns: evaluation.accepted_alpns.clone(),
         safe_message: safe_message.into(),
         retry_after: None,
+        capability_view: None,
         response_observation_id,
     }
 }
@@ -597,6 +628,47 @@ mod tests {
         let json = serde_json::to_string(&presentation("endpoint-a")).unwrap();
         assert!(json.contains("endpoint-a"));
         assert!(json.contains("mct/hello/0"));
+    }
+
+    #[test]
+    fn hello_capability_view_carries_callable_surfaces() {
+        let view = MctHelloCapabilityView {
+            node_id: MctNodeId::new("node-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            vision_id: VisionId::new("vision-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            published_at: Timestamp::new("2026-07-09T00:00:00Z").unwrap(),
+            policy_revision: 7,
+            supported_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
+            supported_wit_worlds: vec!["patina:demo/control@0.1.0".into()],
+            supported_observation_modes: vec!["local-ledger".into()],
+            callable_surfaces: vec![MctHelloCallableSurface {
+                child_name: "resident-wit".into(),
+                operation_id: "patina:demo/control@0.1.0.run".into(),
+                runtime_kind: RuntimeKind::WasmComponent,
+                vision_id: VisionId::new("vision-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+                policy_revision: 9,
+                visibility: "vision_scoped".into(),
+            }],
+            capability_view_ref: None,
+        };
+
+        let decoded: MctHelloCapabilityView =
+            serde_json::from_str(&serde_json::to_string(&view).unwrap()).unwrap();
+
+        assert_eq!(decoded.node_id, view.node_id);
+        assert_eq!(decoded.vision_id, view.vision_id);
+        assert_eq!(decoded.policy_revision, 7);
+        assert_eq!(decoded.callable_surfaces.len(), 1);
+        assert_eq!(
+            decoded.callable_surfaces[0].operation_id,
+            "patina:demo/control@0.1.0.run"
+        );
+        assert_eq!(
+            decoded.callable_surfaces[0].runtime_kind,
+            RuntimeKind::WasmComponent
+        );
     }
 
     #[test]

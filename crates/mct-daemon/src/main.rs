@@ -12,10 +12,11 @@ use mct_daemon::{
     MctWasmComponentInvocationIds, MctWasmComponentRuntime, MctWasmHostConfig,
     MctWitHostImportAdapters, MctWitToyHostAdapter, build_federation_capability_view_with_children,
     build_metrics_snapshot, current_timestamp, daemon_status, daemon_status_with_resident,
-    default_config_path, default_state_path, install_verified_child_package,
-    load_children_from_dir, local_blob_store_for_state_path, mct_secrets_toy_contract,
-    record_composition_plan, reload_configured_child, serve_http_control_once_with_snapshot_result,
-    sync_child_registry_source, warmup_configured_child,
+    default_config_path, default_state_path, hello_capability_view_from_federation_view,
+    install_verified_child_package, load_children_from_dir, local_blob_store_for_state_path,
+    mct_secrets_toy_contract, record_composition_plan, reload_configured_child,
+    serve_http_control_once_with_snapshot_result, sync_child_registry_source,
+    warmup_configured_child,
 };
 use mct_iroh::{
     MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES, MctIrohCallHandlerResult, MctIrohConcurrentServeConfig,
@@ -1110,6 +1111,41 @@ fn ledger_sequence_tip(path: &Path) -> u64 {
         .unwrap_or(0)
 }
 
+fn resident_hello_capability_view(
+    config: &mct_daemon::MctDaemonConfig,
+    summary: &mct_daemon::MctRuntimeStateSummary,
+    identity: &MctLocalNodeIdentity,
+    children: &[mct_daemon::MctLoadedChild],
+) -> MctHelloCapabilityView {
+    let federation_view = build_federation_capability_view_with_children(
+        config,
+        summary,
+        identity.node_id.clone(),
+        identity.vision_id.clone(),
+        children.iter(),
+    );
+    hello_capability_view_from_federation_view(&federation_view)
+}
+
+fn local_hello_capability_view_from_config(
+    config: &mct_daemon::MctDaemonConfig,
+    state_path: &Path,
+    children_dir: &Path,
+) -> Result<Option<MctHelloCapabilityView>> {
+    let Some(identity) = config.local_identity.as_ref() else {
+        return Ok(None);
+    };
+    let state = MctRuntimeStateStore::open(state_path)?;
+    let summary = state.summary()?;
+    let load_report = load_children_from_dir(MctChildLoadOptions::new(children_dir.to_path_buf()));
+    Ok(Some(resident_hello_capability_view(
+        config,
+        &summary,
+        identity,
+        &load_report.children,
+    )))
+}
+
 async fn run_resident_mother<S>(
     config: ResidentMotherConfig,
     shutdown: S,
@@ -1141,13 +1177,20 @@ where
     }
     let ticket = endpoint.ticket();
     let load_report = load_children_from_dir(MctChildLoadOptions::new(config.children_dir.clone()));
-    let _state = MctRuntimeStateStore::open(&config.state_path)
+    let state = MctRuntimeStateStore::open(&config.state_path)
         .with_context(|| format!("open runtime state {}", config.state_path.display()))?;
-    drop(_state);
+    let runtime_summary = state.summary()?;
+    drop(state);
     let ledger = ResidentLedgerWriter::spawn(config.ledger_path.clone())?;
 
     let loaded_child_count = load_report.loaded;
     let resident_config = config_store.load()?;
+    let hello_capability_view = resident_hello_capability_view(
+        &resident_config,
+        &runtime_summary,
+        &identity,
+        &load_report.children,
+    );
     let approved_child_count = resident_config
         .child_approvals
         .values()
@@ -1204,6 +1247,7 @@ where
                 max_concurrent_connections: config.max_concurrent_connections,
                 events: Some(events),
                 require_binding_signature: true,
+                capability_view: Some(hello_capability_view),
                 ..MctIrohConcurrentServeConfig::default()
             },
             current_timestamp,
@@ -4198,9 +4242,15 @@ async fn call_iroh_peer(mut args: Vec<String>) -> Result<()> {
     let config_path = take_option(&mut args, "--config")
         .map(PathBuf::from)
         .unwrap_or_else(default_config_path);
+    let children_dir = take_option(&mut args, "--children-dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_children_dir);
+    let state_path = take_option(&mut args, "--state")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_state_path);
     if args.len() < 2 {
         bail!(
-            "expected: mct-daemon iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path]"
+            "expected: mct-daemon iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path] [--children-dir path] [--state path]"
         );
     }
     let identity_path = PathBuf::from(args.remove(0));
@@ -4212,6 +4262,8 @@ async fn call_iroh_peer(mut args: Vec<String>) -> Result<()> {
         function_name: args.get(2).cloned().unwrap_or_else(|| "echo".into()),
     };
     let config = MctDaemonConfigStore::new(&config_path).load()?;
+    let capability_view =
+        local_hello_capability_view_from_config(&config, &state_path, &children_dir)?;
     let peer = config.peers.get(peer_node_id.as_str()).ok_or_else(|| {
         anyhow::anyhow!(
             "peer '{peer_node_id}' not found in {}",
@@ -4228,13 +4280,14 @@ async fn call_iroh_peer(mut args: Vec<String>) -> Result<()> {
     let local_endpoint_id = endpoint.snapshot().endpoint_id;
     let trace_id = TraceId::new("trace-cli-iroh-call-peer")
         .expect("string ID literal/generated value must be non-empty");
-    let hello_request = cli_hello_request(
+    let hello_request = cli_hello_request_with_capability_view(
         &local_endpoint_id,
         &peer.binding_id,
         &MctNodeId::new("local-mct").expect("string ID literal/generated value must be non-empty"),
         &peer.vision_id,
         &trace_id,
         peer.binding_signature_ref.clone(),
+        capability_view,
     );
     let hello_response = endpoint.send_hello(&peer_ticket, &hello_request).await?;
     println!("{}", serde_json::to_string_pretty(&hello_response)?);
@@ -4262,6 +4315,26 @@ fn cli_hello_request(
     trace_id: &TraceId,
     signature_ref: Option<String>,
 ) -> MctHelloRequest {
+    cli_hello_request_with_capability_view(
+        endpoint_id,
+        binding_id,
+        node_id,
+        vision_id,
+        trace_id,
+        signature_ref,
+        None,
+    )
+}
+
+fn cli_hello_request_with_capability_view(
+    endpoint_id: &EndpointIdText,
+    binding_id: &PeerBindingId,
+    node_id: &MctNodeId,
+    vision_id: &VisionId,
+    trace_id: &TraceId,
+    signature_ref: Option<String>,
+    capability_view: Option<MctHelloCapabilityView>,
+) -> MctHelloRequest {
     MctHelloRequest {
         hello_id: "hello-cli".into(),
         received_over: IrohConnectionPresentation {
@@ -4285,7 +4358,7 @@ fn cli_hello_request(
             signature_ref,
             expires_at: None,
         },
-        capability_view: None,
+        capability_view,
         local_policy_revision_seen: Some(1),
         trace_id: trace_id.clone(),
         received_observation_id: ObservationId::new("obs-cli-hello-received")
@@ -4541,7 +4614,7 @@ fn default_identity_path() -> PathBuf {
 
 fn print_help() {
     println!(
-        "mct-daemon {version}\n\nCommands:\n  status\n  serve [--identity path] [--config path] [--children-dir path] [--state path] [--ledger path] [--max-connections n] [--relay-default] [--http addr | --uds socket-path]\n  control serve-http [addr] [--state path]\n  control serve-uds [socket-path] [--state path]\n  registry install <verified-package-dir> [--children-dir path] [--replace] [--json]\n  registry sync <source-id> [children-dir] [--state path] [--strict-integrity] [--json]\n  federation view [--config path] [--state path] [--children-dir path] [--json]\n  metrics snapshot [--state path] [--json]\n  pando record <composition-id> [step-id,call-id,runtime,child,decision ...] [--state path] [--json]\n  children load [children-dir] [--strict-integrity] [--json]\n  process call <executable> [payload-json] [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  children approve <child-name> [children-dir] [--config path] [--strict-integrity]\n  children revoke <child-name> [--config path]\n  children approvals [--config path] [--json]\n  children warmup <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  children reload <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--signature-ref proof] [--config path]\n  peers list [--config path] [--json]\n  peers revoke <peer-node-id> [--config path]\n  peers remove <peer-node-id> [--config path]\n  state summary [--state path] [--json]\n  runs list [--state path] [--json] [--limit n]\n  slate list-work --project-root path [--status status] [--kind kind] [--children-dir path] [--config path] [--state path] [--ledger path]\n  toys authorize-slate <child-name> <project-root> [--children-dir path] [--config path] [--state path] [--json]\n  toys authorize-secret <child-name> <secret-name> [--children-dir path] [--config path] [--state path] [--json]\n  wasm call <component-file> <export-name> [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  wasm call-wit <child-name> <operation-id> <args-json> [--project-root path] [--guest-project /project] [--git-repo path] [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh identity [identity-file] [--config path]\n  iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir]\n  iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable> --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function] [--signature-ref proof]\n  iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path]\n  jvm call-json <operation-id> <args-json> [--children-dir path] [--config path] [--state path] [--ledger path]",
+        "mct-daemon {version}\n\nCommands:\n  status\n  serve [--identity path] [--config path] [--children-dir path] [--state path] [--ledger path] [--max-connections n] [--relay-default] [--http addr | --uds socket-path]\n  control serve-http [addr] [--state path]\n  control serve-uds [socket-path] [--state path]\n  registry install <verified-package-dir> [--children-dir path] [--replace] [--json]\n  registry sync <source-id> [children-dir] [--state path] [--strict-integrity] [--json]\n  federation view [--config path] [--state path] [--children-dir path] [--json]\n  metrics snapshot [--state path] [--json]\n  pando record <composition-id> [step-id,call-id,runtime,child,decision ...] [--state path] [--json]\n  children load [children-dir] [--strict-integrity] [--json]\n  process call <executable> [payload-json] [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  children approve <child-name> [children-dir] [--config path] [--strict-integrity]\n  children revoke <child-name> [--config path]\n  children approvals [--config path] [--json]\n  children warmup <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  children reload <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--signature-ref proof] [--config path]\n  peers list [--config path] [--json]\n  peers revoke <peer-node-id> [--config path]\n  peers remove <peer-node-id> [--config path]\n  state summary [--state path] [--json]\n  runs list [--state path] [--json] [--limit n]\n  slate list-work --project-root path [--status status] [--kind kind] [--children-dir path] [--config path] [--state path] [--ledger path]\n  toys authorize-slate <child-name> <project-root> [--children-dir path] [--config path] [--state path] [--json]\n  toys authorize-secret <child-name> <secret-name> [--children-dir path] [--config path] [--state path] [--json]\n  wasm call <component-file> <export-name> [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  wasm call-wit <child-name> <operation-id> <args-json> [--project-root path] [--guest-project /project] [--git-repo path] [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh identity [identity-file] [--config path]\n  iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir]\n  iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable> --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function] [--signature-ref proof]\n  iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path] [--children-dir path] [--state path]\n  jvm call-json <operation-id> <args-json> [--children-dir path] [--config path] [--state path] [--ledger path]",
         version = mct_daemon::version()
     );
 }
@@ -4850,6 +4923,113 @@ mod tests {
             }),
             "{trace_entries:?}"
         );
+        client.close().await;
+    }
+
+    #[tokio::test]
+    async fn resident_hello_publishes_federation_callable_surface() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let identity_path = dir.path().join("identity").join("iroh-secret.hex");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let socket_path = dir.path().join("control.sock");
+        let children_dir = dir.path().join("children");
+        write_resident_process_child(&children_dir);
+
+        let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let client_endpoint_id = client.snapshot().endpoint_id;
+        let store = MctDaemonConfigStore::new(&config_path);
+        store
+            .ensure_local_identity(MctOperatorNodeScope::default(), &identity_path)
+            .unwrap();
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        assert_eq!(loaded.loaded, 1, "{loaded:?}");
+        store
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+        store
+            .upsert_peer(MctPeerAddressBookEntry {
+                peer_node_id: MctNodeId::new("mother-client")
+                    .expect("string ID literal/generated value must be non-empty"),
+                binding_id: PeerBindingId::new("binding-resident-client")
+                    .expect("string ID literal/generated value must be non-empty"),
+                endpoint_id: client_endpoint_id.clone(),
+                vision_id: VisionId::new("vision-local")
+                    .expect("string ID literal/generated value must be non-empty"),
+                ticket: None,
+                binding_signature_ref: None,
+                binding_state: BindingState::Admitted,
+                policy_revision: 1,
+                updated_at: mct_daemon::current_timestamp_string(),
+            })
+            .unwrap();
+        let client_signature_ref = store.load().unwrap().peers["mother-client"]
+            .binding_signature_ref
+            .clone();
+
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let resident = tokio::spawn(run_resident_mother(
+            ResidentMotherConfig {
+                config_path,
+                identity_path,
+                children_dir,
+                state_path,
+                ledger_path,
+                control: ResidentControlTransport::Uds(socket_path),
+                relay_default: false,
+                max_concurrent_connections: 8,
+            },
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            Some(ready_tx),
+        ));
+        let ticket = tokio::time::timeout(Duration::from_secs(10), ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let trace_id = TraceId::new("trace-resident-hello-surface")
+            .expect("string ID literal/generated value must be non-empty");
+        let binding_id = PeerBindingId::new("binding-resident-client")
+            .expect("string ID literal/generated value must be non-empty");
+        let client_node_id = MctNodeId::new("mother-client")
+            .expect("string ID literal/generated value must be non-empty");
+        let vision_id = VisionId::new("vision-local")
+            .expect("string ID literal/generated value must be non-empty");
+        let hello = cli_hello_request(
+            &client_endpoint_id,
+            &binding_id,
+            &client_node_id,
+            &vision_id,
+            &trace_id,
+            client_signature_ref,
+        );
+        let hello_response = client.send_hello(&ticket, &hello).await.unwrap();
+        assert_eq!(hello_response.hello_outcome, HelloOutcome::Admitted);
+        let capability_view = hello_response
+            .capability_view
+            .expect("resident hello response publishes capability view");
+        assert_eq!(
+            capability_view.node_id,
+            MctNodeId::new("local-mct")
+                .expect("string ID literal/generated value must be non-empty")
+        );
+        assert_eq!(capability_view.vision_id, vision_id);
+        assert!(capability_view.callable_surfaces.iter().any(|surface| {
+            surface.child_name == "resident-echo"
+                && surface.operation_id == "patina:demo/control@0.1.0.run"
+                && surface.visibility == "vision_scoped"
+        }));
+
+        let _ = shutdown_tx.send(());
+        tokio::time::timeout(Duration::from_secs(10), resident)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
         client.close().await;
     }
 

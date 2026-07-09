@@ -2,8 +2,12 @@ use crate::{
     MctChildIngressMode, MctChildInstanceState, MctDaemonConfig, MctLoadedChild,
     MctRuntimeStateSummary, current_timestamp_string,
 };
-use mct_kernel::{ChildApprovalState, ChildAssignmentState, MctNodeId, RuntimeKind, VisionId};
+use mct_kernel::{
+    ChildApprovalState, ChildAssignmentState, MctHelloCallableSurface, MctHelloCapabilityView,
+    MctNodeId, RuntimeKind, Timestamp, VisionId,
+};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MctFederationPeerView {
@@ -31,6 +35,7 @@ pub struct MctFederationCapabilityView {
     pub artifacts: u64,
     pub approved_children: u64,
     pub ready_instances: u64,
+    pub policy_revision: u64,
     pub callable_surfaces: Vec<MctFederationCallableSurfaceView>,
     pub peers: Vec<MctFederationPeerView>,
     pub visibility: String,
@@ -75,6 +80,19 @@ pub fn build_federation_capability_view_with_children<'a>(
 
     let callable_surfaces = federation_callable_surfaces(config, &node_id, &vision_id, children);
 
+    let policy_revision = config
+        .local_identity
+        .as_ref()
+        .filter(|identity| identity.node_id == node_id && identity.vision_id == vision_id)
+        .map(|identity| identity.policy_revision)
+        .unwrap_or_else(|| {
+            callable_surfaces
+                .iter()
+                .map(|surface| surface.policy_revision)
+                .max()
+                .unwrap_or(1)
+        });
+
     MctFederationCapabilityView {
         node_id,
         vision_id,
@@ -82,9 +100,55 @@ pub fn build_federation_capability_view_with_children<'a>(
         artifacts: summary.artifacts,
         approved_children: summary.approved_children,
         ready_instances: summary.ready_instances,
+        policy_revision,
         callable_surfaces,
         peers,
         visibility: "vision_scoped".into(),
+    }
+}
+
+pub fn hello_capability_view_from_federation_view(
+    view: &MctFederationCapabilityView,
+) -> MctHelloCapabilityView {
+    let supported_wit_worlds = view
+        .callable_surfaces
+        .iter()
+        .filter_map(|surface| {
+            surface
+                .operation_id
+                .rsplit_once('.')
+                .map(|(world, _)| world)
+        })
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
+    MctHelloCapabilityView {
+        node_id: view.node_id.clone(),
+        vision_id: view.vision_id.clone(),
+        published_at: Timestamp::new(view.published_at.clone())
+            .expect("federation published_at is generated as RFC3339"),
+        policy_revision: view.policy_revision,
+        supported_alpns: vec![
+            mct_kernel::MCT_HELLO_ALPN.into(),
+            mct_kernel::MCT_CALL_ALPN.into(),
+        ],
+        supported_wit_worlds,
+        supported_observation_modes: vec!["local-ledger".into()],
+        callable_surfaces: view
+            .callable_surfaces
+            .iter()
+            .map(|surface| MctHelloCallableSurface {
+                child_name: surface.child_name.clone(),
+                operation_id: surface.operation_id.clone(),
+                runtime_kind: surface.runtime_kind,
+                vision_id: surface.vision_id.clone(),
+                policy_revision: surface.policy_revision,
+                visibility: surface.visibility.clone(),
+            })
+            .collect(),
+        capability_view_ref: None,
     }
 }
 

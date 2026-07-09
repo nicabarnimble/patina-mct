@@ -72,6 +72,7 @@ pub use cycle::{
 pub use federation::{
     MctFederationCallableSurfaceView, MctFederationCapabilityView, MctFederationPeerView,
     build_federation_capability_view, build_federation_capability_view_with_children,
+    hello_capability_view_from_federation_view,
 };
 pub use inspector::{
     MctInspectorObservationQuery, MctInspectorObservationView, inspect_observation_entries,

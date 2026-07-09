@@ -65,10 +65,10 @@ pub use observation::{
 pub use peer::{
     BindingState, ConnectionSide, EvaluationIds, HelloEvaluationContext, HelloOutcome, HelloPolicy,
     HelloReason, IrohConnectionPresentation, MCT_CALL_ALPN, MCT_HELLO_ALPN,
-    MctHelloAdmissionEvaluation, MctHelloCapabilityView, MctHelloRequest, MctHelloResponse,
-    MctPeerAdmissionDecision, MctPeerBinding, MctPeerBindingPresentation, MctPeerBindingScope,
-    MctProtocolVersion, PathClass, PeerAdmissionOutcome, PeerAdmissionReason, SafeHelloReason,
-    evaluate_hello, hello_response,
+    MctHelloAdmissionEvaluation, MctHelloCallableSurface, MctHelloCapabilityView, MctHelloRequest,
+    MctHelloResponse, MctPeerAdmissionDecision, MctPeerBinding, MctPeerBindingPresentation,
+    MctPeerBindingScope, MctProtocolVersion, PathClass, PeerAdmissionOutcome, PeerAdmissionReason,
+    SafeHelloReason, evaluate_hello, hello_response,
 };
 pub use route::{
     AuthorizedRouteExecution, CandidateAuthorityEvaluation, CandidateAuthorityOutcome,
