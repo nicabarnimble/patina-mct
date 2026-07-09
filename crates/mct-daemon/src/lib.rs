@@ -48,9 +48,10 @@ pub use composition::{
 };
 pub use config::{
     MctConfigChildAuthorityProjection, MctDaemonConfig, MctDaemonConfigStore, MctLocalNodeIdentity,
-    MctOperatorChildScope, MctOperatorNodeScope, MctPeerAddressBookEntry,
-    MctPeerAuthorityProjection, MctStoredChildApproval, MctStoredChildAssignment,
-    current_timestamp, current_timestamp_string, default_config_path,
+    MctOperatorChildScope, MctOperatorNodeScope, MctOutboundPeerBindingPresentation,
+    MctPeerAddressBookEntry, MctPeerAuthorityProjection, MctStoredChildApproval,
+    MctStoredChildAssignment, current_timestamp, current_timestamp_string, default_config_path,
+    outbound_peer_binding_for_local,
 };
 pub use control::{
     MctControlPlaneAuthPolicy, MctControlPlaneResponse, MctControlPlaneSnapshot,
