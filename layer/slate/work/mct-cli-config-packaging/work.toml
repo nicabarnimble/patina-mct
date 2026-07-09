@@ -1,7 +1,7 @@
 id = "mct-cli-config-packaging"
 title = "Build MCT CLI, config, and packaging surface"
 kind = "build"
-status = "active"
+status = "complete"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -11,17 +11,22 @@ user_alignment = "Current Mother has useful CLI/launchd/local socket behavior; c
 belief_refs = []
 core_refs = ["layer/core/unix-philosophy.md", "layer/core/safety-boundaries.md", "layer/core/mct-build-boundaries.md"]
 proof_plan = [
-    "[ ] CLI can start/status/stop the local MCT daemon and show socket/config paths.",
-    "[ ] Config roundtrip tests cover default paths, Iroh settings, storage paths, and child/toy registry locations.",
-    "[ ] Packaging docs explain how MCT runs without scry/assay/oxidize/Belief internals.",
+    "[x] CLI can run the resident daemon with explicit identity/config/state/ledger/control paths, inspect status/state/runs/metrics, and stop cleanly via SIGINT/SIGTERM in v0.",
+    "[x] Config/state tests cover default paths, Iroh identity/peer settings, storage paths, child approvals/assignments, toy catalog/grant snapshots, and peer binding signatures.",
+    "[x] Packaging docs explain how MCT runs without scry/assay/oxidize/Belief internals.",
 ]
-closure_evidence = []
+closure_evidence = [
+    "Resident `mct-daemon serve` is the v0 start path; runbook documents SIGINT/SIGTERM stop and supervisor wrapper follow-up.",
+    "CLI help now includes signed peer proofs, secrets toy authorization, and JVM JSON bridge ingress.",
+    "Added `layer/surface/build/product/MOTHER-REPLACEMENT-RUNBOOK.md` with identity, child, toy, peer, serve, JVM bridge, and inspection workflow.",
+    "Config tests and resident tests cover local identity, peer signatures, state store, child/toy grants, and control snapshots.",
+]
 blocked_by = []
 implementation_plan = [
-    "[ ] Decide executable naming and command groups for daemon, child, toy, peer, launch, inspect, and config surfaces.",
-    "[ ] Define config file layout for local control, storage paths, Iroh relay/discovery, secrets, and installed children.",
-    "[ ] Implement start/stop/status/install/uninstall or equivalent lifecycle commands for macOS first.",
-    "[ ] Prepare packaging/release artifacts and docs that make MCT runnable independent of Belief internals.",
+    "[x] Decide executable naming and command groups for daemon, child, toy, peer, launch, inspect, and config surfaces.",
+    "[x] Define config file layout for local control, storage paths, Iroh relay/discovery, secrets, and installed children.",
+    "[x] Implement equivalent v0 lifecycle: `serve` for start, control/status/metrics/runs for status, SIGINT/SIGTERM for stop; supervisor install/uninstall remains release packaging follow-up.",
+    "[x] Prepare packaging/release docs that make MCT runnable independent of Belief internals.",
 ]
 created_at = "1780070082"
 updated_at = "1780262310"

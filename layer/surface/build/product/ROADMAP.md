@@ -93,12 +93,18 @@ Dependency-ordered; each item assumes the ones before it.
       Completed 2026-07-06 for local candidates only; PHASE3 T5 stale-
       revision effect-boundary guard is discharged. Remote candidates and
       cross-Mother call forwarding remain recorded under item 6.
-- [ ] **4. Binding signature verification** — verify `signature_ref`
+- [x] **4. Binding signature verification** — verify `signature_ref`
       against the issuer's key material at hello time; required before
       admitting peers you don't operate.
+      Completed 2026-07-09 for the resident Mother path: peer entries can
+      carry issued `binding_signature_ref` values, configured callers present
+      them in hello, and unsigned/tampered proofs fail closed before admission.
 - [ ] **5. Toy catalog growth** — secrets, network egress, and storage
       toys as WIT contract identities in the closed catalog, each behind
       grant evaluation like the existing toys.
+      Secrets landed 2026-07-09 as `toy-secrets` / `patina:secrets/secrets@0.1.0#get`
+      with redacted observations and scoped grants. Network egress and storage
+      toys remain follow-up breadth.
 - [ ] **6. Multi-Vision publication** — per-Vision capability publication
       and cross-Vision grants; the federation product. Route item 3 is
       local-candidate only; remote route candidates and cross-Mother call

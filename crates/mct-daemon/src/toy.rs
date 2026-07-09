@@ -6,6 +6,9 @@ use std::{
     path::{Component, Path, PathBuf},
     process::Command,
 };
+
+pub const MCT_SECRETS_TOY_ID: &str = "toy-secrets";
+const MCT_SECRETS_INTERFACE: &str = "patina:secrets/secrets@0.1.0";
 use thiserror::Error;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -13,6 +16,7 @@ pub enum MctToyBackend {
     EchoJson,
     StaticFailure { safe_message: String },
     GitCommand { repo_root: PathBuf },
+    SecretStore { secrets: BTreeMap<String, String> },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +45,25 @@ pub struct MctToyCallReport {
     pub output_json: Option<String>,
     pub safe_message: String,
     pub observations: Vec<MctObservation>,
+}
+
+pub fn mct_secrets_toy_contract() -> CanonicalToyContract {
+    let toy_id = ToyId::new(MCT_SECRETS_TOY_ID)
+        .expect("string ID literal/generated value must be non-empty");
+    CanonicalToyContract {
+        admitted_by_observation_id: ObservationId::new(format!("obs:toy-catalog:{toy_id}"))
+            .expect("string ID literal/generated value must be non-empty"),
+        toy_id,
+        contract: ToyContractIdentity {
+            namespace: "patina".into(),
+            interface_name: "secrets/secrets".into(),
+            version: "0.1.0".into(),
+            function_name: Some("get".into()),
+            resource_name: Some("secret-name".into()),
+        },
+        authority_bearing: true,
+        catalog_revision: 1,
+    }
 }
 
 impl MctToyAdapterRegistry {
@@ -109,6 +132,24 @@ impl MctToyAdapterRegistry {
                         ),
                     }
                 }
+                Some(MctToyBackend::SecretStore { secrets }) => {
+                    match call_secret_toy(secrets, input_json) {
+                        Ok(output_json) => (
+                            MctToyAdapterOutcome::Success,
+                            Some(output_json),
+                            "secret toy call completed".to_owned(),
+                            ObservationKind::ToyCallCompleted,
+                            ObservationOutcome::Completed,
+                        ),
+                        Err(error) => (
+                            MctToyAdapterOutcome::Failed,
+                            None,
+                            error.safe_message(),
+                            ObservationKind::ToyCallFailed,
+                            ObservationOutcome::Failed,
+                        ),
+                    }
+                }
                 None => (
                     MctToyAdapterOutcome::Failed,
                     None,
@@ -155,6 +196,59 @@ fn stale_toy_authority_report(
         output_json: None,
         safe_message: "toy call authority stale".into(),
         observations: vec![observation],
+    }
+}
+
+fn call_secret_toy(
+    secrets: &BTreeMap<String, String>,
+    input_json: &str,
+) -> Result<String, SecretToyError> {
+    let input: Value =
+        serde_json::from_str(input_json).map_err(|source| SecretToyError::InputJson { source })?;
+    let interface = required_str(&input, "interface").map_err(SecretToyError::from_git_shape)?;
+    if interface != MCT_SECRETS_INTERFACE {
+        return Err(SecretToyError::UnsupportedInterface);
+    }
+    let function = required_str(&input, "function").map_err(SecretToyError::from_git_shape)?;
+    if function != "get" {
+        return Err(SecretToyError::UnsupportedFunction);
+    }
+    let name = required_str(&input, "name").map_err(SecretToyError::from_git_shape)?;
+    if name.trim().is_empty() {
+        return Err(SecretToyError::InvalidName);
+    }
+    let Some(value) = secrets.get(name) else {
+        return Err(SecretToyError::Unavailable);
+    };
+    Ok(serde_json::json!({"ok": {"name": name, "value": value}}).to_string())
+}
+
+#[derive(Debug, Error)]
+enum SecretToyError {
+    #[error("secret toy input must be JSON: {source}")]
+    InputJson {
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("secret toy received unsupported interface")]
+    UnsupportedInterface,
+    #[error("secret toy received unsupported function")]
+    UnsupportedFunction,
+    #[error("secret name is invalid")]
+    InvalidName,
+    #[error("secret unavailable")]
+    Unavailable,
+    #[error("secret request invalid")]
+    InvalidShape,
+}
+
+impl SecretToyError {
+    fn from_git_shape(_source: GitToyError) -> Self {
+        Self::InvalidShape
+    }
+
+    fn safe_message(&self) -> String {
+        self.to_string()
     }
 }
 
@@ -662,6 +756,118 @@ mod tests {
         assert_eq!(report.observations.len(), 1);
         assert_eq!(report.observations[0].outcome, ObservationOutcome::Denied);
         assert_eq!(report.observations[0].kind, ObservationKind::ToyCallFailed);
+    }
+
+    #[test]
+    fn secret_toy_backend_returns_secret_without_observing_value() {
+        let mut registry = MctToyAdapterRegistry::new();
+        registry.register(
+            ToyId::new(MCT_SECRETS_TOY_ID)
+                .expect("string ID literal/generated value must be non-empty"),
+            MctToyBackend::SecretStore {
+                secrets: BTreeMap::from([(
+                    "api-token".to_owned(),
+                    "super-secret-value".to_owned(),
+                )]),
+            },
+        );
+
+        let report = registry.call_authorized_toy(
+            &authorized(MCT_SECRETS_TOY_ID),
+            &call(),
+            r#"{"interface":"patina:secrets/secrets@0.1.0","function":"get","name":"api-token"}"#,
+            ids("toy-secret-success"),
+        );
+
+        assert_eq!(report.outcome, MctToyAdapterOutcome::Success);
+        assert!(
+            report
+                .output_json
+                .as_ref()
+                .is_some_and(|json| json.contains("super-secret-value"))
+        );
+        let observation_json = serde_json::to_string(&report.observations).unwrap();
+        assert!(!observation_json.contains("super-secret-value"));
+        assert!(!observation_json.contains("api-token"));
+        assert_eq!(report.safe_message, "secret toy call completed");
+    }
+
+    #[test]
+    fn secret_toy_grant_evaluation_requires_explicit_scope() {
+        let call = call();
+        let toy_id = ToyId::new(MCT_SECRETS_TOY_ID)
+            .expect("string ID literal/generated value must be non-empty");
+        let request = ToyGrantEvaluationRequest {
+            toy_id: toy_id.clone(),
+            subject: ToyGrantSubject {
+                child_name: "child-demo".into(),
+                artifact_id: "artifact-demo".into(),
+                artifact_version: "0.1.0".into(),
+                assignment_id: Some(
+                    ChildAssignmentId::new("assignment-child")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
+                caller_node_id: Some(
+                    MctNodeId::new("mother-a")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
+            },
+            child_instance_id: ChildInstanceId::new("instance-toy-adapter")
+                .expect("string ID literal/generated value must be non-empty"),
+            action: "get".into(),
+            resource_id: Some("api-token".into()),
+            node_id: MctNodeId::new("mother-a")
+                .expect("string ID literal/generated value must be non-empty"),
+            now: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+            ids: ToyGrantEvaluationIds {
+                evaluation_id: ToyGrantEvaluationId::new("eval-secret")
+                    .expect("string ID literal/generated value must be non-empty"),
+                decision_id: DecisionId::new("decision-secret")
+                    .expect("string ID literal/generated value must be non-empty"),
+                observation_id: ObservationId::new("obs-secret-eval")
+                    .expect("string ID literal/generated value must be non-empty"),
+                authorized_toy_call_id: AuthorizedToyCallId::new("auth-secret")
+                    .expect("string ID literal/generated value must be non-empty"),
+            },
+        };
+        let catalog = vec![mct_secrets_toy_contract()];
+
+        let denied = evaluate_toy_grant_for_call(&call, &request, &catalog, &[]);
+        assert_eq!(
+            denied.evaluation.reason_code,
+            ToyGrantReasonCode::MissingGrant
+        );
+        assert!(denied.authorized.is_none());
+
+        let grant = ToyGrant {
+            grant_id: ToyGrantId::new("grant-secret")
+                .expect("string ID literal/generated value must be non-empty"),
+            toy_id,
+            subject: request.subject.clone(),
+            scope: ToyGrantScope {
+                vision_id: call.caller.vision_id.clone(),
+                node_id: Some(request.node_id.clone()),
+                project_id: None,
+                data_classification: Some("public".into()),
+                resource_id: Some("api-token".into()),
+                allowed_actions: vec!["get".into()],
+            },
+            constraints: ToyGrantConstraints {
+                starts_at: None,
+                expires_at: None,
+                max_uses: None,
+                max_duration_ms: None,
+                locality_required: true,
+            },
+            grant_state: ToyGrantState::Active,
+            issuer_id: "issuer".into(),
+            policy_revision: call.authority_context.policy_revision,
+            grants_revision: call.authority_context.grants_revision,
+            authority_observation_id: ObservationId::new("obs-secret-grant")
+                .expect("string ID literal/generated value must be non-empty"),
+        };
+        let allowed = evaluate_toy_grant_for_call(&call, &request, &catalog, &[grant]);
+        assert!(allowed.is_allowed());
     }
 
     #[test]

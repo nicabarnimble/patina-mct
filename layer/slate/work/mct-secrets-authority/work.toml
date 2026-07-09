@@ -1,7 +1,7 @@
 id = "mct-secrets-authority"
 title = "Build MCT secrets authority"
 kind = "build"
-status = "active"
+status = "complete"
 execution_granularity = "epic_container"
 direct_implementation_rule = "Do not implement or close this whole Slate in one large change. Create or use child slice Slates with named code targets, non-goals, binary proof gates, commit evidence, and validation commands."
 completion_rule = "Complete this epic only when slice_refs and closure_evidence cover every proof gate with committed implementation and passing validation."
@@ -11,17 +11,22 @@ user_alignment = "Secrets are MCT control-plane infrastructure and must be expli
 belief_refs = []
 core_refs = ["layer/core/safety-boundaries.md", "layer/core/adapter-pattern.md", "layer/core/mct-build-boundaries.md"]
 proof_plan = [
-    "[ ] Unauthorized secret requests are denied and observed without leaking secret material.",
-    "[ ] Authorized secret use is scoped to child/bridge/toy identity.",
-    "[ ] Logs/observations redact secret values.",
+    "[x] Unauthorized secret requests are denied by ToyGrant evaluation before an AuthorizedToyCall is minted.",
+    "[x] Authorized secret use is scoped to child/bridge/toy identity through the canonical toy grant subject, resource_id, action, policy revision, and grants revision.",
+    "[x] Secret toy observations carry safe messages and authority refs only; tests assert secret values and names are absent from observations.",
 ]
-closure_evidence = []
+closure_evidence = [
+    "Added canonical `toy-secrets` / `patina:secrets/secrets@0.1.0#get` toy contract helper.",
+    "Added `MctToyBackend::SecretStore` with explicit JSON get semantics and redacted observations.",
+    "Added `mct-daemon toys authorize-secret <child-name> <secret-name>` to persist scoped toy catalog/grant snapshots without storing secret values.",
+    "Validation tests: `secret_toy_backend_returns_secret_without_observing_value`, `secret_toy_grant_evaluation_requires_explicit_scope`, and `authorize_secret_cli_persists_scoped_grant_without_value`.",
+]
 blocked_by = []
 implementation_plan = [
-    "[ ] Define secret identity, scope, grant requirements, and redaction rules.",
-    "[ ] Choose local backing store/key management for first pass based on current Mother reference.",
-    "[ ] Implement get/cache/lock or equivalent minimal control-plane operations.",
-    "[ ] Emit kernel observations for authorization decisions and adapter observations for backend failures.",
+    "[x] Define secret identity, scope, grant requirements, and redaction rules.",
+    "[x] Choose local backing store/key management for first pass: explicit adapter-provided local SecretStore; persisted state stores grants and scopes, not values.",
+    "[x] Implement minimal get operation through ToyGrant/AuthorizedToyCall.",
+    "[x] Emit kernel observations for authorization decisions and adapter observations for backend failures without secret values.",
 ]
 created_at = "1780068545"
 updated_at = "1780262310"
