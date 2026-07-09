@@ -19,7 +19,11 @@ pub use endpoint::{
     MotherIrohEndpointLifecycle, MotherIrohEndpointResult, MotherIrohEndpointSnapshot,
     MotherIrohEndpointTicket, MotherIrohRelayMode,
 };
-pub use identity::{endpoint_id_for_secret_key_hex, load_or_create_node_secret_key_hex};
+pub use identity::{
+    MCT_PEER_BINDING_SIGNATURE_PREFIX, MctPeerBindingSignatureVerification,
+    endpoint_id_for_secret_key_hex, load_or_create_node_secret_key_hex,
+    sign_peer_binding_signature_ref, verify_peer_binding_signature_ref,
+};
 pub use serve::{
     MCT_CALL_FRAME_READ_BUDGET_BYTES, MCT_INLINE_PAYLOAD_MAX_BYTES,
     MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES, MctIrohCallHandlerResult, MctIrohCallPayloadReply,
@@ -487,6 +491,69 @@ mod tests {
 
         first_client.close().await;
         second_client.close().await;
+        serve_task.abort();
+    }
+
+    #[tokio::test]
+    async fn concurrent_serve_requires_signed_peer_binding_when_configured() {
+        let server_secret = iroh::SecretKey::generate();
+        let server_secret_hex = crate::identity::encode_hex(&server_secret.to_bytes());
+        let server = MotherIrohEndpoint::bind(
+            MotherIrohEndpointConfig::local_mct().with_secret_key_hex(server_secret_hex.clone()),
+        )
+        .await
+        .unwrap();
+        let server_endpoint_id = server.snapshot().endpoint_id;
+        let mut signed_client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let mut unsigned_client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let server_ticket = server.ticket();
+        let signed_endpoint_id = signed_client.snapshot().endpoint_id;
+        let unsigned_endpoint_id = unsigned_client.snapshot().endpoint_id;
+        let signed_binding = test_peer_binding(&signed_endpoint_id);
+        let unsigned_binding = test_peer_binding(&unsigned_endpoint_id);
+        let signature_ref = sign_peer_binding_signature_ref(
+            &server_secret_hex,
+            &signed_binding,
+            &server_endpoint_id,
+        )
+        .unwrap();
+        let serve_task = tokio::spawn(async move {
+            server
+                .serve_concurrent_with_call_handler(
+                    MctIrohServeState::new(),
+                    vec![signed_binding, unsigned_binding],
+                    MctIrohConcurrentServeConfig {
+                        require_binding_signature: true,
+                        ..MctIrohConcurrentServeConfig::default()
+                    },
+                    || Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
+                    |_, _, _| async { MctIrohCallHandlerResult::accepted_for_routing(None) },
+                )
+                .await
+        });
+
+        let signed_trace = TraceId::new("trace-signed-binding")
+            .expect("string ID literal/generated value must be non-empty");
+        let unsigned_trace = TraceId::new("trace-unsigned-binding")
+            .expect("string ID literal/generated value must be non-empty");
+        let mut signed_hello = test_hello_request(&signed_endpoint_id, &signed_trace);
+        signed_hello.presented_binding.signature_ref = Some(signature_ref);
+        let unsigned_hello = test_hello_request(&unsigned_endpoint_id, &unsigned_trace);
+        let (signed_response, unsigned_response) = tokio::join!(
+            signed_client.send_hello(&server_ticket, &signed_hello),
+            unsigned_client.send_hello(&server_ticket, &unsigned_hello),
+        );
+
+        assert_eq!(
+            signed_response.unwrap().hello_outcome,
+            HelloOutcome::Admitted
+        );
+        let unsigned_response = unsigned_response.unwrap();
+        assert_eq!(unsigned_response.hello_outcome, HelloOutcome::Denied);
+        assert_eq!(unsigned_response.safe_message, "not authorized");
+
+        signed_client.close().await;
+        unsigned_client.close().await;
         serve_task.abort();
     }
 

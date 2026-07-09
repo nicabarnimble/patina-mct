@@ -102,7 +102,8 @@ pub use supervisor::{
     MctSupervisedProcessStatus,
 };
 pub use toy::{
-    MctToyAdapterOutcome, MctToyAdapterRegistry, MctToyBackend, MctToyCallIds, MctToyCallReport,
+    MCT_SECRETS_TOY_ID, MctToyAdapterOutcome, MctToyAdapterRegistry, MctToyBackend, MctToyCallIds,
+    MctToyCallReport, mct_secrets_toy_contract,
 };
 pub use wasm::{
     DEFAULT_WASM_MEMORY_LIMIT_BYTES, MctWasiHostConfig, MctWasiPreopen, MctWasiPreopenAccess,
