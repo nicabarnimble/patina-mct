@@ -279,6 +279,7 @@ pub struct MctIrohConcurrentServeConfig {
     pub connection_timeout: Duration,
     pub events: Option<mpsc::Sender<MctIrohServeEvent>>,
     pub require_binding_signature: bool,
+    pub capability_view: Option<MctHelloCapabilityView>,
 }
 
 impl Default for MctIrohConcurrentServeConfig {
@@ -288,6 +289,7 @@ impl Default for MctIrohConcurrentServeConfig {
             connection_timeout: SERVE_CONNECTION_TIMEOUT,
             events: None,
             require_binding_signature: false,
+            capability_view: None,
         }
     }
 }
@@ -743,6 +745,7 @@ impl MotherIrohEndpoint {
             .clone();
         let issuer_endpoint_id = self.snapshot().endpoint_id;
         let require_binding_signature = config.require_binding_signature;
+        let capability_view = config.capability_view.clone();
         let state = Arc::new(Mutex::new(state));
         let semaphore = Arc::new(Semaphore::new(config.max_concurrent_connections));
         let active_tasks = Arc::new(AtomicU64::new(0));
@@ -771,6 +774,7 @@ impl MotherIrohEndpoint {
             let connection_timeout = config.connection_timeout;
             let issuer_endpoint_id = issuer_endpoint_id.clone();
             let active_tasks = Arc::clone(&active_tasks);
+            let capability_view = capability_view.clone();
             active_tasks.fetch_add(1, Ordering::SeqCst);
 
             tokio::spawn(async move {
@@ -848,11 +852,14 @@ impl MotherIrohEndpoint {
                                 );
                             }
                             state.remember_hello(remote_endpoint_id, evaluation.clone());
-                            let response = hello_response(
+                            let mut response = hello_response(
                                 format!("reply-iroh-hello-{}", state.next_suffix()),
                                 &evaluation,
                                 state.next_observation_id("hello-reply"),
                             );
+                            if evaluation.is_admitted() {
+                                response.capability_view = capability_view.clone();
+                            }
                             drop(state);
                             let response_bytes =
                                 serde_json::to_vec(&response).map_err(|source| {
