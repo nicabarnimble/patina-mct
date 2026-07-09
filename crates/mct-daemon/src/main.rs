@@ -6,17 +6,18 @@ use mct_daemon::{
     MctCompositionStep, MctConfigChildAuthorityProjection, MctControlPlaneSnapshot,
     MctControlPlaneSnapshotError, MctControlPlaneSnapshotResult, MctDaemonConfigStore,
     MctDaemonStatus, MctLocalBlobStoreError, MctLocalNodeIdentity, MctOperatorChildScope,
-    MctOperatorNodeScope, MctPeerAddressBookEntry, MctProcessChildHarness,
-    MctProcessChildInvocationIds, MctRemoteSurfaceRefresh, MctResidentStatus, MctRuntimeStateStore,
-    MctToyAdapterRegistry, MctToyBackend, MctWasiHostConfig, MctWasiPreopen, MctWasiPreopenAccess,
+    MctOperatorNodeScope, MctOutboundPeerBindingPresentation, MctPeerAddressBookEntry,
+    MctProcessChildHarness, MctProcessChildInvocationIds, MctRemoteCallableSurfaceRecord,
+    MctRemoteSurfaceRefresh, MctResidentStatus, MctRuntimeStateStore, MctToyAdapterRegistry,
+    MctToyBackend, MctWasiHostConfig, MctWasiPreopen, MctWasiPreopenAccess,
     MctWasmComponentInvocationIds, MctWasmComponentRuntime, MctWasmHostConfig,
     MctWitHostImportAdapters, MctWitToyHostAdapter, build_federation_capability_view_with_children,
     build_metrics_snapshot, current_timestamp, daemon_status, daemon_status_with_resident,
     default_config_path, default_state_path, hello_capability_view_from_federation_view,
     install_verified_child_package, load_children_from_dir, local_blob_store_for_state_path,
-    mct_secrets_toy_contract, record_composition_plan, reload_configured_child,
-    serve_http_control_once_with_snapshot_result, sync_child_registry_source,
-    warmup_configured_child,
+    mct_secrets_toy_contract, outbound_peer_binding_for_local, record_composition_plan,
+    reload_configured_child, serve_http_control_once_with_snapshot_result,
+    sync_child_registry_source, warmup_configured_child,
 };
 use mct_iroh::{
     MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES, MctIrohCallHandlerResult, MctIrohConcurrentServeConfig,
@@ -2011,14 +2012,38 @@ fn authorize_resident_child_blocking(
     call: &MctCall,
 ) -> Result<ResidentAuthorizationOutcome> {
     let config = MctDaemonConfigStore::new(&paths.config_path).load()?;
+    let state = MctRuntimeStateStore::open(&paths.state_path)?;
     let load_report = load_children_from_dir(MctChildLoadOptions::new(paths.children_dir.clone()));
-    authorize_resident_child_from_loaded(&config, load_report.children, call)
+    authorize_resident_child_from_loaded_with_state(
+        &config,
+        Some(&state),
+        load_report.children,
+        call,
+        current_timestamp(),
+    )
 }
 
+#[cfg(test)]
 fn authorize_resident_child_from_loaded(
     config: &mct_daemon::MctDaemonConfig,
     children: Vec<mct_daemon::MctLoadedChild>,
     call: &MctCall,
+) -> Result<ResidentAuthorizationOutcome> {
+    authorize_resident_child_from_loaded_with_state(
+        config,
+        None,
+        children,
+        call,
+        current_timestamp(),
+    )
+}
+
+fn authorize_resident_child_from_loaded_with_state(
+    config: &mct_daemon::MctDaemonConfig,
+    state: Option<&MctRuntimeStateStore>,
+    children: Vec<mct_daemon::MctLoadedChild>,
+    call: &MctCall,
+    now: Timestamp,
 ) -> Result<ResidentAuthorizationOutcome> {
     let scope = resident_child_scope(config);
     let projection = config.authority_projection_for_loaded_children(children.iter(), scope);
@@ -2052,7 +2077,7 @@ fn authorize_resident_child_from_loaded(
         });
     }
 
-    let remote_plans = resident_remote_candidate_plans(config, call);
+    let remote_plans = resident_remote_candidate_plans(config, state, call, now)?;
     let mut observations = resident_candidate_observations(call, &plans);
     observations.extend(resident_remote_candidate_observations(call, &remote_plans));
     let mut authority_evaluations = plans
@@ -2183,38 +2208,59 @@ fn resident_candidate_for_child(
 
 fn resident_remote_candidate_plans(
     config: &mct_daemon::MctDaemonConfig,
+    state: Option<&MctRuntimeStateStore>,
     call: &MctCall,
-) -> Vec<ResidentRemoteCandidatePlan> {
+    now: Timestamp,
+) -> Result<Vec<ResidentRemoteCandidatePlan>> {
     let Some(identity) = config.local_identity.as_ref() else {
-        return Vec::new();
+        return Ok(Vec::new());
+    };
+    let Some(state) = state else {
+        return Ok(Vec::new());
     };
 
-    config
-        .peers
-        .values()
-        .filter_map(|peer| {
-            let binding = peer.to_peer_binding(identity).ok()?;
-            let candidate = resident_candidate_for_peer(peer);
-            let authority = resident_remote_candidate_authority(
-                identity,
-                peer,
-                &binding,
-                candidate.clone(),
-                call,
-            );
-            Some(ResidentRemoteCandidatePlan {
-                candidate,
-                authority,
-            })
-        })
-        .collect()
+    let operation_id = mct_daemon::operation_id_from_target(&call.target);
+    let surfaces = state.fresh_remote_callable_surfaces_for_operation(
+        &call.caller.vision_id,
+        &operation_id,
+        &now,
+    )?;
+    let mut plans = Vec::new();
+    for surface in surfaces {
+        let Some(peer) = config.peers.get(surface.peer_node_id.as_str()) else {
+            continue;
+        };
+        let candidate = resident_candidate_for_remote_surface(peer, &surface);
+        let authority = resident_remote_candidate_authority(
+            identity,
+            peer,
+            &surface,
+            candidate.clone(),
+            call,
+            &now,
+        )?;
+        plans.push(ResidentRemoteCandidatePlan {
+            candidate,
+            authority,
+        });
+    }
+    Ok(plans)
 }
 
-fn resident_candidate_for_peer(peer: &mct_daemon::MctPeerAddressBookEntry) -> CandidateRoute {
+fn resident_candidate_for_remote_surface(
+    peer: &mct_daemon::MctPeerAddressBookEntry,
+    surface: &MctRemoteCallableSurfaceRecord,
+) -> CandidateRoute {
     CandidateRoute {
-        candidate_id: format!("peer:{}:{}", peer.peer_node_id, peer.binding_id),
+        candidate_id: format!(
+            "peer:{}:{}:{}:{}",
+            surface.peer_node_id, surface.binding_id, surface.operation_id, surface.child_name
+        ),
         node_id: peer.peer_node_id.clone(),
-        child_id: None,
+        child_id: Some(
+            ChildId::new(surface.child_name.clone())
+                .expect("string ID literal/generated value must be non-empty"),
+        ),
         runtime_kind: RuntimeKind::RemotePeer,
         network_path: resident_peer_network_path(peer),
     }
@@ -2236,13 +2282,21 @@ fn resident_peer_network_path(peer: &mct_daemon::MctPeerAddressBookEntry) -> Net
 fn resident_remote_candidate_authority(
     identity: &MctLocalNodeIdentity,
     peer: &mct_daemon::MctPeerAddressBookEntry,
-    binding: &MctPeerBinding,
+    surface: &MctRemoteCallableSurfaceRecord,
     candidate: CandidateRoute,
     call: &MctCall,
-) -> CandidateAuthorityEvaluation {
+    now: &Timestamp,
+) -> Result<CandidateAuthorityEvaluation> {
+    let local_binding = peer.to_peer_binding(identity)?;
+    let outbound_binding = peer
+        .outbound_binding
+        .as_ref()
+        .map(|outbound| outbound_peer_binding_for_local(identity, peer, outbound))
+        .transpose()?;
+    let operation_id = mct_daemon::operation_id_from_target(&call.target);
     let reason = match verify_peer_binding_signature_ref(
         peer.binding_signature_ref.as_deref(),
-        binding,
+        &local_binding,
         &identity.endpoint_id,
     ) {
         MctPeerBindingSignatureVerification::Valid => None,
@@ -2253,19 +2307,59 @@ fn resident_remote_candidate_authority(
         }
     }
     .or_else(|| {
+        let Some(outbound_binding) = outbound_binding.as_ref() else {
+            return Some(CandidateEliminationReason::PeerNotAdmitted);
+        };
+        match verify_peer_binding_signature_ref(
+            peer.outbound_binding
+                .as_ref()
+                .map(|outbound| outbound.signature_ref.as_str()),
+            outbound_binding,
+            &peer.endpoint_id,
+        ) {
+            MctPeerBindingSignatureVerification::Valid => None,
+            MctPeerBindingSignatureVerification::Missing
+            | MctPeerBindingSignatureVerification::Malformed
+            | MctPeerBindingSignatureVerification::Invalid => {
+                Some(CandidateEliminationReason::PeerNotAdmitted)
+            }
+        }
+    })
+    .or_else(|| {
+        peer.outbound_binding
+            .as_ref()
+            .and_then(|outbound| outbound.expires_at.as_ref())
+            .and_then(|expires_at| match timestamp_not_after(expires_at, now) {
+                Ok(true) => Some(CandidateEliminationReason::PeerNotAdmitted),
+                Ok(false) => None,
+                Err(_) => Some(CandidateEliminationReason::PeerNotAdmitted),
+            })
+    })
+    .or_else(|| {
         (peer.binding_state != BindingState::Admitted)
             .then_some(CandidateEliminationReason::PeerNotAdmitted)
     })
     .or_else(|| {
-        (!binding
+        (surface.binding_id != peer.binding_id || surface.endpoint_id != peer.endpoint_id)
+            .then_some(CandidateEliminationReason::PeerNotAdmitted)
+    })
+    .or_else(|| {
+        (!local_binding
             .scope
             .allowed_alpns
             .iter()
-            .any(|alpn| alpn == MCT_CALL_ALPN))
+            .any(|alpn| alpn == MCT_CALL_ALPN)
+            || !outbound_binding.as_ref().is_some_and(|binding| {
+                binding
+                    .scope
+                    .allowed_alpns
+                    .iter()
+                    .any(|alpn| alpn == MCT_CALL_ALPN)
+            }))
         .then_some(CandidateEliminationReason::PeerNotAdmitted)
     })
     .or_else(|| {
-        (peer.vision_id != call.caller.vision_id)
+        (peer.vision_id != call.caller.vision_id || surface.vision_id != call.caller.vision_id)
             .then_some(CandidateEliminationReason::VisionPolicyDenied)
     })
     .or_else(|| {
@@ -2278,22 +2372,40 @@ fn resident_remote_candidate_authority(
             .then_some(CandidateEliminationReason::SecretScopeForbidden)
     })
     .or_else(|| {
+        (surface.operation_id != operation_id || surface.visibility != "vision_scoped")
+            .then_some(CandidateEliminationReason::CapabilityUnavailable)
+    })
+    .or_else(|| {
         peer.ticket
             .is_none()
             .then_some(CandidateEliminationReason::CapabilityUnavailable)
-    })
-    .unwrap_or(CandidateEliminationReason::CapabilityUnavailable);
+    });
 
-    // Remote route forwarding is intentionally not executable until scoped
-    // publication and Iroh forwarding are implemented. For now, admitted signed
-    // peers become observed remote candidates but are eliminated as a temporal
-    // capability gap instead of being silently ignored or accidentally executed.
-    CandidateAuthorityEvaluation::eliminated(
-        candidate,
-        reason,
-        peer.policy_revision,
-        call.authority_context.grants_revision,
-    )
+    Ok(match reason {
+        Some(reason) => CandidateAuthorityEvaluation::eliminated(
+            candidate,
+            reason,
+            peer.policy_revision,
+            call.authority_context.grants_revision,
+        ),
+        None => CandidateAuthorityEvaluation::admissible(
+            candidate,
+            peer.policy_revision,
+            call.authority_context.grants_revision,
+        ),
+    })
+}
+
+fn timestamp_not_after(timestamp: &Timestamp, now: &Timestamp) -> Result<bool> {
+    let timestamp = timestamp
+        .as_str()
+        .parse::<jiff::Timestamp>()
+        .context("parse timestamp")?;
+    let now = now
+        .as_str()
+        .parse::<jiff::Timestamp>()
+        .context("parse current timestamp")?;
+    Ok(timestamp <= now)
 }
 
 fn child_elimination_reason(reason: ChildCallReasonCode) -> CandidateEliminationReason {
@@ -3652,11 +3764,12 @@ fn run_runs(mut args: Vec<String>) -> Result<()> {
 
 fn run_peers(mut args: Vec<String>) -> Result<()> {
     if args.is_empty() {
-        bail!("expected peers subcommand: add | list | revoke | remove");
+        bail!("expected peers subcommand: add | list | set-outbound-proof | revoke | remove");
     }
     match args.remove(0).as_str() {
         "add" => run_peers_add(args),
         "list" => run_peers_list(args),
+        "set-outbound-proof" => run_peers_set_outbound_proof(args),
         "revoke" => run_peers_revoke(args),
         "remove" => run_peers_remove(args),
         other => bail!("unknown peers subcommand '{other}'"),
@@ -3693,6 +3806,7 @@ fn run_peers_add(mut args: Vec<String>) -> Result<()> {
         vision_id,
         ticket,
         binding_signature_ref,
+        outbound_binding: None,
         binding_state: BindingState::Admitted,
         policy_revision: 1,
         updated_at: mct_daemon::current_timestamp_string(),
@@ -3711,6 +3825,56 @@ fn run_peers_add(mut args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+fn run_peers_set_outbound_proof(mut args: Vec<String>) -> Result<()> {
+    let config_path = take_option(&mut args, "--config")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_config_path);
+    let signature_ref = take_option(&mut args, "--signature-ref").ok_or_else(|| {
+        anyhow::anyhow!("peers set-outbound-proof requires --signature-ref proof")
+    })?;
+    let expires_at = take_option(&mut args, "--expires-at")
+        .map(Timestamp::new)
+        .transpose()
+        .context("parse --expires-at timestamp")?;
+    if args.len() < 2 {
+        bail!(
+            "expected: mct-daemon peers set-outbound-proof <peer-node-id> <binding-id> --signature-ref proof [--expires-at ts] [--config path]"
+        );
+    }
+    let peer_node_id = MctNodeId::new(args.remove(0))
+        .expect("string ID literal/generated value must be non-empty");
+    let binding_id = PeerBindingId::new(args.remove(0))
+        .expect("string ID literal/generated value must be non-empty");
+    let config = MctDaemonConfigStore::new(&config_path).set_peer_outbound_proof(
+        &peer_node_id,
+        MctOutboundPeerBindingPresentation {
+            binding_id,
+            policy_revision: 1,
+            signature_ref,
+            expires_at,
+        },
+    )?;
+    let peer = config
+        .peers
+        .get(peer_node_id.as_str())
+        .expect("updated peer remains in config");
+    println!(
+        "peer outbound proof set={} binding={} config={} expires_at={}",
+        peer_node_id,
+        peer.outbound_binding
+            .as_ref()
+            .map(|proof| proof.binding_id.to_string())
+            .unwrap_or_else(|| "-".into()),
+        config_path.display(),
+        peer.outbound_binding
+            .as_ref()
+            .and_then(|proof| proof.expires_at.as_ref())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "-".into())
+    );
+    Ok(())
+}
+
 fn run_peers_list(mut args: Vec<String>) -> Result<()> {
     let config_path = take_option(&mut args, "--config")
         .map(PathBuf::from)
@@ -3724,13 +3888,14 @@ fn run_peers_list(mut args: Vec<String>) -> Result<()> {
     println!("config={}", config_path.display());
     for peer in config.peers.values() {
         println!(
-            "peer node={} endpoint={} binding={} vision={} ticket={} signature_ref={}",
+            "peer node={} endpoint={} binding={} vision={} ticket={} signature_ref={} outbound_proof={}",
             peer.peer_node_id,
             peer.endpoint_id,
             peer.binding_id,
             peer.vision_id,
             peer.ticket.is_some(),
-            peer.binding_signature_ref.is_some()
+            peer.binding_signature_ref.is_some(),
+            peer.outbound_binding.is_some()
         );
     }
     Ok(())
@@ -4674,6 +4839,7 @@ fn cli_peer_binding(
         vision_id,
         ticket: None,
         binding_signature_ref: None,
+        outbound_binding: None,
         binding_state: BindingState::Admitted,
         policy_revision: 1,
         updated_at: local_identity.updated_at.clone(),
@@ -4719,7 +4885,7 @@ fn default_identity_path() -> PathBuf {
 
 fn print_help() {
     println!(
-        "mct-daemon {version}\n\nCommands:\n  status\n  serve [--identity path] [--config path] [--children-dir path] [--state path] [--ledger path] [--max-connections n] [--relay-default] [--http addr | --uds socket-path]\n  control serve-http [addr] [--state path]\n  control serve-uds [socket-path] [--state path]\n  registry install <verified-package-dir> [--children-dir path] [--replace] [--json]\n  registry sync <source-id> [children-dir] [--state path] [--strict-integrity] [--json]\n  federation view [--config path] [--state path] [--children-dir path] [--json]\n  metrics snapshot [--state path] [--json]\n  pando record <composition-id> [step-id,call-id,runtime,child,decision ...] [--state path] [--json]\n  children load [children-dir] [--strict-integrity] [--json]\n  process call <executable> [payload-json] [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  children approve <child-name> [children-dir] [--config path] [--strict-integrity]\n  children revoke <child-name> [--config path]\n  children approvals [--config path] [--json]\n  children warmup <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  children reload <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--signature-ref proof] [--config path]\n  peers list [--config path] [--json]\n  peers revoke <peer-node-id> [--config path]\n  peers remove <peer-node-id> [--config path]\n  state summary [--state path] [--json]\n  runs list [--state path] [--json] [--limit n]\n  slate list-work --project-root path [--status status] [--kind kind] [--children-dir path] [--config path] [--state path] [--ledger path]\n  toys authorize-slate <child-name> <project-root> [--children-dir path] [--config path] [--state path] [--json]\n  toys authorize-secret <child-name> <secret-name> [--children-dir path] [--config path] [--state path] [--json]\n  wasm call <component-file> <export-name> [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  wasm call-wit <child-name> <operation-id> <args-json> [--project-root path] [--guest-project /project] [--git-repo path] [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh identity [identity-file] [--config path]\n  iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir]\n  iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable> --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function] [--signature-ref proof]\n  iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path] [--children-dir path] [--state path]\n  jvm call-json <operation-id> <args-json> [--children-dir path] [--config path] [--state path] [--ledger path]",
+        "mct-daemon {version}\n\nCommands:\n  status\n  serve [--identity path] [--config path] [--children-dir path] [--state path] [--ledger path] [--max-connections n] [--relay-default] [--http addr | --uds socket-path]\n  control serve-http [addr] [--state path]\n  control serve-uds [socket-path] [--state path]\n  registry install <verified-package-dir> [--children-dir path] [--replace] [--json]\n  registry sync <source-id> [children-dir] [--state path] [--strict-integrity] [--json]\n  federation view [--config path] [--state path] [--children-dir path] [--json]\n  metrics snapshot [--state path] [--json]\n  pando record <composition-id> [step-id,call-id,runtime,child,decision ...] [--state path] [--json]\n  children load [children-dir] [--strict-integrity] [--json]\n  process call <executable> [payload-json] [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  children approve <child-name> [children-dir] [--config path] [--strict-integrity]\n  children revoke <child-name> [--config path]\n  children approvals [--config path] [--json]\n  children warmup <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  children reload <child-name> [--children-dir path] [--config path] [--ledger path] [--state path] [--json]\n  peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--signature-ref proof] [--config path]\n  peers list [--config path] [--json]\n  peers set-outbound-proof <peer-node-id> <binding-id> --signature-ref proof [--expires-at ts] [--config path]\n  peers revoke <peer-node-id> [--config path]\n  peers remove <peer-node-id> [--config path]\n  state summary [--state path] [--json]\n  runs list [--state path] [--json] [--limit n]\n  slate list-work --project-root path [--status status] [--kind kind] [--children-dir path] [--config path] [--state path] [--ledger path]\n  toys authorize-slate <child-name> <project-root> [--children-dir path] [--config path] [--state path] [--json]\n  toys authorize-secret <child-name> <secret-name> [--children-dir path] [--config path] [--state path] [--json]\n  wasm call <component-file> <export-name> [namespace interface function] --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  wasm call-wit <child-name> <operation-id> <args-json> [--project-root path] [--guest-project /project] [--git-repo path] [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh identity [identity-file] [--config path]\n  iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir]\n  iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable> --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]\n  iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function] [--signature-ref proof]\n  iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path] [--children-dir path] [--state path]\n  jvm call-json <operation-id> <args-json> [--children-dir path] [--config path] [--state path] [--ledger path]",
         version = mct_daemon::version()
     );
 }
@@ -4732,6 +4898,7 @@ mod authority_test_fixture;
 mod tests {
     use super::*;
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+    use mct_iroh::{endpoint_id_for_secret_key_hex, sign_peer_binding_signature_ref};
 
     fn test_call() -> MctCall {
         MctCall {
@@ -4909,6 +5076,7 @@ mod tests {
                     .expect("string ID literal/generated value must be non-empty"),
                 ticket: None,
                 binding_signature_ref: None,
+                outbound_binding: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
                 updated_at: mct_daemon::current_timestamp_string(),
@@ -5064,6 +5232,7 @@ mod tests {
                     .expect("string ID literal/generated value must be non-empty"),
                 ticket: None,
                 binding_signature_ref: None,
+                outbound_binding: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
                 updated_at: mct_daemon::current_timestamp_string(),
@@ -5344,6 +5513,7 @@ mod tests {
                     .expect("string ID literal/generated value must be non-empty"),
                 ticket: None,
                 binding_signature_ref: None,
+                outbound_binding: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
                 updated_at: mct_daemon::current_timestamp_string(),
@@ -5441,6 +5611,7 @@ mod tests {
                     .expect("string ID literal/generated value must be non-empty"),
                 ticket: None,
                 binding_signature_ref: None,
+                outbound_binding: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
                 updated_at: mct_daemon::current_timestamp_string(),
@@ -6072,87 +6243,71 @@ mod tests {
     }
 
     #[test]
-    fn resident_remote_route_candidates_require_admitted_signed_peer() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("config.json");
-        let store = MctDaemonConfigStore::new(&config_path);
-        store
-            .ensure_local_identity(
-                MctOperatorNodeScope::default(),
-                dir.path().join("identity").join("iroh-secret.hex"),
-            )
-            .unwrap();
-        store
-            .upsert_peer(resident_remote_peer_entry(
-                "remote-mct",
-                "binding-remote",
-                "endpoint-remote",
-                "vision-local",
-                BindingState::Admitted,
-                None,
-            ))
-            .unwrap();
-        let config = store.load().unwrap();
-        let call = resident_test_call(
-            TraceId::new("trace-remote-route-candidate")
-                .expect("string ID literal/generated value must be non-empty"),
-        );
+    fn resident_remote_surface_candidate_becomes_admissible_when_all_checks_pass() {
+        let fixture = remote_surface_candidate_fixture();
 
-        let plans = resident_remote_candidate_plans(&config, &call);
+        let plans = resident_remote_candidate_plans(
+            &fixture.config,
+            Some(&fixture.state),
+            &fixture.call,
+            Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
+        )
+        .unwrap();
 
         assert_eq!(plans.len(), 1);
         assert_eq!(
             plans[0].candidate.candidate_id,
-            "peer:remote-mct:binding-remote"
+            "peer:remote-mct:binding-remote:patina:demo/control@0.1.0.run:remote-child"
         );
         assert_eq!(plans[0].candidate.runtime_kind, RuntimeKind::RemotePeer);
         assert_eq!(plans[0].candidate.network_path, NetworkPathClass::Direct);
         assert_eq!(
-            plans[0].authority.reason,
-            Some(CandidateEliminationReason::CapabilityUnavailable)
+            plans[0].authority.outcome,
+            CandidateAuthorityOutcome::Admissible
         );
+        assert_eq!(plans[0].authority.reason, None);
+    }
 
-        let outcome = authorize_resident_child_from_loaded(&config, Vec::new(), &call).unwrap();
-        let ResidentAuthorizationOutcome::Denied { observations, .. } = outcome else {
-            panic!("remote forwarding is not executable in this slice")
-        };
-        let text = serde_json::to_string(&observations).unwrap();
-        assert!(text.contains("peer:remote-mct:binding-remote"));
-        assert!(text.contains("RemotePeer"));
-        assert!(text.contains("CapabilityUnavailable"));
+    #[test]
+    fn resident_remote_surface_candidate_forbids_secret_scope() {
+        let mut fixture = remote_surface_candidate_fixture();
+        fixture
+            .call
+            .payload_metadata
+            .contains_secret_scoped_material = true;
+
+        let plans = resident_remote_candidate_plans(
+            &fixture.config,
+            Some(&fixture.state),
+            &fixture.call,
+            Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(plans.len(), 1);
+        assert_eq!(
+            plans[0].authority.reason,
+            Some(CandidateEliminationReason::SecretScopeForbidden)
+        );
     }
 
     #[test]
     fn resident_remote_route_candidates_reject_unsigned_peer_binding() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("config.json");
-        let store = MctDaemonConfigStore::new(&config_path);
-        store
-            .ensure_local_identity(
-                MctOperatorNodeScope::default(),
-                dir.path().join("identity").join("iroh-secret.hex"),
-            )
-            .unwrap();
-        let mut config = store.load().unwrap();
-        config.peers.insert(
-            "remote-mct".into(),
-            resident_remote_peer_entry(
-                "remote-mct",
-                "binding-unsigned",
-                "endpoint-remote",
-                "vision-local",
-                BindingState::Admitted,
-                None,
-            ),
-        );
-        store.save(&config).unwrap();
-        let config = store.load().unwrap();
-        let call = resident_test_call(
-            TraceId::new("trace-remote-route-unsigned")
-                .expect("string ID literal/generated value must be non-empty"),
-        );
+        let mut fixture = remote_surface_candidate_fixture();
+        fixture
+            .config
+            .peers
+            .get_mut("remote-mct")
+            .unwrap()
+            .binding_signature_ref = None;
 
-        let plans = resident_remote_candidate_plans(&config, &call);
+        let plans = resident_remote_candidate_plans(
+            &fixture.config,
+            Some(&fixture.state),
+            &fixture.call,
+            Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
+        )
+        .unwrap();
 
         assert_eq!(plans.len(), 1);
         assert_eq!(
@@ -6356,6 +6511,93 @@ mod tests {
         call
     }
 
+    struct RemoteSurfaceCandidateFixture {
+        _dir: tempfile::TempDir,
+        config: mct_daemon::MctDaemonConfig,
+        state: MctRuntimeStateStore,
+        call: MctCall,
+    }
+
+    fn remote_surface_candidate_fixture() -> RemoteSurfaceCandidateFixture {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let state_path = dir.path().join("state.sqlite");
+        let local_identity_path = dir.path().join("identity").join("iroh-secret.hex");
+        let remote_identity_path = dir.path().join("remote").join("iroh-secret.hex");
+        let store = MctDaemonConfigStore::new(&config_path);
+        let local_identity = store
+            .ensure_local_identity(MctOperatorNodeScope::default(), &local_identity_path)
+            .unwrap();
+        let remote_secret = load_or_create_node_secret_key_hex(&remote_identity_path).unwrap();
+        let remote_endpoint_id = endpoint_id_for_secret_key_hex(&remote_secret).unwrap();
+        store
+            .upsert_peer(resident_remote_peer_entry(
+                "remote-mct",
+                "binding-remote",
+                remote_endpoint_id.as_str(),
+                "vision-local",
+                BindingState::Admitted,
+                None,
+            ))
+            .unwrap();
+        let mut config = store.load().unwrap();
+        let peer = config.peers.get("remote-mct").unwrap().clone();
+        let outbound_binding = MctOutboundPeerBindingPresentation {
+            binding_id: PeerBindingId::new("binding-outbound-local")
+                .expect("string ID literal/generated value must be non-empty"),
+            policy_revision: 1,
+            signature_ref: String::new(),
+            expires_at: None,
+        };
+        let outbound_binding_to_sign =
+            outbound_peer_binding_for_local(&local_identity, &peer, &outbound_binding).unwrap();
+        let outbound_signature = sign_peer_binding_signature_ref(
+            &remote_secret,
+            &outbound_binding_to_sign,
+            &remote_endpoint_id,
+        )
+        .unwrap();
+        store
+            .set_peer_outbound_proof(
+                &peer.peer_node_id,
+                MctOutboundPeerBindingPresentation {
+                    signature_ref: outbound_signature,
+                    ..outbound_binding
+                },
+            )
+            .unwrap();
+        config = store.load().unwrap();
+        let state = MctRuntimeStateStore::open(&state_path).unwrap();
+        let view = hello_capability_view(
+            &peer.peer_node_id,
+            &peer.vision_id,
+            1,
+            &["patina:demo/control@0.1.0.run"],
+        );
+        state
+            .refresh_remote_callable_surfaces(MctRemoteSurfaceRefresh {
+                peer_node_id: &peer.peer_node_id,
+                binding_id: &peer.binding_id,
+                endpoint_id: &peer.endpoint_id,
+                view: &view,
+                received_at: &Timestamp::new("2026-07-09T00:00:00Z").unwrap(),
+                stale_at: &Timestamp::new("2026-07-09T00:05:00Z").unwrap(),
+                view_observation_id: &ObservationId::new("obs-remote-surface-view")
+                    .expect("string ID literal/generated value must be non-empty"),
+            })
+            .unwrap();
+        let call = resident_test_call(
+            TraceId::new("trace-remote-route-candidate")
+                .expect("string ID literal/generated value must be non-empty"),
+        );
+        RemoteSurfaceCandidateFixture {
+            _dir: dir,
+            config,
+            state,
+            call,
+        }
+    }
+
     fn resident_remote_peer_entry(
         peer_node_id: &str,
         binding_id: &str,
@@ -6380,6 +6622,7 @@ mod tests {
                 relay_urls: Vec::new(),
             }),
             binding_signature_ref,
+            outbound_binding: None,
             binding_state,
             policy_revision: 1,
             updated_at: "2026-07-09T00:00:00Z".into(),

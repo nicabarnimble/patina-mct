@@ -51,6 +51,14 @@ pub struct MctStoredChildAssignment {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctOutboundPeerBindingPresentation {
+    pub binding_id: PeerBindingId,
+    pub policy_revision: u64,
+    pub signature_ref: String,
+    pub expires_at: Option<Timestamp>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MctPeerAddressBookEntry {
     pub peer_node_id: MctNodeId,
     pub binding_id: PeerBindingId,
@@ -59,6 +67,8 @@ pub struct MctPeerAddressBookEntry {
     pub ticket: Option<MotherIrohEndpointTicket>,
     #[serde(default)]
     pub binding_signature_ref: Option<String>,
+    #[serde(default)]
+    pub outbound_binding: Option<MctOutboundPeerBindingPresentation>,
     pub binding_state: BindingState,
     pub policy_revision: u64,
     pub updated_at: String,
@@ -204,6 +214,35 @@ impl MctDaemonConfig {
             instances,
         }
     }
+}
+
+pub fn outbound_peer_binding_for_local(
+    local_identity: &MctLocalNodeIdentity,
+    peer: &MctPeerAddressBookEntry,
+    outbound: &MctOutboundPeerBindingPresentation,
+) -> Result<MctPeerBinding> {
+    Ok(MctPeerBinding {
+        binding_id: outbound.binding_id.clone(),
+        iroh_endpoint_id: local_identity.endpoint_id.clone(),
+        scope: MctPeerBindingScope {
+            mct_node_id: local_identity.node_id.clone(),
+            vision_id: peer.vision_id.clone(),
+            allowed_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
+            data_scope: None,
+            observation_scope: None,
+        },
+        issuer_node_id: peer.peer_node_id.clone(),
+        policy_revision: outbound.policy_revision,
+        binding_state: BindingState::Admitted,
+        issued_at: Timestamp::new(peer.updated_at.clone())?,
+        expires_at: outbound.expires_at.clone(),
+        created_by_observation_id: ObservationId::new(format!(
+            "obs:peer-outbound-binding:{}",
+            outbound.binding_id
+        ))
+        .expect("string ID literal/generated value must be non-empty"),
+        superseded_by_observation_id: None,
+    })
 }
 
 impl MctPeerAddressBookEntry {
@@ -451,6 +490,24 @@ impl MctDaemonConfigStore {
             )?);
         }
         config.peers.insert(entry.peer_node_id.to_string(), entry);
+        self.save(&config)?;
+        Ok(config)
+    }
+
+    pub fn set_peer_outbound_proof(
+        &self,
+        peer_node_id: &MctNodeId,
+        outbound_binding: MctOutboundPeerBindingPresentation,
+    ) -> Result<MctDaemonConfig> {
+        if outbound_binding.signature_ref.trim().is_empty() {
+            bail!("outbound binding signature_ref must not be empty");
+        }
+        let mut config = self.load()?;
+        let Some(peer) = config.peers.get_mut(peer_node_id.as_str()) else {
+            bail!("peer '{peer_node_id}' not found in config");
+        };
+        peer.outbound_binding = Some(outbound_binding);
+        peer.updated_at = current_timestamp_string();
         self.save(&config)?;
         Ok(config)
     }
@@ -721,6 +778,7 @@ mod tests {
                 relay_urls: Vec::new(),
             }),
             binding_signature_ref: None,
+            outbound_binding: None,
             binding_state: state,
             policy_revision: 1,
             updated_at: "2026-07-09T00:00:00Z".into(),
