@@ -7304,6 +7304,110 @@ mod tests {
     }
 
     #[test]
+    fn two_mother_wrong_vision_fails_closed() {
+        let mut fixture = remote_surface_candidate_fixture();
+        fixture.call.caller.vision_id = VisionId::new("vision-other")
+            .expect("string ID literal/generated value must be non-empty");
+
+        let plans = resident_remote_candidate_plans(
+            &fixture.config,
+            Some(&fixture.state),
+            &fixture.call,
+            Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
+        )
+        .unwrap();
+
+        assert!(plans.is_empty());
+    }
+
+    #[test]
+    fn two_mother_revoked_or_expired_binding_fails_closed() {
+        let mut fixture = remote_surface_candidate_fixture();
+        fixture
+            .config
+            .peers
+            .get_mut("remote-mct")
+            .unwrap()
+            .binding_state = BindingState::Revoked;
+
+        let revoked = resident_remote_candidate_plans(
+            &fixture.config,
+            Some(&fixture.state),
+            &fixture.call,
+            Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            revoked[0].authority.reason,
+            Some(CandidateEliminationReason::PeerNotAdmitted)
+        );
+
+        let peer = fixture.config.peers.get_mut("remote-mct").unwrap();
+        peer.binding_state = BindingState::Admitted;
+        peer.outbound_binding.as_mut().unwrap().expires_at =
+            Some(Timestamp::new("2026-07-08T00:00:00Z").unwrap());
+        let expired = resident_remote_candidate_plans(
+            &fixture.config,
+            Some(&fixture.state),
+            &fixture.call,
+            Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            expired[0].authority.reason,
+            Some(CandidateEliminationReason::PeerNotAdmitted)
+        );
+    }
+
+    #[test]
+    fn two_mother_unauthorized_operation_fails_closed() {
+        let mut fixture = remote_surface_candidate_fixture();
+        fixture.call.target.function_name = "missing".into();
+
+        let plans = resident_remote_candidate_plans(
+            &fixture.config,
+            Some(&fixture.state),
+            &fixture.call,
+            Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
+        )
+        .unwrap();
+
+        assert!(plans.is_empty());
+    }
+
+    #[test]
+    fn two_mother_bad_payload_fails_closed() {
+        let reply = remote_reply_fixture(
+            CallProtocolReplyOutcome::Malformed,
+            "malformed call payload",
+        );
+        let handler = remote_reply_to_call_handler_result(
+            reply,
+            DecisionId::new("route-revalidation:bad-payload")
+                .expect("string ID literal/generated value must be non-empty"),
+            remote_route_taken_fixture(),
+        );
+
+        assert_eq!(handler.outcome, CallProtocolOutcome::Failed);
+        assert_eq!(handler.safe_message, "malformed call payload");
+        assert!(handler.route_taken.is_none());
+    }
+
+    #[test]
+    fn two_mother_remote_denial_fails_closed() {
+        let reply = remote_reply_fixture(CallProtocolReplyOutcome::Denied, "not authorized");
+        let handler = remote_reply_to_call_handler_result(
+            reply,
+            DecisionId::new("route-revalidation:remote-denial")
+                .expect("string ID literal/generated value must be non-empty"),
+            remote_route_taken_fixture(),
+        );
+
+        assert_eq!(handler.outcome, CallProtocolOutcome::Denied);
+        assert!(handler.route_taken.is_none());
+    }
+
+    #[test]
     fn resident_route_revision_guard_denies_before_effect() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.json");
@@ -7503,6 +7607,42 @@ mod tests {
         config: mct_daemon::MctDaemonConfig,
         state: MctRuntimeStateStore,
         call: MctCall,
+    }
+
+    fn remote_route_taken_fixture() -> RouteTaken {
+        RouteTaken {
+            node_id: MctNodeId::new("remote-mct")
+                .expect("string ID literal/generated value must be non-empty"),
+            child_id: Some(
+                ChildId::new("remote-child")
+                    .expect("string ID literal/generated value must be non-empty"),
+            ),
+            runtime_kind: RuntimeKind::RemotePeer,
+        }
+    }
+
+    fn remote_reply_fixture(
+        reply_outcome: CallProtocolReplyOutcome,
+        safe_message: &str,
+    ) -> MctIrohCallPayloadReply {
+        MctIrohCallPayloadReply {
+            reply: MctCallProtocolReply {
+                reply_id: ReplyId::new("reply-remote-fixture")
+                    .expect("string ID literal/generated value must be non-empty"),
+                protocol_request_id: ProtocolRequestId::new("proto-remote-fixture")
+                    .expect("string ID literal/generated value must be non-empty"),
+                decision_id: DecisionId::new("decision-remote-fixture")
+                    .expect("string ID literal/generated value must be non-empty"),
+                result_ref: None,
+                result_payload: MctCallPayloadHandle::Empty,
+                route_taken: None,
+                reply_outcome,
+                safe_message: safe_message.into(),
+                reply_observation_id: ObservationId::new("obs-reply-remote-fixture")
+                    .expect("string ID literal/generated value must be non-empty"),
+            },
+            inline_result_payload: None,
+        }
     }
 
     fn remote_surface_candidate_fixture() -> RemoteSurfaceCandidateFixture {
