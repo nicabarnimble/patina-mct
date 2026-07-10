@@ -825,8 +825,8 @@ Peer mutation commands accept `--uds` (default `.mct/control.sock`) and `--ledge
 
 - [x] Re-establish `b49240e` baseline and read the recorded decision and affected surfaces.
 - [x] Record the UDS, ordering, visibility, and offline-lock mechanism.
-- [ ] Land failing regression tests and implementation.
-- [ ] Mark the peer-authority portion of A6 fixed; leave slice 4 remainder open.
+- [x] Land failing regression tests and implementation.
+- [x] Mark the peer-authority portion of A6 fixed; leave slice 4 remainder open.
 
 ## Slice 2b failure log
 
@@ -964,3 +964,35 @@ Usage: cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]
 
 For more information, try '--help'.
 ```
+
+## S2b.2 implementation record
+
+### Commits
+
+- `d8be388` — `docs: specify peer authority control mutations`
+- `e86a26a` — `feat(control): add local UDS mutation seam`
+- `393884f` — `fix(daemon): observe peer authority mutations`
+
+### Implemented command shapes
+
+The resident UDS now owns `POST /peers/add`, `POST /peers/proof`, `POST /peers/revoke`, and `POST /peers/remove`. Requests are bounded to 64 KiB, carry `expected_config_path`, and return only safe peer/binding/endpoint/Vision/revision/state/count facts. HTTP remains read-only.
+
+`mct-daemon peers add`, `set-outbound-proof`, `revoke`, and `remove` accept `--uds` and `--ledger`. Each first attempts the resident UDS; connection failure alone permits the offline path, which must acquire the exclusive `JsonlObservationLedger` writer lock before validation, decision append, and config replacement. A connected resident rejection never falls back to direct config mutation.
+
+### Ordering and visibility evidence
+
+- `live_uds_peer_mutations_are_durable_and_secret_free` exercises all four UDS mutations, their typed `PeerBindingRecorded`/`PeerBindingRevoked` facts, `BeforeEffect` durability, the 64 KiB rejection, and proof/signature exclusion.
+- `resident_append_failure_prevents_peer_config_effect` proves append acknowledgment gates config replacement.
+- `resident_apply_failure_records_typed_failure_after_decision` proves a post-decision config failure yields `OperatorActionRecorded`/`Failed` without command success.
+- `offline_peer_mutation_observes_before_effect_and_fails_on_lock_contention` exercises the actual CLI fallback and proves a held writer lock leaves the target config untouched.
+- `resident_mother_serves_peer_control_and_shutdown` now revokes an admitted peer over the live resident UDS, observes the revocation first, and proves the next call reloads current config and is denied before execution.
+
+The resident mutation handler and the Iroh authority provider capture the same `config_path`. The provider still calls `MctDaemonConfigStore::load()` for each connection, so no stale peer cache can survive a successful mutation reply. The decision ledger append is acknowledged before config replacement; therefore authority visibility cannot precede its canonical fact.
+
+### Validation and flakes
+
+Required workspace tests, Clippy with `-D warnings`, and tier-0 passed after each of `d8be388`, `e86a26a`, and `393884f`. The final implementation validation passed **259 tests** (259 passed, 0 ignored), Clippy, and Allium check with empty diagnostics/findings.
+
+Flakes: none. Expected red compile failures, deterministic intermediate Clippy findings, and the corrected Cargo filter invocation are recorded verbatim above.
+
+A6 remains open only for the child/operator/storage paths assigned to slice 4. Stop after S2b.2; no slice 3 or slice 4 implementation begins here.

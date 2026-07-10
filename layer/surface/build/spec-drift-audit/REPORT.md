@@ -89,10 +89,10 @@ $ allium analyse layer/allium/mct-product-map.allium
 ### A6 — authority/operator/storage mutations bypass the observation ledger
 
 - **Spec:** `MctObservabilitySpine.AuthorityDecisionsAreObserved` and `.AdapterEffectsAreObserved`, `layer/allium/mct-product-map.allium:1135-1142,1200-1212`; observation matrix, `layer/allium/mct-product-map.allium:1223-1235`.
-- **Code:** child approval/revocation writes at `crates/mct-daemon/src/config.rs:417-476` called from `crates/mct-daemon/src/main.rs:140-193`; peer add/proof/revoke/remove writes at `crates/mct-daemon/src/main.rs:4500-4597,4625-4665`; blob storage effect at `crates/mct-daemon/src/control.rs:442-467` and `crates/mct-daemon/src/blob_store.rs:126-174`.
-- **Evidence:** The map says every grant/revoke/child-approval decision, every operator policy/approval/grant/peer action, and every storage write/failure produces a typed observation. These command and control paths mutate config or publish a CAS blob and return success without accepting a ledger path or appending an `MctObservation`. The config records contain observation-shaped IDs in projections, but no durable observation is written. The ledger therefore cannot be the source of truth for these authority and storage effects.
+- **Code:** child approval/revocation writes at `crates/mct-daemon/src/config.rs:417-476` called from `crates/mct-daemon/src/daemon/cli_runtime.rs`; observed peer mutation orchestration at `crates/mct-daemon/src/daemon/control.rs` and CLI arbitration at `crates/mct-daemon/src/daemon/cli_admin.rs`; blob storage effect at `crates/mct-daemon/src/control.rs:442-467` and `crates/mct-daemon/src/blob_store.rs:126-174`.
+- **Evidence:** The map says every grant/revoke/child-approval decision, every operator policy/approval/grant/peer action, and every storage write/failure produces a typed observation. Child authority commands and CAS publication can still return after mutation without the required typed ledger fact, so the ledger is not yet the source of truth for every A6 effect.
 - **Direction:** spec-ward.
-- **Resolution architecture:** peer mutations will use resident UDS control-plane operations while Mother is running and direct append under the existing free writer lock for offline administration (slice 2b). The child/operator/storage remainder in slice 4 inherits the same resident-writer/control-plane architecture; A6 remains open until those paths land.
+- **Outcome:** peer-authority portion fixed in `393884f` (`fix(daemon): observe peer authority mutations`). Live add/proof/revoke/remove operations run through resident-only UDS handlers and await `BeforeEffect` decision appends before config replacement; offline CLI fallback holds the exclusive ledger writer lock across the same ordering. Append failure leaves config untouched, apply failure adds a typed operator failure, and proofs/signatures are absent from observations and responses. The child/operator/storage remainder stays open for slice 4 and inherits this resident-writer/control-plane architecture.
 
 ### A7 — reload stops the current generation before constructing the replacement
 
@@ -233,7 +233,7 @@ The audit also found implementation alignment, not divergence, in these walked a
 | A3 | A | Idempotency key does not deduplicate | spec-ward |
 | A4 | A | RouteDecision omits planner/snapshot evidence | spec-ward |
 | A5 | A | Hello observation follows response effect | spec-ward — **fixed** in `e16e59d` |
-| A6 | A | Authority/operator/storage mutations are unobserved | spec-ward |
+| A6 | A | Authority/operator/storage mutations are unobserved | spec-ward — peer portion **fixed** in `393884f`; remainder open |
 | A7 | A | Reload drains/stops before replacement readiness | spec-ward |
 | A8 | A | Peer-call lifecycle observation coverage is incomplete | spec-ward |
 | B1 | B | Payload caps and local BLAKE3 CAS are under-described | code-ward |
