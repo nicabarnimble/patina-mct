@@ -80,7 +80,8 @@ pub use inspector::{
     MctInspectorObservationQuery, MctInspectorObservationView, inspect_observation_entries,
 };
 pub use lifecycle::{
-    MctChildReloadReport, MctChildWarmupReport, reload_configured_child, warmup_configured_child,
+    MctChildReloadError, MctChildReloadReport, MctChildWarmupReport, reload_configured_child,
+    warmup_configured_child,
 };
 pub use metrics::{MctMetricsSnapshot, build_metrics_snapshot};
 pub use process::{
