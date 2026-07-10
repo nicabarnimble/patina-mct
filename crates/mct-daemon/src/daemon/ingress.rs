@@ -222,12 +222,30 @@ pub(super) async fn run_iroh(mut args: Vec<String>) -> Result<()> {
             let config_path = take_option(&mut args, "--config")
                 .map(PathBuf::from)
                 .unwrap_or_else(default_config_path);
+            let ledger_path = take_option(&mut args, "--ledger")
+                .map(PathBuf::from)
+                .unwrap_or_else(default_observation_ledger_path);
+            let socket_path = take_option(&mut args, "--uds")
+                .map(PathBuf::from)
+                .unwrap_or_else(default_control_uds_path);
             let identity_path = args
                 .first()
                 .map(PathBuf::from)
                 .unwrap_or_else(default_identity_path);
-            let identity = MctDaemonConfigStore::new(&config_path)
-                .ensure_local_identity(MctOperatorNodeScope::default(), &identity_path)?;
+            let identity_request = serde_json::to_vec(&serde_json::json!({}))?;
+            if try_resident_control_mutation(&socket_path, "/identity/ensure", &identity_request)?
+                .is_some()
+            {
+                bail!("resident accepted unsupported live identity mutation");
+            }
+            let identity =
+                execute_offline_identity_mutation(&config_path, &identity_path, &ledger_path)
+                    .with_context(|| {
+                        format!(
+                            "resident UDS {} unavailable and offline identity mutation failed",
+                            socket_path.display()
+                        )
+                    })?;
             println!("node_id={}", identity.node_id);
             println!("vision_id={}", identity.vision_id);
             println!("endpoint_id={}", identity.endpoint_id);
@@ -975,6 +993,35 @@ pub(super) fn read_ticket(path: &Path) -> Result<MotherIrohEndpointTicket> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn offline_identity_cli_observes_before_creating_key_and_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger_path = dir.path().join("observations.jsonl");
+        let identity_path = dir.path().join("identity.hex");
+        let config_path = dir.path().join("config.json");
+        let socket_path = dir.path().join("missing.sock");
+
+        run_iroh(vec![
+            "identity".into(),
+            identity_path.display().to_string(),
+            "--config".into(),
+            config_path.display().to_string(),
+            "--ledger".into(),
+            ledger_path.display().to_string(),
+            "--uds".into(),
+            socket_path.display().to_string(),
+        ])
+        .await
+        .unwrap();
+
+        assert!(identity_path.exists());
+        assert!(config_path.exists());
+        let secret = std::fs::read_to_string(identity_path).unwrap();
+        let ledger_text = std::fs::read_to_string(ledger_path).unwrap();
+        assert!(ledger_text.contains("operator_action_recorded"));
+        assert!(!ledger_text.contains(secret.trim()));
+    }
 
     #[tokio::test]
     async fn standalone_serve_refuses_held_ledger_before_endpoint_bind() {

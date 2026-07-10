@@ -1611,3 +1611,425 @@ Resident child candidate sourcing calls `authorize_resident_child_blocking` for 
 - [ ] Mark A6 fully fixed, validate each commit, and stop after S4.2.
 
 ## Slice 4 failure log
+
+Expected red compile after adding Slice 4 child-authority and identity regressions:
+
+```text
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0425]: cannot find function `ensure_observed_local_identity` in this scope
+    --> crates/mct-daemon/src/daemon/resident.rs:2767:21
+     |
+2767 |         let error = ensure_observed_local_identity(
+     |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `resident_authority_mutation_handler` in this scope
+   --> crates/mct-daemon/src/daemon/control.rs:913:23
+    |
+390 | / pub(super) fn resident_peer_mutation_handler(
+391 | |     configured_path: PathBuf,
+392 | |     ledger: ResidentLedgerWriter,
+393 | | ) -> mct_daemon::MctUdsControlMutationHandler {
+...   |
+398 | |     })
+399 | | }
+    | |_- similarly named function `resident_peer_mutation_handler` defined here
+...
+913 |           let handler = resident_authority_mutation_handler(
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: a function with a similar name exists
+    |
+913 -         let handler = resident_authority_mutation_handler(
+913 +         let handler = resident_peer_mutation_handler(
+    |
+
+error[E0425]: cannot find function `resident_authority_mutation_handler` in this scope
+    --> crates/mct-daemon/src/daemon/control.rs:1002:23
+     |
+ 390 | / pub(super) fn resident_peer_mutation_handler(
+ 391 | |     configured_path: PathBuf,
+ 392 | |     ledger: ResidentLedgerWriter,
+ 393 | | ) -> mct_daemon::MctUdsControlMutationHandler {
+...    |
+ 398 | |     })
+ 399 | | }
+     | |_- similarly named function `resident_peer_mutation_handler` defined here
+...
+1002 |           let handler = resident_authority_mutation_handler(
+     |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: a function with a similar name exists
+     |
+1002 -         let handler = resident_authority_mutation_handler(
+1002 +         let handler = resident_peer_mutation_handler(
+     |
+
+error[E0425]: cannot find function `execute_offline_child_mutation` in this scope
+    --> crates/mct-daemon/src/daemon/control.rs:1034:9
+     |
+ 401 | / pub(super) fn execute_offline_peer_mutation(
+ 402 | |     configured_path: &Path,
+ 403 | |     ledger_path: &Path,
+ 404 | |     path: &str,
+...    |
+ 429 | | }
+     | |_- similarly named function `execute_offline_peer_mutation` defined here
+...
+1034 |           execute_offline_child_mutation(
+     |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: a function with a similar name exists
+     |
+1034 -         execute_offline_child_mutation(
+1034 +         execute_offline_peer_mutation(
+     |
+
+error[E0425]: cannot find function `execute_offline_identity_mutation` in this scope
+    --> crates/mct-daemon/src/daemon/control.rs:1048:9
+     |
+ 401 | / pub(super) fn execute_offline_peer_mutation(
+ 402 | |     configured_path: &Path,
+ 403 | |     ledger_path: &Path,
+ 404 | |     path: &str,
+...    |
+ 429 | | }
+     | |_- similarly named function `execute_offline_peer_mutation` defined here
+...
+1048 |           execute_offline_identity_mutation(&config_path, &identity_path, &ledger_path).unwrap();
+     |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: a function with a similar name exists
+     |
+1048 -         execute_offline_identity_mutation(&config_path, &identity_path, &ledger_path).unwrap();
+1048 +         execute_offline_peer_mutation(&config_path, &identity_path, &ledger_path).unwrap();
+     |
+
+error[E0425]: cannot find function `execute_offline_identity_mutation` in this scope
+    --> crates/mct-daemon/src/daemon/control.rs:1066:21
+     |
+ 401 | / pub(super) fn execute_offline_peer_mutation(
+ 402 | |     configured_path: &Path,
+ 403 | |     ledger_path: &Path,
+ 404 | |     path: &str,
+...    |
+ 429 | | }
+     | |_- similarly named function `execute_offline_peer_mutation` defined here
+...
+1066 |           let error = execute_offline_identity_mutation(
+     |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: a function with a similar name exists
+     |
+1066 -         let error = execute_offline_identity_mutation(
+1066 +         let error = execute_offline_peer_mutation(
+     |
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 6 previous errors
+```
+
+Deterministic child CLI ownership compile failure before correction:
+
+```text
+   Compiling mct-iroh v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-iroh)
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0382]: borrow of moved value: `children_dir`
+   --> crates/mct-daemon/src/daemon/cli_runtime.rs:116:9
+    |
+100 |     let children_dir = args
+    |         ------------ move occurs because `children_dir` has type `std::path::PathBuf`, which does not implement the `Copy` trait
+...
+104 |     let mut options = MctChildLoadOptions::new(children_dir);
+    |                                                ------------ value moved here
+...
+116 |         &children_dir,
+    |         ^^^^^^^^^^^^^ value borrowed here after move
+    |
+    = note: borrow occurs due to deref coercion to `std::path::Path`
+help: consider borrowing `children_dir`
+    |
+104 |     let mut options = MctChildLoadOptions::new(&children_dir);
+    |                                                +
+
+error[E0505]: cannot move out of `children_dir` because it is borrowed
+   --> crates/mct-daemon/src/daemon/cli_runtime.rs:122:36
+    |
+100 |     let children_dir = args
+    |         ------------ binding `children_dir` declared here
+...
+114 |     let response = execute_cli_child_mutation(
+    |                    -------------------------- borrow later used by call
+115 |         &config_path,
+116 |         &children_dir,
+    |         ------------- borrow of `children_dir` occurs here
+...
+122 |             expected_children_dir: children_dir,
+    |                                    ^^^^^^^^^^^^ move out of `children_dir` occurs here
+    |
+help: consider cloning the value if the performance cost is acceptable
+    |
+116 |         &children_dir.clone(),
+    |                      ++++++++
+
+Some errors have detailed explanations: E0382, E0505.
+For more information about an error, try `rustc --explain E0382`.
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 2 previous errors
+```
+
+Initial composition assertion used the wrong field for the typed elimination class:
+
+```text
+running 1 test
+test control::tests::live_child_revocation_is_visible_to_the_immediately_following_route ... FAILED
+
+failures:
+
+---- control::tests::live_child_revocation_is_visible_to_the_immediately_following_route stdout ----
+
+thread 'control::tests::live_child_revocation_is_visible_to_the_immediately_following_route' (1251367) panicked at crates/mct-daemon/src/daemon/control.rs:1527:9:
+assertion failed: denial_observations.iter().any(|observation|
+        {
+            observation.kind == ObservationKind::CandidateEliminated &&
+                observation.detail_ref.as_deref().is_some_and(|detail|
+                        { detail.contains("ChildNotApproved") })
+        })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    control::tests::live_child_revocation_is_visible_to_the_immediately_following_route
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 47 filtered out; finished in 0.05s
+
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
+Detailed deterministic routing failure showing revocation collapsed into readiness before correction:
+
+```text
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
+     Running unittests src/main.rs (target/debug/deps/mct_daemon-701d058281c133f0)
+
+running 1 test
+
+thread 'control::tests::live_child_revocation_is_visible_to_the_immediately_following_route' (1253641) panicked at crates/mct-daemon/src/daemon/control.rs:1527:9:
+[
+    MctObservation {
+        observation_id: ObservationId(
+            "obs-route-candidate-considered:call-resident-wit:child:resident-echo",
+        ),
+        observed_at: Timestamp {
+            value: "2026-07-10T20:22:34.027041Z",
+            epoch_nanoseconds: 1783714954027041000,
+        },
+        kind: CandidateConsidered,
+        source_plane: Kernel,
+        trace: ObservationTraceRef {
+            trace_id: TraceId(
+                "trace-live-child-revoke",
+            ),
+            span_id: Some(
+                SpanId(
+                    "span-cli-wasm",
+                ),
+            ),
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: Some(
+            CallId(
+                "call-resident-wit",
+            ),
+        ),
+        decision_id: None,
+        subject_id: Some(
+            "resident-echo",
+        ),
+        resource_id: Some(
+            "child:resident-echo",
+        ),
+        policy_revision: Some(
+            1,
+        ),
+        grants_revision: Some(
+            1,
+        ),
+        outcome: Informational,
+        visibility: InternalOnly,
+        safe_message: "candidate considered",
+        detail_ref: Some(
+            "candidate:child:resident-echo;node:local-mct;runtime:Process;network:Local",
+        ),
+    },
+    MctObservation {
+        observation_id: ObservationId(
+            "obs-route-candidate-eliminated:call-resident-wit:child:resident-echo",
+        ),
+        observed_at: Timestamp {
+            value: "2026-07-10T20:22:34.027047Z",
+            epoch_nanoseconds: 1783714954027047000,
+        },
+        kind: CandidateEliminated,
+        source_plane: Kernel,
+        trace: ObservationTraceRef {
+            trace_id: TraceId(
+                "trace-live-child-revoke",
+            ),
+            span_id: Some(
+                SpanId(
+                    "span-cli-wasm",
+                ),
+            ),
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: Some(
+            CallId(
+                "call-resident-wit",
+            ),
+        ),
+        decision_id: None,
+        subject_id: Some(
+            "resident-echo",
+        ),
+        resource_id: Some(
+            "child:resident-echo",
+        ),
+        policy_revision: Some(
+            1,
+        ),
+        grants_revision: Some(
+            1,
+        ),
+        outcome: Denied,
+        visibility: InternalOnly,
+        safe_message: "not authorized",
+        detail_ref: Some(
+            "elimination_reason:CapabilityUnavailable;denial_class:temporal",
+        ),
+    },
+    MctObservation {
+        observation_id: ObservationId(
+            "obs:authorize:call-resident-wit:resident-echo",
+        ),
+        observed_at: Timestamp {
+            value: "2026-07-10T20:22:34.027051Z",
+            epoch_nanoseconds: 1783714954027051000,
+        },
+        kind: CallDenied,
+        source_plane: Kernel,
+        trace: ObservationTraceRef {
+            trace_id: TraceId(
+                "trace-live-child-revoke",
+            ),
+            span_id: None,
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: Some(
+            CallId(
+                "call-resident-wit",
+            ),
+        ),
+        decision_id: Some(
+            DecisionId(
+                "decision:call-resident-wit:resident-echo",
+            ),
+        ),
+        subject_id: Some(
+            "resident-echo",
+        ),
+        resource_id: Some(
+            "instance:resident-echo:1",
+        ),
+        policy_revision: Some(
+            1,
+        ),
+        grants_revision: None,
+        outcome: Denied,
+        visibility: InternalOnly,
+        safe_message: "not authorized",
+        detail_ref: Some(
+            "child_call_reason:InstanceNotReady",
+        ),
+    },
+    MctObservation {
+        observation_id: ObservationId(
+            "obs-route-initial:call-resident-wit",
+        ),
+        observed_at: Timestamp {
+            value: "2026-07-10T20:22:34.027062Z",
+            epoch_nanoseconds: 1783714954027062000,
+        },
+        kind: NoRouteRecorded,
+        source_plane: Kernel,
+        trace: ObservationTraceRef {
+            trace_id: TraceId(
+                "trace-live-child-revoke",
+            ),
+            span_id: None,
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: Some(
+            CallId(
+                "call-resident-wit",
+            ),
+        ),
+        decision_id: Some(
+            DecisionId(
+                "route-initial:call-resident-wit",
+            ),
+        ),
+        subject_id: None,
+        resource_id: None,
+        policy_revision: Some(
+            1,
+        ),
+        grants_revision: Some(
+            1,
+        ),
+        outcome: Denied,
+        visibility: InternalOnly,
+        safe_message: "not authorized",
+        detail_ref: Some(
+            "no_route_reason:CapabilityUnavailable",
+        ),
+    },
+]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test control::tests::live_child_revocation_is_visible_to_the_immediately_following_route ... FAILED
+
+failures:
+
+failures:
+    control::tests::live_child_revocation_is_visible_to_the_immediately_following_route
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 47 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
+Deterministic Clippy finding before grouping typed mutation fact fields:
+
+```text
+error: this function has too many arguments (9/7)
+   --> crates/mct-daemon/src/daemon/control.rs:468:1
+    |
+468 | / fn mutation_observation(
+469 | |     namespace: &str,
+470 | |     kind: ObservationKind,
+471 | |     subject_id: String,
+...   |
+477 | |     safe_message: String,
+478 | | ) -> MctObservation {
+    | |___________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#too_many_arguments
+    = note: `-D clippy::too-many-arguments` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::too_many_arguments)]`
+
+error: could not compile `mct-daemon` (bin "mct-daemon") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 1 previous error
+```

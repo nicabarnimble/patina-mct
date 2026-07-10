@@ -58,14 +58,42 @@ pub(super) fn run_children_load(mut args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+fn execute_cli_child_mutation(
+    config_path: &Path,
+    children_dir: &Path,
+    ledger_path: &Path,
+    socket_path: &Path,
+    path: &str,
+    request: &impl serde::Serialize,
+) -> Result<ChildMutationSuccess> {
+    let body = serde_json::to_vec(request).context("encode child authority mutation request")?;
+    if let Some(response) = try_resident_control_mutation(socket_path, path, &body)? {
+        return serde_json::from_slice(&response)
+            .context("decode resident child authority mutation result");
+    }
+    execute_offline_child_mutation(config_path, children_dir, ledger_path, path, &body)
+        .with_context(|| {
+            format!(
+                "resident UDS {} unavailable and offline child authority mutation failed",
+                socket_path.display()
+            )
+        })
+}
+
 pub(super) fn run_children_approve(mut args: Vec<String>) -> Result<()> {
     let config_path = take_option(&mut args, "--config")
         .map(PathBuf::from)
         .unwrap_or_else(default_config_path);
+    let ledger_path = take_option(&mut args, "--ledger")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_observation_ledger_path);
+    let socket_path = take_option(&mut args, "--uds")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_control_uds_path);
     let strict = take_flag(&mut args, "--strict-integrity");
     if args.is_empty() {
         bail!(
-            "expected: mct-daemon children approve <child-name> [children-dir] [--config path] [--strict-integrity]"
+            "expected: mct-daemon children approve <child-name> [children-dir] [--config path] [--ledger path] [--uds socket-path] [--strict-integrity]"
         );
     }
     let child_name = args.remove(0);
@@ -73,7 +101,7 @@ pub(super) fn run_children_approve(mut args: Vec<String>) -> Result<()> {
         .first()
         .map(PathBuf::from)
         .unwrap_or_else(default_children_dir);
-    let mut options = MctChildLoadOptions::new(children_dir);
+    let mut options = MctChildLoadOptions::new(&children_dir);
     if strict {
         options = options.strict_integrity();
     }
@@ -83,14 +111,25 @@ pub(super) fn run_children_approve(mut args: Vec<String>) -> Result<()> {
         .iter()
         .find(|child| child.name == child_name)
         .ok_or_else(|| anyhow::anyhow!("loaded child '{child_name}' not found"))?;
-    let config = MctDaemonConfigStore::new(&config_path)
-        .approve_and_assign_loaded_child(child, MctOperatorChildScope::default())?;
+    let response = execute_cli_child_mutation(
+        &config_path,
+        &children_dir,
+        &ledger_path,
+        &socket_path,
+        "/children/approve",
+        &ChildApproveRequest {
+            expected_config_path: config_path.clone(),
+            expected_children_dir: children_dir.clone(),
+            child_name: child.name.clone(),
+            strict_integrity: strict,
+        },
+    )?;
     println!(
         "approved child={} config={} approvals={} assignments={}",
         child_name,
         config_path.display(),
-        config.child_approvals.len(),
-        config.child_assignments.len()
+        response.approval_count,
+        response.assignment_count
     );
     Ok(())
 }
@@ -99,17 +138,35 @@ pub(super) fn run_children_revoke(mut args: Vec<String>) -> Result<()> {
     let config_path = take_option(&mut args, "--config")
         .map(PathBuf::from)
         .unwrap_or_else(default_config_path);
+    let ledger_path = take_option(&mut args, "--ledger")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_observation_ledger_path);
+    let socket_path = take_option(&mut args, "--uds")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_control_uds_path);
     if args.is_empty() {
-        bail!("expected: mct-daemon children revoke <child-name> [--config path]");
+        bail!(
+            "expected: mct-daemon children revoke <child-name> [--config path] [--ledger path] [--uds socket-path]"
+        );
     }
     let child_name = args.remove(0);
-    let config = MctDaemonConfigStore::new(&config_path).revoke_child(&child_name)?;
+    let response = execute_cli_child_mutation(
+        &config_path,
+        Path::new("."),
+        &ledger_path,
+        &socket_path,
+        "/children/revoke",
+        &ChildRevokeRequest {
+            expected_config_path: config_path.clone(),
+            child_name: child_name.clone(),
+        },
+    )?;
     println!(
         "revoked child={} config={} approvals={} assignments={}",
         child_name,
         config_path.display(),
-        config.child_approvals.len(),
-        config.child_assignments.len()
+        response.approval_count,
+        response.assignment_count
     );
     Ok(())
 }

@@ -227,6 +227,7 @@ where
         bail!("--max-connections must be greater than zero");
     }
 
+    let ledger = ResidentLedgerWriter::spawn(config.ledger_path.clone())?;
     let config_store = MctDaemonConfigStore::new(&config.config_path);
     let existing_config = config_store.load()?;
     let identity_scope = existing_config
@@ -238,8 +239,13 @@ where
             policy_revision: identity.policy_revision,
         })
         .unwrap_or_default();
-    let identity =
-        config_store.ensure_local_identity(identity_scope, config.identity_path.clone())?;
+    let identity = ensure_observed_local_identity(
+        &config_store,
+        identity_scope,
+        &config.identity_path,
+        &ledger,
+    )
+    .await?;
     let secret_key_hex = load_or_create_node_secret_key_hex(&config.identity_path)?;
     let mut endpoint = MotherIrohEndpoint::bind(iroh_config(secret_key_hex, config.relay_default))
         .await
@@ -258,7 +264,6 @@ where
         .with_context(|| format!("open runtime state {}", config.state_path.display()))?;
     let runtime_summary = state.summary()?;
     drop(state);
-    let ledger = ResidentLedgerWriter::spawn(config.ledger_path.clone())?;
 
     let loaded_child_count = load_report.loaded;
     let resident_config = config_store.load()?;
@@ -304,6 +309,7 @@ where
         config.control.clone(),
         config.state_path.clone(),
         config.config_path.clone(),
+        config.children_dir.clone(),
         ledger.clone(),
         shutdown_tx.subscribe(),
         Some(status_source),
@@ -388,6 +394,7 @@ pub(super) fn spawn_resident_control_task(
     control: ResidentControlTransport,
     state_path: PathBuf,
     config_path: PathBuf,
+    children_dir: PathBuf,
     ledger: ResidentLedgerWriter,
     shutdown: broadcast::Receiver<()>,
     status_source: Option<Arc<ResidentStatusSource>>,
@@ -401,6 +408,7 @@ pub(super) fn spawn_resident_control_task(
                 state_path,
                 path,
                 config_path,
+                children_dir,
                 ledger,
                 shutdown,
                 status_source,
@@ -2754,6 +2762,71 @@ pub(super) mod tests {
 
     fn test_iroh_observation_sink() -> MctIrohObservationSink {
         MctIrohObservationSink::new(|_| async { Ok::<_, std::io::Error>(()) })
+    }
+
+    #[tokio::test]
+    async fn first_boot_identity_is_durable_and_secret_free() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let identity_path = dir.path().join("node.key");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+
+        let identity = ensure_observed_local_identity(
+            &MctDaemonConfigStore::new(&config_path),
+            MctOperatorNodeScope::default(),
+            &identity_path,
+            &ledger,
+        )
+        .await
+        .unwrap();
+        ledger.close().await;
+
+        assert!(config_path.exists());
+        assert!(identity_path.exists());
+        let secret = std::fs::read_to_string(identity_path).unwrap();
+        let entries =
+            JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
+                .unwrap()
+                .entries()
+                .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].durability_class, DurabilityClass::BeforeEffect);
+        assert_eq!(
+            entries[0].observation.kind,
+            ObservationKind::OperatorActionRecorded
+        );
+        assert_eq!(
+            entries[0].observation.resource_id.as_deref(),
+            Some(identity.endpoint_id.as_str())
+        );
+        assert!(
+            !std::fs::read_to_string(ledger_path)
+                .unwrap()
+                .contains(secret.trim())
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_identity_append_failure_leaves_no_identity_effect() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let identity_path = dir.path().join("node.key");
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        drop(receiver);
+
+        let error = ensure_observed_local_identity(
+            &MctDaemonConfigStore::new(&config_path),
+            MctOperatorNodeScope::default(),
+            &identity_path,
+            &ResidentLedgerWriter { sender },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("ledger"));
+        assert!(!config_path.exists());
+        assert!(!identity_path.exists());
     }
 
     fn test_call() -> MctCall {
@@ -5375,7 +5448,7 @@ pub(super) mod tests {
         panic!("resident status did not become ready: {last:?}");
     }
 
-    fn resident_test_call(trace_id: TraceId) -> MctCall {
+    pub(crate) fn resident_test_call(trace_id: TraceId) -> MctCall {
         let mut call = local_wasm_call(OperationTarget {
             namespace: "patina:demo".into(),
             interface_name: "control@0.1.0".into(),
