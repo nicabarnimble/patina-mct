@@ -92,7 +92,7 @@ $ allium analyse layer/allium/mct-product-map.allium
 - **Code:** child approval/revocation writes at `crates/mct-daemon/src/config.rs:417-476` called from `crates/mct-daemon/src/daemon/cli_runtime.rs`; observed peer mutation orchestration at `crates/mct-daemon/src/daemon/control.rs` and CLI arbitration at `crates/mct-daemon/src/daemon/cli_admin.rs`; blob storage effect at `crates/mct-daemon/src/control.rs:442-467` and `crates/mct-daemon/src/blob_store.rs:126-174`.
 - **Evidence:** The map says every grant/revoke/child-approval decision, every operator policy/approval/grant/peer action, and every storage write/failure produces a typed observation. Child authority commands and CAS publication can still return after mutation without the required typed ledger fact, so the ledger is not yet the source of truth for every A6 effect.
 - **Direction:** spec-ward.
-- **Outcome:** peer-authority portion fixed in `393884f` (`fix(daemon): observe peer authority mutations`). Live add/proof/revoke/remove operations run through resident-only UDS handlers and await `BeforeEffect` decision appends before config replacement; offline CLI fallback holds the exclusive ledger writer lock across the same ordering. Append failure leaves config untouched, apply failure adds a typed operator failure, and proofs/signatures are absent from observations and responses. The child/operator/storage remainder stays open for slice 4 and inherits this resident-writer/control-plane architecture.
+- **Outcome:** fully fixed across `393884f` (`fix(daemon): observe peer authority mutations`), `3b1fa34` (`fix(daemon): observe child and node authority mutations`), `abe3eb1` (`fix(daemon): observe registry and blob storage effects`), `57c6b21` (`fix(daemon): observe grant and state administration`), and `0fb06c3` (`fix(control): require observed blob mutation owner`). Live peer, child, grant, registry, composition, and blob mutations run through resident-only UDS handlers and await `BeforeEffect` decision appends before config/state/CAS/package effects; offline-capable CLI fallback holds the exclusive writer lock across the same ordering. Identity is intentionally offline-only, while first bootstrap opens the resident writer and records public identity before key/config creation. Append failure leaves protected effects untouched, apply failures add typed failure facts, and proofs, payload/base64 bytes, secret keys, and secret values are absent from observations. Sinkless blob publication is refused.
 
 ### A7 — reload stops the current generation before constructing the replacement
 
@@ -234,7 +234,7 @@ The audit also found implementation alignment, not divergence, in these walked a
 | A3 | A | Idempotency key does not deduplicate | spec-ward |
 | A4 | A | RouteDecision omits planner/snapshot evidence | spec-ward |
 | A5 | A | Hello observation follows response effect | spec-ward — **fixed** in `e16e59d` |
-| A6 | A | Authority/operator/storage mutations are unobserved | spec-ward — peer portion **fixed** in `393884f`; remainder open |
+| A6 | A | Authority/operator/storage mutations are unobserved | spec-ward — **fixed** in `393884f`, `3b1fa34`, `abe3eb1`, `57c6b21`, and `0fb06c3` |
 | A7 | A | Reload drains/stops before replacement readiness | spec-ward |
 | A8 | A | Peer-call lifecycle observation coverage is incomplete | spec-ward — **fixed** in `fd3cd3d` |
 | B1 | B | Payload caps and local BLAKE3 CAS are under-described | code-ward |
