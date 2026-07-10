@@ -558,3 +558,57 @@ error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 1 previous 
 - `failed_hello_observation_prevents_response_and_remembered_admission` injects one deterministic append failure, observes no hello response, proves there is no retry, and verifies a subsequent call is denied with `HelloNotAdmitted` without invoking the handler.
 - Full required validation passed after `e16e59d`: `cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh`.
 - Flakes: none. The two expected compile failures above were red-test/intermediate implementation failures, not rerun flakes.
+
+---
+
+# Slice S2.5 — mechanical daemon main decomposition
+
+## Baseline
+
+- Starting branch/HEAD: `patina` at `9707420` (`docs: close hello observation durability`).
+- Starting tree: clean.
+- Starting `crates/mct-daemon/src/main.rs`: 8,682 lines.
+- Before-count: **254** tests (254 passed + 0 ignored across every `test result:` line from `cargo test --workspace`), matching the operator baseline.
+- `crates/mct-daemon/src/lib.rs` and every library-owned module remain untouched; no library public-surface promotion is planned.
+
+## S2.5a seam plan
+
+The full binary was read before choosing these seams. The route, forwarding, execution, serving, and observation records form one tightly connected resident pipeline: route outcomes carry execution records, forwarding reuses route revalidation and payload projection, and the 35 resident tests share end-to-end fixtures across those boundaries. To keep this slice mechanical rather than manufacture a new internal API, those candidate seams are merged into one binary-local `resident` module. This still isolates the complete resident runtime from CLI command families and gives later semantic decomposition a single subject-owned file rather than `main.rs`.
+
+All files are binary-local under `crates/mct-daemon/src/daemon/`, declared from `main.rs`; none join the library module set.
+
+| Module | Responsibility | Approximate current ranges moving | Test placement |
+|---|---|---|---|
+| `daemon/cli_runtime.rs` | Children/process/WASM/WIT/slate command implementations and their CLI-only authority helpers. | `main.rs:83-1009` | Existing CLI authorization tests remain in the resident binary test module because they share its child/authority fixtures; new focused tests belong in inline `mod tests`. |
+| `daemon/resident.rs` | Resident Mother serving, ledger writer, observation projection, candidate sourcing/ranking, local and remote route decisions, forwarding client, payload resolution, child delivery, result projection, and revision guards. | `main.rs:1010-3711` plus the existing `main.rs:5628-8682` binary test module | The existing inline `mod tests` moves intact with this module so all resident route/forwarding/execution/serving tests and shared fixtures remain compiled together without logic edits. |
+| `daemon/control.rs` | HTTP/UDS control serving, snapshot source, resident status projection, and control command dispatch. | `main.rs:3712-3890` | Existing control/status tests remain in `resident::tests` because they share resident status fixtures; new focused tests belong inline here. |
+| `daemon/cli_admin.rs` | Registry, federation, metrics, Pando, toys, state/runs, and peer command families. This is the clean landing zone for slice 2b peer CLI rewiring, without preparing that work now. | `main.rs:3891-4681` | Existing toy CLI tests remain in `resident::tests` with their shared child fixtures; new focused tests belong inline here. |
+| `daemon/ingress.rs` | JVM and standalone Iroh ingress/client bridges, protocol request construction, configured-child lookup, and binary adapter helpers. | `main.rs:4682-5591` | Existing JVM/Iroh integration coverage remains in `resident::tests`; new focused tests belong inline here. |
+
+`main.rs` retains only imports, binary-local `mod` declarations/use wiring, `main()`, argument token helpers, default path helpers, help text, and the test-only authority fixture declaration. Expected end state is comfortably within the requested order of 1,000–1,500 lines (likely smaller because the current parser skeleton is compact).
+
+Dependency order for extraction is `cli_runtime` → `control` → `cli_admin` → `ingress` → `resident`: the first four are command/adapter leaves while `resident` composes them and takes the shared integration tests last. Each move may add only `mod`/`use` wiring and the narrow `pub(super)` visibility required for binary-local cross-module calls and tests.
+
+## S2.5 checklist
+
+- [x] Step 0 matched `9707420`, clean tree, completed A5.
+- [x] Read all 8,682 lines of `main.rs` and all of `lib.rs`.
+- [x] Record the 254-test baseline.
+- [x] Commit the seam plan.
+- [ ] Extract `cli_runtime`.
+- [ ] Extract `control`.
+- [ ] Extract `cli_admin`.
+- [ ] Extract `ingress`.
+- [ ] Extract `resident` with the existing inline binary tests.
+- [ ] Confirm after-count is 254 and close the slice.
+
+## Itch list (notes only; no fixes in S2.5)
+
+- CLI option parsing and default-path selection are repeated across most command families.
+- Several `serve-process` ledger/state writes intentionally discard errors with `let _ =`; changing those semantics is outside a move-only slice.
+- Standalone `iroh serve` and `iroh serve-process` use default concurrent-serve config without the resident hello-observation sink; this should be reconciled separately rather than folded into decomposition.
+- Peer add/proof/revoke/remove mutate config directly and remain the explicit slice 2b work.
+- Resident route selection, forwarding, and execution use many concrete cross-stage records; a finer module API should be designed only in a behavior-owning refactor, not inferred during moves.
+- The resident integration suite has broad shared setup and fixture construction; future focused contract tests should be added beside the extracted subjects instead of extending the shared fixture module indefinitely.
+- Several protocol/observation IDs are fixed CLI literals while resident IDs are generated; consistency is outside this slice.
+- Payload fact construction and result projection contain repeated content-type/digest handling that should not be deduplicated mechanically.
