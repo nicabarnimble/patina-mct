@@ -303,6 +303,8 @@ where
     let control_task = spawn_resident_control_task(
         config.control.clone(),
         config.state_path.clone(),
+        config.config_path.clone(),
+        ledger.clone(),
         shutdown_tx.subscribe(),
         Some(status_source),
     )?;
@@ -386,6 +388,8 @@ where
 pub(super) fn spawn_resident_control_task(
     control: ResidentControlTransport,
     state_path: PathBuf,
+    config_path: PathBuf,
+    ledger: ResidentLedgerWriter,
     shutdown: broadcast::Receiver<()>,
     status_source: Option<Arc<ResidentStatusSource>>,
 ) -> Result<tokio::task::JoinHandle<Result<()>>> {
@@ -394,7 +398,15 @@ pub(super) fn spawn_resident_control_task(
             serve_http_control_loop_until(state_path, addr, shutdown, status_source).await
         })),
         ResidentControlTransport::Uds(path) => Ok(tokio::spawn(async move {
-            run_control_serve_uds_with_state_until(state_path, path, shutdown, status_source).await
+            run_control_serve_uds_with_state_until(
+                state_path,
+                path,
+                config_path,
+                ledger,
+                shutdown,
+                status_source,
+            )
+            .await
         })),
     }
 }
@@ -3028,7 +3040,7 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         let resident = tokio::spawn(run_resident_mother(
             ResidentMotherConfig {
-                config_path,
+                config_path: config_path.clone(),
                 identity_path,
                 children_dir,
                 state_path,
@@ -3082,11 +3094,30 @@ mod tests {
         assert_eq!(reply.reply_outcome, CallProtocolReplyOutcome::Success);
         assert!(reply.route_taken.is_some());
 
+        let revoke_response = post_resident_peer_mutation(
+            &socket_path,
+            "/peers/revoke",
+            serde_json::json!({
+                "expected_config_path": config_path,
+                "peer_node_id": client_node_id
+            }),
+        )
+        .await;
+        assert_eq!(revoke_response["action"], "revoke");
+        assert_eq!(
+            store.load().unwrap().peers["mother-client"].binding_state,
+            BindingState::Revoked
+        );
+        let denied_reply = client.send_call(&ticket, &call).await.unwrap();
+        assert_eq!(denied_reply.reply_outcome, CallProtocolReplyOutcome::Denied);
+        assert_eq!(denied_reply.safe_message, "not authorized");
+        assert!(denied_reply.route_taken.is_none());
+
         let status = poll_resident_status(&socket_path, |status| {
             status
                 .resident
                 .as_ref()
-                .is_some_and(|resident| resident.accepted_connection_count >= 2)
+                .is_some_and(|resident| resident.accepted_connection_count >= 3)
         })
         .await;
         assert_eq!(
@@ -3134,6 +3165,17 @@ mod tests {
             }),
             "{trace_entries:?}"
         );
+        let revocation_sequence = entries
+            .iter()
+            .find(|entry| entry.observation.kind == ObservationKind::PeerBindingRevoked)
+            .expect("durable UDS revocation observation")
+            .local_sequence;
+        let denial_sequence = trace_entries
+            .iter()
+            .find(|entry| entry.observation.kind == ObservationKind::CallDenied)
+            .expect("call denied after live revocation")
+            .local_sequence;
+        assert!(revocation_sequence < denial_sequence);
         client.close().await;
     }
 
@@ -5197,6 +5239,33 @@ mod tests {
         assert!(reply.route_taken.is_none());
         assert_eq!(observation.kind, ObservationKind::RouteSelected);
         assert_eq!(observation.resource_id, Some("child:resident-echo".into()));
+    }
+
+    async fn post_resident_peer_mutation(
+        socket_path: &Path,
+        path: &str,
+        body: serde_json::Value,
+    ) -> serde_json::Value {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let body = serde_json::to_vec(&body).unwrap();
+        let mut control = tokio::net::UnixStream::connect(socket_path).await.unwrap();
+        control
+            .write_all(
+                format!(
+                    "POST {path} HTTP/1.1\r\nHost: local\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        control.write_all(&body).await.unwrap();
+        let mut response = Vec::new();
+        control.read_to_end(&mut response).await.unwrap();
+        let response = String::from_utf8(response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap()
     }
 
     async fn poll_resident_status(
