@@ -1018,7 +1018,7 @@ Starting state: `patina` at `bebd227` (`docs: close observed peer mutation slice
 | Terminal handler result recorded | `ResultRecorded` | `Buffered` | Appended after the handler/runtime effect produces its terminal result and before reply encoding/writing. It is an adapter/result fact, not authority; sink failure is nevertheless propagated and suppresses the reply rather than silently losing evidence. |
 | Peer reply emitted | `PeerCallReplied` | `Buffered` | Appended only after response bytes are written and the send stream is finished, so the fact remains truthful. Failure cannot retract delivered bytes, but it is propagated as a fatal serving error rather than discarded. |
 
-The successful causal sequence is therefore receipt → construction → authorization → existing route/revalidation and runtime facts → result recording → reply emission. A denied call has receipt → construction → denial → reply emission. A malformed call has receipt → malformed rejection → reply emission; no fabricated semantic call or `MctResult` is created.
+The successful causal sequence is therefore receipt → construction → authorization → existing route/revalidation and runtime facts → result recording → reply emission. A denied valid call has receipt → construction → denial → terminal result recording → reply emission. A malformed call has receipt → malformed rejection → reply emission; no fabricated semantic call or `MctResult` is created.
 
 ### Malformed handling
 
@@ -1063,9 +1063,9 @@ The standalone path must not call `append_ledger_observations`, because reopenin
 
 - [x] Re-establish `bebd227`, read A8/map contracts, sink paths, standalone paths, discarded writes, and writer-lock semantics.
 - [x] Record the S3.1 lifecycle, durability, malformed, mandatory-sink, standalone ownership, and discarded-write mechanism.
-- [ ] Land failing lifecycle and standalone regressions before implementation.
-- [ ] Implement the mandatory lifecycle sink and fail-closed standalone paths.
-- [ ] Mark A8 fixed, annotate A5 standalone coverage, validate every commit, and stop after S3.2.
+- [x] Land failing lifecycle and standalone regressions before implementation.
+- [x] Implement the mandatory lifecycle sink and fail-closed standalone paths.
+- [x] Mark A8 fixed, annotate A5 standalone coverage, validate every commit, and stop after S3.2.
 
 ## Slice 3 failure log
 
@@ -1484,3 +1484,51 @@ note: the function `write_resident_process_child` is defined here
 For more information about this error, try `rustc --explain E0603`.
 error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 1 previous error
 ```
+
+## S3.2 implementation record
+
+### Commits
+
+- `fa0e515` — `docs: specify peer call lifecycle observations`
+- `fd3cd3d` — `fix(iroh): observe peer call lifecycle`
+
+### Lifecycle outcome
+
+The one serving sink now carries typed hello and call batches. `MctIrohConcurrentServeConfig::new(sink)` requires it, and the single-connection serving APIs also require the same sink explicitly; no sinkless serving default remains.
+
+The durable per-call prefix is `PeerCallReceived` followed by either `PeerCallMalformed`, or `CallConstructed` plus `CallAuthorized`/`CallDenied`. Result-producing valid calls then append `ResultRecorded`; the post-send fact is separately `PeerCallReplied`. Existing handler-owned `RouteSelected`, `RouteRevalidated`, `NoRouteRecorded`, and runtime facts remain untouched and unduplicated. The real resident success test reconstructs this local evidence order:
+
+```text
+PeerCallReceived
+CallConstructed
+CallAuthorized
+RouteRevalidated
+RouteSelected
+RouteRevalidated
+RouteRevalidated
+ResultRecorded
+PeerCallReplied
+```
+
+The multiple revalidation entries are existing distinct authority/effect-boundary facts, not lifecycle-sink duplication.
+
+### Regression evidence
+
+- `malformed_frames_are_observed_before_safe_reply_and_append_failure_suppresses_reply`: undecodable and oversized frames produce receipt/malformed/reply stages and caller-safe malformed replies; injected prefix append failure produces no response.
+- `concurrent_call_sink_covers_success_lifecycle`: successful transport sequence includes distinct receipt, construction, authorization, result, and reply stages.
+- `denied_call_fact_is_recorded_before_reply`: denial is acknowledged by the sink before the caller receives its denial response.
+- `resident_mother_payload_roundtrip_verifies_result_digest`: one real resident call reconstructs the complete transport + route lifecycle from the JSONL ledger, verifies result/reply buffered durability, and excludes payload bytes, base64, and binding key material.
+- `standalone_serve_process_persists_hello_and_call_lifecycle`: standalone process serving uses the mandatory ledger sink for A5 hello ordering and A8 call facts, excluding node secret material.
+- `standalone_serve_refuses_held_ledger_before_endpoint_bind`: lock contention returns the specified refusal before identity creation or endpoint bind.
+
+### Discarded-write enumeration outcome
+
+All five serve-process ledger/state discards were removed. Authority and process-report ledger writes now await the lifetime writer; authority/run-observation projection failures return before child invocation where possible; report projection and completion failures prevent a success reply after execution. `rg` finds no discarded `append_ledger_observations`, `append_run_observations`, or `complete_run` call on the standalone path. None was justified as fail-open.
+
+### Validation and flakes
+
+Both slice commits passed the required workspace tests, Clippy with `-D warnings`, and tier-0. Final implementation validation passed **264 tests** (264 passed, 0 ignored), and Allium check returned empty diagnostics/findings.
+
+Flakes: none. Expected red compile/test failures and deterministic integration corrections are captured verbatim above.
+
+A8 is fixed in `fd3cd3d`; A5 now covers resident and standalone serving. Slices 4–6 remain untouched. Stop after S3.2.
