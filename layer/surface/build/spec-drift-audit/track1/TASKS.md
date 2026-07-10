@@ -996,3 +996,73 @@ Required workspace tests, Clippy with `-D warnings`, and tier-0 passed after eac
 Flakes: none. Expected red compile failures, deterministic intermediate Clippy findings, and the corrected Cargo filter invocation are recorded verbatim above.
 
 A6 remains open only for the child/operator/storage paths assigned to slice 4. Stop after S2b.2; no slice 3 or slice 4 implementation begins here.
+
+---
+
+# Slice 3 — complete peer-call lifecycle observations
+
+Starting state: `patina` at `bebd227` (`docs: close observed peer mutation slice`), clean tree. Allium 3.5.0 check returns no diagnostics or findings.
+
+## S3.1 mechanism specification
+
+### Lifecycle facts and durability
+
+| Lifecycle fact | Observation kind | Durability | Ordering obligation |
+|---|---|---|---|
+| Peer call frame received | `PeerCallReceived` | `BeforeEffect` | Durable before decode success can advance into call construction/authority and before any malformed response. It is call-ingress evidence required by the matrix. |
+| Undecodable, oversized, invalid, or payload-mismatched request rejected | `PeerCallMalformed` | `BeforeEffect` | Durable before the caller-safe malformed reply. Append failure closes the stream without a reply. |
+| Valid envelope constructs one semantic call | `CallConstructed` | `BeforeEffect` | Durable in the same causal prefix as receipt and before authority or handler execution. |
+| Call authority allows routing | `CallAuthorized` | `BeforeEffect` | Durable before invoking the call handler, because the handler may perform the protected route/execution effect. |
+| Call authority denies | `CallDenied` | `BeforeEffect` | Durable before writing the denial reply. |
+| Route selected/revalidated or no route | existing `RouteSelected`, `RouteRevalidated`, or `NoRouteRecorded` facts | Existing `BeforeEffect` writes | `execute_resident_call` already awaits these through `ResidentLedgerWriter` before local/remote execution or terminal no-route return. The transport sink must not duplicate them. |
+| Terminal handler result recorded | `ResultRecorded` | `Buffered` | Appended after the handler/runtime effect produces its terminal result and before reply encoding/writing. It is an adapter/result fact, not authority; sink failure is nevertheless propagated and suppresses the reply rather than silently losing evidence. |
+| Peer reply emitted | `PeerCallReplied` | `Buffered` | Appended only after response bytes are written and the send stream is finished, so the fact remains truthful. Failure cannot retract delivered bytes, but it is propagated as a fatal serving error rather than discarded. |
+
+The successful causal sequence is therefore receipt → construction → authorization → existing route/revalidation and runtime facts → result recording → reply emission. A denied call has receipt → construction → denial → reply emission. A malformed call has receipt → malformed rejection → reply emission; no fabricated semantic call or `MctResult` is created.
+
+### Malformed handling
+
+The concurrent serve task intercepts call-frame read-budget failures before the current `?` return and intercepts envelope decode, request validation, and payload-integrity failures inside the call ALPN branch before their current early returns. It creates a typed malformed evaluation/reply containing only generated safe identifiers and `malformed request`, awaits the lifecycle sink for receipt plus malformed rejection, then writes the safe malformed reply. If that append fails, the branch returns before any response bytes are written. Undecodable and oversized inputs never enter the handler and their raw bytes never enter a fact.
+
+### One mandatory sink
+
+Rename/generalize the slice-2 callback to one `MctIrohObservationSink` carrying typed hello and call-lifecycle fact batches plus the requested durability class. `MctIrohConcurrentServeConfig` owns a non-optional sink and no longer implements a sinkless default; construction requires `MctIrohConcurrentServeConfig::new(sink)`. The single-connection serving APIs also take the same sink, so every public serving path represents observation ownership explicitly. Tests use collecting or no-op-success test sinks; production serving paths use ledger-backed sinks. There is no second observation callback or post-response authority path.
+
+### Standalone serving and writer ownership
+
+Both `iroh serve` and `iroh serve-process` accept `--ledger` (default `.mct/observations.jsonl`) and acquire `ResidentLedgerWriter` before binding an endpoint or printing a ticket. This is the same exclusive `JsonlObservationLedger` lock used by the resident and slice-2b offline path. Refusal is:
+
+```text
+standalone Iroh serve refused: could not acquire the exclusive observation ledger writer; another Mother may already be serving this node
+```
+
+No refusal observation is appended: inability to acquire the canonical writer is exactly why this process has no authority to write that ledger. The command returns before endpoint bind, so there is no partial serving effect.
+
+### Discarded serve-process writes
+
+Every current discarded write is fail-open and none qualifies to remain so:
+
+| Current site | Disposition |
+|---|---|
+| Authority observation `append_ledger_observations` | Use the already-owned resident writer; await and return a failed handler result before child invocation if append fails. |
+| Authority observation `runtime_state.append_run_observations` | Propagate as a failed handler result before child invocation; runtime provenance may not silently diverge. |
+| Process report `append_ledger_observations` | Await the owned writer after execution; failure prevents a success reply. |
+| Process report `runtime_state.append_run_observations` | Propagate failure; do not report successful completion with an incomplete run projection. |
+| `runtime_state.complete_run` | Propagate failure; do not report successful completion while durable runtime state remains running/incomplete. |
+
+The standalone path must not call `append_ledger_observations`, because reopening the ledger would contend with its own lifetime writer lock.
+
+### Out of scope
+
+- Child approval, operator, and storage observation gaps (A6 remainder, slice 4).
+- Reload replacement ordering (A7).
+- Request idempotency/replay semantics (A3).
+- New observation kinds beyond the existing lifecycle taxonomy listed above.
+
+## Slice 3 checklist
+
+- [x] Re-establish `bebd227`, read A8/map contracts, sink paths, standalone paths, discarded writes, and writer-lock semantics.
+- [x] Record the S3.1 lifecycle, durability, malformed, mandatory-sink, standalone ownership, and discarded-write mechanism.
+- [ ] Land failing lifecycle and standalone regressions before implementation.
+- [ ] Implement the mandatory lifecycle sink and fail-closed standalone paths.
+- [ ] Mark A8 fixed, annotate A5 standalone coverage, validate every commit, and stop after S3.2.
