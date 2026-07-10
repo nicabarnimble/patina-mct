@@ -2338,4 +2338,105 @@ At swap, the lifecycle model records the predecessor's allowed `Ready → Draini
 
 ## Slice 5 failure log
 
-No failures recorded yet.
+Initial targeted red-test invocation incorrectly supplied two positional test filters:
+
+```text
+error: unexpected argument 'state::tests::child_reload_swap_is_atomic_and_failed_swap_keeps_persisted_predecessor_ready' found
+
+Usage: cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]
+
+For more information, try '--help'.
+```
+
+Expected red compile after adding the Slice 5 regressions before the replacement verifier and atomic state swap existed:
+
+```text
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0425]: cannot find type `MctChildReloadError` in this scope
+   --> crates/mct-daemon/src/lifecycle.rs:354:34
+    |
+ 14 | pub struct MctChildReloadReport {
+    | ------------------------------- similarly named struct `MctChildReloadReport` defined here
+...
+354 |             error.downcast_ref::<MctChildReloadError>(),
+    |                                  ^^^^^^^^^^^^^^^^^^^
+
+error[E0425]: cannot find function `reload_configured_child_with_verifier` in this scope
+   --> crates/mct-daemon/src/lifecycle.rs:339:21
+    |
+339 |         let error = reload_configured_child_with_verifier(
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0599]: no method named `swap_ready_child_generation` found for struct `state::MctRuntimeStateStore` in the current scope
+    --> crates/mct-daemon/src/state.rs:2209:14
+     |
+  20 |   pub struct MctRuntimeStateStore {
+     |   ------------------------------- method `swap_ready_child_generation` not found for this struct
+...
+2209 | |             .swap_ready_child_generation(&stopped, &invalid_replacement)
+     | |             -^^^^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `state::MctRuntimeStateStore`
+
+error[E0599]: no method named `swap_ready_child_generation` found for struct `state::MctRuntimeStateStore` in the current scope
+    --> crates/mct-daemon/src/state.rs:2232:14
+     |
+  20 |   pub struct MctRuntimeStateStore {
+     |   ------------------------------- method `swap_ready_child_generation` not found for this struct
+...
+2232 | |             .swap_ready_child_generation(&stopped, &replacement)
+     | |             -^^^^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `state::MctRuntimeStateStore`
+
+error[E0433]: cannot find type `MctChildReloadError` in this scope
+   --> crates/mct-daemon/src/lifecycle.rs:345:21
+    |
+345 |                 Err(MctChildReloadError::ReplacementVerification {
+    |                     ^^^^^^^^^^^^^^^^^^^ use of undeclared type `MctChildReloadError`
+
+error[E0433]: cannot find type `MctChildReloadError` in this scope
+   --> crates/mct-daemon/src/lifecycle.rs:355:18
+    |
+355 |             Some(MctChildReloadError::ReplacementVerification { .. })
+    |                  ^^^^^^^^^^^^^^^^^^^ use of undeclared type `MctChildReloadError`
+
+Some errors have detailed explanations: E0425, E0433, E0599.
+For more information about an error, try `rustc --explain E0425`.
+error: could not compile `mct-daemon` (lib test) due to 6 previous errors
+```
+
+Expected red compile after adding the command-path poison-prevention regression before extracting the shared reload executor:
+
+```text
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0425]: cannot find function `execute_child_reload` in this scope
+    --> crates/mct-daemon/src/daemon/cli_runtime.rs:1074:21
+     |
+1074 |         let error = execute_child_reload(
+     |                     ^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 1 previous error
+```
+
+The first command-path run used `u64::MAX` to inject generation construction failure, but SQLite rejected that predecessor generation before reload because its integer representation is signed. The typed reload assertion therefore failed:
+
+```text
+running 1 test
+test cli_runtime::tests::reload_command_failure_keeps_persisted_generation_ready_and_routable ... FAILED
+
+failures:
+
+---- cli_runtime::tests::reload_command_failure_keeps_persisted_generation_ready_and_routable stdout ----
+
+thread 'cli_runtime::tests::reload_command_failure_keeps_persisted_generation_ready_and_routable' (1435287) panicked at crates/mct-daemon/src/daemon/cli_runtime.rs:1102:9:
+assertion failed: matches!(error.downcast_ref::<mct_daemon::MctChildReloadError>(),
+    Some(mct_daemon::MctChildReloadError::ReplacementConstruction { .. }))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+failures:
+    cli_runtime::tests::reload_command_failure_keeps_persisted_generation_ready_and_routable
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 57 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
+The fixture was corrected to the largest persistable SQLite generation (`i64::MAX`), and replacement construction now rejects advancing beyond that durable representation.

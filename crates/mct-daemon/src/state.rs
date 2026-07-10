@@ -834,39 +834,50 @@ impl MctRuntimeStateStore {
     }
 
     pub fn upsert_child_instance(&self, instance: &ChildInstance) -> Result<()> {
-        self.conn.execute(
-            r#"
-            INSERT INTO child_instances(
-                instance_id, assignment_id, artifact_id, child_name, generation, node_id,
-                instance_state, readiness_observation_id, last_lifecycle_observation_id, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-            ON CONFLICT(instance_id) DO UPDATE SET
-                assignment_id = excluded.assignment_id,
-                artifact_id = excluded.artifact_id,
-                child_name = excluded.child_name,
-                generation = excluded.generation,
-                node_id = excluded.node_id,
-                instance_state = excluded.instance_state,
-                readiness_observation_id = excluded.readiness_observation_id,
-                last_lifecycle_observation_id = excluded.last_lifecycle_observation_id,
-                updated_at = excluded.updated_at
-            "#,
-            params![
-                instance.instance_id.as_str(),
-                instance.assignment_id.as_str(),
-                instance.artifact_id.as_str(),
-                instance.child_name,
-                instance.generation,
-                instance.node_id.as_str(),
-                json_atom(&instance.instance_state)?,
-                instance
-                    .readiness_observation_id
-                    .as_ref()
-                    .map(ObservationId::as_str),
-                instance.last_lifecycle_observation_id.as_str(),
-                current_timestamp_string(),
-            ],
-        )?;
+        upsert_child_instance_on(&self.conn, instance)
+    }
+
+    /// Atomically commits a verified replacement generation and retires its ready predecessor.
+    ///
+    /// The replacement is written first inside the transaction. The predecessor must still be
+    /// durably ready, so readers observe either the old ready generation or the committed pair of
+    /// stopped predecessor and ready replacement, never a child with no ready generation.
+    pub fn swap_ready_child_generation(
+        &self,
+        stopped_predecessor: &ChildInstance,
+        ready_replacement: &ChildInstance,
+    ) -> Result<()> {
+        if stopped_predecessor.instance_state != ChildInstanceState::Stopped {
+            bail!("predecessor generation must be stopped before persisted swap");
+        }
+        if ready_replacement.instance_state != ChildInstanceState::Ready {
+            bail!("replacement generation must be ready before persisted swap");
+        }
+        if stopped_predecessor.instance_id == ready_replacement.instance_id
+            || stopped_predecessor.child_name != ready_replacement.child_name
+            || stopped_predecessor.assignment_id != ready_replacement.assignment_id
+            || stopped_predecessor.artifact_id != ready_replacement.artifact_id
+            || stopped_predecessor.node_id != ready_replacement.node_id
+            || stopped_predecessor.generation.checked_add(1) != Some(ready_replacement.generation)
+        {
+            bail!("replacement generation does not directly succeed its predecessor");
+        }
+
+        let transaction = self.conn.unchecked_transaction()?;
+        let persisted_state: String = transaction
+            .query_row(
+                "SELECT instance_state FROM child_instances WHERE instance_id = ?1",
+                params![stopped_predecessor.instance_id.as_str()],
+                |row| row.get(0),
+            )
+            .context("read persisted predecessor generation")?;
+        if persisted_state != "ready" {
+            bail!("persisted predecessor generation is not ready");
+        }
+
+        upsert_child_instance_on(&transaction, ready_replacement)?;
+        upsert_child_instance_on(&transaction, stopped_predecessor)?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -1842,6 +1853,43 @@ fn toy_grant_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToyGrant> {
     })
 }
 
+fn upsert_child_instance_on(connection: &Connection, instance: &ChildInstance) -> Result<()> {
+    connection.execute(
+        r#"
+        INSERT INTO child_instances(
+            instance_id, assignment_id, artifact_id, child_name, generation, node_id,
+            instance_state, readiness_observation_id, last_lifecycle_observation_id, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        ON CONFLICT(instance_id) DO UPDATE SET
+            assignment_id = excluded.assignment_id,
+            artifact_id = excluded.artifact_id,
+            child_name = excluded.child_name,
+            generation = excluded.generation,
+            node_id = excluded.node_id,
+            instance_state = excluded.instance_state,
+            readiness_observation_id = excluded.readiness_observation_id,
+            last_lifecycle_observation_id = excluded.last_lifecycle_observation_id,
+            updated_at = excluded.updated_at
+        "#,
+        params![
+            instance.instance_id.as_str(),
+            instance.assignment_id.as_str(),
+            instance.artifact_id.as_str(),
+            instance.child_name,
+            instance.generation,
+            instance.node_id.as_str(),
+            json_atom(&instance.instance_state)?,
+            instance
+                .readiness_observation_id
+                .as_ref()
+                .map(ObservationId::as_str),
+            instance.last_lifecycle_observation_id.as_str(),
+            current_timestamp_string(),
+        ],
+    )?;
+    Ok(())
+}
+
 fn json_string<T: Serialize>(value: &T) -> Result<String> {
     serde_json::to_string(value).context("encode json cell")
 }
@@ -2177,6 +2225,71 @@ mod tests {
         assert_eq!(summary.approved_children, 1);
         assert_eq!(summary.active_assignments, 1);
         assert_eq!(summary.ready_instances, 1);
+    }
+
+    #[test]
+    fn child_reload_swap_is_atomic_and_failed_swap_keeps_persisted_predecessor_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.sqlite");
+        let store = MctRuntimeStateStore::open(&path).unwrap();
+        store.upsert_artifact(&artifact()).unwrap();
+        store
+            .upsert_child_approval(&approval(ChildApprovalState::Approved))
+            .unwrap();
+        store
+            .upsert_child_assignment(&assignment(ChildAssignmentState::Active))
+            .unwrap();
+        let predecessor = instance(ChildInstanceState::Ready);
+        store.upsert_child_instance(&predecessor).unwrap();
+
+        let mut stopped = predecessor.clone();
+        stopped.instance_state = ChildInstanceState::Stopped;
+        stopped.last_lifecycle_observation_id = ObservationId::new("obs-stopped").unwrap();
+        let mut invalid_replacement = predecessor.clone();
+        invalid_replacement.instance_id = ChildInstanceId::new("instance-b").unwrap();
+        invalid_replacement.generation = 2;
+        invalid_replacement.instance_state = ChildInstanceState::Loading;
+        invalid_replacement.readiness_observation_id = None;
+        invalid_replacement.last_lifecycle_observation_id =
+            ObservationId::new("obs-loading-b").unwrap();
+
+        let error = store
+            .swap_ready_child_generation(&stopped, &invalid_replacement)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("replacement generation must be ready")
+        );
+        assert_eq!(store.summary().unwrap().ready_instances, 1);
+        let persisted: Vec<(String, String)> = store
+            .conn
+            .prepare("SELECT instance_id, instance_state FROM child_instances ORDER BY generation")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(persisted, vec![("instance-a".into(), "ready".into())]);
+
+        let mut replacement = invalid_replacement;
+        replacement.instance_state = ChildInstanceState::Ready;
+        replacement.readiness_observation_id = Some(ObservationId::new("obs-ready-b").unwrap());
+        replacement.last_lifecycle_observation_id = ObservationId::new("obs-ready-b").unwrap();
+        store
+            .swap_ready_child_generation(&stopped, &replacement)
+            .unwrap();
+
+        let persisted: Vec<(u64, String)> = store
+            .conn
+            .prepare("SELECT generation, instance_state FROM child_instances ORDER BY generation")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(persisted, vec![(1, "stopped".into()), (2, "ready".into())]);
+        assert_eq!(store.summary().unwrap().ready_instances, 1);
     }
 
     #[test]

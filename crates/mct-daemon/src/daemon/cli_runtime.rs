@@ -265,14 +265,13 @@ pub(super) fn run_child_lifecycle(mut args: Vec<String>, action: &str) -> Result
             }
         }
         "reload" => {
-            let report = reload_configured_child(
+            let report = execute_child_reload(
+                &state,
                 &projection,
                 &child_name,
                 TraceId::new(format!("trace-reload:{child_name}"))
                     .expect("string ID literal/generated value must be non-empty"),
             )?;
-            state.upsert_child_instance(&report.previous_instance)?;
-            state.upsert_child_instance(&report.next_instance)?;
             append_ledger_observations(&ledger_path, &report.observations)?;
             if as_json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
@@ -289,6 +288,27 @@ pub(super) fn run_child_lifecycle(mut args: Vec<String>, action: &str) -> Result
         other => bail!("unsupported lifecycle action '{other}'"),
     }
     Ok(())
+}
+
+fn execute_child_reload(
+    state: &MctRuntimeStateStore,
+    projection: &MctConfigChildAuthorityProjection,
+    child_name: &str,
+    trace_id: TraceId,
+) -> Result<mct_daemon::MctChildReloadReport> {
+    let predecessor = projection
+        .instances
+        .iter()
+        .find(|instance| instance.child_name == child_name)
+        .ok_or_else(|| anyhow::anyhow!("child '{child_name}' has no configured instance"))?;
+    if predecessor.instance_state != ChildInstanceState::Ready {
+        bail!("child '{child_name}' reload requires a ready current generation");
+    }
+    state.upsert_child_instance(predecessor)?;
+
+    let report = reload_configured_child(projection, child_name, trace_id)?;
+    state.swap_ready_child_generation(&report.previous_instance, &report.next_instance)?;
+    Ok(report)
 }
 
 pub(super) fn run_process(mut args: Vec<String>) -> Result<()> {
@@ -987,4 +1007,173 @@ pub(super) fn run_slate_list_work(mut args: Vec<String>) -> Result<()> {
         call_args.extend(["--ledger".to_owned(), ledger_path]);
     }
     run_wasm_call_wit(call_args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reload_projection(generation: u64) -> MctConfigChildAuthorityProjection {
+        let artifact_id = ComponentArtifactId::new("artifact-reload").unwrap();
+        let approval_id = ChildApprovalId::new("approval-reload").unwrap();
+        let assignment_id = ChildAssignmentId::new("assignment-reload").unwrap();
+        MctConfigChildAuthorityProjection {
+            local_node_id: MctNodeId::new("node-reload").unwrap(),
+            vision_id: VisionId::new("vision-reload").unwrap(),
+            project_id: None,
+            policy_revision: 1,
+            artifacts: vec![ComponentArtifact {
+                artifact_id: artifact_id.clone(),
+                child_name: "child-reload".into(),
+                artifact_version: "0.1.0".into(),
+                content_hash: "sha256:reload".into(),
+                manifest_hash: "sha256:manifest-reload".into(),
+                primary_export: ComponentWitExport {
+                    namespace: "patina".into(),
+                    interface_name: "echo".into(),
+                    version: "0.1.0".into(),
+                    function_names: vec!["echo".into()],
+                },
+                runtime_shape: ComponentRuntimeShape::WasmComponent,
+                ingress_mode: ChildIngressMode::WitOnly,
+                lifecycle_exports: LifecycleExports::AbsentAllowed,
+                verification_status: VerificationStatus::Verified,
+                created_by_observation_id: ObservationId::new("obs-artifact-reload").unwrap(),
+            }],
+            approvals: vec![ChildApproval {
+                approval_id: approval_id.clone(),
+                artifact_id: artifact_id.clone(),
+                child_name: "child-reload".into(),
+                artifact_version: "0.1.0".into(),
+                scope_vision_id: Some(VisionId::new("vision-reload").unwrap()),
+                scope_node_id: Some(MctNodeId::new("node-reload").unwrap()),
+                scope_project_id: None,
+                approval_state: ChildApprovalState::Approved,
+                policy_revision: 1,
+                authority_observation_id: ObservationId::new("obs-approval-reload").unwrap(),
+            }],
+            assignments: vec![ChildAssignment {
+                assignment_id: assignment_id.clone(),
+                approval_id,
+                artifact_id: artifact_id.clone(),
+                child_name: "child-reload".into(),
+                vision_id: VisionId::new("vision-reload").unwrap(),
+                node_id: Some(MctNodeId::new("node-reload").unwrap()),
+                project_id: None,
+                assignment_state: ChildAssignmentState::Active,
+                pinned_artifact_version: "0.1.0".into(),
+                assignment_observation_id: ObservationId::new("obs-assignment-reload").unwrap(),
+            }],
+            instances: vec![ChildInstance {
+                instance_id: ChildInstanceId::new("instance-reload-current").unwrap(),
+                assignment_id,
+                artifact_id,
+                child_name: "child-reload".into(),
+                generation,
+                node_id: MctNodeId::new("node-reload").unwrap(),
+                instance_state: ChildInstanceState::Ready,
+                readiness_observation_id: Some(ObservationId::new("obs-ready-reload").unwrap()),
+                last_lifecycle_observation_id: ObservationId::new("obs-ready-reload").unwrap(),
+            }],
+        }
+    }
+
+    #[test]
+    fn reload_command_failure_keeps_persisted_generation_ready_and_routable() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("state.sqlite");
+        let state = MctRuntimeStateStore::open(&state_path).unwrap();
+        let projection = reload_projection(i64::MAX as u64);
+        state.upsert_artifact(&projection.artifacts[0]).unwrap();
+        state
+            .upsert_child_approval(&projection.approvals[0])
+            .unwrap();
+        state
+            .upsert_child_assignment(&projection.assignments[0])
+            .unwrap();
+
+        let error = execute_child_reload(
+            &state,
+            &projection,
+            "child-reload",
+            TraceId::new("trace-command-reload-failed").unwrap(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<mct_daemon::MctChildReloadError>(),
+            Some(mct_daemon::MctChildReloadError::ReplacementConstruction { .. })
+        ));
+        assert!(error.to_string().contains("generation counter exhausted"));
+        assert_eq!(
+            projection.instances[0].instance_state,
+            ChildInstanceState::Ready
+        );
+        assert_eq!(state.summary().unwrap().ready_instances, 1);
+
+        let connection = rusqlite::Connection::open(&state_path).unwrap();
+        let persisted: (String, String) = connection
+            .query_row(
+                "SELECT instance_id, instance_state FROM child_instances",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            persisted,
+            ("instance-reload-current".into(), "ready".into())
+        );
+
+        let call = MctCall {
+            call_id: CallId::new("call-command-reload-failed").unwrap(),
+            caller: CallerIdentity {
+                node_id: projection.local_node_id.clone(),
+                user_id: None,
+                vision_id: projection.vision_id.clone(),
+                project_id: None,
+            },
+            target: OperationTarget {
+                namespace: "patina".into(),
+                interface_name: "echo".into(),
+                function_name: "echo".into(),
+            },
+            payload_metadata: PayloadMetadata {
+                data_classification: "public".into(),
+                size_bytes: 0,
+                contains_secret_scoped_material: false,
+            },
+            authority_context: AuthorityContextSnapshot {
+                policy_revision: 1,
+                grants_revision: 1,
+                vision_policy_revision: 1,
+            },
+            deadline: Timestamp::new("2026-07-10T23:00:00Z").unwrap(),
+            trace_context: TraceContext {
+                trace_id: TraceId::new("trace-call-command-reload-failed").unwrap(),
+                span_id: SpanId::new("span-call-command-reload-failed").unwrap(),
+            },
+            origin: CallOrigin::Cli,
+        };
+        let authority = evaluate_child_call_authority(
+            &call,
+            &ChildCallAuthorityRequest {
+                instance_id: projection.instances[0].instance_id.clone(),
+                node_id: projection.local_node_id.clone(),
+                ids: ChildCallAuthorityIds {
+                    evaluation_id: ChildCallEvaluationId::new("eval-command-reload-failed")
+                        .unwrap(),
+                    decision_id: DecisionId::new("decision-command-reload-failed").unwrap(),
+                    observation_id: ObservationId::new("obs-command-reload-failed").unwrap(),
+                    authorized_child_invocation_id: AuthorizedChildInvocationId::new(
+                        "authorized-command-reload-failed",
+                    )
+                    .unwrap(),
+                },
+            },
+            &projection.artifacts,
+            &projection.approvals,
+            &projection.assignments,
+            &projection.instances,
+        );
+        assert!(authority.is_allowed(), "{:#?}", authority.evaluation);
+    }
 }
