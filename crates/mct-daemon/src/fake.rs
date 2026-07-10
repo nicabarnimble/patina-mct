@@ -65,7 +65,7 @@ pub(crate) fn run_fake_echo_slice(ledger_path: impl AsRef<Path>) -> Result<FakeE
 
     let hello = evaluate_hello(
         &hello_request,
-        &[binding],
+        std::slice::from_ref(&binding),
         &HelloPolicy::default(),
         HelloEvaluationContext {
             ids: EvaluationIds {
@@ -119,11 +119,18 @@ pub(crate) fn run_fake_echo_slice(ledger_path: impl AsRef<Path>) -> Result<FakeE
     let call = evaluate_call_protocol(
         &call_request,
         &hello,
-        CallEvaluationIds {
-            decision_id: DecisionId::new("decision-call")
-                .expect("string ID literal/generated value must be non-empty"),
-            observation_id: ObservationId::new("obs-call-decision")
-                .expect("string ID literal/generated value must be non-empty"),
+        CallEvaluationContext {
+            ids: CallEvaluationIds {
+                decision_id: DecisionId::new("decision-call")
+                    .expect("string ID literal/generated value must be non-empty"),
+                observation_id: ObservationId::new("obs-call-decision")
+                    .expect("string ID literal/generated value must be non-empty"),
+            },
+            current_peer_authority: MctPeerAuthoritySnapshot {
+                bindings: vec![binding.clone()],
+                policy_revision: HelloPolicy::default().current_policy_revision,
+            },
+            now: Timestamp::new("2026-05-31T00:00:03Z").unwrap(),
         },
     );
     ledger

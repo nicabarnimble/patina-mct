@@ -140,6 +140,20 @@ pub enum CallOrigin {
     Cli,
 }
 
+impl CallOrigin {
+    /// Returns whether this Mother may source remote route candidates.
+    ///
+    /// Calls arriving over `mct/call/0` are terminal at the receiving Mother.
+    /// Local origins may select one remote executor, but an Iroh arrival may
+    /// only use local candidates and therefore cannot be forwarded again.
+    pub const fn allows_remote_candidate_sourcing(self) -> bool {
+        match self {
+            Self::Iroh => false,
+            Self::JvmAdapter | Self::WasmHost | Self::ProcessHarness | Self::Cli => true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Immutable semantic unit of requested work.
 ///
@@ -817,19 +831,30 @@ pub struct CallEvaluationIds {
     pub observation_id: ObservationId,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+/// Adapter-supplied current authority facts for one call evaluation.
+pub struct CallEvaluationContext {
+    /// Identifiers minted for the call decision and its observation.
+    pub ids: CallEvaluationIds,
+    /// Current peer bindings and local policy revision.
+    pub current_peer_authority: crate::peer::MctPeerAuthoritySnapshot,
+    /// Validated current time used for binding expiry checks.
+    pub now: Timestamp,
+}
+
 /// Decides whether an admitted peer may submit this `mct/call/0` request.
 ///
 /// The authority facts are the validated request, the prior hello admission,
-/// and caller-supplied IDs. Returns `AcceptedForRouting` only when hello was
-/// admitted and binding, caller node, vision, ALPN, endpoint, revisions, and
-/// payload size all match. Absence or mismatch of authority is a denied or
-/// malformed decision, not an error.
+/// and adapter-supplied current peer bindings, policy revision, time, and IDs.
+/// Returns `AcceptedForRouting` only when hello was admitted and current binding,
+/// caller node, Vision, ALPN, endpoint, revisions, and payload size all match.
+/// Absence or mismatch of authority is a denied or malformed decision, not an error.
 pub fn evaluate_call_protocol(
     request: &MctCallProtocolRequest,
     hello: &crate::peer::MctHelloAdmissionEvaluation,
-    ids: CallEvaluationIds,
+    context: CallEvaluationContext,
 ) -> MctCallProtocolEvaluation {
-    internal::evaluate_call_protocol_internal(request, hello, ids)
+    internal::evaluate_call_protocol_internal(request, hello, context)
 }
 
 impl MctCallProtocolEvaluation {
@@ -974,9 +999,9 @@ pub fn call_reply_from_evaluation_with_result_payload_and_route(
 mod tests {
     use super::*;
     use crate::peer::{
-        ConnectionSide, HelloOutcome, HelloReason, IrohConnectionPresentation, MCT_CALL_ALPN,
-        MCT_HELLO_ALPN, MctHelloAdmissionEvaluation, MctProtocolVersion, PathClass,
-        SafeHelloReason,
+        BindingState, ConnectionSide, HelloOutcome, HelloReason, IrohConnectionPresentation,
+        MCT_CALL_ALPN, MCT_HELLO_ALPN, MctHelloAdmissionEvaluation, MctPeerAuthoritySnapshot,
+        MctPeerBinding, MctPeerBindingScope, MctProtocolVersion, PathClass, SafeHelloReason,
     };
 
     fn example_call() -> MctCall {
@@ -1035,6 +1060,7 @@ mod tests {
                 VisionId::new("vision-a")
                     .expect("string ID literal/generated value must be non-empty"),
             ),
+            selected_policy_revision: Some(1),
             negotiated_protocol: Some(MctProtocolVersion {
                 protocol_name: MCT_HELLO_ALPN.into(),
                 major: 0,
@@ -1090,12 +1116,55 @@ mod tests {
         }
     }
 
-    fn eval_ids() -> CallEvaluationIds {
-        CallEvaluationIds {
-            decision_id: DecisionId::new("call-decision-1")
-                .expect("string ID literal/generated value must be non-empty"),
-            observation_id: ObservationId::new("obs-call-decision")
-                .expect("string ID literal/generated value must be non-empty"),
+    fn eval_ids() -> CallEvaluationContext {
+        CallEvaluationContext {
+            ids: CallEvaluationIds {
+                decision_id: DecisionId::new("call-decision-1")
+                    .expect("string ID literal/generated value must be non-empty"),
+                observation_id: ObservationId::new("obs-call-decision")
+                    .expect("string ID literal/generated value must be non-empty"),
+            },
+            current_peer_authority: MctPeerAuthoritySnapshot {
+                bindings: vec![MctPeerBinding {
+                    binding_id: PeerBindingId::new("binding-1")
+                        .expect("string ID literal/generated value must be non-empty"),
+                    iroh_endpoint_id: EndpointIdText::new("endpoint-a")
+                        .expect("string ID literal/generated value must be non-empty"),
+                    scope: MctPeerBindingScope {
+                        mct_node_id: MctNodeId::new("node-a")
+                            .expect("string ID literal/generated value must be non-empty"),
+                        vision_id: VisionId::new("vision-a")
+                            .expect("string ID literal/generated value must be non-empty"),
+                        allowed_alpns: vec![MCT_CALL_ALPN.into()],
+                        data_scope: None,
+                        observation_scope: None,
+                    },
+                    issuer_node_id: MctNodeId::new("node-local")
+                        .expect("string ID literal/generated value must be non-empty"),
+                    policy_revision: 1,
+                    binding_state: BindingState::Admitted,
+                    issued_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+                    expires_at: None,
+                    created_by_observation_id: ObservationId::new("obs-binding-current")
+                        .expect("string ID literal/generated value must be non-empty"),
+                    superseded_by_observation_id: None,
+                }],
+                policy_revision: 1,
+            },
+            now: Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
+        }
+    }
+
+    #[test]
+    fn only_local_call_origins_allow_remote_candidate_sourcing() {
+        assert!(!CallOrigin::Iroh.allows_remote_candidate_sourcing());
+        for origin in [
+            CallOrigin::Cli,
+            CallOrigin::JvmAdapter,
+            CallOrigin::WasmHost,
+            CallOrigin::ProcessHarness,
+        ] {
+            assert!(origin.allows_remote_candidate_sourcing(), "{origin:?}");
         }
     }
 
@@ -1278,6 +1347,22 @@ mod tests {
             .expect("string ID literal/generated value must be non-empty");
         let evaluation = evaluate_call_protocol(&request, &admitted_hello(), eval_ids());
         assert_eq!(evaluation.reason, CallProtocolReason::EndpointMismatch);
+        assert_eq!(evaluation.safe_message, "not authorized");
+    }
+
+    #[test]
+    fn newer_call_claim_cannot_reuse_hello_admitted_at_an_older_policy_revision() {
+        let mut request = protocol_request();
+        request.authority.policy_revision = 2;
+        request.call.authority_context.policy_revision = 2;
+        let mut context = eval_ids();
+        context.current_peer_authority.policy_revision = 2;
+        context.current_peer_authority.bindings[0].policy_revision = 2;
+
+        let evaluation = evaluate_call_protocol(&request, &admitted_hello(), context);
+
+        assert_eq!(evaluation.outcome, CallProtocolOutcome::Denied);
+        assert_eq!(evaluation.reason, CallProtocolReason::PolicyRevisionStale);
         assert_eq!(evaluation.safe_message, "not authorized");
     }
 

@@ -40,15 +40,28 @@ pub fn load_or_create_node_secret_key_hex(
             }
         })?;
     }
-    let secret_key_hex = secret_key_to_hex(&SecretKey::generate());
+    let secret_key_hex = generate_node_secret_key_hex();
     write_new_node_secret_key_file(path, &secret_key_hex)?;
     Ok(secret_key_hex)
 }
 
-fn write_new_node_secret_key_file(
+pub fn generate_node_secret_key_hex() -> String {
+    secret_key_to_hex(&SecretKey::generate())
+}
+
+pub fn write_new_node_secret_key_file(
     path: &Path,
     secret_key_hex: &str,
 ) -> MotherIrohEndpointResult<()> {
+    secret_key_from_hex(secret_key_hex)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| {
+            MotherIrohEndpointError::IdentityFile {
+                path: parent.to_path_buf(),
+                source,
+            }
+        })?;
+    }
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ALLIUM_VERSION="${ALLIUM_VERSION:-3.2.3}"
-ALLIUM_SHA256_X86_64_LINUX="${ALLIUM_SHA256_X86_64_LINUX:-3e1afbed99b039a1fe659b1a3aaa69dbb274bfe18a0680571c9d0a4ab3ac205f}"
+ALLIUM_VERSION="${ALLIUM_VERSION:-3.5.0}"
+ALLIUM_SHA256_X86_64_LINUX="${ALLIUM_SHA256_X86_64_LINUX:-f33a9b581173919f2e2fbf3ab6297112e7e1d6e251bf94e957f43f849029c72c}"
 
 if command -v allium >/dev/null 2>&1; then
   allium --version
