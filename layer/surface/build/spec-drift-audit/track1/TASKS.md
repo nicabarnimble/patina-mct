@@ -2190,3 +2190,71 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 55 filtered out;
 
 error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
 ```
+
+Expected red proof that the legacy sinkless blob route still published before removal:
+
+```text
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.70s
+     Running unittests src/lib.rs (target/debug/deps/mct_daemon-5682d471ecfb696f)
+
+running 1 test
+test control::tests::uds_blob_ingest_requires_an_observing_mutation_owner ... FAILED
+
+failures:
+
+---- control::tests::uds_blob_ingest_requires_an_observing_mutation_owner stdout ----
+
+thread 'control::tests::uds_blob_ingest_requires_an_observing_mutation_owner' (1307109) panicked at crates/mct-daemon/src/control.rs:671:9:
+HTTP/1.1 201 Created
+content-type: application/json
+content-length: 310
+connection: close
+
+{
+  "payload": {
+    "blob_ref": "blake3:340067225b7cd91ce9258831ef7e5f613db8fd8f461e498986482a2f3910947c",
+    "content_type": "application/octet-stream",
+    "digest": "340067225b7cd91ce9258831ef7e5f613db8fd8f461e498986482a2f3910947c",
+    "payload_kind": "content_addressed_blob",
+    "size_bytes": 18
+  }
+}
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    control::tests::uds_blob_ingest_requires_an_observing_mutation_owner
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 98 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p mct-daemon --lib`
+```
+
+After removing sinkless publication, the read-only control router correctly returned 405 rather than the test's initially expected 404:
+
+```text
+thread 'control::tests::uds_blob_ingest_requires_an_observing_mutation_owner' (...) panicked at crates/mct-daemon/src/control.rs:630:9:
+HTTP/1.1 405 Method Not Allowed
+content-type: application/json
+content-length: 35
+connection: close
+
+{
+  "error": "method not allowed"
+}
+```
+
+Pre-commit `git diff --check` refused CRLF copied verbatim from the HTTP failure response until the log was normalized:
+
+```text
+layer/surface/build/spec-drift-audit/track1/TASKS.md:2209: trailing whitespace.
++HTTP/1.1 201 Created
+layer/surface/build/spec-drift-audit/track1/TASKS.md:2210: trailing whitespace.
++content-type: application/json
+layer/surface/build/spec-drift-audit/track1/TASKS.md:2211: trailing whitespace.
++content-length: 310
+layer/surface/build/spec-drift-audit/track1/TASKS.md:2212: trailing whitespace.
++connection: close
+layer/surface/build/spec-drift-audit/track1/TASKS.md:2213: trailing whitespace.
+```
