@@ -47,9 +47,9 @@ exit_criteria:
     checked: false
     verify: cargo test -p mct-daemon two_mother_forwarding_records_route_chain_without_payload_bytes
   - id: two-mother-fail-closed
-    text: Cross-Mother wrong-Vision, revoked or expired binding, bad-payload, unauthorized-operation, and remote-denial paths fail closed with typed outcomes and observations.
+    text: Cross-Mother wrong-Vision, revoked or expired binding, bad-payload, unauthorized-operation, remote-denial, and mutual-publication/unready paths fail closed with typed outcomes and observations; an mct/call/0 arrival never sources a second remote hop.
     checked: false
-    verify: cargo test -p mct-daemon two_mother_ -- --nocapture
+    verify: cargo test -p mct-daemon two_mother_ -- --nocapture && cargo test -p mct-daemon forwarded_arrival_with_unavailable_local_candidate_is_terminal
   - id: kernel-boundary
     text: mct-kernel remains free of concrete iroh, wasmtime, WASI, storage, network, and Patina Belief/scry/assay internals.
     checked: false
@@ -89,11 +89,13 @@ Build the first executable Multi-Mother path:
 - No changes to the Ed25519 peer-binding signature scheme.
 - No changes to the two-phase `RouteDecision` / revalidation model except using it for remote routes.
 - No new payload data plane beyond existing `mct/call/0` inline payload and declared handle rules.
+- No multi-hop or transitive routing. That future capability requires end-to-end caller identity rather than per-hop caller rewriting, plus explicit transitive-routing policy; it remains with ROADMAP item 6.
 
 ## Authority Invariants
 
 A remote route is executable only when all of these are true at route planning and still true at execution/forwarding time:
 
+- the call origin is local to this Mother (`Cli`, `JvmAdapter`, `WasmHost`, or `ProcessHarness`), never an `Iroh` arrival from `mct/call/0`;
 - the local config contains a peer binding for the remote node;
 - the binding signature that admits that remote peer to this Mother verifies with the local Mother's endpoint identity;
 - the peer binding state is `Admitted` and not expired/revoked;
@@ -109,6 +111,14 @@ A remote route is executable only when all of these are true at route planning a
 - the remote Mother admits the forwarding hello and call, then independently applies its own child/runtime authority.
 
 Any missing fact denies. Secret-scoped material always eliminates the remote candidate with `SecretScopeForbidden`.
+
+## Single-Hop Forwarding Invariant
+
+`MctCall.origin` is the kernel-visible routing fact. A Mother may source remote candidates only for calls originating at one of its local ingress/host surfaces. A call arriving through `mct/call/0` has `CallOrigin::Iroh` and is terminal at that Mother: route planning considers local candidates only. If all local candidates are eliminated, the existing no-route denial is returned, including the temporal denial class when availability caused the elimination; the forwarding Mother maps that denial through the existing verified reply path.
+
+The candidate-sourcing seam enforces this before remote plans can join local plans. Forward-time hop checks, hop counters, retry parameters, and speculative operator configuration are intentionally absent.
+
+The rationale follows publication semantics: publishing an operation means “I execute this operation.” A peer selected from that publication is an executor, never an onward broker. Besides preventing forwarding loops, this prevents transitive caller-identity rewriting: this phase rewrites caller identity once to the forwarding Mother for node-bound `mct/call/0` admission, and a terminal executor cannot rewrite it again.
 
 ## Wire Contract
 
@@ -170,6 +180,8 @@ For a selected remote route, the caller Mother:
 6. verifies the remote result payload with existing `MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES` rules;
 7. maps remote `Success`, `Denied`, `Failed`, `TimedOut`, `Cancelled`, and `Malformed` reply classes into the local typed result/reply without exposing remote policy internals.
 
+The forwarded request is marked `CallOrigin::Iroh` at the executor. That origin excludes remote plans at the local/remote candidate merge seam, so the forwarding branch is unreachable for the arrival.
+
 Content-addressed or external payload handles are not made magically remote-readable in this phase. If a remote route cannot provide verified inline bytes or a handle the executor can safely evaluate under the existing rules, it fails closed before child delivery.
 
 ## Observation Contract
@@ -201,6 +213,7 @@ Observation detail strings may contain node IDs, candidate IDs, operation IDs, p
 5. Forward selected remote calls over `mct/call/0` and map replies.
 6. Add route-chain observations on caller and executor.
 7. Add end-to-end two-Mother fail-closed tests.
+8. Enforce single-hop candidate sourcing from the kernel-visible call origin and prove forwarded/unready mutual-publication calls terminate without a second forward.
 
 ## Verification
 
