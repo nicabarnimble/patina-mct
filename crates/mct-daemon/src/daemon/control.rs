@@ -696,17 +696,509 @@ async fn execute_resident_child_mutation(
     }
 }
 
-pub(super) fn resident_authority_mutation_handler(
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ObservedBlobIngestRequest {
+    digest: String,
+    size_bytes: u64,
+    content_type: String,
+    #[serde(default = "default_blob_classification")]
+    classification: String,
+    bytes_base64: String,
+}
+
+fn default_blob_classification() -> String {
+    "unspecified".into()
+}
+
+fn blob_observation(
+    request: Option<&ObservedBlobIngestRequest>,
+    kind: ObservationKind,
+    outcome: ObservationOutcome,
+    reason: &str,
+) -> MctObservation {
+    let digest = request
+        .map(|request| request.digest.clone())
+        .unwrap_or_else(|| "unknown".into());
+    let safe_message = request.map_or_else(
+        || format!("blob ingest {reason}"),
+        |request| {
+            format!(
+                "blob ingest {reason} digest={} size={} content_type={} classification={}",
+                request.digest, request.size_bytes, request.content_type, request.classification
+            )
+        },
+    );
+    mutation_observation(MutationObservationFact {
+        namespace: "blob-ingest",
+        kind,
+        subject_id: "local-cas".into(),
+        resource_id: digest,
+        policy_revision: None,
+        grants_revision: None,
+        outcome,
+        source_plane: SourcePlane::Storage,
+        safe_message,
+    })
+}
+
+async fn append_blob_rejection(
+    ledger: &ResidentLedgerWriter,
+    request: Option<&ObservedBlobIngestRequest>,
+    status: u16,
+    reason: &str,
+) -> MctControlPlaneResponse {
+    let observation = blob_observation(
+        request,
+        ObservationKind::StorageAppendFailed,
+        ObservationOutcome::Failed,
+        reason,
+    );
+    if ledger.append(vec![observation]).await.is_err() {
+        return peer_mutation_response(
+            500,
+            serde_json::json!({"error": "blob rejection observation was not durable"}),
+        );
+    }
+    peer_mutation_response(status, serde_json::json!({"error": reason}))
+}
+
+async fn execute_resident_blob_mutation(
+    state_path: &Path,
+    ledger: &ResidentLedgerWriter,
+    body: &[u8],
+) -> MctControlPlaneResponse {
+    let request: ObservedBlobIngestRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(_) => return append_blob_rejection(ledger, None, 400, "invalid_request").await,
+    };
+    if request.size_bytes > MCT_BLOB_MAX_BYTES as u64 {
+        return append_blob_rejection(ledger, Some(&request), 413, "oversize").await;
+    }
+    if request.content_type.trim().is_empty() || request.classification.trim().is_empty() {
+        return append_blob_rejection(ledger, Some(&request), 400, "invalid_metadata").await;
+    }
+    let bytes = match BASE64_STANDARD.decode(request.bytes_base64.as_bytes()) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return append_blob_rejection(ledger, Some(&request), 400, "invalid_encoding").await;
+        }
+    };
+    if bytes.len() as u64 != request.size_bytes {
+        return append_blob_rejection(ledger, Some(&request), 400, "size_mismatch").await;
+    }
+    if request.digest.len() != 64
+        || !request
+            .digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return append_blob_rejection(ledger, Some(&request), 400, "invalid_digest").await;
+    }
+    if blake3::hash(&bytes).to_hex().as_str() != request.digest {
+        return append_blob_rejection(ledger, Some(&request), 400, "digest_mismatch").await;
+    }
+
+    if ledger
+        .append(vec![blob_observation(
+            Some(&request),
+            ObservationKind::AdapterEffectStarted,
+            ObservationOutcome::Started,
+            "validated",
+        )])
+        .await
+        .is_err()
+    {
+        return peer_mutation_response(
+            500,
+            serde_json::json!({"error": "blob ingest decision was not durable"}),
+        );
+    }
+
+    let store = local_blob_store_for_state_path(state_path);
+    let handle = match store.ingest_reader(
+        &request.digest,
+        request.size_bytes,
+        &request.content_type,
+        std::io::Cursor::new(bytes),
+    ) {
+        Ok(handle) => handle,
+        Err(error) => {
+            let reason = match error {
+                MctLocalBlobStoreError::InvalidDigest => "invalid_digest",
+                MctLocalBlobStoreError::BlobTooLarge => "oversize",
+                MctLocalBlobStoreError::BlobSizeMismatch => "size_mismatch",
+                MctLocalBlobStoreError::BlobDigestMismatch => "digest_mismatch",
+                MctLocalBlobStoreError::PayloadBlobUnavailable => "unavailable",
+                MctLocalBlobStoreError::Io { .. } => "storage_io",
+            };
+            return append_blob_rejection(ledger, Some(&request), 500, reason).await;
+        }
+    };
+    if ledger
+        .append(vec![blob_observation(
+            Some(&request),
+            ObservationKind::StorageAppendSucceeded,
+            ObservationOutcome::Completed,
+            "succeeded",
+        )])
+        .await
+        .is_err()
+    {
+        return peer_mutation_response(
+            500,
+            serde_json::json!({"error": "blob success observation was not durable"}),
+        );
+    }
+    peer_mutation_response(201, serde_json::json!({"payload": handle}))
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RegistryInstallRequest {
+    pub(super) expected_children_dir: PathBuf,
+    pub(super) source_dir: PathBuf,
+    pub(super) replace: bool,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RegistrySyncRequest {
+    pub(super) expected_children_dir: PathBuf,
+    pub(super) expected_state_path: PathBuf,
+    pub(super) source_id: String,
+    pub(super) strict_integrity: bool,
+}
+
+#[derive(Clone, Debug)]
+enum PreparedRegistryMutation {
+    Install {
+        request: RegistryInstallRequest,
+        child_name: String,
+        artifact_id: String,
+        artifact_version: String,
+    },
+    Sync {
+        request: RegistrySyncRequest,
+        load_report: mct_daemon::MctChildLoadReport,
+    },
+}
+
+fn prepare_registry_mutation(
+    configured_children_dir: &Path,
+    state_path: &Path,
+    path: &str,
+    body: &[u8],
+) -> Result<PreparedRegistryMutation> {
+    if body.len() > AUTHORITY_MUTATION_BODY_MAX_BYTES {
+        bail!("registry mutation body exceeds 64 KiB limit");
+    }
+    match path {
+        "/registry/install" => {
+            let request: RegistryInstallRequest =
+                serde_json::from_slice(body).context("decode registry install request")?;
+            require_expected_config_path(&request.expected_children_dir, configured_children_dir)?;
+            let report = load_children_from_dir(
+                MctChildLoadOptions::new(&request.source_dir).strict_integrity(),
+            );
+            if report.loaded != 1 || report.failed != 0 {
+                bail!("registry package must contain one verified child");
+            }
+            let child = report.children.first().expect("loaded count checked");
+            if configured_children_dir.join(&child.name).exists() && !request.replace {
+                bail!("installed child already exists and replace was not requested");
+            }
+            Ok(PreparedRegistryMutation::Install {
+                request,
+                child_name: child.name.clone(),
+                artifact_id: child.artifact_id.clone(),
+                artifact_version: child.version.clone(),
+            })
+        }
+        "/registry/sync" => {
+            let request: RegistrySyncRequest =
+                serde_json::from_slice(body).context("decode registry sync request")?;
+            require_expected_config_path(&request.expected_children_dir, configured_children_dir)?;
+            require_expected_config_path(&request.expected_state_path, state_path)?;
+            if request.source_id.trim().is_empty() {
+                bail!("registry source id must not be empty");
+            }
+            let load_report = load_children_from_dir(MctChildLoadOptions {
+                children_dir: configured_children_dir.to_path_buf(),
+                integrity_mode: if request.strict_integrity {
+                    MctChildIntegrityMode::RequireSidecars
+                } else {
+                    MctChildIntegrityMode::AuditOnly
+                },
+            });
+            Ok(PreparedRegistryMutation::Sync {
+                request,
+                load_report,
+            })
+        }
+        _ => bail!("unknown registry mutation route"),
+    }
+}
+
+impl PreparedRegistryMutation {
+    fn decision_observations(&self) -> Vec<MctObservation> {
+        match self {
+            Self::Install {
+                child_name,
+                artifact_id,
+                artifact_version,
+                ..
+            } => vec![mutation_observation(MutationObservationFact {
+                namespace: "registry-install",
+                kind: ObservationKind::ArtifactVerified,
+                subject_id: child_name.clone(),
+                resource_id: artifact_id.clone(),
+                policy_revision: None,
+                grants_revision: None,
+                outcome: ObservationOutcome::Allowed,
+                source_plane: SourcePlane::Kernel,
+                safe_message: format!("verified child artifact version={artifact_version}"),
+            })],
+            Self::Sync {
+                request,
+                load_report,
+            } => {
+                let mut observations = load_report
+                    .children
+                    .iter()
+                    .map(|child| {
+                        mutation_observation(MutationObservationFact {
+                            namespace: "registry-sync-artifact",
+                            kind: if child.integrity_verified() {
+                                ObservationKind::ArtifactVerified
+                            } else {
+                                ObservationKind::ArtifactRejected
+                            },
+                            subject_id: child.name.clone(),
+                            resource_id: child.artifact_id.clone(),
+                            policy_revision: None,
+                            grants_revision: None,
+                            outcome: if child.integrity_verified() {
+                                ObservationOutcome::Allowed
+                            } else {
+                                ObservationOutcome::Denied
+                            },
+                            source_plane: SourcePlane::Kernel,
+                            safe_message: if child.integrity_verified() {
+                                "registry artifact verified".into()
+                            } else {
+                                "registry artifact rejected".into()
+                            },
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                observations.push(mutation_observation(MutationObservationFact {
+                    namespace: "registry-sync",
+                    kind: ObservationKind::OperatorActionRecorded,
+                    subject_id: request.source_id.clone(),
+                    resource_id: format!("children:{}", request.expected_children_dir.display()),
+                    policy_revision: None,
+                    grants_revision: None,
+                    outcome: ObservationOutcome::Allowed,
+                    source_plane: SourcePlane::Operator,
+                    safe_message: format!(
+                        "registry sync accepted loaded={} failed={}",
+                        load_report.loaded, load_report.failed
+                    ),
+                }));
+                observations
+            }
+        }
+    }
+
+    fn failure_observation(&self) -> MctObservation {
+        mutation_observation(MutationObservationFact {
+            namespace: "registry-storage-failure",
+            kind: ObservationKind::StorageAppendFailed,
+            subject_id: match self {
+                Self::Install { child_name, .. } => child_name.clone(),
+                Self::Sync { request, .. } => request.source_id.clone(),
+            },
+            resource_id: "registry".into(),
+            policy_revision: None,
+            grants_revision: None,
+            outcome: ObservationOutcome::Failed,
+            source_plane: SourcePlane::Storage,
+            safe_message: "registry storage effect failed".into(),
+        })
+    }
+
+    fn apply(&self, state_path: &Path) -> Result<serde_json::Value> {
+        match self {
+            Self::Install { request, .. } => {
+                Ok(serde_json::to_value(install_verified_child_package(
+                    &request.source_dir,
+                    &request.expected_children_dir,
+                    request.replace,
+                )?)?)
+            }
+            Self::Sync { request, .. } => {
+                let state = MctRuntimeStateStore::open(state_path)?;
+                Ok(serde_json::to_value(sync_child_registry_source(
+                    &state,
+                    request.source_id.clone(),
+                    &request.expected_children_dir,
+                    if request.strict_integrity {
+                        MctChildIntegrityMode::RequireSidecars
+                    } else {
+                        MctChildIntegrityMode::AuditOnly
+                    },
+                    MctOperatorChildScope::default(),
+                )?)?)
+            }
+        }
+    }
+
+    fn success_observation(&self) -> MctObservation {
+        mutation_observation(MutationObservationFact {
+            namespace: "registry-storage-success",
+            kind: ObservationKind::StorageAppendSucceeded,
+            subject_id: match self {
+                Self::Install { child_name, .. } => child_name.clone(),
+                Self::Sync { request, .. } => request.source_id.clone(),
+            },
+            resource_id: "registry".into(),
+            policy_revision: None,
+            grants_revision: None,
+            outcome: ObservationOutcome::Completed,
+            source_plane: SourcePlane::Storage,
+            safe_message: "registry storage effect completed".into(),
+        })
+    }
+}
+
+async fn execute_resident_registry_mutation(
+    children_dir: &Path,
+    state_path: &Path,
+    ledger: &ResidentLedgerWriter,
+    path: &str,
+    body: &[u8],
+) -> MctControlPlaneResponse {
+    let prepared = match prepare_registry_mutation(children_dir, state_path, path, body) {
+        Ok(prepared) => prepared,
+        Err(_) => {
+            return peer_mutation_response(
+                400,
+                serde_json::json!({"error": "registry mutation rejected"}),
+            );
+        }
+    };
+    if ledger
+        .append(prepared.decision_observations())
+        .await
+        .is_err()
+    {
+        return peer_mutation_response(
+            500,
+            serde_json::json!({"error": "registry decision was not durable"}),
+        );
+    }
+    match prepared.apply(state_path) {
+        Ok(value) => {
+            if ledger
+                .append(vec![prepared.success_observation()])
+                .await
+                .is_err()
+            {
+                return peer_mutation_response(
+                    500,
+                    serde_json::json!({"error": "registry success observation was not durable"}),
+                );
+            }
+            peer_mutation_response(200, value)
+        }
+        Err(_) => {
+            let _ = ledger.append(vec![prepared.failure_observation()]).await;
+            peer_mutation_response(
+                500,
+                serde_json::json!({"error": "registry storage effect failed"}),
+            )
+        }
+    }
+}
+
+pub(super) fn execute_offline_registry_mutation(
+    children_dir: &Path,
+    state_path: &Path,
+    ledger_path: &Path,
+    path: &str,
+    body: &[u8],
+) -> Result<serde_json::Value> {
+    let mut ledger = JsonlObservationLedger::open(ledger_path, "ledger-local", "local-mct")
+        .with_context(|| {
+            format!(
+                "acquire exclusive observation ledger writer lock at {}",
+                ledger_path.display()
+            )
+        })?;
+    let prepared = prepare_registry_mutation(children_dir, state_path, path, body)?;
+    ledger.append_batch_before_effect(
+        prepared.decision_observations(),
+        mct_daemon::current_timestamp_string(),
+    )?;
+    match prepared.apply(state_path) {
+        Ok(value) => {
+            ledger.append_batch_before_effect(
+                [prepared.success_observation()],
+                mct_daemon::current_timestamp_string(),
+            )?;
+            Ok(value)
+        }
+        Err(error) => {
+            ledger.append_batch_before_effect(
+                [prepared.failure_observation()],
+                mct_daemon::current_timestamp_string(),
+            )?;
+            Err(error)
+        }
+    }
+}
+
+fn resident_mutation_handler(
     configured_path: PathBuf,
     children_dir: PathBuf,
+    state_path: Option<PathBuf>,
     ledger: ResidentLedgerWriter,
 ) -> mct_daemon::MctUdsControlMutationHandler {
     mct_daemon::MctUdsControlMutationHandler::new(move |path, body| {
         let configured_path = configured_path.clone();
         let children_dir = children_dir.clone();
+        let state_path = state_path.clone();
         let ledger = ledger.clone();
         async move {
-            if path.starts_with("/children/") {
+            if path == "/blobs" {
+                match state_path {
+                    Some(state_path) => {
+                        execute_resident_blob_mutation(&state_path, &ledger, &body).await
+                    }
+                    None => peer_mutation_response(
+                        404,
+                        serde_json::json!({"error": "blob ingest unavailable"}),
+                    ),
+                }
+            } else if path.starts_with("/registry/") {
+                match state_path {
+                    Some(state_path) => {
+                        execute_resident_registry_mutation(
+                            &children_dir,
+                            &state_path,
+                            &ledger,
+                            &path,
+                            &body,
+                        )
+                        .await
+                    }
+                    None => peer_mutation_response(
+                        404,
+                        serde_json::json!({"error": "registry mutation unavailable"}),
+                    ),
+                }
+            } else if path.starts_with("/children/") {
                 execute_resident_child_mutation(
                     &configured_path,
                     &children_dir,
@@ -725,6 +1217,24 @@ pub(super) fn resident_authority_mutation_handler(
             }
         }
     })
+}
+
+#[cfg(test)]
+pub(super) fn resident_authority_mutation_handler(
+    configured_path: PathBuf,
+    children_dir: PathBuf,
+    ledger: ResidentLedgerWriter,
+) -> mct_daemon::MctUdsControlMutationHandler {
+    resident_mutation_handler(configured_path, children_dir, None, ledger)
+}
+
+pub(super) fn resident_observed_mutation_handler(
+    configured_path: PathBuf,
+    children_dir: PathBuf,
+    state_path: PathBuf,
+    ledger: ResidentLedgerWriter,
+) -> mct_daemon::MctUdsControlMutationHandler {
+    resident_mutation_handler(configured_path, children_dir, Some(state_path), ledger)
 }
 
 pub(super) fn execute_offline_child_mutation(
@@ -950,10 +1460,9 @@ pub(super) async fn run_control_serve_uds_with_state(
     );
     let snapshot_source = ControlSnapshotSource::open(&state_path);
     loop {
-        mct_daemon::serve_uds_control_once_with_snapshot_result_and_blob_store(
+        mct_daemon::serve_uds_control_once_with_snapshot_result(
             &listener,
             control_snapshot(&snapshot_source).await,
-            Some(&state_path),
         )
         .await?;
     }
@@ -979,7 +1488,8 @@ pub(super) async fn run_control_serve_uds_with_state_until(
         socket_path.display()
     );
     let snapshot_source = ControlSnapshotSource::open_with_status(&state_path, status_source);
-    let mutation_handler = resident_authority_mutation_handler(config_path, children_dir, ledger);
+    let mutation_handler =
+        resident_observed_mutation_handler(config_path, children_dir, state_path.clone(), ledger);
     loop {
         tokio::select! {
             _ = shutdown.recv() => break,
@@ -1570,6 +2080,268 @@ mod tests {
         .await;
         assert_eq!(status, 500);
         assert!(!config_path.exists());
+    }
+
+    #[tokio::test]
+    async fn live_registry_install_and_sync_are_observed_before_storage_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let source_dir = dir.path().join("package");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let socket_path = dir.path().join("control.sock");
+        crate::resident::tests::write_resident_process_child(&source_dir);
+        let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let handler = resident_observed_mutation_handler(
+            config_path,
+            children_dir.clone(),
+            state_path.clone(),
+            ledger.clone(),
+        );
+
+        let (install_status, install_response) = post_mutation(
+            Arc::clone(&listener),
+            handler.clone(),
+            &socket_path,
+            "/registry/install",
+            serde_json::json!({
+                "expected_children_dir": children_dir,
+                "source_dir": source_dir.join("resident-echo"),
+                "replace": false
+            }),
+        )
+        .await;
+        assert_eq!(install_status, 200, "{install_response}");
+        assert!(children_dir.join("resident-echo").exists());
+
+        let (sync_status, sync_response) = post_mutation(
+            Arc::clone(&listener),
+            handler.clone(),
+            &socket_path,
+            "/registry/sync",
+            serde_json::json!({
+                "expected_children_dir": children_dir,
+                "expected_state_path": state_path,
+                "source_id": "resident-registry",
+                "strict_integrity": false
+            }),
+        )
+        .await;
+        assert_eq!(sync_status, 200, "{sync_response}");
+        assert_eq!(
+            MctRuntimeStateStore::open(&state_path)
+                .unwrap()
+                .summary()
+                .unwrap()
+                .artifacts,
+            1,
+            "{sync_response}"
+        );
+        drop(handler);
+        ledger.close().await;
+
+        let entries =
+            JsonlObservationLedger::open_read_only(ledger_path, "ledger-local", "local-mct")
+                .unwrap()
+                .entries()
+                .unwrap();
+        assert!(
+            entries
+                .iter()
+                .all(|entry| { entry.durability_class == DurabilityClass::BeforeEffect })
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|entry| { entry.observation.kind == ObservationKind::ArtifactVerified })
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|entry| { entry.observation.kind == ObservationKind::StorageAppendSucceeded })
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|entry| { entry.observation.kind == ObservationKind::OperatorActionRecorded })
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_append_failure_prevents_install_and_offline_lock_contention_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let source_parent = dir.path().join("package");
+        let source_dir = source_parent.join("resident-echo");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let socket_path = dir.path().join("control.sock");
+        crate::resident::tests::write_resident_process_child(&source_parent);
+        let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        drop(receiver);
+        let handler = resident_observed_mutation_handler(
+            config_path,
+            children_dir.clone(),
+            state_path.clone(),
+            ResidentLedgerWriter { sender },
+        );
+        let request = RegistryInstallRequest {
+            expected_children_dir: children_dir.clone(),
+            source_dir: source_dir.clone(),
+            replace: false,
+        };
+        let (status, _) = post_mutation(
+            listener,
+            handler,
+            &socket_path,
+            "/registry/install",
+            serde_json::to_value(&request).unwrap(),
+        )
+        .await;
+        assert_eq!(status, 500);
+        assert!(!children_dir.join("resident-echo").exists());
+
+        let _lock =
+            JsonlObservationLedger::open(&ledger_path, "ledger-local", "local-mct").unwrap();
+        let error = execute_offline_registry_mutation(
+            &children_dir,
+            &state_path,
+            &ledger_path,
+            "/registry/install",
+            &serde_json::to_vec(&request).unwrap(),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("writer lock"));
+        assert!(!children_dir.join("resident-echo").exists());
+    }
+
+    #[tokio::test]
+    async fn resident_blob_ingest_observes_success_and_typed_rejections_without_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let socket_path = dir.path().join("control.sock");
+        let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let handler = resident_observed_mutation_handler(
+            config_path,
+            children_dir,
+            state_path.clone(),
+            ledger.clone(),
+        );
+        let payload = b"storage-secret-payload";
+        let digest = blake3::hash(payload).to_hex().to_string();
+
+        let requests = [
+            serde_json::json!({
+                "digest": digest,
+                "size_bytes": payload.len(),
+                "content_type": "application/octet-stream",
+                "classification": "secret",
+                "bytes_base64": BASE64_STANDARD.encode(payload)
+            }),
+            serde_json::json!({
+                "digest": "0".repeat(64),
+                "size_bytes": payload.len(),
+                "content_type": "application/octet-stream",
+                "classification": "secret",
+                "bytes_base64": BASE64_STANDARD.encode(payload)
+            }),
+            serde_json::json!({
+                "digest": "0".repeat(64),
+                "size_bytes": MCT_BLOB_MAX_BYTES as u64 + 1,
+                "content_type": "application/octet-stream",
+                "classification": "secret",
+                "bytes_base64": ""
+            }),
+        ];
+        let expected_statuses = [201, 400, 413];
+        for (body, expected_status) in requests.into_iter().zip(expected_statuses) {
+            let (status, response) = post_mutation(
+                Arc::clone(&listener),
+                handler.clone(),
+                &socket_path,
+                "/blobs",
+                body,
+            )
+            .await;
+            assert_eq!(status, expected_status, "{response}");
+        }
+        drop(handler);
+        ledger.close().await;
+
+        let store = local_blob_store_for_state_path(&state_path);
+        assert!(store.visible_path(&digest).unwrap().exists());
+        assert!(!store.visible_path(&"0".repeat(64)).unwrap().exists());
+        let entries =
+            JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
+                .unwrap()
+                .entries()
+                .unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.observation.kind)
+                .collect::<Vec<_>>(),
+            vec![
+                ObservationKind::AdapterEffectStarted,
+                ObservationKind::StorageAppendSucceeded,
+                ObservationKind::StorageAppendFailed,
+                ObservationKind::StorageAppendFailed,
+            ]
+        );
+        let ledger_text = std::fs::read_to_string(ledger_path).unwrap();
+        assert!(ledger_text.contains("digest_mismatch"));
+        assert!(ledger_text.contains("oversize"));
+        assert!(!ledger_text.contains("storage-secret-payload"));
+        assert!(!ledger_text.contains(&BASE64_STANDARD.encode(payload)));
+    }
+
+    #[tokio::test]
+    async fn resident_blob_append_failure_leaves_no_visible_cas_object() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let socket_path = dir.path().join("control.sock");
+        let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        drop(receiver);
+        let handler = resident_observed_mutation_handler(
+            config_path,
+            children_dir,
+            state_path.clone(),
+            ResidentLedgerWriter { sender },
+        );
+        let payload = b"not-visible";
+        let digest = blake3::hash(payload).to_hex().to_string();
+        let (status, _) = post_mutation(
+            listener,
+            handler,
+            &socket_path,
+            "/blobs",
+            serde_json::json!({
+                "digest": digest,
+                "size_bytes": payload.len(),
+                "content_type": "application/octet-stream",
+                "classification": "private",
+                "bytes_base64": BASE64_STANDARD.encode(payload)
+            }),
+        )
+        .await;
+        assert_eq!(status, 500);
+        assert!(
+            !local_blob_store_for_state_path(state_path)
+                .visible_path(&digest)
+                .unwrap()
+                .exists()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

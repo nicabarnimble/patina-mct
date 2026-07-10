@@ -2033,3 +2033,131 @@ error: could not compile `mct-daemon` (bin "mct-daemon") due to 1 previous error
 warning: build failed, waiting for other jobs to finish...
 error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 1 previous error
 ```
+
+Expected red compile after adding observed blob regressions:
+
+```text
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0425]: cannot find function `resident_observed_mutation_handler` in this scope
+    --> crates/mct-daemon/src/daemon/control.rs:1585:23
+     |
+ 391 | / pub(super) fn resident_peer_mutation_handler(
+ 392 | |     configured_path: PathBuf,
+ 393 | |     ledger: ResidentLedgerWriter,
+ 394 | | ) -> mct_daemon::MctUdsControlMutationHandler {
+...    |
+ 399 | |     })
+ 400 | | }
+     | |_- similarly named function `resident_peer_mutation_handler` defined here
+...
+1585 |           let handler = resident_observed_mutation_handler(
+     |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: a function with a similar name exists
+     |
+1585 -         let handler = resident_observed_mutation_handler(
+1585 +         let handler = resident_peer_mutation_handler(
+     |
+
+error[E0425]: cannot find function `resident_observed_mutation_handler` in this scope
+    --> crates/mct-daemon/src/daemon/control.rs:1672:23
+     |
+ 391 | / pub(super) fn resident_peer_mutation_handler(
+ 392 | |     configured_path: PathBuf,
+ 393 | |     ledger: ResidentLedgerWriter,
+ 394 | | ) -> mct_daemon::MctUdsControlMutationHandler {
+...    |
+ 399 | |     })
+ 400 | | }
+     | |_- similarly named function `resident_peer_mutation_handler` defined here
+...
+1672 |           let handler = resident_observed_mutation_handler(
+     |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: a function with a similar name exists
+     |
+1672 -         let handler = resident_observed_mutation_handler(
+1672 +         let handler = resident_peer_mutation_handler(
+     |
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 2 previous errors
+```
+
+Expected red registry mutation regression before route implementation:
+
+```text
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.27s
+     Running unittests src/main.rs (target/debug/deps/mct_daemon-701d058281c133f0)
+
+running 1 test
+test control::tests::live_registry_install_and_sync_are_observed_before_storage_effects ... FAILED
+
+failures:
+
+---- control::tests::live_registry_install_and_sync_are_observed_before_storage_effects stdout ----
+
+thread 'control::tests::live_registry_install_and_sync_are_observed_before_storage_effects' (1273523) panicked at crates/mct-daemon/src/daemon/control.rs:1792:9:
+assertion `left == right` failed: {"error":"peer mutation rejected"}
+  left: 400
+ right: 200
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    control::tests::live_registry_install_and_sync_are_observed_before_storage_effects
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 53 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
+Registry integration fixture initially requested strict re-verification after the existing installer intentionally copied only installable package files, so sync recorded zero candidates:
+
+```text
+running 1 test
+test control::tests::live_registry_install_and_sync_are_observed_before_storage_effects ... FAILED
+
+failures:
+
+---- control::tests::live_registry_install_and_sync_are_observed_before_storage_effects stdout ----
+
+thread 'control::tests::live_registry_install_and_sync_are_observed_before_storage_effects' (1275191) panicked at crates/mct-daemon/src/daemon/control.rs:2132:9:
+assertion `left == right` failed
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    control::tests::live_registry_install_and_sync_are_observed_before_storage_effects
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 53 filtered out; finished in 0.09s
+
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
+The corrected assertion exposed that the fixture passed the package parent rather than the package root, producing a nested install that registry discovery correctly ignored:
+
+```text
+assertion `left == right` failed: {"failed":0,"load_report":{"children":[],"children_dir":".../children","discovered":0,"failed":0,"failures":[],"loaded":0},"loaded":0,"source_id":"resident-registry","source_path":".../children"}
+  left: 0
+ right: 1
+```
+
+Deterministic Clippy finding after resident wiring moved to the storage-capable handler:
+
+```text
+error: function `resident_authority_mutation_handler` is never used
+    --> crates/mct-daemon/src/daemon/control.rs:1222:15
+     |
+1222 | pub(super) fn resident_authority_mutation_handler(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `-D dead-code` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: could not compile `mct-daemon` (bin "mct-daemon") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+```
