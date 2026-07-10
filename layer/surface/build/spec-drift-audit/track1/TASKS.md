@@ -1532,3 +1532,82 @@ Both slice commits passed the required workspace tests, Clippy with `-D warnings
 Flakes: none. Expected red compile/test failures and deterministic integration corrections are captured verbatim above.
 
 A8 is fixed in `fd3cd3d`; A5 now covers resident and standalone serving. Slices 4–6 remain untouched. Stop after S3.2.
+
+# Slice 4 — observed child authority, identity, and storage mutations
+
+Starting state: `patina` at `86ea6d5` (`docs: close peer call lifecycle observations`), clean tree. Allium 3.5.0 check returned no diagnostics or findings. The operator resolved the identity fork as offline-only: a bound Mother never changes identity; first bootstrap and stopped-daemon administration hold the one ledger writer and durably record public identity before key/config effects.
+
+## S4.1 mutation enumeration and mechanism specification
+
+### Complete daemon/CLI mutation enumeration
+
+| Command or path | Mutation | Disposition |
+|---|---|---|
+| `children approve` | child approval plus active assignment in config | **observed-in-this-slice** through live resident UDS or lock-protected offline execution |
+| `children revoke` | child approval plus assignment revocation in config | **observed-in-this-slice** through live resident UDS or lock-protected offline execution |
+| resident first identity bootstrap | local node identity config and, when absent, node secret-key file | **observed-in-this-slice, offline-only bootstrap ordering**: open resident writer, append public identity fact, then write key/config |
+| `iroh identity` | local node identity config and, when absent, node secret-key file | **observed-in-this-slice, offline-only**: connected resident refuses; unavailable UDS permits exclusive-lock execution |
+| `registry install` | verified child package publication/replacement under the children directory | **observed-in-this-slice** through resident UDS or lock-protected offline execution |
+| `registry sync` | verified/rejected artifact candidates and registry-source status in runtime state | **observed-in-this-slice** through resident UDS or lock-protected offline execution |
+| `toys authorize-slate` | canonical toy-contract and scoped ToyGrant snapshots in runtime state | **observed-in-this-slice** through resident UDS or lock-protected offline execution |
+| `toys authorize-secret` | secrets toy contract and scoped ToyGrant snapshot in runtime state | **observed-in-this-slice** through resident UDS or lock-protected offline execution |
+| `pando record` | operator-authored composition plan in runtime state | **observed-in-this-slice** through resident UDS or lock-protected offline execution |
+| UDS `POST /blobs` | content-addressed blob publication | **observed-in-this-slice**, resident UDS only; there is no offline blob CLI/path |
+| `peers add`, `set-outbound-proof`, `revoke`, `remove` | peer authority config | **already observed** in `393884f` through the same resident/offline seam |
+| `children warmup`, `children reload` | projected authority records and child instance generations in runtime state | **already observed** by their child approval/assignment/lifecycle report observations; reload effect ordering remains A7/Slice 5 |
+| `process call`, `wasm call`, `wasm call-wit`, `slate list-work`, resident calls, and standalone Iroh serving | run state, invocation state, and adapter effects | **already observed** by before-effect authority observations and typed runtime/toy/serve lifecycle observations (Slices 1–3 included) |
+| `iroh call`, `iroh call-peer`, JVM call ingress | call/transport/runtime effects | **already observed** by their call, authority, transport, route, result, and runtime facts |
+| `children load` | filesystem discovery only; no config, authority, CAS, or runtime-state write | **justified out-of-scope** pure read/discovery projection |
+| `children approvals`, `peers list`, `registry/federation/state/runs/metrics` read surfaces | none | **justified out-of-scope** pure reads/projections |
+| control socket/identity-file cleanup and test-fixture filesystem writes | transport lifecycle or tests, not product authority/storage commands | **justified out-of-scope** |
+
+There is no independent child-assignment command, toy-grant revoke command, general policy editor, or blob CLI. Public config/state methods without a daemon or CLI command caller are not additional command paths.
+
+### UDS commands, budgets, and safe facts
+
+All JSON mutation bodies are bounded to 64 KiB except `/blobs`, whose existing bounded HTTP read budget accommodates the 8 MiB decoded blob cap. Every request names the expected resident-owned path(s); a mismatch is rejected rather than mutating a different store.
+
+| UDS route | Request facts | Typed observation mapping and safe facts |
+|---|---|---|
+| `POST /children/approve` | expected config/children paths, child name, strict-integrity flag | `ChildApproved` and `ChildAssigned`; child, artifact and assignment ids, policy revision |
+| `POST /children/revoke` | expected config path, child name | `ChildRevoked` and `ChildAssignmentRevoked`; child, artifact and assignment ids, policy revision |
+| `POST /identity/ensure` | none accepted for mutation while resident is bound | connected resident returns conflict: `stop the daemon to create or rotate identity`; no fallback or effect |
+| `POST /registry/install` | expected children path, verified package source path, replace flag | `ArtifactVerified` before publication; `StorageAppendSucceeded` after publication or `StorageAppendFailed` on apply failure; child, artifact id/version and destination only |
+| `POST /registry/sync` | expected state/children paths, source id, strict-integrity flag | `ArtifactVerified`/`ArtifactRejected` for discovered packages plus `OperatorActionRecorded`; source, child/artifact ids, counts; no package bytes |
+| `POST /toys/authorize-slate` | expected config/state/children paths, child, project root | one `ToyGrantAllowed` per grant before snapshots; child, toy/grant/resource ids and policy/grants revisions |
+| `POST /toys/authorize-secret` | expected config/state/children paths, child, secret name | `ToyGrantAllowed`; child, toy/grant ids and revisions; the secret name may be a scoped resource id but no secret value or key material is recorded |
+| `POST /pando/record` | expected state path, composition id and typed steps | `OperatorActionRecorded`; composition id and step count, without step payloads |
+| `POST /blobs` | digest, declared size, content type/classification, base64 transport body | `AdapterEffectStarted` before CAS publication, then `StorageAppendSucceeded`; validation rejection uses `StorageAppendFailed` with typed reason (`digest_mismatch`, `size_mismatch`, `oversize`, invalid encoding/digest/content type) |
+
+Identity uses `OperatorActionRecorded` with node id as subject and public endpoint/public-key identity as resource. It never records secret key bytes, hex/base64 encodings, file contents, or private-key material. Other observations likewise omit payload bytes, base64 bodies, package contents, peer proofs, and secrets.
+
+### Ordering and failures
+
+Each resident handler performs: bound and decode → validate against current stores/filesystem → construct typed decision facts → await the resident writer's `BeforeEffect` acknowledgement → apply the config/state/storage replacement → append a typed success effect where required → return success. A decision append failure leaves config/state/CAS/package visibility untouched. An apply failure after the durable decision appends `StorageAppendFailed` or failed `OperatorActionRecorded` and returns failure; it never reports success.
+
+Offline-capable CLI commands first attempt the resident UDS. A connected response, including rejection, is authoritative and never falls back. Connection failure alone permits opening `JsonlObservationLedger` as exclusive writer; the lock is held across validation, decision append, effect, and failure/success append. Contention refuses without mutation. Blob ingest has no offline path.
+
+Resident bootstrap is the identity exception to UDS dispatch because no endpoint is bound yet: `ResidentLedgerWriter::spawn` does not consume identity facts (it opens fixed local ledger identity `ledger-local`/`local-mct`), so there is no circularity. Bootstrap opens the writer first, prepares or reads key material in memory, appends the public identity decision, then writes a new key if needed and replaces config. Append failure aborts startup before either file exists. `iroh identity` follows the same preparation under the offline writer lock. Live node identity rotation is not implemented.
+
+### Mutation visibility
+
+Resident child candidate sourcing calls `authorize_resident_child_blocking` for each call. That function reloads `MctDaemonConfigStore` from the same `config_path`, reloads children from the same `children_dir`, and derives `authority_projection_for_loaded_children`; there is no approval or assignment cache. Toy authorization likewise opens the same runtime state for current grant snapshots. Therefore a successful UDS response follows store replacement, and the immediately following call sees approval, revocation, package, and grant changes. Since decision appends precede replacement, effects cannot become authoritative before their facts.
+
+### Out of scope
+
+- A7/Slice 5 child generation reload ordering.
+- A3/Slice 6 idempotency.
+- Operator identity/authentication beyond UDS filesystem permissions (C1 future).
+- New observation kinds beyond those required above.
+- Live node identity rotation; it requires endpoint rebind and peer re-admission design and is recorded in the ROADMAP standing backlog.
+
+## Slice 4 checklist
+
+- [x] Enumerate every daemon/CLI mutation path and assign a disposition.
+- [ ] Land failing child-authority, identity, storage, and additional-subsystem regressions before each implementation seam.
+- [ ] Implement child authority plus offline-only identity ordering.
+- [ ] Implement observed blob and registry storage mutations.
+- [ ] Implement observed toy-grant and composition-state administration.
+- [ ] Mark A6 fully fixed, validate each commit, and stop after S4.2.
+
+## Slice 4 failure log
