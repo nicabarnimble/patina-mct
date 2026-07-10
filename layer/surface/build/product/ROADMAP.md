@@ -116,6 +116,7 @@ Dependency-ordered; each item assumes the ones before it.
 ### Standing backlog (from the audit arc, non-blocking)
 
 - [x] `main.rs` CLI decomposition substantially addressed by Track 1 slice S2.5: binary-local CLI, control, ingress, and resident modules now own implementation and inline integration tests. `main.rs` intentionally retains entrypoint dispatch wiring, argument-token helpers, default paths, and help text.
+- [ ] Live node identity rotation — requires endpoint rebind plus peer re-admission design. Track 1 Slice 4 intentionally makes identity creation/rotation offline-only and refuses mutation while a resident endpoint is bound.
 - [ ] Consolidate the concurrent and single-connection Iroh call-serving branches behind one reviewed lifecycle routine without weakening the mandatory observation sink or malformed fail-closed ordering; Slice 3 intentionally made both public paths correct before attempting that behavior-owning refactor.
 - [ ] Property-based tests for ALPN intersection and payload validation.
 - [ ] Per-connection hello state (subsumed by item 1).

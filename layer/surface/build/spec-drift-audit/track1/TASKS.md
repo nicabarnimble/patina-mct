@@ -1604,11 +1604,11 @@ Resident child candidate sourcing calls `authorize_resident_child_blocking` for 
 ## Slice 4 checklist
 
 - [x] Enumerate every daemon/CLI mutation path and assign a disposition.
-- [ ] Land failing child-authority, identity, storage, and additional-subsystem regressions before each implementation seam.
-- [ ] Implement child authority plus offline-only identity ordering.
-- [ ] Implement observed blob and registry storage mutations.
-- [ ] Implement observed toy-grant and composition-state administration.
-- [ ] Mark A6 fully fixed, validate each commit, and stop after S4.2.
+- [x] Land failing child-authority, identity, storage, and additional-subsystem regressions before each implementation seam.
+- [x] Implement child authority plus offline-only identity ordering.
+- [x] Implement observed blob and registry storage mutations.
+- [x] Implement observed toy-grant and composition-state administration.
+- [x] Mark A6 fully fixed, validate each commit, and stop after S4.2.
 
 ## Slice 4 failure log
 
@@ -2258,3 +2258,41 @@ layer/surface/build/spec-drift-audit/track1/TASKS.md:2212: trailing whitespace.
 +connection: close
 layer/surface/build/spec-drift-audit/track1/TASKS.md:2213: trailing whitespace.
 ```
+
+## S4.2 implementation record
+
+### Commits
+
+- `746a06e` — `docs: specify observed authority and storage mutations`
+- `3b1fa34` — `fix(daemon): observe child and node authority mutations`
+- `abe3eb1` — `fix(daemon): observe registry and blob storage effects`
+- `57c6b21` — `fix(daemon): observe grant and state administration`
+- `0fb06c3` — `fix(control): require observed blob mutation owner`
+
+### Ordering outcome
+
+The resident UDS mutation owner now dispatches peer, child, registry, toy-grant, composition, and blob operations through the one `ResidentLedgerWriter`. The command validates expected paths and current authority, constructs typed facts, awaits `BeforeEffect` acknowledgement, applies the config/state/filesystem effect, and only then returns success. CLI mutation families attempt that UDS owner first; connection failure alone permits the matching in-process operation while holding the exclusive `JsonlObservationLedger` writer lock. A connected rejection remains authoritative.
+
+Child approve writes `ChildApproved` plus `ChildAssigned`; revoke writes `ChildRevoked` plus `ChildAssignmentRevoked`. Registry install/sync use artifact/operator decisions and storage completion/failure facts. Slate and secret authorization write one `ToyGrantAllowed` fact per grant before contract/grant snapshots. Composition record writes `OperatorActionRecorded` before its state record. Blob ingest records `AdapterEffectStarted` before CAS publication and `StorageAppendSucceeded` before its success reply; malformed, digest-mismatched, size-mismatched, and oversized requests record `StorageAppendFailed` with typed safe reasons. The legacy handler-less blob path now refuses rather than publishing without a ledger owner.
+
+Identity is offline-only. Resident bootstrap opens `ResidentLedgerWriter` first (the ledger uses fixed local ledger/mother identifiers and has no identity dependency), prepares the public endpoint identity in memory, durably appends `OperatorActionRecorded`, and only then writes a new key/config. The offline CLI uses the same exclusive lock ordering. A connected resident returns `stop the daemon to create or rotate identity` and the CLI never falls back. Ledger assertions exclude private-key hex, payload text/base64, package contents, peer proofs, and secret values.
+
+### Composition evidence
+
+`live_child_revocation_is_visible_to_the_immediately_following_route` first authorizes `resident-echo`, revokes its approval/assignment through the live UDS handler, and immediately calls `authorize_resident_child_blocking` again. That path reloads the same config and children directories. The next route is denied with `CandidateEliminated` carrying `ChildNotApproved`; the ledger already contains ordered `ChildRevoked` and `ChildAssignmentRevoked` `BeforeEffect` entries. The correction also separates loaded-instance readiness from approval state in config projection, so revocation remains an authority denial rather than being collapsed into temporal unavailability.
+
+### Failure and lock evidence
+
+- `child_append_failure_prevents_config_effect`, `resident_blob_append_failure_leaves_no_visible_cas_object`, `registry_append_failure_prevents_install_and_offline_lock_contention_refuses`, `administrative_append_failure_and_offline_lock_contention_prevent_state_effects`, and `bootstrap_identity_append_failure_leaves_no_identity_effect` prove per-subsystem append failure prevents protected effects.
+- `offline_child_and_identity_mutations_hold_the_writer_lock_and_hide_secrets`, the registry lock test, and the administrative lock test prove contention refuses without mutation.
+- `live_resident_refuses_identity_rotation_without_offline_fallback` proves the bound-endpoint exception.
+- `resident_blob_ingest_observes_success_and_typed_rejections_without_bytes` proves success, digest mismatch, and oversize facts plus CAS invisibility for rejected objects.
+- `uds_blob_ingest_requires_an_observing_mutation_owner` proves no sinkless CAS route remains.
+
+### Validation and flakes
+
+Every Slice 4 commit passed `cargo test --workspace`, workspace/all-target Clippy with `-D warnings`, and `./scripts/ci-tier0.sh`. Final implementation validation passed **278 tests** (278 passed, 0 ignored), and Allium check returned empty diagnostics/findings.
+
+Flakes: none. Expected red tests, deterministic compile/Clippy findings, fixture corrections, and the CRLF `git diff --check` refusal are captured verbatim above.
+
+A6 is fully fixed. A7/Slice 5 and A3/Slice 6 remain untouched. Live node identity rotation is recorded in the ROADMAP and requires endpoint rebind plus peer re-admission design. Stop after S4.2.
