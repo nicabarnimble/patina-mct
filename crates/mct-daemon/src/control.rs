@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use mct_iroh::MotherIrohEndpointSnapshot;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::{future::Future, path::Path, pin::Pin, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -117,6 +117,38 @@ struct MctBlobIngestRequest {
 }
 
 const MCT_UDS_CONTROL_READ_BUDGET_BYTES: usize = MCT_BLOB_MAX_BYTES.div_ceil(3) * 4 + 4096;
+
+#[cfg(unix)]
+type MctUdsControlMutationFuture =
+    Pin<Box<dyn Future<Output = MctControlPlaneResponse> + Send + 'static>>;
+
+#[cfg(unix)]
+type MctUdsControlMutationCallback =
+    dyn Fn(String, Vec<u8>) -> MctUdsControlMutationFuture + Send + Sync + 'static;
+
+/// Local-only extension point for binary-owned UDS mutation handlers.
+#[cfg(unix)]
+#[derive(Clone)]
+pub struct MctUdsControlMutationHandler {
+    callback: Arc<MctUdsControlMutationCallback>,
+}
+
+#[cfg(unix)]
+impl MctUdsControlMutationHandler {
+    pub fn new<F, Fut>(callback: F) -> Self
+    where
+        F: Fn(String, Vec<u8>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = MctControlPlaneResponse> + Send + 'static,
+    {
+        Self {
+            callback: Arc::new(move |path, body| Box::pin(callback(path, body))),
+        }
+    }
+
+    async fn handle(&self, path: String, body: Vec<u8>) -> MctControlPlaneResponse {
+        (self.callback)(path, body).await
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MctControlPlaneAuthPolicy {
@@ -306,6 +338,22 @@ pub async fn serve_uds_control_once_with_snapshot_result_and_blob_store(
     snapshot: MctControlPlaneSnapshotResult,
     blob_state_path: Option<&Path>,
 ) -> Result<()> {
+    serve_uds_control_once_with_snapshot_result_blob_store_and_mutations(
+        listener,
+        snapshot,
+        blob_state_path,
+        None,
+    )
+    .await
+}
+
+#[cfg(unix)]
+pub async fn serve_uds_control_once_with_snapshot_result_blob_store_and_mutations(
+    listener: &UnixListener,
+    snapshot: MctControlPlaneSnapshotResult,
+    blob_state_path: Option<&Path>,
+    mutation_handler: Option<&MctUdsControlMutationHandler>,
+) -> Result<()> {
     let (mut stream, _) = listener.accept().await.context("accept uds control")?;
     let request_bytes = read_http_request_bounded(&mut stream, MCT_UDS_CONTROL_READ_BUDGET_BYTES)
         .await
@@ -317,6 +365,13 @@ pub async fn serve_uds_control_once_with_snapshot_result_and_blob_store(
         match blob_state_path {
             Some(state_path) => handle_blob_ingest_request(&request_bytes, state_path),
             None => json_response(404, serde_json::json!({"error": "not found"})),
+        }
+    } else if method == "POST"
+        && let Some(handler) = mutation_handler
+    {
+        match request_body(&request_bytes) {
+            Ok(body) => handler.handle(path.to_owned(), body.to_vec()).await,
+            Err(error) => json_response(400, serde_json::json!({"error": error.to_string()})),
         }
     } else {
         handle_control_plane_path_result_with_auth(
@@ -598,6 +653,68 @@ mod tests {
         );
         assert!(!response.body.contains("control blob bytes"));
         assert!(!response.body.contains(&BASE64_STANDARD.encode(bytes)));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn uds_local_mutation_handler_receives_post_body() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("control.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let called = Arc::new(AtomicBool::new(false));
+        let callback_called = Arc::clone(&called);
+        let handler = MctUdsControlMutationHandler::new(move |path, body| {
+            let callback_called = Arc::clone(&callback_called);
+            async move {
+                callback_called.store(true, Ordering::SeqCst);
+                assert_eq!(path, "/peers/revoke");
+                assert_eq!(body, br#"{"peer":"mother-b"}"#);
+                MctControlPlaneResponse {
+                    status_code: 200,
+                    content_type: "application/json".into(),
+                    body: r#"{"status":"ok"}"#.into(),
+                }
+            }
+        });
+        let server = tokio::spawn(async move {
+            serve_uds_control_once_with_snapshot_result_blob_store_and_mutations(
+                &listener,
+                Ok(snapshot()),
+                None,
+                Some(&handler),
+            )
+            .await
+            .unwrap();
+        });
+        let mut client = tokio::net::UnixStream::connect(socket_path).await.unwrap();
+        let body = r#"{"peer":"mother-b"}"#;
+        client
+            .write_all(
+                format!(
+                    "POST /peers/revoke HTTP/1.1\r\nHost: local\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        server.await.unwrap();
+
+        assert!(called.load(Ordering::SeqCst));
+        assert!(
+            String::from_utf8(response)
+                .unwrap()
+                .starts_with("HTTP/1.1 200")
+        );
     }
 
     #[test]

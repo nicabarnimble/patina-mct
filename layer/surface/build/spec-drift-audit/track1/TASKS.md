@@ -827,3 +827,42 @@ Peer mutation commands accept `--uds` (default `.mct/control.sock`) and `--ledge
 - [x] Record the UDS, ordering, visibility, and offline-lock mechanism.
 - [ ] Land failing regression tests and implementation.
 - [ ] Mark the peer-authority portion of A6 fixed; leave slice 4 remainder open.
+
+## Slice 2b failure log
+
+Expected red compile before the UDS mutation callback seam existed:
+
+```text
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0433]: cannot find type `MctUdsControlMutationHandler` in this scope
+   --> crates/mct-daemon/src/control.rs:617:23
+    |
+617 |         let handler = MctUdsControlMutationHandler::new(move |path, body| {
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `MctUdsControlMutationHandler`
+
+error[E0425]: cannot find function `serve_uds_control_once_with_snapshot_result_blob_store_and_mutations` in this scope
+   --> crates/mct-daemon/src/control.rs:631:13
+    |
+304 | / pub async fn serve_uds_control_once_with_snapshot_result_and_blob_store(
+305 | |     listener: &UnixListener,
+306 | |     snapshot: MctControlPlaneSnapshotResult,
+307 | |     blob_state_path: Option<&Path>,
+...   |
+334 | |     Ok(())
+335 | | }
+    | |_- similarly named function `serve_uds_control_once_with_snapshot_result_and_blob_store` defined here
+...
+631 |               serve_uds_control_once_with_snapshot_result_blob_store_and_mutations(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: a function with a similar name exists
+    |
+631 -             serve_uds_control_once_with_snapshot_result_blob_store_and_mutations(
+631 +             serve_uds_control_once_with_snapshot_result_and_blob_store(
+    |
+
+Some errors have detailed explanations: E0425, E0433.
+For more information about an error, try `rustc --explain E0425`.
+error: could not compile `mct-daemon` (lib test) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+```
