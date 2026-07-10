@@ -84,6 +84,7 @@ $ allium analyse layer/allium/mct-product-map.allium
 - **Code:** `crates/mct-iroh/src/serve.rs:833-878,987-1010`; `crates/mct-daemon/src/main.rs:1529-1563`.
 - **Evidence:** The map requires hello receipt, admission/denial, negotiation, and response facts before subsequent protected peer effects. The Iroh server remembers the admitted hello, writes and finishes the network response, waits for connection close, and only then emits `Served`; the daemon asynchronously turns that event into one ledger append. A subsequent call can use the remembered admission before the hello observation is durable, and a crash after sending the response can leave authority granted with no canonical hello fact.
 - **Direction:** spec-ward.
+- **Outcome:** fixed in `e16e59d` (`fix(iroh): persist hello authority before response`). The resident injects an awaited hello-observation sink backed by its single `ResidentLedgerWriter`; admitted and denied evaluations are synchronized before admission is remembered or response bytes are written. Append failure closes the hello without a response or remembered admission.
 
 ### A6 — authority/operator/storage mutations bypass the observation ledger
 
@@ -91,6 +92,7 @@ $ allium analyse layer/allium/mct-product-map.allium
 - **Code:** child approval/revocation writes at `crates/mct-daemon/src/config.rs:417-476` called from `crates/mct-daemon/src/main.rs:140-193`; peer add/proof/revoke/remove writes at `crates/mct-daemon/src/main.rs:4500-4597,4625-4665`; blob storage effect at `crates/mct-daemon/src/control.rs:442-467` and `crates/mct-daemon/src/blob_store.rs:126-174`.
 - **Evidence:** The map says every grant/revoke/child-approval decision, every operator policy/approval/grant/peer action, and every storage write/failure produces a typed observation. These command and control paths mutate config or publish a CAS blob and return success without accepting a ledger path or appending an `MctObservation`. The config records contain observation-shaped IDs in projections, but no durable observation is written. The ledger therefore cannot be the source of truth for these authority and storage effects.
 - **Direction:** spec-ward.
+- **Resolution architecture:** peer mutations will use resident UDS control-plane operations while Mother is running and direct append under the existing free writer lock for offline administration (slice 2b). The child/operator/storage remainder in slice 4 inherits the same resident-writer/control-plane architecture; A6 remains open until those paths land.
 
 ### A7 — reload stops the current generation before constructing the replacement
 
@@ -230,7 +232,7 @@ The audit also found implementation alignment, not divergence, in these walked a
 | A2 | A | Cached hello bypasses current binding revalidation | spec-ward — **fixed** in `5f8f1af` |
 | A3 | A | Idempotency key does not deduplicate | spec-ward |
 | A4 | A | RouteDecision omits planner/snapshot evidence | spec-ward |
-| A5 | A | Hello observation follows response effect | spec-ward |
+| A5 | A | Hello observation follows response effect | spec-ward — **fixed** in `e16e59d` |
 | A6 | A | Authority/operator/storage mutations are unobserved | spec-ward |
 | A7 | A | Reload drains/stops before replacement readiness | spec-ward |
 | A8 | A | Peer-call lifecycle observation coverage is incomplete | spec-ward |
