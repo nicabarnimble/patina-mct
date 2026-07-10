@@ -5941,6 +5941,10 @@ listens = []
             config_path.display().to_string(),
             "--state".into(),
             state_path.display().to_string(),
+            "--ledger".into(),
+            dir.path().join("observations.jsonl").display().to_string(),
+            "--uds".into(),
+            dir.path().join("missing.sock").display().to_string(),
         ])
         .unwrap();
 

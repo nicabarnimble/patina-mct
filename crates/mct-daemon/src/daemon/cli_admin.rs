@@ -194,6 +194,36 @@ pub(super) fn run_metrics(mut args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+fn execute_cli_administrative_mutation(
+    config_path: &Path,
+    children_dir: &Path,
+    state_path: &Path,
+    ledger_path: &Path,
+    socket_path: &Path,
+    path: &str,
+    request: &impl serde::Serialize,
+) -> Result<serde_json::Value> {
+    let body = serde_json::to_vec(request).context("encode administrative mutation request")?;
+    if let Some(response) = try_resident_control_mutation(socket_path, path, &body)? {
+        return serde_json::from_slice(&response)
+            .context("decode resident administrative mutation result");
+    }
+    execute_offline_administrative_mutation(
+        config_path,
+        children_dir,
+        state_path,
+        ledger_path,
+        path,
+        &body,
+    )
+    .with_context(|| {
+        format!(
+            "resident UDS {} unavailable and offline administrative mutation failed",
+            socket_path.display()
+        )
+    })
+}
+
 pub(super) fn run_pando(mut args: Vec<String>) -> Result<()> {
     if args.first().map(String::as_str) != Some("record") {
         bail!(
@@ -204,6 +234,12 @@ pub(super) fn run_pando(mut args: Vec<String>) -> Result<()> {
     let state_path = take_option(&mut args, "--state")
         .map(PathBuf::from)
         .unwrap_or_else(default_state_path);
+    let ledger_path = take_option(&mut args, "--ledger")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_observation_ledger_path);
+    let socket_path = take_option(&mut args, "--uds")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_control_uds_path);
     let as_json = take_flag(&mut args, "--json");
     if args.is_empty() {
         bail!("expected composition id");
@@ -213,16 +249,25 @@ pub(super) fn run_pando(mut args: Vec<String>) -> Result<()> {
         .iter()
         .map(|raw| parse_composition_step(raw))
         .collect::<Result<Vec<_>>>()?;
-    let state = MctRuntimeStateStore::open(&state_path)?;
-    let record = record_composition_plan(
-        &state,
-        MctCompositionPlan {
-            composition_id,
-            vision_id: VisionId::new("vision-local")
-                .expect("string ID literal/generated value must be non-empty"),
-            steps,
+    let value = execute_cli_administrative_mutation(
+        Path::new("."),
+        Path::new("."),
+        &state_path,
+        &ledger_path,
+        &socket_path,
+        "/pando/record",
+        &PandoRecordRequest {
+            expected_state_path: state_path.clone(),
+            plan: MctCompositionPlan {
+                composition_id,
+                vision_id: VisionId::new("vision-local")
+                    .expect("string ID literal/generated value must be non-empty"),
+                steps,
+            },
         },
     )?;
+    let record: MctCompositionRunRecord =
+        serde_json::from_value(value).context("decode composition mutation result")?;
     if as_json {
         println!("{}", serde_json::to_string_pretty(&record)?);
     } else {
@@ -286,6 +331,12 @@ pub(super) fn run_toys_authorize_slate(mut args: Vec<String>) -> Result<()> {
     let state_path = take_option(&mut args, "--state")
         .map(PathBuf::from)
         .unwrap_or_else(default_state_path);
+    let ledger_path = take_option(&mut args, "--ledger")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_observation_ledger_path);
+    let socket_path = take_option(&mut args, "--uds")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_control_uds_path);
     let as_json = take_flag(&mut args, "--json");
     if args.len() < 2 {
         bail!(
@@ -294,37 +345,23 @@ pub(super) fn run_toys_authorize_slate(mut args: Vec<String>) -> Result<()> {
     }
     let child_name = args.remove(0);
     let project_root = canonical_dir(PathBuf::from(args.remove(0)), "project root")?;
-    let child = load_named_child(&children_dir, &child_name)?;
-    let config = MctDaemonConfigStore::new(&config_path).load()?;
-    let approval = config
-        .child_approvals
-        .get(&child_name)
-        .ok_or_else(|| anyhow::anyhow!("child '{child_name}' is not approved in config"))?;
-    if approval.approval_state != ChildApprovalState::Approved {
-        bail!("child '{child_name}' approval is not active");
-    }
-    let assignment = config
-        .child_assignments
-        .get(&child_name)
-        .ok_or_else(|| anyhow::anyhow!("child '{child_name}' is not assigned in config"))?;
-    if assignment.assignment_state != ChildAssignmentState::Active {
-        bail!("child '{child_name}' assignment is not active");
-    }
-    if approval.artifact_id.as_str() != child.artifact_id
-        || assignment.artifact_id.as_str() != child.artifact_id
-    {
-        bail!("child '{child_name}' config artifact does not match loaded child package");
-    }
-
-    let state = MctRuntimeStateStore::open(&state_path)?;
-    let contracts = slate_toy_contracts();
-    for contract in &contracts {
-        state.upsert_toy_contract(contract)?;
-    }
-    let grants = slate_toy_grants_for_child(&child, &project_root);
-    for grant in &grants {
-        state.upsert_toy_grant_snapshot(grant)?;
-    }
+    let value = execute_cli_administrative_mutation(
+        &config_path,
+        &children_dir,
+        &state_path,
+        &ledger_path,
+        &socket_path,
+        "/toys/authorize-slate",
+        &ToyAuthorizeSlateRequest {
+            expected_config_path: config_path.clone(),
+            expected_children_dir: children_dir.clone(),
+            expected_state_path: state_path.clone(),
+            child_name: child_name.clone(),
+            project_root: project_root.clone(),
+        },
+    )?;
+    let contracts = value["contracts"].as_u64().unwrap_or(0);
+    let grants = value["grants"].as_u64().unwrap_or(0);
 
     if as_json {
         println!(
@@ -343,8 +380,8 @@ pub(super) fn run_toys_authorize_slate(mut args: Vec<String>) -> Result<()> {
             child_name,
             project_root.display(),
             state_path.display(),
-            contracts.len(),
-            grants.len()
+            contracts,
+            grants
         );
     }
     Ok(())
@@ -360,6 +397,12 @@ pub(super) fn run_toys_authorize_secret(mut args: Vec<String>) -> Result<()> {
     let state_path = take_option(&mut args, "--state")
         .map(PathBuf::from)
         .unwrap_or_else(default_state_path);
+    let ledger_path = take_option(&mut args, "--ledger")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_observation_ledger_path);
+    let socket_path = take_option(&mut args, "--uds")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_control_uds_path);
     let as_json = take_flag(&mut args, "--json");
     if args.len() < 2 {
         bail!(
@@ -371,33 +414,21 @@ pub(super) fn run_toys_authorize_secret(mut args: Vec<String>) -> Result<()> {
     if secret_name.trim().is_empty() {
         bail!("secret name must not be empty");
     }
-    let child = load_named_child(&children_dir, &child_name)?;
-    let config = MctDaemonConfigStore::new(&config_path).load()?;
-    let approval = config
-        .child_approvals
-        .get(&child_name)
-        .ok_or_else(|| anyhow::anyhow!("child '{child_name}' is not approved in config"))?;
-    if approval.approval_state != ChildApprovalState::Approved {
-        bail!("child '{child_name}' approval is not active");
-    }
-    let assignment = config
-        .child_assignments
-        .get(&child_name)
-        .ok_or_else(|| anyhow::anyhow!("child '{child_name}' is not assigned in config"))?;
-    if assignment.assignment_state != ChildAssignmentState::Active {
-        bail!("child '{child_name}' assignment is not active");
-    }
-    if approval.artifact_id.as_str() != child.artifact_id
-        || assignment.artifact_id.as_str() != child.artifact_id
-    {
-        bail!("child '{child_name}' config artifact does not match loaded child package");
-    }
-
-    let state = MctRuntimeStateStore::open(&state_path)?;
-    let contract = mct_secrets_toy_contract();
-    state.upsert_toy_contract(&contract)?;
-    let grant = secret_toy_grant_for_child(&child, &secret_name);
-    state.upsert_toy_grant_snapshot(&grant)?;
+    let value = execute_cli_administrative_mutation(
+        &config_path,
+        &children_dir,
+        &state_path,
+        &ledger_path,
+        &socket_path,
+        "/toys/authorize-secret",
+        &ToyAuthorizeSecretRequest {
+            expected_config_path: config_path.clone(),
+            expected_children_dir: children_dir.clone(),
+            expected_state_path: state_path.clone(),
+            child_name: child_name.clone(),
+            secret_name: secret_name.clone(),
+        },
+    )?;
 
     if as_json {
         println!(
@@ -406,8 +437,7 @@ pub(super) fn run_toys_authorize_secret(mut args: Vec<String>) -> Result<()> {
                 "state": state_path,
                 "child": child_name,
                 "secret_name": secret_name,
-                "contract": contract,
-                "grant": grant,
+                "result": value,
             }))?
         );
     } else {
