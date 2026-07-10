@@ -18,7 +18,10 @@ use mct_kernel::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     collections::{BTreeMap, VecDeque},
+    error::Error as StdError,
+    fmt,
     future::Future,
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -78,6 +81,12 @@ impl MctIrohServeState {
     fn next_observation_id(&mut self, kind: &str) -> ObservationId {
         ObservationId::new(format!("obs-iroh-{kind}-{}", self.next_suffix()))
             .expect("string ID literal/generated value must be non-empty")
+    }
+
+    fn forget_hello(&mut self, endpoint_id: &EndpointIdText) {
+        self.hello_by_endpoint.remove(endpoint_id);
+        self.hello_insertion_order
+            .retain(|remembered| remembered != endpoint_id);
     }
 
     fn remember_hello(
@@ -197,6 +206,7 @@ mod tests {
                 VisionId::new("vision-test")
                     .expect("string ID literal/generated value must be non-empty")
             }),
+            selected_policy_revision: admitted.then_some(1),
             negotiated_protocol: admitted.then_some(HelloPolicy::default().protocol),
             accepted_alpns: if admitted {
                 vec![MCT_CALL_ALPN.into()]
@@ -229,6 +239,11 @@ pub enum MctIrohServedProtocol {
     },
     Call {
         request: MctCallProtocolRequest,
+        evaluation: MctCallProtocolEvaluation,
+        reply: MctCallProtocolReply,
+    },
+    MalformedCall {
+        trace_id: TraceId,
         evaluation: MctCallProtocolEvaluation,
         reply: MctCallProtocolReply,
     },
@@ -273,22 +288,406 @@ struct MctCallProtocolReplyEnvelope {
     inline_result_payload_base64: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MctIrohObservationDurability {
+    BeforeEffect,
+    Buffered,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MctIrohCallLifecycleStage {
+    Received,
+    Malformed,
+    Constructed,
+    Authorized,
+    Denied,
+    ResultRecorded,
+    ReplyEmitted,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MctIrohCallLifecycleFact {
+    pub stage: MctIrohCallLifecycleStage,
+    pub trace_id: TraceId,
+    pub call_id: Option<CallId>,
+    pub protocol_request_id: ProtocolRequestId,
+    pub decision_id: Option<DecisionId>,
+    pub observation_id: ObservationId,
+    pub policy_revision: Option<u64>,
+    pub grants_revision: Option<u64>,
+    pub outcome: ObservationOutcome,
+    pub safe_message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MctIrohObservationFact {
+    HelloEvaluation {
+        trace_id: TraceId,
+        evaluation: MctHelloAdmissionEvaluation,
+    },
+    CallLifecycle(MctIrohCallLifecycleFact),
+}
+
+impl MctIrohObservationFact {
+    pub fn call_stage(&self) -> Option<MctIrohCallLifecycleStage> {
+        match self {
+            Self::HelloEvaluation { .. } => None,
+            Self::CallLifecycle(fact) => Some(fact.stage),
+        }
+    }
+
+    pub fn to_observation(&self, observed_at: Timestamp) -> MctObservation {
+        match self {
+            Self::HelloEvaluation {
+                trace_id,
+                evaluation,
+            } => hello_evaluation_observation(trace_id.clone(), observed_at, evaluation),
+            Self::CallLifecycle(fact) => {
+                let (kind, source_plane) = match fact.stage {
+                    MctIrohCallLifecycleStage::Received => {
+                        (ObservationKind::PeerCallReceived, SourcePlane::Adapter)
+                    }
+                    MctIrohCallLifecycleStage::Malformed => {
+                        (ObservationKind::PeerCallMalformed, SourcePlane::Adapter)
+                    }
+                    MctIrohCallLifecycleStage::Constructed => {
+                        (ObservationKind::CallConstructed, SourcePlane::Adapter)
+                    }
+                    MctIrohCallLifecycleStage::Authorized => {
+                        (ObservationKind::CallAuthorized, SourcePlane::Kernel)
+                    }
+                    MctIrohCallLifecycleStage::Denied => {
+                        (ObservationKind::CallDenied, SourcePlane::Kernel)
+                    }
+                    MctIrohCallLifecycleStage::ResultRecorded => {
+                        (ObservationKind::ResultRecorded, SourcePlane::Kernel)
+                    }
+                    MctIrohCallLifecycleStage::ReplyEmitted => {
+                        (ObservationKind::PeerCallReplied, SourcePlane::Peer)
+                    }
+                };
+                MctObservation {
+                    observation_id: fact.observation_id.clone(),
+                    observed_at,
+                    kind,
+                    source_plane,
+                    trace: ObservationTraceRef {
+                        trace_id: fact.trace_id.clone(),
+                        span_id: None,
+                        parent_span_id: None,
+                        external_trace_id: None,
+                    },
+                    call_id: fact.call_id.clone(),
+                    decision_id: fact.decision_id.clone(),
+                    subject_id: None,
+                    resource_id: Some(fact.protocol_request_id.to_string()),
+                    policy_revision: fact.policy_revision,
+                    grants_revision: fact.grants_revision,
+                    outcome: fact.outcome,
+                    visibility: ObservationVisibility::InternalOnly,
+                    safe_message: fact.safe_message.clone(),
+                    detail_ref: None,
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MctIrohObservationBatch {
+    pub durability: MctIrohObservationDurability,
+    pub facts: Vec<MctIrohObservationFact>,
+}
+
+type ObservationFuture = Pin<
+    Box<
+        dyn Future<Output = Result<(), Box<dyn StdError + Send + Sync + 'static>>> + Send + 'static,
+    >,
+>;
+
+type ObservationCallback =
+    dyn Fn(MctIrohObservationBatch) -> ObservationFuture + Send + Sync + 'static;
+
+/// Awaited adapter callback for making serving lifecycle facts durable.
+#[derive(Clone)]
+pub struct MctIrohObservationSink {
+    callback: Arc<ObservationCallback>,
+}
+
+impl MctIrohObservationSink {
+    pub fn new<F, Fut, E>(callback: F) -> Self
+    where
+        F: Fn(MctIrohObservationBatch) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+        E: StdError + Send + Sync + 'static,
+    {
+        Self {
+            callback: Arc::new(move |batch| {
+                let future = callback(batch);
+                Box::pin(async move {
+                    future.await.map_err(|source| {
+                        Box::new(source) as Box<dyn StdError + Send + Sync + 'static>
+                    })
+                })
+            }),
+        }
+    }
+
+    async fn record(
+        &self,
+        batch: MctIrohObservationBatch,
+    ) -> Result<(), Box<dyn StdError + Send + Sync + 'static>> {
+        (self.callback)(batch).await
+    }
+}
+
+impl fmt::Debug for MctIrohObservationSink {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MctIrohObservationSink")
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct MctIrohConcurrentServeConfig {
     pub max_concurrent_connections: usize,
     pub connection_timeout: Duration,
     pub events: Option<mpsc::Sender<MctIrohServeEvent>>,
     pub require_binding_signature: bool,
+    pub capability_view: Option<MctHelloCapabilityView>,
+    pub observation_sink: MctIrohObservationSink,
 }
 
-impl Default for MctIrohConcurrentServeConfig {
-    fn default() -> Self {
+impl MctIrohConcurrentServeConfig {
+    pub fn new(observation_sink: MctIrohObservationSink) -> Self {
         Self {
             max_concurrent_connections: 64,
             connection_timeout: SERVE_CONNECTION_TIMEOUT,
             events: None,
             require_binding_signature: false,
+            capability_view: None,
+            observation_sink,
         }
+    }
+}
+
+fn call_lifecycle_fact(
+    stage: MctIrohCallLifecycleStage,
+    request: &MctCallProtocolRequest,
+    decision_id: Option<DecisionId>,
+    observation_id: ObservationId,
+    outcome: ObservationOutcome,
+    safe_message: impl Into<String>,
+) -> MctIrohObservationFact {
+    MctIrohObservationFact::CallLifecycle(MctIrohCallLifecycleFact {
+        stage,
+        trace_id: request.call.trace_context.trace_id.clone(),
+        call_id: Some(request.call.call_id.clone()),
+        protocol_request_id: request.protocol_request_id.clone(),
+        decision_id,
+        observation_id,
+        policy_revision: Some(request.call.authority_context.policy_revision),
+        grants_revision: Some(request.call.authority_context.grants_revision),
+        outcome,
+        safe_message: safe_message.into(),
+    })
+}
+
+fn malformed_call_lifecycle_fact(
+    stage: MctIrohCallLifecycleStage,
+    trace_id: TraceId,
+    evaluation: &MctCallProtocolEvaluation,
+    observation_id: ObservationId,
+) -> MctIrohObservationFact {
+    MctIrohObservationFact::CallLifecycle(MctIrohCallLifecycleFact {
+        stage,
+        trace_id,
+        call_id: None,
+        protocol_request_id: evaluation.protocol_request_id.clone(),
+        decision_id: Some(evaluation.decision_id.clone()),
+        observation_id,
+        policy_revision: None,
+        grants_revision: None,
+        outcome: ObservationOutcome::Denied,
+        safe_message: if stage == MctIrohCallLifecycleStage::Received {
+            "peer call received".into()
+        } else {
+            "malformed request".into()
+        },
+    })
+}
+
+fn reply_observation_outcome(outcome: CallProtocolReplyOutcome) -> ObservationOutcome {
+    match outcome {
+        CallProtocolReplyOutcome::Success => ObservationOutcome::Completed,
+        CallProtocolReplyOutcome::Denied | CallProtocolReplyOutcome::Malformed => {
+            ObservationOutcome::Denied
+        }
+        CallProtocolReplyOutcome::Failed => ObservationOutcome::Failed,
+        CallProtocolReplyOutcome::TimedOut => ObservationOutcome::TimedOut,
+        CallProtocolReplyOutcome::Cancelled => ObservationOutcome::Cancelled,
+    }
+}
+
+fn malformed_request_evaluation(
+    request: &MctCallProtocolRequest,
+    state: &mut MctIrohServeState,
+) -> MctCallProtocolEvaluation {
+    MctCallProtocolEvaluation {
+        decision_id: state.next_decision_id("call-malformed"),
+        protocol_request_id: request.protocol_request_id.clone(),
+        call_id: Some(request.call.call_id.clone()),
+        route_decision_id: None,
+        result_ref: None,
+        outcome: CallProtocolOutcome::Malformed,
+        reason: CallProtocolReason::MalformedCall,
+        safe_message: "malformed request".into(),
+        observation_id: state.next_observation_id("call-malformed"),
+    }
+}
+
+fn malformed_call_evaluation_and_reply(
+    state: &mut MctIrohServeState,
+) -> (TraceId, MctCallProtocolEvaluation, MctCallProtocolReply) {
+    let suffix = state.next_suffix();
+    let protocol_request_id = ProtocolRequestId::new(format!("malformed-call-{suffix}"))
+        .expect("generated protocol request ID must be non-empty");
+    let evaluation = MctCallProtocolEvaluation {
+        decision_id: state.next_decision_id("call-malformed"),
+        protocol_request_id,
+        call_id: None,
+        route_decision_id: None,
+        result_ref: None,
+        outcome: CallProtocolOutcome::Malformed,
+        reason: CallProtocolReason::MalformedCall,
+        safe_message: "malformed request".into(),
+        observation_id: state.next_observation_id("call-malformed"),
+    };
+    let reply = call_reply_from_evaluation(
+        ReplyId::new(format!("reply-iroh-call-malformed-{suffix}"))
+            .expect("generated reply ID must be non-empty"),
+        &evaluation,
+        None,
+        state.next_observation_id("call-reply"),
+    );
+    let trace_id = TraceId::new(format!("trace-iroh-call-malformed-{suffix}"))
+        .expect("generated trace ID must be non-empty");
+    (trace_id, evaluation, reply)
+}
+
+fn call_received_fact(request: &MctCallProtocolRequest) -> MctIrohObservationFact {
+    call_lifecycle_fact(
+        MctIrohCallLifecycleStage::Received,
+        request,
+        None,
+        request.received_observation_id.clone(),
+        ObservationOutcome::Started,
+        "peer call received",
+    )
+}
+
+fn call_malformed_fact(
+    request: &MctCallProtocolRequest,
+    evaluation: &MctCallProtocolEvaluation,
+) -> MctIrohObservationFact {
+    call_lifecycle_fact(
+        MctIrohCallLifecycleStage::Malformed,
+        request,
+        Some(evaluation.decision_id.clone()),
+        evaluation.observation_id.clone(),
+        ObservationOutcome::Denied,
+        "malformed request",
+    )
+}
+
+fn call_constructed_fact(
+    request: &MctCallProtocolRequest,
+    observation_id: ObservationId,
+) -> MctIrohObservationFact {
+    call_lifecycle_fact(
+        MctIrohCallLifecycleStage::Constructed,
+        request,
+        None,
+        observation_id,
+        ObservationOutcome::Informational,
+        "call constructed",
+    )
+}
+
+fn call_authority_fact(
+    request: &MctCallProtocolRequest,
+    evaluation: &MctCallProtocolEvaluation,
+) -> MctIrohObservationFact {
+    let (stage, outcome) = if evaluation.is_accepted_for_routing() {
+        (
+            MctIrohCallLifecycleStage::Authorized,
+            ObservationOutcome::Allowed,
+        )
+    } else {
+        (
+            MctIrohCallLifecycleStage::Denied,
+            ObservationOutcome::Denied,
+        )
+    };
+    call_lifecycle_fact(
+        stage,
+        request,
+        Some(evaluation.decision_id.clone()),
+        evaluation.observation_id.clone(),
+        outcome,
+        evaluation.safe_message.clone(),
+    )
+}
+
+fn call_result_fact(
+    request: &MctCallProtocolRequest,
+    evaluation: &MctCallProtocolEvaluation,
+    observation_id: ObservationId,
+) -> MctIrohObservationFact {
+    let outcome = match evaluation.outcome {
+        CallProtocolOutcome::AcceptedForRouting | CallProtocolOutcome::Completed => {
+            ObservationOutcome::Completed
+        }
+        CallProtocolOutcome::Malformed | CallProtocolOutcome::Denied => ObservationOutcome::Denied,
+        CallProtocolOutcome::Failed => ObservationOutcome::Failed,
+        CallProtocolOutcome::TimedOut => ObservationOutcome::TimedOut,
+    };
+    call_lifecycle_fact(
+        MctIrohCallLifecycleStage::ResultRecorded,
+        request,
+        Some(evaluation.decision_id.clone()),
+        observation_id,
+        outcome,
+        evaluation.safe_message.clone(),
+    )
+}
+
+fn call_reply_emitted_fact(served: &MctIrohServedProtocol) -> Option<MctIrohObservationFact> {
+    match served {
+        MctIrohServedProtocol::Hello { .. } => None,
+        MctIrohServedProtocol::Call {
+            request,
+            evaluation,
+            reply,
+        } => Some(call_lifecycle_fact(
+            MctIrohCallLifecycleStage::ReplyEmitted,
+            request,
+            Some(evaluation.decision_id.clone()),
+            reply.reply_observation_id.clone(),
+            reply_observation_outcome(reply.reply_outcome),
+            reply.safe_message.clone(),
+        )),
+        MctIrohServedProtocol::MalformedCall {
+            trace_id,
+            evaluation,
+            reply,
+        } => Some(malformed_call_lifecycle_fact(
+            MctIrohCallLifecycleStage::ReplyEmitted,
+            trace_id.clone(),
+            evaluation,
+            reply.reply_observation_id.clone(),
+        )),
     }
 }
 
@@ -488,6 +887,7 @@ fn deny_hello_for_invalid_signature(
         selected_binding_id: None,
         selected_node_id: None,
         selected_vision_id: None,
+        selected_policy_revision: None,
         negotiated_protocol: None,
         accepted_alpns: Vec::new(),
         hello_outcome: HelloOutcome::Denied,
@@ -709,7 +1109,12 @@ impl MotherIrohEndpoint {
             now,
             move || {
                 let bindings = Arc::clone(&bindings);
-                async move { Ok((*bindings).clone()) }
+                async move {
+                    Ok(MctPeerAuthoritySnapshot {
+                        bindings: (*bindings).clone(),
+                        policy_revision: HelloPolicy::default().current_policy_revision,
+                    })
+                }
             },
             call_handler,
         )
@@ -734,7 +1139,7 @@ impl MotherIrohEndpoint {
         N: Fn() -> Timestamp + Clone + Send + Sync + 'static,
         B: Fn() -> BindingsFut + Clone + Send + Sync + 'static,
         BindingsFut:
-            Future<Output = MotherIrohEndpointResult<Vec<MctPeerBinding>>> + Send + 'static,
+            Future<Output = MotherIrohEndpointResult<MctPeerAuthoritySnapshot>> + Send + 'static,
     {
         let endpoint = self
             .endpoint
@@ -743,12 +1148,21 @@ impl MotherIrohEndpoint {
             .clone();
         let issuer_endpoint_id = self.snapshot().endpoint_id;
         let require_binding_signature = config.require_binding_signature;
+        let capability_view = config.capability_view.clone();
+        let observation_sink = config.observation_sink.clone();
         let state = Arc::new(Mutex::new(state));
         let semaphore = Arc::new(Semaphore::new(config.max_concurrent_connections));
         let active_tasks = Arc::new(AtomicU64::new(0));
+        let (task_error_tx, mut task_error_rx) = mpsc::unbounded_channel();
 
         loop {
-            let Some(incoming) = endpoint.accept().await else {
+            let incoming = tokio::select! {
+                error = task_error_rx.recv() => {
+                    return Err(error.expect("serving task error channel remains open"));
+                }
+                incoming = endpoint.accept() => incoming,
+            };
+            let Some(incoming) = incoming else {
                 break;
             };
             let Ok(permit) = semaphore.clone().try_acquire_owned() else {
@@ -771,6 +1185,9 @@ impl MotherIrohEndpoint {
             let connection_timeout = config.connection_timeout;
             let issuer_endpoint_id = issuer_endpoint_id.clone();
             let active_tasks = Arc::clone(&active_tasks);
+            let capability_view = capability_view.clone();
+            let observation_sink = observation_sink.clone();
+            let task_error_tx = task_error_tx.clone();
             active_tasks.fetch_add(1, Ordering::SeqCst);
 
             tokio::spawn(async move {
@@ -803,15 +1220,84 @@ impl MotherIrohEndpoint {
                             source: boxed_source(source),
                         }
                     })?;
-                    let request_bytes = recv
+                    let request_bytes = match recv
                         .read_to_end(MCT_CALL_FRAME_READ_BUDGET_BYTES)
                         .await
-                        .map_err(|source| MotherIrohEndpointError::ProtocolIo {
-                            action: "read request stream",
-                            source: boxed_source(source),
-                        })?;
+                    {
+                        Ok(request_bytes) => request_bytes,
+                        Err(_source) if alpn.as_slice() == MCT_CALL_ALPN.as_bytes() => {
+                            let mut state_guard = state.lock().await;
+                            let (trace_id, evaluation, reply) =
+                                malformed_call_evaluation_and_reply(&mut state_guard);
+                            let receipt_observation_id =
+                                state_guard.next_observation_id("call-received");
+                            drop(state_guard);
+                            observation_sink
+                                .record(MctIrohObservationBatch {
+                                    durability: MctIrohObservationDurability::BeforeEffect,
+                                    facts: vec![
+                                        malformed_call_lifecycle_fact(
+                                            MctIrohCallLifecycleStage::Received,
+                                            trace_id.clone(),
+                                            &evaluation,
+                                            receipt_observation_id,
+                                        ),
+                                        malformed_call_lifecycle_fact(
+                                            MctIrohCallLifecycleStage::Malformed,
+                                            trace_id.clone(),
+                                            &evaluation,
+                                            evaluation.observation_id.clone(),
+                                        ),
+                                    ],
+                                })
+                                .await
+                                .map_err(|source| MotherIrohEndpointError::ProtocolProvider {
+                                    action: "durably record malformed mct/call/0 frame",
+                                    source,
+                                })?;
+                            let response_bytes = encode_call_reply_envelope(&reply, None)?;
+                            send.write_all(&response_bytes).await.map_err(|source| {
+                                MotherIrohEndpointError::ProtocolIo {
+                                    action: "write malformed call response stream",
+                                    source: boxed_source(source),
+                                }
+                            })?;
+                            send.finish().map_err(|source| {
+                                MotherIrohEndpointError::ProtocolIo {
+                                    action: "finish malformed call response stream",
+                                    source: boxed_source(source),
+                                }
+                            })?;
+                            let served = MctIrohServedProtocol::MalformedCall {
+                                trace_id,
+                                evaluation,
+                                reply,
+                            };
+                            observation_sink
+                                .record(MctIrohObservationBatch {
+                                    durability: MctIrohObservationDurability::Buffered,
+                                    facts: vec![call_reply_emitted_fact(&served)
+                                        .expect("malformed call has reply fact")],
+                                })
+                                .await
+                                .map_err(|sink_source| {
+                                    MotherIrohEndpointError::ProtocolProvider {
+                                        action: "record malformed mct/call/0 reply",
+                                        source: sink_source,
+                                    }
+                                })?;
+                            connection.closed().await;
+                            return Ok(served);
+                        }
+                        Err(source) => {
+                            return Err(MotherIrohEndpointError::ProtocolIo {
+                                action: "read request stream",
+                                source: boxed_source(source),
+                            });
+                        }
+                    };
 
-                    let bindings = bindings_provider().await?;
+                    let current_peer_authority = bindings_provider().await?;
 
                     let (response_bytes, served) = match alpn.as_slice() {
                         bytes if bytes == MCT_HELLO_ALPN.as_bytes() => {
@@ -827,10 +1313,15 @@ impl MotherIrohEndpoint {
                             request.received_over.connection_side = ConnectionSide::Incoming;
 
                             let mut state = state.lock().await;
+                            state.forget_hello(&remote_endpoint_id);
+                            let hello_policy = HelloPolicy {
+                                current_policy_revision: current_peer_authority.policy_revision,
+                                ..HelloPolicy::default()
+                            };
                             let mut evaluation = evaluate_hello(
                                 &request,
-                                &bindings,
-                                &HelloPolicy::default(),
+                                &current_peer_authority.bindings,
+                                &hello_policy,
                                 HelloEvaluationContext {
                                     ids: EvaluationIds {
                                         decision_id: state.next_decision_id("hello"),
@@ -842,18 +1333,19 @@ impl MotherIrohEndpoint {
                             if require_binding_signature {
                                 evaluation = enforce_hello_binding_signature(
                                     &request,
-                                    &bindings,
+                                    &current_peer_authority.bindings,
                                     &issuer_endpoint_id,
                                     evaluation,
                                 );
                             }
-                            state.remember_hello(remote_endpoint_id, evaluation.clone());
-                            let response = hello_response(
+                            let mut response = hello_response(
                                 format!("reply-iroh-hello-{}", state.next_suffix()),
                                 &evaluation,
                                 state.next_observation_id("hello-reply"),
                             );
-                            drop(state);
+                            if evaluation.is_admitted() {
+                                response.capability_view = capability_view.clone();
+                            }
                             let response_bytes =
                                 serde_json::to_vec(&response).map_err(|source| {
                                     MotherIrohEndpointError::ProtocolJson {
@@ -861,6 +1353,21 @@ impl MotherIrohEndpoint {
                                         source,
                                     }
                                 })?;
+                            observation_sink
+                                .record(MctIrohObservationBatch {
+                                    durability: MctIrohObservationDurability::BeforeEffect,
+                                    facts: vec![MctIrohObservationFact::HelloEvaluation {
+                                        trace_id: request.trace_id.clone(),
+                                        evaluation: evaluation.clone(),
+                                    }],
+                                })
+                                .await
+                                .map_err(|source| MotherIrohEndpointError::ProtocolProvider {
+                                    action: "durably record mct/hello/0 evaluation",
+                                    source,
+                                })?;
+                            state.remember_hello(remote_endpoint_id, evaluation.clone());
+                            drop(state);
                             (
                                 response_bytes,
                                 MctIrohServedProtocol::Hello {
@@ -871,105 +1378,222 @@ impl MotherIrohEndpoint {
                             )
                         }
                         bytes if bytes == MCT_CALL_ALPN.as_bytes() => {
-                            let (mut request, inline_payload_bytes) =
-                                decode_call_request_envelope(&request_bytes)?;
-                            request.received_over.endpoint_id = remote_endpoint_id.clone();
-                            request.received_over.alpn = MCT_CALL_ALPN.into();
-                            request.received_over.connection_side = ConnectionSide::Incoming;
-                            request.validate().map_err(|source| {
-                                MotherIrohEndpointError::ProtocolKernel {
-                                    action: "validate inbound mct/call/0 request",
-                                    source,
-                                }
-                            })?;
-
-                            let payload_decision = evaluate_payload_integrity(
-                                PayloadIntegritySubject::Request,
-                                &request.payload,
-                                &observed_inline_payload(inline_payload_bytes.as_deref()),
-                                MCT_INLINE_PAYLOAD_MAX_BYTES as u64,
-                            );
-                            let mut state_guard = state.lock().await;
-                            let mut evaluation =
-                                if payload_decision.outcome == PayloadIntegrityOutcome::Matched {
-                                    let hello = state_guard
-                                        .hello_for_endpoint(&remote_endpoint_id)
-                                        .unwrap_or_else(|| {
-                                            denied_missing_hello(
-                                                request.protocol_request_id.as_str(),
-                                                &mut state_guard,
-                                            )
-                                        });
-                                    evaluate_call_protocol(
-                                        &request,
-                                        &hello,
-                                        CallEvaluationIds {
-                                            decision_id: state_guard.next_decision_id("call"),
-                                            observation_id: state_guard.next_observation_id("call"),
+                            match decode_call_request_envelope(&request_bytes) {
+                                Err(_) => {
+                                    let mut state_guard = state.lock().await;
+                                    let (trace_id, evaluation, reply) =
+                                        malformed_call_evaluation_and_reply(&mut state_guard);
+                                    let receipt_observation_id =
+                                        state_guard.next_observation_id("call-received");
+                                    drop(state_guard);
+                                    observation_sink
+                                        .record(MctIrohObservationBatch {
+                                            durability:
+                                                MctIrohObservationDurability::BeforeEffect,
+                                            facts: vec![
+                                                malformed_call_lifecycle_fact(
+                                                    MctIrohCallLifecycleStage::Received,
+                                                    trace_id.clone(),
+                                                    &evaluation,
+                                                    receipt_observation_id,
+                                                ),
+                                                malformed_call_lifecycle_fact(
+                                                    MctIrohCallLifecycleStage::Malformed,
+                                                    trace_id.clone(),
+                                                    &evaluation,
+                                                    evaluation.observation_id.clone(),
+                                                ),
+                                            ],
+                                        })
+                                        .await
+                                        .map_err(|source| {
+                                            MotherIrohEndpointError::ProtocolProvider {
+                                                action:
+                                                    "durably record malformed mct/call/0 envelope",
+                                                source,
+                                            }
+                                        })?;
+                                    let response_bytes =
+                                        encode_call_reply_envelope(&reply, None)?;
+                                    (
+                                        response_bytes,
+                                        MctIrohServedProtocol::MalformedCall {
+                                            trace_id,
+                                            evaluation,
+                                            reply,
                                         },
                                     )
-                                } else {
-                                    payload_malformed_evaluation(
-                                        &request,
-                                        &mut state_guard,
-                                        payload_decision.reason.to_call_protocol_reason(),
-                                        payload_decision.safe_message.clone(),
-                                    )
-                                };
-                            drop(state_guard);
+                                }
+                                Ok((mut request, inline_payload_bytes)) => {
+                                    request.received_over.endpoint_id =
+                                        remote_endpoint_id.clone();
+                                    request.received_over.alpn = MCT_CALL_ALPN.into();
+                                    request.received_over.connection_side =
+                                        ConnectionSide::Incoming;
 
-                            let handled = if evaluation.is_accepted_for_routing() {
-                                Some(
-                                    call_handler(
-                                        request.clone(),
-                                        evaluation.clone(),
-                                        inline_payload_bytes.clone(),
+                                    let validation_failed = request.validate().is_err();
+                                    let payload_decision = (!validation_failed).then(|| {
+                                        evaluate_payload_integrity(
+                                            PayloadIntegritySubject::Request,
+                                            &request.payload,
+                                            &observed_inline_payload(
+                                                inline_payload_bytes.as_deref(),
+                                            ),
+                                            MCT_INLINE_PAYLOAD_MAX_BYTES as u64,
+                                        )
+                                    });
+                                    let mut state_guard = state.lock().await;
+                                    let constructed_observation_id =
+                                        state_guard.next_observation_id("call-constructed");
+                                    let mut evaluation = if validation_failed {
+                                        malformed_request_evaluation(&request, &mut state_guard)
+                                    } else if let Some(payload_decision) = payload_decision.as_ref()
+                                        && payload_decision.outcome
+                                            != PayloadIntegrityOutcome::Matched
+                                    {
+                                        payload_malformed_evaluation(
+                                            &request,
+                                            &mut state_guard,
+                                            payload_decision.reason.to_call_protocol_reason(),
+                                            payload_decision.safe_message.clone(),
+                                        )
+                                    } else {
+                                        let hello = state_guard
+                                            .hello_for_endpoint(&remote_endpoint_id)
+                                            .unwrap_or_else(|| {
+                                                denied_missing_hello(
+                                                    request.protocol_request_id.as_str(),
+                                                    &mut state_guard,
+                                                )
+                                            });
+                                        evaluate_call_protocol(
+                                            &request,
+                                            &hello,
+                                            CallEvaluationContext {
+                                                ids: CallEvaluationIds {
+                                                    decision_id: state_guard
+                                                        .next_decision_id("call"),
+                                                    observation_id: state_guard
+                                                        .next_observation_id("call"),
+                                                },
+                                                current_peer_authority,
+                                                now: now(),
+                                            },
+                                        )
+                                    };
+                                    drop(state_guard);
+
+                                    let prefix_facts = if evaluation.outcome
+                                        == CallProtocolOutcome::Malformed
+                                    {
+                                        vec![
+                                            call_received_fact(&request),
+                                            call_malformed_fact(&request, &evaluation),
+                                        ]
+                                    } else {
+                                        vec![
+                                            call_received_fact(&request),
+                                            call_constructed_fact(
+                                                &request,
+                                                constructed_observation_id,
+                                            ),
+                                            call_authority_fact(&request, &evaluation),
+                                        ]
+                                    };
+                                    observation_sink
+                                        .record(MctIrohObservationBatch {
+                                            durability:
+                                                MctIrohObservationDurability::BeforeEffect,
+                                            facts: prefix_facts,
+                                        })
+                                        .await
+                                        .map_err(|source| {
+                                            MotherIrohEndpointError::ProtocolProvider {
+                                                action:
+                                                    "durably record mct/call/0 authority prefix",
+                                                source,
+                                            }
+                                        })?;
+
+                                    let handled = if evaluation.is_accepted_for_routing() {
+                                        Some(
+                                            call_handler(
+                                                request.clone(),
+                                                evaluation.clone(),
+                                                inline_payload_bytes.clone(),
+                                            )
+                                            .await,
+                                        )
+                                    } else {
+                                        None
+                                    };
+                                    if let Some(handled) = handled.as_ref() {
+                                        evaluation.outcome = handled.outcome;
+                                        evaluation.safe_message = handled.safe_message.clone();
+                                        evaluation.route_decision_id =
+                                            handled.route_decision_id.clone();
+                                    }
+                                    let mut state_guard = state.lock().await;
+                                    let reply =
+                                        call_reply_from_evaluation_with_result_payload_and_route(
+                                            ReplyId::new(format!(
+                                                "reply-iroh-call-{}",
+                                                state_guard.next_suffix()
+                                            ))
+                                            .expect(
+                                                "string ID literal/generated value must be non-empty",
+                                            ),
+                                            &evaluation,
+                                            handled
+                                                .as_ref()
+                                                .and_then(|handled| handled.result_ref.clone()),
+                                            handled
+                                                .as_ref()
+                                                .map(|handled| handled.result_payload.clone())
+                                                .unwrap_or(MctCallPayloadHandle::Empty),
+                                            handled
+                                                .as_ref()
+                                                .and_then(|handled| handled.route_taken.clone()),
+                                            state_guard.next_observation_id("call-reply"),
+                                        );
+                                    let result_observation_id =
+                                        state_guard.next_observation_id("call-result");
+                                    drop(state_guard);
+                                    if evaluation.outcome != CallProtocolOutcome::Malformed {
+                                        observation_sink
+                                            .record(MctIrohObservationBatch {
+                                                durability:
+                                                    MctIrohObservationDurability::Buffered,
+                                                facts: vec![call_result_fact(
+                                                    &request,
+                                                    &evaluation,
+                                                    result_observation_id,
+                                                )],
+                                            })
+                                            .await
+                                            .map_err(|source| {
+                                                MotherIrohEndpointError::ProtocolProvider {
+                                                    action: "record mct/call/0 result",
+                                                    source,
+                                                }
+                                            })?;
+                                    }
+                                    let response_bytes = encode_call_reply_envelope(
+                                        &reply,
+                                        handled.as_ref().and_then(|handled| {
+                                            handled.inline_result_payload.as_deref()
+                                        }),
+                                    )?;
+                                    (
+                                        response_bytes,
+                                        MctIrohServedProtocol::Call {
+                                            request,
+                                            evaluation,
+                                            reply,
+                                        },
                                     )
-                                    .await,
-                                )
-                            } else {
-                                None
-                            };
-                            if let Some(handled) = handled.as_ref() {
-                                evaluation.outcome = handled.outcome;
-                                evaluation.safe_message = handled.safe_message.clone();
-                                evaluation.route_decision_id = handled.route_decision_id.clone();
+                                }
                             }
-                            let mut state_guard = state.lock().await;
-                            let reply = call_reply_from_evaluation_with_result_payload_and_route(
-                                ReplyId::new(format!(
-                                    "reply-iroh-call-{}",
-                                    state_guard.next_suffix()
-                                ))
-                                .expect("string ID literal/generated value must be non-empty"),
-                                &evaluation,
-                                handled
-                                    .as_ref()
-                                    .and_then(|handled| handled.result_ref.clone()),
-                                handled
-                                    .as_ref()
-                                    .map(|handled| handled.result_payload.clone())
-                                    .unwrap_or(MctCallPayloadHandle::Empty),
-                                handled
-                                    .as_ref()
-                                    .and_then(|handled| handled.route_taken.clone()),
-                                state_guard.next_observation_id("call-reply"),
-                            );
-                            drop(state_guard);
-                            let response_bytes = encode_call_reply_envelope(
-                                &reply,
-                                handled
-                                    .as_ref()
-                                    .and_then(|handled| handled.inline_result_payload.as_deref()),
-                            )?;
-                            (
-                                response_bytes,
-                                MctIrohServedProtocol::Call {
-                                    request,
-                                    evaluation,
-                                    reply,
-                                },
-                            )
                         }
                         other => {
                             let alpn = String::from_utf8_lossy(other).to_string();
@@ -988,6 +1612,18 @@ impl MotherIrohEndpoint {
                             action: "finish response stream",
                             source: boxed_source(source),
                         })?;
+                    if let Some(reply_fact) = call_reply_emitted_fact(&served) {
+                        observation_sink
+                            .record(MctIrohObservationBatch {
+                                durability: MctIrohObservationDurability::Buffered,
+                                facts: vec![reply_fact],
+                            })
+                            .await
+                            .map_err(|source| MotherIrohEndpointError::ProtocolProvider {
+                                action: "record mct/call/0 reply emission",
+                                source,
+                            })?;
+                    }
                     connection.closed().await;
                     Ok(served)
                 })
@@ -1007,7 +1643,17 @@ impl MotherIrohEndpoint {
                 }
                 active_tasks.fetch_sub(1, Ordering::SeqCst);
                 drop(permit);
-                served.map(|_| ())
+                if let Err(error) = served {
+                    let reply_observation_failed = matches!(
+                        &error,
+                        MotherIrohEndpointError::ProtocolProvider { action, .. }
+                            if *action == "record mct/call/0 reply emission"
+                                || *action == "record malformed mct/call/0 reply"
+                    );
+                    if reply_observation_failed {
+                        let _ = task_error_tx.send(error);
+                    }
+                }
             });
         }
 
@@ -1021,10 +1667,11 @@ impl MotherIrohEndpoint {
         &self,
         state: &mut MctIrohServeState,
         bindings: &[MctPeerBinding],
+        observation_sink: &MctIrohObservationSink,
         now: Timestamp,
         result_ref: Option<ResultRef>,
     ) -> MotherIrohEndpointResult<MctIrohServedProtocol> {
-        self.serve_next_with_call_handler(state, bindings, now, move |_, _, _| {
+        self.serve_next_with_call_handler(state, bindings, observation_sink, now, move |_, _, _| {
             MctIrohCallHandlerResult::accepted_for_routing(result_ref.clone())
         })
         .await
@@ -1034,6 +1681,7 @@ impl MotherIrohEndpoint {
         &self,
         state: &mut MctIrohServeState,
         bindings: &[MctPeerBinding],
+        observation_sink: &MctIrohObservationSink,
         now: Timestamp,
         call_handler: F,
     ) -> MotherIrohEndpointResult<MctIrohServedProtocol>
@@ -1047,6 +1695,7 @@ impl MotherIrohEndpoint {
         self.serve_next_with_call_handler_timeout(
             state,
             bindings,
+            observation_sink,
             now,
             SERVE_CONNECTION_TIMEOUT,
             call_handler,
@@ -1058,6 +1707,7 @@ impl MotherIrohEndpoint {
         &self,
         state: &mut MctIrohServeState,
         bindings: &[MctPeerBinding],
+        observation_sink: &MctIrohObservationSink,
         now: Timestamp,
         connection_timeout: Duration,
         mut call_handler: F,
@@ -1108,13 +1758,74 @@ impl MotherIrohEndpoint {
                     source: boxed_source(source),
                 }
             })?;
-            let request_bytes = recv
-                .read_to_end(MCT_CALL_FRAME_READ_BUDGET_BYTES)
-                .await
-                .map_err(|source| MotherIrohEndpointError::ProtocolIo {
-                    action: "read request stream",
-                    source: boxed_source(source),
-                })?;
+            let request_bytes = match recv.read_to_end(MCT_CALL_FRAME_READ_BUDGET_BYTES).await {
+                Ok(request_bytes) => request_bytes,
+                Err(_source) if alpn.as_slice() == MCT_CALL_ALPN.as_bytes() => {
+                    let (trace_id, evaluation, reply) = malformed_call_evaluation_and_reply(state);
+                    let receipt_observation_id = state.next_observation_id("call-received");
+                    observation_sink
+                        .record(MctIrohObservationBatch {
+                            durability: MctIrohObservationDurability::BeforeEffect,
+                            facts: vec![
+                                malformed_call_lifecycle_fact(
+                                    MctIrohCallLifecycleStage::Received,
+                                    trace_id.clone(),
+                                    &evaluation,
+                                    receipt_observation_id,
+                                ),
+                                malformed_call_lifecycle_fact(
+                                    MctIrohCallLifecycleStage::Malformed,
+                                    trace_id.clone(),
+                                    &evaluation,
+                                    evaluation.observation_id.clone(),
+                                ),
+                            ],
+                        })
+                        .await
+                        .map_err(|source| MotherIrohEndpointError::ProtocolProvider {
+                            action: "durably record malformed mct/call/0 frame",
+                            source,
+                        })?;
+                    let response_bytes = encode_call_reply_envelope(&reply, None)?;
+                    send.write_all(&response_bytes).await.map_err(|source| {
+                        MotherIrohEndpointError::ProtocolIo {
+                            action: "write malformed call response stream",
+                            source: boxed_source(source),
+                        }
+                    })?;
+                    send.finish()
+                        .map_err(|source| MotherIrohEndpointError::ProtocolIo {
+                            action: "finish malformed call response stream",
+                            source: boxed_source(source),
+                        })?;
+                    let served = MctIrohServedProtocol::MalformedCall {
+                        trace_id,
+                        evaluation,
+                        reply,
+                    };
+                    observation_sink
+                        .record(MctIrohObservationBatch {
+                            durability: MctIrohObservationDurability::Buffered,
+                            facts: vec![
+                                call_reply_emitted_fact(&served)
+                                    .expect("malformed call has reply fact"),
+                            ],
+                        })
+                        .await
+                        .map_err(|source| MotherIrohEndpointError::ProtocolProvider {
+                            action: "record malformed mct/call/0 reply",
+                            source,
+                        })?;
+                    connection.closed().await;
+                    return Ok(served);
+                }
+                Err(source) => {
+                    return Err(MotherIrohEndpointError::ProtocolIo {
+                        action: "read request stream",
+                        source: boxed_source(source),
+                    });
+                }
+            };
 
             let (response_bytes, served) = match alpn.as_slice() {
                 bytes if bytes == MCT_HELLO_ALPN.as_bytes() => {
@@ -1139,6 +1850,19 @@ impl MotherIrohEndpoint {
                             now,
                         },
                     );
+                    observation_sink
+                        .record(MctIrohObservationBatch {
+                            durability: MctIrohObservationDurability::BeforeEffect,
+                            facts: vec![MctIrohObservationFact::HelloEvaluation {
+                                trace_id: request.trace_id.clone(),
+                                evaluation: evaluation.clone(),
+                            }],
+                        })
+                        .await
+                        .map_err(|source| MotherIrohEndpointError::ProtocolProvider {
+                            action: "durably record mct/hello/0 evaluation",
+                            source,
+                        })?;
                     state.remember_hello(remote_endpoint_id.clone(), evaluation.clone());
                     let response = hello_response(
                         format!("reply-iroh-hello-{}", state.next_suffix()),
@@ -1162,26 +1886,93 @@ impl MotherIrohEndpoint {
                 }
                 bytes if bytes == MCT_CALL_ALPN.as_bytes() => {
                     let (mut request, inline_payload_bytes) =
-                        decode_call_request_envelope(&request_bytes)?;
+                        match decode_call_request_envelope(&request_bytes) {
+                            Ok(decoded) => decoded,
+                            Err(_) => {
+                                let (trace_id, evaluation, reply) =
+                                    malformed_call_evaluation_and_reply(state);
+                                let receipt_observation_id =
+                                    state.next_observation_id("call-received");
+                                observation_sink
+                                    .record(MctIrohObservationBatch {
+                                        durability: MctIrohObservationDurability::BeforeEffect,
+                                        facts: vec![
+                                            malformed_call_lifecycle_fact(
+                                                MctIrohCallLifecycleStage::Received,
+                                                trace_id.clone(),
+                                                &evaluation,
+                                                receipt_observation_id,
+                                            ),
+                                            malformed_call_lifecycle_fact(
+                                                MctIrohCallLifecycleStage::Malformed,
+                                                trace_id.clone(),
+                                                &evaluation,
+                                                evaluation.observation_id.clone(),
+                                            ),
+                                        ],
+                                    })
+                                    .await
+                                    .map_err(|source| {
+                                        MotherIrohEndpointError::ProtocolProvider {
+                                            action: "durably record malformed mct/call/0 envelope",
+                                            source,
+                                        }
+                                    })?;
+                                let response_bytes = encode_call_reply_envelope(&reply, None)?;
+                                send.write_all(&response_bytes).await.map_err(|source| {
+                                    MotherIrohEndpointError::ProtocolIo {
+                                        action: "write malformed call response stream",
+                                        source: boxed_source(source),
+                                    }
+                                })?;
+                                send.finish().map_err(|source| {
+                                    MotherIrohEndpointError::ProtocolIo {
+                                        action: "finish malformed call response stream",
+                                        source: boxed_source(source),
+                                    }
+                                })?;
+                                let served = MctIrohServedProtocol::MalformedCall {
+                                    trace_id,
+                                    evaluation,
+                                    reply,
+                                };
+                                observation_sink
+                                    .record(MctIrohObservationBatch {
+                                        durability: MctIrohObservationDurability::Buffered,
+                                        facts: vec![
+                                            call_reply_emitted_fact(&served)
+                                                .expect("malformed call has reply fact"),
+                                        ],
+                                    })
+                                    .await
+                                    .map_err(|source| {
+                                        MotherIrohEndpointError::ProtocolProvider {
+                                            action: "record malformed mct/call/0 reply",
+                                            source,
+                                        }
+                                    })?;
+                                connection.closed().await;
+                                return Ok(served);
+                            }
+                        };
                     request.received_over.endpoint_id = remote_endpoint_id.clone();
                     request.received_over.alpn = MCT_CALL_ALPN.into();
                     request.received_over.connection_side = ConnectionSide::Incoming;
-                    request.validate().map_err(|source| {
-                        MotherIrohEndpointError::ProtocolKernel {
-                            action: "validate inbound mct/call/0 request",
-                            source,
-                        }
-                    })?;
-
-                    let payload_decision = evaluate_payload_integrity(
-                        PayloadIntegritySubject::Request,
-                        &request.payload,
-                        &observed_inline_payload(inline_payload_bytes.as_deref()),
-                        MCT_INLINE_PAYLOAD_MAX_BYTES as u64,
-                    );
-                    let mut evaluation = if payload_decision.outcome
-                        == PayloadIntegrityOutcome::Matched
-                    {
+                    let validation_failed = request.validate().is_err();
+                    let payload_decision = (!validation_failed).then(|| {
+                        evaluate_payload_integrity(
+                            PayloadIntegritySubject::Request,
+                            &request.payload,
+                            &observed_inline_payload(inline_payload_bytes.as_deref()),
+                            MCT_INLINE_PAYLOAD_MAX_BYTES as u64,
+                        )
+                    });
+                    let constructed_observation_id = state.next_observation_id("call-constructed");
+                    let mut evaluation = if validation_failed {
+                        malformed_request_evaluation(&request, state)
+                    } else if payload_decision.as_ref().is_some_and(|decision| {
+                        decision.outcome == PayloadIntegrityOutcome::Matched
+                    }) {
                         let hello = state
                             .hello_for_endpoint(&remote_endpoint_id)
                             .unwrap_or_else(|| {
@@ -1190,12 +1981,22 @@ impl MotherIrohEndpoint {
                         evaluate_call_protocol(
                             &request,
                             &hello,
-                            CallEvaluationIds {
-                                decision_id: state.next_decision_id("call"),
-                                observation_id: state.next_observation_id("call"),
+                            CallEvaluationContext {
+                                ids: CallEvaluationIds {
+                                    decision_id: state.next_decision_id("call"),
+                                    observation_id: state.next_observation_id("call"),
+                                },
+                                current_peer_authority: MctPeerAuthoritySnapshot {
+                                    bindings: bindings.to_vec(),
+                                    policy_revision: HelloPolicy::default().current_policy_revision,
+                                },
+                                now: now.clone(),
                             },
                         )
                     } else {
+                        let payload_decision = payload_decision
+                            .as_ref()
+                            .expect("validated request has payload integrity decision");
                         payload_malformed_evaluation(
                             &request,
                             state,
@@ -1203,6 +2004,28 @@ impl MotherIrohEndpoint {
                             payload_decision.safe_message.clone(),
                         )
                     };
+                    let prefix_facts = if evaluation.outcome == CallProtocolOutcome::Malformed {
+                        vec![
+                            call_received_fact(&request),
+                            call_malformed_fact(&request, &evaluation),
+                        ]
+                    } else {
+                        vec![
+                            call_received_fact(&request),
+                            call_constructed_fact(&request, constructed_observation_id),
+                            call_authority_fact(&request, &evaluation),
+                        ]
+                    };
+                    observation_sink
+                        .record(MctIrohObservationBatch {
+                            durability: MctIrohObservationDurability::BeforeEffect,
+                            facts: prefix_facts,
+                        })
+                        .await
+                        .map_err(|source| MotherIrohEndpointError::ProtocolProvider {
+                            action: "durably record mct/call/0 authority prefix",
+                            source,
+                        })?;
                     let handled = if evaluation.is_accepted_for_routing() {
                         Some(call_handler(
                             &request,
@@ -1233,6 +2056,22 @@ impl MotherIrohEndpoint {
                             .and_then(|handled| handled.route_taken.clone()),
                         state.next_observation_id("call-reply"),
                     );
+                    if evaluation.outcome != CallProtocolOutcome::Malformed {
+                        observation_sink
+                            .record(MctIrohObservationBatch {
+                                durability: MctIrohObservationDurability::Buffered,
+                                facts: vec![call_result_fact(
+                                    &request,
+                                    &evaluation,
+                                    state.next_observation_id("call-result"),
+                                )],
+                            })
+                            .await
+                            .map_err(|source| MotherIrohEndpointError::ProtocolProvider {
+                                action: "record mct/call/0 result",
+                                source,
+                            })?;
+                    }
                     let response_bytes = encode_call_reply_envelope(
                         &reply,
                         handled
@@ -1265,6 +2104,18 @@ impl MotherIrohEndpoint {
                     action: "finish response stream",
                     source: boxed_source(source),
                 })?;
+            if let Some(reply_fact) = call_reply_emitted_fact(&served) {
+                observation_sink
+                    .record(MctIrohObservationBatch {
+                        durability: MctIrohObservationDurability::Buffered,
+                        facts: vec![reply_fact],
+                    })
+                    .await
+                    .map_err(|source| MotherIrohEndpointError::ProtocolProvider {
+                        action: "record mct/call/0 reply emission",
+                        source,
+                    })?;
+            }
             connection.closed().await;
             Ok(served)
         })
@@ -1435,6 +2286,7 @@ fn denied_missing_hello(
         selected_binding_id: None,
         selected_node_id: None,
         selected_vision_id: None,
+        selected_policy_revision: None,
         negotiated_protocol: None,
         accepted_alpns: Vec::new(),
         hello_outcome: HelloOutcome::Denied,

@@ -159,6 +159,7 @@ pub(super) fn evaluate_hello_internal(
         selected_binding_id: Some(binding.binding_id.clone()),
         selected_node_id: Some(binding.scope.mct_node_id.clone()),
         selected_vision_id: Some(binding.scope.vision_id.clone()),
+        selected_policy_revision: Some(binding.policy_revision),
         negotiated_protocol: Some(policy.protocol.clone()),
         accepted_alpns,
         hello_outcome: HelloOutcome::Admitted,
@@ -219,6 +220,7 @@ fn denied(
         selected_binding_id: None,
         selected_node_id: None,
         selected_vision_id: None,
+        selected_policy_revision: None,
         negotiated_protocol: None,
         accepted_alpns: Vec::new(),
         hello_outcome: match safe_reason {

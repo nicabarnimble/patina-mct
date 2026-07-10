@@ -206,11 +206,18 @@ async fn serve_two_local_connections(
                 let evaluation = evaluate_call_protocol(
                     &request,
                     &hello,
-                    CallEvaluationIds {
-                        decision_id: DecisionId::new("decision-iroh-call")
-                            .expect("string ID literal/generated value must be non-empty"),
-                        observation_id: ObservationId::new("obs-iroh-call-decision")
-                            .expect("string ID literal/generated value must be non-empty"),
+                    CallEvaluationContext {
+                        ids: CallEvaluationIds {
+                            decision_id: DecisionId::new("decision-iroh-call")
+                                .expect("string ID literal/generated value must be non-empty"),
+                            observation_id: ObservationId::new("obs-iroh-call-decision")
+                                .expect("string ID literal/generated value must be non-empty"),
+                        },
+                        current_peer_authority: MctPeerAuthoritySnapshot {
+                            bindings: bindings.clone(),
+                            policy_revision: HelloPolicy::default().current_policy_revision,
+                        },
+                        now: Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
                     },
                 );
                 state.lock().await.last_call = Some(evaluation.clone());

@@ -1119,6 +1119,7 @@ mod tests {
             selected_binding_id: None,
             selected_node_id: None,
             selected_vision_id: None,
+            selected_policy_revision: None,
             negotiated_protocol: None,
             accepted_alpns: Vec::new(),
             hello_outcome: HelloOutcome::Denied,

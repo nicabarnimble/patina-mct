@@ -21,13 +21,16 @@ pub use endpoint::{
 };
 pub use identity::{
     MCT_PEER_BINDING_SIGNATURE_PREFIX, MctPeerBindingSignatureVerification,
-    endpoint_id_for_secret_key_hex, load_or_create_node_secret_key_hex,
-    sign_peer_binding_signature_ref, verify_peer_binding_signature_ref,
+    endpoint_id_for_secret_key_hex, generate_node_secret_key_hex,
+    load_or_create_node_secret_key_hex, sign_peer_binding_signature_ref,
+    verify_peer_binding_signature_ref, write_new_node_secret_key_file,
 };
 pub use serve::{
     MCT_CALL_FRAME_READ_BUDGET_BYTES, MCT_INLINE_PAYLOAD_MAX_BYTES,
-    MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES, MctIrohCallHandlerResult, MctIrohCallPayloadReply,
-    MctIrohConcurrentServeConfig, MctIrohPeerCallReport, MctIrohServeEvent, MctIrohServeState,
+    MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES, MctIrohCallHandlerResult, MctIrohCallLifecycleFact,
+    MctIrohCallLifecycleStage, MctIrohCallPayloadReply, MctIrohConcurrentServeConfig,
+    MctIrohObservationBatch, MctIrohObservationDurability, MctIrohObservationFact,
+    MctIrohObservationSink, MctIrohPeerCallReport, MctIrohServeEvent, MctIrohServeState,
     MctIrohServedProtocol,
 };
 
@@ -45,7 +48,18 @@ mod tests {
     use crate::test_support::{run_local_iroh_echo_roundtrip, run_unknown_peer_denial_roundtrip};
     use iroh::{Endpoint, RelayMode, endpoint::presets};
     use mct_kernel::*;
-    use std::time::Duration;
+    use std::{
+        sync::{
+            Arc, Mutex, OnceLock,
+            atomic::{AtomicU64, Ordering},
+        },
+        time::Duration,
+    };
+
+    fn test_observation_sink() -> &'static MctIrohObservationSink {
+        static SINK: OnceLock<MctIrohObservationSink> = OnceLock::new();
+        SINK.get_or_init(|| MctIrohObservationSink::new(|_| async { Ok::<_, std::io::Error>(()) }))
+    }
 
     #[test]
     fn exposes_version() {
@@ -134,6 +148,7 @@ mod tests {
             server.serve_next(
                 &mut state,
                 std::slice::from_ref(&binding),
+                test_observation_sink(),
                 Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
                 None,
             ),
@@ -152,6 +167,7 @@ mod tests {
             server.serve_next(
                 &mut state,
                 std::slice::from_ref(&binding),
+                test_observation_sink(),
                 Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
                 Some(
                     ResultRef::new("result-public-iroh")
@@ -197,6 +213,7 @@ mod tests {
             server.serve_next(
                 &mut state,
                 std::slice::from_ref(&binding),
+                test_observation_sink(),
                 Timestamp::new("2026-07-02T00:00:00Z").unwrap(),
                 None,
             ),
@@ -242,6 +259,7 @@ mod tests {
             .serve_next_with_call_handler_timeout(
                 &mut state,
                 &[],
+                test_observation_sink(),
                 Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
                 Duration::from_secs(2),
                 |_, _, _| MctIrohCallHandlerResult::accepted_for_routing(None),
@@ -287,6 +305,7 @@ mod tests {
             .serve_next_with_call_handler_timeout(
                 &mut state,
                 &[],
+                test_observation_sink(),
                 Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
                 Duration::from_secs(2),
                 |_, _, _| MctIrohCallHandlerResult::accepted_for_routing(None),
@@ -389,6 +408,7 @@ mod tests {
             server.serve_next(
                 &mut state,
                 std::slice::from_ref(&binding),
+                test_observation_sink(),
                 Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
                 None,
             ),
@@ -400,6 +420,7 @@ mod tests {
             server.serve_next_with_call_handler(
                 &mut state,
                 std::slice::from_ref(&binding),
+                test_observation_sink(),
                 Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
                 |_, evaluation, _| {
                     assert!(evaluation.is_accepted_for_routing());
@@ -432,6 +453,273 @@ mod tests {
         client.close().await;
     }
 
+    fn collecting_observation_sink(
+        batches: Arc<Mutex<Vec<MctIrohObservationBatch>>>,
+    ) -> MctIrohObservationSink {
+        MctIrohObservationSink::new(move |batch| {
+            let batches = Arc::clone(&batches);
+            async move {
+                batches.lock().unwrap().push(batch);
+                Ok::<_, std::io::Error>(())
+            }
+        })
+    }
+
+    async fn raw_call_frame(
+        ticket: &MotherIrohEndpointTicket,
+        bytes: &[u8],
+    ) -> MotherIrohEndpointResult<Vec<u8>> {
+        let endpoint = Endpoint::builder(presets::N0)
+            .relay_mode(RelayMode::Disabled)
+            .alpns(mct_alpn_bytes())
+            .bind()
+            .await
+            .unwrap();
+        let connection = endpoint
+            .connect(endpoint_addr_from_ticket(ticket)?, MCT_CALL_ALPN.as_bytes())
+            .await
+            .map_err(|source| MotherIrohEndpointError::ProtocolIo {
+                action: "connect raw call test client",
+                source: Box::new(source),
+            })?;
+        let (mut send, mut recv) =
+            connection
+                .open_bi()
+                .await
+                .map_err(|source| MotherIrohEndpointError::ProtocolIo {
+                    action: "open raw call test stream",
+                    source: Box::new(source),
+                })?;
+        send.write_all(bytes)
+            .await
+            .map_err(|source| MotherIrohEndpointError::ProtocolIo {
+                action: "write raw call test frame",
+                source: Box::new(source),
+            })?;
+        send.finish()
+            .map_err(|source| MotherIrohEndpointError::ProtocolIo {
+                action: "finish raw call test frame",
+                source: Box::new(source),
+            })?;
+        recv.read_to_end(MCT_CALL_FRAME_READ_BUDGET_BYTES)
+            .await
+            .map_err(|source| MotherIrohEndpointError::ProtocolIo {
+                action: "read raw call test response",
+                source: Box::new(source),
+            })
+    }
+
+    #[tokio::test]
+    async fn concurrent_call_sink_covers_success_lifecycle() {
+        let server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let server_ticket = server.ticket();
+        let client_endpoint_id = client.snapshot().endpoint_id;
+        let binding = test_peer_binding(&client_endpoint_id);
+        let batches = Arc::new(Mutex::new(Vec::new()));
+        let sink = collecting_observation_sink(Arc::clone(&batches));
+        let serve_task = tokio::spawn(async move {
+            server
+                .serve_concurrent_with_call_handler(
+                    MctIrohServeState::new(),
+                    vec![binding],
+                    MctIrohConcurrentServeConfig::new(sink),
+                    || Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
+                    |_, _, _| async {
+                        MctIrohCallHandlerResult::completed(
+                            ResultRef::new("result-lifecycle")
+                                .expect("string ID literal/generated value must be non-empty"),
+                        )
+                    },
+                )
+                .await
+        });
+
+        let trace_id = TraceId::new("trace-call-lifecycle")
+            .expect("string ID literal/generated value must be non-empty");
+        let hello = test_hello_request(&client_endpoint_id, &trace_id);
+        let hello_response = client.send_hello(&server_ticket, &hello).await.unwrap();
+        let call = test_call_request(&client_endpoint_id, &trace_id, &hello_response);
+        let reply = client.send_call(&server_ticket, &call).await.unwrap();
+        assert_eq!(reply.reply_outcome, CallProtocolReplyOutcome::Success);
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let stages = batches
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .flat_map(|batch| batch.facts.iter())
+                    .filter_map(MctIrohObservationFact::call_stage)
+                    .collect::<Vec<_>>();
+                if stages.contains(&MctIrohCallLifecycleStage::ReplyEmitted) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let stages = batches
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|batch| batch.facts.iter())
+            .filter_map(MctIrohObservationFact::call_stage)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            stages,
+            vec![
+                MctIrohCallLifecycleStage::Received,
+                MctIrohCallLifecycleStage::Constructed,
+                MctIrohCallLifecycleStage::Authorized,
+                MctIrohCallLifecycleStage::ResultRecorded,
+                MctIrohCallLifecycleStage::ReplyEmitted,
+            ]
+        );
+
+        client.close().await;
+        serve_task.abort();
+    }
+
+    #[tokio::test]
+    async fn denied_call_fact_is_recorded_before_reply() {
+        let server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let server_ticket = server.ticket();
+        let client_endpoint_id = client.snapshot().endpoint_id;
+        let binding = test_peer_binding(&client_endpoint_id);
+        let denial_recorded = Arc::new(AtomicU64::new(0));
+        let sink_denial_recorded = Arc::clone(&denial_recorded);
+        let sink = MctIrohObservationSink::new(move |batch| {
+            let denial_recorded = Arc::clone(&sink_denial_recorded);
+            async move {
+                if batch
+                    .facts
+                    .iter()
+                    .any(|fact| fact.call_stage() == Some(MctIrohCallLifecycleStage::Denied))
+                {
+                    denial_recorded.fetch_add(1, Ordering::SeqCst);
+                }
+                Ok::<_, std::io::Error>(())
+            }
+        });
+        let serve_task = tokio::spawn(async move {
+            server
+                .serve_concurrent_with_call_handler(
+                    MctIrohServeState::new(),
+                    vec![binding],
+                    MctIrohConcurrentServeConfig::new(sink),
+                    || Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
+                    |_, _, _| async { panic!("denied calls must not reach the call handler") },
+                )
+                .await
+        });
+
+        let trace_id = TraceId::new("trace-call-denied-before-reply")
+            .expect("string ID literal/generated value must be non-empty");
+        let call = test_call_request(&client_endpoint_id, &trace_id, &fake_hello_response());
+        let reply = client.send_call(&server_ticket, &call).await.unwrap();
+        assert_eq!(reply.reply_outcome, CallProtocolReplyOutcome::Denied);
+        assert_eq!(denial_recorded.load(Ordering::SeqCst), 1);
+
+        client.close().await;
+        serve_task.abort();
+    }
+
+    #[tokio::test]
+    async fn malformed_frames_are_observed_before_safe_reply_and_append_failure_suppresses_reply() {
+        let server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let server_ticket = server.ticket();
+        let batches = Arc::new(Mutex::new(Vec::new()));
+        let sink = collecting_observation_sink(Arc::clone(&batches));
+        let serve_task = tokio::spawn(async move {
+            server
+                .serve_concurrent_with_call_handler(
+                    MctIrohServeState::new(),
+                    Vec::new(),
+                    MctIrohConcurrentServeConfig::new(sink),
+                    || Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
+                    |_, _, _| async {
+                        panic!("malformed requests must not reach the call handler")
+                    },
+                )
+                .await
+        });
+        let response = raw_call_frame(&server_ticket, b"{not-json").await.unwrap();
+        let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+        assert_eq!(response["reply_outcome"], "malformed");
+        assert_eq!(response["safe_message"], "malformed request");
+        let facts = batches
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|batch| batch.facts.iter())
+            .filter_map(MctIrohObservationFact::call_stage)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            facts,
+            vec![
+                MctIrohCallLifecycleStage::Received,
+                MctIrohCallLifecycleStage::Malformed,
+                MctIrohCallLifecycleStage::ReplyEmitted,
+            ]
+        );
+
+        let oversized = vec![b'x'; MCT_CALL_FRAME_READ_BUDGET_BYTES + 1];
+        let oversized_response = raw_call_frame(&server_ticket, &oversized).await.unwrap();
+        let oversized_response: serde_json::Value =
+            serde_json::from_slice(&oversized_response).unwrap();
+        assert_eq!(oversized_response["reply_outcome"], "malformed");
+        assert_eq!(oversized_response["safe_message"], "malformed request");
+        let facts = batches
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|batch| batch.facts.iter())
+            .filter_map(MctIrohObservationFact::call_stage)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            &facts[facts.len() - 3..],
+            &[
+                MctIrohCallLifecycleStage::Received,
+                MctIrohCallLifecycleStage::Malformed,
+                MctIrohCallLifecycleStage::ReplyEmitted,
+            ]
+        );
+        serve_task.abort();
+
+        let failing_server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let failing_ticket = failing_server.ticket();
+        let failing_sink = MctIrohObservationSink::new(|batch| async move {
+            if batch
+                .facts
+                .iter()
+                .any(|fact| fact.call_stage() == Some(MctIrohCallLifecycleStage::Malformed))
+            {
+                Err(std::io::Error::other("injected malformed append failure"))
+            } else {
+                Ok(())
+            }
+        });
+        let failing_task = tokio::spawn(async move {
+            failing_server
+                .serve_concurrent_with_call_handler(
+                    MctIrohServeState::new(),
+                    Vec::new(),
+                    MctIrohConcurrentServeConfig::new(failing_sink),
+                    || Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
+                    |_, _, _| async {
+                        panic!("malformed requests must not reach the call handler")
+                    },
+                )
+                .await
+        });
+        assert!(raw_call_frame(&failing_ticket, b"{not-json").await.is_err());
+        assert!(!failing_task.is_finished());
+        failing_task.abort();
+    }
+
     #[tokio::test]
     async fn concurrent_serve_keeps_peer_hello_state_separate() {
         let server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
@@ -447,7 +735,7 @@ mod tests {
                 .serve_concurrent_with_call_handler(
                     MctIrohServeState::new(),
                     vec![first_binding, second_binding],
-                    MctIrohConcurrentServeConfig::default(),
+                    MctIrohConcurrentServeConfig::new(test_observation_sink().clone()),
                     || Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
                     |_, _, _| async {
                         MctIrohCallHandlerResult::completed(
@@ -495,6 +783,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_hello_observation_prevents_response_and_remembered_admission() {
+        let server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let server_ticket = server.ticket();
+        let client_endpoint_id = client.snapshot().endpoint_id;
+        let binding = test_peer_binding(&client_endpoint_id);
+        let execution_count = Arc::new(AtomicU64::new(0));
+        let handler_execution_count = Arc::clone(&execution_count);
+        let append_attempt_count = Arc::new(AtomicU64::new(0));
+        let sink_append_attempt_count = Arc::clone(&append_attempt_count);
+        let (events, mut received_events) = tokio::sync::mpsc::channel(8);
+        let serve_task = tokio::spawn(async move {
+            server
+                .serve_concurrent_with_call_handler(
+                    MctIrohServeState::new(),
+                    vec![binding],
+                    MctIrohConcurrentServeConfig {
+                        events: Some(events),
+                        ..MctIrohConcurrentServeConfig::new(MctIrohObservationSink::new(
+                            move |batch| {
+                                let append_attempt_count = Arc::clone(&sink_append_attempt_count);
+                                async move {
+                                    if batch.facts.iter().any(|fact| {
+                                        matches!(
+                                            fact,
+                                            MctIrohObservationFact::HelloEvaluation { .. }
+                                        )
+                                    }) {
+                                        append_attempt_count.fetch_add(1, Ordering::SeqCst);
+                                        Err(std::io::Error::other("injected ledger append failure"))
+                                    } else {
+                                        Ok(())
+                                    }
+                                }
+                            },
+                        ))
+                    },
+                    || Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
+                    move |_, _, _| {
+                        let execution_count = Arc::clone(&handler_execution_count);
+                        async move {
+                            execution_count.fetch_add(1, Ordering::SeqCst);
+                            MctIrohCallHandlerResult::completed(
+                                ResultRef::new("result-observation-failure")
+                                    .expect("string ID literal/generated value must be non-empty"),
+                            )
+                        }
+                    },
+                )
+                .await
+        });
+
+        let trace_id = TraceId::new("trace-failed-hello-observation")
+            .expect("string ID literal/generated value must be non-empty");
+        let hello = test_hello_request(&client_endpoint_id, &trace_id);
+        assert!(client.send_hello(&server_ticket, &hello).await.is_err());
+
+        let call = test_call_request(&client_endpoint_id, &trace_id, &fake_hello_response());
+        let reply = client.send_call(&server_ticket, &call).await.unwrap();
+        assert_eq!(reply.reply_outcome, CallProtocolReplyOutcome::Denied);
+        assert_eq!(reply.safe_message, "not authorized");
+        assert_eq!(append_attempt_count.load(Ordering::SeqCst), 1);
+        assert_eq!(execution_count.load(Ordering::SeqCst), 0);
+
+        let evaluation = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(MctIrohServeEvent::Served(served)) = received_events.recv().await
+                    && let MctIrohServedProtocol::Call { evaluation, .. } = *served
+                {
+                    break evaluation;
+                }
+            }
+        })
+        .await
+        .expect("call evaluation event");
+        assert_eq!(evaluation.reason, CallProtocolReason::HelloNotAdmitted);
+
+        client.close().await;
+        serve_task.abort();
+    }
+
+    #[tokio::test]
     async fn concurrent_serve_requires_signed_peer_binding_when_configured() {
         let server_secret = iroh::SecretKey::generate();
         let server_secret_hex = crate::identity::encode_hex(&server_secret.to_bytes());
@@ -524,7 +894,7 @@ mod tests {
                     vec![signed_binding, unsigned_binding],
                     MctIrohConcurrentServeConfig {
                         require_binding_signature: true,
-                        ..MctIrohConcurrentServeConfig::default()
+                        ..MctIrohConcurrentServeConfig::new(test_observation_sink().clone())
                     },
                     || Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
                     |_, _, _| async { MctIrohCallHandlerResult::accepted_for_routing(None) },
@@ -571,7 +941,7 @@ mod tests {
                     MctIrohConcurrentServeConfig {
                         max_concurrent_connections: 1,
                         events: Some(events),
-                        ..MctIrohConcurrentServeConfig::default()
+                        ..MctIrohConcurrentServeConfig::new(test_observation_sink().clone())
                     },
                     || Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
                     |_, _, _| async { MctIrohCallHandlerResult::accepted_for_routing(None) },
@@ -702,6 +1072,143 @@ mod tests {
             ObservationId::new("obs-iroh-call-decision")
                 .expect("string ID literal/generated value must be non-empty")
         );
+    }
+
+    #[tokio::test]
+    async fn call_rechecks_binding_revocation_after_hello() {
+        assert_current_binding_denial(
+            |binding| binding.binding_state = BindingState::Revoked,
+            Timestamp::new("2026-05-31T00:00:03Z").unwrap(),
+            CallProtocolReason::BindingRevoked,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn call_rechecks_binding_expiry_after_hello() {
+        assert_current_binding_denial(
+            |binding| {
+                binding.expires_at = Some(Timestamp::new("2026-05-31T00:00:03Z").unwrap());
+            },
+            Timestamp::new("2026-05-31T00:00:04Z").unwrap(),
+            CallProtocolReason::BindingExpired,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn call_rechecks_binding_policy_revision_after_hello() {
+        assert_current_binding_denial(
+            |binding| binding.policy_revision = 2,
+            Timestamp::new("2026-05-31T00:00:03Z").unwrap(),
+            CallProtocolReason::PolicyRevisionStale,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn call_rechecks_narrowed_alpn_scope_after_hello() {
+        assert_current_binding_denial(
+            |binding| binding.scope.allowed_alpns = vec![MCT_HELLO_ALPN.into()],
+            Timestamp::new("2026-05-31T00:00:03Z").unwrap(),
+            CallProtocolReason::AlpnNotAdmitted,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn call_rechecks_narrowed_vision_scope_after_hello() {
+        assert_current_binding_denial(
+            |binding| {
+                binding.scope.vision_id = VisionId::new("vision-narrowed")
+                    .expect("string ID literal/generated value must be non-empty");
+            },
+            Timestamp::new("2026-05-31T00:00:03Z").unwrap(),
+            CallProtocolReason::VisionMismatch,
+        )
+        .await;
+    }
+
+    async fn assert_current_binding_denial(
+        mutate: impl FnOnce(&mut MctPeerBinding),
+        call_time: Timestamp,
+        expected_reason: CallProtocolReason,
+    ) {
+        let server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let server_ticket = server.ticket();
+        let client_endpoint_id = client.snapshot().endpoint_id;
+        let binding = Arc::new(Mutex::new(test_peer_binding(&client_endpoint_id)));
+        let now = Arc::new(Mutex::new(Timestamp::new("2026-05-31T00:00:02Z").unwrap()));
+        let execution_count = Arc::new(AtomicU64::new(0));
+        let (events, mut received_events) = tokio::sync::mpsc::channel(8);
+
+        let provider_binding = Arc::clone(&binding);
+        let server_now = Arc::clone(&now);
+        let handler_execution_count = Arc::clone(&execution_count);
+        let serve_task = tokio::spawn(async move {
+            server
+                .serve_concurrent_with_binding_provider(
+                    MctIrohServeState::new(),
+                    MctIrohConcurrentServeConfig {
+                        events: Some(events),
+                        ..MctIrohConcurrentServeConfig::new(test_observation_sink().clone())
+                    },
+                    move || server_now.lock().unwrap().clone(),
+                    move || {
+                        let current = provider_binding.lock().unwrap().clone();
+                        async move {
+                            Ok(MctPeerAuthoritySnapshot {
+                                policy_revision: current.policy_revision,
+                                bindings: vec![current],
+                            })
+                        }
+                    },
+                    move |_, _, _| {
+                        let execution_count = Arc::clone(&handler_execution_count);
+                        async move {
+                            execution_count.fetch_add(1, Ordering::SeqCst);
+                            MctIrohCallHandlerResult::completed(
+                                ResultRef::new("result-current-binding")
+                                    .expect("string ID literal/generated value must be non-empty"),
+                            )
+                        }
+                    },
+                )
+                .await
+        });
+
+        let trace_id = TraceId::new("trace-current-binding")
+            .expect("string ID literal/generated value must be non-empty");
+        let hello = test_hello_request(&client_endpoint_id, &trace_id);
+        let hello_response = client.send_hello(&server_ticket, &hello).await.unwrap();
+        assert_eq!(hello_response.hello_outcome, HelloOutcome::Admitted);
+
+        mutate(&mut binding.lock().unwrap());
+        *now.lock().unwrap() = call_time;
+
+        let call = test_call_request(&client_endpoint_id, &trace_id, &hello_response);
+        let reply = client.send_call(&server_ticket, &call).await.unwrap();
+        assert_eq!(reply.reply_outcome, CallProtocolReplyOutcome::Denied);
+        assert_eq!(reply.safe_message, "not authorized");
+        assert_eq!(execution_count.load(Ordering::SeqCst), 0);
+
+        let evaluation = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(MctIrohServeEvent::Served(served)) = received_events.recv().await
+                    && let MctIrohServedProtocol::Call { evaluation, .. } = *served
+                {
+                    break evaluation;
+                }
+            }
+        })
+        .await
+        .expect("call evaluation event");
+        assert_eq!(evaluation.outcome, CallProtocolOutcome::Denied);
+        assert_eq!(evaluation.reason, expected_reason);
+
+        client.close().await;
+        serve_task.abort();
     }
 
     fn test_peer_binding(endpoint_id: &EndpointIdText) -> MctPeerBinding {
@@ -855,6 +1362,7 @@ mod tests {
             accepted_alpns: vec![MCT_CALL_ALPN.into()],
             safe_message: "admitted".into(),
             retry_after: None,
+            capability_view: None,
             response_observation_id: ObservationId::new("obs-fake-hello-reply")
                 .expect("string ID literal/generated value must be non-empty"),
         }
@@ -900,6 +1408,7 @@ mod tests {
             server.serve_next(
                 &mut state,
                 std::slice::from_ref(&binding),
+                test_observation_sink(),
                 Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
                 None,
             ),
@@ -921,6 +1430,7 @@ mod tests {
             server.serve_next_with_call_handler(
                 &mut state,
                 std::slice::from_ref(&binding),
+                test_observation_sink(),
                 Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
                 |_, evaluation, payload| {
                     assert!(evaluation.is_accepted_for_routing());
@@ -976,6 +1486,7 @@ mod tests {
             server.serve_next(
                 &mut state,
                 &[],
+                test_observation_sink(),
                 Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
                 None,
             ),
@@ -1025,6 +1536,7 @@ mod tests {
             server.serve_next(
                 &mut state,
                 &[],
+                test_observation_sink(),
                 Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
                 None,
             ),
@@ -1058,6 +1570,7 @@ mod tests {
             server.serve_next(
                 &mut state,
                 &[],
+                test_observation_sink(),
                 Timestamp::new("2026-05-31T00:00:03Z").unwrap(),
                 None,
             ),

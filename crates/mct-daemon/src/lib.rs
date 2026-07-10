@@ -48,9 +48,10 @@ pub use composition::{
 };
 pub use config::{
     MctConfigChildAuthorityProjection, MctDaemonConfig, MctDaemonConfigStore, MctLocalNodeIdentity,
-    MctOperatorChildScope, MctOperatorNodeScope, MctPeerAddressBookEntry,
-    MctPeerAuthorityProjection, MctStoredChildApproval, MctStoredChildAssignment,
-    current_timestamp, current_timestamp_string, default_config_path,
+    MctOperatorChildScope, MctOperatorNodeScope, MctOutboundPeerBindingPresentation,
+    MctPeerAddressBookEntry, MctPeerAuthorityProjection, MctStoredChildApproval,
+    MctStoredChildAssignment, current_timestamp, current_timestamp_string, default_config_path,
+    outbound_peer_binding_for_local,
 };
 pub use control::{
     MctControlPlaneAuthPolicy, MctControlPlaneResponse, MctControlPlaneSnapshot,
@@ -62,15 +63,18 @@ pub use control::{
 };
 #[cfg(unix)]
 pub use control::{
-    serve_uds_control_once, serve_uds_control_once_with_auth,
+    MctUdsControlMutationHandler, serve_uds_control_once, serve_uds_control_once_with_auth,
     serve_uds_control_once_with_snapshot_result,
     serve_uds_control_once_with_snapshot_result_and_blob_store,
+    serve_uds_control_once_with_snapshot_result_blob_store_and_mutations,
 };
 pub use cycle::{
     MctChildTaskCycleReport, MctDrainedEvent, MctTaskCycleChild, run_child_task_cycle,
 };
 pub use federation::{
-    MctFederationCapabilityView, MctFederationPeerView, build_federation_capability_view,
+    MctFederationCallableSurfaceView, MctFederationCapabilityView, MctFederationPeerView,
+    build_federation_capability_view, build_federation_capability_view_with_children,
+    hello_capability_view_from_federation_view,
 };
 pub use inspector::{
     MctInspectorObservationQuery, MctInspectorObservationView, inspect_observation_entries,
@@ -89,8 +93,9 @@ pub use registry::{
 };
 pub use state::{
     ChildInvocationProvenance, MctCompositionRunRecord, MctMetricPoint, MctQueuedTaskRecord,
-    MctRegistrySourceRecord, MctRuntimeRunRecord, MctRuntimeRunState, MctRuntimeStateStore,
-    MctRuntimeStateSummary, MctTaskIntentRecord, MctTaskStatus, default_state_path,
+    MctRegistrySourceRecord, MctRemoteCallableSurfaceRecord, MctRemoteSurfaceRefresh,
+    MctRuntimeRunRecord, MctRuntimeRunState, MctRuntimeStateStore, MctRuntimeStateSummary,
+    MctTaskIntentRecord, MctTaskStatus, default_state_path,
 };
 pub use status::{
     MctDaemonHealth, MctDaemonReadiness, MctDaemonStatus, MctResidentStatus, daemon_status,

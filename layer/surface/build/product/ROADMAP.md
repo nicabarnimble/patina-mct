@@ -106,13 +106,18 @@ Dependency-ordered; each item assumes the ones before it.
       with redacted observations and scoped grants. Network egress and storage
       toys remain follow-up breadth.
 - [ ] **6. Multi-Vision publication** — per-Vision capability publication
-      and cross-Vision grants; the federation product. Route item 3 is
-      local-candidate only; remote route candidates and cross-Mother call
-      forwarding remain follow-on work here.
+      and cross-Vision grants; the federation product. Single-hop remote route
+      candidates and cross-Mother call forwarding are implemented under
+      `multi-mother-route-forwarding`; multi-Vision/cross-Vision authority
+      remains here. Future multi-hop/transitive routing also belongs here and
+      requires end-to-end caller identity (not per-hop rewriting) plus explicit
+      transitive-routing policy before implementation.
 
 ### Standing backlog (from the audit arc, non-blocking)
 
-- [ ] `main.rs` CLI decomposition (2,600+ lines of subcommand dispatch).
+- [x] `main.rs` CLI decomposition substantially addressed by Track 1 slice S2.5: binary-local CLI, control, ingress, and resident modules now own implementation and inline integration tests. `main.rs` intentionally retains entrypoint dispatch wiring, argument-token helpers, default paths, and help text.
+- [ ] Live node identity rotation — requires endpoint rebind plus peer re-admission design. Track 1 Slice 4 intentionally makes identity creation/rotation offline-only and refuses mutation while a resident endpoint is bound.
+- [ ] Consolidate the concurrent and single-connection Iroh call-serving branches behind one reviewed lifecycle routine without weakening the mandatory observation sink or malformed fail-closed ordering; Slice 3 intentionally made both public paths correct before attempting that behavior-owning refactor.
 - [ ] Property-based tests for ALPN intersection and payload validation.
 - [ ] Per-connection hello state (subsumed by item 1).
 - [x] Child SDK / packaging tooling in-repo (children currently built in

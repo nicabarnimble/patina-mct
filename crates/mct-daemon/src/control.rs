@@ -1,13 +1,11 @@
 use crate::{
     MCT_BLOB_MAX_BYTES, MctRuntimeRunRecord, MctRuntimeStateSummary,
-    local_blob_store_for_state_path,
     status::{MctDaemonHealth, MctDaemonReadiness, MctDaemonStatus, daemon_status},
 };
 use anyhow::{Context, Result, bail};
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use mct_iroh::MotherIrohEndpointSnapshot;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::{future::Future, path::Path, pin::Pin, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -108,15 +106,39 @@ pub struct MctControlPlaneResponse {
     pub body: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-struct MctBlobIngestRequest {
-    digest: String,
-    size_bytes: u64,
-    content_type: String,
-    bytes_base64: String,
+const MCT_UDS_CONTROL_READ_BUDGET_BYTES: usize = MCT_BLOB_MAX_BYTES.div_ceil(3) * 4 + 4096;
+
+#[cfg(unix)]
+type MctUdsControlMutationFuture =
+    Pin<Box<dyn Future<Output = MctControlPlaneResponse> + Send + 'static>>;
+
+#[cfg(unix)]
+type MctUdsControlMutationCallback =
+    dyn Fn(String, Vec<u8>) -> MctUdsControlMutationFuture + Send + Sync + 'static;
+
+/// Local-only extension point for binary-owned UDS mutation handlers.
+#[cfg(unix)]
+#[derive(Clone)]
+pub struct MctUdsControlMutationHandler {
+    callback: Arc<MctUdsControlMutationCallback>,
 }
 
-const MCT_UDS_CONTROL_READ_BUDGET_BYTES: usize = MCT_BLOB_MAX_BYTES.div_ceil(3) * 4 + 4096;
+#[cfg(unix)]
+impl MctUdsControlMutationHandler {
+    pub fn new<F, Fut>(callback: F) -> Self
+    where
+        F: Fn(String, Vec<u8>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = MctControlPlaneResponse> + Send + 'static,
+    {
+        Self {
+            callback: Arc::new(move |path, body| Box::pin(callback(path, body))),
+        }
+    }
+
+    async fn handle(&self, path: String, body: Vec<u8>) -> MctControlPlaneResponse {
+        (self.callback)(path, body).await
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MctControlPlaneAuthPolicy {
@@ -306,6 +328,22 @@ pub async fn serve_uds_control_once_with_snapshot_result_and_blob_store(
     snapshot: MctControlPlaneSnapshotResult,
     blob_state_path: Option<&Path>,
 ) -> Result<()> {
+    serve_uds_control_once_with_snapshot_result_blob_store_and_mutations(
+        listener,
+        snapshot,
+        blob_state_path,
+        None,
+    )
+    .await
+}
+
+#[cfg(unix)]
+pub async fn serve_uds_control_once_with_snapshot_result_blob_store_and_mutations(
+    listener: &UnixListener,
+    snapshot: MctControlPlaneSnapshotResult,
+    _blob_state_path: Option<&Path>,
+    mutation_handler: Option<&MctUdsControlMutationHandler>,
+) -> Result<()> {
     let (mut stream, _) = listener.accept().await.context("accept uds control")?;
     let request_bytes = read_http_request_bounded(&mut stream, MCT_UDS_CONTROL_READ_BUDGET_BYTES)
         .await
@@ -313,10 +351,12 @@ pub async fn serve_uds_control_once_with_snapshot_result_and_blob_store(
     let request = String::from_utf8_lossy(&request_bytes);
     let (method, path) = parse_http_request_line(&request)?;
     let authorization_header = parse_authorization_header(&request);
-    let response = if method == "POST" && path == "/blobs" {
-        match blob_state_path {
-            Some(state_path) => handle_blob_ingest_request(&request_bytes, state_path),
-            None => json_response(404, serde_json::json!({"error": "not found"})),
+    let response = if method == "POST"
+        && let Some(handler) = mutation_handler
+    {
+        match request_body(&request_bytes) {
+            Ok(body) => handler.handle(path.to_owned(), body.to_vec()).await,
+            Err(error) => json_response(400, serde_json::json!({"error": error.to_string()})),
         }
     } else {
         handle_control_plane_path_result_with_auth(
@@ -439,34 +479,6 @@ fn request_body(bytes: &[u8]) -> Result<&[u8]> {
     Ok(&bytes[headers_end + 4..])
 }
 
-fn handle_blob_ingest_request(request_bytes: &[u8], state_path: &Path) -> MctControlPlaneResponse {
-    let body = match request_body(request_bytes) {
-        Ok(body) => body,
-        Err(error) => return json_response(400, serde_json::json!({"error": error.to_string()})),
-    };
-    let request = match serde_json::from_slice::<MctBlobIngestRequest>(body) {
-        Ok(request) => request,
-        Err(error) => return json_response(400, serde_json::json!({"error": error.to_string()})),
-    };
-    if request.size_bytes > MCT_BLOB_MAX_BYTES as u64 {
-        return json_response(413, serde_json::json!({"error": "blob too large"}));
-    }
-    let bytes = match BASE64_STANDARD.decode(request.bytes_base64.as_bytes()) {
-        Ok(bytes) => bytes,
-        Err(error) => return json_response(400, serde_json::json!({"error": error.to_string()})),
-    };
-    let store = local_blob_store_for_state_path(state_path);
-    match store.ingest_reader(
-        &request.digest,
-        request.size_bytes,
-        &request.content_type,
-        std::io::Cursor::new(bytes),
-    ) {
-        Ok(handle) => json_response(201, serde_json::json!({"payload": handle})),
-        Err(error) => json_response(400, serde_json::json!({"error": error.safe_message()})),
-    }
-}
-
 fn http_response_bytes(response: &MctControlPlaneResponse) -> String {
     let reason = match response.status_code {
         200 => "OK",
@@ -511,7 +523,8 @@ fn json_response<T: Serialize>(status_code: u16, value: T) -> MctControlPlaneRes
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MctDaemonHealth, MctDaemonReadiness};
+    use crate::{MctDaemonHealth, MctDaemonReadiness, local_blob_store_for_state_path};
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 
     fn snapshot() -> MctControlPlaneSnapshot {
         MctControlPlaneSnapshot::new(
@@ -569,10 +582,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn uds_blob_ingest_request_writes_visible_blob() {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn uds_blob_ingest_requires_an_observing_mutation_owner() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
         let dir = tempfile::tempdir().unwrap();
         let state_path = dir.path().join("state.sqlite");
+        let socket_path = dir.path().join("control.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
         let bytes = b"control blob bytes";
         let digest = blake3::hash(bytes).to_hex().to_string();
         let body = serde_json::json!({
@@ -582,22 +600,102 @@ mod tests {
             "bytes_base64": BASE64_STANDARD.encode(bytes),
         })
         .to_string();
-        let request = format!(
-            "POST /blobs HTTP/1.1\r\nHost: local\r\nContent-Length: {}\r\n\r\n{}",
-            body.len(),
-            body
-        );
+        let server = tokio::spawn(async move {
+            serve_uds_control_once_with_snapshot_result_blob_store_and_mutations(
+                &listener,
+                Ok(snapshot()),
+                Some(&state_path),
+                None,
+            )
+            .await
+            .unwrap();
+        });
+        let mut client = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+        client
+            .write_all(
+                format!(
+                    "POST /blobs HTTP/1.1\r\nHost: local\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        client.shutdown().await.unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).await.unwrap();
+        server.await.unwrap();
 
-        let response = handle_blob_ingest_request(request.as_bytes(), &state_path);
-        assert_eq!(response.status_code, 201, "{}", response.body);
+        assert!(response.starts_with("HTTP/1.1 405"), "{response}");
         assert!(
-            local_blob_store_for_state_path(&state_path)
+            !local_blob_store_for_state_path(dir.path().join("state.sqlite"))
                 .visible_path(&digest)
                 .unwrap()
                 .exists()
         );
-        assert!(!response.body.contains("control blob bytes"));
-        assert!(!response.body.contains(&BASE64_STANDARD.encode(bytes)));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn uds_local_mutation_handler_receives_post_body() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("control.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let called = Arc::new(AtomicBool::new(false));
+        let callback_called = Arc::clone(&called);
+        let handler = MctUdsControlMutationHandler::new(move |path, body| {
+            let callback_called = Arc::clone(&callback_called);
+            async move {
+                callback_called.store(true, Ordering::SeqCst);
+                assert_eq!(path, "/peers/revoke");
+                assert_eq!(body, br#"{"peer":"mother-b"}"#);
+                MctControlPlaneResponse {
+                    status_code: 200,
+                    content_type: "application/json".into(),
+                    body: r#"{"status":"ok"}"#.into(),
+                }
+            }
+        });
+        let server = tokio::spawn(async move {
+            serve_uds_control_once_with_snapshot_result_blob_store_and_mutations(
+                &listener,
+                Ok(snapshot()),
+                None,
+                Some(&handler),
+            )
+            .await
+            .unwrap();
+        });
+        let mut client = tokio::net::UnixStream::connect(socket_path).await.unwrap();
+        let body = r#"{"peer":"mother-b"}"#;
+        client
+            .write_all(
+                format!(
+                    "POST /peers/revoke HTTP/1.1\r\nHost: local\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        server.await.unwrap();
+
+        assert!(called.load(Ordering::SeqCst));
+        assert!(
+            String::from_utf8(response)
+                .unwrap()
+                .starts_with("HTTP/1.1 200")
+        );
     }
 
     #[test]

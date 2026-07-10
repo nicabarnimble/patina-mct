@@ -1,5 +1,7 @@
 use super::*;
-use crate::peer::{MCT_CALL_ALPN, MctHelloAdmissionEvaluation};
+use crate::peer::{
+    BindingState, MCT_CALL_ALPN, MctHelloAdmissionEvaluation, MctPeerAuthoritySnapshot,
+};
 
 pub(super) fn evaluate_payload_integrity_internal(
     subject: PayloadIntegritySubject,
@@ -148,8 +150,14 @@ fn is_valid_blake3_hex(value: &str) -> bool {
 pub(super) fn evaluate_call_protocol_internal(
     request: &MctCallProtocolRequest,
     hello: &MctHelloAdmissionEvaluation,
-    ids: CallEvaluationIds,
+    context: CallEvaluationContext,
 ) -> MctCallProtocolEvaluation {
+    let CallEvaluationContext {
+        ids,
+        current_peer_authority,
+        now,
+    } = context;
+
     if !hello.is_admitted() || request.authority.hello_decision_id != hello.decision_id {
         return denied(
             request,
@@ -206,6 +214,12 @@ pub(super) fn evaluate_call_protocol_internal(
         );
     }
 
+    if let Some(reason) =
+        current_binding_denial_reason(request, hello, &current_peer_authority, &now)
+    {
+        return denied(request, ids, reason, "not authorized");
+    }
+
     if request.call.authority_context.policy_revision < request.authority.policy_revision
         || request.call.authority_context.grants_revision < request.authority.grants_revision
     {
@@ -237,6 +251,66 @@ pub(super) fn evaluate_call_protocol_internal(
         safe_message: "accepted for routing".into(),
         observation_id: ids.observation_id,
     }
+}
+
+fn current_binding_denial_reason(
+    request: &MctCallProtocolRequest,
+    hello: &MctHelloAdmissionEvaluation,
+    authority: &MctPeerAuthoritySnapshot,
+    now: &Timestamp,
+) -> Option<CallProtocolReason> {
+    let Some(binding) = authority.bindings.iter().find(|binding| {
+        binding.binding_id == request.authority.peer_binding_id
+            && binding.iroh_endpoint_id == request.received_over.endpoint_id
+    }) else {
+        return Some(CallProtocolReason::BindingMismatch);
+    };
+
+    match binding.binding_state {
+        BindingState::Admitted => {}
+        BindingState::Revoked => return Some(CallProtocolReason::BindingRevoked),
+        BindingState::Expired => return Some(CallProtocolReason::BindingExpired),
+        BindingState::Pending | BindingState::Denied => {
+            return Some(CallProtocolReason::BindingMismatch);
+        }
+    }
+
+    if binding
+        .expires_at
+        .as_ref()
+        .is_some_and(|expires_at| expires_at <= now)
+    {
+        return Some(CallProtocolReason::BindingExpired);
+    }
+
+    if hello.selected_policy_revision != Some(binding.policy_revision)
+        || binding.policy_revision != request.authority.policy_revision
+        || binding.policy_revision < authority.policy_revision
+        || request.authority.policy_revision < authority.policy_revision
+    {
+        return Some(CallProtocolReason::PolicyRevisionStale);
+    }
+
+    if binding.scope.mct_node_id != request.call.caller.node_id {
+        return Some(CallProtocolReason::CallerMismatch);
+    }
+
+    if binding.scope.vision_id != request.authority.vision_id
+        || binding.scope.vision_id != request.call.caller.vision_id
+    {
+        return Some(CallProtocolReason::VisionMismatch);
+    }
+
+    if !binding
+        .scope
+        .allowed_alpns
+        .iter()
+        .any(|alpn| alpn == MCT_CALL_ALPN)
+    {
+        return Some(CallProtocolReason::AlpnNotAdmitted);
+    }
+
+    None
 }
 
 fn denied(
