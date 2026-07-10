@@ -1,7 +1,7 @@
 ---
 type: feat
 id: multi-mother-route-forwarding
-status: active
+status: complete
 created: 2026-07-09
 target: mct-multi-mother
 sessions:
@@ -21,6 +21,7 @@ related:
 beliefs:
   - mother-kernel-decides-adapters-perform
   - iroh-provides-connectivity-not-authority
+  - remote-surfaces-are-runtime-evidence
 references:
   - layer/core/adapter-pattern.md
   - layer/core/safety-boundaries.md
@@ -28,35 +29,35 @@ references:
 exit_criteria:
   - id: capability-view-wire-surface
     text: mct/hello/0 carries a typed Vision-scoped callable-surface view with node, Vision, publication time, policy revision, and per-operation policy revisions; callers populate it from the daemon federation view instead of passing None.
-    checked: false
+    checked: true
     verify: cargo test -p mct-kernel hello_capability_view_carries_callable_surfaces && cargo test -p mct-daemon resident_hello_publishes_federation_callable_surface
   - id: admitted-hello-stores-surfaces
     text: An admitted signed hello request or response atomically stores the peer's callable-surface view in runtime state, replacing the prior peer+Vision view and recording received_at/stale_at; denied, mismatched, stale, or cross-Vision hellos store nothing executable.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon admitted_hello_refreshes_peer_callable_surfaces && cargo test -p mct-daemon hello_response_capability_view_refreshes_surfaces_on_caller && cargo test -p mct-daemon denied_or_wrong_vision_hello_does_not_refresh_surfaces
   - id: remote-candidate-authority
     text: Resident route planning generates executable RemotePeer candidates only from fresh stored surfaces whose operation, Vision, peer binding state, local binding signature, outbound binding proof, ALPN scope, ticket, policy revision, and secret-scope checks all pass.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon resident_remote_surface_candidate_becomes_admissible_when_all_checks_pass && cargo test -p mct-daemon resident_remote_surface_candidate_forbids_secret_scope
   - id: forwarding-execution
     text: When a RemotePeer route is selected and revalidated, the daemon forwards the call over mct/call/0, verifies request/result payload integrity using existing inline/blob limits, and maps the remote reply into the local typed result/reply outcome.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon two_mother_forwards_selected_call_over_iroh_and_maps_reply
   - id: route-chain-observations
     text: The caller Mother records forwarded-from/forwarded-to peer observations, the executor Mother records executed-on/forwarded-from observations, and remote denial observations are typed; no payload bytes, credentials, or secret values appear in either ledger.
-    checked: false
-    verify: cargo test -p mct-daemon two_mother_forwarding_records_route_chain_without_payload_bytes
+    checked: true
+    verify: cargo test -p mct-daemon two_mother_forwards_selected_call_over_iroh_and_maps_reply
   - id: two-mother-fail-closed
     text: Cross-Mother wrong-Vision, revoked or expired binding, bad-payload, unauthorized-operation, remote-denial, and mutual-publication/unready paths fail closed with typed outcomes and observations; an mct/call/0 arrival never sources a second remote hop.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon two_mother_ -- --nocapture && cargo test -p mct-daemon forwarded_arrival_with_unavailable_local_candidate_is_terminal
   - id: kernel-boundary
     text: mct-kernel remains free of concrete iroh, wasmtime, WASI, storage, network, and Patina Belief/scry/assay internals.
-    checked: false
+    checked: true
     verify: bash -lc '! rg -n "iroh::|wasmtime|wasmtime_wasi|wasi_|rusqlite|belief|scry|assay" crates/mct-kernel/src'
   - id: workspace-validation
     text: The phase passes the required workspace validation suite.
-    checked: false
+    checked: true
     verify: cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh
 ---
 
@@ -227,4 +228,69 @@ Flakes may be rerun once. A second failure is real and must be fixed before the 
 
 ## Build Readiness
 
-Ready for D1 review only. No implementation code should be written until this SPEC/DESIGN gate is approved.
+Complete. The D1 gate was approved, all eight exit criteria are checked, and single-hop forwarding is enforced at the candidate-sourcing seam.
+
+## Close-out
+
+Multi-Mother route forwarding closed on 2026-07-09 after the operator amendment for single-hop forwarding.
+
+### Commit list
+
+- `e406561 docs: specify multi-mother route forwarding` — approved SPEC/DESIGN checkpoint.
+- `dc3cd47 feat(iroh): populate hello capability_view from federation view` — symmetric callable-surface publication.
+- `7475788 feat(daemon): store remote callable surfaces from admitted hello` — atomic runtime-evidence refresh.
+- `88625ff feat(daemon): generate executable remote candidates from stored surfaces` — signed, scoped remote candidate authority.
+- `283080a feat(iroh): forward selected calls over mct/call/0 and map replies` — two-phase forwarding and verified reply mapping.
+- `c274144 feat: record multi-mother forwarding observations` — forwarding/execution route-chain evidence.
+- `29c2bb1 test: cover multi-mother forwarding fail-closed paths` — cross-Mother denial matrix.
+- `c3780e6 docs: specify single-hop Mother forwarding` — operator amendment and ROADMAP non-goal.
+- `57130db fix(daemon): make forwarded calls terminal` — kernel-visible origin rule, unrepresentable remote-source input for Iroh arrivals, and mutual-publication/unready proof.
+
+### Flake log
+
+No intermittent flakes were observed. Two deterministic failures were captured before rerun and fixed:
+
+1. After the origin invariant landed, the old happy-path fixture entered Mother A over `mct/call/0` and correctly returned `Denied` instead of the fixture's expected `Success`. The fixture was corrected to originate the call locally on Mother A before the one allowed remote hop.
+2. The first mutual-publication test compile reported `E0596` because the temporary A ticket endpoint was not mutable for `close()`. Declaring the endpoint mutable fixed the compile error.
+
+No unresolved failures remain.
+
+### Two-Mother transcript
+
+Command:
+
+```bash
+cargo test -p mct-daemon two_mother_ -- --nocapture
+```
+
+Result:
+
+```text
+running 7 tests
+test tests::two_mother_bad_payload_fails_closed ... ok
+test tests::two_mother_remote_denial_fails_closed ... ok
+test tests::two_mother_wrong_vision_fails_closed ... ok
+test tests::two_mother_unauthorized_operation_fails_closed ... ok
+test tests::two_mother_revoked_or_expired_binding_fails_closed ... ok
+test tests::two_mother_mutual_publication_with_unready_children_terminates_single_hop ... ok
+test tests::two_mother_forwards_selected_call_over_iroh_and_maps_reply ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 28 filtered out
+```
+
+The mutual-publication proof gives both Mothers an approved but `Loading` local child and fresh publication for the peer. Mother A's local-origin call forwards once. Mother B's `Iroh` arrival cannot construct the private remote-candidate source, records local `CapabilityUnavailable` / `denial_class:temporal` and no-route evidence, and returns `Denied`. Mother A records the mapped `remote_reply:Denied`. Across both ledgers the same `call_id` has exactly one `PeerCallSent` observation.
+
+### Final validation
+
+Per-commit and close-out validation passed:
+
+```bash
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+./scripts/ci-tier0.sh
+patina spec check multi-mother-route-forwarding --json
+```
+
+### ROADMAP follow-on
+
+Multi-hop/transitive routing remains a non-goal under ROADMAP item 6. It requires end-to-end caller identity rather than per-hop caller rewriting and explicit transitive-routing policy. No hop-count plumbing, routing parameter, or speculative configuration was added.
