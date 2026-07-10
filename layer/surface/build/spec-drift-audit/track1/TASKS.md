@@ -321,3 +321,169 @@ For more information about this error, try `rustc --explain E0382`.
 error: could not compile `mct-daemon` (lib test) due to 1 previous error
 warning: build failed, waiting for other jobs to finish...
 ```
+
+---
+
+# Slice 2 — peer-authority observation durability
+
+## Operator prompt (verbatim)
+
+```text
+Track 1 slice 2 of the spec-drift remediation in patina-mct:
+observation durability for peer authority. This slice covers finding
+A5 and the PEER-AUTHORITY portion of A6 from
+layer/surface/build/spec-drift-audit/REPORT.md. Both are spec-ward:
+the product map's contract stands and the code must honor it. The
+binding contract: hello receipt/admission/denial facts are durable
+BEFORE subsequent protected peer effects proceed
+(HelloObservationsBeforeEffects, map lines 563-590;
+AuthorityFactsAreDurableBeforeEffect, lines 1319 and 1406-1407), and
+every peer authority mutation produces a typed observation
+(AuthorityDecisionsAreObserved, lines 1135-1142). No mid-slice gate;
+if the mechanism SPEC uncovers a design fork the map does not answer —
+in particular, if durable-before-effect cannot be achieved without
+redesigning the single-writer ledger — STOP and report options
+instead of choosing.
+
+## Step 0 — Re-establish state (STOP and report if anything differs)
+
+a) Branch `patina`, expected HEAD 2f540ca (test(iroh): cover
+   forwarding-time binding revocation). Commit pending session
+   artifacts via your normal flow first; tree otherwise clean.
+b) Read: REPORT.md findings A5 and A6 with citations; the map lines
+   above plus the observation matrix (1223-1235);
+   layer/surface/build/spec-drift-audit/track1/TASKS.md (slice 1
+   record); layer/core/dependable-rust.md.
+c) Code: crates/mct-iroh/src/serve.rs:833-878 and 987-1010 (hello
+   remembered, response finished, Served emitted after close);
+   crates/mct-daemon/src/main.rs:1529-1563 (async Served-to-ledger
+   projection); the peer mutation paths at
+   crates/mct-daemon/src/main.rs:4500-4597 and 4625-4665 (add, proof,
+   revoke, remove — config writes with no ledger append); the JSONL
+   ledger writer and its single-writer/locking model in
+   mct-observation (including open_read_only added in the audit arc);
+   how the resident daemon currently owns the ledger handle.
+
+## Working principles (binding)
+
+Favor strong invariants over defensive fallbacks. Make bad states
+impossible where practical. Do not add complexity to paper over
+unclear design. Prefer simple data models, explicit contracts, and
+shared logic over local patches, duplicated code, or speculative
+abstractions. Write Rust code that Jon Gjengset would agree with.
+Always read code before writing code. Git update with scalpel as you
+work, not with shotgun after. Kernel decides, adapters perform:
+observation append is an adapter effect; fail closed — if the
+authority fact cannot be made durable, the effect it licenses must
+not proceed. Failing test first. Each slice lands its regression
+tests with the fix. Stop at a task boundary if context runs low.
+
+Validation green after EVERY commit:
+cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh
+Flake protocol: capture failures verbatim in track1/TASKS.md before
+rerunning.
+
+## Task S2.1 — Mechanism SPEC (short; no gate)
+
+Append a slice-2 SPEC section to track1/TASKS.md deciding:
+- How the serve path achieves durable-before-effect for hello
+  admission AND denial facts: synchronous append via a shared ledger
+  handle/callback passed into serve, vs a write-ahead acknowledgment
+  from the daemon, vs another shape the code supports. Weigh against
+  the single-writer lock model; justify briefly. The ordering rule to
+  satisfy: the hello observation is durable before the hello RESPONSE
+  is sent (the response is the first protected effect — it grants the
+  peer an admission it can immediately use).
+- Failure semantics: ledger append fails → the hello response is not
+  sent and the admission is not remembered; state the connection
+  outcome and what, if anything, is retried. Never
+  observe-after-effect as a fallback.
+- Peer authority mutations (add, proof update, revoke, remove): each
+  produces a typed observation appended durably BEFORE the command
+  reports success; state the ObservationKind mapping (reuse existing
+  kinds where they exist) and what facts each records (binding id,
+  endpoint, revision, no secrets).
+- Explicitly out of scope: full peer-call lifecycle coverage
+  including malformed requests (A8, slice 3); child/operator/storage
+  observation gaps (A6 remainder, slice 4).
+
+## Task S2.2 — Implement + regression tests
+
+Failing tests first. Minimum coverage:
+- ordering: after a completed hello, the admission observation is
+  already durable in the JSONL ledger at the moment the client holds
+  the response (assert via read-only ledger access in the test);
+  same for a denied hello;
+- fail-closed: with ledger append failure injected (use or add a
+  seam; no sleeping/racing), the hello response is never sent, no
+  admission is remembered, and a subsequent call on that connection
+  is denied for missing hello;
+- peer mutations: add, proof update, revoke, and remove each append
+  their typed observation before command success, asserted against
+  the ledger file; revoke's observation composes with slice 1 — the
+  revocation fact is in the ledger by the time calls start being
+  denied;
+- no payload bytes and no key material in any new observation
+  (extend the existing no-bytes assertions to the new kinds);
+- existing suites stay green, including two-Mother forwarding.
+Update REPORT.md: A5 row → fixed with commit hash; A6 row → note
+"peer-authority portion fixed in <hash>; child/operator/storage
+remainder open (slice 4)". Tick the slice checklist.
+
+## Boundary
+
+STOP after S2.2. Slices 3-6 are separate prompts. Final report:
+commits, validation, flake log, the mechanism chosen for
+durable-before-effect and why, and anything discovered for the audit
+report or ROADMAP. Stay on `patina`; no merges from other branches
+mid-slice.
+```
+
+## Slice 2 checklist
+
+- [x] Step 0 baseline matched `patina` at `2f540ca` with a clean tree.
+- [x] Read A5/A6, the fixed product-map contracts, slice-1 record, dependable Rust guidance, serve/event ordering, peer mutation commands, and ledger locking.
+- [x] Specify the supported hello write-ahead mechanism and failure semantics.
+- [x] Identify the live peer-mutation/single-writer design fork required by the stop condition.
+- [ ] Operator selects the live mutation path.
+- [ ] Implement S2.2 and update A5/A6 outcomes.
+
+## S2.1 mechanism specification and stop finding
+
+### Hello ordering — supported without ledger redesign
+
+Use an awaited daemon-supplied write-ahead callback in the concurrent Iroh serve path. The callback projects the typed hello evaluation into `MctObservation`, sends it through the existing cloned `ResidentLedgerWriter`, and awaits the writer acknowledgment; that acknowledgment is issued only after `append_batch_before_effect` writes and `sync_data` completes. This preserves the single JSONL writer and keeps observation storage in the daemon adapter rather than moving it into `mct-iroh`.
+
+For each hello, the server first clears any remembered admission for that endpoint, evaluates the hello, constructs the response facts, and invokes the callback before remembering a newly admitted hello or writing response bytes. Callback failure terminates that hello stream without a response, leaves no admission remembered, and is not retried or downgraded to observe-after-effect. A later `mct/call/0` connection from the endpoint is evaluated without remembered admission and receives the existing missing-hello denial.
+
+### Peer mutation observation mapping
+
+The existing taxonomy can represent the required facts without key material:
+
+| Command | Observation kind | Recorded facts |
+|---|---|---|
+| `peers add` | `PeerBindingRecorded` | binding ID, peer endpoint ID, policy revision, admitted state, peer node/Vision in safe detail |
+| `peers set-outbound-proof` | `PeerBindingRecorded` | outbound binding ID, peer endpoint ID, policy revision, expiry presence/time, action label; never the signature |
+| `peers revoke` | `PeerBindingRevoked` | binding ID, peer endpoint ID, policy revision, revoked state |
+| `peers remove` | `PeerBindingRevoked` | final binding ID, peer endpoint ID, policy revision, removal action/tombstone |
+
+Authority-expanding add/proof decisions must be durable before config publication. Revocation/removal should first persist a revoked tombstone (fail closed), append the typed fact, and only then report success or remove the tombstone; this avoids restoring authority when observation storage is unavailable.
+
+### Blocking design fork — live commands cannot reach the resident writer
+
+The resident daemon owns `JsonlObservationLedger` through `ResidentLedgerWriter`; the OS file lock intentionally rejects a second writer. The four `mct-daemon peers ...` commands are separate short-lived processes that mutate the shared config directly and currently have no IPC route to the resident-owned writer. Opening the JSONL ledger in those commands would therefore either make all live peer mutations fail while Mother is running or require weakening/redesigning the single-writer invariant.
+
+This matters functionally, not only operationally: slice 1 deliberately reloads peer config for every call so a live `peers revoke` can deny subsequent calls. An offline-only observation implementation would remove that live revocation behavior, while direct multi-writer append would violate the ledger contract.
+
+The map fixes durability but does not choose how external peer commands reach the resident authority/ledger owner. S2.2 therefore stops pending one of these operator choices:
+
+1. **Resident control-plane mutation (recommended architecture, not selected):** add authenticated add/proof/revoke/remove control operations; the resident appends through its writer and mutates config in the ordered command handler. CLI commands become control clients while Mother is active.
+2. **Dedicated ledger/authority IPC:** expose a narrow append-and-ack service owned by the resident, while leaving config mutation in the CLI process. This preserves one writer but introduces cross-process ordering/partial-failure coordination.
+3. **Offline-only peer mutation:** have peer commands acquire the JSONL writer lock and fail closed when the resident is active. This is smallest but removes live revocation and conflicts with the slice-1 operational shape.
+4. **Multi-writer ledger redesign:** coordinate file append/hash-chain state across processes. This is the widest and riskiest option and directly crosses the prompt's stop condition.
+
+### Out of scope
+
+- Full peer-call lifecycle and malformed-call observations (A8, slice 3).
+- Child/operator/storage observation gaps (A6 remainder, slice 4).
+- Changes to the single-writer ledger before operator selection.
