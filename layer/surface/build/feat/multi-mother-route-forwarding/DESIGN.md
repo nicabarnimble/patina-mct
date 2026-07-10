@@ -21,8 +21,9 @@ Publisher Mother A
 
 Receiver Mother B
   admitted signed hello request/response -> store fresh peer surfaces in runtime state
-  local call -> route candidates from local children + fresh A surfaces
-  RouteDecision selects RemotePeer candidate
+  locally originated call -> route candidates from local children + fresh A surfaces
+  forwarded mct/call/0 arrival -> local candidates only; terminal no-route if none survive
+  RouteDecision selects RemotePeer candidate only for the locally originated call
   revalidate -> outbound hello to A -> mct/call/0 -> reply mapped to local result
 
 Both Mothers
@@ -153,7 +154,9 @@ This uses the existing `verify_peer_binding_signature_ref` function and signatur
 
 ## Candidate Generation
 
-Remote candidates come from stored surfaces, not from every peer.
+Remote candidates come from stored surfaces, not from every peer, and only for a call that originated on this Mother. The existing kernel `MctCall.origin` is the required fact: `Cli`, `JvmAdapter`, `WasmHost`, and `ProcessHarness` may enter remote candidate sourcing; `Iroh` means the call arrived over `mct/call/0` and is terminal.
+
+At the daemon's local/remote plan merge seam, construct a private originated-call capability from `MctCall` only when its origin permits remote sourcing. Make `resident_remote_candidate_plans` require that capability rather than an unrestricted `&MctCall`. An `Iroh` arrival therefore cannot be represented as input to remote candidate sourcing; its remote-plan set is empty by construction before ranking or forwarding exists. Do not add a later forward-time guard, hop counter, or config switch.
 
 For a call target, compute the canonical operation id. For each stored fresh surface with that operation:
 
@@ -189,7 +192,7 @@ Wasm < Process < JVM < RemotePeer < Internal
 
 That is acceptable for this phase. Optimization never grants authority; it only ranks candidates that survived filtering.
 
-For remote routes, execution-time revalidation must happen immediately before the forwarding effect. If the current config/state no longer matches the selected remote candidate, deny before opening the outbound call stream.
+For remote routes, execution-time revalidation must happen immediately before the forwarding effect. If the current config/state no longer matches the selected remote candidate, deny before opening the outbound call stream. Revalidation does not implement loop prevention: the stronger invariant is that forwarded arrivals never have a remote route available to select.
 
 ## Forwarding Execution
 
@@ -221,6 +224,8 @@ Flow:
    - failed/timed out/cancelled -> matching safe local outcome.
 
 No payload bytes go into observations. Inline bytes may traverse `mct/call/0` only as protocol payload, bounded by existing constants.
+
+Publication means “I execute this operation,” not “I broker this operation.” The executor therefore keeps the forwarded request's `CallOrigin::Iroh`, considers only local candidates, and returns its typed no-route denial when local availability disappears. This also limits caller rewriting to one hop: multi-hop would require end-to-end caller identity and explicit transitive policy and is deferred to ROADMAP item 6.
 
 ## Observation Details
 
@@ -267,6 +272,8 @@ Each behavior change starts with a failing test:
 12. `two_mother_unauthorized_operation_fails_closed`
 13. `two_mother_remote_denial_fails_closed`
 14. `hello_response_capability_view_refreshes_surfaces_on_caller`
+15. `forwarded_arrival_with_unavailable_local_candidate_is_terminal`
+16. `two_mother_mutual_publication_with_unready_children_terminates_single_hop`
 
 ## Commit Plan After D1
 

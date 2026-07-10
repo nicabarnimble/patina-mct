@@ -106,9 +106,12 @@ Dependency-ordered; each item assumes the ones before it.
       with redacted observations and scoped grants. Network egress and storage
       toys remain follow-up breadth.
 - [ ] **6. Multi-Vision publication** — per-Vision capability publication
-      and cross-Vision grants; the federation product. Route item 3 is
-      local-candidate only; remote route candidates and cross-Mother call
-      forwarding remain follow-on work here.
+      and cross-Vision grants; the federation product. Single-hop remote route
+      candidates and cross-Mother call forwarding are implemented under
+      `multi-mother-route-forwarding`; multi-Vision/cross-Vision authority
+      remains here. Future multi-hop/transitive routing also belongs here and
+      requires end-to-end caller identity (not per-hop rewriting) plus explicit
+      transitive-routing policy before implementation.
 
 ### Standing backlog (from the audit arc, non-blocking)
 
