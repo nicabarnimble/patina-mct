@@ -142,6 +142,18 @@ pub struct MctPeerBinding {
     pub superseded_by_observation_id: Option<ObservationId>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+/// Current peer-binding authority loaded by an adapter for one protocol evaluation.
+///
+/// The snapshot is not an admission token. Kernel evaluation still checks the
+/// selected binding, its scope and lifecycle, and the current policy revision.
+pub struct MctPeerAuthoritySnapshot {
+    /// Peer bindings current at the adapter boundary.
+    pub bindings: Vec<MctPeerBinding>,
+    /// Local policy revision current at the adapter boundary.
+    pub policy_revision: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Protocol version requested or negotiated during hello.
 ///
@@ -329,6 +341,8 @@ pub struct MctHelloAdmissionEvaluation {
     pub selected_node_id: Option<MctNodeId>,
     /// Vision admitted for subsequent calls; present only on admission.
     pub selected_vision_id: Option<VisionId>,
+    /// Binding policy revision admitted by hello; present only on admission.
+    pub selected_policy_revision: Option<u64>,
     /// Protocol version negotiated; present only on admission.
     pub negotiated_protocol: Option<MctProtocolVersion>,
     /// ALPNs admitted for later phases.

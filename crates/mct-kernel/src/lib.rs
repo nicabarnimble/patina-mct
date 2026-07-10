@@ -24,13 +24,13 @@ pub mod route;
 pub mod toy;
 
 pub use call::{
-    AuthorityContextSnapshot, CallEvaluationIds, CallOrigin, CallProtocolOutcome,
-    CallProtocolReason, CallProtocolReplyOutcome, CallerIdentity, ExecutionSummary, MctCall,
-    MctCallPayloadHandle, MctCallProtocolAuthority, MctCallProtocolEvaluation,
-    MctCallProtocolReply, MctCallProtocolRequest, MctPayloadIntegrityDecision,
-    MctPayloadIntegrityObservation, MctResult, OperationTarget, PayloadIntegrityOutcome,
-    PayloadIntegrityReason, PayloadIntegritySubject, PayloadMetadata, ResultOutcome, RouteTaken,
-    RuntimeKind, TraceContext, call_reply_from_evaluation,
+    AuthorityContextSnapshot, CallEvaluationContext, CallEvaluationIds, CallOrigin,
+    CallProtocolOutcome, CallProtocolReason, CallProtocolReplyOutcome, CallerIdentity,
+    ExecutionSummary, MctCall, MctCallPayloadHandle, MctCallProtocolAuthority,
+    MctCallProtocolEvaluation, MctCallProtocolReply, MctCallProtocolRequest,
+    MctPayloadIntegrityDecision, MctPayloadIntegrityObservation, MctResult, OperationTarget,
+    PayloadIntegrityOutcome, PayloadIntegrityReason, PayloadIntegritySubject, PayloadMetadata,
+    ResultOutcome, RouteTaken, RuntimeKind, TraceContext, call_reply_from_evaluation,
     call_reply_from_evaluation_with_result_payload,
     call_reply_from_evaluation_with_result_payload_and_route, decode_call_protocol_reply_json,
     decode_call_protocol_request_json, encode_call_protocol_reply_json,
@@ -66,9 +66,9 @@ pub use peer::{
     BindingState, ConnectionSide, EvaluationIds, HelloEvaluationContext, HelloOutcome, HelloPolicy,
     HelloReason, IrohConnectionPresentation, MCT_CALL_ALPN, MCT_HELLO_ALPN,
     MctHelloAdmissionEvaluation, MctHelloCallableSurface, MctHelloCapabilityView, MctHelloRequest,
-    MctHelloResponse, MctPeerAdmissionDecision, MctPeerBinding, MctPeerBindingPresentation,
-    MctPeerBindingScope, MctProtocolVersion, PathClass, PeerAdmissionOutcome, PeerAdmissionReason,
-    SafeHelloReason, evaluate_hello, hello_response,
+    MctHelloResponse, MctPeerAdmissionDecision, MctPeerAuthoritySnapshot, MctPeerBinding,
+    MctPeerBindingPresentation, MctPeerBindingScope, MctProtocolVersion, PathClass,
+    PeerAdmissionOutcome, PeerAdmissionReason, SafeHelloReason, evaluate_hello, hello_response,
 };
 pub use route::{
     AuthorizedRouteExecution, CandidateAuthorityEvaluation, CandidateAuthorityOutcome,

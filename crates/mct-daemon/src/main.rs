@@ -1405,7 +1405,7 @@ fn spawn_resident_control_task(
 
 async fn load_peer_bindings_for_iroh(
     path: PathBuf,
-) -> mct_iroh::MotherIrohEndpointResult<Vec<MctPeerBinding>> {
+) -> mct_iroh::MotherIrohEndpointResult<MctPeerAuthoritySnapshot> {
     tokio::task::spawn_blocking(move || {
         MctDaemonConfigStore::new(path)
             .load()
@@ -1416,7 +1416,10 @@ async fn load_peer_bindings_for_iroh(
         action: "join peer binding load",
         source: Box::new(source),
     })?
-    .map(|projection| projection.bindings)
+    .map(|projection| MctPeerAuthoritySnapshot {
+        bindings: projection.bindings,
+        policy_revision: projection.policy_revision,
+    })
     .map_err(|source| MotherIrohEndpointError::ProtocolProvider {
         action: "load peer bindings",
         source: Box::new(std::io::Error::other(source.to_string())),
@@ -8139,6 +8142,7 @@ mod tests {
             selected_binding_id: Some(binding_id.clone()),
             selected_node_id: Some(node_id.clone()),
             selected_vision_id: Some(vision_id.clone()),
+            selected_policy_revision: Some(1),
             negotiated_protocol: Some(HelloPolicy::default().protocol),
             accepted_alpns: vec![MCT_CALL_ALPN.into()],
             hello_outcome: HelloOutcome::Admitted,

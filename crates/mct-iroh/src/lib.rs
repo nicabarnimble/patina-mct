@@ -45,7 +45,13 @@ mod tests {
     use crate::test_support::{run_local_iroh_echo_roundtrip, run_unknown_peer_denial_roundtrip};
     use iroh::{Endpoint, RelayMode, endpoint::presets};
     use mct_kernel::*;
-    use std::time::Duration;
+    use std::{
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicU64, Ordering},
+        },
+        time::Duration,
+    };
 
     #[test]
     fn exposes_version() {
@@ -702,6 +708,143 @@ mod tests {
             ObservationId::new("obs-iroh-call-decision")
                 .expect("string ID literal/generated value must be non-empty")
         );
+    }
+
+    #[tokio::test]
+    async fn call_rechecks_binding_revocation_after_hello() {
+        assert_current_binding_denial(
+            |binding| binding.binding_state = BindingState::Revoked,
+            Timestamp::new("2026-05-31T00:00:03Z").unwrap(),
+            CallProtocolReason::BindingRevoked,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn call_rechecks_binding_expiry_after_hello() {
+        assert_current_binding_denial(
+            |binding| {
+                binding.expires_at = Some(Timestamp::new("2026-05-31T00:00:03Z").unwrap());
+            },
+            Timestamp::new("2026-05-31T00:00:04Z").unwrap(),
+            CallProtocolReason::BindingExpired,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn call_rechecks_binding_policy_revision_after_hello() {
+        assert_current_binding_denial(
+            |binding| binding.policy_revision = 2,
+            Timestamp::new("2026-05-31T00:00:03Z").unwrap(),
+            CallProtocolReason::PolicyRevisionStale,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn call_rechecks_narrowed_alpn_scope_after_hello() {
+        assert_current_binding_denial(
+            |binding| binding.scope.allowed_alpns = vec![MCT_HELLO_ALPN.into()],
+            Timestamp::new("2026-05-31T00:00:03Z").unwrap(),
+            CallProtocolReason::AlpnNotAdmitted,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn call_rechecks_narrowed_vision_scope_after_hello() {
+        assert_current_binding_denial(
+            |binding| {
+                binding.scope.vision_id = VisionId::new("vision-narrowed")
+                    .expect("string ID literal/generated value must be non-empty");
+            },
+            Timestamp::new("2026-05-31T00:00:03Z").unwrap(),
+            CallProtocolReason::VisionMismatch,
+        )
+        .await;
+    }
+
+    async fn assert_current_binding_denial(
+        mutate: impl FnOnce(&mut MctPeerBinding),
+        call_time: Timestamp,
+        expected_reason: CallProtocolReason,
+    ) {
+        let server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let server_ticket = server.ticket();
+        let client_endpoint_id = client.snapshot().endpoint_id;
+        let binding = Arc::new(Mutex::new(test_peer_binding(&client_endpoint_id)));
+        let now = Arc::new(Mutex::new(Timestamp::new("2026-05-31T00:00:02Z").unwrap()));
+        let execution_count = Arc::new(AtomicU64::new(0));
+        let (events, mut received_events) = tokio::sync::mpsc::channel(8);
+
+        let provider_binding = Arc::clone(&binding);
+        let server_now = Arc::clone(&now);
+        let handler_execution_count = Arc::clone(&execution_count);
+        let serve_task = tokio::spawn(async move {
+            server
+                .serve_concurrent_with_binding_provider(
+                    MctIrohServeState::new(),
+                    MctIrohConcurrentServeConfig {
+                        events: Some(events),
+                        ..MctIrohConcurrentServeConfig::default()
+                    },
+                    move || server_now.lock().unwrap().clone(),
+                    move || {
+                        let current = provider_binding.lock().unwrap().clone();
+                        async move {
+                            Ok(MctPeerAuthoritySnapshot {
+                                policy_revision: current.policy_revision,
+                                bindings: vec![current],
+                            })
+                        }
+                    },
+                    move |_, _, _| {
+                        let execution_count = Arc::clone(&handler_execution_count);
+                        async move {
+                            execution_count.fetch_add(1, Ordering::SeqCst);
+                            MctIrohCallHandlerResult::completed(
+                                ResultRef::new("result-current-binding")
+                                    .expect("string ID literal/generated value must be non-empty"),
+                            )
+                        }
+                    },
+                )
+                .await
+        });
+
+        let trace_id = TraceId::new("trace-current-binding")
+            .expect("string ID literal/generated value must be non-empty");
+        let hello = test_hello_request(&client_endpoint_id, &trace_id);
+        let hello_response = client.send_hello(&server_ticket, &hello).await.unwrap();
+        assert_eq!(hello_response.hello_outcome, HelloOutcome::Admitted);
+
+        mutate(&mut binding.lock().unwrap());
+        *now.lock().unwrap() = call_time;
+
+        let call = test_call_request(&client_endpoint_id, &trace_id, &hello_response);
+        let reply = client.send_call(&server_ticket, &call).await.unwrap();
+        assert_eq!(reply.reply_outcome, CallProtocolReplyOutcome::Denied);
+        assert_eq!(reply.safe_message, "not authorized");
+        assert_eq!(execution_count.load(Ordering::SeqCst), 0);
+
+        let evaluation = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(MctIrohServeEvent::Served(served)) = received_events.recv().await
+                    && let MctIrohServedProtocol::Call { evaluation, .. } = *served
+                {
+                    break evaluation;
+                }
+            }
+        })
+        .await
+        .expect("call evaluation event");
+        assert_eq!(evaluation.outcome, CallProtocolOutcome::Denied);
+        assert_eq!(evaluation.reason, expected_reason);
+
+        client.close().await;
+        serve_task.abort();
     }
 
     fn test_peer_binding(endpoint_id: &EndpointIdText) -> MctPeerBinding {
