@@ -4,11 +4,12 @@ Goal: build the next layer after v0 Mother runtime replacement. Keep MCT focused
 
 ## Execution order
 
-1. [ ] Multi-Mother first. This is the next major MCT power milestone.
+1. [x] Multi-Mother first. Completed 2026-07-09 as single-hop route forwarding; multi-Vision and transitive routing remain ROADMAP item 6 follow-ons.
 2. [x] Before Multi-Mother implementation, audit existing Patina Mother routing and record preserve/replace decisions. See audit snapshot below.
 3. [ ] During/after Multi-Mother, design storage/network toy contracts from the Patina Mother capability audit.
 4. [ ] JVM SDK after/alongside the chosen Multi-Mother ingress shape, so the SDK targets the real transport instead of only the temporary CLI bridge.
 5. [ ] Supervisor install/start/stop wrappers after runtime semantics are stable, unless local daily operation becomes painful sooner.
+6. [ ] Resume the paused `mct-release-hardening` and `mct-interface-launcher-control` epics as the final gate. "Replace Patina Mother" cannot be claimed while they are paused; they are deferred, not dropped.
 
 ## Now: Multi-Mother
 
@@ -33,29 +34,37 @@ The hard part is authority. A remote Mother is not trusted just because it conne
 - [x] Replace: graph/federation knowledge routing as a substitute for runtime route authority.
 - [x] Replace: local native-job `patina:peer/peer` enqueue as the remote execution path.
 - [x] Build: remote `CandidateRoute` generation from admitted signed peers.
-  - Implemented as observed `RuntimeKind::RemotePeer` candidates; they remain fail-closed with `CapabilityUnavailable` until scoped publication and forwarding are implemented.
-- [ ] Build: scoped publication of callable surfaces from one Mother to another.
-  - [x] Local federation capability view publishes Vision-scoped callable child operations.
-  - [ ] Carry/consume callable surface views across peer exchange so remote route authority can use them.
-- [ ] Build: route-forward execution over Iroh `mct/hello/0` + `mct/call/0`.
-- [ ] Build: route-chain observations on both Mothers.
+  - Executable `RuntimeKind::RemotePeer` candidates now require fresh scoped publication plus complete bidirectional binding authority and are revalidated before forwarding.
+
+Build order — each step depends on the one before it:
+
+- [x] 1. Scoped publication of callable surfaces from one Mother to another.
+  - [x] Local federation capability view publishes Vision-scoped callable child operations (`mct-daemon federation view`).
+  - [x] Send the typed view across admitted hello request/response exchange.
+  - [x] Receive, atomically store, and refresh remote surfaces as expiring runtime evidence.
+- [x] 2. Route-forward execution over Iroh `mct/hello/0` + `mct/call/0`: an originating Mother selects a published executor and maps its verified reply into a local typed result.
+- [x] 3. Route-chain observations on both Mothers: forwarded-from on the originator, executed-on on the executor, and typed denial records reconstruct the authority chain.
+- [x] 4. End-to-end two-Mother failure tests: wrong Vision, revoked/expired binding, bad payload, unauthorized operation, remote denial, and mutual-publication/unready termination.
+  - Forwarded `mct/call/0` arrivals are terminal and cannot source another remote candidate.
 
 ### Authority requirements
 
-- [ ] Signed peer binding proof is required for remote Mother admission.
-- [ ] Allowed ALPNs/operations are scoped by binding/policy.
-- [ ] Vision/project limits are enforced before routing or execution.
-- [ ] Route forwarding rules are explicit and observable.
-- [ ] Request and result payload integrity are verified end to end.
-- [ ] Remote failures map to safe, typed outcomes.
-- [ ] Observations distinguish local execution, forwarded execution, and remote denial.
+- [x] Signed peer binding proof is required for remote Mother admission.
+  - Ed25519 verification of `signature_ref` is enforced in hello admission and in remote candidate evaluation; missing, malformed, or invalid proofs fail closed.
+- [x] Allowed ALPNs are scoped by binding/policy at hello admission and candidate evaluation.
+- [x] Remote operations are scoped by fresh published callable surfaces.
+- [x] Vision limits are enforced before routing (hello admission and candidate elimination).
+- [x] Route forwarding rules are explicit, observable, and single-hop by invariant.
+- [x] Request and result payload integrity are verified end to end.
+- [x] Remote failures map to safe, typed outcomes.
+- [x] Observations distinguish local execution, forwarded execution, and remote denial.
 
 ### Acceptance sketch
 
-- [ ] Mother A can publish a scoped callable surface to Mother B.
-- [ ] Mother B can route an authorized call to Mother A and receive a verified result.
-- [ ] Unauthorized, wrong-Vision, wrong-operation, expired-binding, and bad-payload paths fail closed.
-- [ ] Both Mothers record enough observations to reconstruct the route and authority chain without leaking payload bytes or secrets.
+- [x] Mother A can publish a scoped callable surface to Mother B.
+- [x] Mother B can route an authorized locally originated call to Mother A and receive a verified result.
+- [x] Unauthorized, wrong-Vision, wrong-operation, expired-binding, bad-payload, and remote no-route paths fail closed.
+- [x] Both Mothers record enough observations to reconstruct the route and authority chain without leaking payload bytes or secrets.
 
 ## Next: storage/network toy contracts
 
