@@ -615,6 +615,91 @@ pub(super) fn run_runs(mut args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+fn default_control_uds_path() -> PathBuf {
+    PathBuf::from(".mct").join("control.sock")
+}
+
+#[cfg(unix)]
+fn try_resident_peer_mutation(
+    socket_path: &Path,
+    path: &str,
+    body: &[u8],
+) -> Result<Option<PeerMutationSuccess>> {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+
+    let mut stream = match UnixStream::connect(socket_path) {
+        Ok(stream) => stream,
+        Err(_) => return Ok(None),
+    };
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .context("set resident UDS read timeout")?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(10)))
+        .context("set resident UDS write timeout")?;
+    write!(
+        stream,
+        "POST {path} HTTP/1.1\r\nHost: local\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    )
+    .context("write resident peer mutation headers")?;
+    stream
+        .write_all(body)
+        .context("write resident peer mutation body")?;
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .context("finish resident peer mutation request")?;
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .context("read resident peer mutation response")?;
+    let response = std::str::from_utf8(&response).context("decode resident peer response")?;
+    let (headers, response_body) = response
+        .split_once("\r\n\r\n")
+        .context("resident peer response missing header terminator")?;
+    let status = headers
+        .split_whitespace()
+        .nth(1)
+        .context("resident peer response missing status")?
+        .parse::<u16>()
+        .context("parse resident peer response status")?;
+    if !(200..300).contains(&status) {
+        bail!("resident peer mutation failed with HTTP status {status}");
+    }
+    Ok(Some(
+        serde_json::from_str(response_body).context("decode resident peer mutation result")?,
+    ))
+}
+
+#[cfg(not(unix))]
+fn try_resident_peer_mutation(
+    _socket_path: &Path,
+    _path: &str,
+    _body: &[u8],
+) -> Result<Option<PeerMutationSuccess>> {
+    Ok(None)
+}
+
+fn execute_cli_peer_mutation(
+    config_path: &Path,
+    ledger_path: &Path,
+    socket_path: &Path,
+    path: &str,
+    request: &impl serde::Serialize,
+) -> Result<PeerMutationSuccess> {
+    let body = serde_json::to_vec(request).context("encode peer mutation request")?;
+    if let Some(response) = try_resident_peer_mutation(socket_path, path, &body)? {
+        return Ok(response);
+    }
+    execute_offline_peer_mutation(config_path, ledger_path, path, &body).with_context(|| {
+        format!(
+            "resident UDS {} unavailable and offline peer mutation failed",
+            socket_path.display()
+        )
+    })
+}
+
 pub(super) fn run_peers(mut args: Vec<String>) -> Result<()> {
     if args.is_empty() {
         bail!("expected peers subcommand: add | list | set-outbound-proof | revoke | remove");
@@ -633,10 +718,16 @@ pub(super) fn run_peers_add(mut args: Vec<String>) -> Result<()> {
     let config_path = take_option(&mut args, "--config")
         .map(PathBuf::from)
         .unwrap_or_else(default_config_path);
+    let ledger_path = take_option(&mut args, "--ledger")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_observation_ledger_path);
+    let socket_path = take_option(&mut args, "--uds")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_control_uds_path);
     let binding_signature_ref = take_option(&mut args, "--signature-ref");
     if args.len() < 4 {
         bail!(
-            "expected: mct-daemon peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--signature-ref proof] [--config path]"
+            "expected: mct-daemon peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--signature-ref proof] [--config path] [--ledger path] [--uds socket-path]"
         );
     }
     let peer_node_id = MctNodeId::new(args.remove(0))
@@ -652,28 +743,29 @@ pub(super) fn run_peers_add(mut args: Vec<String>) -> Result<()> {
         .map(PathBuf::from)
         .map(|path| read_ticket(&path))
         .transpose()?;
-    let config = MctDaemonConfigStore::new(&config_path).upsert_peer(MctPeerAddressBookEntry {
-        peer_node_id: peer_node_id.clone(),
-        binding_id,
-        endpoint_id,
-        vision_id,
-        ticket,
-        binding_signature_ref,
-        outbound_binding: None,
-        binding_state: BindingState::Admitted,
-        policy_revision: 1,
-        updated_at: mct_daemon::current_timestamp_string(),
-    })?;
+    let signature_present = binding_signature_ref.is_some();
+    let response = execute_cli_peer_mutation(
+        &config_path,
+        &ledger_path,
+        &socket_path,
+        "/peers/add",
+        &PeerAddRequest {
+            expected_config_path: config_path.clone(),
+            peer_node_id: peer_node_id.clone(),
+            binding_id,
+            endpoint_id,
+            vision_id,
+            ticket,
+            binding_signature_ref,
+            policy_revision: 1,
+        },
+    )?;
     println!(
         "peer added={} config={} peers={} signature_ref={}",
         peer_node_id,
         config_path.display(),
-        config.peers.len(),
-        config
-            .peers
-            .get(peer_node_id.as_str())
-            .and_then(|peer| peer.binding_signature_ref.as_ref())
-            .is_some()
+        response.peer_count,
+        signature_present
     );
     Ok(())
 }
@@ -682,6 +774,12 @@ pub(super) fn run_peers_set_outbound_proof(mut args: Vec<String>) -> Result<()> 
     let config_path = take_option(&mut args, "--config")
         .map(PathBuf::from)
         .unwrap_or_else(default_config_path);
+    let ledger_path = take_option(&mut args, "--ledger")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_observation_ledger_path);
+    let socket_path = take_option(&mut args, "--uds")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_control_uds_path);
     let signature_ref = take_option(&mut args, "--signature-ref").ok_or_else(|| {
         anyhow::anyhow!("peers set-outbound-proof requires --signature-ref proof")
     })?;
@@ -691,37 +789,35 @@ pub(super) fn run_peers_set_outbound_proof(mut args: Vec<String>) -> Result<()> 
         .context("parse --expires-at timestamp")?;
     if args.len() < 2 {
         bail!(
-            "expected: mct-daemon peers set-outbound-proof <peer-node-id> <binding-id> --signature-ref proof [--expires-at ts] [--config path]"
+            "expected: mct-daemon peers set-outbound-proof <peer-node-id> <binding-id> --signature-ref proof [--expires-at ts] [--config path] [--ledger path] [--uds socket-path]"
         );
     }
     let peer_node_id = MctNodeId::new(args.remove(0))
         .expect("string ID literal/generated value must be non-empty");
     let binding_id = PeerBindingId::new(args.remove(0))
         .expect("string ID literal/generated value must be non-empty");
-    let config = MctDaemonConfigStore::new(&config_path).set_peer_outbound_proof(
-        &peer_node_id,
-        MctOutboundPeerBindingPresentation {
+    let response = execute_cli_peer_mutation(
+        &config_path,
+        &ledger_path,
+        &socket_path,
+        "/peers/proof",
+        &PeerProofRequest {
+            expected_config_path: config_path.clone(),
+            peer_node_id: peer_node_id.clone(),
             binding_id,
             policy_revision: 1,
             signature_ref,
             expires_at,
         },
     )?;
-    let peer = config
-        .peers
-        .get(peer_node_id.as_str())
-        .expect("updated peer remains in config");
     println!(
         "peer outbound proof set={} binding={} config={} expires_at={}",
         peer_node_id,
-        peer.outbound_binding
-            .as_ref()
-            .map(|proof| proof.binding_id.to_string())
-            .unwrap_or_else(|| "-".into()),
+        response.binding_id,
         config_path.display(),
-        peer.outbound_binding
+        response
+            .expires_at
             .as_ref()
-            .and_then(|proof| proof.expires_at.as_ref())
             .map(ToString::to_string)
             .unwrap_or_else(|| "-".into())
     );
@@ -758,22 +854,35 @@ pub(super) fn run_peers_revoke(mut args: Vec<String>) -> Result<()> {
     let config_path = take_option(&mut args, "--config")
         .map(PathBuf::from)
         .unwrap_or_else(default_config_path);
+    let ledger_path = take_option(&mut args, "--ledger")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_observation_ledger_path);
+    let socket_path = take_option(&mut args, "--uds")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_control_uds_path);
     if args.is_empty() {
-        bail!("expected: mct-daemon peers revoke <peer-node-id> [--config path]");
+        bail!(
+            "expected: mct-daemon peers revoke <peer-node-id> [--config path] [--ledger path] [--uds socket-path]"
+        );
     }
     let peer_node_id = MctNodeId::new(args.remove(0))
         .expect("string ID literal/generated value must be non-empty");
-    let config = MctDaemonConfigStore::new(&config_path).revoke_peer(&peer_node_id)?;
-    let peer = config
-        .peers
-        .get(peer_node_id.as_str())
-        .expect("revoked peer remains in config");
+    let response = execute_cli_peer_mutation(
+        &config_path,
+        &ledger_path,
+        &socket_path,
+        "/peers/revoke",
+        &PeerNodeRequest {
+            expected_config_path: config_path.clone(),
+            peer_node_id: peer_node_id.clone(),
+        },
+    )?;
     println!(
         "peer revoked={} state={:?} config={} peers={}",
         peer_node_id,
-        peer.binding_state,
+        response.binding_state,
         config_path.display(),
-        config.peers.len()
+        response.peer_count
     );
     Ok(())
 }
@@ -782,17 +891,34 @@ pub(super) fn run_peers_remove(mut args: Vec<String>) -> Result<()> {
     let config_path = take_option(&mut args, "--config")
         .map(PathBuf::from)
         .unwrap_or_else(default_config_path);
+    let ledger_path = take_option(&mut args, "--ledger")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_observation_ledger_path);
+    let socket_path = take_option(&mut args, "--uds")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_control_uds_path);
     if args.is_empty() {
-        bail!("expected: mct-daemon peers remove <peer-node-id> [--config path]");
+        bail!(
+            "expected: mct-daemon peers remove <peer-node-id> [--config path] [--ledger path] [--uds socket-path]"
+        );
     }
     let peer_node_id = MctNodeId::new(args.remove(0))
         .expect("string ID literal/generated value must be non-empty");
-    let config = MctDaemonConfigStore::new(&config_path).remove_peer(&peer_node_id)?;
+    let response = execute_cli_peer_mutation(
+        &config_path,
+        &ledger_path,
+        &socket_path,
+        "/peers/remove",
+        &PeerNodeRequest {
+            expected_config_path: config_path.clone(),
+            peer_node_id: peer_node_id.clone(),
+        },
+    )?;
     println!(
         "peer removed={} config={} peers={}",
         peer_node_id,
         config_path.display(),
-        config.peers.len()
+        response.peer_count
     );
     Ok(())
 }

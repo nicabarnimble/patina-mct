@@ -866,3 +866,101 @@ For more information about an error, try `rustc --explain E0425`.
 error: could not compile `mct-daemon` (lib test) due to 2 previous errors
 warning: build failed, waiting for other jobs to finish...
 ```
+
+Expected red compile after adding the Slice 2b behavior regressions and before implementing the shared resident/offline mutation workflow:
+
+```text
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0425]: cannot find function `resident_peer_mutation_handler` in this scope
+   --> crates/mct-daemon/src/daemon/control.rs:260:23
+    |
+260 |         let handler = resident_peer_mutation_handler(config_path.clone(), ledger.clone());
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `resident_peer_mutation_handler` in this scope
+   --> crates/mct-daemon/src/daemon/control.rs:344:23
+    |
+344 |         let handler = resident_peer_mutation_handler(
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `resident_peer_mutation_handler` in this scope
+   --> crates/mct-daemon/src/daemon/control.rs:371:23
+    |
+371 |         let handler = resident_peer_mutation_handler(config_path.clone(), ledger.clone());
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `execute_offline_peer_mutation` in this scope
+   --> crates/mct-daemon/src/daemon/control.rs:408:24
+    |
+408 |         let response = execute_offline_peer_mutation(
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `execute_offline_peer_mutation` in this scope
+   --> crates/mct-daemon/src/daemon/control.rs:428:21
+    |
+428 |         let error = execute_offline_peer_mutation(
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 5 previous errors
+```
+
+Deterministic pre-commit Clippy findings before tightening the prepared mutation representation:
+
+```text
+    Checking mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error: large size difference between variants
+  --> crates/mct-daemon/src/daemon/control.rs:38:1
+   |
+38 | /  enum PreparedPeerMutationEffect {
+39 | |      Add(MctPeerAddressBookEntry),
+   | |      ---------------------------- the largest variant contains at least 352 bytes
+40 | |/     Proof {
+41 | ||         peer_node_id: MctNodeId,
+42 | ||         outbound: MctOutboundPeerBindingPresentation,
+43 | ||     },
+   | ||_____- the second-largest variant contains at least 136 bytes
+44 | |      Revoke(MctNodeId),
+45 | |      Remove(MctNodeId),
+46 | |  }
+   | |__^ the entire enum is at least 352 bytes
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#large_enum_variant
+   = note: `-D clippy::large-enum-variant` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::large_enum_variant)]`
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+   |
+39 -     Add(MctPeerAddressBookEntry),
+39 +     Add(Box<MctPeerAddressBookEntry>),
+   |
+
+error: this function has too many arguments (10/7)
+   --> crates/mct-daemon/src/daemon/control.rs:102:1
+    |
+102 | / fn peer_mutation_observation(
+103 | |     kind: ObservationKind,
+104 | |     outcome: ObservationOutcome,
+105 | |     action: &str,
+...   |
+112 | |     expires_at: Option<&Timestamp>,
+113 | | ) -> MctObservation {
+    | |___________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#too_many_arguments
+    = note: `-D clippy::too-many-arguments` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::too_many_arguments)]`
+
+error: could not compile `mct-daemon` (bin "mct-daemon") due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 2 previous errors
+```
+
+Validation command invocation corrected before rerun (Cargo accepts one test filter):
+
+```text
+error: unexpected argument 'resident::tests::resident_mother_serves_peer_control_and_shutdown' found
+
+Usage: cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]
+
+For more information, try '--help'.
+```
