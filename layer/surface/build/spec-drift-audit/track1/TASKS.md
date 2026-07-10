@@ -445,8 +445,8 @@ mid-slice.
 - [x] Read A5/A6, the fixed product-map contracts, slice-1 record, dependable Rust guidance, serve/event ordering, peer mutation commands, and ledger locking.
 - [x] Specify the supported hello write-ahead mechanism and failure semantics.
 - [x] Identify the live peer-mutation/single-writer design fork required by the stop condition.
-- [ ] Operator selects the live mutation path.
-- [ ] Implement S2.2 and update A5/A6 outcomes.
+- [x] Operator selects the live mutation path.
+- [x] Implement S2.2 and mark A5 fixed; defer A6 peer mutations to slice 2b and the remainder to slice 4.
 
 ## S2.1 mechanism specification and stop finding
 
@@ -547,3 +547,14 @@ note: required by a bound in `MctIrohHelloObservationSink::new`
 For more information about this error, try `rustc --explain E0277`.
 error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 1 previous error
 ```
+
+## S2.2 implementation record
+
+- `e16e59d` — `fix(iroh): persist hello authority before response`.
+- `MctIrohHelloObservationSink` is awaited while the per-endpoint hello state is cleared and before an admitted evaluation is remembered or response bytes are written.
+- `resident_hello_observation_sink` projects the kernel evaluation and awaits `ResidentLedgerWriter::append`, whose acknowledgment follows `append_batch_before_effect` and `sync_data`.
+- The old post-response `Served::Hello` projection is suppressed, avoiding a duplicate canonical authority fact; the served event still drives non-ledger follow-up such as admitted remote-surface refresh.
+- `resident_hello_observations_are_durable_before_responses` reads the ledger immediately after each admitted and denied client response and finds the matching `BeforeEffect` `PeerAdmitted`/`PeerRejected` entry. It also verifies that a signature marker and inline payload field are absent.
+- `failed_hello_observation_prevents_response_and_remembered_admission` injects one deterministic append failure, observes no hello response, proves there is no retry, and verifies a subsequent call is denied with `HelloNotAdmitted` without invoking the handler.
+- Full required validation passed after `e16e59d`: `cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh`.
+- Flakes: none. The two expected compile failures above were red-test/intermediate implementation failures, not rerun flakes.
