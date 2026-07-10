@@ -595,12 +595,12 @@ Dependency order for extraction is `cli_runtime` → `control` → `cli_admin` �
 - [x] Read all 8,682 lines of `main.rs` and all of `lib.rs`.
 - [x] Record the 254-test baseline.
 - [x] Commit the seam plan.
-- [ ] Extract `cli_runtime`.
-- [ ] Extract `control`.
-- [ ] Extract `cli_admin`.
-- [ ] Extract `ingress`.
-- [ ] Extract `resident` with the existing inline binary tests.
-- [ ] Confirm after-count is 254 and close the slice.
+- [x] Extract `cli_runtime`.
+- [x] Extract `control`.
+- [x] Extract `cli_admin`.
+- [x] Extract `ingress`.
+- [x] Extract `resident` with the existing inline binary tests.
+- [x] Confirm after-count is 254 and close the slice.
 
 ## Itch list (notes only; no fixes in S2.5)
 
@@ -744,3 +744,37 @@ warning: build failed, waiting for other jobs to finish...
 warning: `mct-daemon` (bin "mct-daemon" test) generated 3 warnings (2 duplicates)
 error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 10 previous errors; 3 warnings emitted
 ```
+
+## S2.5c close record
+
+### Per-module commits and final line counts
+
+| Commit | Extracted module | Final lines |
+|---|---|---:|
+| `7977989` | `crates/mct-daemon/src/daemon/cli_runtime.rs` | 933 |
+| `9ad3be0` | `crates/mct-daemon/src/daemon/control.rs` | 185 |
+| `a31f1f0` | `crates/mct-daemon/src/daemon/cli_admin.rs` | 798 |
+| `c212b85` | `crates/mct-daemon/src/daemon/ingress.rs` | 915 |
+| `741e620` | `crates/mct-daemon/src/daemon/resident.rs` (including the moved inline integration tests) | 5,767 |
+
+Final `crates/mct-daemon/src/main.rs`: **141 lines**, retaining only imports, entrypoint dispatch, binary-local module wiring, argument-token helpers, default paths, help text, and the test authority-fixture declaration. The result is below the approximate 1,000–1,500-line target because this binary's parser skeleton is compact once command implementations and inline tests move.
+
+### Verification
+
+- Before-count: **254** (254 passed, 0 ignored).
+- After-count: **254** (254 passed, 0 ignored).
+- Every extraction commit passed `cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh`.
+- The mct-daemon library-owned surface has zero diff from `9707420`; all new files are binary-local beneath `src/daemon/`.
+- Flakes: none. The one deterministic intermediate path-attribute compile failure is recorded verbatim above and was not rerun as a flake.
+- ROADMAP standing backlog now marks `main.rs` decomposition substantially addressed; dispatch wiring remains in `main.rs` by design.
+
+### Itch list (verbatim from the plan)
+
+- CLI option parsing and default-path selection are repeated across most command families.
+- Several `serve-process` ledger/state writes intentionally discard errors with `let _ =`; changing those semantics is outside a move-only slice.
+- Standalone `iroh serve` and `iroh serve-process` use default concurrent-serve config without the resident hello-observation sink; this should be reconciled separately rather than folded into decomposition.
+- Peer add/proof/revoke/remove mutate config directly and remain the explicit slice 2b work.
+- Resident route selection, forwarding, and execution use many concrete cross-stage records; a finer module API should be designed only in a behavior-owning refactor, not inferred during moves.
+- The resident integration suite has broad shared setup and fixture construction; future focused contract tests should be added beside the extracted subjects instead of extending the shared fixture module indefinitely.
+- Several protocol/observation IDs are fixed CLI literals while resident IDs are generated; consistency is outside this slice.
+- Payload fact construction and result projection contain repeated content-type/digest handling that should not be deduplicated mechanically.
