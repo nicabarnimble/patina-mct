@@ -2181,6 +2181,19 @@ struct ResidentRemoteCandidatePlan {
     authority: CandidateAuthorityEvaluation,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ResidentRemoteCandidateSource<'a> {
+    call: &'a MctCall,
+}
+
+impl<'a> ResidentRemoteCandidateSource<'a> {
+    fn for_call(call: &'a MctCall) -> Option<Self> {
+        call.origin
+            .allows_remote_candidate_sourcing()
+            .then_some(Self { call })
+    }
+}
+
 fn authorize_resident_child_blocking(
     paths: &ResidentExecutionPaths,
     call: &MctCall,
@@ -2251,7 +2264,12 @@ fn authorize_resident_child_from_loaded_with_state(
         });
     }
 
-    let remote_plans = resident_remote_candidate_plans(config, state, call, now)?;
+    let remote_plans = ResidentRemoteCandidateSource::for_call(call)
+        .map(|source| {
+            resident_remote_candidate_plans_from_source(config, state, source, now.clone())
+        })
+        .transpose()?
+        .unwrap_or_default();
     let mut observations = resident_candidate_observations(call, &plans);
     observations.extend(resident_remote_candidate_observations(call, &remote_plans));
     let mut authority_evaluations = plans
@@ -2411,12 +2429,13 @@ fn resident_candidate_for_child(
     }
 }
 
-fn resident_remote_candidate_plans(
+fn resident_remote_candidate_plans_from_source(
     config: &mct_daemon::MctDaemonConfig,
     state: Option<&MctRuntimeStateStore>,
-    call: &MctCall,
+    source: ResidentRemoteCandidateSource<'_>,
     now: Timestamp,
 ) -> Result<Vec<ResidentRemoteCandidatePlan>> {
+    let call = source.call;
     let Some(identity) = config.local_identity.as_ref() else {
         return Ok(Vec::new());
     };
@@ -2450,6 +2469,18 @@ fn resident_remote_candidate_plans(
         });
     }
     Ok(plans)
+}
+
+#[cfg(test)]
+fn resident_remote_candidate_plans(
+    config: &mct_daemon::MctDaemonConfig,
+    state: Option<&MctRuntimeStateStore>,
+    call: &MctCall,
+    now: Timestamp,
+) -> Result<Vec<ResidentRemoteCandidatePlan>> {
+    let source = ResidentRemoteCandidateSource::for_call(call)
+        .context("test call must have a local origin to source remote candidates")?;
+    resident_remote_candidate_plans_from_source(config, state, source, now)
 }
 
 fn resident_candidate_for_remote_surface(
@@ -6279,7 +6310,6 @@ mod tests {
             .join("iroh-secret.hex");
         let mother_a_state_path = dir.path().join("mother-a").join("state.sqlite");
         let mother_a_ledger_path = dir.path().join("mother-a").join("observations.jsonl");
-        let mother_a_socket_path = dir.path().join("mother-a").join("control.sock");
         let mother_a_children_dir = dir.path().join("mother-a").join("children");
         let mother_b_config_path = dir.path().join("mother-b").join("config.json");
         let mother_b_identity_path = dir
@@ -6377,10 +6407,6 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
-        let client_endpoint_id = client.snapshot().endpoint_id;
-        let client_node_id = MctNodeId::new("mother-client")
-            .expect("string ID literal/generated value must be non-empty");
         mother_a_store
             .upsert_peer(MctPeerAddressBookEntry {
                 peer_node_id: mother_b_node_id.clone(),
@@ -6408,24 +6434,6 @@ mod tests {
                 },
             )
             .unwrap();
-        mother_a_store
-            .upsert_peer(MctPeerAddressBookEntry {
-                peer_node_id: client_node_id.clone(),
-                binding_id: PeerBindingId::new("binding-a-admits-client")
-                    .expect("string ID literal/generated value must be non-empty"),
-                endpoint_id: client_endpoint_id.clone(),
-                vision_id: vision_id.clone(),
-                ticket: None,
-                binding_signature_ref: None,
-                outbound_binding: None,
-                binding_state: BindingState::Admitted,
-                policy_revision: 1,
-                updated_at: mct_daemon::current_timestamp_string(),
-            })
-            .unwrap();
-        let client_proof_for_a = mother_a_store.load().unwrap().peers["mother-client"]
-            .binding_signature_ref
-            .clone();
         let mother_a_peer_b = mother_a_store.load().unwrap().peers["mother-b"].clone();
         let received_at = current_timestamp();
         let stale_at = remote_surface_stale_at(&received_at).unwrap();
@@ -6461,58 +6469,15 @@ mod tests {
             })
             .unwrap();
 
-        let (mother_a_ready_tx, mother_a_ready_rx) = tokio::sync::oneshot::channel();
-        let (mother_a_shutdown_tx, mother_a_shutdown_rx) = tokio::sync::oneshot::channel();
-        let mother_a = tokio::spawn(run_resident_mother(
-            ResidentMotherConfig {
-                config_path: mother_a_config_path.clone(),
-                identity_path: mother_a_identity_path.clone(),
-                children_dir: mother_a_children_dir,
-                state_path: mother_a_state_path,
-                ledger_path: mother_a_ledger_path.clone(),
-                control: ResidentControlTransport::Uds(mother_a_socket_path),
-                relay_default: false,
-                max_concurrent_connections: 8,
-            },
-            async move {
-                let _ = mother_a_shutdown_rx.await;
-            },
-            Some(mother_a_ready_tx),
-        ));
-        let mother_a_ticket = tokio::time::timeout(Duration::from_secs(10), mother_a_ready_rx)
-            .await
-            .unwrap()
-            .unwrap();
-
         let trace_id = TraceId::new("trace-two-mother-forward")
             .expect("string ID literal/generated value must be non-empty");
-        let hello = cli_hello_request(
-            &client_endpoint_id,
-            &PeerBindingId::new("binding-a-admits-client")
-                .expect("string ID literal/generated value must be non-empty"),
-            &client_node_id,
-            &vision_id,
-            &trace_id,
-            client_proof_for_a,
-        );
-        let hello_response = client.send_hello(&mother_a_ticket, &hello).await.unwrap();
         let payload = br#"{"hello":"remote"}"#.to_vec();
-        let mut call = cli_call_request(
-            &client_endpoint_id,
-            &PeerBindingId::new("binding-a-admits-client")
-                .expect("string ID literal/generated value must be non-empty"),
-            &client_node_id,
-            &vision_id,
-            &trace_id,
-            OperationTarget {
-                namespace: "patina:demo".into(),
-                interface_name: "control@0.1.0".into(),
-                function_name: "run".into(),
-            },
-            &hello_response,
-        );
+        let mut call = resident_test_protocol_request(resident_test_call(trace_id));
         call.call.call_id = CallId::new("call-two-mother-forward")
             .expect("string ID literal/generated value must be non-empty");
+        call.call.caller.node_id = mother_a_node_id;
+        call.call.caller.vision_id = vision_id;
+        call.call.origin = CallOrigin::Cli;
         call.call.payload_metadata.size_bytes = payload.len() as u64;
         call.payload = MctCallPayloadHandle::InlinePayload {
             inline_payload_ref: "payload-two-mother-forward".into(),
@@ -6520,36 +6485,36 @@ mod tests {
             size_bytes: payload.len() as u64,
             blake3_digest_hex: blake3_hex(&payload),
         };
+        let mother_a_ledger = ResidentLedgerWriter::spawn(mother_a_ledger_path.clone()).unwrap();
+        let call_reply = execute_resident_call(
+            ResidentExecutionPaths {
+                config_path: mother_a_config_path,
+                children_dir: mother_a_children_dir,
+                state_path: mother_a_state_path,
+            },
+            mother_a_ledger.clone(),
+            call,
+            ResidentRequestPayload::remote(Some(payload)),
+        )
+        .await;
+        mother_a_ledger.close().await;
 
-        let call_reply = client
-            .send_call_with_inline_payload(&mother_a_ticket, &call, payload)
-            .await
-            .unwrap();
-        let reply_outcome = call_reply.reply.reply_outcome;
-        let inline_result_payload = call_reply.inline_result_payload;
-        let route_taken = call_reply.reply.route_taken;
-
-        let _ = mother_a_shutdown_tx.send(());
         let _ = mother_b_shutdown_tx.send(());
-        tokio::time::timeout(Duration::from_secs(10), mother_a)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
         tokio::time::timeout(Duration::from_secs(10), mother_b)
             .await
             .unwrap()
             .unwrap()
             .unwrap();
-        client.close().await;
 
-        assert_eq!(reply_outcome, CallProtocolReplyOutcome::Success);
+        assert_eq!(call_reply.outcome, CallProtocolOutcome::Completed);
         assert_eq!(
-            inline_result_payload.expect("forwarded result payload"),
+            call_reply
+                .inline_result_payload
+                .expect("forwarded result payload"),
             br#"processed:{"hello":"remote"}"#.to_vec()
         );
         assert!(matches!(
-            route_taken,
+            call_reply.route_taken,
             Some(RouteTaken {
                 runtime_kind: RuntimeKind::RemotePeer,
                 ..
@@ -6563,6 +6528,305 @@ mod tests {
         assert!(!mother_b_ledger.contains("{\"hello\":\"remote\"}"));
         assert!(!mother_a_ledger.contains("processed:"));
         assert!(!mother_b_ledger.contains("processed:"));
+    }
+
+    #[tokio::test]
+    async fn two_mother_mutual_publication_with_unready_children_terminates_single_hop() {
+        let dir = tempfile::tempdir().unwrap();
+        let a_root = dir.path().join("mother-a");
+        let b_root = dir.path().join("mother-b");
+        let a_config_path = a_root.join("config.json");
+        let a_identity_path = a_root.join("identity").join("iroh-secret.hex");
+        let a_state_path = a_root.join("state.sqlite");
+        let a_ledger_path = a_root.join("observations.jsonl");
+        let a_children_dir = a_root.join("children");
+        let b_config_path = b_root.join("config.json");
+        let b_identity_path = b_root.join("identity").join("iroh-secret.hex");
+        let b_state_path = b_root.join("state.sqlite");
+        let b_ledger_path = b_root.join("observations.jsonl");
+        let b_children_dir = b_root.join("children");
+        write_resident_process_child(&a_children_dir);
+        write_resident_process_child(&b_children_dir);
+
+        let a_node = MctNodeId::new("mother-a").unwrap();
+        let b_node = MctNodeId::new("mother-b").unwrap();
+        let vision = VisionId::new("vision-local").unwrap();
+        let a_store = MctDaemonConfigStore::new(&a_config_path);
+        let b_store = MctDaemonConfigStore::new(&b_config_path);
+        let a_identity = a_store
+            .ensure_local_identity(
+                MctOperatorNodeScope {
+                    node_id: a_node.clone(),
+                    vision_id: vision.clone(),
+                    policy_revision: 1,
+                },
+                &a_identity_path,
+            )
+            .unwrap();
+        let b_identity = b_store
+            .ensure_local_identity(
+                MctOperatorNodeScope {
+                    node_id: b_node.clone(),
+                    vision_id: vision.clone(),
+                    policy_revision: 1,
+                },
+                &b_identity_path,
+            )
+            .unwrap();
+        let mut loaded_a = load_children_from_dir(MctChildLoadOptions::new(&a_children_dir));
+        let mut loaded_b = load_children_from_dir(MctChildLoadOptions::new(&b_children_dir));
+        a_store
+            .approve_and_assign_loaded_child(
+                &loaded_a.children[0],
+                MctOperatorChildScope {
+                    vision_id: vision.clone(),
+                    node_id: a_node.clone(),
+                    project_id: None,
+                    policy_revision: 1,
+                },
+            )
+            .unwrap();
+        b_store
+            .approve_and_assign_loaded_child(
+                &loaded_b.children[0],
+                MctOperatorChildScope {
+                    vision_id: vision.clone(),
+                    node_id: b_node.clone(),
+                    project_id: None,
+                    policy_revision: 1,
+                },
+            )
+            .unwrap();
+        loaded_a.children[0].instance_state = mct_daemon::MctChildInstanceState::Loading;
+        loaded_b.children[0].instance_state = mct_daemon::MctChildInstanceState::Loading;
+
+        let a_secret = load_or_create_node_secret_key_hex(&a_identity_path).unwrap();
+        let mut a_ticket_endpoint = MotherIrohEndpoint::bind(iroh_config(a_secret, false))
+            .await
+            .unwrap();
+        let a_ticket = a_ticket_endpoint.ticket();
+        a_ticket_endpoint.close().await;
+        let b_secret = load_or_create_node_secret_key_hex(&b_identity_path).unwrap();
+        let b_endpoint = MotherIrohEndpoint::bind(iroh_config(b_secret, false))
+            .await
+            .unwrap();
+        let b_ticket = b_endpoint.ticket();
+
+        b_store
+            .upsert_peer(MctPeerAddressBookEntry {
+                peer_node_id: a_node.clone(),
+                binding_id: PeerBindingId::new("binding-b-admits-a").unwrap(),
+                endpoint_id: a_identity.endpoint_id.clone(),
+                vision_id: vision.clone(),
+                ticket: Some(a_ticket),
+                binding_signature_ref: None,
+                outbound_binding: None,
+                binding_state: BindingState::Admitted,
+                policy_revision: 1,
+                updated_at: mct_daemon::current_timestamp_string(),
+            })
+            .unwrap();
+        let b_proof_for_a = b_store.load().unwrap().peers["mother-a"]
+            .binding_signature_ref
+            .clone()
+            .unwrap();
+        a_store
+            .upsert_peer(MctPeerAddressBookEntry {
+                peer_node_id: b_node.clone(),
+                binding_id: PeerBindingId::new("binding-a-admits-b").unwrap(),
+                endpoint_id: b_identity.endpoint_id.clone(),
+                vision_id: vision.clone(),
+                ticket: Some(b_ticket.clone()),
+                binding_signature_ref: None,
+                outbound_binding: None,
+                binding_state: BindingState::Admitted,
+                policy_revision: 1,
+                updated_at: mct_daemon::current_timestamp_string(),
+            })
+            .unwrap();
+        let a_proof_for_b = a_store.load().unwrap().peers["mother-b"]
+            .binding_signature_ref
+            .clone()
+            .unwrap();
+        a_store
+            .set_peer_outbound_proof(
+                &b_node,
+                MctOutboundPeerBindingPresentation {
+                    binding_id: PeerBindingId::new("binding-b-admits-a").unwrap(),
+                    policy_revision: 1,
+                    signature_ref: b_proof_for_a,
+                    expires_at: None,
+                },
+            )
+            .unwrap();
+        b_store
+            .set_peer_outbound_proof(
+                &a_node,
+                MctOutboundPeerBindingPresentation {
+                    binding_id: PeerBindingId::new("binding-a-admits-b").unwrap(),
+                    policy_revision: 1,
+                    signature_ref: a_proof_for_b,
+                    expires_at: None,
+                },
+            )
+            .unwrap();
+
+        let a_config = a_store.load().unwrap();
+        let b_config = b_store.load().unwrap();
+        let a_peer_b = a_config.peers["mother-b"].clone();
+        let b_peer_a = b_config.peers["mother-a"].clone();
+        let received_at = current_timestamp();
+        let stale_at = remote_surface_stale_at(&received_at).unwrap();
+        let a_view = hello_capability_view(&a_node, &vision, 1, &["patina:demo/control@0.1.0.run"]);
+        let b_view = hello_capability_view(&b_node, &vision, 1, &["patina:demo/control@0.1.0.run"]);
+        MctRuntimeStateStore::open(&a_state_path)
+            .unwrap()
+            .refresh_remote_callable_surfaces(MctRemoteSurfaceRefresh {
+                peer_node_id: &b_node,
+                binding_id: &a_peer_b.binding_id,
+                endpoint_id: &a_peer_b.endpoint_id,
+                view: &b_view,
+                received_at: &received_at,
+                stale_at: &stale_at,
+                view_observation_id: &ObservationId::new("obs-a-saw-b-surface").unwrap(),
+            })
+            .unwrap();
+        MctRuntimeStateStore::open(&b_state_path)
+            .unwrap()
+            .refresh_remote_callable_surfaces(MctRemoteSurfaceRefresh {
+                peer_node_id: &a_node,
+                binding_id: &b_peer_a.binding_id,
+                endpoint_id: &b_peer_a.endpoint_id,
+                view: &a_view,
+                received_at: &received_at,
+                stale_at: &stale_at,
+                view_observation_id: &ObservationId::new("obs-b-saw-a-surface").unwrap(),
+            })
+            .unwrap();
+
+        let b_ledger = ResidentLedgerWriter::spawn(b_ledger_path.clone()).unwrap();
+        let b_handler_ledger = b_ledger.clone();
+        let b_handler_config = b_config.clone();
+        let b_handler_state_path = b_state_path.clone();
+        let b_handler_children = loaded_b.children.clone();
+        let b_bindings = b_config.peer_authority_projection().unwrap().bindings;
+        let b_serve = tokio::spawn(async move {
+            b_endpoint
+                .serve_concurrent_with_call_handler(
+                    MctIrohServeState::new(),
+                    b_bindings,
+                    MctIrohConcurrentServeConfig {
+                        require_binding_signature: true,
+                        capability_view: Some(b_view),
+                        ..MctIrohConcurrentServeConfig::default()
+                    },
+                    current_timestamp,
+                    move |request, _, _| {
+                        let ledger = b_handler_ledger.clone();
+                        let config = b_handler_config.clone();
+                        let state_path = b_handler_state_path.clone();
+                        let children = b_handler_children.clone();
+                        async move {
+                            let state = MctRuntimeStateStore::open(state_path).unwrap();
+                            match authorize_resident_child_from_loaded_with_state(
+                                &config,
+                                Some(&state),
+                                children,
+                                &request.call,
+                                current_timestamp(),
+                            )
+                            .unwrap()
+                            {
+                                ResidentAuthorizationOutcome::Denied {
+                                    route_decision_id,
+                                    observations,
+                                } => {
+                                    ledger.append(observations).await.unwrap();
+                                    MctIrohCallHandlerResult::denied()
+                                        .with_route(Some(route_decision_id), None)
+                                }
+                                ResidentAuthorizationOutcome::Authorized(_) => {
+                                    MctIrohCallHandlerResult::failed(
+                                        "unready local child unexpectedly authorized",
+                                    )
+                                }
+                                ResidentAuthorizationOutcome::RemoteAuthorized(authorized) => {
+                                    ledger.append(authorized.route_observations).await.unwrap();
+                                    MctIrohCallHandlerResult::failed(
+                                        "forwarded arrival unexpectedly selected a remote route",
+                                    )
+                                }
+                            }
+                        }
+                    },
+                )
+                .await
+        });
+
+        let call_id = CallId::new("call-mutual-unready-single-hop").unwrap();
+        let mut call = resident_test_call(TraceId::new("trace-mutual-unready-single-hop").unwrap());
+        call.call_id = call_id.clone();
+        call.caller.node_id = a_node;
+        call.caller.vision_id = vision;
+        call.origin = CallOrigin::Cli;
+        let request = resident_test_protocol_request(call.clone());
+        let a_state = MctRuntimeStateStore::open(&a_state_path).unwrap();
+        let ResidentAuthorizationOutcome::RemoteAuthorized(authorized) =
+            authorize_resident_child_from_loaded_with_state(
+                &a_config,
+                Some(&a_state),
+                loaded_a.children,
+                &call,
+                current_timestamp(),
+            )
+            .unwrap()
+        else {
+            panic!("originating Mother should select its published remote executor")
+        };
+        let a_ledger = ResidentLedgerWriter::spawn(a_ledger_path.clone()).unwrap();
+        a_ledger
+            .append(authorized.route_observations.clone())
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            execute_authorized_resident_remote_call(
+                ResidentExecutionPaths {
+                    config_path: a_config_path,
+                    children_dir: a_children_dir,
+                    state_path: a_state_path,
+                },
+                *authorized,
+                request,
+                None,
+                a_ledger.clone(),
+            ),
+        )
+        .await
+        .expect("single-hop denial must complete before the deadline");
+        assert_eq!(result.outcome, CallProtocolOutcome::Denied);
+
+        a_ledger.close().await;
+        b_ledger.close().await;
+        b_serve.abort();
+        let a_text = std::fs::read_to_string(&a_ledger_path).unwrap();
+        let b_text = std::fs::read_to_string(&b_ledger_path).unwrap();
+        assert!(a_text.contains("CapabilityUnavailable"));
+        assert!(a_text.contains("denial_class:temporal"));
+        assert!(a_text.contains("remote_reply:Denied"));
+        assert!(b_text.contains("CapabilityUnavailable"));
+        assert!(b_text.contains("denial_class:temporal"));
+        assert!(b_text.contains("no_route_recorded"));
+        assert!(!b_text.contains("peer_call_sent"));
+
+        let forward_count = [&a_text, &b_text]
+            .into_iter()
+            .flat_map(|text| text.lines())
+            .filter(|line| {
+                line.contains(call_id.as_str()) && line.contains("\"kind\":\"peer_call_sent\"")
+            })
+            .count();
+        assert_eq!(forward_count, 1, "the same call_id must be forwarded once");
     }
 
     #[tokio::test]
@@ -7230,6 +7494,33 @@ mod tests {
     }
 
     #[test]
+    fn forwarded_arrival_with_unavailable_local_candidate_is_terminal() {
+        let fixture = remote_surface_candidate_fixture();
+        let mut unavailable_child = test_child();
+        unavailable_child.instance_state = mct_daemon::MctChildInstanceState::Loading;
+        let mut forwarded_call = fixture.call.clone();
+        forwarded_call.origin = CallOrigin::Iroh;
+
+        let outcome = authorize_resident_child_from_loaded_with_state(
+            &fixture.config,
+            Some(&fixture.state),
+            vec![unavailable_child],
+            &forwarded_call,
+            Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
+        )
+        .unwrap();
+
+        let ResidentAuthorizationOutcome::Denied { observations, .. } = outcome else {
+            panic!("forwarded arrival must be terminal when local execution is unavailable")
+        };
+        let text = serde_json::to_string(&observations).unwrap();
+        assert!(text.contains("CapabilityUnavailable"));
+        assert!(text.contains("denial_class:temporal"));
+        assert!(!text.contains("peer:remote-mct"));
+        assert!(!text.contains("peer_call_sent"));
+    }
+
+    #[test]
     fn resident_remote_surface_candidate_becomes_admissible_when_all_checks_pass() {
         let fixture = remote_surface_candidate_fixture();
 
@@ -7667,6 +7958,9 @@ mod tests {
                 None,
             ))
             .unwrap();
+        store
+            .approve_and_assign_loaded_child(&test_child(), MctOperatorChildScope::default())
+            .unwrap();
         let mut config = store.load().unwrap();
         let peer = config.peers.get("remote-mct").unwrap().clone();
         let outbound_binding = MctOutboundPeerBindingPresentation {
@@ -7713,10 +8007,11 @@ mod tests {
                     .expect("string ID literal/generated value must be non-empty"),
             })
             .unwrap();
-        let call = resident_test_call(
+        let mut call = resident_test_call(
             TraceId::new("trace-remote-route-candidate")
                 .expect("string ID literal/generated value must be non-empty"),
         );
+        call.origin = CallOrigin::Cli;
         RemoteSurfaceCandidateFixture {
             _dir: dir,
             config,

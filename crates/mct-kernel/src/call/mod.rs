@@ -140,6 +140,20 @@ pub enum CallOrigin {
     Cli,
 }
 
+impl CallOrigin {
+    /// Returns whether this Mother may source remote route candidates.
+    ///
+    /// Calls arriving over `mct/call/0` are terminal at the receiving Mother.
+    /// Local origins may select one remote executor, but an Iroh arrival may
+    /// only use local candidates and therefore cannot be forwarded again.
+    pub const fn allows_remote_candidate_sourcing(self) -> bool {
+        match self {
+            Self::Iroh => false,
+            Self::JvmAdapter | Self::WasmHost | Self::ProcessHarness | Self::Cli => true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Immutable semantic unit of requested work.
 ///
@@ -1096,6 +1110,19 @@ mod tests {
                 .expect("string ID literal/generated value must be non-empty"),
             observation_id: ObservationId::new("obs-call-decision")
                 .expect("string ID literal/generated value must be non-empty"),
+        }
+    }
+
+    #[test]
+    fn only_local_call_origins_allow_remote_candidate_sourcing() {
+        assert!(!CallOrigin::Iroh.allows_remote_candidate_sourcing());
+        for origin in [
+            CallOrigin::Cli,
+            CallOrigin::JvmAdapter,
+            CallOrigin::WasmHost,
+            CallOrigin::ProcessHarness,
+        ] {
+            assert!(origin.allows_remote_candidate_sourcing(), "{origin:?}");
         }
     }
 
