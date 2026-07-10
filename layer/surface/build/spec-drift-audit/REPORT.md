@@ -84,7 +84,7 @@ $ allium analyse layer/allium/mct-product-map.allium
 - **Code:** `crates/mct-iroh/src/serve.rs:833-878,987-1010`; `crates/mct-daemon/src/main.rs:1529-1563`.
 - **Evidence:** The map requires hello receipt, admission/denial, negotiation, and response facts before subsequent protected peer effects. The Iroh server remembers the admitted hello, writes and finishes the network response, waits for connection close, and only then emits `Served`; the daemon asynchronously turns that event into one ledger append. A subsequent call can use the remembered admission before the hello observation is durable, and a crash after sending the response can leave authority granted with no canonical hello fact.
 - **Direction:** spec-ward.
-- **Outcome:** fixed in `e16e59d` (`fix(iroh): persist hello authority before response`). The resident injects an awaited hello-observation sink backed by its single `ResidentLedgerWriter`; admitted and denied evaluations are synchronized before admission is remembered or response bytes are written. Append failure closes the hello without a response or remembered admission.
+- **Outcome:** fixed in `e16e59d` (`fix(iroh): persist hello authority before response`), with standalone coverage completed in `fd3cd3d` (`fix(iroh): observe peer call lifecycle`). The now-mandatory serving observation sink is backed by the owning path's single `ResidentLedgerWriter`; resident, `iroh serve`, and `iroh serve-process` synchronize admitted and denied hello evaluations before admission is remembered or response bytes are written. Append failure closes the hello without a response or remembered admission.
 
 ### A6 — authority/operator/storage mutations bypass the observation ledger
 
@@ -104,9 +104,10 @@ $ allium analyse layer/allium/mct-product-map.allium
 ### A8 — peer-call lifecycle observations are incomplete and emitted after reply
 
 - **Spec:** `MctCallProtocol.PeerCallObservationsCoverLifecycle`, `layer/allium/mct-product-map.allium:697,826-850`; observation coverage, `layer/allium/mct-product-map.allium:1223-1233,1282-1308`.
-- **Code:** `crates/mct-iroh/src/serve.rs:820-1000,1010-1018`; `crates/mct-daemon/src/main.rs:1567-1587`.
-- **Evidence:** The map requires receipt, malformed rejection, call construction, authorization/denial, route/no-route, result recording, and reply observations. Successful serving emits one `Served::Call` only after the reply stream is finished, and the daemon projects it to one call-protocol evaluation observation. Decode/validation failures return before a `Served` event, so malformed requests have no corresponding ledger fact. Route/execution paths add some later facts, but receipt, construction, malformed rejection, distinct result recording, and reply emission are not all represented as required.
+- **Code:** mandatory typed lifecycle sink and serving order in `crates/mct-iroh/src/serve.rs`; resident ledger projection in `crates/mct-daemon/src/daemon/resident.rs`; standalone writer ownership in `crates/mct-daemon/src/daemon/ingress.rs`.
+- **Evidence:** The map requires receipt, malformed rejection, call construction, authorization/denial, route/no-route, result recording, and reply observations. Route/no-route and execution observations remain owned by the existing resident handler; the transport now supplies the missing ingress, authority prefix, result, and reply facts without duplicating route evidence.
 - **Direction:** spec-ward.
+- **Outcome:** fixed in `fd3cd3d` (`fix(iroh): observe peer call lifecycle`). Every serving API requires one typed sink. Receipt/construction/authorization/denial/malformed prefixes are awaited with `BeforeEffect` durability; undecodable and oversized requests receive a safe malformed reply only after durable rejection, while append failure yields no response. Result and truthful post-send reply facts use buffered durability. Standalone servers acquire the exclusive ledger writer before endpoint bind, and serve-process no longer discards ledger/state write failures.
 
 ## Class B — the product map under-describes landed behavior
 
@@ -235,7 +236,7 @@ The audit also found implementation alignment, not divergence, in these walked a
 | A5 | A | Hello observation follows response effect | spec-ward — **fixed** in `e16e59d` |
 | A6 | A | Authority/operator/storage mutations are unobserved | spec-ward — peer portion **fixed** in `393884f`; remainder open |
 | A7 | A | Reload drains/stops before replacement readiness | spec-ward |
-| A8 | A | Peer-call lifecycle observation coverage is incomplete | spec-ward |
+| A8 | A | Peer-call lifecycle observation coverage is incomplete | spec-ward — **fixed** in `fd3cd3d` |
 | B1 | B | Payload caps and local BLAKE3 CAS are under-described | code-ward |
 | B2 | B | Effect-boundary revision guard is under-described | code-ward |
 | B3 | B | Reply `route_taken` projection is under-described | code-ward |
