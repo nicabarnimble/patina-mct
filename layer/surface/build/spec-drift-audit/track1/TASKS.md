@@ -2296,3 +2296,46 @@ Every Slice 4 commit passed `cargo test --workspace`, workspace/all-target Clipp
 Flakes: none. Expected red tests, deterministic compile/Clippy findings, fixture corrections, and the CRLF `git diff --check` refusal are captured verbatim above.
 
 A6 is fully fixed. A7/Slice 5 and A3/Slice 6 remain untouched. Live node identity rotation is recorded in the ROADMAP and requires endpoint rebind plus peer re-admission design. Stop after S4.2.
+
+# Slice 5 — replacement-ready child reload ordering
+
+Starting state: `patina` at `ab067ee` (`Merge pull request #19 from nicabarnimble/patina`), clean and synchronized with `origin/patina`.
+
+## S5.1 mechanism specification
+
+### Corrected transition and commit point
+
+Reload constructs a distinct generation at `current.generation + 1` in `Loading`, verifies it against current artifact/approval/assignment authority, and transitions that replacement to `Ready` while the predecessor remains `Ready`. Only then does swap begin: the predecessor transitions to `Draining`, then `Stopped`, and the state store atomically persists the ready replacement and stopped predecessor. The state transaction commit is the point of no return. Before commit, readers continue to see the predecessor as the sole ready generation; after commit, readers see the replacement ready and the predecessor stopped. Lifecycle observations retain the causal order replacement ready → predecessor draining → predecessor stopped.
+
+Every construction, authority-verification, or readiness-transition failure occurs before swap. The typed failure is returned to the command, the predecessor object is not transitioned, and no replacement or predecessor state is persisted. Consequently durable state cannot pass through a snapshot with zero ready generations when a ready predecessor existed before reload.
+
+### Caller enumeration
+
+- `children reload` → `run_children_reload` → `run_child_lifecycle(..., "reload")` is the only caller of `reload_configured_child` and the only path that persists a replacement generation. It receives both the replacement-ready ordering and the atomic state swap.
+- `children warmup` calls the separate `warmup_configured_child` path. It transitions one configured loading generation to ready and performs no replacement or predecessor drain, so it does not share or require this fix.
+- `MctProcessSupervisor` supervises already-authorized process invocations and has independent spawn/status/stop/recovery states. It does not call component-generation lifecycle transitions or reload.
+- `run_child_task_cycle` drains event queues, ticks intents, leases tasks, and records task/metric state. Its `drain` vocabulary is not child-generation draining and it does not call reload transitions.
+- Resident routing reloads current config/children authority for each call but does not mutate instance generations. No resident warmup, reload, supervisor restart, or task-cycle generation caller exists.
+
+### Existing drain semantics
+
+At swap, the lifecycle model records the predecessor's allowed `Ready → Draining → Stopped` transitions. The current implementation has no drain timer, in-flight counter, cancellation, or wait loop: already-started work is not synchronously interrupted by these model transitions, while subsequent persisted-state selection excludes the stopped predecessor. This slice preserves that behavior; drain execution/timeout redesign is separate work.
+
+### Out of scope
+
+- A3/Slice 6 idempotency and replay behavior.
+- New observation kinds; existing child lifecycle report observations already cover these transitions.
+- Drain timeout, in-flight work tracking, or cancellation redesign.
+- Supervisor restart/recovery policy.
+
+## Slice 5 checklist
+
+- [x] Re-establish `ab067ee`; read A7/map contracts, lifecycle model, all callers, persistence ordering, and the Slice 4 observation disposition.
+- [x] Record corrected sequencing, failure semantics, caller enumeration, drain behavior, and exclusions.
+- [ ] Land failing ready-before-drain, failed-replacement, persistence, and post-failure routing regressions before implementation.
+- [ ] Implement replacement-first preparation and atomic persisted swap with minimal library surface.
+- [ ] Mark A7 fixed, validate every commit, and stop after S5.2.
+
+## Slice 5 failure log
+
+No failures recorded yet.
