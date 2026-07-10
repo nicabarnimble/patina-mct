@@ -27,8 +27,8 @@ pub use identity::{
 pub use serve::{
     MCT_CALL_FRAME_READ_BUDGET_BYTES, MCT_INLINE_PAYLOAD_MAX_BYTES,
     MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES, MctIrohCallHandlerResult, MctIrohCallPayloadReply,
-    MctIrohConcurrentServeConfig, MctIrohPeerCallReport, MctIrohServeEvent, MctIrohServeState,
-    MctIrohServedProtocol,
+    MctIrohConcurrentServeConfig, MctIrohHelloObservationSink, MctIrohPeerCallReport,
+    MctIrohServeEvent, MctIrohServeState, MctIrohServedProtocol,
 };
 
 /// Returns the crate version for health and smoke tests.
@@ -497,6 +497,80 @@ mod tests {
 
         first_client.close().await;
         second_client.close().await;
+        serve_task.abort();
+    }
+
+    #[tokio::test]
+    async fn failed_hello_observation_prevents_response_and_remembered_admission() {
+        let server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let server_ticket = server.ticket();
+        let client_endpoint_id = client.snapshot().endpoint_id;
+        let binding = test_peer_binding(&client_endpoint_id);
+        let execution_count = Arc::new(AtomicU64::new(0));
+        let handler_execution_count = Arc::clone(&execution_count);
+        let append_attempt_count = Arc::new(AtomicU64::new(0));
+        let sink_append_attempt_count = Arc::clone(&append_attempt_count);
+        let (events, mut received_events) = tokio::sync::mpsc::channel(8);
+        let serve_task = tokio::spawn(async move {
+            server
+                .serve_concurrent_with_call_handler(
+                    MctIrohServeState::new(),
+                    vec![binding],
+                    MctIrohConcurrentServeConfig {
+                        events: Some(events),
+                        hello_observation_sink: Some(MctIrohHelloObservationSink::new(
+                            move |_, _| {
+                                let append_attempt_count = Arc::clone(&sink_append_attempt_count);
+                                async move {
+                                    append_attempt_count.fetch_add(1, Ordering::SeqCst);
+                                    Err(std::io::Error::other("injected ledger append failure"))
+                                }
+                            },
+                        )),
+                        ..MctIrohConcurrentServeConfig::default()
+                    },
+                    || Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
+                    move |_, _, _| {
+                        let execution_count = Arc::clone(&handler_execution_count);
+                        async move {
+                            execution_count.fetch_add(1, Ordering::SeqCst);
+                            MctIrohCallHandlerResult::completed(
+                                ResultRef::new("result-observation-failure")
+                                    .expect("string ID literal/generated value must be non-empty"),
+                            )
+                        }
+                    },
+                )
+                .await
+        });
+
+        let trace_id = TraceId::new("trace-failed-hello-observation")
+            .expect("string ID literal/generated value must be non-empty");
+        let hello = test_hello_request(&client_endpoint_id, &trace_id);
+        assert!(client.send_hello(&server_ticket, &hello).await.is_err());
+
+        let call = test_call_request(&client_endpoint_id, &trace_id, &fake_hello_response());
+        let reply = client.send_call(&server_ticket, &call).await.unwrap();
+        assert_eq!(reply.reply_outcome, CallProtocolReplyOutcome::Denied);
+        assert_eq!(reply.safe_message, "not authorized");
+        assert_eq!(append_attempt_count.load(Ordering::SeqCst), 1);
+        assert_eq!(execution_count.load(Ordering::SeqCst), 0);
+
+        let evaluation = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(MctIrohServeEvent::Served(served)) = received_events.recv().await
+                    && let MctIrohServedProtocol::Call { evaluation, .. } = *served
+                {
+                    break evaluation;
+                }
+            }
+        })
+        .await
+        .expect("call evaluation event");
+        assert_eq!(evaluation.reason, CallProtocolReason::HelloNotAdmitted);
+
+        client.close().await;
         serve_task.abort();
     }
 

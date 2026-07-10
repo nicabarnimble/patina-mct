@@ -18,7 +18,10 @@ use mct_kernel::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     collections::{BTreeMap, VecDeque},
+    error::Error as StdError,
+    fmt,
     future::Future,
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -78,6 +81,12 @@ impl MctIrohServeState {
     fn next_observation_id(&mut self, kind: &str) -> ObservationId {
         ObservationId::new(format!("obs-iroh-{kind}-{}", self.next_suffix()))
             .expect("string ID literal/generated value must be non-empty")
+    }
+
+    fn forget_hello(&mut self, endpoint_id: &EndpointIdText) {
+        self.hello_by_endpoint.remove(endpoint_id);
+        self.hello_insertion_order
+            .retain(|remembered| remembered != endpoint_id);
     }
 
     fn remember_hello(
@@ -274,6 +283,57 @@ struct MctCallProtocolReplyEnvelope {
     inline_result_payload_base64: Option<String>,
 }
 
+type HelloObservationFuture = Pin<
+    Box<
+        dyn Future<Output = Result<(), Box<dyn StdError + Send + Sync + 'static>>> + Send + 'static,
+    >,
+>;
+
+type HelloObservationCallback =
+    dyn Fn(TraceId, MctHelloAdmissionEvaluation) -> HelloObservationFuture + Send + Sync + 'static;
+
+/// Awaited adapter callback for making hello authority decisions durable.
+#[derive(Clone)]
+pub struct MctIrohHelloObservationSink {
+    callback: Arc<HelloObservationCallback>,
+}
+
+impl MctIrohHelloObservationSink {
+    pub fn new<F, Fut, E>(callback: F) -> Self
+    where
+        F: Fn(TraceId, MctHelloAdmissionEvaluation) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+        E: StdError + Send + Sync + 'static,
+    {
+        Self {
+            callback: Arc::new(move |trace_id, evaluation| {
+                let future = callback(trace_id, evaluation);
+                Box::pin(async move {
+                    future.await.map_err(|source| {
+                        Box::new(source) as Box<dyn StdError + Send + Sync + 'static>
+                    })
+                })
+            }),
+        }
+    }
+
+    async fn record(
+        &self,
+        trace_id: TraceId,
+        evaluation: MctHelloAdmissionEvaluation,
+    ) -> Result<(), Box<dyn StdError + Send + Sync + 'static>> {
+        (self.callback)(trace_id, evaluation).await
+    }
+}
+
+impl fmt::Debug for MctIrohHelloObservationSink {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MctIrohHelloObservationSink")
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct MctIrohConcurrentServeConfig {
     pub max_concurrent_connections: usize,
@@ -281,6 +341,7 @@ pub struct MctIrohConcurrentServeConfig {
     pub events: Option<mpsc::Sender<MctIrohServeEvent>>,
     pub require_binding_signature: bool,
     pub capability_view: Option<MctHelloCapabilityView>,
+    pub hello_observation_sink: Option<MctIrohHelloObservationSink>,
 }
 
 impl Default for MctIrohConcurrentServeConfig {
@@ -291,6 +352,7 @@ impl Default for MctIrohConcurrentServeConfig {
             events: None,
             require_binding_signature: false,
             capability_view: None,
+            hello_observation_sink: None,
         }
     }
 }
@@ -753,6 +815,7 @@ impl MotherIrohEndpoint {
         let issuer_endpoint_id = self.snapshot().endpoint_id;
         let require_binding_signature = config.require_binding_signature;
         let capability_view = config.capability_view.clone();
+        let hello_observation_sink = config.hello_observation_sink.clone();
         let state = Arc::new(Mutex::new(state));
         let semaphore = Arc::new(Semaphore::new(config.max_concurrent_connections));
         let active_tasks = Arc::new(AtomicU64::new(0));
@@ -782,6 +845,7 @@ impl MotherIrohEndpoint {
             let issuer_endpoint_id = issuer_endpoint_id.clone();
             let active_tasks = Arc::clone(&active_tasks);
             let capability_view = capability_view.clone();
+            let hello_observation_sink = hello_observation_sink.clone();
             active_tasks.fetch_add(1, Ordering::SeqCst);
 
             tokio::spawn(async move {
@@ -838,6 +902,7 @@ impl MotherIrohEndpoint {
                             request.received_over.connection_side = ConnectionSide::Incoming;
 
                             let mut state = state.lock().await;
+                            state.forget_hello(&remote_endpoint_id);
                             let hello_policy = HelloPolicy {
                                 current_policy_revision: current_peer_authority.policy_revision,
                                 ..HelloPolicy::default()
@@ -862,7 +927,6 @@ impl MotherIrohEndpoint {
                                     evaluation,
                                 );
                             }
-                            state.remember_hello(remote_endpoint_id, evaluation.clone());
                             let mut response = hello_response(
                                 format!("reply-iroh-hello-{}", state.next_suffix()),
                                 &evaluation,
@@ -871,7 +935,6 @@ impl MotherIrohEndpoint {
                             if evaluation.is_admitted() {
                                 response.capability_view = capability_view.clone();
                             }
-                            drop(state);
                             let response_bytes =
                                 serde_json::to_vec(&response).map_err(|source| {
                                     MotherIrohEndpointError::ProtocolJson {
@@ -879,6 +942,18 @@ impl MotherIrohEndpoint {
                                         source,
                                     }
                                 })?;
+                            if let Some(sink) = &hello_observation_sink {
+                                sink.record(request.trace_id.clone(), evaluation.clone())
+                                    .await
+                                    .map_err(|source| {
+                                        MotherIrohEndpointError::ProtocolProvider {
+                                            action: "durably record mct/hello/0 evaluation",
+                                            source,
+                                        }
+                                    })?;
+                            }
+                            state.remember_hello(remote_endpoint_id, evaluation.clone());
+                            drop(state);
                             (
                                 response_bytes,
                                 MctIrohServedProtocol::Hello {
