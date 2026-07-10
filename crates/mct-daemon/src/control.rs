@@ -361,17 +361,17 @@ pub async fn serve_uds_control_once_with_snapshot_result_blob_store_and_mutation
     let request = String::from_utf8_lossy(&request_bytes);
     let (method, path) = parse_http_request_line(&request)?;
     let authorization_header = parse_authorization_header(&request);
-    let response = if method == "POST" && path == "/blobs" {
-        match blob_state_path {
-            Some(state_path) => handle_blob_ingest_request(&request_bytes, state_path),
-            None => json_response(404, serde_json::json!({"error": "not found"})),
-        }
-    } else if method == "POST"
+    let response = if method == "POST"
         && let Some(handler) = mutation_handler
     {
         match request_body(&request_bytes) {
             Ok(body) => handler.handle(path.to_owned(), body.to_vec()).await,
             Err(error) => json_response(400, serde_json::json!({"error": error.to_string()})),
+        }
+    } else if method == "POST" && path == "/blobs" {
+        match blob_state_path {
+            Some(state_path) => handle_blob_ingest_request(&request_bytes, state_path),
+            None => json_response(404, serde_json::json!({"error": "not found"})),
         }
     } else {
         handle_control_plane_path_result_with_auth(

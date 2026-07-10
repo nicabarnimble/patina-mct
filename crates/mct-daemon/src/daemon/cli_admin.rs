@@ -11,18 +11,61 @@ pub(super) fn run_registry(mut args: Vec<String>) -> Result<()> {
     }
 }
 
+fn execute_cli_registry_mutation<T: serde::de::DeserializeOwned>(
+    children_dir: &Path,
+    state_path: &Path,
+    ledger_path: &Path,
+    socket_path: &Path,
+    path: &str,
+    request: &impl serde::Serialize,
+) -> Result<T> {
+    let body = serde_json::to_vec(request).context("encode registry mutation request")?;
+    let value = if let Some(response) = try_resident_control_mutation(socket_path, path, &body)? {
+        serde_json::from_slice(&response).context("decode resident registry mutation result")?
+    } else {
+        execute_offline_registry_mutation(children_dir, state_path, ledger_path, path, &body)
+            .with_context(|| {
+                format!(
+                    "resident UDS {} unavailable and offline registry mutation failed",
+                    socket_path.display()
+                )
+            })?
+    };
+    serde_json::from_value(value).context("decode registry mutation result")
+}
+
 pub(super) fn run_registry_install(mut args: Vec<String>) -> Result<()> {
     let children_dir = take_option(&mut args, "--children-dir")
         .map(PathBuf::from)
         .unwrap_or_else(default_children_dir);
+    let state_path = take_option(&mut args, "--state")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_state_path);
+    let ledger_path = take_option(&mut args, "--ledger")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_observation_ledger_path);
+    let socket_path = take_option(&mut args, "--uds")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_control_uds_path);
     let replace = take_flag(&mut args, "--replace");
     let as_json = take_flag(&mut args, "--json");
     if args.len() != 1 {
         bail!(
-            "expected: mct-daemon registry install <verified-package-dir> [--children-dir path] [--replace] [--json]"
+            "expected: mct-daemon registry install <verified-package-dir> [--children-dir path] [--state path] [--ledger path] [--uds socket-path] [--replace] [--json]"
         );
     }
-    let report = install_verified_child_package(PathBuf::from(&args[0]), children_dir, replace)?;
+    let report: MctChildPackageInstallReport = execute_cli_registry_mutation(
+        &children_dir,
+        &state_path,
+        &ledger_path,
+        &socket_path,
+        "/registry/install",
+        &RegistryInstallRequest {
+            expected_children_dir: children_dir.clone(),
+            source_dir: PathBuf::from(&args[0]),
+            replace,
+        },
+    )?;
     if as_json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -42,6 +85,12 @@ pub(super) fn run_registry_sync(mut args: Vec<String>) -> Result<()> {
     let state_path = take_option(&mut args, "--state")
         .map(PathBuf::from)
         .unwrap_or_else(default_state_path);
+    let ledger_path = take_option(&mut args, "--ledger")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_observation_ledger_path);
+    let socket_path = take_option(&mut args, "--uds")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_control_uds_path);
     let strict = take_flag(&mut args, "--strict-integrity");
     let as_json = take_flag(&mut args, "--json");
     if args.is_empty() {
@@ -52,17 +101,18 @@ pub(super) fn run_registry_sync(mut args: Vec<String>) -> Result<()> {
         .first()
         .map(PathBuf::from)
         .unwrap_or_else(default_children_dir);
-    let state = MctRuntimeStateStore::open(&state_path)?;
-    let report = sync_child_registry_source(
-        &state,
-        source_id,
-        children_dir,
-        if strict {
-            MctChildIntegrityMode::RequireSidecars
-        } else {
-            MctChildIntegrityMode::AuditOnly
+    let report: MctRegistrySyncReport = execute_cli_registry_mutation(
+        &children_dir,
+        &state_path,
+        &ledger_path,
+        &socket_path,
+        "/registry/sync",
+        &RegistrySyncRequest {
+            expected_children_dir: children_dir.clone(),
+            expected_state_path: state_path.clone(),
+            source_id,
+            strict_integrity: strict,
         },
-        MctOperatorChildScope::default(),
     )?;
     if as_json {
         println!("{}", serde_json::to_string_pretty(&report)?);
