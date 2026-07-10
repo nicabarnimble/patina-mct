@@ -2161,3 +2161,32 @@ error: function `resident_authority_mutation_handler` is never used
 error: could not compile `mct-daemon` (bin "mct-daemon") due to 1 previous error
 warning: build failed, waiting for other jobs to finish...
 ```
+
+Expected red administrative mutation regression before toy/pando routes:
+
+```text
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.64s
+     Running unittests src/main.rs (target/debug/deps/mct_daemon-701d058281c133f0)
+
+running 1 test
+test control::tests::live_toy_grants_and_composition_state_are_observed_before_effects ... FAILED
+
+failures:
+
+---- control::tests::live_toy_grants_and_composition_state_are_observed_before_effects stdout ----
+
+thread 'control::tests::live_toy_grants_and_composition_state_are_observed_before_effects' (1291440) panicked at crates/mct-daemon/src/daemon/control.rs:2154:13:
+assertion `left == right` failed: {"error":"peer mutation rejected"}
+  left: 400
+ right: 200
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    control::tests::live_toy_grants_and_composition_state_are_observed_before_effects
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 55 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```

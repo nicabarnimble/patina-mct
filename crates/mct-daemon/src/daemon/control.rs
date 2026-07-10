@@ -1159,6 +1159,287 @@ pub(super) fn execute_offline_registry_mutation(
     }
 }
 
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ToyAuthorizeSlateRequest {
+    pub(super) expected_config_path: PathBuf,
+    pub(super) expected_children_dir: PathBuf,
+    pub(super) expected_state_path: PathBuf,
+    pub(super) child_name: String,
+    pub(super) project_root: PathBuf,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ToyAuthorizeSecretRequest {
+    pub(super) expected_config_path: PathBuf,
+    pub(super) expected_children_dir: PathBuf,
+    pub(super) expected_state_path: PathBuf,
+    pub(super) child_name: String,
+    pub(super) secret_name: String,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PandoRecordRequest {
+    pub(super) expected_state_path: PathBuf,
+    pub(super) plan: MctCompositionPlan,
+}
+
+#[derive(Clone, Debug)]
+enum PreparedAdministrativeMutation {
+    ToyGrants {
+        state_path: PathBuf,
+        child_name: String,
+        contracts: Vec<CanonicalToyContract>,
+        grants: Vec<ToyGrant>,
+    },
+    Composition {
+        state_path: PathBuf,
+        plan: MctCompositionPlan,
+    },
+}
+
+fn require_current_child_authority(
+    config_path: &Path,
+    children_dir: &Path,
+    child_name: &str,
+) -> Result<mct_daemon::MctLoadedChild> {
+    let child = load_named_child(children_dir, child_name)?;
+    let config = MctDaemonConfigStore::new(config_path).load()?;
+    let approval = config
+        .child_approvals
+        .get(child_name)
+        .ok_or_else(|| anyhow::anyhow!("child is not approved"))?;
+    let assignment = config
+        .child_assignments
+        .get(child_name)
+        .ok_or_else(|| anyhow::anyhow!("child is not assigned"))?;
+    if approval.approval_state != ChildApprovalState::Approved
+        || assignment.assignment_state != ChildAssignmentState::Active
+        || approval.artifact_id.as_str() != child.artifact_id
+        || assignment.artifact_id.as_str() != child.artifact_id
+    {
+        bail!("child authority is not active for loaded artifact");
+    }
+    Ok(child)
+}
+
+fn prepare_administrative_mutation(
+    config_path: &Path,
+    children_dir: &Path,
+    state_path: &Path,
+    path: &str,
+    body: &[u8],
+) -> Result<PreparedAdministrativeMutation> {
+    if body.len() > AUTHORITY_MUTATION_BODY_MAX_BYTES {
+        bail!("administrative mutation body exceeds 64 KiB limit");
+    }
+    match path {
+        "/toys/authorize-slate" => {
+            let request: ToyAuthorizeSlateRequest =
+                serde_json::from_slice(body).context("decode slate grant request")?;
+            require_expected_config_path(&request.expected_config_path, config_path)?;
+            require_expected_config_path(&request.expected_children_dir, children_dir)?;
+            require_expected_config_path(&request.expected_state_path, state_path)?;
+            let project_root = canonical_dir(request.project_root, "project root")?;
+            let child =
+                require_current_child_authority(config_path, children_dir, &request.child_name)?;
+            Ok(PreparedAdministrativeMutation::ToyGrants {
+                state_path: state_path.to_path_buf(),
+                child_name: request.child_name,
+                contracts: slate_toy_contracts(),
+                grants: slate_toy_grants_for_child(&child, &project_root),
+            })
+        }
+        "/toys/authorize-secret" => {
+            let request: ToyAuthorizeSecretRequest =
+                serde_json::from_slice(body).context("decode secret grant request")?;
+            require_expected_config_path(&request.expected_config_path, config_path)?;
+            require_expected_config_path(&request.expected_children_dir, children_dir)?;
+            require_expected_config_path(&request.expected_state_path, state_path)?;
+            if request.secret_name.trim().is_empty() {
+                bail!("secret name must not be empty");
+            }
+            let child =
+                require_current_child_authority(config_path, children_dir, &request.child_name)?;
+            Ok(PreparedAdministrativeMutation::ToyGrants {
+                state_path: state_path.to_path_buf(),
+                child_name: request.child_name,
+                contracts: vec![mct_secrets_toy_contract()],
+                grants: vec![secret_toy_grant_for_child(&child, &request.secret_name)],
+            })
+        }
+        "/pando/record" => {
+            let request: PandoRecordRequest =
+                serde_json::from_slice(body).context("decode composition record request")?;
+            require_expected_config_path(&request.expected_state_path, state_path)?;
+            if request.plan.composition_id.trim().is_empty() {
+                bail!("composition id must not be empty");
+            }
+            Ok(PreparedAdministrativeMutation::Composition {
+                state_path: state_path.to_path_buf(),
+                plan: request.plan,
+            })
+        }
+        _ => bail!("unknown administrative mutation route"),
+    }
+}
+
+impl PreparedAdministrativeMutation {
+    fn decision_observations(&self) -> Vec<MctObservation> {
+        match self {
+            Self::ToyGrants {
+                child_name, grants, ..
+            } => grants
+                .iter()
+                .map(|grant| {
+                    mutation_observation(MutationObservationFact {
+                        namespace: "toy-grant",
+                        kind: ObservationKind::ToyGrantAllowed,
+                        subject_id: child_name.clone(),
+                        resource_id: format!("{}:{}", grant.toy_id, grant.grant_id),
+                        policy_revision: Some(grant.policy_revision),
+                        grants_revision: Some(grant.grants_revision),
+                        outcome: ObservationOutcome::Allowed,
+                        source_plane: SourcePlane::Kernel,
+                        safe_message: "toy grant allowed".into(),
+                    })
+                })
+                .collect(),
+            Self::Composition { plan, .. } => vec![mutation_observation(MutationObservationFact {
+                namespace: "composition-record",
+                kind: ObservationKind::OperatorActionRecorded,
+                subject_id: "local-operator".into(),
+                resource_id: plan.composition_id.clone(),
+                policy_revision: None,
+                grants_revision: None,
+                outcome: ObservationOutcome::Allowed,
+                source_plane: SourcePlane::Operator,
+                safe_message: format!("composition plan accepted steps={}", plan.steps.len()),
+            })],
+        }
+    }
+
+    fn failure_observation(&self) -> MctObservation {
+        mutation_observation(MutationObservationFact {
+            namespace: "administrative-storage-failure",
+            kind: ObservationKind::StorageAppendFailed,
+            subject_id: "local-operator".into(),
+            resource_id: match self {
+                Self::ToyGrants { child_name, .. } => child_name.clone(),
+                Self::Composition { plan, .. } => plan.composition_id.clone(),
+            },
+            policy_revision: None,
+            grants_revision: None,
+            outcome: ObservationOutcome::Failed,
+            source_plane: SourcePlane::Storage,
+            safe_message: "administrative state effect failed".into(),
+        })
+    }
+
+    fn apply(&self) -> Result<serde_json::Value> {
+        match self {
+            Self::ToyGrants {
+                state_path,
+                child_name,
+                contracts,
+                grants,
+            } => {
+                let state = MctRuntimeStateStore::open(state_path)?;
+                for contract in contracts {
+                    state.upsert_toy_contract(contract)?;
+                }
+                for grant in grants {
+                    state.upsert_toy_grant_snapshot(grant)?;
+                }
+                Ok(serde_json::json!({
+                    "state": state_path,
+                    "child": child_name,
+                    "contracts": contracts.len(),
+                    "grants": grants.len()
+                }))
+            }
+            Self::Composition { state_path, plan } => Ok(serde_json::to_value(
+                record_composition_plan(&MctRuntimeStateStore::open(state_path)?, plan.clone())?,
+            )?),
+        }
+    }
+}
+
+async fn execute_resident_administrative_mutation(
+    config_path: &Path,
+    children_dir: &Path,
+    state_path: &Path,
+    ledger: &ResidentLedgerWriter,
+    path: &str,
+    body: &[u8],
+) -> MctControlPlaneResponse {
+    let prepared =
+        match prepare_administrative_mutation(config_path, children_dir, state_path, path, body) {
+            Ok(prepared) => prepared,
+            Err(_) => {
+                return peer_mutation_response(
+                    400,
+                    serde_json::json!({"error": "administrative mutation rejected"}),
+                );
+            }
+        };
+    if ledger
+        .append(prepared.decision_observations())
+        .await
+        .is_err()
+    {
+        return peer_mutation_response(
+            500,
+            serde_json::json!({"error": "administrative decision was not durable"}),
+        );
+    }
+    match prepared.apply() {
+        Ok(value) => peer_mutation_response(200, value),
+        Err(_) => {
+            let _ = ledger.append(vec![prepared.failure_observation()]).await;
+            peer_mutation_response(
+                500,
+                serde_json::json!({"error": "administrative state effect failed"}),
+            )
+        }
+    }
+}
+
+pub(super) fn execute_offline_administrative_mutation(
+    config_path: &Path,
+    children_dir: &Path,
+    state_path: &Path,
+    ledger_path: &Path,
+    path: &str,
+    body: &[u8],
+) -> Result<serde_json::Value> {
+    let mut ledger = JsonlObservationLedger::open(ledger_path, "ledger-local", "local-mct")
+        .with_context(|| {
+            format!(
+                "acquire exclusive observation ledger writer lock at {}",
+                ledger_path.display()
+            )
+        })?;
+    let prepared =
+        prepare_administrative_mutation(config_path, children_dir, state_path, path, body)?;
+    ledger.append_batch_before_effect(
+        prepared.decision_observations(),
+        mct_daemon::current_timestamp_string(),
+    )?;
+    match prepared.apply() {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            ledger.append_batch_before_effect(
+                [prepared.failure_observation()],
+                mct_daemon::current_timestamp_string(),
+            )?;
+            Err(error)
+        }
+    }
+}
+
 fn resident_mutation_handler(
     configured_path: PathBuf,
     children_dir: PathBuf,
@@ -1196,6 +1477,24 @@ fn resident_mutation_handler(
                     None => peer_mutation_response(
                         404,
                         serde_json::json!({"error": "registry mutation unavailable"}),
+                    ),
+                }
+            } else if path.starts_with("/toys/") || path == "/pando/record" {
+                match state_path {
+                    Some(state_path) => {
+                        execute_resident_administrative_mutation(
+                            &configured_path,
+                            &children_dir,
+                            &state_path,
+                            &ledger,
+                            &path,
+                            &body,
+                        )
+                        .await
+                    }
+                    None => peer_mutation_response(
+                        404,
+                        serde_json::json!({"error": "administrative mutation unavailable"}),
                     ),
                 }
             } else if path.starts_with("/children/") {
@@ -2080,6 +2379,174 @@ mod tests {
         .await;
         assert_eq!(status, 500);
         assert!(!config_path.exists());
+    }
+
+    #[tokio::test]
+    async fn live_toy_grants_and_composition_state_are_observed_before_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let socket_path = dir.path().join("control.sock");
+        crate::resident::tests::write_resident_process_child(&children_dir);
+        let child =
+            load_children_from_dir(MctChildLoadOptions::new(&children_dir).strict_integrity())
+                .children
+                .into_iter()
+                .next()
+                .unwrap();
+        MctDaemonConfigStore::new(&config_path)
+            .approve_and_assign_loaded_child(&child, MctOperatorChildScope::default())
+            .unwrap();
+        let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let handler = resident_observed_mutation_handler(
+            config_path.clone(),
+            children_dir.clone(),
+            state_path.clone(),
+            ledger.clone(),
+        );
+
+        for (path, body) in [
+            (
+                "/toys/authorize-slate",
+                serde_json::json!({
+                    "expected_config_path": config_path,
+                    "expected_children_dir": children_dir,
+                    "expected_state_path": state_path,
+                    "child_name": "resident-echo",
+                    "project_root": dir.path()
+                }),
+            ),
+            (
+                "/toys/authorize-secret",
+                serde_json::json!({
+                    "expected_config_path": config_path,
+                    "expected_children_dir": children_dir,
+                    "expected_state_path": state_path,
+                    "child_name": "resident-echo",
+                    "secret_name": "api-token-name"
+                }),
+            ),
+            (
+                "/pando/record",
+                serde_json::json!({
+                    "expected_state_path": state_path,
+                    "plan": {
+                        "composition_id": "composition-observed",
+                        "vision_id": "vision-local",
+                        "steps": []
+                    }
+                }),
+            ),
+        ] {
+            let (status, response) = post_mutation(
+                Arc::clone(&listener),
+                handler.clone(),
+                &socket_path,
+                path,
+                body,
+            )
+            .await;
+            assert_eq!(status, 200, "{response}");
+        }
+        drop(handler);
+        ledger.close().await;
+
+        let state = MctRuntimeStateStore::open(&state_path).unwrap();
+        assert_eq!(state.toy_grant_snapshots().unwrap().len(), 5);
+        let ledger_text = std::fs::read_to_string(ledger_path).unwrap();
+        assert!(ledger_text.contains("toy_grant_allowed"));
+        assert!(ledger_text.contains("operator_action_recorded"));
+        assert!(!ledger_text.contains("secret-value-material"));
+    }
+
+    #[tokio::test]
+    async fn administrative_append_failure_and_offline_lock_contention_prevent_state_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let socket_path = dir.path().join("control.sock");
+        crate::resident::tests::write_resident_process_child(&children_dir);
+        let child =
+            load_children_from_dir(MctChildLoadOptions::new(&children_dir).strict_integrity())
+                .children
+                .into_iter()
+                .next()
+                .unwrap();
+        MctDaemonConfigStore::new(&config_path)
+            .approve_and_assign_loaded_child(&child, MctOperatorChildScope::default())
+            .unwrap();
+        let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        drop(receiver);
+        let handler = resident_observed_mutation_handler(
+            config_path.clone(),
+            children_dir.clone(),
+            state_path.clone(),
+            ResidentLedgerWriter { sender },
+        );
+        let request = ToyAuthorizeSecretRequest {
+            expected_config_path: config_path.clone(),
+            expected_children_dir: children_dir.clone(),
+            expected_state_path: state_path.clone(),
+            child_name: "resident-echo".into(),
+            secret_name: "credential-name".into(),
+        };
+        let (status, _) = post_mutation(
+            listener,
+            handler,
+            &socket_path,
+            "/toys/authorize-secret",
+            serde_json::to_value(&request).unwrap(),
+        )
+        .await;
+        assert_eq!(status, 500);
+        assert!(!state_path.exists());
+
+        execute_offline_administrative_mutation(
+            &config_path,
+            &children_dir,
+            &state_path,
+            &ledger_path,
+            "/toys/authorize-secret",
+            &serde_json::to_vec(&request).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            MctRuntimeStateStore::open(&state_path)
+                .unwrap()
+                .toy_grant_snapshots()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let locked_state = dir.path().join("locked-state.sqlite");
+        let _lock =
+            JsonlObservationLedger::open(&ledger_path, "ledger-local", "local-mct").unwrap();
+        let error = execute_offline_administrative_mutation(
+            Path::new("."),
+            Path::new("."),
+            &locked_state,
+            &ledger_path,
+            "/pando/record",
+            &serde_json::to_vec(&PandoRecordRequest {
+                expected_state_path: locked_state.clone(),
+                plan: MctCompositionPlan {
+                    composition_id: "locked-composition".into(),
+                    vision_id: VisionId::new("vision-local").unwrap(),
+                    steps: vec![],
+                },
+            })
+            .unwrap(),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("writer lock"));
+        assert!(!locked_state.exists());
     }
 
     #[tokio::test]
