@@ -778,3 +778,52 @@ Final `crates/mct-daemon/src/main.rs`: **141 lines**, retaining only imports, en
 - The resident integration suite has broad shared setup and fixture construction; future focused contract tests should be added beside the extracted subjects instead of extending the shared fixture module indefinitely.
 - Several protocol/observation IDs are fixed CLI literals while resident IDs are generated; consistency is outside this slice.
 - Payload fact construction and result projection contain repeated content-type/digest handling that should not be deduplicated mechanically.
+
+---
+
+# Slice 2b — observed peer authority mutations
+
+## S2b.1 mechanism specification
+
+Starting state: `patina` at `b49240e` (`docs: close daemon main decomposition`), clean tree.
+
+### Local UDS commands
+
+HTTP remains read-only. The local UDS accepts these JSON commands, each with a **64 KiB body budget** inside the existing bounded UDS transport read budget:
+
+| Method/path | Request | Success response |
+|---|---|---|
+| `POST /peers/add` | expected config path; peer node, binding, endpoint and Vision IDs; optional endpoint ticket and presented binding proof | action, peer node, binding, endpoint, Vision, policy revision, resulting peer count |
+| `POST /peers/proof` | expected config path; peer node and outbound binding IDs; policy revision; proof; optional expiry | same safe mutation facts and resulting peer count; proof is omitted |
+| `POST /peers/revoke` | expected config path and peer node ID | safe facts for the binding now revoked and resulting peer count |
+| `POST /peers/remove` | expected config path and peer node ID | safe facts for the removed binding and resulting peer count |
+
+The expected config path prevents a CLI using a custom `--config` from silently mutating a resident attached to another store. Malformed/oversized requests fail before observation or mutation. Responses never echo proof/signature material.
+
+### Handler ordering and observation mapping
+
+The resident UDS handler serially performs: deserialize and validate against the current config → construct the typed decision fact → await `ResidentLedgerWriter::append` (`append_batch_before_effect` plus `sync_data`) → apply the config mutation → return success. If apply fails after the decision is durable, it appends an `OperatorActionRecorded` failure fact and returns failure; it never reports success or hides ledger/config divergence. If the decision append fails, config is untouched.
+
+Decision kinds are `PeerBindingRecorded` for add and proof update, and `PeerBindingRevoked` for revoke and remove. Facts include action, peer node, binding, endpoint, Vision, policy revision, and state/expiry metadata where applicable. Proofs, signatures, ticket secrets, payload bytes, and raw failure details are excluded. Apply failures use `OperatorActionRecorded` with `Failed` outcome and the same safe identity/revision facts.
+
+### Mutation visibility coherence
+
+The resident handler applies through `MctDaemonConfigStore` at the same `config_path` captured by `run_resident_mother`. The Iroh binding provider invokes `load_peer_bindings_for_iroh(config_path)` for every accepted hello/call connection; that function calls `MctDaemonConfigStore::load()` and `peer_authority_projection()` rather than reading a cached snapshot. Therefore a successful UDS reply follows config replacement, and the next call's current-binding evaluation necessarily reloads the mutation. Since the decision append precedes config replacement, the typed fact is durable before any denial or admission caused by the mutation.
+
+### CLI online/offline arbitration
+
+Peer mutation commands accept `--uds` (default `.mct/control.sock`) and `--ledger` (default `.mct/observations.jsonl`). They first attempt the UDS command. If connection fails, they open `JsonlObservationLedger` as the exclusive writer, prepare the same validated mutation, append the same decision fact durably, apply the same config operation, append a typed failure on apply error, and report the result. If the resident owns the writer lock, offline open fails with a clear fail-closed error and config is untouched. The CLI never writes config before either a resident acknowledgment or acquisition of the free writer lock.
+
+### Out of scope
+
+- Child approval, operator, and storage observation gaps (A6 remainder, slice 4).
+- Standalone serve sink gaps and discarded ledger writes (slice 3).
+- Any HTTP mutation route.
+- Operator identity/authentication beyond local UDS filesystem permissions (C1 future).
+
+## Slice 2b checklist
+
+- [x] Re-establish `b49240e` baseline and read the recorded decision and affected surfaces.
+- [x] Record the UDS, ordering, visibility, and offline-lock mechanism.
+- [ ] Land failing regression tests and implementation.
+- [ ] Mark the peer-authority portion of A6 fixed; leave slice 4 remainder open.
