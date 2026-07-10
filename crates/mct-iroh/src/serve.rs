@@ -197,6 +197,7 @@ mod tests {
                 VisionId::new("vision-test")
                     .expect("string ID literal/generated value must be non-empty")
             }),
+            selected_policy_revision: admitted.then_some(1),
             negotiated_protocol: admitted.then_some(HelloPolicy::default().protocol),
             accepted_alpns: if admitted {
                 vec![MCT_CALL_ALPN.into()]
@@ -490,6 +491,7 @@ fn deny_hello_for_invalid_signature(
         selected_binding_id: None,
         selected_node_id: None,
         selected_vision_id: None,
+        selected_policy_revision: None,
         negotiated_protocol: None,
         accepted_alpns: Vec::new(),
         hello_outcome: HelloOutcome::Denied,
@@ -711,7 +713,12 @@ impl MotherIrohEndpoint {
             now,
             move || {
                 let bindings = Arc::clone(&bindings);
-                async move { Ok((*bindings).clone()) }
+                async move {
+                    Ok(MctPeerAuthoritySnapshot {
+                        bindings: (*bindings).clone(),
+                        policy_revision: HelloPolicy::default().current_policy_revision,
+                    })
+                }
             },
             call_handler,
         )
@@ -736,7 +743,7 @@ impl MotherIrohEndpoint {
         N: Fn() -> Timestamp + Clone + Send + Sync + 'static,
         B: Fn() -> BindingsFut + Clone + Send + Sync + 'static,
         BindingsFut:
-            Future<Output = MotherIrohEndpointResult<Vec<MctPeerBinding>>> + Send + 'static,
+            Future<Output = MotherIrohEndpointResult<MctPeerAuthoritySnapshot>> + Send + 'static,
     {
         let endpoint = self
             .endpoint
@@ -815,7 +822,7 @@ impl MotherIrohEndpoint {
                             source: boxed_source(source),
                         })?;
 
-                    let bindings = bindings_provider().await?;
+                    let current_peer_authority = bindings_provider().await?;
 
                     let (response_bytes, served) = match alpn.as_slice() {
                         bytes if bytes == MCT_HELLO_ALPN.as_bytes() => {
@@ -831,10 +838,14 @@ impl MotherIrohEndpoint {
                             request.received_over.connection_side = ConnectionSide::Incoming;
 
                             let mut state = state.lock().await;
+                            let hello_policy = HelloPolicy {
+                                current_policy_revision: current_peer_authority.policy_revision,
+                                ..HelloPolicy::default()
+                            };
                             let mut evaluation = evaluate_hello(
                                 &request,
-                                &bindings,
-                                &HelloPolicy::default(),
+                                &current_peer_authority.bindings,
+                                &hello_policy,
                                 HelloEvaluationContext {
                                     ids: EvaluationIds {
                                         decision_id: state.next_decision_id("hello"),
@@ -846,7 +857,7 @@ impl MotherIrohEndpoint {
                             if require_binding_signature {
                                 evaluation = enforce_hello_binding_signature(
                                     &request,
-                                    &bindings,
+                                    &current_peer_authority.bindings,
                                     &issuer_endpoint_id,
                                     evaluation,
                                 );
@@ -897,32 +908,37 @@ impl MotherIrohEndpoint {
                                 MCT_INLINE_PAYLOAD_MAX_BYTES as u64,
                             );
                             let mut state_guard = state.lock().await;
-                            let mut evaluation =
-                                if payload_decision.outcome == PayloadIntegrityOutcome::Matched {
-                                    let hello = state_guard
-                                        .hello_for_endpoint(&remote_endpoint_id)
-                                        .unwrap_or_else(|| {
-                                            denied_missing_hello(
-                                                request.protocol_request_id.as_str(),
-                                                &mut state_guard,
-                                            )
-                                        });
-                                    evaluate_call_protocol(
-                                        &request,
-                                        &hello,
-                                        CallEvaluationIds {
+                            let mut evaluation = if payload_decision.outcome
+                                == PayloadIntegrityOutcome::Matched
+                            {
+                                let hello = state_guard
+                                    .hello_for_endpoint(&remote_endpoint_id)
+                                    .unwrap_or_else(|| {
+                                        denied_missing_hello(
+                                            request.protocol_request_id.as_str(),
+                                            &mut state_guard,
+                                        )
+                                    });
+                                evaluate_call_protocol(
+                                    &request,
+                                    &hello,
+                                    CallEvaluationContext {
+                                        ids: CallEvaluationIds {
                                             decision_id: state_guard.next_decision_id("call"),
                                             observation_id: state_guard.next_observation_id("call"),
                                         },
-                                    )
-                                } else {
-                                    payload_malformed_evaluation(
-                                        &request,
-                                        &mut state_guard,
-                                        payload_decision.reason.to_call_protocol_reason(),
-                                        payload_decision.safe_message.clone(),
-                                    )
-                                };
+                                        current_peer_authority,
+                                        now: now(),
+                                    },
+                                )
+                            } else {
+                                payload_malformed_evaluation(
+                                    &request,
+                                    &mut state_guard,
+                                    payload_decision.reason.to_call_protocol_reason(),
+                                    payload_decision.safe_message.clone(),
+                                )
+                            };
                             drop(state_guard);
 
                             let handled = if evaluation.is_accepted_for_routing() {
@@ -1197,9 +1213,16 @@ impl MotherIrohEndpoint {
                         evaluate_call_protocol(
                             &request,
                             &hello,
-                            CallEvaluationIds {
-                                decision_id: state.next_decision_id("call"),
-                                observation_id: state.next_observation_id("call"),
+                            CallEvaluationContext {
+                                ids: CallEvaluationIds {
+                                    decision_id: state.next_decision_id("call"),
+                                    observation_id: state.next_observation_id("call"),
+                                },
+                                current_peer_authority: MctPeerAuthoritySnapshot {
+                                    bindings: bindings.to_vec(),
+                                    policy_revision: HelloPolicy::default().current_policy_revision,
+                                },
+                                now: now.clone(),
                             },
                         )
                     } else {
@@ -1442,6 +1465,7 @@ fn denied_missing_hello(
         selected_binding_id: None,
         selected_node_id: None,
         selected_vision_id: None,
+        selected_policy_revision: None,
         negotiated_protocol: None,
         accepted_alpns: Vec::new(),
         hello_outcome: HelloOutcome::Denied,

@@ -114,14 +114,193 @@ from specification-track branches mid-slice.
 - [x] Read the audit findings, fixed product-map contracts, dependable Rust guidance, and current hello/call evaluation paths.
 - [x] S1.0: verify the official v3.5.0 Linux x86_64 release checksum.
 - [x] S1.0: pin Allium 3.5.0 and its checksum in CI.
-- [ ] S1.0: run tier-0, commit, and run the required post-commit validation.
-- [ ] S1.1: record the A2 mechanism specification.
-- [ ] S1.2: land failing real-path regression tests before the behavior fix.
-- [ ] S1.2: implement current-binding call revalidation in the kernel decision path.
+- [x] S1.0: run tier-0, commit, and run the required post-commit validation.
+- [x] S1.1: record the A2 mechanism specification.
+- [x] S1.2: land failing real-path regression tests before the behavior fix.
+- [x] S1.2: implement current-binding call revalidation in the kernel decision path.
 - [ ] S1.2: cover revoked, expired, stale-revision, narrowed-scope, unchanged, and forwarding paths.
 - [ ] S1.2: update A2 in the audit report with `fixed` and the implementation commit.
 - [ ] S1.2: complete per-commit validation and stop.
 
+## S1.1 mechanism specification — current binding authority per call
+
+### Fixed contract
+
+Every `mct/call/0` evaluation rechecks the remembered hello against current peer authority. The adapter supplies the current peer-binding snapshot, the current local policy revision, and a validated current timestamp for that call connection; the remembered hello retains the binding policy revision it admitted and remains necessary evidence, but is not sufficient current authority.
+
+The kernel selects the current binding by the binding ID and authenticated endpoint recorded by the request/hello chain, then requires the binding to remain admitted, unexpired, unchanged from the hello-admitted revision, current under local policy, and scoped to the same node, Vision, and `mct/call/0` ALPN. The call handler is unreachable when any current-binding check denies.
+
+### Decision seam
+
+Extend the existing `evaluate_call_protocol` inputs with an explicit `CallEvaluationContext` carrying IDs, current bindings, current policy revision, and current time. Keep every denial in the existing call evaluator so protocol callers cannot accidentally perform a stale hello-only evaluation; do not add a separate adapter pre-check or parallel evaluator.
+
+This keeps the adapter responsible for loading config/time facts and the kernel responsible for the one typed authority decision. It also makes omission of current binding authority unrepresentable at the public call-evaluation seam.
+
+### Typed outcomes
+
+| Current-binding condition | `CallProtocolReason` | Caller-safe message |
+|---|---|---|
+| Binding state is `Revoked` | `BindingRevoked` | `not authorized` |
+| Binding state is `Expired`, or `expires_at <= now` | `BindingExpired` | `not authorized` |
+| Binding is absent/denied/pending or no longer matches the admitted binding and endpoint | `BindingMismatch` | `not authorized` |
+| Current binding or call authority revision is older than the current local policy revision | `PolicyRevisionStale` | `not authorized` |
+| Current binding no longer grants the admitted node | `CallerMismatch` | `not authorized` |
+| Current binding no longer grants the admitted Vision | `VisionMismatch` | `not authorized` |
+| Current binding no longer grants `mct/call/0` | `AlpnNotAdmitted` | `not authorized` |
+
+A binding revision greater than the call/remembered authority is also stale for that call: policy changes do not silently widen an old admission. Unchanged active authority continues through the existing payload and routing checks.
+
+### Out of scope
+
+- Observation ordering and durability (slice 2, A5).
+- Idempotency and replay semantics (A3).
+- Child replacement lifecycle (A7).
+- Peer-ontology changes from Track 2.
+
 ## Flake log
 
-None.
+No flakes. Expected red phase captured before the behavior fix:
+
+```text
+$ cargo test -p mct-iroh call_rechecks_ -- --nocapture
+   Compiling mct-iroh v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-iroh)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.45s
+     Running unittests src/lib.rs (target/debug/deps/mct_iroh-c905e0248aa84c8b)
+
+running 4 tests
+
+thread 'tests::call_rechecks_binding_expiry_after_hello' (602639) panicked at crates/mct-iroh/src/lib.rs:812:9:
+assertion `left == right` failed
+  left: Success
+ right: Denied
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'tests::call_rechecks_binding_revocation_after_hello' (602641) panicked at crates/mct-iroh/src/lib.rs:812:9:
+assertion `left == right` failed
+  left: Success
+ right: Denied
+
+thread 'tests::call_rechecks_binding_policy_revision_after_hello' (602640) panicked at crates/mct-iroh/src/lib.rs:812:9:
+assertion `left == right` failed
+  left: Success
+ right: Denied
+
+thread 'tests::call_rechecks_narrowed_alpn_scope_after_hello' (602642) panicked at crates/mct-iroh/src/lib.rs:812:9:
+assertion `left == right` failed
+  left: Success
+ right: Denied
+error: test failed, to rerun pass `-p mct-iroh --lib`
+test tests::call_rechecks_binding_revocation_after_hello ... FAILED
+test tests::call_rechecks_binding_expiry_after_hello ... FAILED
+test tests::call_rechecks_binding_policy_revision_after_hello ... FAILED
+test tests::call_rechecks_narrowed_alpn_scope_after_hello ... FAILED
+
+failures:
+
+failures:
+    tests::call_rechecks_binding_expiry_after_hello
+    tests::call_rechecks_binding_policy_revision_after_hello
+    tests::call_rechecks_binding_revocation_after_hello
+    tests::call_rechecks_narrowed_alpn_scope_after_hello
+
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 26 filtered out; finished in 3.33s
+```
+
+Implementation compile failure captured before correction:
+
+```text
+$ cargo check --workspace
+    Checking mct-kernel v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-kernel)
+    Checking mct-observation v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-observation)
+    Checking mct-iroh v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-iroh)
+error[E0422]: cannot find struct, variant or union type `MctPeerAuthoritySnapshot` in this scope
+   --> crates/mct-iroh/src/serve.rs:715:24
+    |
+715 |                     Ok(MctPeerAuthoritySnapshot {
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `MctPeerAuthoritySnapshot` in this scope
+   --> crates/mct-iroh/src/serve.rs:743:63
+    |
+743 |         BindingsFut: Future<Output = MotherIrohEndpointResult<MctPeerAuthoritySnapshot>>
+    |                                                               ^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+    |
+help: you might be missing a type parameter
+    |
+612 | impl<MctPeerAuthoritySnapshot> MotherIrohEndpoint {
+    |     ++++++++++++++++++++++++++
+
+error[E0422]: cannot find struct, variant or union type `CallEvaluationContext` in this scope
+   --> crates/mct-iroh/src/serve.rs:923:41
+    |
+923 | ...                   CallEvaluationContext {
+    |                       ^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: crates/mct-kernel/src/peer/mod.rs:479:1
+    |
+479 | pub struct HelloEvaluationContext {
+    | --------------------------------- similarly named struct `HelloEvaluationContext` defined here
+    |
+help: a struct with a similar name exists
+    |
+923 -                                         CallEvaluationContext {
+923 +                                         HelloEvaluationContext {
+    |
+
+error[E0422]: cannot find struct, variant or union type `CallEvaluationContext` in this scope
+    --> crates/mct-iroh/src/serve.rs:1214:29
+     |
+1214 | ...                   CallEvaluationContext {
+     |                       ^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: crates/mct-kernel/src/peer/mod.rs:479:1
+     |
+ 479 | pub struct HelloEvaluationContext {
+     | --------------------------------- similarly named struct `HelloEvaluationContext` defined here
+     |
+help: a struct with a similar name exists
+     |
+1214 -                             CallEvaluationContext {
+1214 +                             HelloEvaluationContext {
+     |
+
+error[E0422]: cannot find struct, variant or union type `MctPeerAuthoritySnapshot` in this scope
+    --> crates/mct-iroh/src/serve.rs:1219:57
+     |
+1219 | ...                   current_peer_authority: MctPeerAuthoritySnapshot {
+     |                                               ^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+Some errors have detailed explanations: E0422, E0425.
+For more information about an error, try `rustc --explain E0422`.
+error: could not compile `mct-iroh` (lib) due to 5 previous errors
+```
+
+Clippy compile failure captured before correction:
+
+```text
+$ cargo clippy --workspace --all-targets -- -D warnings
+    Checking mct-kernel v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-kernel)
+    Checking mct-observation v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-observation)
+    Checking mct-iroh v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-iroh)
+    Checking mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0382]: borrow of moved value: `binding`
+   --> crates/mct-daemon/src/fake.rs:130:32
+    |
+ 48 |     let binding = fake_binding();
+    |         ------- move occurs because `binding` has type `mct_kernel::MctPeerBinding`, which does not implement the `Copy` trait
+...
+ 68 |         &[binding],
+    |           ------- value moved here
+...
+130 |                 bindings: vec![binding.clone()],
+    |                                ^^^^^^^ value borrowed here after move
+    |
+help: consider cloning the value if the performance cost is acceptable
+    |
+ 68 |         &[binding.clone()],
+    |                  ++++++++
+
+For more information about this error, try `rustc --explain E0382`.
+error: could not compile `mct-daemon` (lib test) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+```
