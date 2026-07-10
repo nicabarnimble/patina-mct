@@ -181,13 +181,7 @@ impl MctDaemonConfig {
                 generation: 1,
                 node_id: scope.node_id.clone(),
                 instance_state: match child.instance_state {
-                    crate::MctChildInstanceState::Ready
-                        if stored_approval.approval_state == ChildApprovalState::Approved
-                            && stored_assignment.assignment_state
-                                == ChildAssignmentState::Active =>
-                    {
-                        ChildInstanceState::Ready
-                    }
+                    crate::MctChildInstanceState::Ready => ChildInstanceState::Ready,
                     crate::MctChildInstanceState::Failed => ChildInstanceState::Failed,
                     _ => ChildInstanceState::Loading,
                 },
@@ -414,7 +408,7 @@ impl MctDaemonConfigStore {
         Ok(identity)
     }
 
-    pub fn approve_and_assign_loaded_child(
+    pub fn prepare_approved_and_assigned_child(
         &self,
         child: &MctLoadedChild,
         scope: MctOperatorChildScope,
@@ -457,12 +451,26 @@ impl MctDaemonConfigStore {
                 updated_at: now,
             },
         );
+        Ok(config)
+    }
+
+    pub fn approve_and_assign_loaded_child(
+        &self,
+        child: &MctLoadedChild,
+        scope: MctOperatorChildScope,
+    ) -> Result<MctDaemonConfig> {
+        let config = self.prepare_approved_and_assigned_child(child, scope)?;
         self.save(&config)?;
         Ok(config)
     }
 
-    pub fn revoke_child(&self, child_name: &str) -> Result<MctDaemonConfig> {
+    pub fn prepare_revoked_child(&self, child_name: &str) -> Result<MctDaemonConfig> {
         let mut config = self.load()?;
+        if !config.child_approvals.contains_key(child_name)
+            || !config.child_assignments.contains_key(child_name)
+        {
+            bail!("child '{child_name}' does not have approval and assignment authority");
+        }
         let now = current_timestamp_string();
         if let Some(approval) = config.child_approvals.get_mut(child_name) {
             approval.approval_state = ChildApprovalState::Revoked;
@@ -472,6 +480,11 @@ impl MctDaemonConfigStore {
             assignment.assignment_state = ChildAssignmentState::Revoked;
             assignment.updated_at = now;
         }
+        Ok(config)
+    }
+
+    pub fn revoke_child(&self, child_name: &str) -> Result<MctDaemonConfig> {
+        let config = self.prepare_revoked_child(child_name)?;
         self.save(&config)?;
         Ok(config)
     }

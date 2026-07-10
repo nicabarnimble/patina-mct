@@ -387,6 +387,7 @@ async fn execute_resident_peer_mutation(
     }
 }
 
+#[cfg(test)]
 pub(super) fn resident_peer_mutation_handler(
     configured_path: PathBuf,
     ledger: ResidentLedgerWriter,
@@ -418,6 +419,477 @@ pub(super) fn execute_offline_peer_mutation(
     )?;
     match prepared.apply() {
         Ok(response) => Ok(response),
+        Err(error) => {
+            ledger.append_batch_before_effect(
+                [prepared.failure_observation()],
+                mct_daemon::current_timestamp_string(),
+            )?;
+            Err(error)
+        }
+    }
+}
+
+const AUTHORITY_MUTATION_BODY_MAX_BYTES: usize = 64 * 1024;
+static NEXT_AUTHORITY_MUTATION_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ChildApproveRequest {
+    pub(super) expected_config_path: PathBuf,
+    pub(super) expected_children_dir: PathBuf,
+    pub(super) child_name: String,
+    pub(super) strict_integrity: bool,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ChildRevokeRequest {
+    pub(super) expected_config_path: PathBuf,
+    pub(super) child_name: String,
+}
+
+#[derive(Clone, Debug)]
+struct PreparedChildMutation {
+    config_path: PathBuf,
+    child_name: String,
+    config: mct_daemon::MctDaemonConfig,
+    approving: bool,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub(super) struct ChildMutationSuccess {
+    pub(super) child_name: String,
+    pub(super) approval_state: ChildApprovalState,
+    pub(super) assignment_state: ChildAssignmentState,
+    pub(super) approval_count: usize,
+    pub(super) assignment_count: usize,
+}
+
+struct MutationObservationFact {
+    namespace: &'static str,
+    kind: ObservationKind,
+    subject_id: String,
+    resource_id: String,
+    policy_revision: Option<u64>,
+    grants_revision: Option<u64>,
+    outcome: ObservationOutcome,
+    source_plane: SourcePlane,
+    safe_message: String,
+}
+
+fn mutation_observation(fact: MutationObservationFact) -> MctObservation {
+    let sequence = NEXT_AUTHORITY_MUTATION_ID.fetch_add(1, Ordering::Relaxed);
+    let observed_at = current_timestamp();
+    let id = format!("{}-{observed_at}-{sequence}", fact.namespace);
+    MctObservation {
+        observation_id: ObservationId::new(format!("obs:{id}"))
+            .expect("generated observation ID must be non-empty"),
+        observed_at,
+        kind: fact.kind,
+        source_plane: fact.source_plane,
+        trace: ObservationTraceRef {
+            trace_id: TraceId::new(format!("trace:{id}"))
+                .expect("generated trace ID must be non-empty"),
+            span_id: None,
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: None,
+        decision_id: Some(
+            DecisionId::new(format!("decision:{id}"))
+                .expect("generated decision ID must be non-empty"),
+        ),
+        subject_id: Some(fact.subject_id),
+        resource_id: Some(fact.resource_id),
+        policy_revision: fact.policy_revision,
+        grants_revision: fact.grants_revision,
+        outcome: fact.outcome,
+        visibility: ObservationVisibility::NodeOperator,
+        safe_message: fact.safe_message,
+        detail_ref: None,
+    }
+}
+
+fn prepare_child_mutation(
+    configured_path: &Path,
+    configured_children_dir: &Path,
+    path: &str,
+    body: &[u8],
+) -> Result<PreparedChildMutation> {
+    if body.len() > AUTHORITY_MUTATION_BODY_MAX_BYTES {
+        bail!("child authority mutation body exceeds 64 KiB limit");
+    }
+    let store = MctDaemonConfigStore::new(configured_path);
+    match path {
+        "/children/approve" => {
+            let request: ChildApproveRequest =
+                serde_json::from_slice(body).context("decode child approval request")?;
+            require_expected_config_path(&request.expected_config_path, configured_path)?;
+            require_expected_config_path(&request.expected_children_dir, configured_children_dir)?;
+            if request.child_name.trim().is_empty() {
+                bail!("child name must not be empty");
+            }
+            let report = load_children_from_dir(MctChildLoadOptions {
+                children_dir: configured_children_dir.to_path_buf(),
+                integrity_mode: if request.strict_integrity {
+                    MctChildIntegrityMode::RequireSidecars
+                } else {
+                    MctChildIntegrityMode::AuditOnly
+                },
+            });
+            let child = report
+                .children
+                .iter()
+                .find(|child| child.name == request.child_name)
+                .ok_or_else(|| anyhow::anyhow!("loaded child not found"))?;
+            let config = store
+                .prepare_approved_and_assigned_child(child, MctOperatorChildScope::default())?;
+            Ok(PreparedChildMutation {
+                config_path: configured_path.to_path_buf(),
+                child_name: request.child_name,
+                config,
+                approving: true,
+            })
+        }
+        "/children/revoke" => {
+            let request: ChildRevokeRequest =
+                serde_json::from_slice(body).context("decode child revocation request")?;
+            require_expected_config_path(&request.expected_config_path, configured_path)?;
+            let config = store.prepare_revoked_child(&request.child_name)?;
+            Ok(PreparedChildMutation {
+                config_path: configured_path.to_path_buf(),
+                child_name: request.child_name,
+                config,
+                approving: false,
+            })
+        }
+        _ => bail!("unknown child authority mutation route"),
+    }
+}
+
+impl PreparedChildMutation {
+    fn decision_observations(&self) -> Vec<MctObservation> {
+        let approval = &self.config.child_approvals[&self.child_name];
+        let assignment = &self.config.child_assignments[&self.child_name];
+        let outcome = if self.approving {
+            ObservationOutcome::Allowed
+        } else {
+            ObservationOutcome::Denied
+        };
+        vec![
+            mutation_observation(MutationObservationFact {
+                namespace: "child-approval",
+                kind: if self.approving {
+                    ObservationKind::ChildApproved
+                } else {
+                    ObservationKind::ChildRevoked
+                },
+                subject_id: self.child_name.clone(),
+                resource_id: approval.artifact_id.to_string(),
+                policy_revision: Some(approval.policy_revision),
+                grants_revision: None,
+                outcome,
+                source_plane: SourcePlane::Kernel,
+                safe_message: if self.approving {
+                    "child approved".into()
+                } else {
+                    "child approval revoked".into()
+                },
+            }),
+            mutation_observation(MutationObservationFact {
+                namespace: "child-assignment",
+                kind: if self.approving {
+                    ObservationKind::ChildAssigned
+                } else {
+                    ObservationKind::ChildAssignmentRevoked
+                },
+                subject_id: self.child_name.clone(),
+                resource_id: format!("assignment:{}", self.child_name),
+                policy_revision: Some(assignment.policy_revision),
+                grants_revision: None,
+                outcome,
+                source_plane: SourcePlane::Kernel,
+                safe_message: if self.approving {
+                    "child assigned".into()
+                } else {
+                    "child assignment revoked".into()
+                },
+            }),
+        ]
+    }
+
+    fn failure_observation(&self) -> MctObservation {
+        mutation_observation(MutationObservationFact {
+            namespace: "child-authority-failure",
+            kind: ObservationKind::OperatorActionRecorded,
+            subject_id: self.child_name.clone(),
+            resource_id: format!("config:{}", self.config_path.display()),
+            policy_revision: self
+                .config
+                .child_approvals
+                .get(&self.child_name)
+                .map(|approval| approval.policy_revision),
+            grants_revision: None,
+            outcome: ObservationOutcome::Failed,
+            source_plane: SourcePlane::Operator,
+            safe_message: "child authority config apply failed".into(),
+        })
+    }
+
+    fn apply(&self) -> Result<ChildMutationSuccess> {
+        MctDaemonConfigStore::new(&self.config_path).save(&self.config)?;
+        Ok(ChildMutationSuccess {
+            child_name: self.child_name.clone(),
+            approval_state: self.config.child_approvals[&self.child_name].approval_state,
+            assignment_state: self.config.child_assignments[&self.child_name].assignment_state,
+            approval_count: self.config.child_approvals.len(),
+            assignment_count: self.config.child_assignments.len(),
+        })
+    }
+}
+
+async fn execute_resident_child_mutation(
+    configured_path: &Path,
+    children_dir: &Path,
+    ledger: &ResidentLedgerWriter,
+    path: &str,
+    body: &[u8],
+) -> MctControlPlaneResponse {
+    let prepared = match prepare_child_mutation(configured_path, children_dir, path, body) {
+        Ok(prepared) => prepared,
+        Err(_) => {
+            return peer_mutation_response(
+                400,
+                serde_json::json!({"error": "child authority mutation rejected"}),
+            );
+        }
+    };
+    if ledger
+        .append(prepared.decision_observations())
+        .await
+        .is_err()
+    {
+        return peer_mutation_response(
+            500,
+            serde_json::json!({"error": "child authority decision was not durable"}),
+        );
+    }
+    match prepared.apply() {
+        Ok(success) => peer_mutation_response(
+            200,
+            serde_json::to_value(success).expect("child mutation response must serialize"),
+        ),
+        Err(_) => {
+            let failure_is_durable = ledger
+                .append(vec![prepared.failure_observation()])
+                .await
+                .is_ok();
+            peer_mutation_response(
+                500,
+                serde_json::json!({"error": if failure_is_durable {
+                    "child authority config apply failed"
+                } else {
+                    "child authority config apply failed and failure observation was not durable"
+                }}),
+            )
+        }
+    }
+}
+
+pub(super) fn resident_authority_mutation_handler(
+    configured_path: PathBuf,
+    children_dir: PathBuf,
+    ledger: ResidentLedgerWriter,
+) -> mct_daemon::MctUdsControlMutationHandler {
+    mct_daemon::MctUdsControlMutationHandler::new(move |path, body| {
+        let configured_path = configured_path.clone();
+        let children_dir = children_dir.clone();
+        let ledger = ledger.clone();
+        async move {
+            if path.starts_with("/children/") {
+                execute_resident_child_mutation(
+                    &configured_path,
+                    &children_dir,
+                    &ledger,
+                    &path,
+                    &body,
+                )
+                .await
+            } else if path == "/identity/ensure" {
+                peer_mutation_response(
+                    409,
+                    serde_json::json!({"error": "stop the daemon to create or rotate identity"}),
+                )
+            } else {
+                execute_resident_peer_mutation(&configured_path, &ledger, &path, &body).await
+            }
+        }
+    })
+}
+
+pub(super) fn execute_offline_child_mutation(
+    configured_path: &Path,
+    children_dir: &Path,
+    ledger_path: &Path,
+    path: &str,
+    body: &[u8],
+) -> Result<ChildMutationSuccess> {
+    let mut ledger = JsonlObservationLedger::open(ledger_path, "ledger-local", "local-mct")
+        .with_context(|| {
+            format!(
+                "acquire exclusive observation ledger writer lock at {}",
+                ledger_path.display()
+            )
+        })?;
+    let prepared = prepare_child_mutation(configured_path, children_dir, path, body)?;
+    ledger.append_batch_before_effect(
+        prepared.decision_observations(),
+        mct_daemon::current_timestamp_string(),
+    )?;
+    match prepared.apply() {
+        Ok(success) => Ok(success),
+        Err(error) => {
+            ledger.append_batch_before_effect(
+                [prepared.failure_observation()],
+                mct_daemon::current_timestamp_string(),
+            )?;
+            Err(error)
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PreparedIdentityMutation {
+    config_path: PathBuf,
+    identity_path: PathBuf,
+    identity: MctLocalNodeIdentity,
+    config: mct_daemon::MctDaemonConfig,
+    secret_key_hex: String,
+    write_new_key: bool,
+}
+
+fn prepare_identity_mutation(
+    store: &MctDaemonConfigStore,
+    scope: MctOperatorNodeScope,
+    identity_path: &Path,
+) -> Result<PreparedIdentityMutation> {
+    let secret_key_hex = if identity_path.exists() {
+        load_or_create_node_secret_key_hex(identity_path)?
+    } else {
+        generate_node_secret_key_hex()
+    };
+    let endpoint_id = endpoint_id_for_secret_key_hex(&secret_key_hex)?;
+    let identity = MctLocalNodeIdentity {
+        node_id: scope.node_id,
+        vision_id: scope.vision_id,
+        endpoint_id,
+        identity_path: identity_path.to_path_buf(),
+        policy_revision: scope.policy_revision,
+        updated_at: mct_daemon::current_timestamp_string(),
+    };
+    let mut config = store.load()?;
+    config.local_identity = Some(identity.clone());
+    Ok(PreparedIdentityMutation {
+        config_path: store.path().to_path_buf(),
+        identity_path: identity_path.to_path_buf(),
+        identity,
+        config,
+        secret_key_hex,
+        write_new_key: !identity_path.exists(),
+    })
+}
+
+impl PreparedIdentityMutation {
+    fn decision_observation(&self) -> MctObservation {
+        mutation_observation(MutationObservationFact {
+            namespace: "node-identity",
+            kind: ObservationKind::OperatorActionRecorded,
+            subject_id: self.identity.node_id.to_string(),
+            resource_id: self.identity.endpoint_id.to_string(),
+            policy_revision: Some(self.identity.policy_revision),
+            grants_revision: None,
+            outcome: ObservationOutcome::Allowed,
+            source_plane: SourcePlane::Operator,
+            safe_message: format!(
+                "local node identity recorded endpoint={} vision={}",
+                self.identity.endpoint_id, self.identity.vision_id
+            ),
+        })
+    }
+
+    fn failure_observation(&self) -> MctObservation {
+        mutation_observation(MutationObservationFact {
+            namespace: "node-identity-failure",
+            kind: ObservationKind::OperatorActionRecorded,
+            subject_id: self.identity.node_id.to_string(),
+            resource_id: self.identity.endpoint_id.to_string(),
+            policy_revision: Some(self.identity.policy_revision),
+            grants_revision: None,
+            outcome: ObservationOutcome::Failed,
+            source_plane: SourcePlane::Operator,
+            safe_message: "local node identity apply failed".into(),
+        })
+    }
+
+    fn apply(&self) -> Result<MctLocalNodeIdentity> {
+        if self.write_new_key {
+            write_new_node_secret_key_file(&self.identity_path, &self.secret_key_hex)?;
+        }
+        MctDaemonConfigStore::new(&self.config_path).save(&self.config)?;
+        Ok(self.identity.clone())
+    }
+}
+
+pub(super) async fn ensure_observed_local_identity(
+    store: &MctDaemonConfigStore,
+    scope: MctOperatorNodeScope,
+    identity_path: &Path,
+    ledger: &ResidentLedgerWriter,
+) -> Result<MctLocalNodeIdentity> {
+    let prepared = prepare_identity_mutation(store, scope, identity_path)?;
+    ledger
+        .append(vec![prepared.decision_observation()])
+        .await
+        .context("append local identity decision to ledger")?;
+    match prepared.apply() {
+        Ok(identity) => Ok(identity),
+        Err(error) => {
+            ledger.append(vec![prepared.failure_observation()]).await?;
+            Err(error)
+        }
+    }
+}
+
+pub(super) fn execute_offline_identity_mutation(
+    configured_path: &Path,
+    identity_path: &Path,
+    ledger_path: &Path,
+) -> Result<MctLocalNodeIdentity> {
+    let mut ledger = JsonlObservationLedger::open(ledger_path, "ledger-local", "local-mct")
+        .with_context(|| {
+            format!(
+                "acquire exclusive observation ledger writer lock at {}",
+                ledger_path.display()
+            )
+        })?;
+    let store = MctDaemonConfigStore::new(configured_path);
+    let existing = store.load()?;
+    let scope = existing
+        .local_identity
+        .as_ref()
+        .map(|identity| MctOperatorNodeScope {
+            node_id: identity.node_id.clone(),
+            vision_id: identity.vision_id.clone(),
+            policy_revision: identity.policy_revision,
+        })
+        .unwrap_or_default();
+    let prepared = prepare_identity_mutation(&store, scope, identity_path)?;
+    ledger.append_batch_before_effect(
+        [prepared.decision_observation()],
+        mct_daemon::current_timestamp_string(),
+    )?;
+    match prepared.apply() {
+        Ok(identity) => Ok(identity),
         Err(error) => {
             ledger.append_batch_before_effect(
                 [prepared.failure_observation()],
@@ -492,6 +964,7 @@ pub(super) async fn run_control_serve_uds_with_state_until(
     state_path: PathBuf,
     socket_path: PathBuf,
     config_path: PathBuf,
+    children_dir: PathBuf,
     ledger: ResidentLedgerWriter,
     mut shutdown: broadcast::Receiver<()>,
     status_source: Option<Arc<ResidentStatusSource>>,
@@ -506,7 +979,7 @@ pub(super) async fn run_control_serve_uds_with_state_until(
         socket_path.display()
     );
     let snapshot_source = ControlSnapshotSource::open_with_status(&state_path, status_source);
-    let mutation_handler = resident_peer_mutation_handler(config_path, ledger);
+    let mutation_handler = resident_authority_mutation_handler(config_path, children_dir, ledger);
     loop {
         tokio::select! {
             _ = shutdown.recv() => break,
@@ -540,6 +1013,7 @@ pub(super) async fn run_control_serve_uds_with_state_until(
     _state_path: PathBuf,
     _socket_path: PathBuf,
     _config_path: PathBuf,
+    _children_dir: PathBuf,
     _ledger: ResidentLedgerWriter,
     _shutdown: broadcast::Receiver<()>,
     _status_source: Option<Arc<ResidentStatusSource>>,
@@ -898,5 +1372,294 @@ mod tests {
         .unwrap_err();
         assert!(format!("{error:#}").contains("writer lock"));
         assert!(!locked_config.exists());
+    }
+
+    #[tokio::test]
+    async fn live_child_authority_mutations_are_durable_before_config_effect() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let socket_path = dir.path().join("control.sock");
+        crate::resident::tests::write_resident_process_child(&children_dir);
+        let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let handler = resident_authority_mutation_handler(
+            config_path.clone(),
+            children_dir.clone(),
+            ledger.clone(),
+        );
+
+        for (path, body) in [
+            (
+                "/children/approve",
+                serde_json::json!({
+                    "expected_config_path": config_path,
+                    "expected_children_dir": children_dir,
+                    "child_name": "resident-echo",
+                    "strict_integrity": true
+                }),
+            ),
+            (
+                "/children/revoke",
+                serde_json::json!({
+                    "expected_config_path": config_path,
+                    "child_name": "resident-echo"
+                }),
+            ),
+        ] {
+            let (status, response) = post_mutation(
+                Arc::clone(&listener),
+                handler.clone(),
+                &socket_path,
+                path,
+                body,
+            )
+            .await;
+            assert_eq!(status, 200, "{response}");
+            let entries =
+                JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
+                    .unwrap()
+                    .entries()
+                    .unwrap();
+            assert!(
+                entries
+                    .iter()
+                    .all(|entry| { entry.durability_class == DurabilityClass::BeforeEffect })
+            );
+        }
+        drop(handler);
+        ledger.close().await;
+
+        let config = MctDaemonConfigStore::new(&config_path).load().unwrap();
+        assert_eq!(
+            config.child_approvals["resident-echo"].approval_state,
+            ChildApprovalState::Revoked
+        );
+        assert_eq!(
+            config.child_assignments["resident-echo"].assignment_state,
+            ChildAssignmentState::Revoked
+        );
+        let kinds =
+            JsonlObservationLedger::open_read_only(ledger_path, "ledger-local", "local-mct")
+                .unwrap()
+                .entries()
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.observation.kind)
+                .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            vec![
+                ObservationKind::ChildApproved,
+                ObservationKind::ChildAssigned,
+                ObservationKind::ChildRevoked,
+                ObservationKind::ChildAssignmentRevoked,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn live_child_revocation_is_visible_to_the_immediately_following_route() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let socket_path = dir.path().join("control.sock");
+        crate::resident::tests::write_resident_process_child(&children_dir);
+        let child =
+            load_children_from_dir(MctChildLoadOptions::new(&children_dir).strict_integrity())
+                .children
+                .into_iter()
+                .next()
+                .unwrap();
+        MctDaemonConfigStore::new(&config_path)
+            .approve_and_assign_loaded_child(&child, MctOperatorChildScope::default())
+            .unwrap();
+        let paths = crate::resident::ResidentExecutionPaths {
+            config_path: config_path.clone(),
+            children_dir: children_dir.clone(),
+            state_path,
+        };
+        let call = crate::resident::tests::resident_test_call(
+            TraceId::new("trace-live-child-revoke").unwrap(),
+        );
+        assert!(matches!(
+            crate::resident::authorize_resident_child_blocking(&paths, &call).unwrap(),
+            crate::resident::ResidentAuthorizationOutcome::Authorized(_)
+        ));
+
+        let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let handler =
+            resident_authority_mutation_handler(config_path.clone(), children_dir, ledger.clone());
+        let (status, response) = post_mutation(
+            listener,
+            handler.clone(),
+            &socket_path,
+            "/children/revoke",
+            serde_json::json!({
+                "expected_config_path": config_path,
+                "child_name": "resident-echo"
+            }),
+        )
+        .await;
+        assert_eq!(status, 200, "{response}");
+
+        let denial_observations =
+            match crate::resident::authorize_resident_child_blocking(&paths, &call).unwrap() {
+                crate::resident::ResidentAuthorizationOutcome::Denied { observations, .. } => {
+                    observations
+                }
+                other => panic!("expected child revocation denial, got {other:?}"),
+            };
+        assert!(
+            denial_observations.iter().any(|observation| {
+                observation.kind == ObservationKind::CandidateEliminated
+                    && observation
+                        .detail_ref
+                        .as_deref()
+                        .is_some_and(|detail| detail.contains("ChildNotApproved"))
+            }),
+            "{denial_observations:#?}"
+        );
+        let entries =
+            JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
+                .unwrap()
+                .entries()
+                .unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].observation.kind, ObservationKind::ChildRevoked);
+        assert_eq!(
+            entries[1].observation.kind,
+            ObservationKind::ChildAssignmentRevoked
+        );
+        drop(handler);
+        ledger.close().await;
+    }
+
+    #[tokio::test]
+    async fn child_append_failure_prevents_config_effect() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let socket_path = dir.path().join("control.sock");
+        crate::resident::tests::write_resident_process_child(&children_dir);
+        let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        drop(receiver);
+        let handler = resident_authority_mutation_handler(
+            config_path.clone(),
+            children_dir.clone(),
+            ResidentLedgerWriter { sender },
+        );
+
+        let (status, _) = post_mutation(
+            listener,
+            handler,
+            &socket_path,
+            "/children/approve",
+            serde_json::json!({
+                "expected_config_path": config_path,
+                "expected_children_dir": children_dir,
+                "child_name": "resident-echo",
+                "strict_integrity": true
+            }),
+        )
+        .await;
+        assert_eq!(status, 500);
+        assert!(!config_path.exists());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn live_resident_refuses_identity_rotation_without_offline_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let socket_path = dir.path().join("control.sock");
+        let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let handler =
+            resident_authority_mutation_handler(config_path.clone(), children_dir, ledger.clone());
+        let server = tokio::spawn({
+            let listener = Arc::clone(&listener);
+            let handler = handler.clone();
+            async move {
+                mct_daemon::serve_uds_control_once_with_snapshot_result_blob_store_and_mutations(
+                    &listener,
+                    Err(MctControlPlaneSnapshotError::runtime_state_unavailable()),
+                    None,
+                    Some(&handler),
+                )
+                .await
+                .unwrap();
+            }
+        });
+        let client_socket = socket_path.clone();
+        let error = tokio::task::spawn_blocking(move || {
+            try_resident_control_mutation(&client_socket, "/identity/ensure", b"{}").unwrap_err()
+        })
+        .await
+        .unwrap();
+        server.await.unwrap();
+
+        assert!(format!("{error:#}").contains("stop the daemon to create or rotate identity"));
+        assert!(!config_path.exists());
+        drop(handler);
+        ledger.close().await;
+        assert!(
+            JsonlObservationLedger::open_read_only(ledger_path, "ledger-local", "local-mct",)
+                .unwrap()
+                .entries()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn offline_child_and_identity_mutations_hold_the_writer_lock_and_hide_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let identity_path = dir.path().join("node.key");
+        let ledger_path = dir.path().join("observations.jsonl");
+        crate::resident::tests::write_resident_process_child(&children_dir);
+
+        execute_offline_child_mutation(
+            &config_path,
+            &children_dir,
+            &ledger_path,
+            "/children/approve",
+            &serde_json::to_vec(&serde_json::json!({
+                "expected_config_path": config_path,
+                "expected_children_dir": children_dir,
+                "child_name": "resident-echo",
+                "strict_integrity": true
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        execute_offline_identity_mutation(&config_path, &identity_path, &ledger_path).unwrap();
+        assert!(identity_path.exists());
+        assert!(config_path.exists());
+
+        let secret = std::fs::read_to_string(&identity_path).unwrap();
+        let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
+        assert!(ledger_text.contains("child_approved"));
+        assert!(ledger_text.contains("operator_action_recorded"));
+        assert!(!ledger_text.contains(secret.trim()));
+
+        let locked_config = dir.path().join("locked.json");
+        let locked_identity = dir.path().join("locked.key");
+        let _lock =
+            JsonlObservationLedger::open(&ledger_path, "ledger-local", "local-mct").unwrap();
+        let error =
+            execute_offline_identity_mutation(&locked_config, &locked_identity, &ledger_path)
+                .unwrap_err();
+        assert!(format!("{error:#}").contains("writer lock"));
+        assert!(!locked_config.exists());
+        assert!(!locked_identity.exists());
     }
 }

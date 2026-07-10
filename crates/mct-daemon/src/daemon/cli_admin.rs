@@ -615,16 +615,16 @@ pub(super) fn run_runs(mut args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
-fn default_control_uds_path() -> PathBuf {
+pub(super) fn default_control_uds_path() -> PathBuf {
     PathBuf::from(".mct").join("control.sock")
 }
 
 #[cfg(unix)]
-fn try_resident_peer_mutation(
+pub(super) fn try_resident_control_mutation(
     socket_path: &Path,
     path: &str,
     body: &[u8],
-) -> Result<Option<PeerMutationSuccess>> {
+) -> Result<Option<Vec<u8>>> {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
 
@@ -643,41 +643,48 @@ fn try_resident_peer_mutation(
         "POST {path} HTTP/1.1\r\nHost: local\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         body.len()
     )
-    .context("write resident peer mutation headers")?;
+    .context("write resident control mutation headers")?;
     stream
         .write_all(body)
-        .context("write resident peer mutation body")?;
+        .context("write resident control mutation body")?;
     stream
         .shutdown(std::net::Shutdown::Write)
-        .context("finish resident peer mutation request")?;
+        .context("finish resident control mutation request")?;
     let mut response = Vec::new();
     stream
         .read_to_end(&mut response)
-        .context("read resident peer mutation response")?;
-    let response = std::str::from_utf8(&response).context("decode resident peer response")?;
+        .context("read resident control mutation response")?;
+    let response = std::str::from_utf8(&response).context("decode resident control response")?;
     let (headers, response_body) = response
         .split_once("\r\n\r\n")
-        .context("resident peer response missing header terminator")?;
+        .context("resident control response missing header terminator")?;
     let status = headers
         .split_whitespace()
         .nth(1)
-        .context("resident peer response missing status")?
+        .context("resident control response missing status")?
         .parse::<u16>()
-        .context("parse resident peer response status")?;
+        .context("parse resident control response status")?;
     if !(200..300).contains(&status) {
-        bail!("resident peer mutation failed with HTTP status {status}");
+        let safe_error = serde_json::from_str::<serde_json::Value>(response_body)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("error")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| "resident mutation rejected".into());
+        bail!("resident control mutation failed with HTTP status {status}: {safe_error}");
     }
-    Ok(Some(
-        serde_json::from_str(response_body).context("decode resident peer mutation result")?,
-    ))
+    Ok(Some(response_body.as_bytes().to_vec()))
 }
 
 #[cfg(not(unix))]
-fn try_resident_peer_mutation(
+pub(super) fn try_resident_control_mutation(
     _socket_path: &Path,
     _path: &str,
     _body: &[u8],
-) -> Result<Option<PeerMutationSuccess>> {
+) -> Result<Option<Vec<u8>>> {
     Ok(None)
 }
 
@@ -689,8 +696,8 @@ fn execute_cli_peer_mutation(
     request: &impl serde::Serialize,
 ) -> Result<PeerMutationSuccess> {
     let body = serde_json::to_vec(request).context("encode peer mutation request")?;
-    if let Some(response) = try_resident_peer_mutation(socket_path, path, &body)? {
-        return Ok(response);
+    if let Some(response) = try_resident_control_mutation(socket_path, path, &body)? {
+        return serde_json::from_slice(&response).context("decode resident peer mutation result");
     }
     execute_offline_peer_mutation(config_path, ledger_path, path, &body).with_context(|| {
         format!(

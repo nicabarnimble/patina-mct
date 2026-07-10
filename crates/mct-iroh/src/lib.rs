@@ -21,8 +21,9 @@ pub use endpoint::{
 };
 pub use identity::{
     MCT_PEER_BINDING_SIGNATURE_PREFIX, MctPeerBindingSignatureVerification,
-    endpoint_id_for_secret_key_hex, load_or_create_node_secret_key_hex,
-    sign_peer_binding_signature_ref, verify_peer_binding_signature_ref,
+    endpoint_id_for_secret_key_hex, generate_node_secret_key_hex,
+    load_or_create_node_secret_key_hex, sign_peer_binding_signature_ref,
+    verify_peer_binding_signature_ref, write_new_node_secret_key_file,
 };
 pub use serve::{
     MCT_CALL_FRAME_READ_BUDGET_BYTES, MCT_INLINE_PAYLOAD_MAX_BYTES,
