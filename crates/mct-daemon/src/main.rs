@@ -21,10 +21,11 @@ use mct_daemon::{
 };
 use mct_iroh::{
     MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES, MctIrohCallHandlerResult, MctIrohCallPayloadReply,
-    MctIrohConcurrentServeConfig, MctIrohServeEvent, MctIrohServeState, MctIrohServedProtocol,
-    MctPeerBindingSignatureVerification, MotherIrohEndpoint, MotherIrohEndpointConfig,
-    MotherIrohEndpointError, MotherIrohEndpointSnapshot, MotherIrohEndpointTicket,
-    MotherIrohRelayMode, load_or_create_node_secret_key_hex, verify_peer_binding_signature_ref,
+    MctIrohConcurrentServeConfig, MctIrohHelloObservationSink, MctIrohServeEvent,
+    MctIrohServeState, MctIrohServedProtocol, MctPeerBindingSignatureVerification,
+    MotherIrohEndpoint, MotherIrohEndpointConfig, MotherIrohEndpointError,
+    MotherIrohEndpointSnapshot, MotherIrohEndpointTicket, MotherIrohRelayMode,
+    load_or_create_node_secret_key_hex, verify_peer_binding_signature_ref,
 };
 use mct_kernel::*;
 use mct_observation::JsonlObservationLedger;
@@ -1330,6 +1331,7 @@ where
         state_path: config.state_path.clone(),
     };
     let execution_ledger = ledger.clone();
+    let hello_observation_sink = resident_hello_observation_sink(ledger.clone());
     let serve_result = tokio::select! {
         result = endpoint.serve_concurrent_with_binding_provider(
             MctIrohServeState::new(),
@@ -1338,6 +1340,7 @@ where
                 events: Some(events),
                 require_binding_signature: true,
                 capability_view: Some(hello_capability_view),
+                hello_observation_sink: Some(hello_observation_sink),
                 ..MctIrohConcurrentServeConfig::default()
             },
             current_timestamp,
@@ -1529,6 +1532,22 @@ impl ResidentLedgerWriter {
     }
 }
 
+fn resident_hello_observation_sink(ledger: ResidentLedgerWriter) -> MctIrohHelloObservationSink {
+    MctIrohHelloObservationSink::new(move |trace_id, evaluation| {
+        let ledger = ledger.clone();
+        async move {
+            ledger
+                .append(vec![hello_evaluation_observation(
+                    trace_id,
+                    current_timestamp(),
+                    &evaluation,
+                )])
+                .await
+                .map_err(|error| std::io::Error::other(error.to_string()))
+        }
+    })
+}
+
 async fn record_iroh_serve_events(
     mut events: tokio::sync::mpsc::Receiver<MctIrohServeEvent>,
     ledger: ResidentLedgerWriter,
@@ -1569,15 +1588,7 @@ async fn record_iroh_serve_events(
 
 fn resident_observations_for_served_protocol(served: MctIrohServedProtocol) -> Vec<MctObservation> {
     match served {
-        MctIrohServedProtocol::Hello {
-            request,
-            evaluation,
-            ..
-        } => vec![hello_evaluation_observation(
-            request.trace_id,
-            current_timestamp(),
-            &evaluation,
-        )],
+        MctIrohServedProtocol::Hello { .. } => Vec::new(),
         MctIrohServedProtocol::Call {
             request,
             evaluation,
@@ -5765,6 +5776,124 @@ mod tests {
             authority_observation_id: ObservationId::new("obs-grant")
                 .expect("string ID literal/generated value must be non-empty"),
         }
+    }
+
+    #[tokio::test]
+    async fn resident_hello_observations_are_durable_before_responses() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger_path = dir.path().join("observations.jsonl");
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let mut admitted_client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let mut denied_client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let ticket = server.ticket();
+        let admitted_endpoint_id = admitted_client.snapshot().endpoint_id;
+        let denied_endpoint_id = denied_client.snapshot().endpoint_id;
+        let binding = MctPeerBinding {
+            binding_id: PeerBindingId::new("binding-durable-hello")
+                .expect("string ID literal/generated value must be non-empty"),
+            iroh_endpoint_id: admitted_endpoint_id.clone(),
+            scope: MctPeerBindingScope {
+                mct_node_id: MctNodeId::new("mother-durable-client")
+                    .expect("string ID literal/generated value must be non-empty"),
+                vision_id: VisionId::new("vision-local")
+                    .expect("string ID literal/generated value must be non-empty"),
+                allowed_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
+                data_scope: None,
+                observation_scope: None,
+            },
+            issuer_node_id: MctNodeId::new("local-mct")
+                .expect("string ID literal/generated value must be non-empty"),
+            policy_revision: 1,
+            binding_state: BindingState::Admitted,
+            issued_at: Timestamp::new("2026-07-09T00:00:00Z").unwrap(),
+            expires_at: None,
+            created_by_observation_id: ObservationId::new("obs-binding-durable-hello")
+                .expect("string ID literal/generated value must be non-empty"),
+            superseded_by_observation_id: None,
+        };
+        let hello_observation_sink = resident_hello_observation_sink(ledger.clone());
+        let serve_task = tokio::spawn(async move {
+            server
+                .serve_concurrent_with_call_handler(
+                    MctIrohServeState::new(),
+                    vec![binding],
+                    MctIrohConcurrentServeConfig {
+                        hello_observation_sink: Some(hello_observation_sink),
+                        ..MctIrohConcurrentServeConfig::default()
+                    },
+                    || Timestamp::new("2026-07-09T00:00:02Z").unwrap(),
+                    |_, _, _| async { MctIrohCallHandlerResult::accepted_for_routing(None) },
+                )
+                .await
+        });
+
+        let admitted_trace = TraceId::new("trace-durable-admitted-hello")
+            .expect("string ID literal/generated value must be non-empty");
+        let signature_marker = "key-material-must-not-enter-hello-observation";
+        let admitted_hello = cli_hello_request(
+            &admitted_endpoint_id,
+            &PeerBindingId::new("binding-durable-hello")
+                .expect("string ID literal/generated value must be non-empty"),
+            &MctNodeId::new("mother-durable-client")
+                .expect("string ID literal/generated value must be non-empty"),
+            &VisionId::new("vision-local")
+                .expect("string ID literal/generated value must be non-empty"),
+            &admitted_trace,
+            Some(signature_marker.into()),
+        );
+        let admitted_response = admitted_client
+            .send_hello(&ticket, &admitted_hello)
+            .await
+            .unwrap();
+        assert_eq!(admitted_response.hello_outcome, HelloOutcome::Admitted);
+        let entries =
+            JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
+                .unwrap()
+                .entries()
+                .unwrap();
+        assert!(entries.iter().any(|entry| {
+            entry.observation.trace.trace_id == admitted_trace
+                && entry.observation.kind == ObservationKind::PeerAdmitted
+                && entry.durability_class == mct_observation::DurabilityClass::BeforeEffect
+        }));
+
+        let denied_trace = TraceId::new("trace-durable-denied-hello")
+            .expect("string ID literal/generated value must be non-empty");
+        let denied_hello = cli_hello_request(
+            &denied_endpoint_id,
+            &PeerBindingId::new("binding-durable-hello")
+                .expect("string ID literal/generated value must be non-empty"),
+            &MctNodeId::new("mother-unknown-client")
+                .expect("string ID literal/generated value must be non-empty"),
+            &VisionId::new("vision-local")
+                .expect("string ID literal/generated value must be non-empty"),
+            &denied_trace,
+            Some(signature_marker.into()),
+        );
+        let denied_response = denied_client
+            .send_hello(&ticket, &denied_hello)
+            .await
+            .unwrap();
+        assert_eq!(denied_response.hello_outcome, HelloOutcome::Denied);
+        let entries =
+            JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
+                .unwrap()
+                .entries()
+                .unwrap();
+        assert!(entries.iter().any(|entry| {
+            entry.observation.trace.trace_id == denied_trace
+                && entry.observation.kind == ObservationKind::PeerRejected
+                && entry.durability_class == mct_observation::DurabilityClass::BeforeEffect
+        }));
+        let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
+        assert!(!ledger_text.contains(signature_marker));
+        assert!(!ledger_text.contains("inline_payload_base64"));
+
+        admitted_client.close().await;
+        denied_client.close().await;
+        serve_task.abort();
+        ledger.close().await;
     }
 
     #[tokio::test]

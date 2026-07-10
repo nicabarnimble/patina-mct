@@ -487,3 +487,63 @@ The map fixes durability but does not choose how external peer commands reach th
 - Full peer-call lifecycle and malformed-call observations (A8, slice 3).
 - Child/operator/storage observation gaps (A6 remainder, slice 4).
 - Changes to the single-writer ledger before operator selection.
+
+## S2.1 operator decision
+
+Option 1 is selected: peer authority mutations become resident control-plane operations and the CLI becomes a control client. The existing local UDS already accepts mutations while HTTP remains read-only, and the resident Mother is the authority owner for one node. When Mother is not running, the CLI may acquire the free JSONL writer lock and perform the mutation with its durable typed observation directly. The existing lock arbitrates the two paths without weakening the single-writer invariant.
+
+Options 2–4 are rejected: dedicated append IPC leaves cross-process mutation/observation partial-failure windows; offline-only administration removes live revocation; and multi-writer ledger access breaks the chosen single-writer shape. Implementation is deferred to slice 2b. Slice 2 completes A5 only.
+
+## Slice 2 failure log
+
+Expected failing-test compile output before the hello observation seam existed:
+
+```text
+   Compiling mct-iroh v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-iroh)
+error[E0560]: struct `serve::MctIrohConcurrentServeConfig` has no field named `hello_observation_sink`
+   --> crates/mct-iroh/src/lib.rs:520:25
+    |
+520 |                         hello_observation_sink: Some(MctIrohHelloObservationSink::new(
+    |                         ^^^^^^^^^^^^^^^^^^^^^^ `serve::MctIrohConcurrentServeConfig` does not have this field
+    |
+    = note: available fields are: `max_concurrent_connections`, `connection_timeout`, `require_binding_signature`, `capability_view`
+
+error[E0433]: cannot find type `MctIrohHelloObservationSink` in this scope
+   --> crates/mct-iroh/src/lib.rs:520:54
+    |
+520 |                         hello_observation_sink: Some(MctIrohHelloObservationSink::new(
+    |                                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `MctIrohHelloObservationSink`
+
+Some errors have detailed explanations: E0433, E0560.
+For more information about an error, try `rustc --explain E0433`.
+error: could not compile `mct-iroh` (lib test) due to 2 previous errors
+```
+
+Intermediate compile failure after adding the generic callback seam:
+
+```text
+   Compiling mct-iroh v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-iroh)
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0277]: the trait bound `anyhow::Error: std::error::Error` is not satisfied
+    --> crates/mct-daemon/src/main.rs:1538:5
+     |
+1538 | /     MctIrohHelloObservationSink::new(move |trace_id, evaluation| {
+1539 | |         let ledger = ledger.clone();
+1540 | |         async move {
+1541 | |             ledger
+...    |
+1549 | |     })
+     | |______^ the trait `std::error::Error` is not implemented for `anyhow::Error`
+     |
+note: required by a bound in `MctIrohHelloObservationSink::new`
+    --> crates/mct-iroh/src/serve.rs:310:12
+     |
+ 306 |     pub fn new<F, Fut, E>(callback: F) -> Self
+     |            --- required by a bound in this associated function
+...
+ 310 |         E: StdError + Send + Sync + 'static,
+     |            ^^^^^^^^ required by this bound in `MctIrohHelloObservationSink::new`
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 1 previous error
+```
