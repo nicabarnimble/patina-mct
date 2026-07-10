@@ -1066,3 +1066,421 @@ The standalone path must not call `append_ledger_observations`, because reopenin
 - [ ] Land failing lifecycle and standalone regressions before implementation.
 - [ ] Implement the mandatory lifecycle sink and fail-closed standalone paths.
 - [ ] Mark A8 fixed, annotate A5 standalone coverage, validate every commit, and stop after S3.2.
+
+## Slice 3 failure log
+
+Expected red compile after adding lifecycle-sink regressions and before the generalized mandatory sink existed:
+
+```text
+   Compiling mct-iroh v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-iroh)
+error[E0425]: cannot find type `MctIrohObservationBatch` in this scope
+   --> crates/mct-iroh/src/lib.rs:442:32
+    |
+442 |         batches: Arc<Mutex<Vec<MctIrohObservationBatch>>>,
+    |                                ^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+    |
+help: you might be missing a type parameter
+    |
+441 |     fn collecting_observation_sink<MctIrohObservationBatch>(
+    |                                   +++++++++++++++++++++++++
+
+error[E0425]: cannot find type `MctIrohObservationSink` in this scope
+   --> crates/mct-iroh/src/lib.rs:443:10
+    |
+443 |     ) -> MctIrohObservationSink {
+    |          ^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: crates/mct-iroh/src/serve.rs:297:1
+    |
+297 | pub struct MctIrohHelloObservationSink {
+    | -------------------------------------- similarly named struct `MctIrohHelloObservationSink` defined here
+    |
+help: a struct with a similar name exists
+    |
+443 |     ) -> MctIrohHelloObservationSink {
+    |                 +++++
+
+error[E0433]: cannot find type `MctIrohObservationSink` in this scope
+   --> crates/mct-iroh/src/lib.rs:444:9
+    |
+444 |         MctIrohObservationSink::new(move |batch| {
+    |         ^^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `MctIrohObservationSink`
+    |
+help: a struct with a similar name exists
+    |
+444 |         MctIrohHelloObservationSink::new(move |batch| {
+    |                +++++
+
+error[E0599]: no associated function or constant named `new` found for struct `serve::MctIrohConcurrentServeConfig` in the current scope
+   --> crates/mct-iroh/src/lib.rs:509:51
+    |
+509 |                     MctIrohConcurrentServeConfig::new(sink),
+    |                                                   ^^^ associated function or constant not found in `serve::MctIrohConcurrentServeConfig`
+    |
+   ::: crates/mct-iroh/src/serve.rs:338:1
+    |
+338 | pub struct MctIrohConcurrentServeConfig {
+    | --------------------------------------- associated function or constant `new` not found for this struct
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following traits define an item `new`, perhaps you need to implement one of them:
+            candidate #1: `crypto_common::KeyInit`
+            candidate #2: `crypto_common::KeyInit`
+            candidate #3: `crypto_common::KeyIvInit`
+            candidate #4: `crypto_common::KeyIvInit`
+            candidate #5: `crypto_common::TryKeyInit`
+            candidate #6: `curve25519_dalek::traits::VartimePrecomputedMultiscalarMul`
+            candidate #7: `digest::block_api::VariableOutputCore`
+            candidate #8: `digest::digest::Digest`
+            candidate #9: `parking_lot_core::thread_parker::ThreadParkerT`
+            candidate #10: `rand::distr::uniform::UniformSampler`
+            candidate #11: `ring::aead::BoundKey`
+            candidate #12: `typenum::marker_traits::Bit`
+
+error[E0433]: cannot find type `MctIrohObservationFact` in this scope
+   --> crates/mct-iroh/src/lib.rs:536:33
+    |
+536 |                     .filter_map(MctIrohObservationFact::call_stage)
+    |                                 ^^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `MctIrohObservationFact`
+
+error[E0433]: cannot find type `MctIrohCallLifecycleStage` in this scope
+   --> crates/mct-iroh/src/lib.rs:538:37
+    |
+538 |                 if stages.contains(&MctIrohCallLifecycleStage::ReplyEmitted) {
+    |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `MctIrohCallLifecycleStage`
+
+error[E0433]: cannot find type `MctIrohObservationFact` in this scope
+   --> crates/mct-iroh/src/lib.rs:551:25
+    |
+551 |             .filter_map(MctIrohObservationFact::call_stage)
+    |                         ^^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `MctIrohObservationFact`
+
+error[E0433]: cannot find type `MctIrohCallLifecycleStage` in this scope
+   --> crates/mct-iroh/src/lib.rs:556:17
+    |
+556 |                 MctIrohCallLifecycleStage::Received,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `MctIrohCallLifecycleStage`
+
+error[E0433]: cannot find type `MctIrohCallLifecycleStage` in this scope
+   --> crates/mct-iroh/src/lib.rs:557:17
+    |
+557 |                 MctIrohCallLifecycleStage::Constructed,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `MctIrohCallLifecycleStage`
+
+error[E0433]: cannot find type `MctIrohCallLifecycleStage` in this scope
+   --> crates/mct-iroh/src/lib.rs:558:17
+    |
+558 |                 MctIrohCallLifecycleStage::Authorized,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `MctIrohCallLifecycleStage`
+
+error[E0433]: cannot find type `MctIrohCallLifecycleStage` in this scope
+   --> crates/mct-iroh/src/lib.rs:559:17
+    |
+559 |                 MctIrohCallLifecycleStage::ResultRecorded,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `MctIrohCallLifecycleStage`
+
+error[E0433]: cannot find type `MctIrohCallLifecycleStage` in this scope
+   --> crates/mct-iroh/src/lib.rs:560:17
+    |
+560 |                 MctIrohCallLifecycleStage::ReplyEmitted,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `MctIrohCallLifecycleStage`
+
+error[E0599]: no associated function or constant named `new` found for struct `serve::MctIrohConcurrentServeConfig` in the current scope
+   --> crates/mct-iroh/src/lib.rs:579:51
+    |
+579 |                     MctIrohConcurrentServeConfig::new(sink),
+    |                                                   ^^^ associated function or constant not found in `serve::MctIrohConcurrentServeConfig`
+    |
+   ::: crates/mct-iroh/src/serve.rs:338:1
+    |
+338 | pub struct MctIrohConcurrentServeConfig {
+    | --------------------------------------- associated function or constant `new` not found for this struct
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following traits define an item `new`, perhaps you need to implement one of them:
+            candidate #1: `crypto_common::KeyInit`
+            candidate #2: `crypto_common::KeyInit`
+            candidate #3: `crypto_common::KeyIvInit`
+            candidate #4: `crypto_common::KeyIvInit`
+            candidate #5: `crypto_common::TryKeyInit`
+            candidate #6: `curve25519_dalek::traits::VartimePrecomputedMultiscalarMul`
+            candidate #7: `digest::block_api::VariableOutputCore`
+            candidate #8: `digest::digest::Digest`
+            candidate #9: `parking_lot_core::thread_parker::ThreadParkerT`
+            candidate #10: `rand::distr::uniform::UniformSampler`
+            candidate #11: `ring::aead::BoundKey`
+            candidate #12: `typenum::marker_traits::Bit`
+
+error[E0433]: cannot find type `MctIrohObservationFact` in this scope
+   --> crates/mct-iroh/src/lib.rs:598:25
+    |
+598 |             .filter_map(MctIrohObservationFact::call_stage)
+    |                         ^^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `MctIrohObservationFact`
+
+error[E0433]: cannot find type `MctIrohCallLifecycleStage` in this scope
+   --> crates/mct-iroh/src/lib.rs:603:17
+    |
+603 |                 MctIrohCallLifecycleStage::Received,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `MctIrohCallLifecycleStage`
+
+error[E0433]: cannot find type `MctIrohCallLifecycleStage` in this scope
+   --> crates/mct-iroh/src/lib.rs:604:17
+    |
+604 |                 MctIrohCallLifecycleStage::Malformed,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `MctIrohCallLifecycleStage`
+
+error[E0433]: cannot find type `MctIrohCallLifecycleStage` in this scope
+   --> crates/mct-iroh/src/lib.rs:605:17
+    |
+605 |                 MctIrohCallLifecycleStage::ReplyEmitted,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `MctIrohCallLifecycleStage`
+
+error[E0433]: cannot find type `MctIrohObservationSink` in this scope
+   --> crates/mct-iroh/src/lib.rs:612:28
+    |
+612 |         let failing_sink = MctIrohObservationSink::new(|batch| async move {
+    |                            ^^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `MctIrohObservationSink`
+    |
+help: a struct with a similar name exists
+    |
+612 |         let failing_sink = MctIrohHelloObservationSink::new(|batch| async move {
+    |                                   +++++
+
+error[E0433]: cannot find type `MctIrohCallLifecycleStage` in this scope
+   --> crates/mct-iroh/src/lib.rs:616:55
+    |
+616 |                 .any(|fact| fact.call_stage() == Some(MctIrohCallLifecycleStage::Malformed))
+    |                                                       ^^^^^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `MctIrohCallLifecycleStage`
+
+error[E0599]: no associated function or constant named `new` found for struct `serve::MctIrohConcurrentServeConfig` in the current scope
+   --> crates/mct-iroh/src/lib.rs:628:51
+    |
+628 |                     MctIrohConcurrentServeConfig::new(failing_sink),
+    |                                                   ^^^ associated function or constant not found in `serve::MctIrohConcurrentServeConfig`
+    |
+   ::: crates/mct-iroh/src/serve.rs:338:1
+    |
+338 | pub struct MctIrohConcurrentServeConfig {
+    | --------------------------------------- associated function or constant `new` not found for this struct
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following traits define an item `new`, perhaps you need to implement one of them:
+            candidate #1: `crypto_common::KeyInit`
+            candidate #2: `crypto_common::KeyInit`
+            candidate #3: `crypto_common::KeyIvInit`
+            candidate #4: `crypto_common::KeyIvInit`
+            candidate #5: `crypto_common::TryKeyInit`
+            candidate #6: `curve25519_dalek::traits::VartimePrecomputedMultiscalarMul`
+            candidate #7: `digest::block_api::VariableOutputCore`
+            candidate #8: `digest::digest::Digest`
+            candidate #9: `parking_lot_core::thread_parker::ThreadParkerT`
+            candidate #10: `rand::distr::uniform::UniformSampler`
+            candidate #11: `ring::aead::BoundKey`
+            candidate #12: `typenum::marker_traits::Bit`
+
+Some errors have detailed explanations: E0425, E0433, E0599.
+For more information about an error, try `rustc --explain E0425`.
+error: could not compile `mct-iroh` (lib test) due to 20 previous errors
+```
+
+Expected integration compile after making the sink mandatory and before rewiring daemon consumers:
+
+```text
+    Checking mct-iroh v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-iroh)
+    Checking mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0432]: unresolved import `mct_iroh::MctIrohHelloObservationSink`
+  --> crates/mct-daemon/src/main.rs:25:35
+   |
+25 |     MctIrohConcurrentServeConfig, MctIrohHelloObservationSink, MctIrohServeEvent,
+   |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `MctIrohHelloObservationSink` in the root
+   |
+help: a similar name exists in the module
+   |
+25 -     MctIrohConcurrentServeConfig, MctIrohHelloObservationSink, MctIrohServeEvent,
+25 +     MctIrohConcurrentServeConfig, MctIrohObservationSink, MctIrohServeEvent,
+   |
+
+error[E0560]: struct `mct_iroh::MctIrohConcurrentServeConfig` has no field named `hello_observation_sink`
+   --> crates/mct-daemon/src/daemon/resident.rs:338:17
+    |
+338 |                 hello_observation_sink: Some(hello_observation_sink),
+    |                 ^^^^^^^^^^^^^^^^^^^^^^ unknown field
+    |
+help: a field with a similar name exists
+    |
+338 -                 hello_observation_sink: Some(hello_observation_sink),
+338 +                 observation_sink: Some(hello_observation_sink),
+    |
+
+error[E0599]: no associated function or constant named `default` found for struct `mct_iroh::MctIrohConcurrentServeConfig` in the current scope
+   --> crates/mct-daemon/src/daemon/resident.rs:339:49
+    |
+339 |                 ..MctIrohConcurrentServeConfig::default()
+    |                                                 ^^^^^^^ associated function or constant not found in `mct_iroh::MctIrohConcurrentServeConfig`
+    |
+note: if you're trying to build a new `mct_iroh::MctIrohConcurrentServeConfig`, consider using `mct_iroh::MctIrohConcurrentServeConfig::new` which returns `mct_iroh::MctIrohConcurrentServeConfig`
+   --> crates/mct-iroh/src/serve.rs:463:5
+    |
+463 |     pub fn new(observation_sink: MctIrohObservationSink) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no associated function or constant named `default` found for struct `mct_iroh::MctIrohConcurrentServeConfig` in the current scope
+   --> crates/mct-daemon/src/daemon/ingress.rs:308:43
+    |
+308 |             MctIrohConcurrentServeConfig::default(),
+    |                                           ^^^^^^^ associated function or constant not found in `mct_iroh::MctIrohConcurrentServeConfig`
+    |
+note: if you're trying to build a new `mct_iroh::MctIrohConcurrentServeConfig`, consider using `mct_iroh::MctIrohConcurrentServeConfig::new` which returns `mct_iroh::MctIrohConcurrentServeConfig`
+   --> crates/mct-iroh/src/serve.rs:463:5
+    |
+463 |     pub fn new(observation_sink: MctIrohObservationSink) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no associated function or constant named `default` found for struct `mct_iroh::MctIrohConcurrentServeConfig` in the current scope
+   --> crates/mct-daemon/src/daemon/ingress.rs:386:43
+    |
+386 |             MctIrohConcurrentServeConfig::default(),
+    |                                           ^^^^^^^ associated function or constant not found in `mct_iroh::MctIrohConcurrentServeConfig`
+    |
+note: if you're trying to build a new `mct_iroh::MctIrohConcurrentServeConfig`, consider using `mct_iroh::MctIrohConcurrentServeConfig::new` which returns `mct_iroh::MctIrohConcurrentServeConfig`
+   --> crates/mct-iroh/src/serve.rs:463:5
+    |
+463 |     pub fn new(observation_sink: MctIrohObservationSink) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0004]: non-exhaustive patterns: `mct_iroh::MctIrohServedProtocol::MalformedCall { .. }` not covered
+   --> crates/mct-daemon/src/daemon/resident.rs:599:11
+    |
+599 |     match served {
+    |           ^^^^^^ pattern `mct_iroh::MctIrohServedProtocol::MalformedCall { .. }` not covered
+    |
+note: `mct_iroh::MctIrohServedProtocol` defined here
+   --> crates/mct-iroh/src/serve.rs:234:1
+    |
+234 | pub enum MctIrohServedProtocol {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+245 |     MalformedCall {
+    |     ------------- not covered
+    = note: the matched value is of type `mct_iroh::MctIrohServedProtocol`
+help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
+    |
+609 ~         )],
+610 ~         mct_iroh::MctIrohServedProtocol::MalformedCall { .. } => todo!(),
+    |
+
+Some errors have detailed explanations: E0004, E0432, E0560, E0599.
+For more information about an error, try `rustc --explain E0004`.
+error: could not compile `mct-daemon` (bin "mct-daemon") due to 6 previous errors
+```
+
+Existing Slice-2 regression exposed over-broad serving-loop termination on an authority-prefix sink failure:
+
+```text
+   Compiling mct-iroh v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-iroh)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.37s
+     Running unittests src/lib.rs (target/debug/deps/mct_iroh-c905e0248aa84c8b)
+
+running 34 tests
+test serve::tests::denied_hellos_leave_no_per_peer_state ... ok
+test serve::tests::serve_state_ids_do_not_collide_across_instances ... ok
+test identity::tests::peer_binding_signature_ref_roundtrips_and_fails_on_tamper ... ok
+test tests::caller_rejects_reply_digest_mismatch_and_oversized_result ... ok
+test serve::tests::admitted_hello_state_is_capped_oldest_first ... ok
+test tests::call_payload_integrity_failures_are_malformed_before_authority ... ok
+test tests::concurrent_call_sink_covers_success_lifecycle ... ok
+test tests::endpoint_config_can_select_default_relay_mode ... ok
+test tests::endpoint_config_defaults_to_local_mct_alpns ... ok
+test tests::endpoint_config_rejects_empty_alpns ... ok
+test tests::call_rechecks_binding_revocation_after_hello ... ok
+test tests::exposes_version ... ok
+test tests::call_rechecks_binding_policy_revision_after_hello ... ok
+test tests::call_rechecks_narrowed_alpn_scope_after_hello ... ok
+test tests::call_rechecks_narrowed_vision_scope_after_hello ... ok
+test tests::call_payload_roundtrip_carries_request_and_result_bytes ... ok
+test tests::concurrent_serve_refuses_connections_beyond_bound ... ok
+test tests::call_rechecks_binding_expiry_after_hello ... ok
+test tests::node_secret_key_file_is_created_owner_read_write_only ... ok
+test tests::call_payload_caps_fail_closed ... ok
+test tests::mother_owned_endpoint_starts_and_closes ... ok
+test tests::concurrent_serve_keeps_peer_hello_state_separate ... ok
+test tests::mother_endpoint_ticket_connects_hello_then_call ... ok
+test tests::local_iroh_completes_mct_hello_then_call ... ok
+test tests::iroh_call_handler_can_complete_reply_after_runtime_execution ... ok
+test tests::serve_next_denies_binding_expired_against_current_accept_time ... ok
+test tests::iroh_adapter_observations_cover_endpoint_and_protocol_events ... ok
+test tests::concurrent_serve_requires_signed_peer_binding_when_configured ... ok
+test tests::unknown_peer_is_denied_before_call ... ok
+test tests::malformed_frames_are_observed_before_safe_reply_and_append_failure_suppresses_reply ... ok
+test tests::call_frame_budget_refuses_oversized_request ... ok
+test tests::send_hello_times_out_when_peer_never_replies ... ok
+test tests::serve_next_times_out_when_peer_never_sends_data ... ok
+test tests::failed_hello_observation_prevents_response_and_remembered_admission ... FAILED
+
+failures:
+
+---- tests::failed_hello_observation_prevents_response_and_remembered_admission stdout ----
+
+thread 'tests::failed_hello_observation_prevents_response_and_remembered_admission' (1073238) panicked at crates/mct-iroh/src/lib.rs:777:67:
+called `Result::unwrap()` on an `Err` value: ProtocolTimeout { action: "complete outbound MCT roundtrip" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::failed_hello_observation_prevents_response_and_remembered_admission
+
+test result: FAILED. 33 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 31.33s
+
+error: test failed, to rerun pass `-p mct-iroh --lib`
+```
+
+Expected red full-lifecycle assertion exposed the existing route path's multiple revalidation facts and actual ordering:
+
+```text
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.26s
+     Running unittests src/main.rs (target/debug/deps/mct_daemon-701d058281c133f0)
+
+running 1 test
+mct resident mother endpoint_id=4b1dcfb4692e3c76639409c5f12822a22943677d00b2c8029d33c9a6a1be6007
+ticket={  "endpoint_id": "4b1dcfb4692e3c76639409c5f12822a22943677d00b2c8029d33c9a6a1be6007",  "direct_addresses": [    "10.10.10.209:58908",    "100.114.124.29:58908"  ],  "relay_urls": []}
+mct resident mother children loaded=1 failed=0 bindings=1 max_connections=8
+mct daemon serving control uds on /var/folders/6h/329275913d1d3k1lfvvvryp40000gn/T/.tmp9jNduM/control.sock
+
+thread 'resident::tests::resident_mother_payload_roundtrip_verifies_result_digest' (1083056) panicked at crates/mct-daemon/src/daemon/resident.rs:4417:9:
+assertion `left == right` failed
+  left: [PeerCallReceived, CallConstructed, CallAuthorized, RouteRevalidated, RouteSelected, RouteRevalidated, RouteRevalidated, ResultRecorded, PeerCallReplied]
+ right: [PeerCallReceived, CallConstructed, CallAuthorized, RouteSelected, RouteRevalidated, ResultRecorded, PeerCallReplied]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test resident::tests::resident_mother_payload_roundtrip_verifies_result_digest ... FAILED
+
+failures:
+
+failures:
+    resident::tests::resident_mother_payload_roundtrip_verifies_result_digest
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 40 filtered out; finished in 2.96s
+
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
+Standalone integration fixture visibility compile failure before correction:
+
+```text
+   Compiling mct-iroh v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-iroh)
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0603]: function `write_resident_process_child` is private
+    --> crates/mct-daemon/src/daemon/ingress.rs:1016:33
+     |
+1016 |         crate::resident::tests::write_resident_process_child(&children_dir);
+     |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ private function
+     |
+note: the function `write_resident_process_child` is defined here
+    --> crates/mct-daemon/src/daemon/resident.rs:5688:5
+     |
+5688 |     pub(super) fn write_resident_process_child(children_dir: &Path) {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0603`.
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 1 previous error
+```

@@ -326,7 +326,7 @@ where
         state_path: config.state_path.clone(),
     };
     let execution_ledger = ledger.clone();
-    let hello_observation_sink = resident_hello_observation_sink(ledger.clone());
+    let observation_sink = resident_iroh_observation_sink(ledger.clone());
     let serve_result = tokio::select! {
         result = endpoint.serve_concurrent_with_binding_provider(
             MctIrohServeState::new(),
@@ -335,8 +335,7 @@ where
                 events: Some(events),
                 require_binding_signature: true,
                 capability_view: Some(hello_capability_view),
-                hello_observation_sink: Some(hello_observation_sink),
-                ..MctIrohConcurrentServeConfig::default()
+                ..MctIrohConcurrentServeConfig::new(observation_sink)
             },
             current_timestamp,
             move || {
@@ -495,6 +494,7 @@ pub(super) struct ResidentLedgerWriter {
 
 pub(super) struct ResidentLedgerWrite {
     pub(super) observations: Vec<MctObservation>,
+    pub(super) durability: DurabilityClass,
     pub(super) ack: tokio::sync::oneshot::Sender<std::result::Result<(), String>>,
 }
 
@@ -505,12 +505,23 @@ impl ResidentLedgerWriter {
         let (sender, mut receiver) = tokio::sync::mpsc::channel::<ResidentLedgerWrite>(256);
         tokio::task::spawn_blocking(move || {
             while let Some(write) = receiver.blocking_recv() {
-                let result = ledger
-                    .append_batch_before_effect(
-                        write.observations,
-                        mct_daemon::current_timestamp_string(),
-                    )
-                    .map(|_| ())
+                let appended_at = mct_daemon::current_timestamp_string();
+                let result = write
+                    .observations
+                    .into_iter()
+                    .try_for_each(|observation| match write.durability {
+                        DurabilityClass::BeforeEffect => ledger
+                            .append_before_effect(observation, appended_at.clone())
+                            .map(|_| ()),
+                        DurabilityClass::Buffered | DurabilityClass::ProjectionOnly => ledger
+                            .append(
+                                observation,
+                                appended_at.clone(),
+                                write.durability,
+                                ExportStatus::NotRequired,
+                            )
+                            .map(|_| ()),
+                    })
                     .map_err(|error| error.to_string());
                 let _ = write.ack.send(result);
             }
@@ -519,12 +530,25 @@ impl ResidentLedgerWriter {
     }
 
     pub(super) async fn append(&self, observations: Vec<MctObservation>) -> Result<()> {
+        self.append_with_durability(observations, DurabilityClass::BeforeEffect)
+            .await
+    }
+
+    pub(super) async fn append_with_durability(
+        &self,
+        observations: Vec<MctObservation>,
+        durability: DurabilityClass,
+    ) -> Result<()> {
         if observations.is_empty() {
             return Ok(());
         }
         let (ack, rx) = tokio::sync::oneshot::channel();
         self.sender
-            .send(ResidentLedgerWrite { observations, ack })
+            .send(ResidentLedgerWrite {
+                observations,
+                durability,
+                ack,
+            })
             .await
             .context("send observations to resident ledger writer")?;
         rx.await
@@ -537,18 +561,24 @@ impl ResidentLedgerWriter {
     }
 }
 
-pub(super) fn resident_hello_observation_sink(
+pub(super) fn resident_iroh_observation_sink(
     ledger: ResidentLedgerWriter,
-) -> MctIrohHelloObservationSink {
-    MctIrohHelloObservationSink::new(move |trace_id, evaluation| {
+) -> MctIrohObservationSink {
+    MctIrohObservationSink::new(move |batch: MctIrohObservationBatch| {
         let ledger = ledger.clone();
         async move {
+            let durability = match batch.durability {
+                MctIrohObservationDurability::BeforeEffect => DurabilityClass::BeforeEffect,
+                MctIrohObservationDurability::Buffered => DurabilityClass::Buffered,
+            };
+            let observed_at = current_timestamp();
+            let observations = batch
+                .facts
+                .iter()
+                .map(|fact| fact.to_observation(observed_at.clone()))
+                .collect();
             ledger
-                .append(vec![hello_evaluation_observation(
-                    trace_id,
-                    current_timestamp(),
-                    &evaluation,
-                )])
+                .append_with_durability(observations, durability)
                 .await
                 .map_err(|error| std::io::Error::other(error.to_string()))
         }
@@ -594,20 +624,10 @@ pub(super) async fn record_iroh_serve_events(
 }
 
 pub(super) fn resident_observations_for_served_protocol(
-    served: MctIrohServedProtocol,
+    _served: MctIrohServedProtocol,
 ) -> Vec<MctObservation> {
-    match served {
-        MctIrohServedProtocol::Hello { .. } => Vec::new(),
-        MctIrohServedProtocol::Call {
-            request,
-            evaluation,
-            ..
-        } => vec![call_protocol_evaluation_observation(
-            request.call.trace_context.trace_id,
-            current_timestamp(),
-            &evaluation,
-        )],
-    }
+    // Hello and call lifecycle facts are written by the awaited mandatory sink.
+    Vec::new()
 }
 
 pub(super) fn resident_endpoint_observation(
@@ -2727,10 +2747,14 @@ pub(super) fn result_to_call_handler_result(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
     use mct_iroh::{endpoint_id_for_secret_key_hex, sign_peer_binding_signature_ref};
+
+    fn test_iroh_observation_sink() -> MctIrohObservationSink {
+        MctIrohObservationSink::new(|_| async { Ok::<_, std::io::Error>(()) })
+    }
 
     fn test_call() -> MctCall {
         MctCall {
@@ -2909,16 +2933,13 @@ mod tests {
                 .expect("string ID literal/generated value must be non-empty"),
             superseded_by_observation_id: None,
         };
-        let hello_observation_sink = resident_hello_observation_sink(ledger.clone());
+        let observation_sink = resident_iroh_observation_sink(ledger.clone());
         let serve_task = tokio::spawn(async move {
             server
                 .serve_concurrent_with_call_handler(
                     MctIrohServeState::new(),
                     vec![binding],
-                    MctIrohConcurrentServeConfig {
-                        hello_observation_sink: Some(hello_observation_sink),
-                        ..MctIrohConcurrentServeConfig::default()
-                    },
+                    MctIrohConcurrentServeConfig::new(observation_sink),
                     || Timestamp::new("2026-07-09T00:00:02Z").unwrap(),
                     |_, _, _| async { MctIrohCallHandlerResult::accepted_for_routing(None) },
                 )
@@ -3840,7 +3861,7 @@ mod tests {
                     MctIrohConcurrentServeConfig {
                         events: Some(events),
                         require_binding_signature: true,
-                        ..MctIrohConcurrentServeConfig::default()
+                        ..MctIrohConcurrentServeConfig::new(test_iroh_observation_sink())
                     },
                     current_timestamp,
                     move || {
@@ -4109,7 +4130,7 @@ mod tests {
                     MctIrohConcurrentServeConfig {
                         require_binding_signature: true,
                         capability_view: Some(b_view),
-                        ..MctIrohConcurrentServeConfig::default()
+                        ..MctIrohConcurrentServeConfig::new(test_iroh_observation_sink())
                     },
                     current_timestamp,
                     move |request, _, _| {
@@ -4262,6 +4283,7 @@ mod tests {
         let client_signature_ref = store.load().unwrap().peers["mother-payload-client"]
             .binding_signature_ref
             .clone();
+        let signature_marker = client_signature_ref.clone().unwrap();
 
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -4362,6 +4384,60 @@ mod tests {
             .unwrap();
         client.close().await;
 
+        let entries =
+            JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
+                .unwrap()
+                .entries()
+                .unwrap();
+        let lifecycle_kinds = entries
+            .iter()
+            .filter(|entry| {
+                entry
+                    .observation
+                    .call_id
+                    .as_ref()
+                    .is_some_and(|call_id| call_id.as_str() == "call-resident-payload-e2e")
+            })
+            .map(|entry| entry.observation.kind)
+            .filter(|kind| {
+                matches!(
+                    kind,
+                    ObservationKind::PeerCallReceived
+                        | ObservationKind::CallConstructed
+                        | ObservationKind::CallAuthorized
+                        | ObservationKind::RouteSelected
+                        | ObservationKind::RouteRevalidated
+                        | ObservationKind::NoRouteRecorded
+                        | ObservationKind::ResultRecorded
+                        | ObservationKind::PeerCallReplied
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            lifecycle_kinds,
+            vec![
+                ObservationKind::PeerCallReceived,
+                ObservationKind::CallConstructed,
+                ObservationKind::CallAuthorized,
+                ObservationKind::RouteRevalidated,
+                ObservationKind::RouteSelected,
+                ObservationKind::RouteRevalidated,
+                ObservationKind::RouteRevalidated,
+                ObservationKind::ResultRecorded,
+                ObservationKind::PeerCallReplied,
+            ]
+        );
+        let result_entry = entries
+            .iter()
+            .find(|entry| entry.observation.kind == ObservationKind::ResultRecorded)
+            .unwrap();
+        let reply_entry = entries
+            .iter()
+            .find(|entry| entry.observation.kind == ObservationKind::PeerCallReplied)
+            .unwrap();
+        assert_eq!(result_entry.durability_class, DurabilityClass::Buffered);
+        assert_eq!(reply_entry.durability_class, DurabilityClass::Buffered);
+
         let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
         assert!(ledger_text.contains("call-resident-payload-e2e"));
         assert!(ledger_text.contains("payload:request:size="));
@@ -4370,6 +4446,7 @@ mod tests {
         assert!(!ledger_text.contains("processed:"));
         assert!(!ledger_text.contains(&payload_base64));
         assert!(!ledger_text.contains(&expected_result_base64));
+        assert!(!ledger_text.contains(&signature_marker));
     }
 
     #[tokio::test]
@@ -5608,7 +5685,7 @@ mod tests {
         }
     }
 
-    fn write_resident_process_child(children_dir: &Path) {
+    pub(crate) fn write_resident_process_child(children_dir: &Path) {
         write_resident_process_child_script(
             children_dir,
             "resident-echo",

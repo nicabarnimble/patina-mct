@@ -261,9 +261,12 @@ pub(super) fn default_wasm_host_config() -> MctWasmHostConfig {
 
 pub(super) async fn serve_iroh(mut args: Vec<String>) -> Result<()> {
     let relay_default = take_flag(&mut args, "--relay-default");
+    let ledger_path = take_option(&mut args, "--ledger")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_observation_ledger_path);
     if args.len() < 5 {
         bail!(
-            "expected: mct-daemon iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir]"
+            "expected: mct-daemon iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir] [--ledger path]"
         );
     }
     let identity_path = PathBuf::from(&args[0]);
@@ -280,6 +283,13 @@ pub(super) async fn serve_iroh(mut args: Vec<String>) -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(default_children_dir);
 
+    let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).with_context(|| {
+        format!(
+            "standalone Iroh serve refused: could not acquire the exclusive observation ledger writer; another Mother may already be serving this node ({})",
+            ledger_path.display()
+        )
+    })?;
+    let observation_sink = resident_iroh_observation_sink(ledger.clone());
     let secret_key_hex = load_or_create_node_secret_key_hex(&identity_path)?;
     let mut endpoint = MotherIrohEndpoint::bind(iroh_config(secret_key_hex, relay_default)).await?;
     let local_endpoint_id = endpoint.snapshot().endpoint_id;
@@ -305,7 +315,7 @@ pub(super) async fn serve_iroh(mut args: Vec<String>) -> Result<()> {
         .serve_concurrent_with_call_handler(
             MctIrohServeState::new(),
             vec![binding],
-            MctIrohConcurrentServeConfig::default(),
+            MctIrohConcurrentServeConfig::new(observation_sink),
             current_timestamp,
             |_, _, _| async {
                 MctIrohCallHandlerResult::accepted_for_routing(Some(
@@ -318,12 +328,21 @@ pub(super) async fn serve_iroh(mut args: Vec<String>) -> Result<()> {
     if let Err(error) = result {
         eprintln!("iroh serve error: {error}");
         endpoint.close().await;
+        ledger.close().await;
         return Err(error.into());
     }
+    ledger.close().await;
     Ok(())
 }
 
-pub(super) async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
+pub(super) async fn serve_iroh_process(args: Vec<String>) -> Result<()> {
+    serve_iroh_process_with_ready(args, None).await
+}
+
+pub(super) async fn serve_iroh_process_with_ready(
+    mut args: Vec<String>,
+    ready: Option<tokio::sync::oneshot::Sender<MotherIrohEndpointTicket>>,
+) -> Result<()> {
     let relay_default = take_flag(&mut args, "--relay-default");
     let child_name = take_option(&mut args, "--child").ok_or_else(|| {
         anyhow::anyhow!("iroh serve-process requires --child <approved-child-name>")
@@ -356,12 +375,23 @@ pub(super) async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
         .expect("string ID literal/generated value must be non-empty");
     let executable = PathBuf::from(&args[5]);
 
+    let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).with_context(|| {
+        format!(
+            "standalone Iroh serve refused: could not acquire the exclusive observation ledger writer; another Mother may already be serving this node ({})",
+            ledger_path.display()
+        )
+    })?;
+    let observation_sink = resident_iroh_observation_sink(ledger.clone());
+    let projection = load_configured_child_projection(&config_path, &children_dir)?;
     let secret_key_hex = load_or_create_node_secret_key_hex(&identity_path)?;
     let mut endpoint = MotherIrohEndpoint::bind(iroh_config(secret_key_hex, relay_default)).await?;
     let local_endpoint_id = endpoint.snapshot().endpoint_id;
     let ticket = endpoint.ticket();
     println!("mct iroh process serving endpoint_id={local_endpoint_id}");
     println!("ticket={}", ticket.to_json()?.replace('\n', ""));
+    if let Some(ready) = ready {
+        let _ = ready.send(ticket.clone());
+    }
 
     let binding = cli_peer_binding(
         binding_id,
@@ -378,18 +408,18 @@ pub(super) async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
         local_node_id: MctNodeId::new("local-mct")
             .expect("string ID literal/generated value must be non-empty"),
     };
-    let projection = load_configured_child_projection(&config_path, &children_dir)?;
+    let handler_ledger = ledger.clone();
     let result = endpoint
         .serve_concurrent_with_call_handler(
             MctIrohServeState::new(),
             vec![binding],
-            MctIrohConcurrentServeConfig::default(),
+            MctIrohConcurrentServeConfig::new(observation_sink),
             current_timestamp,
             move |request, _evaluation, _inline_payload| {
                 let harness = harness.clone();
                 let projection = projection.clone();
                 let child_name = child_name.clone();
-                let ledger_path = ledger_path.clone();
+                let ledger = handler_ledger.clone();
                 let state_path = state_path.clone();
                 async move {
                     let (authorized, authority_observation) =
@@ -405,10 +435,13 @@ pub(super) async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
                                 ));
                             }
                         };
-                    let _ = append_ledger_observations(
-                        &ledger_path,
-                        std::slice::from_ref(&authority_observation),
-                    );
+                    if ledger
+                        .append(vec![authority_observation.clone()])
+                        .await
+                        .is_err()
+                    {
+                        return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+                    }
                     let runtime_state = match MctRuntimeStateStore::open(&state_path) {
                         Ok(runtime_state) => runtime_state,
                         Err(error) => {
@@ -433,10 +466,17 @@ pub(super) async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
                             "runtime run could not start: {error}"
                         ));
                     }
-                    let _ = runtime_state.append_run_observations(
-                        &run_id,
-                        std::slice::from_ref(&authority_observation),
-                    );
+                    if runtime_state
+                        .append_run_observations(
+                            &run_id,
+                            std::slice::from_ref(&authority_observation),
+                        )
+                        .is_err()
+                    {
+                        return MctIrohCallHandlerResult::failed(
+                            "runtime observation projection unavailable",
+                        );
+                    }
                     let report = match harness.invoke_authorized_child(
                         authorized,
                         &request.call,
@@ -473,13 +513,29 @@ pub(super) async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
                             ));
                         }
                     };
-                    let _ = append_ledger_observations(&ledger_path, &report.observations);
-                    let _ = runtime_state.append_run_observations(&run_id, &report.observations);
-                    let _ = runtime_state.complete_run(
-                        &run_id,
-                        &report.result,
-                        mct_daemon::current_timestamp_string(),
-                    );
+                    if ledger.append(report.observations.clone()).await.is_err() {
+                        return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+                    }
+                    if runtime_state
+                        .append_run_observations(&run_id, &report.observations)
+                        .is_err()
+                    {
+                        return MctIrohCallHandlerResult::failed(
+                            "runtime observation projection unavailable",
+                        );
+                    }
+                    if runtime_state
+                        .complete_run(
+                            &run_id,
+                            &report.result,
+                            mct_daemon::current_timestamp_string(),
+                        )
+                        .is_err()
+                    {
+                        return MctIrohCallHandlerResult::failed(
+                            "runtime completion projection unavailable",
+                        );
+                    }
                     match report.result.outcome {
                         ResultOutcome::Success => MctIrohCallHandlerResult::completed(
                             ResultRef::new(format!("result-iroh-process:{}", request.call.call_id))
@@ -499,8 +555,10 @@ pub(super) async fn serve_iroh_process(mut args: Vec<String>) -> Result<()> {
     if let Err(error) = result {
         eprintln!("iroh process serve error: {error}");
         endpoint.close().await;
+        ledger.close().await;
         return Err(error.into());
     }
+    ledger.close().await;
     Ok(())
 }
 
@@ -912,4 +970,177 @@ pub(super) fn read_ticket(path: &Path) -> Result<MotherIrohEndpointTicket> {
     let json = std::fs::read_to_string(path)
         .with_context(|| format!("reading peer ticket {}", path.display()))?;
     MotherIrohEndpointTicket::from_json(&json).map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn standalone_serve_refuses_held_ledger_before_endpoint_bind() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger_path = dir.path().join("observations.jsonl");
+        let identity_path = dir.path().join("identity.hex");
+        let _lock =
+            JsonlObservationLedger::open(&ledger_path, "ledger-local", "local-mct").unwrap();
+
+        let error = serve_iroh(vec![
+            identity_path.display().to_string(),
+            "binding-standalone-lock".into(),
+            "endpoint-client".into(),
+            "mother-client".into(),
+            "vision-local".into(),
+            "--ledger".into(),
+            ledger_path.display().to_string(),
+        ])
+        .await
+        .unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains(
+                "standalone Iroh serve refused: could not acquire the exclusive observation ledger writer; another Mother may already be serving this node"
+            )
+        );
+        assert!(!identity_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn standalone_serve_process_persists_hello_and_call_lifecycle() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let identity_path = dir.path().join("identity.hex");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        crate::resident::tests::write_resident_process_child(&children_dir);
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        MctDaemonConfigStore::new(&config_path)
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+        let executable = children_dir
+            .join("resident-echo")
+            .join("resident-echo.wasm");
+        let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let client_endpoint_id = client.snapshot().endpoint_id;
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let serve_task = tokio::spawn(serve_iroh_process_with_ready(
+            vec![
+                identity_path.display().to_string(),
+                "binding-standalone-client".into(),
+                client_endpoint_id.to_string(),
+                "standalone-client".into(),
+                "vision-local".into(),
+                executable.display().to_string(),
+                "--child".into(),
+                "resident-echo".into(),
+                "--children-dir".into(),
+                children_dir.display().to_string(),
+                "--config".into(),
+                config_path.display().to_string(),
+                "--ledger".into(),
+                ledger_path.display().to_string(),
+                "--state".into(),
+                state_path.display().to_string(),
+            ],
+            Some(ready_tx),
+        ));
+        let ticket = tokio::time::timeout(Duration::from_secs(10), ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        let trace_id = TraceId::new("trace-standalone-serve-process")
+            .expect("string ID literal/generated value must be non-empty");
+        let binding_id = PeerBindingId::new("binding-standalone-client")
+            .expect("string ID literal/generated value must be non-empty");
+        let node_id = MctNodeId::new("standalone-client")
+            .expect("string ID literal/generated value must be non-empty");
+        let vision_id = VisionId::new("vision-local")
+            .expect("string ID literal/generated value must be non-empty");
+        let hello = cli_hello_request(
+            &client_endpoint_id,
+            &binding_id,
+            &node_id,
+            &vision_id,
+            &trace_id,
+            None,
+        );
+        let hello_response = client.send_hello(&ticket, &hello).await.unwrap();
+        assert_eq!(hello_response.hello_outcome, HelloOutcome::Admitted);
+        let call = cli_call_request(
+            &client_endpoint_id,
+            &binding_id,
+            &node_id,
+            &vision_id,
+            &trace_id,
+            OperationTarget {
+                namespace: "patina:demo".into(),
+                interface_name: "control@0.1.0".into(),
+                function_name: "run".into(),
+            },
+            &hello_response,
+        );
+        let reply = client.send_call(&ticket, &call).await.unwrap();
+        assert_eq!(reply.reply_outcome, CallProtocolReplyOutcome::Success);
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let has_reply = JsonlObservationLedger::open_read_only(
+                    &ledger_path,
+                    "ledger-local",
+                    "local-mct",
+                )
+                .ok()
+                .and_then(|reader| reader.entries().ok())
+                .is_some_and(|entries| {
+                    entries
+                        .iter()
+                        .any(|entry| entry.observation.kind == ObservationKind::PeerCallReplied)
+                });
+                if has_reply {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        serve_task.abort();
+        client.close().await;
+
+        let entries =
+            JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
+                .unwrap()
+                .entries()
+                .unwrap();
+        assert!(entries.iter().any(|entry| {
+            entry.observation.kind == ObservationKind::PeerAdmitted
+                && entry.durability_class == DurabilityClass::BeforeEffect
+        }));
+        let lifecycle = entries
+            .iter()
+            .filter_map(|entry| match entry.observation.kind {
+                ObservationKind::PeerCallReceived
+                | ObservationKind::CallConstructed
+                | ObservationKind::CallAuthorized
+                | ObservationKind::ResultRecorded
+                | ObservationKind::PeerCallReplied => Some(entry.observation.kind),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            lifecycle,
+            vec![
+                ObservationKind::PeerCallReceived,
+                ObservationKind::CallConstructed,
+                ObservationKind::CallAuthorized,
+                ObservationKind::ResultRecorded,
+                ObservationKind::PeerCallReplied,
+            ]
+        );
+        let secret_key_material = std::fs::read_to_string(identity_path).unwrap();
+        let ledger_text = std::fs::read_to_string(ledger_path).unwrap();
+        assert!(!ledger_text.contains(secret_key_material.trim()));
+        assert!(!ledger_text.contains("inline_payload_base64"));
+    }
 }
