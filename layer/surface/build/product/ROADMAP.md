@@ -115,7 +115,7 @@ Dependency-ordered; each item assumes the ones before it.
 
 ### Standing backlog (from the audit arc, non-blocking)
 
-- [ ] `main.rs` CLI decomposition (2,600+ lines of subcommand dispatch).
+- [x] `main.rs` CLI decomposition substantially addressed by Track 1 slice S2.5: binary-local CLI, control, ingress, and resident modules now own implementation and inline integration tests. `main.rs` intentionally retains entrypoint dispatch wiring, argument-token helpers, default paths, and help text.
 - [ ] Property-based tests for ALPN intersection and payload validation.
 - [ ] Per-connection hello state (subsumed by item 1).
 - [x] Child SDK / packaging tooling in-repo (children currently built in
