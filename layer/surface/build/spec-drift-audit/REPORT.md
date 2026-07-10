@@ -97,9 +97,10 @@ $ allium analyse layer/allium/mct-product-map.allium
 ### A7 — reload stops the current generation before constructing the replacement
 
 - **Spec:** `MctChildComponentLifecycle.ReplacementLoadsBeforeSwap` and `.FailedReplacementDoesNotPoisonCurrent`, `layer/allium/mct-product-map.allium:1514-1515,1687-1694`.
-- **Code:** `crates/mct-daemon/src/lifecycle.rs:60-140`; persistence order at `crates/mct-daemon/src/main.rs:289-298`.
-- **Evidence:** The map says, “Replacement loads before swap,” and requires a failed replacement not to invalidate the ready generation. `reload_configured_child` first transitions the existing instance to draining and stopped, then clones that stopped value into a new loading generation and marks it ready. The command persists both outputs afterward. This is the inverse order and offers no path that leaves the old ready generation intact if replacement construction/readiness fails.
+- **Code:** replacement preparation and typed failure at `crates/mct-daemon/src/lifecycle.rs`; atomic persistence at `crates/mct-daemon/src/state.rs`; command orchestration at `crates/mct-daemon/src/daemon/cli_runtime.rs`.
+- **Evidence:** The map says, “Replacement loads before swap,” and requires a failed replacement not to invalidate the ready generation. Reload now constructs a distinct loading generation, verifies and transitions it to ready while the predecessor remains ready, then records the predecessor's drain/stop transitions. The state store requires a ready persisted predecessor and atomically inserts the ready replacement before stopping the predecessor, so durable readers see either the predecessor ready or the committed replacement ready. Typed construction/verification failure returns before swap and leaves the predecessor ready, persisted, and callable.
 - **Direction:** spec-ward.
+- **Outcome:** fixed in `3df5245` (`fix(daemon): load replacement before child swap`). `reload_records_replacement_ready_before_predecessor_drain` proves the lifecycle evidence order and generation advance; `child_reload_swap_is_atomic_and_failed_swap_keeps_persisted_predecessor_ready` proves the storage contract; and `reload_command_failure_keeps_persisted_generation_ready_and_routable` proves typed command failure preserves both durable readiness and call authority.
 
 ### A8 — peer-call lifecycle observations are incomplete and emitted after reply
 
@@ -235,7 +236,7 @@ The audit also found implementation alignment, not divergence, in these walked a
 | A4 | A | RouteDecision omits planner/snapshot evidence | spec-ward |
 | A5 | A | Hello observation follows response effect | spec-ward — **fixed** in `e16e59d` |
 | A6 | A | Authority/operator/storage mutations are unobserved | spec-ward — **fixed** in `393884f`, `3b1fa34`, `abe3eb1`, `57c6b21`, and `0fb06c3` |
-| A7 | A | Reload drains/stops before replacement readiness | spec-ward |
+| A7 | A | Reload drains/stops before replacement readiness | spec-ward — **fixed** in `3df5245` |
 | A8 | A | Peer-call lifecycle observation coverage is incomplete | spec-ward — **fixed** in `fd3cd3d` |
 | B1 | B | Payload caps and local BLAKE3 CAS are under-described | code-ward |
 | B2 | B | Effect-boundary revision guard is under-described | code-ward |

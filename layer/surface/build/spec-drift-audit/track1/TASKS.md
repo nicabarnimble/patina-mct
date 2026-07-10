@@ -2332,9 +2332,9 @@ At swap, the lifecycle model records the predecessor's allowed `Ready → Draini
 
 - [x] Re-establish `ab067ee`; read A7/map contracts, lifecycle model, all callers, persistence ordering, and the Slice 4 observation disposition.
 - [x] Record corrected sequencing, failure semantics, caller enumeration, drain behavior, and exclusions.
-- [ ] Land failing ready-before-drain, failed-replacement, persistence, and post-failure routing regressions before implementation.
-- [ ] Implement replacement-first preparation and atomic persisted swap with minimal library surface.
-- [ ] Mark A7 fixed, validate every commit, and stop after S5.2.
+- [x] Land failing ready-before-drain, failed-replacement, persistence, and post-failure routing regressions before implementation.
+- [x] Implement replacement-first preparation and atomic persisted swap with minimal library surface.
+- [x] Mark A7 fixed, validate every commit, and stop after S5.2.
 
 ## Slice 5 failure log
 
@@ -2440,3 +2440,34 @@ error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
 ```
 
 The fixture was corrected to the largest persistable SQLite generation (`i64::MAX`), and replacement construction now rejects advancing beyond that durable representation.
+
+## S5.2 implementation record
+
+### Commits
+
+- `d68454e` — `docs: specify replacement-ready reload ordering`
+- `3df5245` — `fix(daemon): load replacement before child swap`
+
+### Ordering and failure outcome
+
+`reload_configured_child` now clones the ready predecessor into a distinct `generation + 1` loading record without mutating the predecessor. It verifies current artifact/approval/assignment authority for that replacement and transitions it to ready first. Only after replacement readiness succeeds does it derive the predecessor's draining and stopped records. The report's existing lifecycle facts are ordered replacement `ChildInstanceReady` → predecessor `ChildInstanceDraining` → predecessor `ChildInstanceStopped`; no new observation kind was added.
+
+`execute_child_reload` persists the current ready generation before preparation, then delegates the successful pair to `MctRuntimeStateStore::swap_ready_child_generation`. That method rejects any pair that is not stopped predecessor plus ready direct successor with matching child, assignment, artifact, and node. Within one SQLite transaction it verifies the persisted predecessor is still ready, writes the ready replacement first, writes the stopped predecessor second, and commits. The commit is the point of no return and the transaction makes a zero-ready durable snapshot unrepresentable.
+
+Construction and verification failures use the typed public `MctChildReloadError`; the command propagates them without calling the swap. The only new public library surfaces are that error and the atomic state-store method required across the library/binary crate boundary. Warmup, process supervision, task cycling, and resident routing do not call component reload and were not changed.
+
+### Regression and ordering evidence
+
+- `reload_records_replacement_ready_before_predecessor_drain` asserts generation `1 → 2`, leaves the input predecessor ready, and reconstructs the report order as replacement ready before predecessor draining/stopped.
+- `failed_replacement_keeps_current_generation_ready_and_callable` injects typed replacement verification failure, asserts the in-memory predecessor remains ready, and obtains an allowed child-call authority result from it afterward.
+- `child_reload_swap_is_atomic_and_failed_swap_keeps_persisted_predecessor_ready` rejects a non-ready replacement without changing the stored predecessor, then proves successful swap leaves exactly generation 1 stopped and generation 2 ready with one ready instance.
+- `reload_command_failure_keeps_persisted_generation_ready_and_routable` drives the command's shared executor through typed construction failure, asserts the SQLite row remains the ready predecessor with one ready instance, and proves the immediately following call remains authorized.
+- Existing Slice 4 authority/composition regressions, including `live_child_revocation_is_visible_to_the_immediately_following_route`, remain green.
+
+### Validation and flakes
+
+Both Slice 5 commits passed `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, and `./scripts/ci-tier0.sh`. Final implementation validation passed **281 tests** (281 passed, 0 ignored), and Allium check returned empty diagnostics/findings.
+
+Flakes: none. The invalid two-filter test invocation, expected red compile failures, and deterministic signed-SQLite fixture correction are captured verbatim above.
+
+A7 is fixed in `3df5245`. A3/Slice 6 remains untouched. Stop after S5.2.
