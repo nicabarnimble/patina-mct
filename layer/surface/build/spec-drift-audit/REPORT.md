@@ -62,6 +62,7 @@ $ allium analyse layer/allium/mct-product-map.allium
 - **Code:** `crates/mct-iroh/src/serve.rs:83-114,818-820,880-939`; `crates/mct-kernel/src/call/internal.rs:148-227`.
 - **Evidence:** The map says every peer call still passes “the normal MCT authority filter” and execution-time revalidation, including peer binding authority. The server loads current bindings for each connection, but the call branch does not use them; it retrieves a remembered hello solely by endpoint. Kernel call evaluation compares the request with that cached hello and never receives current bindings or current time. A binding revoked or expired after hello can therefore continue admitting calls until the remembered hello is evicted or replaced.
 - **Direction:** spec-ward.
+- **Outcome:** fixed in `5f8f1af` (`fix(kernel): evaluate calls against current binding authority`); current bindings, policy revision, admitted revision, and current time are now mandatory call-evaluation facts.
 
 ### A3 — request idempotency is declared but not implemented
 
@@ -226,7 +227,7 @@ The audit also found implementation alignment, not divergence, in these walked a
 | ID | Class | Area | Resolution direction |
 |---|---|---|---|
 | A1 | A | Origin creates remote-routing permission | code-ward |
-| A2 | A | Cached hello bypasses current binding revalidation | spec-ward |
+| A2 | A | Cached hello bypasses current binding revalidation | spec-ward — **fixed** in `5f8f1af` |
 | A3 | A | Idempotency key does not deduplicate | spec-ward |
 | A4 | A | RouteDecision omits planner/snapshot evidence | spec-ward |
 | A5 | A | Hello observation follows response effect | spec-ward |

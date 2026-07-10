@@ -6534,6 +6534,138 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn two_mother_forwarding_denies_when_executor_revokes_binding_after_hello() {
+        let mut fixture = remote_surface_candidate_fixture();
+        let executor = MotherIrohEndpoint::bind(iroh_config(fixture.remote_secret.clone(), false))
+            .await
+            .unwrap();
+        let executor_ticket = executor.ticket();
+        let config_store = MctDaemonConfigStore::new(&fixture.config_path);
+        let mut peer = fixture.config.peers["remote-mct"].clone();
+        peer.ticket = Some(executor_ticket);
+        fixture.config = config_store.upsert_peer(peer).unwrap();
+
+        let received_at = current_timestamp();
+        let stale_at = remote_surface_stale_at(&received_at).unwrap();
+        let peer = fixture.config.peers["remote-mct"].clone();
+        let surface_view = hello_capability_view(
+            &peer.peer_node_id,
+            &peer.vision_id,
+            1,
+            &["patina:demo/control@0.1.0.run"],
+        );
+        fixture
+            .state
+            .refresh_remote_callable_surfaces(MctRemoteSurfaceRefresh {
+                peer_node_id: &peer.peer_node_id,
+                binding_id: &peer.binding_id,
+                endpoint_id: &peer.endpoint_id,
+                view: &surface_view,
+                received_at: &received_at,
+                stale_at: &stale_at,
+                view_observation_id: &ObservationId::new("obs-forward-revocation-surface")
+                    .expect("string ID literal/generated value must be non-empty"),
+            })
+            .unwrap();
+
+        let local_identity = fixture.config.local_identity.as_ref().unwrap();
+        let outbound = peer.outbound_binding.as_ref().unwrap();
+        let executor_binding =
+            outbound_peer_binding_for_local(local_identity, &peer, outbound).unwrap();
+        let provider_calls = Arc::new(AtomicU64::new(0));
+        let provider_counter = Arc::clone(&provider_calls);
+        let handler_calls = Arc::new(AtomicU64::new(0));
+        let handler_counter = Arc::clone(&handler_calls);
+        let (events, mut received_events) = tokio::sync::mpsc::channel(8);
+        let executor_task = tokio::spawn(async move {
+            executor
+                .serve_concurrent_with_binding_provider(
+                    MctIrohServeState::new(),
+                    MctIrohConcurrentServeConfig {
+                        events: Some(events),
+                        require_binding_signature: true,
+                        ..MctIrohConcurrentServeConfig::default()
+                    },
+                    current_timestamp,
+                    move || {
+                        let mut binding = executor_binding.clone();
+                        if provider_counter.fetch_add(1, Ordering::SeqCst) > 0 {
+                            binding.binding_state = BindingState::Revoked;
+                        }
+                        async move {
+                            Ok(MctPeerAuthoritySnapshot {
+                                bindings: vec![binding],
+                                policy_revision: 1,
+                            })
+                        }
+                    },
+                    move |_, _, _| {
+                        let handler_counter = Arc::clone(&handler_counter);
+                        async move {
+                            handler_counter.fetch_add(1, Ordering::SeqCst);
+                            MctIrohCallHandlerResult::completed(
+                                ResultRef::new("unexpected-forwarded-result")
+                                    .expect("string ID literal/generated value must be non-empty"),
+                            )
+                        }
+                    },
+                )
+                .await
+        });
+
+        let outcome = authorize_resident_child_from_loaded_with_state(
+            &fixture.config,
+            Some(&fixture.state),
+            Vec::new(),
+            &fixture.call,
+            current_timestamp(),
+        )
+        .unwrap();
+        let ResidentAuthorizationOutcome::RemoteAuthorized(execution) = outcome else {
+            panic!("fresh published executor should be selected before revocation");
+        };
+        let ledger_path = fixture._dir.path().join("forwarding-observations.jsonl");
+        let ledger = ResidentLedgerWriter::spawn(ledger_path).unwrap();
+        ledger
+            .append(execution.route_observations.clone())
+            .await
+            .unwrap();
+        let result = execute_authorized_resident_remote_call(
+            ResidentExecutionPaths {
+                config_path: fixture.config_path.clone(),
+                children_dir: fixture._dir.path().join("children"),
+                state_path: fixture.state_path.clone(),
+            },
+            *execution,
+            resident_test_protocol_request(fixture.call.clone()),
+            None,
+            ledger.clone(),
+        )
+        .await;
+        ledger.close().await;
+
+        assert_eq!(result.outcome, CallProtocolOutcome::Denied);
+        assert_eq!(result.safe_message, "not authorized");
+        assert_eq!(provider_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 0);
+        let call_evaluation = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(MctIrohServeEvent::Served(served)) = received_events.recv().await
+                    && let MctIrohServedProtocol::Call { evaluation, .. } = *served
+                {
+                    break evaluation;
+                }
+            }
+        })
+        .await
+        .expect("forwarded call evaluation event");
+        assert_eq!(call_evaluation.outcome, CallProtocolOutcome::Denied);
+        assert_eq!(call_evaluation.reason, CallProtocolReason::BindingRevoked);
+
+        executor_task.abort();
+    }
+
+    #[tokio::test]
     async fn two_mother_mutual_publication_with_unready_children_terminates_single_hop() {
         let dir = tempfile::tempdir().unwrap();
         let a_root = dir.path().join("mother-a");
@@ -7898,6 +8030,9 @@ mod tests {
 
     struct RemoteSurfaceCandidateFixture {
         _dir: tempfile::TempDir,
+        config_path: PathBuf,
+        state_path: PathBuf,
+        remote_secret: String,
         config: mct_daemon::MctDaemonConfig,
         state: MctRuntimeStateStore,
         call: MctCall,
@@ -8017,6 +8152,9 @@ mod tests {
         call.origin = CallOrigin::Cli;
         RemoteSurfaceCandidateFixture {
             _dir: dir,
+            config_path,
+            state_path,
+            remote_secret,
             config,
             state,
             call,

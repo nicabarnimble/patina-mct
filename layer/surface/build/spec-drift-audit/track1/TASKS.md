@@ -118,9 +118,9 @@ from specification-track branches mid-slice.
 - [x] S1.1: record the A2 mechanism specification.
 - [x] S1.2: land failing real-path regression tests before the behavior fix.
 - [x] S1.2: implement current-binding call revalidation in the kernel decision path.
-- [ ] S1.2: cover revoked, expired, stale-revision, narrowed-scope, unchanged, and forwarding paths.
-- [ ] S1.2: update A2 in the audit report with `fixed` and the implementation commit.
-- [ ] S1.2: complete per-commit validation and stop.
+- [x] S1.2: cover revoked, expired, stale-revision, narrowed-scope, unchanged, and forwarding paths.
+- [x] S1.2: update A2 in the audit report with `fixed` and the implementation commit.
+- [x] S1.2: complete per-commit validation and stop.
 
 ## S1.1 mechanism specification — current binding authority per call
 
@@ -156,6 +156,23 @@ A binding revision greater than the call/remembered authority is also stale for 
 - Idempotency and replay semantics (A3).
 - Child replacement lifecycle (A7).
 - Peer-ontology changes from Track 2.
+
+## Validation record
+
+- `ce42258` (`chore: pin allium 3.5.0 in CI`): required post-commit workspace tests, Clippy `-D warnings`, and tier-0 passed.
+- `5f8f1af` (`fix(kernel): evaluate calls against current binding authority`): required post-commit workspace tests, Clippy `-D warnings`, and tier-0 passed.
+- `test(iroh): cover forwarding-time binding revocation`: required post-commit workspace tests, Clippy `-D warnings`, and tier-0 passed.
+
+## Staleness coverage
+
+| Class | Regression evidence |
+|---|---|
+| Revoked after hello | `call_rechecks_binding_revocation_after_hello`; `two_mother_forwarding_denies_when_executor_revokes_binding_after_hello` |
+| Expired by current time | `call_rechecks_binding_expiry_after_hello` with injected time |
+| Policy revision changed | `call_rechecks_binding_policy_revision_after_hello`; `newer_call_claim_cannot_reuse_hello_admitted_at_an_older_policy_revision` |
+| ALPN scope narrowed | `call_rechecks_narrowed_alpn_scope_after_hello` |
+| Vision scope narrowed | `call_rechecks_narrowed_vision_scope_after_hello` |
+| Unchanged active binding | Existing local Iroh roundtrips, concurrent peer isolation, resident Mother, and two-Mother forwarding suites |
 
 ## Flake log
 
