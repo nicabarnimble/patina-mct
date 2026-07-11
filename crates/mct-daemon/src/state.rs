@@ -4,11 +4,34 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use mct_kernel::*;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
+
+pub const MCT_IDEMPOTENCY_TTL_SECONDS: i64 = 12 * 60;
+pub const MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER: usize = 256;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctRecordedCallReply {
+    pub result_ref: Option<ResultRef>,
+    pub result_payload: MctCallPayloadHandle,
+    #[serde(skip)]
+    pub inline_result_payload: Option<Vec<u8>>,
+    pub route_decision_id: Option<DecisionId>,
+    pub route_taken: Option<RouteTaken>,
+    pub outcome: CallProtocolOutcome,
+    pub protocol_reason: Option<CallProtocolReason>,
+    pub safe_message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MctIdempotencyReservation {
+    ExecuteFresh,
+    Replay(Box<MctRecordedCallReply>),
+    Refused(MctIdempotencyReason),
+}
 
 /// Project-local durable runtime state for one standalone MCT node.
 ///
@@ -369,6 +392,24 @@ impl MctRuntimeStateStore {
             CREATE INDEX IF NOT EXISTS idx_remote_callable_surfaces_operation
             ON remote_callable_surfaces(vision_id, operation_id, stale_at);
 
+            CREATE TABLE IF NOT EXISTS call_idempotency_entries (
+                caller_scope TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                target_identity TEXT NOT NULL,
+                call_id TEXT NOT NULL,
+                payload_digest TEXT NOT NULL,
+                entry_state TEXT NOT NULL CHECK(entry_state IN ('in_flight', 'completed')),
+                recorded_reply_json TEXT,
+                inline_result_payload BLOB,
+                created_at TEXT NOT NULL,
+                completed_at TEXT,
+                expires_at TEXT NOT NULL,
+                PRIMARY KEY (caller_scope, idempotency_key)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_call_idempotency_expiry
+            ON call_idempotency_entries(caller_scope, expires_at);
+
             CREATE TABLE IF NOT EXISTS runtime_runs (
                 run_id TEXT PRIMARY KEY,
                 call_id TEXT NOT NULL,
@@ -699,6 +740,162 @@ impl MctRuntimeStateStore {
             |row| row.get(0),
         )?;
         value.parse().context("parse schema version")
+    }
+
+    pub fn reserve_call_idempotency(
+        &self,
+        caller_scope: &str,
+        idempotency_key: &str,
+        fingerprint: &MctIdempotencyFingerprint,
+        now: &Timestamp,
+        expires_at: &Timestamp,
+        caller_budget: usize,
+    ) -> Result<MctIdempotencyReservation> {
+        if caller_scope.trim().is_empty() || idempotency_key.trim().is_empty() {
+            bail!("idempotency scope and key must not be blank");
+        }
+        if expires_at <= now {
+            bail!("idempotency expiry must follow reservation time");
+        }
+
+        let transaction =
+            rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "DELETE FROM call_idempotency_entries WHERE expires_at <= ?1",
+            params![now.as_str()],
+        )?;
+        let stored = transaction
+            .query_row(
+                r#"
+                SELECT target_identity, call_id, payload_digest, entry_state,
+                       recorded_reply_json, inline_result_payload, expires_at
+                FROM call_idempotency_entries
+                WHERE caller_scope = ?1 AND idempotency_key = ?2
+                "#,
+                params![caller_scope, idempotency_key],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<Vec<u8>>>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let entry_count = transaction.query_row(
+            "SELECT COUNT(*) FROM call_idempotency_entries WHERE caller_scope = ?1",
+            params![caller_scope],
+            |row| row.get::<_, i64>(0),
+        )? as usize;
+        let stored_facts = stored
+            .as_ref()
+            .map(
+                |(target, call_id, payload_digest, state, _, _, expires_at)| {
+                    Ok(MctIdempotencyStoredEntry {
+                        fingerprint: MctIdempotencyFingerprint {
+                            target: target.clone(),
+                            call_id: CallId::new(call_id.clone())?,
+                            payload_digest: payload_digest.clone(),
+                        },
+                        state: match state.as_str() {
+                            "in_flight" => MctIdempotencyEntryState::InFlight,
+                            "completed" => MctIdempotencyEntryState::Completed,
+                            other => bail!("unknown idempotency entry state '{other}'"),
+                        },
+                        expires_at: Timestamp::new(expires_at.clone())?,
+                    })
+                },
+            )
+            .transpose()?;
+        let decision = evaluate_idempotency_request(
+            fingerprint,
+            stored_facts.as_ref(),
+            entry_count,
+            caller_budget,
+            now,
+        );
+
+        let reservation = match decision.reason {
+            MctIdempotencyReason::ExecuteFresh => {
+                transaction.execute(
+                    r#"
+                    INSERT INTO call_idempotency_entries(
+                        caller_scope, idempotency_key, target_identity, call_id,
+                        payload_digest, entry_state, recorded_reply_json,
+                        inline_result_payload, created_at, completed_at, expires_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, 'in_flight', NULL, NULL, ?6, NULL, ?7)
+                    "#,
+                    params![
+                        caller_scope,
+                        idempotency_key,
+                        fingerprint.target,
+                        fingerprint.call_id.as_str(),
+                        fingerprint.payload_digest,
+                        now.as_str(),
+                        expires_at.as_str(),
+                    ],
+                )?;
+                MctIdempotencyReservation::ExecuteFresh
+            }
+            MctIdempotencyReason::ReplayCompleted => {
+                let (_, _, _, _, reply_json, inline_payload, _) = stored
+                    .ok_or_else(|| anyhow::anyhow!("completed idempotency entry disappeared"))?;
+                let mut reply: MctRecordedCallReply =
+                    serde_json::from_str(reply_json.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!("completed idempotency reply is missing")
+                    })?)?;
+                reply.inline_result_payload = inline_payload;
+                MctIdempotencyReservation::Replay(Box::new(reply))
+            }
+            reason => MctIdempotencyReservation::Refused(reason),
+        };
+        transaction.commit()?;
+        Ok(reservation)
+    }
+
+    pub fn complete_call_idempotency(
+        &self,
+        caller_scope: &str,
+        idempotency_key: &str,
+        fingerprint: &MctIdempotencyFingerprint,
+        reply: &MctRecordedCallReply,
+        completed_at: &Timestamp,
+    ) -> Result<()> {
+        if reply
+            .inline_result_payload
+            .as_ref()
+            .is_some_and(|payload| payload.len() > mct_iroh::MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES)
+        {
+            bail!("recorded idempotency reply payload exceeds inline result cap");
+        }
+        let changed = self.conn.execute(
+            r#"
+            UPDATE call_idempotency_entries
+            SET entry_state = 'completed', recorded_reply_json = ?1,
+                inline_result_payload = ?2, completed_at = ?3
+            WHERE caller_scope = ?4 AND idempotency_key = ?5
+              AND target_identity = ?6 AND call_id = ?7 AND payload_digest = ?8
+              AND entry_state = 'in_flight'
+            "#,
+            params![
+                serde_json::to_string(reply)?,
+                reply.inline_result_payload,
+                completed_at.as_str(),
+                caller_scope,
+                idempotency_key,
+                fingerprint.target,
+                fingerprint.call_id.as_str(),
+                fingerprint.payload_digest,
+            ],
+        )?;
+        if changed != 1 {
+            bail!("idempotency completion did not match one in-flight reservation");
+        }
+        Ok(())
     }
 
     pub fn upsert_artifact(&self, artifact: &ComponentArtifact) -> Result<()> {
@@ -2554,6 +2751,112 @@ mod tests {
         let summary = store.summary().unwrap();
         assert_eq!(summary.child_state_keys, 1);
         assert_eq!(summary.child_subscriptions, 1);
+    }
+
+    #[test]
+    fn idempotency_store_scopes_reserves_replays_expires_and_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.sqlite");
+        let store = MctRuntimeStateStore::open(&path).unwrap();
+        let fingerprint = MctIdempotencyFingerprint {
+            target: "patina/echo.echo".into(),
+            call_id: CallId::new("call-idem-store").unwrap(),
+            payload_digest: "digest-store".into(),
+        };
+        let now = Timestamp::new("2026-07-10T00:00:00Z").unwrap();
+        let expires = Timestamp::new("2026-07-10T00:12:00Z").unwrap();
+
+        assert!(matches!(
+            store
+                .reserve_call_idempotency("binding-a", "key-a", &fingerprint, &now, &expires, 1)
+                .unwrap(),
+            MctIdempotencyReservation::ExecuteFresh
+        ));
+        assert!(matches!(
+            store
+                .reserve_call_idempotency("binding-a", "key-a", &fingerprint, &now, &expires, 1)
+                .unwrap(),
+            MctIdempotencyReservation::Refused(MctIdempotencyReason::IdempotencyInProgress)
+        ));
+        assert!(matches!(
+            store
+                .reserve_call_idempotency("binding-b", "key-a", &fingerprint, &now, &expires, 1)
+                .unwrap(),
+            MctIdempotencyReservation::ExecuteFresh
+        ));
+
+        let recorded = MctRecordedCallReply {
+            result_ref: Some(ResultRef::new("result-idem").unwrap()),
+            result_payload: MctCallPayloadHandle::InlinePayload {
+                inline_payload_ref: "result-payload-idem".into(),
+                content_type: "application/json".into(),
+                size_bytes: 2,
+                blake3_digest_hex: blake3::hash(b"{}").to_hex().to_string(),
+            },
+            inline_result_payload: Some(b"{}".to_vec()),
+            route_decision_id: None,
+            route_taken: None,
+            outcome: CallProtocolOutcome::Completed,
+            protocol_reason: None,
+            safe_message: "completed".into(),
+        };
+        store
+            .complete_call_idempotency(
+                "binding-a",
+                "key-a",
+                &fingerprint,
+                &recorded,
+                &Timestamp::new("2026-07-10T00:01:00Z").unwrap(),
+            )
+            .unwrap();
+        drop(store);
+
+        let reopened = MctRuntimeStateStore::open(&path).unwrap();
+        assert_eq!(
+            reopened
+                .reserve_call_idempotency("binding-a", "key-a", &fingerprint, &now, &expires, 1)
+                .unwrap(),
+            MctIdempotencyReservation::Replay(Box::new(recorded.clone()))
+        );
+        let mut mismatch = fingerprint.clone();
+        mismatch.call_id = CallId::new("different-call").unwrap();
+        assert!(matches!(
+            reopened
+                .reserve_call_idempotency("binding-a", "key-a", &mismatch, &now, &expires, 1)
+                .unwrap(),
+            MctIdempotencyReservation::Refused(MctIdempotencyReason::IdempotencyKeyReuseMismatch)
+        ));
+        assert!(matches!(
+            reopened
+                .reserve_call_idempotency("binding-a", "new-key", &fingerprint, &now, &expires, 1)
+                .unwrap(),
+            MctIdempotencyReservation::Refused(MctIdempotencyReason::IdempotencyBudgetFull)
+        ));
+        assert_eq!(
+            reopened
+                .reserve_call_idempotency("binding-a", "key-a", &fingerprint, &now, &expires, 1)
+                .unwrap(),
+            MctIdempotencyReservation::Replay(Box::new(recorded))
+        );
+        assert!(matches!(
+            reopened
+                .reserve_call_idempotency(
+                    "binding-a",
+                    "key-a",
+                    &fingerprint,
+                    &Timestamp::new("2026-07-10T00:13:00Z").unwrap(),
+                    &Timestamp::new("2026-07-10T00:25:00Z").unwrap(),
+                    1,
+                )
+                .unwrap(),
+            MctIdempotencyReservation::ExecuteFresh
+        ));
+
+        let raw = std::fs::read(&path).unwrap();
+        assert!(
+            !raw.windows(b"request-secret".len())
+                .any(|window| window == b"request-secret")
+        );
     }
 
     #[test]

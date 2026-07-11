@@ -334,8 +334,11 @@ fn denied(
             | CallProtocolReason::PayloadDigestMismatch
             | CallProtocolReason::PayloadMissingInlineBytes
             | CallProtocolReason::PayloadUnexpectedInlineBytes
-            | CallProtocolReason::InvalidPayloadDigest => CallProtocolOutcome::Malformed,
-            CallProtocolReason::ChildPayloadContentTypeUnsupported
+            | CallProtocolReason::InvalidPayloadDigest
+            | CallProtocolReason::IdempotencyKeyReuseMismatch => CallProtocolOutcome::Malformed,
+            CallProtocolReason::IdempotencyBudgetFull
+            | CallProtocolReason::IdempotencyInProgress
+            | CallProtocolReason::ChildPayloadContentTypeUnsupported
             | CallProtocolReason::ResultPayloadTooLarge
             | CallProtocolReason::ResultPayloadIntegrityMismatch
             | CallProtocolReason::ExecutionFailed => CallProtocolOutcome::Failed,

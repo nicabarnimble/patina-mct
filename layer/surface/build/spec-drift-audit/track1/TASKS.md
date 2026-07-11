@@ -2527,4 +2527,105 @@ Cross-Mother idempotency after forwarding failover is explicitly out of scope an
 
 ## Slice 6 failure log
 
-No failures recorded yet.
+Expected red kernel compile after adding the decision-matrix regression before the idempotency facts and evaluator existed:
+
+```text
+   Compiling mct-kernel v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-kernel)
+error[E0422]: cannot find struct, variant or union type `MctIdempotencyFingerprint` in this scope
+    --> crates/mct-kernel/src/call/mod.rs:1741:27
+error[E0422]: cannot find struct, variant or union type `MctIdempotencyStoredEntry` in this scope
+    --> crates/mct-kernel/src/call/mod.rs:1746:25
+error[E0433]: cannot find type `MctIdempotencyEntryState` in this scope
+    --> crates/mct-kernel/src/call/mod.rs:1748:20
+error[E0425]: cannot find function `evaluate_idempotency_request` in this scope
+    --> crates/mct-kernel/src/call/mod.rs:1752:13
+error[E0433]: cannot find type `MctIdempotencyReason` in this scope
+    --> crates/mct-kernel/src/call/mod.rs:1760:13
+
+Some errors have detailed explanations: E0422, E0425, E0433.
+For more information about an error, try `rustc --explain E0422`.
+error: could not compile `mct-kernel` (lib test) due to 15 previous errors
+```
+
+The first resident integration run exposed that the observation detail used Rust `Debug` casing instead of the specified stable typed code:
+
+```text
+running 1 test
+test resident::tests::resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage ... FAILED
+
+failures:
+
+---- resident::tests::resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage stdout ----
+
+thread 'resident::tests::resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage' (1653747) panicked at crates/mct-daemon/src/daemon/resident.rs:4936:9:
+assertion failed: ledger_text.contains("idempotency_replay_completed")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+failures:
+    resident::tests::resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 58 filtered out; finished in 0.54s
+
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
+The next resident run correctly stored the capped result payload, but the fixture echoed the request marker into that result, making a raw SQLite byte assertion unable to distinguish permitted result bytes from forbidden request bytes:
+
+```text
+running 1 test
+test resident::tests::resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage ... FAILED
+
+failures:
+
+---- resident::tests::resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage stdout ----
+
+thread 'resident::tests::resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage' (1654532) panicked at crates/mct-daemon/src/daemon/resident.rs:4955:9:
+assertion failed: !state_bytes.windows(b"request-secret-marker".len()).any(|window|
+            window == b"request-secret-marker")
+
+failures:
+    resident::tests::resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 58 filtered out; finished in 0.57s
+
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
+The counting fixture was corrected to consume but not echo request bytes, preserving a distinct result payload for replay assertions.
+
+Expected full-gate Clippy failure after the initial replay record was stored inline in the reservation enum:
+
+```text
+error: large size difference between variants
+  --> crates/mct-daemon/src/state.rs:30:1
+   |
+30 | / pub enum MctIdempotencyReservation {
+31 | |     ExecuteFresh,
+32 | |     Replay(MctRecordedCallReply),
+   | |     ---------------------------- the largest variant contains at least 248 bytes
+33 | |     Refused(MctIdempotencyReason),
+   | |     ----------------------------- the second-largest variant contains at least 1 bytes
+34 | | }
+   | |_^ the entire enum is at least 248 bytes
+   |
+   = note: `-D clippy::large-enum-variant` implied by `-D warnings`
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+   |
+32 -     Replay(MctRecordedCallReply),
+32 +     Replay(Box<MctRecordedCallReply>),
+   |
+
+error: could not compile `mct-daemon` (lib) due to 1 previous error
+error: could not compile `mct-daemon` (lib test) due to 1 previous error
+```
+
+The authority-precedence extension changed the lifecycle fixture from one call to an original plus revoked retry; the expected sequence included `CallDenied` but the test's lifecycle-kind filter had not yet admitted that existing kind:
+
+```text
+thread 'resident::tests::resident_mother_payload_roundtrip_verifies_result_digest' (1662744) panicked at crates/mct-daemon/src/daemon/resident.rs:4799:9:
+assertion `left == right` failed
+  left: [PeerCallReceived, CallConstructed, CallAuthorized, RouteRevalidated, RouteSelected, RouteRevalidated, RouteRevalidated, ResultRecorded, PeerCallReplied, PeerCallReceived, CallConstructed, ResultRecorded, PeerCallReplied]
+ right: [PeerCallReceived, CallConstructed, CallAuthorized, RouteRevalidated, RouteSelected, RouteRevalidated, RouteRevalidated, ResultRecorded, PeerCallReplied, PeerCallReceived, CallConstructed, CallDenied, ResultRecorded, PeerCallReplied]
+
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
