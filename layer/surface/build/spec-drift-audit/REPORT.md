@@ -67,9 +67,10 @@ $ allium analyse layer/allium/mct-product-map.allium
 ### A3 — request idempotency is declared but not implemented
 
 - **Spec:** `MctCallProtocol.IdempotencyIsRequestScoped`, `layer/allium/mct-product-map.allium:842-843`.
-- **Code:** `crates/mct-kernel/src/call/mod.rs:592-634`; `crates/mct-daemon/src/main.rs:3189-3213`.
-- **Evidence:** The invariant says idempotency keys “deduplicate retry of the same protocol request.” Production code only validates that the optional string is nonblank and copies it when forwarding; there is no lookup, reservation, replay, or duplicate-result path. Repeating the same request/key can execute the child effect again.
+- **Code:** pure decisions and protocol reasons in `crates/mct-kernel/src/call/mod.rs`; SQLite reservation/completion in `crates/mct-daemon/src/state.rs`; shared resident and standalone execution seam in `crates/mct-daemon/src/daemon/resident.rs` and `crates/mct-daemon/src/daemon/ingress.rs`.
+- **Evidence:** The invariant says idempotency keys “deduplicate retry of the same protocol request.” Keyed requests now reserve `(authenticated caller scope, key)` atomically after payload and current-binding authority checks. Matching completed requests replay the recorded bounded reply without route or child execution; in-flight, fingerprint-mismatched, and budget-full requests receive typed fail-closed responses. Entries survive restart, expire after a documented 12-minute window, and never store request payload bytes. Un-keyed calls remain unchanged.
 - **Direction:** spec-ward.
+- **Outcome:** fixed in `2ed18af` (`fix(call): persist request-scoped idempotent replay`). Kernel, state, resident, standalone-process, concurrent in-flight, restart, scope, TTL, mismatch, budget, payload-exclusion, and post-revocation regressions cover the operator-defined 2026-07-10 contract. That contract is recorded as Track 2 tend-pass input because the map's one-line invariant remains under-descriptive.
 
 ### A4 — `RouteDecision` does not record phase-2 reasoning or snapshots
 
@@ -232,7 +233,7 @@ The audit also found implementation alignment, not divergence, in these walked a
 |---|---|---|---|
 | A1 | A | Origin creates remote-routing permission | code-ward |
 | A2 | A | Cached hello bypasses current binding revalidation | spec-ward — **fixed** in `5f8f1af` |
-| A3 | A | Idempotency key does not deduplicate | spec-ward |
+| A3 | A | Idempotency key does not deduplicate | spec-ward — **fixed** in `2ed18af` |
 | A4 | A | RouteDecision omits planner/snapshot evidence | spec-ward |
 | A5 | A | Hello observation follows response effect | spec-ward — **fixed** in `e16e59d` |
 | A6 | A | Authority/operator/storage mutations are unobserved | spec-ward — **fixed** in `393884f`, `3b1fa34`, `abe3eb1`, `57c6b21`, and `0fb06c3` |
