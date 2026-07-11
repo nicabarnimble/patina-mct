@@ -111,7 +111,10 @@ Dependency-ordered; each item assumes the ones before it.
       `multi-mother-route-forwarding`; multi-Vision/cross-Vision authority
       remains here. Future multi-hop/transitive routing also belongs here and
       requires end-to-end caller identity (not per-hop rewriting) plus explicit
-      transitive-routing policy before implementation.
+      transitive-routing policy before implementation. Cross-Mother idempotency
+      after forwarding failover also belongs here: Track 1 Slice 6 deliberately
+      provides request-scoped replay only at the Mother whose authenticated
+      caller/binding and SQLite store handled the original request.
 
 ### Standing backlog (from the audit arc, non-blocking)
 

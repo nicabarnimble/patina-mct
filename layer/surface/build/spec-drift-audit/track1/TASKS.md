@@ -2521,9 +2521,9 @@ Cross-Mother idempotency after forwarding failover is explicitly out of scope an
 
 - [x] Re-establish `add7600`; read A3/map, kernel validation, forwarding, real serve order, reply bounds, state transactions, and injected-time seams.
 - [x] Record placement, scope, schema/state machine, atomic reservation, typed outcomes, constants, observations, and crash recovery.
-- [ ] Land failing kernel, state, serving/resident, restart, authority-precedence, and secret-exclusion regressions.
-- [ ] Implement request-scoped persistent replay without changing un-keyed behavior.
-- [ ] Update A3, ROADMAP, Track 2 input, validation/flake record, and stop after S6.2.
+- [x] Land failing kernel, state, serving/resident, restart, authority-precedence, and secret-exclusion regressions.
+- [x] Implement request-scoped persistent replay without changing un-keyed behavior.
+- [x] Update A3, ROADMAP, Track 2 input, validation/flake record, and stop after S6.2.
 
 ## Slice 6 failure log
 
@@ -2629,3 +2629,45 @@ assertion `left == right` failed
 
 error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
 ```
+
+## S6.2 implementation record
+
+### Commits
+
+- `2eb2ce2` — `docs: specify request-scoped idempotent replay`
+- `2ed18af` — `fix(call): persist request-scoped idempotent replay`
+
+### Implemented call order and boundaries
+
+The real peer path now runs request decode/validation → payload-integrity decision → current hello/binding authority evaluation → durable receipt/construction/authority prefix → shared daemon idempotency decision → route decision/revalidation → local child or one-hop forwarding effect → durable idempotency completion → transport result/reply facts. The Iroh transport still invokes the handler only for `AcceptedForRouting`, so a revoked, expired, narrowed, or stale binding cannot reach replay. `resident_mother_payload_roundtrip_verifies_result_digest` now records an original keyed result, revokes the peer, retries the identical request, and receives `not authorized` with no cached payload.
+
+Resident, standalone `iroh serve`, and standalone `iroh serve-process` use the shared decomposed `execute_idempotent_call` seam. `iroh serve` now accepts `--state` so its keyed peer requests also use the existing runtime SQLite rather than an in-memory exception. Local calls scope by stable adapter/caller/Vision/project identity; peer and forwarded arrivals scope by the currently authorized peer binding.
+
+### Kernel and storage outcome
+
+The kernel owns `MctIdempotencyFingerprint`, stored-entry facts, state/reason enums, and `evaluate_idempotency_request`. The adapter owns schema v6 `call_idempotency_entries`, `IMMEDIATE` reservation transactions, expiration cleanup, and bounded reply persistence. Fingerprints contain canonical target, semantic call id, and payload digest/reference digest only. Entries move absent/expired → `in_flight` → `completed`; no unexpired entry is evicted.
+
+The stable typed reasons are `idempotency_key_reuse_mismatch`, `idempotency_budget_full`, `idempotency_in_progress`, and `idempotency_replay_completed`. `MctIrohCallHandlerResult` carries an optional protocol reason so the serving evaluation and wire-safe outcome preserve these 0.x-visible distinctions. Mismatch maps to malformed; budget and in-progress map to retriable failed replies; replay returns the recorded outcome, safe message, result reference/handle, route projection, and capped inline result bytes without executing the handler.
+
+Constants are `MCT_IDEMPOTENCY_TTL_SECONDS = 720`, `MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER = 256`, and the existing 32 KiB inline-result cap. Crash-left `in_flight` entries refuse retries until their injected-time TTL expires, then execute fresh.
+
+### Regression evidence
+
+- `idempotency_decision_replays_matches_and_refuses_other_cases`: pure kernel replay, mismatch, in-progress, budget, and expiry decisions.
+- `idempotency_store_scopes_reserves_replays_expires_and_survives_reopen`: caller isolation, atomic reservation, restart replay, mismatch, no-eviction budget behavior, and injected expiry.
+- `in_flight_idempotency_duplicate_refuses_without_second_execution`: a held original plus concurrent duplicate yields one execution and typed in-progress refusal without waiting.
+- `resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage`: exact semantic result replay, execution counter, peer-binding scope isolation, mismatch refusal, TTL fresh execution, un-keyed repeated execution, typed observations, and no key/request bytes in ledger or SQLite.
+- `standalone_serve_process_persists_hello_and_call_lifecycle`: duplicate network request replays after one persisted process run, proving the standalone path shares the mechanism.
+- Existing current-binding revocation/expiry/narrowing tests plus the post-original revocation extension prove authority precedence.
+
+### Audit and follow-on
+
+A3 is fixed in `2ed18af`. The full operator-defined contract is explicitly Track 2 tend-pass input because `IdempotencyIsRequestScoped` remains only one line in the product map. Cross-Mother replay after forwarding failover is recorded under ROADMAP item 6 and remains out of scope. A1 and A4 remain deliberately open for peer ontology and planner-evidence work.
+
+### Validation and flakes
+
+Both Slice 6 commits passed `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, and `./scripts/ci-tier0.sh`. Final implementation validation passed **285 tests** (285 passed, 0 ignored); Allium check returned empty diagnostics/findings.
+
+Flakes: none. Expected red kernel compilation, two deterministic fixture/assertion corrections, the lifecycle filter correction, and the large-enum Clippy correction are captured verbatim above.
+
+Track 1 implementation slices are complete. Stop after S6.2.
