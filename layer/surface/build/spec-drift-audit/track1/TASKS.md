@@ -2471,3 +2471,60 @@ Both Slice 5 commits passed `cargo test --workspace`, `cargo clippy --workspace 
 Flakes: none. The invalid two-filter test invocation, expected red compile failures, and deterministic signed-SQLite fixture correction are captured verbatim above.
 
 A7 is fixed in `3df5245`. A3/Slice 6 remains untouched. Stop after S5.2.
+
+# Slice 6 — request-scoped idempotent replay
+
+Starting state: `patina` at `add7600` (`docs: close replacement-ready reload slice`), clean and three commits ahead of `origin/patina`. The operator-defined 2026-07-10 idempotency contract is binding and is Track 2 tend-pass input: the map's single `IdempotencyIsRequestScoped` line must grow to carry this contract.
+
+## S6.1 mechanism specification
+
+### Validated order and scope
+
+The merged peer-call order is decode/shape validation → payload-integrity validation → current hello/binding authority evaluation → durable call authority prefix → idempotency reserve/replay decision → route decision/revalidation → child or forwarding effect → idempotency completion → result/reply observations. Thus replay can avoid route/execution work but cannot bypass current binding authority. Local CLI/JVM/control requests enter the same resident execution seam after their local admission construction; their scope is the canonical local caller identity. Peer arrivals scope by the currently authorized peer binding id. Forwarded arrivals consequently scope by the forwarding Mother's binding at the receiving Mother.
+
+The fingerprint is the canonical target identity (`namespace/interface.function`), semantic call id, and declared payload digest. Empty payload uses a named empty digest marker. Neither the scope nor fingerprint stores request payload bytes.
+
+### Durable state and atomic reservation
+
+The existing runtime SQLite gains `call_idempotency_entries` keyed by `(caller_scope, idempotency_key)`, with target identity, call id, payload digest, state (`in_flight` or `completed`), canonical recorded handler reply JSON, optional capped inline result payload BLOB, `created_at`, `completed_at`, and `expires_at`. Completed data contains only caller-safe outcome/message/result/route facts and at most the existing 32 KiB result payload.
+
+Reservation runs in an SQLite `IMMEDIATE` transaction. It deletes expired entries, reads the composite key and the caller's unexpired count, asks the kernel to decide from those stored facts, and inserts `in_flight` before commit only for `ExecuteFresh`. A concurrent duplicate therefore sees `in_flight`; two adapters cannot both reserve execution. Completion updates that exact fingerprint from `in_flight` to `completed` with the bounded reply. A process that dies before completion leaves `in_flight`; it returns in-progress until TTL expiry, then is forgotten and may execute fresh.
+
+The state machine is absent/expired → `in_flight` → `completed`; there is no eviction transition. Within TTL and budget, a keyed retry replays or is refused and never silently re-executes. After TTL, reuse is explicitly fresh execution. Un-keyed calls bypass this subsystem.
+
+### Kernel decisions and caller-safe projection
+
+The kernel receives caller scope, requested fingerprint, optional stored entry facts, caller entry count, budget, and injected current time. It returns one of:
+
+- `ExecuteFresh`: reserve and execute.
+- `ReplayCompleted`: return the stored caller-safe reply and result payload without routing/execution.
+- `IdempotencyKeyReuseMismatch`: malformed-family refusal, safe text `idempotency key does not match request`.
+- `IdempotencyBudgetFull`: retriable failed response, safe text `idempotency capacity unavailable; retry later`; no entry is evicted.
+- `IdempotencyInProgress`: retriable failed response, safe text `request already in progress; retry later`; no wait and no second execution.
+
+These add wire-observable call-protocol reason variants and safe texts under the normal 0.x compatibility policy. They do not widen authority.
+
+### Bounds
+
+- `MCT_IDEMPOTENCY_TTL_SECONDS = 12 * 60`: twelve minutes is the midpoint of the operator's 10–15 minute network retry window while bounding crash-held reservations.
+- `MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER = 256`: 256 independently retryable calls per authenticated caller bounds durable state while leaving ample room for concurrent CLI and network retries.
+
+The existing `MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES = 32 * 1024` remains the replay payload bound.
+
+### Observation mapping and exclusions
+
+Replay appends an existing `ResultRecorded` fact with typed `idempotency_replay_completed` detail before returning the recorded result. Mismatch, budget-full, and in-progress refusals append existing `CallDenied` facts with their typed reason and safe text. Facts contain scope/fingerprint digests and key digests where correlation is needed, never raw idempotency keys or request/result payload bytes. Existing transport result and reply facts continue to describe the response actually emitted.
+
+Cross-Mother idempotency after forwarding failover is explicitly out of scope and belongs in the ROADMAP federation follow-on. A3 is the only implementation finding in this slice; A1 and A4 remain open.
+
+## Slice 6 checklist
+
+- [x] Re-establish `add7600`; read A3/map, kernel validation, forwarding, real serve order, reply bounds, state transactions, and injected-time seams.
+- [x] Record placement, scope, schema/state machine, atomic reservation, typed outcomes, constants, observations, and crash recovery.
+- [ ] Land failing kernel, state, serving/resident, restart, authority-precedence, and secret-exclusion regressions.
+- [ ] Implement request-scoped persistent replay without changing un-keyed behavior.
+- [ ] Update A3, ROADMAP, Track 2 input, validation/flake record, and stop after S6.2.
+
+## Slice 6 failure log
+
+No failures recorded yet.
