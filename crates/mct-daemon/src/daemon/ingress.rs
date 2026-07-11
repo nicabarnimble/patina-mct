@@ -282,9 +282,12 @@ pub(super) async fn serve_iroh(mut args: Vec<String>) -> Result<()> {
     let ledger_path = take_option(&mut args, "--ledger")
         .map(PathBuf::from)
         .unwrap_or_else(default_observation_ledger_path);
+    let state_path = take_option(&mut args, "--state")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_state_path);
     if args.len() < 5 {
         bail!(
-            "expected: mct-daemon iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir] [--ledger path]"
+            "expected: mct-daemon iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir] [--ledger path] [--state path]"
         );
     }
     let identity_path = PathBuf::from(&args[0]);
@@ -329,17 +332,31 @@ pub(super) async fn serve_iroh(mut args: Vec<String>) -> Result<()> {
         identity_path,
         local_endpoint_id.clone(),
     );
+    let handler_ledger = ledger.clone();
     let result = endpoint
         .serve_concurrent_with_call_handler(
             MctIrohServeState::new(),
             vec![binding],
             MctIrohConcurrentServeConfig::new(observation_sink),
             current_timestamp,
-            |_, _, _| async {
-                MctIrohCallHandlerResult::accepted_for_routing(Some(
-                    ResultRef::new("result-mct-peer-call")
-                        .expect("string ID literal/generated value must be non-empty"),
-                ))
+            move |request, _, _| {
+                let state_path = state_path.clone();
+                let ledger = handler_ledger.clone();
+                async move {
+                    super::resident::execute_idempotent_call(
+                        state_path,
+                        ledger,
+                        request,
+                        current_timestamp(),
+                        || async {
+                            MctIrohCallHandlerResult::accepted_for_routing(Some(
+                                ResultRef::new("result-mct-peer-call")
+                                    .expect("string ID literal/generated value must be non-empty"),
+                            ))
+                        },
+                    )
+                    .await
+                }
             },
         )
         .await;
@@ -439,133 +456,153 @@ pub(super) async fn serve_iroh_process_with_ready(
                 let child_name = child_name.clone();
                 let ledger = handler_ledger.clone();
                 let state_path = state_path.clone();
+                let idempotency_request = request.clone();
+                let idempotency_ledger = ledger.clone();
+                let idempotency_state_path = state_path.clone();
                 async move {
-                    let (authorized, authority_observation) =
-                        match authorize_configured_child_from_projection(
-                            &projection,
-                            &child_name,
-                            &request.call,
-                        ) {
-                            Ok(authorized) => authorized,
-                            Err(error) => {
+                    super::resident::execute_idempotent_call(
+                        idempotency_state_path,
+                        idempotency_ledger,
+                        idempotency_request,
+                        current_timestamp(),
+                        move || async move {
+                            let (authorized, authority_observation) =
+                                match authorize_configured_child_from_projection(
+                                    &projection,
+                                    &child_name,
+                                    &request.call,
+                                ) {
+                                    Ok(authorized) => authorized,
+                                    Err(error) => {
+                                        return MctIrohCallHandlerResult::failed(format!(
+                                            "process child authority denied: {error}"
+                                        ));
+                                    }
+                                };
+                            if ledger
+                                .append(vec![authority_observation.clone()])
+                                .await
+                                .is_err()
+                            {
+                                return MctIrohCallHandlerResult::failed(
+                                    "observation ledger unavailable",
+                                );
+                            }
+                            let runtime_state = match MctRuntimeStateStore::open(&state_path) {
+                                Ok(runtime_state) => runtime_state,
+                                Err(error) => {
+                                    return MctIrohCallHandlerResult::failed(format!(
+                                        "runtime state unavailable: {error}"
+                                    ));
+                                }
+                            };
+                            let run_id = run_id_for_call("iroh-process", &request.call);
+                            let child_invocation_provenance =
+                                ChildInvocationProvenance::from_authorized(
+                                    &authorized,
+                                    authority_observation.observation_id.clone(),
+                                );
+                            if let Err(error) = runtime_state.insert_run_started(
+                                &run_id,
+                                &request.call,
+                                RuntimeKind::Process,
+                                Some(&child_invocation_provenance),
+                                mct_daemon::current_timestamp_string(),
+                            ) {
                                 return MctIrohCallHandlerResult::failed(format!(
-                                    "process child authority denied: {error}"
+                                    "runtime run could not start: {error}"
                                 ));
                             }
-                        };
-                    if ledger
-                        .append(vec![authority_observation.clone()])
-                        .await
-                        .is_err()
-                    {
-                        return MctIrohCallHandlerResult::failed("observation ledger unavailable");
-                    }
-                    let runtime_state = match MctRuntimeStateStore::open(&state_path) {
-                        Ok(runtime_state) => runtime_state,
-                        Err(error) => {
-                            return MctIrohCallHandlerResult::failed(format!(
-                                "runtime state unavailable: {error}"
-                            ));
-                        }
-                    };
-                    let run_id = run_id_for_call("iroh-process", &request.call);
-                    let child_invocation_provenance = ChildInvocationProvenance::from_authorized(
-                        &authorized,
-                        authority_observation.observation_id.clone(),
-                    );
-                    if let Err(error) = runtime_state.insert_run_started(
-                        &run_id,
-                        &request.call,
-                        RuntimeKind::Process,
-                        Some(&child_invocation_provenance),
-                        mct_daemon::current_timestamp_string(),
-                    ) {
-                        return MctIrohCallHandlerResult::failed(format!(
-                            "runtime run could not start: {error}"
-                        ));
-                    }
-                    if runtime_state
-                        .append_run_observations(
-                            &run_id,
-                            std::slice::from_ref(&authority_observation),
-                        )
-                        .is_err()
-                    {
-                        return MctIrohCallHandlerResult::failed(
-                            "runtime observation projection unavailable",
-                        );
-                    }
-                    let report = match harness.invoke_authorized_child(
-                        authorized,
-                        &request.call,
-                        "{}",
-                        MctProcessChildInvocationIds {
-                            started_observation_id: ObservationId::new(format!(
-                                "obs-iroh-process-started:{}",
-                                request.call.call_id
-                            ))
-                            .expect("string ID literal/generated value must be non-empty"),
-                            completed_observation_id: ObservationId::new(format!(
-                                "obs-iroh-process-completed:{}",
-                                request.call.call_id
-                            ))
-                            .expect("string ID literal/generated value must be non-empty"),
-                            result_ref: ResultRef::new(format!(
-                                "result-iroh-process:{}",
-                                request.call.call_id
-                            ))
-                            .expect("string ID literal/generated value must be non-empty"),
-                            audit_ref: AuditRef::new(format!(
-                                "audit-iroh-process:{}",
-                                request.call.call_id
-                            ))
-                            .expect("string ID literal/generated value must be non-empty"),
-                            started_at: current_timestamp(),
-                            completed_at: current_timestamp(),
+                            if runtime_state
+                                .append_run_observations(
+                                    &run_id,
+                                    std::slice::from_ref(&authority_observation),
+                                )
+                                .is_err()
+                            {
+                                return MctIrohCallHandlerResult::failed(
+                                    "runtime observation projection unavailable",
+                                );
+                            }
+                            let report = match harness.invoke_authorized_child(
+                                authorized,
+                                &request.call,
+                                "{}",
+                                MctProcessChildInvocationIds {
+                                    started_observation_id: ObservationId::new(format!(
+                                        "obs-iroh-process-started:{}",
+                                        request.call.call_id
+                                    ))
+                                    .expect("string ID literal/generated value must be non-empty"),
+                                    completed_observation_id: ObservationId::new(format!(
+                                        "obs-iroh-process-completed:{}",
+                                        request.call.call_id
+                                    ))
+                                    .expect("string ID literal/generated value must be non-empty"),
+                                    result_ref: ResultRef::new(format!(
+                                        "result-iroh-process:{}",
+                                        request.call.call_id
+                                    ))
+                                    .expect("string ID literal/generated value must be non-empty"),
+                                    audit_ref: AuditRef::new(format!(
+                                        "audit-iroh-process:{}",
+                                        request.call.call_id
+                                    ))
+                                    .expect("string ID literal/generated value must be non-empty"),
+                                    started_at: current_timestamp(),
+                                    completed_at: current_timestamp(),
+                                },
+                            ) {
+                                Ok(report) => report,
+                                Err(error) => {
+                                    return MctIrohCallHandlerResult::failed(format!(
+                                        "process child failed: {error}"
+                                    ));
+                                }
+                            };
+                            if ledger.append(report.observations.clone()).await.is_err() {
+                                return MctIrohCallHandlerResult::failed(
+                                    "observation ledger unavailable",
+                                );
+                            }
+                            if runtime_state
+                                .append_run_observations(&run_id, &report.observations)
+                                .is_err()
+                            {
+                                return MctIrohCallHandlerResult::failed(
+                                    "runtime observation projection unavailable",
+                                );
+                            }
+                            if runtime_state
+                                .complete_run(
+                                    &run_id,
+                                    &report.result,
+                                    mct_daemon::current_timestamp_string(),
+                                )
+                                .is_err()
+                            {
+                                return MctIrohCallHandlerResult::failed(
+                                    "runtime completion projection unavailable",
+                                );
+                            }
+                            match report.result.outcome {
+                                ResultOutcome::Success => MctIrohCallHandlerResult::completed(
+                                    ResultRef::new(format!(
+                                        "result-iroh-process:{}",
+                                        request.call.call_id
+                                    ))
+                                    .expect("string ID literal/generated value must be non-empty"),
+                                ),
+                                ResultOutcome::TimedOut => MctIrohCallHandlerResult::timed_out(),
+                                ResultOutcome::Failed
+                                | ResultOutcome::Denied
+                                | ResultOutcome::Cancelled => MctIrohCallHandlerResult::failed(
+                                    report.result.requester_message,
+                                ),
+                            }
                         },
-                    ) {
-                        Ok(report) => report,
-                        Err(error) => {
-                            return MctIrohCallHandlerResult::failed(format!(
-                                "process child failed: {error}"
-                            ));
-                        }
-                    };
-                    if ledger.append(report.observations.clone()).await.is_err() {
-                        return MctIrohCallHandlerResult::failed("observation ledger unavailable");
-                    }
-                    if runtime_state
-                        .append_run_observations(&run_id, &report.observations)
-                        .is_err()
-                    {
-                        return MctIrohCallHandlerResult::failed(
-                            "runtime observation projection unavailable",
-                        );
-                    }
-                    if runtime_state
-                        .complete_run(
-                            &run_id,
-                            &report.result,
-                            mct_daemon::current_timestamp_string(),
-                        )
-                        .is_err()
-                    {
-                        return MctIrohCallHandlerResult::failed(
-                            "runtime completion projection unavailable",
-                        );
-                    }
-                    match report.result.outcome {
-                        ResultOutcome::Success => MctIrohCallHandlerResult::completed(
-                            ResultRef::new(format!("result-iroh-process:{}", request.call.call_id))
-                                .expect("string ID literal/generated value must be non-empty"),
-                        ),
-                        ResultOutcome::TimedOut => MctIrohCallHandlerResult::timed_out(),
-                        ResultOutcome::Failed
-                        | ResultOutcome::Denied
-                        | ResultOutcome::Cancelled => {
-                            MctIrohCallHandlerResult::failed(report.result.requester_message)
-                        }
-                    }
+                    )
+                    .await
                 }
             },
         )
@@ -1129,6 +1166,19 @@ mod tests {
         );
         let reply = client.send_call(&ticket, &call).await.unwrap();
         assert_eq!(reply.reply_outcome, CallProtocolReplyOutcome::Success);
+        let replay = client.send_call(&ticket, &call).await.unwrap();
+        assert_eq!(replay.reply_outcome, reply.reply_outcome);
+        assert_eq!(replay.safe_message, reply.safe_message);
+        assert_eq!(replay.result_ref, reply.result_ref);
+        assert_eq!(replay.result_payload, reply.result_payload);
+        assert_eq!(
+            MctRuntimeStateStore::open(&state_path)
+                .unwrap()
+                .summary()
+                .unwrap()
+                .runs,
+            1
+        );
 
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -1181,6 +1231,12 @@ mod tests {
                 ObservationKind::PeerCallReceived,
                 ObservationKind::CallConstructed,
                 ObservationKind::CallAuthorized,
+                ObservationKind::ResultRecorded,
+                ObservationKind::PeerCallReplied,
+                ObservationKind::PeerCallReceived,
+                ObservationKind::CallConstructed,
+                ObservationKind::CallAuthorized,
+                ObservationKind::ResultRecorded,
                 ObservationKind::ResultRecorded,
                 ObservationKind::PeerCallReplied,
             ]

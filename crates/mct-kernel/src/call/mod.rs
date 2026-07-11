@@ -634,6 +634,102 @@ impl MctCallProtocolRequest {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Request identity facts protected by one request-scoped idempotency key.
+pub struct MctIdempotencyFingerprint {
+    /// Canonical WIT target identity.
+    pub target: String,
+    /// Semantic call identifier.
+    pub call_id: CallId,
+    /// Declared payload digest or canonical empty/external marker.
+    pub payload_digest: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// Durable state of one unexpired idempotency entry.
+pub enum MctIdempotencyEntryState {
+    /// The original request reserved the key and has not recorded a reply.
+    InFlight,
+    /// The original request recorded its terminal caller-safe reply.
+    Completed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Storage facts supplied to the kernel for one scoped idempotency key.
+pub struct MctIdempotencyStoredEntry {
+    /// Fingerprint reserved by the original request.
+    pub fingerprint: MctIdempotencyFingerprint,
+    /// Current durable entry state.
+    pub state: MctIdempotencyEntryState,
+    /// End of the bounded replay window.
+    pub expires_at: Timestamp,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// Typed kernel reason for a request-scoped idempotency decision.
+pub enum MctIdempotencyReason {
+    /// No live entry exists and the caller may reserve fresh execution.
+    ExecuteFresh,
+    /// The matching completed reply must be replayed.
+    ReplayCompleted,
+    /// The same scoped key names different request identity facts.
+    IdempotencyKeyReuseMismatch,
+    /// The caller's bounded unexpired entry budget is full.
+    IdempotencyBudgetFull,
+    /// The matching original request is still executing.
+    IdempotencyInProgress,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Pure kernel decision over request and stored idempotency facts.
+pub struct MctIdempotencyDecision {
+    /// Typed decision reason.
+    pub reason: MctIdempotencyReason,
+    /// Caller-safe text for replay/reservation or refusal projection.
+    pub safe_message: String,
+}
+
+/// Decides whether a scoped keyed request executes, replays, or is refused.
+pub fn evaluate_idempotency_request(
+    requested: &MctIdempotencyFingerprint,
+    stored: Option<&MctIdempotencyStoredEntry>,
+    caller_entry_count: usize,
+    caller_entry_budget: usize,
+    now: &Timestamp,
+) -> MctIdempotencyDecision {
+    let live = stored.filter(|entry| entry.expires_at > *now);
+    let reason = match live {
+        Some(entry) if entry.fingerprint != *requested => {
+            MctIdempotencyReason::IdempotencyKeyReuseMismatch
+        }
+        Some(entry) if entry.state == MctIdempotencyEntryState::InFlight => {
+            MctIdempotencyReason::IdempotencyInProgress
+        }
+        Some(_) => MctIdempotencyReason::ReplayCompleted,
+        None if caller_entry_count >= caller_entry_budget => {
+            MctIdempotencyReason::IdempotencyBudgetFull
+        }
+        None => MctIdempotencyReason::ExecuteFresh,
+    };
+    let safe_message = match reason {
+        MctIdempotencyReason::ExecuteFresh => "idempotency key reserved",
+        MctIdempotencyReason::ReplayCompleted => "recorded result replayed",
+        MctIdempotencyReason::IdempotencyKeyReuseMismatch => {
+            "idempotency key does not match request"
+        }
+        MctIdempotencyReason::IdempotencyBudgetFull => {
+            "idempotency capacity unavailable; retry later"
+        }
+        MctIdempotencyReason::IdempotencyInProgress => "request already in progress; retry later",
+    };
+    MctIdempotencyDecision {
+        reason,
+        safe_message: safe_message.into(),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 /// Kernel outcome for the `mct/call/0` protocol decision.
@@ -700,6 +796,14 @@ pub enum CallProtocolReason {
     ResultPayloadTooLarge,
     /// Caller-side result payload size or digest verification failed.
     ResultPayloadIntegrityMismatch,
+    /// A scoped idempotency key was reused for different request facts.
+    IdempotencyKeyReuseMismatch,
+    /// A caller's bounded idempotency budget is full.
+    IdempotencyBudgetFull,
+    /// A matching request is still in flight.
+    IdempotencyInProgress,
+    /// A completed matching request was replayed.
+    IdempotencyReplayCompleted,
     /// Later authority checks denied the call after protocol admission.
     AuthorityDenied,
     /// No authorized route remained for the admitted call.
@@ -1734,6 +1838,84 @@ mod tests {
             ..cancelled_with_route
         };
         assert!(cancelled_without_route.validate().is_ok());
+    }
+
+    #[test]
+    fn idempotency_decision_replays_matches_and_refuses_other_cases() {
+        let fingerprint = MctIdempotencyFingerprint {
+            target: "patina/echo.echo".into(),
+            call_id: CallId::new("call-idem").unwrap(),
+            payload_digest: "digest-a".into(),
+        };
+        let completed = MctIdempotencyStoredEntry {
+            fingerprint: fingerprint.clone(),
+            state: MctIdempotencyEntryState::Completed,
+            expires_at: Timestamp::new("2026-07-10T00:12:00Z").unwrap(),
+        };
+        assert_eq!(
+            evaluate_idempotency_request(
+                &fingerprint,
+                Some(&completed),
+                1,
+                256,
+                &Timestamp::new("2026-07-10T00:01:00Z").unwrap(),
+            )
+            .reason,
+            MctIdempotencyReason::ReplayCompleted
+        );
+
+        let mut mismatch = fingerprint.clone();
+        mismatch.payload_digest = "digest-b".into();
+        assert_eq!(
+            evaluate_idempotency_request(
+                &mismatch,
+                Some(&completed),
+                1,
+                256,
+                &Timestamp::new("2026-07-10T00:01:00Z").unwrap(),
+            )
+            .reason,
+            MctIdempotencyReason::IdempotencyKeyReuseMismatch
+        );
+
+        let in_flight = MctIdempotencyStoredEntry {
+            fingerprint: fingerprint.clone(),
+            state: MctIdempotencyEntryState::InFlight,
+            expires_at: Timestamp::new("2026-07-10T00:12:00Z").unwrap(),
+        };
+        assert_eq!(
+            evaluate_idempotency_request(
+                &fingerprint,
+                Some(&in_flight),
+                1,
+                256,
+                &Timestamp::new("2026-07-10T00:01:00Z").unwrap(),
+            )
+            .reason,
+            MctIdempotencyReason::IdempotencyInProgress
+        );
+        assert_eq!(
+            evaluate_idempotency_request(
+                &fingerprint,
+                None,
+                256,
+                256,
+                &Timestamp::new("2026-07-10T00:01:00Z").unwrap(),
+            )
+            .reason,
+            MctIdempotencyReason::IdempotencyBudgetFull
+        );
+        assert_eq!(
+            evaluate_idempotency_request(
+                &fingerprint,
+                Some(&completed),
+                1,
+                256,
+                &Timestamp::new("2026-07-10T00:13:00Z").unwrap(),
+            )
+            .reason,
+            MctIdempotencyReason::ExecuteFresh
+        );
     }
 
     #[test]
