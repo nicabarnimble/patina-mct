@@ -1,7 +1,10 @@
 -- allium: 3
 -- mct-peer-ontology.allium
 
--- Status: elicited draft for reviewing-agent review before a product-map tend pass.
+-- Status: ratified companion law for `mct-product-map.allium`.
+-- Review: decisions and tend-pass acceptance are recorded in session
+-- `20260712-112719-785420000`; the 2026-07-12 product-map tend pass references this
+-- module's contracts by name and does not duplicate their relationship semantics.
 -- Scope: The explicit relationships sovereign MCT Mothers instantiate with each other.
 -- Includes:
 --   - Directional call admission and outbound authorization
