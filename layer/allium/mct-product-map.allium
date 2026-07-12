@@ -1,6 +1,16 @@
 -- allium: 3
 -- mct-product-map.allium
 
+-- Epistemic status:
+-- `allium check` and `allium analyse` establish well-formedness and internal analysis only.
+-- Intent/code alignment is evidenced by dated weed audits and named contract tests.
+-- The first weed audit was recorded on 2026-07-09 at
+-- `layer/surface/build/spec-drift-audit/REPORT.md`.
+-- Decision: 2026-07-12, peer-relationship semantics are governed by the ratified companion
+-- law `mct-peer-ontology.allium`, reviewed in session `20260712-112719-785420000`.
+-- Product-map peer records and protocols reference that law's contracts by name rather than
+-- duplicating its relationship semantics.
+
 -- Scope: Whole MCT product map as guiding behavioural principles.
 -- Includes:
 --   - Mother/Child/Toy authority boundary
