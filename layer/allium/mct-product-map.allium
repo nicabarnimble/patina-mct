@@ -139,6 +139,13 @@ contract MctRuntimeShape {
 -- Decision: Phase 2 must not feed new permissions back into Phase 1. It may report that authorized routes are unavailable, degraded, or deadline-impossible, causing the no-route path to run.
 -- Decision: Runtime policy checks may short-circuit for speed, while debug/dry-run checks may accumulate all violations for explanation.
 -- Decision: Routing decisions operate on snapshots. Execution must revalidate authority because stale authority is a security bug; stale optimization is a performance miss.
+-- Decision: 2026-07-12 tend disposition of REPORT B2: local child execution has a distinct
+-- effect-boundary revision guard after route revalidation mints execution authority and
+-- immediately before the child adapter effect. It rereads current policy and grant revisions and
+-- compares them with the minted authority; either mismatch denies before execution.
+-- Decision: Effect-boundary revision guarding composes with route revalidation rather than
+-- replacing it. Revalidation proves the selected route, child, and toys against its authority
+-- facts; the final guard proves that those minted revisions are still current at the effect seam.
 
 contract TwoPhaseRouting {
     @invariant AuthorityPrecedesOptimization
@@ -155,6 +162,14 @@ contract TwoPhaseRouting {
 
     @invariant ExecutionRevalidatesAuthority
         -- Authority is rechecked at execution time so expired grants, revoked peers, revoked children, or changed data policy cannot be bypassed by a stale routing decision.
+
+    @invariant EffectBoundaryRevisionGuardIsDistinct
+        -- After route revalidation and immediately before a local child effect, current policy and
+        -- grant revisions must still match the revisions carried by the minted execution authority.
+
+    @invariant EffectBoundaryGuardCannotRepairStaleAuthority
+        -- A revision mismatch denies before the child effect; the adapter cannot refresh, widen,
+        -- or reinterpret the already-minted authority token as current.
 }
 
 -- Decision: If Phase 1 eliminates every route, the default no-route result is hard denial with a clear policy reason.

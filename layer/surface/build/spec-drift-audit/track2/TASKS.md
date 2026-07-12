@@ -150,7 +150,7 @@ The operator reviews the full diff before this becomes law.
 - [x] T1: state map epistemics, ratify companion status, and create this ledger.
 - [x] T2: specify the complete request-scoped idempotency contract.
 - [x] T3/B1: describe bounded payload integrity and local content-addressed storage.
-- [ ] T3/B2: describe the effect-boundary revision guard.
+- [x] T3/B2: describe the effect-boundary revision guard.
 - [ ] T3/B3: describe caller-safe `route_taken` reply projection.
 - [ ] T3/B4: describe the concrete signed binding proof.
 - [ ] T3/B5: describe callable-surface publication evidence by companion reference.
