@@ -102,11 +102,7 @@ pub(super) fn evaluate_hello_internal(
         );
     }
 
-    if binding
-        .expires_at
-        .as_ref()
-        .is_some_and(|expires_at| expires_at <= &now)
-    {
+    if binding.expires_at <= now {
         return denied(
             request,
             ids,
