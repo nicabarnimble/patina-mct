@@ -703,6 +703,16 @@ contract MctCallAtomicity {
 -- Decision: `mct/call/0` is a transport envelope around the semantic `MctCall`; it does not create a second call model. The receiving Mother constructs or rejects one immutable `MctCall` before authority routing.
 -- Decision: Remote calls are WIT-shaped: namespace, interface, function. Iroh stream details, relay/direct path facts, and endpoint ids remain adapter evidence and authority context, not operation identity.
 -- Decision: Payload bytes may be inline, content-addressed, or referenced out of band. Payload metadata used by authority must match the payload handle before execution proceeds.
+-- Decision: 2026-07-12 tend disposition of REPORT B1: payload frames, inline request bytes,
+-- inline result bytes, and local content-addressed blobs are each bounded by named disclosed
+-- constants. Current disclosed values are 96 KiB, 32 KiB, 32 KiB, and 8 MiB respectively;
+-- implementations may revise values without weakening the named-bound obligation.
+-- Decision: Inline and content-addressed payload integrity uses exact observed byte count and
+-- BLAKE3 digest. Declared size/digest disagreement, malformed digest, or exceeded bound fails
+-- closed before execution or result acceptance.
+-- Decision: The local BLAKE3 content-addressed store writes to a non-visible temporary object,
+-- computes and verifies exact size and digest, and only then atomically renames the object into
+-- digest-addressed visibility. Failed or partial verification never publishes the object.
 -- Decision: A peer call reply carries a caller-safe `MctResult` reference or safe adapter error. Internal route decisions, candidate elimination, child details, and topology stay in observations.
 -- Decision: `mct/call/0` requires observations for peer call receipt, malformed rejection, constructed call, authorization/denial, route selection/no-route, result recording, and peer reply.
 -- Decision: A hello admission narrows but does not pre-authorize a call. Every `mct/call/0` request still passes the normal MCT authority filter, ToyGrant checks, child assignment checks, data policy, and execution-time revalidation.
@@ -721,6 +731,7 @@ value MctCallPayloadHandle {
     payload_kind: inline_payload | content_addressed_blob | external_reference | empty
     content_type: String?
     approximate_size_bytes: Integer
+    exact_size_bytes: Integer?
     digest: String?
     blob_ref: String?
     external_ref: String?
@@ -798,6 +809,7 @@ surface MctCallProtocolRequestProjection {
         request.call.payload_metadata.data_classification
         request.payload.payload_kind
         request.payload.approximate_size_bytes
+        request.payload.exact_size_bytes
         request.payload.digest
         request.idempotency_key
         request.received_observation_id
@@ -878,6 +890,14 @@ contract MctCallProtocol {
     @invariant PayloadMetadataMatchesHandle
         -- Payload metadata used for routing and authority is checked against the payload handle before execution proceeds.
 
+    @invariant PayloadBytesAreBoundedByNamedConstants
+        -- Protocol frames, inline request bytes, inline result bytes, and local blob objects each
+        -- refuse input beyond their named disclosed bound.
+
+    @invariant PayloadIntegrityIsVerifiedAtIngress
+        -- Inline and content-addressed request bytes, and inline result bytes, are accepted only
+        -- when exact observed size and BLAKE3 digest match their declaration.
+
     @invariant IdempotencyIsRequestScoped
         -- Idempotency keys deduplicate retry only within the current authenticated caller scope;
         -- they do not authorize a different request, expose another caller's result, or bypass
@@ -920,6 +940,23 @@ contract MctCallProtocol {
 
     @invariant PeerCallObservationsCoverLifecycle
         -- Receipt, malformed rejection, call construction, authorization, route/no-route, execution result, and reply are all observable facts.
+}
+
+contract MctPayloadIntegrityAndLocalCas {
+    @invariant ExactSizeAndDigestBeforeUse
+        -- Inline or local content-addressed bytes cannot reach execution or result consumption
+        -- until exact size and BLAKE3 digest have been verified against the declared handle.
+
+    @invariant StorageIsBoundedByNamedConstant
+        -- Local content-addressed ingest and fetch refuse objects beyond the named blob bound.
+
+    @invariant VerifyThenAtomicallyPublish
+        -- Local CAS ingest writes to a non-visible temporary object, verifies the complete size
+        -- and digest, and atomically publishes under the digest path only after verification.
+
+    @invariant FailedVerificationIsNotVisible
+        -- Oversized, incomplete, size-mismatched, digest-mismatched, or malformed objects never
+        -- become visible as successful content-addressed payloads.
 }
 
 -- Decision: The terminal return concept is `MctResult`, not `MctReply`, because denial, timeout, failure, and cancellation are outcomes even when no component replies.

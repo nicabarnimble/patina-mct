@@ -149,7 +149,7 @@ The operator reviews the full diff before this becomes law.
 - [x] Read the companion law, elicitation decision log and 22 inputs, audit A4/B1-B5, Track-1 gate and Slice-6 records, and full product map.
 - [x] T1: state map epistemics, ratify companion status, and create this ledger.
 - [x] T2: specify the complete request-scoped idempotency contract.
-- [ ] T3/B1: describe bounded payload integrity and local content-addressed storage.
+- [x] T3/B1: describe bounded payload integrity and local content-addressed storage.
 - [ ] T3/B2: describe the effect-boundary revision guard.
 - [ ] T3/B3: describe caller-safe `route_taken` reply projection.
 - [ ] T3/B4: describe the concrete signed binding proof.
