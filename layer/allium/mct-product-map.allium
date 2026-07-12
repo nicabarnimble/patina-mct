@@ -732,6 +732,11 @@ contract MctHelloProtocol {
 -- Decision: `MctCall` is not the result. The return path is a separate future concept, likely `MctResult` or `MctReply`.
 -- Decision: Actual payload bytes may travel separately. Routing consumes payload metadata so it can authorize and cost movement without deserializing business data.
 -- Decision: `origin` records which adapter produced the call for audit and telemetry, but must not create adapter-specific routing authority.
+-- Decision: 2026-07-12 A1 resolution in session `20260712-112719-785420000` preserves
+-- `OriginIsForObservationNotPermission`. Origin is the adapter's mechanical observation and
+-- dispatch witness for which protocol question arrived; it creates and removes no authority.
+-- For Iroh arrivals, local-only evaluation follows from the submitted `mct/call/0` question under
+-- companion contract `TerminalPeerCallSubmission`, not from an origin-specific permission gate.
 
 value CallerIdentity {
     node_id: String
@@ -818,7 +823,9 @@ contract MctCallAtomicity {
         -- Iroh, JVM adapter, WASM host, process harness, and CLI calls enter the same authority pipeline after translation to `MctCall`.
 
     @invariant OriginIsForObservationNotPermission
-        -- The origin adapter may be used for audit and telemetry but not as a shortcut around Vision, data, peer, child, toy, or secret policy.
+        -- The origin adapter may be used for audit, telemetry, and dispatch of the protocol
+        -- semantics that arrived, but it neither grants nor removes Vision, data, peer, child,
+        -- toy, secret, or route authority.
 
     @invariant PayloadMetadataPrecedesPayloadInspection
         -- Routing can evaluate classification and movement cost from metadata without requiring business payload deserialization.
@@ -846,6 +853,24 @@ contract MctCallAtomicity {
 -- authority.
 -- Decision: `mct/call/0` requires observations for peer call receipt, malformed rejection, constructed call, authorization/denial, route selection/no-route, result recording, and peer reply.
 -- Decision: A hello admission narrows but does not pre-authorize a call. Every `mct/call/0` request still passes the normal MCT authority filter, ToyGrant checks, child assignment checks, data policy, and execution-time revalidation.
+-- Decision: 2026-07-12 session `20260712-112719-785420000` defines `mct/call/0` as
+-- “I propose this receiving Mother as local executor.” Under companion contract
+-- `TerminalPeerCallSubmission`, every admitted arrival is terminal: the receiver evaluates local
+-- candidates and never sources another peer; local unavailability returns the normal safe no-route
+-- or denial outcome.
+-- Decision: Per-hop vouching under companion contract `PerHopPeerAccountability` is permanent
+-- `mct/call/0` semantics. The receiver authorizes and records the authenticated ImmediateCaller;
+-- upstream identity stays in the ledger that verified it and is not carried as an originator claim.
+-- Preserved call and trace identifiers, not propagated identity, correlate bilateral ledgers.
+-- Decision: Authorized cross-Mother ledger reconstruction belongs to future
+-- `ObservationReplicationAuthorization` over `mct/observe/0`, under each Mother's own disclosure
+-- authority. It is not smuggled through the call envelope.
+-- Decision: Brokered multi-hop submission is a distinct future relationship requiring
+-- authenticated end-to-end identity, executor-held originator authority, and explicit transitive
+-- routing policy. It cannot extend or mutate `mct/call/0` terminal and per-hop semantics.
+-- Decision: A future call envelope may reference the `CapabilityPublication` that informed
+-- receiver selection solely to strengthen route audit. Whether to add that reference remains the
+-- companion law's open route-audit question; it would grant no authority or alter terminality.
 
 value MctCallProtocolAuthority {
     hello_decision_id: String
@@ -1020,6 +1045,26 @@ contract MctCallProtocol {
 
     @invariant HelloDoesNotPreAuthorizeCall
         -- Hello admission permits the peer to submit a call envelope, but each call still passes authority, routing, ToyGrant, child assignment, data policy, and revalidation checks.
+
+    @invariant PeerSubmissionProposesReceiverAsLocalExecutor
+        -- `mct/call/0` uses `TerminalPeerCallSubmission`: the admitted ImmediateCaller asks this
+        -- receiving Mother to evaluate the call for local execution.
+
+    @invariant PeerSubmissionIsTerminalAtReceiver
+        -- A received `mct/call/0` request never sources another peer candidate; inability to run
+        -- locally produces the normal safe no-route or denial result.
+
+    @invariant PeerCallUsesPermanentPerHopVouching
+        -- The receiver authorizes only the admitted ImmediateCaller. Upstream identity remains
+        -- with its verifier, while call and trace identifiers support authorized ledger joining.
+
+    @invariant ObservationReplicationOwnsCrossLedgerSharing
+        -- Cross-Mother ledger-slice disclosure requires future
+        -- `ObservationReplicationAuthorization`; call submission conveys no observation access.
+
+    @invariant BrokeredSubmissionCannotExtendCallProtocol
+        -- Multi-hop brokerage requires a separate relationship, protocol, end-to-end identity,
+        -- executor-held authority, and transitive policy and cannot alter `mct/call/0` semantics.
 
     @invariant PayloadMetadataMatchesHandle
         -- Payload metadata used for routing and authority is checked against the payload handle before execution proceeds.
