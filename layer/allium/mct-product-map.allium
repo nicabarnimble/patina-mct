@@ -527,6 +527,11 @@ contract MctIrohProtocolLayer {
 -- Decision: A successful hello admits only the negotiated protocol version, Vision scope, peer binding, and ALPN set recorded in its decision. Later peer messages must reference that admission decision or a derived session capability.
 -- Decision: A denied hello returns only a safe reason such as `not authorized`, `unsupported version`, or `retry later`; internal observations retain the precise reason.
 -- Decision: `mct/hello/0` may advertise a policy-filtered capability view, but capability advertisement is not a grant. Child access, toy use, thought acceptance, and observation replication still require their own authority checks.
+-- Decision: 2026-07-10 Track-1 hello-observation gate: the hello response is the first
+-- protected effect because a peer can immediately use an admitted response. Receipt and the typed
+-- admission or denial decision are durably appended before admission is remembered or response
+-- bytes are sent. Append failure sends no response, remembers no admission, and is not retried or
+-- downgraded to observe-after-effect.
 -- Decision: 2026-07-12 tend disposition of REPORT B5: hello capability views may carry
 -- expiring, Vision-scoped callable-surface evidence naming operation, local runtime class, and
 -- publisher policy revision. Received evidence is stored and refreshed transactionally and is
@@ -734,7 +739,13 @@ contract MctHelloProtocol {
         -- The peer receives only safe denial or retry information while internal observations retain precise policy and topology reasons.
 
     @invariant HelloObservationsBeforeEffects
-        -- Hello receipt, admission, denial, negotiated protocol, and response facts are observed before subsequent protected peer effects proceed.
+        -- Hello receipt and the admission or denial decision are durable before admission is
+        -- remembered or response bytes are sent; negotiated protocol and truthful response facts
+        -- preserve that write-ahead lifecycle before later protected peer effects.
+
+    @invariant FailedHelloObservationPreventsAdmissionAndResponse
+        -- Failure to durably append the hello authority facts closes the attempt without response,
+        -- remembered admission, retry, or observe-after-effect fallback.
 
     @invariant AdmissionScopeIsNarrow
         -- A hello admission authorizes only the negotiated protocol version, selected binding, Vision scope, and accepted ALPN set recorded in the decision.
@@ -1546,6 +1557,46 @@ contract MctObservabilitySpine {
 -- Decision: Storage observes append success/failure and observation backpressure. Observation sink failure must become visible through bounded backpressure, health, or fallback diagnostic evidence.
 -- Decision: Node health and telemetry exports are projections or reported conditions derived from observations and telemetry facts; they do not become the authority record.
 -- Decision: Operator actions that alter policy, approvals, grants, peers, or visibility produce observations with the acting identity and policy/grant revision.
+-- Decision: 2026-07-10 Track-1 control-plane gate: while Mother is running, her resident
+-- authenticated local control surface owns live authority, registry, grant, composition, and
+-- storage mutations; CLI commands are clients of that owner. When Mother is unavailable, an
+-- offline-capable command may mutate only while holding the free exclusive ledger-writer lock.
+-- A connected resident response, including rejection, is authoritative and never falls back to
+-- offline mutation.
+-- Decision: Protected mutation order is validate current facts, durably append the typed decision,
+-- apply the config/state/storage effect, append any required success or failure fact, then report
+-- success. Decision append failure leaves the protected effect untouched.
+-- Decision: 2026-07-10 Track-1 identity gate: node identity creation and rotation are offline-only
+-- under exclusive ledger ownership. First resident bootstrap opens the ledger writer, prepares
+-- public identity, durably records it, and only then writes key/config material. A bound resident
+-- refuses live identity rotation. Coordinated live rotation remains future work requiring endpoint
+-- rebind and peer re-admission design.
+
+contract MctAuthorityMutationOwnership {
+    @invariant ResidentOwnsLiveMutations
+        -- While Mother is running, one authenticated local resident control owner serializes
+        -- protected mutations through her observation writer and state/config/storage adapters.
+
+    @invariant OfflineMutationRequiresExclusiveLedgerOwnership
+        -- An offline-capable command mutates only when the resident is unavailable and it holds
+        -- the exclusive ledger writer across validation, decision append, effect, and outcome.
+
+    @invariant ConnectedResidentResponseNeverFallsBack
+        -- Any connected resident response, including denial or failure, is authoritative and
+        -- cannot trigger a second offline mutation path.
+
+    @invariant MutationDecisionIsDurableBeforeEffect
+        -- A protected mutation becomes visible only after its typed decision is durable; append
+        -- failure leaves config, state, package, grant, composition, identity, or blob untouched.
+
+    @invariant IdentityMutationIsOfflineOnly
+        -- A bound Mother does not create or rotate node identity; offline administration holds
+        -- exclusive ledger ownership, and live rotation requires a future rebind/re-admission law.
+
+    @invariant IdentityBootstrapObservationPrecedesPersistence
+        -- First bootstrap records the public identity decision before writing new key or config
+        -- material and fails startup without those effects if durable append fails.
+}
 
 value ObservationRequiredLinks {
     trace_id: Boolean
