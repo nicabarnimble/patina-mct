@@ -21,7 +21,7 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 | `entity-fields.MctPeerBinding`, `entity-fields.MctPeerBindingScope`, `value-equality.MctPeerBindingScope` | COVERED | `mct_kernel::peer::tests::binding_without_expiry_fails_closed`; Rust and operator/config projections require `expires_at`. |
 | `entity-optional.MctPeerBinding.superseded_by_observation_id`, `surface-actor.MctPeerBindingProjection`, `surface-exposure.MctPeerBindingProjection` | COVERED | `mct_kernel::peer::tests::active_binding_admits_intersection_of_requested_policy_and_binding_alpns`; `mct_kernel::observation::tests::revoked_and_expired_bindings_become_observations` |
 | `value-equality.MctPeerBindingPresentation`, `entity-fields.MctPeerBindingPresentation` | COVERED | `mct_iroh::identity::tests::peer_binding_signature_ref_roundtrips_and_fails_on_tamper`; `mct_kernel::call::tests::call_envelope_roundtrip_preserves_semantic_call_across_edges` |
-| `value-equality.MctHelloCallableSurface`, `entity-fields.MctHelloCallableSurface`, `value-equality.MctHelloCapabilityView`, `entity-fields.MctHelloCapabilityView` | COVERED | `mct_kernel::peer::tests::hello_capability_view_carries_callable_surfaces`; `mct_daemon::federation::tests::federation_view_publishes_only_vision_scoped_callable_surfaces` |
+| `value-equality.MctHelloCallableSurface`, `entity-fields.MctHelloCallableSurface`, `value-equality.MctHelloCapabilityView`, `entity-fields.MctHelloCapabilityView` | COVERED | `mct_kernel::peer::tests::hello_capability_view_carries_callable_surfaces`; `mct_daemon::federation::tests::honest_local_execution_offer_excludes_approved_assigned_non_ready_child` |
 | `entity-fields.MctHelloRequest`, hello request optional fields, request projection actor/exposure | COVERED | `mct_kernel::call::tests::call_envelope_roundtrip_preserves_semantic_call_across_edges`; `mct_iroh::tests::local_iroh_completes_mct_hello_then_call` |
 | `entity-fields.MctHelloResponse`, response optional fields, response projection actor/exposure | COVERED | `mct_iroh::tests::local_iroh_completes_mct_hello_then_call`; `mct_daemon_bin::resident::tests::hello_response_capability_view_refreshes_surfaces_on_caller` |
 | `value-equality.MctCallPayloadHandle`, `entity-fields.MctCallPayloadHandle` | COVERED | `mct_kernel::call::tests::payload_integrity_decisions_cover_request_mismatch_classes`; `mct_kernel::call::tests::payload_integrity_decisions_cover_local_content_addressed_blob` |
@@ -148,7 +148,7 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 
 | Invariant / obligation | Status | Evidence |
 |---|---|---|
-| `CapabilityPublicationRelationship.HonestLocalExecutionOffer` | GAP | Existing federation coverage includes an unapproved loading child; S3 must isolate readiness by making a child approved/assigned but non-ready and prove it is not published. |
+| `CapabilityPublicationRelationship.HonestLocalExecutionOffer` | COVERED | `mct_daemon::federation::tests::honest_local_execution_offer_excludes_approved_assigned_non_ready_child` proves approval and assignment cannot publish a non-ready instance. |
 | `AdvertisementNeverGrantsAuthority` | COVERED | `mct_daemon_bin::resident::tests::eligible_route_candidate_requires_every_current_conjunct` retains fresh publication while independently removing each directional consent. |
 | `OfferIsVisionScoped` | COVERED | `mct_daemon::federation::tests::federation_view_is_vision_scoped`; `mct_daemon_bin::resident::tests::two_mother_wrong_vision_fails_closed` |
 | `OfferLapsesAtFreshnessBoundary` | COVERED | `mct_daemon_bin::resident::tests::capability_offer_lapses_at_freshness_boundary` proves candidacy is absent exactly at and after `stale_at`. |
@@ -157,9 +157,9 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 
 | Status | Rows |
 |---|---:|
-| COVERED | 70 |
-| GAP | 3 |
+| COVERED | 71 |
+| GAP | 2 |
 | LAW-LEADS-CODE | 0 |
 | DEFERRED | 2 |
 
-S2 resolved both mandatory-expiry rows through one contract change and the operator-pointed egress row through a shared before-effect recording boundary. The three remaining GAP rows are current-authority-before-replay edge classes, per-hop upstream identity projection, and publication honesty.
+S2 resolved both mandatory-expiry rows through one contract change and the operator-pointed egress row through a shared before-effect recording boundary. The two remaining GAP rows are current-authority-before-replay edge classes and per-hop upstream identity projection.

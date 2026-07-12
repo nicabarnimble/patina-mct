@@ -347,3 +347,8 @@ error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
 - `cargo clippy --workspace --all-targets -- -D warnings`: clean.
 - `./scripts/ci-tier0.sh`: clean, including both Allium laws.
 - `git diff --check`: clean.
+
+### S3 honest local execution publication
+
+- Added `honest_local_execution_offer_excludes_approved_assigned_non_ready_child`.
+- Validation gate pending commit.
