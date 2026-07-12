@@ -461,6 +461,15 @@ contract MctIrohProtocolLayer {
 -- Decision: A successful hello admits only the negotiated protocol version, Vision scope, peer binding, and ALPN set recorded in its decision. Later peer messages must reference that admission decision or a derived session capability.
 -- Decision: A denied hello returns only a safe reason such as `not authorized`, `unsupported version`, or `retry later`; internal observations retain the precise reason.
 -- Decision: `mct/hello/0` may advertise a policy-filtered capability view, but capability advertisement is not a grant. Child access, toy use, thought acceptance, and observation replication still require their own authority checks.
+-- Decision: 2026-07-12 tend disposition of REPORT B5: hello capability views may carry
+-- expiring, Vision-scoped callable-surface evidence naming operation, local runtime class, and
+-- publisher policy revision. Received evidence is stored and refreshed transactionally and is
+-- usable for candidacy only while fresh.
+-- Decision: The meaning of each callable surface is governed by
+-- `mct-peer-ontology.allium` contract `CapabilityPublicationRelationship`: it is an honest local
+-- execution offer contributing capability, never authority or brokerage. The current consumer
+-- window is 300 seconds as a disclosed implementation value; exact freshness policy and explicit
+-- revocation remain the companion law's open questions and are not frozen here.
 
 value MctProtocolVersion {
     protocol_name: String
@@ -480,10 +489,24 @@ value MctPeerBindingPresentation {
     expires_at: Timestamp?
 }
 
+value MctHelloCallableSurface {
+    child_name: String
+    operation_id: String
+    runtime_kind: process | jvm_child | wasm_component | remote_peer | internal
+    vision_id: String
+    policy_revision: Integer
+    visibility: String
+}
+
 value MctHelloCapabilityView {
+    node_id: String
+    vision_id: String
+    published_at: Timestamp
+    policy_revision: Integer
     supported_alpns: List<String>
     supported_wit_worlds: List<String>
     supported_observation_modes: List<String>
+    callable_surfaces: List<MctHelloCallableSurface>
     capability_view_ref: String?
 }
 
@@ -562,6 +585,11 @@ surface MctHelloRequestProjection {
         request.presented_binding.vision_id
         request.presented_binding.policy_revision
         request.presented_binding.allowed_alpns_claim
+        request.capability_view.node_id
+        request.capability_view.vision_id
+        request.capability_view.published_at
+        request.capability_view.policy_revision
+        request.capability_view.callable_surfaces
         request.capability_view.capability_view_ref
         request.local_policy_revision_seen
         request.trace_id
@@ -623,6 +651,18 @@ contract MctHelloProtocol {
 
     @invariant CapabilityViewIsNotGrant
         -- Capability advertisements during hello do not grant child, toy, thought, observation, or data authority.
+
+    @invariant CallableSurfacesUseCompanionPublicationMeaning
+        -- Each callable surface is interpreted through `CapabilityPublicationRelationship` as a
+        -- Vision-scoped local execution offer, never as call, route, child, toy, or data authority.
+
+    @invariant StaleCallableSurfaceIsNotCandidateEvidence
+        -- A callable surface contributes capability evidence only within the consumer's current
+        -- freshness policy; stale evidence is removed from candidacy without attributing fault.
+
+    @invariant PublicationPolicyRevisionIsEvidence
+        -- A publisher's policy revision is retained for evidence and change detection and is not
+        -- treated as cross-Mother equality with the consumer's local policy revision.
 
     @invariant SafeDenialOnlyToPeer
         -- The peer receives only safe denial or retry information while internal observations retain precise policy and topology reasons.
