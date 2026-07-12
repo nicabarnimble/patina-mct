@@ -127,8 +127,8 @@ ROADMAP. No PR, no merge, no further pushes.
 - [x] S0: push authorized checkpoint `patina` to `origin/patina` (`ab067ee..502defd`).
 - [x] S0: read both laws, audit dispositions, and Track 2 follow-ups.
 - [x] S0: capture Allium 3.5.0 plan/model categories for both laws.
-- [ ] S1: commit the priority obligation ledger.
-- [ ] S2.1: mandatory peer-binding expiry contract test and small fix or stop.
+- [x] S1: commit the priority obligation ledger (`c988fb3`).
+- [x] S2.1: mandatory peer-binding expiry contract test and spec-ward fix.
 - [ ] S2.2: operator-pointed egress observation contract test and small fix or stop.
 - [ ] S2.x: resolve any additional LAW-LEADS-CODE rows found by S1.
 - [ ] S3: fill every priority GAP or explicitly defer it with reason.
@@ -151,3 +151,167 @@ ROADMAP. No PR, no merge, no further pushes.
 ## Failure and flake log
 
 Capture every expected red test and every flake verbatim here before rerunning.
+
+### S2.1 expected red — mandatory binding expiry
+
+```text
+$ cargo test -p mct-kernel peer::tests::binding_without_expiry_fails_closed -- --nocapture
+running 1 test
+
+thread 'peer::tests::binding_without_expiry_fails_closed' panicked at crates/mct-kernel/src/peer/mod.rs:723:9:
+assertion failed: serde_json::from_value::<MctPeerBinding>(value).is_err()
+test peer::tests::binding_without_expiry_fails_closed ... FAILED
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 75 filtered out
+error: test failed, to rerun pass `-p mct-kernel --lib`
+```
+
+### S2.1 implementation compile — second current-binding evaluator
+
+```text
+$ cargo check --workspace
+error[E0599]: no method named `as_ref` found for struct `id::Timestamp` in the current scope
+   --> crates/mct-kernel/src/call/internal.rs:280:10
+    |
+278 |       if binding
+279 |           .expires_at
+280 |           .as_ref()
+    |           -^^^^^^ method not found in `id::Timestamp`
+error: could not compile `mct-kernel` (lib) due to 1 previous error
+```
+
+### S2.1 implementation compile — daemon projections
+
+```text
+$ cargo check --workspace
+error[E0599]: no method named `as_ref` found for struct `mct_kernel::Timestamp`
+    --> crates/mct-daemon/src/daemon/resident.rs:1940:54
+error[E0308]: mismatched types
+    --> crates/mct-daemon/src/daemon/resident.rs:2534:25
+     |
+     | expected `Option<Timestamp>`, found `Timestamp`
+error[E0063]: missing field `expires_at` in initializer of `mct_daemon::MctPeerAddressBookEntry`
+    --> crates/mct-daemon/src/daemon/ingress.rs:1008:5
+error: could not compile `mct-daemon` (bin "mct-daemon") due to 3 previous errors
+```
+
+### S2.1 test compilation — mandatory field fixture migration
+
+```text
+$ cargo test --workspace --no-run
+error[E0308]: mismatched types
+    --> crates/mct-kernel/src/call/mod.rs:1251:33
+     | expected `Timestamp`, found `Option<_>`
+error[E0308]: mismatched types
+    --> crates/mct-kernel/src/observation.rs:1209:25
+     | expected `Timestamp`, found `Option<_>`
+error[E0308]: mismatched types
+   --> crates/mct-kernel/src/peer/mod.rs:781:30
+     | expected `Timestamp`, found `Option<Timestamp>`
+error: could not compile `mct-kernel` (lib test) due to 3 previous errors
+```
+
+### S2.1 test compilation — adapter/config fixtures
+
+```text
+$ cargo test --workspace --no-run
+error[E0308]: mismatched types
+   --> crates/mct-iroh/src/identity.rs:267:25
+error[E0308]: mismatched types
+   --> crates/mct-iroh/src/test_support.rs:303:21
+error[E0308]: mismatched types
+   --> crates/mct-iroh/src/lib.rs:206:30
+error[E0308]: mismatched types
+    --> crates/mct-iroh/src/lib.rs:1091:38
+error[E0308]: mismatched types
+    --> crates/mct-iroh/src/lib.rs:1233:25
+error: could not compile `mct-iroh` (lib test) due to 5 previous errors
+error[E0063]: missing field `expires_at` in initializer of `config::MctPeerAddressBookEntry`
+   --> crates/mct-daemon/src/config.rs:779:9
+error[E0308]: mismatched types
+   --> crates/mct-daemon/src/fake.rs:240:21
+error[E0063]: missing field `expires_at` in initializer of `config::MctPeerAddressBookEntry`
+   --> crates/mct-daemon/src/federation.rs:215:13
+error[E0063]: missing field `expires_at` in initializer of `config::MctPeerAddressBookEntry`
+   --> crates/mct-daemon/src/federation.rs:234:13
+error: could not compile `mct-daemon` (lib test) due to 4 previous errors
+```
+
+### S2.1 test compilation — binary-local peer fixtures
+
+```text
+$ cargo test --workspace --no-run
+error[E0308]: mismatched types
+    --> crates/mct-daemon/src/daemon/resident.rs:3323:25
+error[E0063]: missing field `expires_at` in initializer of `mct_daemon::MctPeerAddressBookEntry`
+    --> crates/mct-daemon/src/daemon/resident.rs:3432:26
+error[E0063]: missing field `expires_at` in initializer of `mct_daemon::MctPeerAddressBookEntry`
+    --> crates/mct-daemon/src/daemon/resident.rs:3618:26
+error[E0063]: missing field `expires_at` in initializer of `mct_daemon::MctPeerAddressBookEntry`
+    --> crates/mct-daemon/src/daemon/resident.rs:3899:26
+error[E0063]: missing field `expires_at` in initializer of `mct_daemon::MctPeerAddressBookEntry`
+    --> crates/mct-daemon/src/daemon/resident.rs:4040:26
+error[E0063]: missing field `expires_at` in initializer of `mct_daemon::MctPeerAddressBookEntry`
+    --> crates/mct-daemon/src/daemon/resident.rs:4083:26
+error[E0308]: mismatched types
+    --> crates/mct-daemon/src/daemon/resident.rs:4105:33
+error[E0063]: missing field `expires_at` in initializer of `mct_daemon::MctPeerAddressBookEntry`
+    --> crates/mct-daemon/src/daemon/resident.rs:4420:26
+error[E0063]: missing field `expires_at` in initializer of `mct_daemon::MctPeerAddressBookEntry`
+    --> crates/mct-daemon/src/daemon/resident.rs:4438:26
+error[E0308]: mismatched types
+    --> crates/mct-daemon/src/daemon/resident.rs:4462:33
+error[E0308]: mismatched types
+    --> crates/mct-daemon/src/daemon/resident.rs:4473:33
+error[E0063]: missing field `expires_at` in initializer of `mct_daemon::MctPeerAddressBookEntry`
+    --> crates/mct-daemon/src/daemon/resident.rs:4659:26
+error[E0308]: mismatched types
+    --> crates/mct-daemon/src/daemon/resident.rs:5720:13
+error[E0308]: mismatched types
+    --> crates/mct-daemon/src/daemon/resident.rs:6082:25
+error[E0063]: missing field `expires_at` in initializer of `mct_daemon::MctPeerAddressBookEntry`
+    --> crates/mct-daemon/src/daemon/resident.rs:6145:9
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 15 previous errors
+```
+
+### S2.1 full gate — CLI fixture migration
+
+```text
+failures:
+
+---- control::tests::offline_peer_mutation_observes_before_effect_and_fails_on_lock_contention stdout ----
+called `Result::unwrap()` on an `Err` value: peers add requires --expires-at <timestamp>
+
+---- control::tests::resident_append_failure_prevents_peer_config_effect stdout ----
+assertion `left == right` failed
+  left: 400
+ right: 500
+
+---- control::tests::live_uds_peer_mutations_are_durable_and_secret_free stdout ----
+assertion `left == right` failed: {"error":"peer mutation rejected"}
+  left: 400
+ right: 200
+
+---- control::tests::resident_apply_failure_records_typed_failure_after_decision stdout ----
+assertion `left == right` failed: {"error":"peer mutation rejected"}
+  left: 400
+ right: 500
+
+---- ingress::tests::standalone_serve_refuses_held_ledger_before_endpoint_bind stdout ----
+assertion failed: format!("{error:#}").contains("standalone Iroh serve refused: could not acquire the exclusive observation ledger writer; another Mother may already be serving this node")
+
+---- ingress::tests::standalone_serve_process_persists_hello_and_call_lifecycle stdout ----
+called `Result::unwrap()` on an `Err` value: RecvError(())
+
+test result: FAILED. 54 passed; 6 failed; 0 ignored; 0 measured; 0 filtered out
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
+## Completed validation
+
+### S2.1 mandatory binding expiry
+
+- `cargo test --workspace`: 286 passed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `./scripts/ci-tier0.sh`: clean, including both Allium laws.
+- `git diff --check`: clean.

@@ -285,9 +285,12 @@ pub(super) async fn serve_iroh(mut args: Vec<String>) -> Result<()> {
     let state_path = take_option(&mut args, "--state")
         .map(PathBuf::from)
         .unwrap_or_else(default_state_path);
+    let expires_at = take_option(&mut args, "--expires-at")
+        .ok_or_else(|| anyhow::anyhow!("iroh serve requires --expires-at <timestamp>"))
+        .and_then(|value| Timestamp::new(value).context("parse --expires-at timestamp"))?;
     if args.len() < 5 {
         bail!(
-            "expected: mct-daemon iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir] [--ledger path] [--state path]"
+            "expected: mct-daemon iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir] --expires-at ts [--ledger path] [--state path]"
         );
     }
     let identity_path = PathBuf::from(&args[0]);
@@ -331,6 +334,7 @@ pub(super) async fn serve_iroh(mut args: Vec<String>) -> Result<()> {
         vision_id,
         identity_path,
         local_endpoint_id.clone(),
+        expires_at,
     );
     let handler_ledger = ledger.clone();
     let result = endpoint
@@ -394,9 +398,12 @@ pub(super) async fn serve_iroh_process_with_ready(
     let state_path = take_option(&mut args, "--state")
         .map(PathBuf::from)
         .unwrap_or_else(default_state_path);
+    let expires_at = take_option(&mut args, "--expires-at")
+        .ok_or_else(|| anyhow::anyhow!("iroh serve-process requires --expires-at <timestamp>"))
+        .and_then(|value| Timestamp::new(value).context("parse --expires-at timestamp"))?;
     if args.len() < 6 {
         bail!(
-            "expected: mct-daemon iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable> --child <child-name> [--children-dir path] [--config path] [--ledger path] [--state path]"
+            "expected: mct-daemon iroh serve-process [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> <executable> --child <child-name> --expires-at ts [--children-dir path] [--config path] [--ledger path] [--state path]"
         );
     }
     let identity_path = PathBuf::from(&args[0]);
@@ -435,6 +442,7 @@ pub(super) async fn serve_iroh_process_with_ready(
         vision_id,
         identity_path,
         local_endpoint_id.clone(),
+        expires_at,
     );
     let harness = MctProcessChildHarness {
         executable,
@@ -994,6 +1002,7 @@ pub(super) fn cli_peer_binding(
     vision_id: VisionId,
     identity_path: PathBuf,
     local_endpoint_id: EndpointIdText,
+    expires_at: Timestamp,
 ) -> MctPeerBinding {
     let local_identity = MctLocalNodeIdentity {
         node_id: MctNodeId::new("local-mct")
@@ -1015,6 +1024,7 @@ pub(super) fn cli_peer_binding(
         outbound_binding: None,
         binding_state: BindingState::Admitted,
         policy_revision: 1,
+        expires_at,
         updated_at: local_identity.updated_at.clone(),
     }
     .to_peer_binding(&local_identity)
@@ -1074,6 +1084,8 @@ mod tests {
             "endpoint-client".into(),
             "mother-client".into(),
             "vision-local".into(),
+            "--expires-at".into(),
+            "2099-01-01T00:00:00Z".into(),
             "--ledger".into(),
             ledger_path.display().to_string(),
         ])
@@ -1116,6 +1128,8 @@ mod tests {
                 "standalone-client".into(),
                 "vision-local".into(),
                 executable.display().to_string(),
+                "--expires-at".into(),
+                "2099-01-01T00:00:00Z".into(),
                 "--child".into(),
                 "resident-echo".into(),
                 "--children-dir".into(),

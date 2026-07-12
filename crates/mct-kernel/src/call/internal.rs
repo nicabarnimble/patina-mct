@@ -275,11 +275,7 @@ fn current_binding_denial_reason(
         }
     }
 
-    if binding
-        .expires_at
-        .as_ref()
-        .is_some_and(|expires_at| expires_at <= now)
-    {
+    if &binding.expires_at <= now {
         return Some(CallProtocolReason::BindingExpired);
     }
 

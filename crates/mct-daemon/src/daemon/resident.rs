@@ -1935,14 +1935,13 @@ pub(super) fn resident_remote_candidate_authority(
         }
     })
     .or_else(|| {
-        peer.outbound_binding
-            .as_ref()
-            .and_then(|outbound| outbound.expires_at.as_ref())
-            .and_then(|expires_at| match timestamp_not_after(expires_at, now) {
+        peer.outbound_binding.as_ref().and_then(|outbound| {
+            match timestamp_not_after(&outbound.expires_at, now) {
                 Ok(true) => Some(CandidateEliminationReason::PeerNotAdmitted),
                 Ok(false) => None,
                 Err(_) => Some(CandidateEliminationReason::PeerNotAdmitted),
-            })
+            }
+        })
     })
     .or_else(|| {
         (peer.binding_state != BindingState::Admitted)
@@ -2531,7 +2530,7 @@ pub(super) fn resident_forwarding_hello_request(
             policy_revision: Some(outbound_binding.policy_revision),
             allowed_alpns_claim: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
             signature_ref: Some(outbound_binding.signature_ref.clone()),
-            expires_at: outbound_binding.expires_at.clone(),
+            expires_at: Some(outbound_binding.expires_at.clone()),
         },
         capability_view,
         local_policy_revision_seen: Some(local_identity.policy_revision),
@@ -3149,6 +3148,10 @@ pub(super) mod tests {
         assert!(!identity_path.exists());
     }
 
+    fn contract_peer_expiry() -> Timestamp {
+        Timestamp::new("2099-01-01T00:00:00Z").unwrap()
+    }
+
     fn test_call() -> MctCall {
         MctCall {
             call_id: CallId::new("call-cli-toy-expiry")
@@ -3321,7 +3324,7 @@ pub(super) mod tests {
             policy_revision: 1,
             binding_state: BindingState::Admitted,
             issued_at: Timestamp::new("2026-07-09T00:00:00Z").unwrap(),
-            expires_at: None,
+            expires_at: contract_peer_expiry(),
             created_by_observation_id: ObservationId::new("obs-binding-durable-hello")
                 .expect("string ID literal/generated value must be non-empty"),
             superseded_by_observation_id: None,
@@ -3443,6 +3446,7 @@ pub(super) mod tests {
                 outbound_binding: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
+                expires_at: contract_peer_expiry(),
                 updated_at: mct_daemon::current_timestamp_string(),
             })
             .unwrap();
@@ -3629,6 +3633,7 @@ pub(super) mod tests {
                 outbound_binding: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
+                expires_at: contract_peer_expiry(),
                 updated_at: mct_daemon::current_timestamp_string(),
             })
             .unwrap();
@@ -3910,6 +3915,7 @@ pub(super) mod tests {
                 outbound_binding: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
+                expires_at: contract_peer_expiry(),
                 updated_at: mct_daemon::current_timestamp_string(),
             })
             .unwrap();
@@ -4049,6 +4055,7 @@ pub(super) mod tests {
                 outbound_binding: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
+                expires_at: contract_peer_expiry(),
                 updated_at: mct_daemon::current_timestamp_string(),
             })
             .unwrap();
@@ -4092,6 +4099,7 @@ pub(super) mod tests {
                 outbound_binding: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
+                expires_at: contract_peer_expiry(),
                 updated_at: mct_daemon::current_timestamp_string(),
             })
             .unwrap();
@@ -4103,7 +4111,7 @@ pub(super) mod tests {
                         .expect("string ID literal/generated value must be non-empty"),
                     policy_revision: 1,
                     signature_ref: mother_b_proof_for_a,
-                    expires_at: None,
+                    expires_at: contract_peer_expiry(),
                 },
             )
             .unwrap();
@@ -4428,6 +4436,7 @@ pub(super) mod tests {
                 outbound_binding: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
+                expires_at: contract_peer_expiry(),
                 updated_at: mct_daemon::current_timestamp_string(),
             })
             .unwrap();
@@ -4446,6 +4455,7 @@ pub(super) mod tests {
                 outbound_binding: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
+                expires_at: contract_peer_expiry(),
                 updated_at: mct_daemon::current_timestamp_string(),
             })
             .unwrap();
@@ -4460,7 +4470,7 @@ pub(super) mod tests {
                     binding_id: PeerBindingId::new("binding-b-admits-a").unwrap(),
                     policy_revision: 1,
                     signature_ref: b_proof_for_a,
-                    expires_at: None,
+                    expires_at: contract_peer_expiry(),
                 },
             )
             .unwrap();
@@ -4471,7 +4481,7 @@ pub(super) mod tests {
                     binding_id: PeerBindingId::new("binding-a-admits-b").unwrap(),
                     policy_revision: 1,
                     signature_ref: a_proof_for_b,
-                    expires_at: None,
+                    expires_at: contract_peer_expiry(),
                 },
             )
             .unwrap();
@@ -4670,6 +4680,7 @@ pub(super) mod tests {
                 outbound_binding: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
+                expires_at: contract_peer_expiry(),
                 updated_at: mct_daemon::current_timestamp_string(),
             })
             .unwrap();
@@ -5718,7 +5729,7 @@ pub(super) mod tests {
         let peer = fixture.config.peers.get_mut("remote-mct").unwrap();
         peer.binding_state = BindingState::Admitted;
         peer.outbound_binding.as_mut().unwrap().expires_at =
-            Some(Timestamp::new("2026-07-08T00:00:00Z").unwrap());
+            Timestamp::new("2026-07-08T00:00:00Z").unwrap();
         let expired = resident_remote_candidate_plans(
             &fixture.config,
             Some(&fixture.state),
@@ -6080,7 +6091,7 @@ pub(super) mod tests {
                 .expect("string ID literal/generated value must be non-empty"),
             policy_revision: 1,
             signature_ref: String::new(),
-            expires_at: None,
+            expires_at: contract_peer_expiry(),
         };
         let outbound_binding_to_sign =
             outbound_peer_binding_for_local(&local_identity, &peer, &outbound_binding).unwrap();
@@ -6162,6 +6173,7 @@ pub(super) mod tests {
             outbound_binding: None,
             binding_state,
             policy_revision: 1,
+            expires_at: contract_peer_expiry(),
             updated_at: "2026-07-09T00:00:00Z".into(),
         }
     }

@@ -226,6 +226,7 @@ mod tests {
                 outbound_binding: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
+                expires_at: Timestamp::new("2026-07-09T00:05:00Z").unwrap(),
                 updated_at: "1".into(),
             },
         );
@@ -245,6 +246,7 @@ mod tests {
                 outbound_binding: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
+                expires_at: Timestamp::new("2026-07-09T00:05:00Z").unwrap(),
                 updated_at: "1".into(),
             },
         );

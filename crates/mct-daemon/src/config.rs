@@ -55,7 +55,7 @@ pub struct MctOutboundPeerBindingPresentation {
     pub binding_id: PeerBindingId,
     pub policy_revision: u64,
     pub signature_ref: String,
-    pub expires_at: Option<Timestamp>,
+    pub expires_at: Timestamp,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,6 +71,7 @@ pub struct MctPeerAddressBookEntry {
     pub outbound_binding: Option<MctOutboundPeerBindingPresentation>,
     pub binding_state: BindingState,
     pub policy_revision: u64,
+    pub expires_at: Timestamp,
     pub updated_at: String,
 }
 
@@ -255,7 +256,7 @@ impl MctPeerAddressBookEntry {
             policy_revision: self.policy_revision,
             binding_state: self.binding_state,
             issued_at: Timestamp::new(self.updated_at.clone())?,
-            expires_at: None,
+            expires_at: self.expires_at.clone(),
             created_by_observation_id: ObservationId::new(format!(
                 "obs:peer-binding:{}",
                 self.binding_id
@@ -794,6 +795,7 @@ mod tests {
             outbound_binding: None,
             binding_state: state,
             policy_revision: 1,
+            expires_at: Timestamp::new("2026-07-09T00:05:00Z").unwrap(),
             updated_at: "2026-07-09T00:00:00Z".into(),
         }
     }

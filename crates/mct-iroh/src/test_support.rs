@@ -300,7 +300,7 @@ fn local_binding_for(endpoint_id: &EndpointIdText) -> MctPeerBinding {
         policy_revision: 1,
         binding_state: BindingState::Admitted,
         issued_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
-        expires_at: None,
+        expires_at: Timestamp::new("2026-05-31T00:05:00Z").unwrap(),
         created_by_observation_id: ObservationId::new("obs-binding-local-iroh")
             .expect("string ID literal/generated value must be non-empty"),
         superseded_by_observation_id: None,

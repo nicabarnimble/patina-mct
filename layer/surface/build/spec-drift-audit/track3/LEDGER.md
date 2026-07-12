@@ -18,7 +18,7 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 
 | Plan obligation(s) | Status | Evidence |
 |---|---|---|
-| `entity-fields.MctPeerBinding`, `entity-fields.MctPeerBindingScope`, `value-equality.MctPeerBindingScope` | LAW-LEADS-CODE | `MctPeerBinding.expires_at` remains optional in Rust; S2.1 must establish mandatory time bounds. |
+| `entity-fields.MctPeerBinding`, `entity-fields.MctPeerBindingScope`, `value-equality.MctPeerBindingScope` | COVERED | `mct_kernel::peer::tests::binding_without_expiry_fails_closed`; Rust and operator/config projections require `expires_at`. |
 | `entity-optional.MctPeerBinding.superseded_by_observation_id`, `surface-actor.MctPeerBindingProjection`, `surface-exposure.MctPeerBindingProjection` | COVERED | `mct_kernel::peer::tests::active_binding_admits_intersection_of_requested_policy_and_binding_alpns`; `mct_kernel::observation::tests::revoked_and_expired_bindings_become_observations` |
 | `value-equality.MctPeerBindingPresentation`, `entity-fields.MctPeerBindingPresentation` | COVERED | `mct_iroh::identity::tests::peer_binding_signature_ref_roundtrips_and_fails_on_tamper`; `mct_kernel::call::tests::call_envelope_roundtrip_preserves_semantic_call_across_edges` |
 | `value-equality.MctHelloCallableSurface`, `entity-fields.MctHelloCallableSurface`, `value-equality.MctHelloCapabilityView`, `entity-fields.MctHelloCapabilityView` | COVERED | `mct_kernel::peer::tests::hello_capability_view_carries_callable_surfaces`; `mct_daemon::federation::tests::federation_view_publishes_only_vision_scoped_callable_surfaces` |
@@ -88,7 +88,7 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 
 | Invariant / obligation | Status | Evidence |
 |---|---|---|
-| `MctIrohPeerBindingAuthority.EveryPeerBindingIsTimeBounded` | LAW-LEADS-CODE | Rust bindings and configured outbound presentations currently permit `expires_at = None`; S2.1 must make an unbounded relationship fail closed. |
+| `MctIrohPeerBindingAuthority.EveryPeerBindingIsTimeBounded` | COVERED | `mct_kernel::peer::tests::binding_without_expiry_fails_closed`; `mct_kernel::peer::tests::active_binding_past_expiry_is_denied`; `mct_iroh::tests::call_rechecks_binding_expiry_after_hello` |
 | `BindingProofCoversCanonicalDirectionalRecord` | COVERED | `mct_iroh::identity::tests::peer_binding_signature_ref_roundtrips_and_fails_on_tamper` |
 | `InvalidBindingProofFailsClosed` | COVERED | `mct_iroh::tests::concurrent_serve_requires_signed_peer_binding_when_configured`; `mct_daemon_bin::resident::tests::resident_mother_rejects_unsigned_peer_binding`; `mct_daemon_bin::resident::tests::resident_remote_route_candidates_reject_unsigned_peer_binding` |
 | `ProofDoesNotBecomeRelationshipOntology` | COVERED | `mct_daemon_bin::resident::tests::resident_remote_surface_candidate_becomes_admissible_when_all_checks_pass` requires proof plus independent authority/publication/reachability facts. |
@@ -153,13 +153,13 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 | `OfferIsVisionScoped` | COVERED | `mct_daemon::federation::tests::federation_view_is_vision_scoped`; `mct_daemon_bin::resident::tests::two_mother_wrong_vision_fails_closed` |
 | `OfferLapsesAtFreshnessBoundary` | GAP | Fresh filtering exists, but no named test positions a publication exactly at the consumer freshness boundary and proves candidacy removal without fault. |
 
-## Initial status summary
+## Current status summary
 
 | Status | Rows |
 |---|---:|
-| COVERED | 60 |
+| COVERED | 62 |
 | GAP | 10 |
-| LAW-LEADS-CODE | 3 |
+| LAW-LEADS-CODE | 1 |
 | DEFERRED | 2 |
 
-The three LAW-LEADS-CODE rows collapse to the two authorized seams: mandatory expiry appears in both the structural and semantic tables; operator-pointed egress is the second seam. The ten GAP rows collapse to five focused test groups: current-authority-before-replay edge classes, complete candidacy/role/bilateral conjunction, per-hop upstream identity projection, publication honesty, and publication freshness.
+S2.1 resolved both mandatory-expiry rows through one contract change. The remaining LAW-LEADS-CODE row is operator-pointed egress. The ten GAP rows collapse to five focused test groups: current-authority-before-replay edge classes, complete candidacy/role/bilateral conjunction, per-hop upstream identity projection, publication honesty, and publication freshness.

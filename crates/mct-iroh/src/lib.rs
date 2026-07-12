@@ -203,7 +203,7 @@ mod tests {
         let client_endpoint_id = client.snapshot().endpoint_id;
         let server_ticket = server.ticket();
         let mut binding = test_peer_binding(&client_endpoint_id);
-        binding.expires_at = Some(Timestamp::new("2026-06-01T00:00:00Z").unwrap());
+        binding.expires_at = Timestamp::new("2026-06-01T00:00:00Z").unwrap();
         let mut state = MctIrohServeState::new();
         let trace_id = TraceId::new("trace-expired-binding-iroh")
             .expect("string ID literal/generated value must be non-empty");
@@ -1088,7 +1088,7 @@ mod tests {
     async fn call_rechecks_binding_expiry_after_hello() {
         assert_current_binding_denial(
             |binding| {
-                binding.expires_at = Some(Timestamp::new("2026-05-31T00:00:03Z").unwrap());
+                binding.expires_at = Timestamp::new("2026-05-31T00:00:03Z").unwrap();
             },
             Timestamp::new("2026-05-31T00:00:04Z").unwrap(),
             CallProtocolReason::BindingExpired,
@@ -1230,7 +1230,7 @@ mod tests {
             policy_revision: 1,
             binding_state: BindingState::Admitted,
             issued_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
-            expires_at: None,
+            expires_at: Timestamp::new("2026-05-31T00:05:00Z").unwrap(),
             created_by_observation_id: ObservationId::new("obs-binding-public-iroh")
                 .expect("string ID literal/generated value must be non-empty"),
             superseded_by_observation_id: None,

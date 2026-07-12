@@ -6,6 +6,10 @@ Mode: audit only (`weed` check mode)
 
 Baseline: branch `patina`, `bcb4778` (`docs: close multi-mother forwarding phase`), clean tree
 
+## Contract-propagation catches
+
+- **2026-07-12 — mandatory peer-binding expiry:** Track 3's `mct_kernel::peer::tests::binding_without_expiry_fails_closed` caught that Rust/config/CLI representations still permitted an unbounded binding despite `MctIrohPeerBindingAuthority.EveryPeerBindingIsTimeBounded`. The representation now requires expiry end-to-end, including signed canonical records and outbound presentations.
+
 ## Scope and method
 
 This audit compares `layer/allium/mct-product-map.allium` with the landed resident Mother, payload/CAS, route-wiring, typed-WIT, binding-signature, and single-hop forwarding implementation. It makes no code, specification, or test changes.
