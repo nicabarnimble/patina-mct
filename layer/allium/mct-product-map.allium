@@ -744,7 +744,7 @@ entity MctCallProtocolEvaluation {
     route_decision_id: String?
     result_ref: String?
     outcome: accepted_for_routing | malformed | denied | failed | timed_out | completed
-    reason: hello_not_admitted | alpn_not_admitted | endpoint_mismatch | binding_revoked | binding_expired | policy_revision_stale | malformed_call | payload_metadata_mismatch | authority_denied | no_route | execution_failed | execution_timed_out | result_recorded
+    reason: hello_not_admitted | alpn_not_admitted | endpoint_mismatch | binding_revoked | binding_expired | policy_revision_stale | malformed_call | payload_metadata_mismatch | authority_denied | no_route | execution_failed | execution_timed_out | result_recorded | idempotency_key_reuse_mismatch | idempotency_budget_full | idempotency_in_progress | idempotency_replay_completed
     safe_message: String
     observation_id: String
 }
@@ -833,6 +833,35 @@ surface MctCallProtocolReplyProjection {
         reply.reply_observation_id
 }
 
+-- Decision: 2026-07-10 Track-1 Slice 6 grows `IdempotencyIsRequestScoped` from its
+-- original deduplication rule into durable replay semantics. The old meaning remains: a key
+-- deduplicates retry of the same protocol request and never authorizes a different call or
+-- bypasses revalidation.
+-- Decision: A matching completed retry returns the recorded caller-safe reply, including its
+-- outcome, safe message, result reference or handle, route projection, and bounded inline result
+-- payload, without routing or executing the child again.
+-- Decision: Idempotency scope is the current authenticated caller identity. Peer requests use
+-- the current immediate peer binding; local adapters use their canonical local caller identity.
+-- One caller can never receive another caller's recorded result.
+-- Decision: The request fingerprint covers canonical WIT target identity, semantic call id, and
+-- declared payload digest or named empty marker. A key reused with a different fingerprint fails
+-- closed and never returns the prior result.
+-- Decision: Entries have a named TTL and named per-caller budget. Current disclosed values are
+-- 720 seconds and 256 unexpired entries per caller; these values are implementation policy, not
+-- frozen protocol constants. A full budget refuses the new keyed request and never evicts a
+-- current entry. Within its TTL, a keyed retry replays or is typed-refused and never silently
+-- re-executes; after expiry, reuse is explicitly fresh execution.
+-- Decision: An in-flight duplicate is typed-refused without waiting and without a second
+-- execution. Durable completed entries survive process restart; crash-left in-flight entries
+-- refuse until expiry.
+-- Decision: Current payload and peer-binding authority evaluation precedes every idempotency
+-- reserve or replay decision. Replay can avoid routing and execution but cannot revive revoked,
+-- expired, narrowed, or stale authority.
+-- Decision: The 0.x wire disclosure names `idempotency_key_reuse_mismatch`,
+-- `idempotency_budget_full`, `idempotency_in_progress`, and
+-- `idempotency_replay_completed`. Cross-Mother replay after forwarding failover is excluded from
+-- request-scoped idempotency and remains a federation follow-on.
+
 contract MctCallProtocol {
     @invariant RequiresHelloAdmission
         -- A peer call is accepted only when a prior hello decision admitted `mct/call/0` for the same endpoint, binding, and Vision scope.
@@ -850,7 +879,41 @@ contract MctCallProtocol {
         -- Payload metadata used for routing and authority is checked against the payload handle before execution proceeds.
 
     @invariant IdempotencyIsRequestScoped
-        -- Idempotency keys deduplicate retry of the same protocol request; they do not authorize a different call or bypass revalidation.
+        -- Idempotency keys deduplicate retry only within the current authenticated caller scope;
+        -- they do not authorize a different request, expose another caller's result, or bypass
+        -- current authority and revalidation.
+
+    @invariant MatchingCompletedRetryReplaysRecordedReply
+        -- A completed matching fingerprint returns the original caller-safe reply and bounded
+        -- result payload without route selection or child execution.
+
+    @invariant IdempotencyFingerprintMustMatch
+        -- Reuse of a key for a different canonical target, semantic call id, or payload digest
+        -- fails closed and never reveals or substitutes the stored result.
+
+    @invariant IdempotencyBoundsRefuseRatherThanEvict
+        -- TTL and per-caller capacity are bounded by named disclosed constants. Capacity pressure
+        -- refuses new keyed work and never evicts a current entry to make room.
+
+    @invariant CurrentIdempotencyEntryNeverSilentlyReexecutes
+        -- Before expiry, a keyed retry either replays the completed reply or receives a typed
+        -- refusal; fresh execution after expiry is explicit.
+
+    @invariant InFlightDuplicateIsRefused
+        -- A duplicate of an in-flight request receives a typed retry-later failure without
+        -- waiting and without a second execution.
+
+    @invariant IdempotencyStateSurvivesRestart
+        -- Completed replay state is durable across restart; an incomplete crash-held reservation
+        -- remains in flight until its bounded expiry rather than being treated as fresh.
+
+    @invariant CurrentAuthorityPrecedesReplay
+        -- Payload integrity and current caller or peer-binding authority are evaluated before
+        -- replay so cached success cannot become stale authority.
+
+    @invariant CrossMotherReplayRequiresFederationContract
+        -- Request-scoped idempotency does not deduplicate across Mothers after forwarding or
+        -- failover; that behaviour requires a separate federation contract.
 
     @invariant CallerReceivesSafeResultOnly
         -- Peer replies contain caller-safe result information and opaque references, not internal route reasoning or topology.
