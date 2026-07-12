@@ -170,6 +170,11 @@ contract TwoPhaseRouting {
     @invariant EffectBoundaryGuardCannotRepairStaleAuthority
         -- A revision mismatch denies before the child effect; the adapter cannot refresh, widen,
         -- or reinterpret the already-minted authority token as current.
+
+    @invariant PeerEgressAndLocalChildEffectGuardsAreDistinct
+        -- Derived peer candidacy and its complete current-record authority are revalidated before
+        -- outbound submission under `PeerOperationalRoleDerivation`; this route-egress guard is
+        -- distinct from the local policy/grant revision guard immediately before a child effect.
 }
 
 -- Decision: If Phase 1 eliminates every route, the default no-route result is hard denial with a clear policy reason.
@@ -252,6 +257,27 @@ contract NodeProfileAndTelemetry {
 -- Decision: Iroh endpoint hooks and relay access control may reject unknown, banned, or malformed peers early, but the MCT authority decision remains a kernel peer-admission decision that records an observation.
 -- Decision: RCAN-style signed capability tokens are useful evidence and a design pattern for attenuation, but MCT peer bindings and ToyGrants remain the authority records for MCT calls, observations, thoughts, and child/toy access.
 -- Decision: Binding creation, admission, rejection, revocation, expiry, and stale-policy denial are observed facts before protected peer effects such as `mct/call/0`, `mct/thought/0`, or `mct/observe/0` proceed.
+-- Decision: 2026-07-12 session `20260712-112719-785420000` governs peer relationships
+-- through companion contracts `PeerRelationshipTaxonomy`, `PeerOperationalRoleDerivation`, and
+-- `BilateralExecutableRouting`. `CallSubmissionAdmission` is the receiving Mother's directional
+-- binding; `OutboundCallAuthorization` is possession of the reverse admission; and
+-- `CapabilityPublication` is the separately governed publication record.
+-- Decision: Every peer relationship is explicit, issued, scoped, time-bounded, and revocable.
+-- A binding admitting `mct/call/0` permits submission for evaluation only and grants no call,
+-- route, child, toy, data movement, result-ingress, or effect authority.
+-- Decision: ImmediateCaller, CapabilityPublisher, EligibleRouteCandidate, SelectedExecutor, and
+-- bilateral pair states are current projections under the companion law, never stored role or
+-- routable authority. The exact derived candidacy conjunction is
+-- `PeerOperationalRoleDerivation.EligibleRouteCandidateDerivation` and is revalidated before
+-- outbound submission.
+-- Decision: Mutual directional admission is two-sovereign consent because peer routing sends
+-- bounded payload bytes to the executor and imports its result into the sender's fabric. The
+-- receiver's binding is ingress consent; the sender's binding is her egress, peer-trust, and data-
+-- placement decision. Either direction may end independently and removes candidacy on the next
+-- current-record evaluation.
+-- Decision: An operator-pointed peer call is an explicit, scoped, durably observed individual
+-- egress decision under `PeerOperationalRoleDerivation.OperatorPointedSubmissionIsDistinct`.
+-- It creates no ambient relationship and does not waive receiver admission or per-call authority.
 -- Decision: 2026-07-12 tend disposition of REPORT B4: the landed binding proof is an
 -- Ed25519 signature reference prefixed `mct-ed25519-binding-v1:` over canonical JSON carrying a
 -- versioned context plus binding id, issuer node and endpoint, peer node and endpoint, Vision,
@@ -286,7 +312,7 @@ entity MctPeerBinding {
     policy_revision: Integer
     binding_state: pending | admitted | denied | expired | revoked
     issued_at: Timestamp
-    expires_at: Timestamp?
+    expires_at: Timestamp
     created_by_observation_id: String
     superseded_by_observation_id: String?
 }
@@ -374,6 +400,30 @@ contract MctIrohPeerBindingAuthority {
 
     @invariant CapabilityTokensDoNotReplaceToyGrants
         -- Signed tokens may prove delegated peer facts, but MCT ToyGrants and peer bindings remain the authority records used by the kernel.
+
+    @invariant PeerRelationshipsUseCompanionTaxonomy
+        -- Durable call relationships, publication, operational roles, pair states, and derived
+        -- candidacy are governed by the named companion contracts rather than duplicated here.
+
+    @invariant EveryPeerBindingIsTimeBounded
+        -- A peer binding always has an expiry; omission cannot create an indefinite relationship.
+
+    @invariant CallBindingAdmitsSubmissionOnly
+        -- A current call-scoped binding allows the peer to submit for evaluation and grants no
+        -- call execution, route, child, toy, data movement, result ingress, or adapter effect.
+
+    @invariant PeerRolesAndPairStatesAreDerived
+        -- Immediate caller, publisher, candidate, executor, stranger, one-way, mutual, and
+        -- routable states are current projections and are never persisted as authority.
+
+    @invariant DerivedRoutingRequiresCompanionConjunction
+        -- Resident peer candidacy uses the complete current conjunction named by
+        -- `EligibleRouteCandidateDerivation`; no one term, including publication or ticket,
+        -- establishes candidacy alone.
+
+    @invariant OperatorPointedEgressIsOneObservedDecision
+        -- Explicit operator direction authorizes only that scoped, durably observed egress and
+        -- creates no continuing peer relationship or receiver-side authority.
 
     @invariant BindingProofCoversCanonicalDirectionalRecord
         -- The Ed25519 proof authenticates the canonical binding identity, issuer and peer node and
