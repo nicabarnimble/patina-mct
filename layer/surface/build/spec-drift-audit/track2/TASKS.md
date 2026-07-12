@@ -155,8 +155,8 @@ The operator reviews the full diff before this becomes law.
 - [x] T3/B4: describe the concrete signed binding proof.
 - [x] T3/B5: describe callable-surface publication evidence by companion reference.
 - [x] T4: disposition all 22 peer-ontology tend inputs without semantic duplication.
-- [ ] T5: defer A4 to C2, close B1-B5 audit rows, and record terminal disposition tally.
-- [ ] Final validation and operator-review report.
+- [x] T5: defer A4 to C2, close B1-B5 audit rows, and record terminal disposition tally.
+- [x] Final validation completed; operator-review report prepared without pushing or merging.
 
 ## Tend-input disposition ledger
 
@@ -187,4 +187,15 @@ The operator reviews the full diff before this becomes law.
 
 Failures are captured verbatim here before any rerun.
 
-- `docs: state map epistemics and peer companion` — full required gate passed; no flakes.
+- `35a7702` (`docs: state map epistemics and peer companion`) — full required gate passed; no flakes.
+- `183857e` (`docs: specify request idempotency contract`) — full required gate passed; no flakes.
+- `2f07f72` (`docs: describe payload integrity semantics`) — full required gate passed; no flakes.
+- `205c646` (`docs: describe effect-boundary revision semantics`) — full required gate passed; no flakes.
+- `dfcef73` (`docs: describe caller-safe route projection semantics`) — full required gate passed; no flakes.
+- `2eeb0eb` (`docs: describe signed peer binding semantics`) — full required gate passed; no flakes.
+- `727b093` (`docs: describe capability publication evidence`) — full required gate passed; no flakes.
+- `2742e4f` (`docs: reference ratified bilateral peer authority`) — full required gate passed; no flakes.
+- `d7c2871` (`docs: reference ratified terminal peer call semantics`) — full required gate passed; no flakes.
+- `85261aa` (`docs: reference future peer authority slots`) — full required gate passed; no flakes.
+- `c6e5a77` (`docs: record observed mutation ownership`) — full required gate passed; no flakes.
+- `docs: disposition planner evidence and close audit rows` — full required gate passed; no flakes.

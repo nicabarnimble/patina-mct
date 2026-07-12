@@ -45,7 +45,7 @@ $ allium analyse layer/allium/mct-product-map.allium
 }
 ```
 
-**Tooling finding T1 — local/CI Allium version skew.** The accepted local baseline is 3.5.0, while `scripts/install-allium-ci.sh:4-5` defaults CI to Allium 3.2.3 and its matching checksum. This can make local and CI syntax/analysis behavior differ. **Direction: code-ward** — bump the CI pin and checksum in a separate gate-time commit; do not combine it with this audit.
+**Tooling finding T1 — local/CI Allium version skew.** The accepted local baseline is 3.5.0, while `scripts/install-allium-ci.sh:4-5` defaults CI to Allium 3.2.3 and its matching checksum. This can make local and CI syntax/analysis behavior differ. **Direction: code-ward** — bump the CI pin and checksum in a separate gate-time commit; do not combine it with this audit. **Outcome:** fixed in `ce42258` (`chore: pin allium 3.5.0 in CI`).
 
 ## Class A — code violates a product-map decision or invariant
 
@@ -55,6 +55,7 @@ $ allium analyse layer/allium/mct-product-map.allium
 - **Code:** `crates/mct-kernel/src/call/mod.rs:127-155`; `crates/mct-daemon/src/main.rs:2184-2194,2267-2272`.
 - **Evidence:** The map says, “`origin` records which adapter produced the call for audit and telemetry, but must not create adapter-specific routing authority.” `CallOrigin::allows_remote_candidate_sourcing` grants remote-candidate sourcing to CLI/JVM/WASM/process origins and denies it to Iroh origin; `ResidentRemoteCandidateSource` is constructible only through that predicate at the candidate merge seam. Origin therefore changes the set of routes the call may receive, not merely its audit projection. The single-hop behavior is intentional and should remain Class A until the operator reconciles the contradictory map statement.
 - **Direction:** code-ward.
+- **Outcome:** resolved by peer-ontology session `20260712-112719-785420000` and addressed in the map by `d7c2871`; `OriginIsForObservationNotPermission` stands, while terminality derives from `mct/call/0` protocol semantics.
 
 ### A2 — an admitted hello is reused without current binding revalidation
 
@@ -78,6 +79,7 @@ $ allium analyse layer/allium/mct-product-map.allium
 - **Code:** `crates/mct-kernel/src/route.rs:144-198`; `crates/mct-daemon/src/main.rs:2273-2315,2744-2763`.
 - **Evidence:** The map says `RouteDecision` records authority filtering, feasible routes, planner scoring, selected route, snapshot revisions, and revalidation chain. The Rust record has authority evaluations, one selected route, and one no-route reason, but no phase-1 survivor set, planner evaluations/ranks/reasons, or decision snapshot revisions. The daemon sorts admissible candidates using an unrecorded static tuple. Operators can see what was selected but cannot reconstruct the recorded phase-2 comparison or the capability/telemetry snapshot that justified it.
 - **Direction:** spec-ward.
+- **Outcome:** **adjudicated-deferred to C2 planner/telemetry future (tend pass)** in `mct-product-map.allium`. The complete evidence contract remains law; current deterministic selection must not claim full planner scoring and must revisit the record when C2 inputs land.
 
 ### A5 — hello admission observations are durable only after the response effect
 
@@ -119,6 +121,7 @@ $ allium analyse layer/allium/mct-product-map.allium
 - **Code:** `crates/mct-iroh/src/serve.rs:30-32,396-447`; `crates/mct-daemon/src/blob_store.rs:11-12,71-188`; control-plane ingest at `crates/mct-daemon/src/control.rs:442-467`.
 - **Evidence:** The map says bytes may be inline/content-addressed/external and models only approximate sizes and generic digest/reference fields. Landed behavior uses exact byte counts, BLAKE3 digests, 32 KiB inline request/result caps, a 96 KiB frame budget, and an 8 MiB local CAS with temp-write, size/digest verification, atomic rename, and a control-plane ingestion endpoint. These are externally observable payload semantics absent from the map.
 - **Direction:** code-ward.
+- **Outcome:** addressed in the product map by `2f07f72` (`docs: describe payload integrity semantics`).
 
 ### B2 — a second revision guard exists at the local effect boundary
 
@@ -126,6 +129,7 @@ $ allium analyse layer/allium/mct-product-map.allium
 - **Code:** `crates/mct-daemon/src/main.rs:2104-2118,2789-2799,3296-3337`.
 - **Evidence:** The map requires authority revalidation but does not describe the landed split. The daemon first mints an `AuthorizedRouteExecution`, then rereads the current policy/grants revisions from the execution-side config snapshot and compares them with the token immediately before child execution. Either mismatch yields a typed terminal denial. That additional effect-boundary revision guard should be captured as part of route/revalidation semantics.
 - **Direction:** code-ward.
+- **Outcome:** addressed in the product map by `205c646` (`docs: describe effect-boundary revision semantics`).
 
 ### B3 — `route_taken` is a caller-safe `mct/call/0` reply projection
 
@@ -133,6 +137,7 @@ $ allium analyse layer/allium/mct-product-map.allium
 - **Code:** `crates/mct-kernel/src/call/mod.rs:772-822,955-985`; server projection at `crates/mct-iroh/src/serve.rs:945-971`.
 - **Evidence:** The map gives `MctResult` a conditional `route_taken`, but its `MctCallProtocolReply` has no result-payload or route field. The landed wire reply carries both, validates that denied/cancelled/malformed outcomes cannot expose `route_taken`, and includes it for execution-attempt outcomes. This is a new caller-visible protocol projection rule.
 - **Direction:** code-ward.
+- **Outcome:** addressed in the product map by `dfcef73` (`docs: describe caller-safe route projection semantics`).
 
 ### B4 — binding proof has a concrete Ed25519 canonical-message format
 
@@ -140,6 +145,7 @@ $ allium analyse layer/allium/mct-product-map.allium
 - **Code:** `crates/mct-iroh/src/identity.rs:9-17,78-168`; admission enforcement at `crates/mct-iroh/src/serve.rs:450-499`.
 - **Evidence:** The map treats signed tokens as evidence and exposes an opaque signature reference, but does not define the landed proof. Code uses prefix `mct-ed25519-binding-v1:`, verifies against the issuer's Iroh public key, and signs a canonical JSON payload covering binding/issuer/peer endpoint and node IDs, Vision, ALPNs, policy revision, and expiry. Missing, malformed, or invalid proofs become safe `CapabilityInvalid` hello denial when signature enforcement is enabled.
 - **Direction:** code-ward.
+- **Outcome:** addressed in the product map by `2eeb0eb` (`docs: describe signed peer binding semantics`).
 
 ### B5 — hello capability views carry expiring callable-surface evidence
 
@@ -147,6 +153,7 @@ $ allium analyse layer/allium/mct-product-map.allium
 - **Code:** callable surface/view records at `crates/mct-kernel/src/peer/mod.rs:185-223`; publication filtering at `crates/mct-daemon/src/federation.rs:155-197`; five-minute freshness and storage at `crates/mct-daemon/src/main.rs:1150-1221` and `crates/mct-daemon/src/state.rs:910-1031`.
 - **Evidence:** The map's hello view lists ALPNs, WIT worlds, observation modes, and an optional reference. Code additionally publishes each ready, approved, assigned, Vision-matching child operation with runtime and policy revisions; received views are stored transactionally and eligible for route sourcing for 300 seconds. This runtime-evidence model is substantially more specific than the map.
 - **Direction:** code-ward.
+- **Outcome:** addressed in the product map by `727b093` (`docs: describe capability publication evidence`), by reference to the ratified companion publication contract without freezing its open freshness/revocation policy.
 
 ## Class C — specified future behavior not yet built
 
@@ -193,6 +200,7 @@ $ allium analyse layer/allium/mct-product-map.allium
 - **Code:** publication source filter, `crates/mct-daemon/src/federation.rs:155-197`; candidate sourcing, `crates/mct-daemon/src/main.rs:2432-2471`.
 - **Evidence:** Only operations of a locally loaded, ready, approved, actively assigned, same-Vision child are published. A consumer converts a fresh published operation directly into a route to that publishing peer. There is no broker/forwardable-capability distinction: publication is executable evidence that the publisher itself can run the operation. The product map does not state that peer-relationship commitment.
 - **Direction:** elicitation.
+- **Outcome:** ratified by session `20260712-112719-785420000` and addressed in the map by `727b093`: publication is an honest, fresh, revocable local execution offer, not authority or brokerage.
 
 ### D2 — `mct/call/0` arrivals are terminal at the receiving Mother
 
@@ -200,6 +208,7 @@ $ allium analyse layer/allium/mct-product-map.allium
 - **Code:** origin capability, `crates/mct-kernel/src/call/mod.rs:127-155`; unrepresentable candidate-source seam, `crates/mct-daemon/src/main.rs:2184-2194,2267-2272`.
 - **Evidence:** Calls constructed with `CallOrigin::Iroh` cannot produce `ResidentRemoteCandidateSource`; therefore remote plans never join local plans for a forwarded arrival. If local candidates are unavailable, the receiving Mother returns its existing no-route result rather than brokering another hop. This exact relationship semantics is absent from the map and also creates the A1 contradiction.
 - **Direction:** elicitation.
+- **Outcome:** ratified by session `20260712-112719-785420000` and addressed in the map by `d7c2871`: `mct/call/0` is permanently terminal at the receiving Mother.
 
 ### D3 — forwarding rewrites caller identity per hop
 
@@ -207,6 +216,7 @@ $ allium analyse layer/allium/mct-product-map.allium
 - **Code:** forwarded request construction, `crates/mct-daemon/src/main.rs:3171-3218`; executor observation, `crates/mct-daemon/src/main.rs:1814-1860`.
 - **Evidence:** Before forwarding, the daemon clones the call, replaces `caller.node_id` with the forwarding Mother's node, clears `user_id`, replaces Vision with the peer Vision, preserves project ID, and sets origin to Iroh while retaining the same call ID. The executor therefore authorizes and records the immediate forwarding Mother, not the end-to-end original caller; upstream caller context remains only on the originator's local ledger. The map has no stated per-hop accountability model.
 - **Direction:** elicitation.
+- **Outcome:** ratified by session `20260712-112719-785420000` and addressed in the map by `d7c2871`: per-hop vouching and ImmediateCaller attribution are permanent protocol semantics.
 
 ### D4 — executable peer routing requires two directional binding proofs
 
@@ -214,6 +224,7 @@ $ allium analyse layer/allium/mct-product-map.allium
 - **Code:** address-book relationship shape, `crates/mct-daemon/src/config.rs:53-75`; remote authority chain, `crates/mct-daemon/src/main.rs:2518-2596`.
 - **Evidence:** A configured relationship stores both the local Mother's signed admission of the peer (`binding_signature_ref`) and a distinct peer-issued outbound proof that the local Mother may be admitted by the peer (`outbound_binding`). Remote candidacy requires both signatures, both call ALPN scopes, outbound expiry, admitted local state, matching endpoint/binding evidence, and a ticket. This bilateral, directional relationship ontology is not represented by the product map's single binding concept.
 - **Direction:** elicitation.
+- **Outcome:** ratified by session `20260712-112719-785420000` and addressed in the map by `2742e4f`: mutual directional admission is the two-sovereign gate for derived executable routing.
 
 ## Coverage notes
 
@@ -231,31 +242,31 @@ The audit also found implementation alignment, not divergence, in these walked a
 
 | ID | Class | Area | Resolution direction |
 |---|---|---|---|
-| A1 | A | Origin creates remote-routing permission | code-ward |
+| A1 | A | Origin creates remote-routing permission | **resolved** by peer ontology; map addressed in `d7c2871` |
 | A2 | A | Cached hello bypasses current binding revalidation | spec-ward — **fixed** in `5f8f1af` |
 | A3 | A | Idempotency key does not deduplicate | spec-ward — **fixed** in `2ed18af` |
-| A4 | A | RouteDecision omits planner/snapshot evidence | spec-ward |
+| A4 | A | RouteDecision omits planner/snapshot evidence | **adjudicated-deferred to C2** planner/telemetry future (tend pass) |
 | A5 | A | Hello observation follows response effect | spec-ward — **fixed** in `e16e59d` |
 | A6 | A | Authority/operator/storage mutations are unobserved | spec-ward — **fixed** in `393884f`, `3b1fa34`, `abe3eb1`, `57c6b21`, and `0fb06c3` |
 | A7 | A | Reload drains/stops before replacement readiness | spec-ward — **fixed** in `3df5245` |
 | A8 | A | Peer-call lifecycle observation coverage is incomplete | spec-ward — **fixed** in `fd3cd3d` |
-| B1 | B | Payload caps and local BLAKE3 CAS are under-described | code-ward |
-| B2 | B | Effect-boundary revision guard is under-described | code-ward |
-| B3 | B | Reply `route_taken` projection is under-described | code-ward |
-| B4 | B | Ed25519 binding proof format is under-described | code-ward |
-| B5 | B | Expiring callable-surface evidence is under-described | code-ward |
+| B1 | B | Payload caps and local BLAKE3 CAS are under-described | **addressed in map** by `2f07f72` |
+| B2 | B | Effect-boundary revision guard is under-described | **addressed in map** by `205c646` |
+| B3 | B | Reply `route_taken` projection is under-described | **addressed in map** by `dfcef73` |
+| B4 | B | Ed25519 binding proof format is under-described | **addressed in map** by `2eeb0eb` |
+| B5 | B | Expiring callable-surface evidence is under-described | **addressed in map** by `727b093` |
 | C1 | C | Full identity/Vision/data/compute authority is future | elicitation |
 | C2 | C | Capability profiles, telemetry, environment planner are future | elicitation |
 | C3 | C | Retry/grant-request/escalation are future | elicitation |
 | C4 | C | Thought/observe/federation ALPNs are future | elicitation |
 | C5 | C | JVM-backed WIT child substrate is future | elicitation |
-| D1 | D | Publication commits the publisher to local execution | elicitation |
-| D2 | D | Forwarded arrivals are terminal/single-hop | elicitation |
-| D3 | D | Forwarding uses per-hop caller identity | elicitation |
-| D4 | D | Peer routing requires bilateral directional proofs | elicitation |
-| T1 | Tooling | Local Allium 3.5.0 vs CI pin 3.2.3 | separate gate-time commit |
+| D1 | D | Publication commits the publisher to local execution | **ratified/addressed** by session `20260712-112719-785420000` and `727b093` |
+| D2 | D | Forwarded arrivals are terminal/single-hop | **ratified/addressed** by session `20260712-112719-785420000` and `d7c2871` |
+| D3 | D | Forwarding uses per-hop caller identity | **ratified/addressed** by session `20260712-112719-785420000` and `d7c2871` |
+| D4 | D | Peer routing requires bilateral directional proofs | **ratified/addressed** by session `20260712-112719-785420000` and `2742e4f` |
+| T1 | Tooling | Local Allium 3.5.0 vs CI pin 3.2.3 | **fixed** in `ce42258` |
 
-Counts: **A = 8, B = 5, C = 5, D = 4; tooling = 1.**
+Counts: **A = 8, B = 5, C = 5, D = 4; tooling = 1.** All **23** findings now have terminal dispositions: fixed, addressed in law, ratified, or explicitly deferred to a named future scope.
 
 ## Unclassified items
 

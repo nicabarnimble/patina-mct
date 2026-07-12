@@ -1257,6 +1257,12 @@ contract MctResultTerminality {
 -- Decision: `MctResult.authority_decision_ref` is an opaque reference to `RouteDecision`; it is not permission to read the decision.
 -- Decision: Full `RouteDecision` access is itself governed by authority: a node operator may see decisions involving their node, a Vision operator may see decisions in their Vision, and a system operator may see broader records.
 -- Decision: `RouteDecision` retention may have full-fidelity and compacted forms later. This is storage policy; the domain structure should still capture the complete reasoning.
+-- Decision: 2026-07-12 tend disposition of REPORT A4: complete phase-2 planner evaluations
+-- and decision snapshot evidence remain the governing target above, but their implementation is
+-- deliberately deferred to the C2 capability-profile, telemetry, and environment-planner future.
+-- The current deterministic tie-break records candidate eliminations and selected route but does
+-- not claim real planner scoring or full snapshots. When phase 2 gains capability/telemetry inputs,
+-- this record and its tests MUST be revisited to carry the complete comparison and revisions.
 
 value CandidateRoute {
     candidate_id: String
@@ -1337,6 +1343,14 @@ contract RouteDecisionPrivacy {
 
     @invariant RevalidationIsSeparateDecision
         -- Pre-execution revalidation records a separate decision linked to the initial decision.
+
+    @invariant PlannerEvidenceDeferralCannotClaimFullScoring
+        -- Until C2 lands real capability-profile and telemetry inputs, deterministic selection
+        -- cannot be represented or described as complete phase-2 scoring and snapshot evidence.
+
+    @invariant PlannerEvidenceMustGrowWithPlannerInputs
+        -- Introducing real phase-2 inputs requires RouteDecision and its contract tests to record
+        -- the compared candidates, planner reasons or ranks, and governing snapshot revisions.
 
     @invariant SafeSummaryOnlyToRequester
         -- Requesters receive only `outcome`, safe requester message, and opaque references through `MctResult`.
