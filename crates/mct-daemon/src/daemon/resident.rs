@@ -5639,6 +5639,106 @@ pub(super) mod tests {
         assert_eq!(plans[0].authority.reason, None);
     }
 
+    /// Covers `PeerOperationalRoleDerivation.EligibleRouteCandidateDerivation`,
+    /// `PeerRelationshipTaxonomy.RolesAreCurrentProjections`, and
+    /// `BilateralExecutableRouting` by removing each current conjunct independently.
+    #[test]
+    fn eligible_route_candidate_requires_every_current_conjunct() {
+        let fixture = remote_surface_candidate_fixture();
+        let now = Timestamp::new("2026-07-09T00:01:00Z").unwrap();
+        let is_admissible =
+            |config: &mct_daemon::MctDaemonConfig, state: &MctRuntimeStateStore, call: &MctCall| {
+                resident_remote_candidate_plans(config, Some(state), call, now.clone())
+                    .unwrap()
+                    .iter()
+                    .any(|plan| plan.authority.outcome == CandidateAuthorityOutcome::Admissible)
+            };
+
+        assert!(is_admissible(
+            &fixture.config,
+            &fixture.state,
+            &fixture.call
+        ));
+
+        let mut without_local_admission = fixture.config.clone();
+        without_local_admission
+            .peers
+            .get_mut("remote-mct")
+            .unwrap()
+            .binding_state = BindingState::Pending;
+        assert!(!is_admissible(
+            &without_local_admission,
+            &fixture.state,
+            &fixture.call
+        ));
+
+        let mut without_reverse_admission = fixture.config.clone();
+        without_reverse_admission
+            .peers
+            .get_mut("remote-mct")
+            .unwrap()
+            .outbound_binding = None;
+        assert!(!is_admissible(
+            &without_reverse_admission,
+            &fixture.state,
+            &fixture.call
+        ));
+
+        let empty_state =
+            MctRuntimeStateStore::open(fixture._dir.path().join("empty.sqlite")).unwrap();
+        assert!(!is_admissible(&fixture.config, &empty_state, &fixture.call));
+
+        let mut wrong_vision = fixture.call.clone();
+        wrong_vision.caller.vision_id = VisionId::new("vision-other").unwrap();
+        assert!(!is_admissible(
+            &fixture.config,
+            &fixture.state,
+            &wrong_vision
+        ));
+
+        let mut outside_call_scope = fixture.call.clone();
+        outside_call_scope.target.function_name = "not-published".into();
+        assert!(!is_admissible(
+            &fixture.config,
+            &fixture.state,
+            &outside_call_scope
+        ));
+
+        let mut without_reachability = fixture.config.clone();
+        without_reachability
+            .peers
+            .get_mut("remote-mct")
+            .unwrap()
+            .ticket = None;
+        assert!(!is_admissible(
+            &without_reachability,
+            &fixture.state,
+            &fixture.call
+        ));
+    }
+
+    /// Covers `CapabilityPublicationRelationship.OfferLapsesAtFreshnessBoundary`.
+    #[test]
+    fn capability_offer_lapses_at_freshness_boundary() {
+        let fixture = remote_surface_candidate_fixture();
+
+        for now in ["2026-07-09T00:05:00Z", "2026-07-09T00:05:01Z"] {
+            let plans = resident_remote_candidate_plans(
+                &fixture.config,
+                Some(&fixture.state),
+                &fixture.call,
+                Timestamp::new(now).unwrap(),
+            )
+            .unwrap();
+            assert!(
+                !plans.iter().any(|plan| {
+                    plan.authority.outcome == CandidateAuthorityOutcome::Admissible
+                }),
+                "publication must not remain admissible at {now}"
+            );
+        }
+    }
+
     #[test]
     fn resident_remote_surface_candidate_forbids_secret_scope() {
         let mut fixture = remote_surface_candidate_fixture();

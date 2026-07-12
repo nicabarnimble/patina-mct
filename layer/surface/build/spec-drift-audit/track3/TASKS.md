@@ -339,3 +339,11 @@ error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
 - `cargo clippy --workspace --all-targets -- -D warnings`: clean.
 - `./scripts/ci-tier0.sh`: clean, including both Allium laws.
 - `git diff --check`: clean.
+
+### S3 candidacy conjunction and publication freshness
+
+- Added `eligible_route_candidate_requires_every_current_conjunct` and `capability_offer_lapses_at_freshness_boundary`.
+- `cargo test --workspace`: 289 passed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `./scripts/ci-tier0.sh`: clean, including both Allium laws.
+- `git diff --check`: clean.
