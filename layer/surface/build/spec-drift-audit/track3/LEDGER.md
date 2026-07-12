@@ -108,8 +108,8 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 
 | Invariant / obligation | Status | Evidence |
 |---|---|---|
-| `PeerRelationshipTaxonomy.RolesAreCurrentProjections` | GAP | Existing tests remove individual authority facts, but no single focused property proves every role/candidate is recomputed from the full current conjunction. |
-| `PeerOperationalRoleDerivation.EligibleRouteCandidateDerivation` | GAP | S3 must prove the positive candidate and independently remove local admission, reverse admission/proof, fresh publication, Vision agreement, call scope, and ticket reachability. |
+| `PeerRelationshipTaxonomy.RolesAreCurrentProjections` | COVERED | `mct_daemon_bin::resident::tests::eligible_route_candidate_requires_every_current_conjunct` mutates current facts independently and immediately loses candidacy. |
+| `PeerOperationalRoleDerivation.EligibleRouteCandidateDerivation` | COVERED | `mct_daemon_bin::resident::tests::eligible_route_candidate_requires_every_current_conjunct` proves the positive candidate and independently removes local admission, reverse admission/proof, fresh publication, Vision agreement, call scope, and ticket reachability. |
 | `SelectedExecutorDerivation` | COVERED | `mct_daemon_bin::resident::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello` revalidates after selection and before egress. |
 | `OperatorPointedSubmissionIsDistinct` | COVERED | `mct_daemon_bin::ingress::tests::operator_pointed_egress_is_durable_before_send` proves the operator decision is durable before the receiver observes `mct/call/0`; both manual CLI paths use the same recording boundary. |
 
@@ -139,27 +139,27 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 |---|---|---|
 | `TwoExposuresRequireTwoSovereignConsents` | COVERED | `mct_daemon_bin::resident::tests::resident_remote_surface_candidate_becomes_admissible_when_all_checks_pass`; missing terms are consolidated by the candidacy GAP above. |
 | `MutualAdmissionPreventsExternallyWritableRouting` | COVERED | `mct_daemon_bin::resident::tests::resident_remote_route_candidates_reject_unsigned_peer_binding`; `mct_daemon_bin::resident::tests::two_mother_unauthorized_operation_fails_closed` |
-| `OneWayStatesRemainMeaningful` | GAP | The full candidacy property must independently prove each one-way relationship cannot become an outbound candidate. |
-| `BilateralStateIsDerivedNotStored` | GAP | Covered together with `RolesAreCurrentProjections` by the planned current-conjunction property test. |
+| `OneWayStatesRemainMeaningful` | COVERED | `mct_daemon_bin::resident::tests::eligible_route_candidate_requires_every_current_conjunct` independently removes each directional admission. |
+| `BilateralStateIsDerivedNotStored` | COVERED | `mct_daemon_bin::resident::tests::eligible_route_candidate_requires_every_current_conjunct` derives candidacy from current directional records rather than a stored pair state. |
 | `EitherDirectionEndsCandidacyImmediately` | COVERED | `mct_daemon_bin::resident::tests::two_mother_revoked_or_expired_binding_fails_closed`; `mct_daemon_bin::resident::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello` |
-| `ReachabilityIsNotAuthority` | GAP | Full candidacy property must prove a ticket alone grants nothing and omission of the ticket removes candidacy. |
+| `ReachabilityIsNotAuthority` | COVERED | `mct_daemon_bin::resident::tests::eligible_route_candidate_requires_every_current_conjunct` proves publication plus reachability cannot replace either consent and omission of the ticket removes candidacy. |
 
 ### Capability publication
 
 | Invariant / obligation | Status | Evidence |
 |---|---|---|
 | `CapabilityPublicationRelationship.HonestLocalExecutionOffer` | GAP | Existing federation coverage includes an unapproved loading child; S3 must isolate readiness by making a child approved/assigned but non-ready and prove it is not published. |
-| `AdvertisementNeverGrantsAuthority` | GAP | Full candidacy property must prove fresh publication without either directional consent is insufficient. |
+| `AdvertisementNeverGrantsAuthority` | COVERED | `mct_daemon_bin::resident::tests::eligible_route_candidate_requires_every_current_conjunct` retains fresh publication while independently removing each directional consent. |
 | `OfferIsVisionScoped` | COVERED | `mct_daemon::federation::tests::federation_view_is_vision_scoped`; `mct_daemon_bin::resident::tests::two_mother_wrong_vision_fails_closed` |
-| `OfferLapsesAtFreshnessBoundary` | GAP | Fresh filtering exists, but no named test positions a publication exactly at the consumer freshness boundary and proves candidacy removal without fault. |
+| `OfferLapsesAtFreshnessBoundary` | COVERED | `mct_daemon_bin::resident::tests::capability_offer_lapses_at_freshness_boundary` proves candidacy is absent exactly at and after `stale_at`. |
 
 ## Current status summary
 
 | Status | Rows |
 |---|---:|
-| COVERED | 63 |
-| GAP | 10 |
+| COVERED | 70 |
+| GAP | 3 |
 | LAW-LEADS-CODE | 0 |
 | DEFERRED | 2 |
 
-S2 resolved both mandatory-expiry rows through one contract change and the operator-pointed egress row through a shared before-effect recording boundary. The ten GAP rows collapse to five focused test groups: current-authority-before-replay edge classes, complete candidacy/role/bilateral conjunction, per-hop upstream identity projection, publication honesty, and publication freshness.
+S2 resolved both mandatory-expiry rows through one contract change and the operator-pointed egress row through a shared before-effect recording boundary. The three remaining GAP rows are current-authority-before-replay edge classes, per-hop upstream identity projection, and publication honesty.
