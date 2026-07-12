@@ -441,6 +441,12 @@ contract MctIrohPeerBindingAuthority {
 -- Decision: Iroh intentionally stops at reliable public-key-addressed connectivity, endpoint discovery, relay/direct path continuity, and ALPN protocol composition. MCT should not push Vision membership, child authorization, thought acceptance, or ToyGrant authority into Iroh transport identity.
 -- Decision: MCT is the protocol/runtime/authority layer above Iroh. It defines MCT ALPN protocols, WIT-shaped calls, thought semantics, observation replication, admission, and grants.
 -- Decision: ALPN is the composition seam. Candidate MCT-over-Iroh ALPNs include `mct/hello/0` for admission/version/capability exchange, `mct/call/0` for WIT-shaped remote calls, `mct/thought/0` for immutable thought/fact exchange, `mct/observe/0` for selected observation replication, and `mct/federation/0` for federation control.
+-- Decision: 2026-07-12 session `20260712-112719-785420000` reserves the named future
+-- relationships `ThoughtExchangeAuthorization`, `ObservationReplicationAuthorization`, and
+-- `FederationControlAuthorization` under companion contract `FuturePeerRelationshipSlots`.
+-- A generic peer binding or successful ALPN negotiation can admit protocol negotiation but never
+-- supplies that protocol's domain authority. Each future relationship requires its own explicit,
+-- issued, scoped, time-bounded, and revocable authority record before implementation.
 -- Decision: MCT whole-app nodes may use public relays for development/bootstrap, managed relays for convenience, or self-hosted/federated relays for production boundaries. Relay choice changes reachability and metadata exposure, not MCT authority.
 -- Decision: noq/Iroh own direct-vs-relay switching, multipath continuity, address discovery, and future path types such as WebRTC or Wi-Fi-aware transport. MCT policy may constrain acceptable path classes and observe path facts, but it does not schedule packets.
 -- Decision: Iroh blobs/content addressing are optional payload and artifact tools. MCT may use them for immutable artifacts, bulk data, or thought payload material, but live calls, admission, and observation streams remain protocol flows with their own authority.
@@ -492,6 +498,16 @@ contract MctIrohProtocolLayer {
 
     @invariant AlpnIsProtocolCompositionSeam
         -- MCT-over-Iroh behaviour is declared through ALPN-specific protocols whose authority requirements are explicit.
+
+    @invariant GenericBindingDoesNotSupplyProtocolDomainAuthority
+        -- A peer binding or negotiated ALPN can admit protocol use at the transport/application
+        -- seam but cannot instantiate thought, observation-replication, or federation-control
+        -- authority.
+
+    @invariant FutureProtocolsRequireNamedRelationshipRecords
+        -- ThoughtExchangeAuthorization, ObservationReplicationAuthorization, and
+        -- FederationControlAuthorization each require a separate explicit, scoped, expiring,
+        -- revocable record before their protected protocol effects exist.
 
     @invariant ChildrenUseCapabilitiesNotTransport
         -- Children consume peer networking through scoped WIT/Toy capabilities and MCT protocols, not through raw Iroh endpoint or socket handles.
