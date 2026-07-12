@@ -154,34 +154,34 @@ The operator reviews the full diff before this becomes law.
 - [x] T3/B3: describe caller-safe `route_taken` reply projection.
 - [x] T3/B4: describe the concrete signed binding proof.
 - [x] T3/B5: describe callable-surface publication evidence by companion reference.
-- [ ] T4: disposition all 22 peer-ontology tend inputs without semantic duplication.
+- [x] T4: disposition all 22 peer-ontology tend inputs without semantic duplication.
 - [ ] T5: defer A4 to C2, close B1-B5 audit rows, and record terminal disposition tally.
 - [ ] Final validation and operator-review report.
 
 ## Tend-input disposition ledger
 
-1. [ ] Companion integration form.
-2. [ ] Durable relationship taxonomy.
-3. [ ] Contextual role derivation.
-4. [ ] Submission-only binding authority and mandatory time bound.
-5. [ ] CapabilityPublication meaning.
-6. [ ] Publication freshness and unresolved mechanics.
-7. [ ] B5 callable-surface publication.
-8. [ ] Terminal local execution proposal.
-9. [ ] Origin remains observation/dispatch.
-10. [ ] Permanent per-hop vouching.
-11. [ ] ObservationReplicationAuthorization owns cross-ledger sharing.
-12. [ ] Bilateral directional bindings and derived states.
-13. [ ] Exact candidate conjunction and egress revalidation.
-14. [ ] Operator-pointed individual egress decision.
-15. [ ] Reachability is not authority.
-16. [ ] B4 proof relationship.
-17. [ ] B1 payload/result ingress rationale.
-18. [ ] B3 route projection is not peer authority.
-19. [ ] Slice-6 authority/replay ordering and scope.
-20. [ ] Future protocol authority slots.
-21. [ ] Brokered multi-hop is a distinct future relationship.
-22. [ ] Optional publication reference remains a route-audit question.
+1. [x] Satisfied by `35a7702`: retained a ratified standalone companion and added reciprocal by-name references.
+2. [x] Edited in `2742e4f`: referenced CallSubmissionAdmission, OutboundCallAuthorization, and CapabilityPublication through `PeerRelationshipTaxonomy`.
+3. [x] Edited in `2742e4f`: current role and pair-state projections are never stored authority.
+4. [x] Edited in `2742e4f`: call admission is submission-only and `MctPeerBinding.expires_at` is mandatory.
+5. [x] Satisfied by `727b093` and companion `CapabilityPublicationRelationship`.
+6. [x] Satisfied by `727b093`: freshness is candidacy currency; the 300-second value, exact freshness policy, and explicit revocation remain the companion's named open questions.
+7. [x] Edited in `727b093`: callable surfaces carry operation/runtime/policy evidence and use companion publication meaning.
+8. [x] Edited in `d7c2871`: peer submission proposes the receiver as local executor and is terminal.
+9. [x] Edited in `d7c2871`: A1 preserves origin as observation/dispatch, never authority.
+10. [x] Edited in `d7c2871`: permanent ImmediateCaller per-hop vouching and correlation IDs.
+11. [x] Edited in `d7c2871`: future ObservationReplicationAuthorization owns cross-ledger disclosure.
+12. [x] Edited in `2742e4f`: two directional bindings govern derived pair states.
+13. [x] Edited in `2742e4f` and connected to B2 in `205c646`: exact companion conjunction and distinct pre-egress revalidation.
+14. [x] Edited in `2742e4f`: operator-pointed egress is one scoped, observed decision and creates no relationship.
+15. [x] Satisfied and reinforced in `2742e4f`: ticket/reachability remains evidence, never authority.
+16. [x] Satisfied by B4 `2eeb0eb` and related to each directional record in `2742e4f`.
+17. [x] Satisfied by B1 `2f07f72`; two-sovereign payload egress/result ingress rationale added in `2742e4f`.
+18. [x] Satisfied by B3 `dfcef73`: route projection reports an attempt and grants no peer authority.
+19. [x] Satisfied by T2 `183857e`: current authority precedes caller-scoped replay; cross-Mother failover replay remains excluded.
+20. [x] Edited in `85261aa`: named future protocol relationships require independent domain authority.
+21. [x] Edited in `d7c2871`: brokered multi-hop is distinct and cannot mutate `mct/call/0`.
+22. [x] Edited in `d7c2871`: optional publication reference remains the companion route-audit open question and never authority.
 
 ## Validation and flake log
 
