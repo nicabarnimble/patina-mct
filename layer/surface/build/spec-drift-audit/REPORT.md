@@ -9,6 +9,7 @@ Baseline: branch `patina`, `bcb4778` (`docs: close multi-mother forwarding phase
 ## Contract-propagation catches
 
 - **2026-07-12 — mandatory peer-binding expiry:** Track 3's `mct_kernel::peer::tests::binding_without_expiry_fails_closed` caught that Rust/config/CLI representations still permitted an unbounded binding despite `MctIrohPeerBindingAuthority.EveryPeerBindingIsTimeBounded`. The representation now requires expiry end-to-end, including signed canonical records and outbound presentations.
+- **2026-07-12 — operator-pointed egress observation:** `mct_daemon_bin::ingress::tests::operator_pointed_egress_is_durable_before_send` caught that manual `iroh call` and `call-peer` submitted without a local individual-decision fact. Both paths now append a node-operator-safe `OperatorActionRecorded` observation before `mct/call/0` egress.
 
 ## Scope and method
 

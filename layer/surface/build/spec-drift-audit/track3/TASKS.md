@@ -129,8 +129,8 @@ ROADMAP. No PR, no merge, no further pushes.
 - [x] S0: capture Allium 3.5.0 plan/model categories for both laws.
 - [x] S1: commit the priority obligation ledger (`c988fb3`).
 - [x] S2.1: mandatory peer-binding expiry contract test and spec-ward fix.
-- [ ] S2.2: operator-pointed egress observation contract test and small fix or stop.
-- [ ] S2.x: resolve any additional LAW-LEADS-CODE rows found by S1.
+- [x] S2.2: operator-pointed egress observation contract test and spec-ward fix.
+- [x] S2.x: no additional LAW-LEADS-CODE seams found by S1.
 - [ ] S3: fill every priority GAP or explicitly defer it with reason.
 - [ ] Final validation and report; no PR, merge, or further push.
 
@@ -307,11 +307,35 @@ test result: FAILED. 54 passed; 6 failed; 0 ignored; 0 measured; 0 filtered out
 error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
 ```
 
+### S2.2 expected red — operator-pointed egress observation
+
+```text
+$ cargo test -p mct-daemon --bin mct-daemon ingress::tests::operator_pointed_egress_is_durable_before_send -- --nocapture
+running 1 test
+
+thread 'ingress::tests::operator_pointed_egress_is_durable_before_send' panicked at crates/mct-daemon/src/daemon/ingress.rs:1146:9:
+assertion failed: observed_before_send.load(Ordering::SeqCst)
+test ingress::tests::operator_pointed_egress_is_durable_before_send ... FAILED
+
+failures:
+    ingress::tests::operator_pointed_egress_is_durable_before_send
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 60 filtered out
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
 ## Completed validation
 
 ### S2.1 mandatory binding expiry
 
 - `cargo test --workspace`: 286 passed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `./scripts/ci-tier0.sh`: clean, including both Allium laws.
+- `git diff --check`: clean.
+
+### S2.2 operator-pointed egress observation
+
+- `cargo test --workspace`: 287 passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: clean.
 - `./scripts/ci-tier0.sh`: clean, including both Allium laws.
 - `git diff --check`: clean.
