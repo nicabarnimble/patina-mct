@@ -729,6 +729,11 @@ contract MctCallAtomicity {
 -- computes and verifies exact size and digest, and only then atomically renames the object into
 -- digest-addressed visibility. Failed or partial verification never publishes the object.
 -- Decision: A peer call reply carries a caller-safe `MctResult` reference or safe adapter error. Internal route decisions, candidate elimination, child details, and topology stay in observations.
+-- Decision: 2026-07-12 tend disposition of REPORT B3: `route_taken` is a caller-safe
+-- `mct/call/0` reply projection. It may identify the execution route for success, failure, or
+-- timeout after execution was attempted; denied, cancelled-before-execution, and malformed
+-- replies carry no route. The projection does not expose candidate reasoning or grant peer
+-- authority.
 -- Decision: `mct/call/0` requires observations for peer call receipt, malformed rejection, constructed call, authorization/denial, route selection/no-route, result recording, and peer reply.
 -- Decision: A hello admission narrows but does not pre-authorize a call. Every `mct/call/0` request still passes the normal MCT authority filter, ToyGrant checks, child assignment checks, data policy, and execution-time revalidation.
 
@@ -780,6 +785,7 @@ entity MctCallProtocolReply {
     protocol_request_id: String
     decision_id: String
     result_ref: String?
+    route_taken: RouteTaken?
     reply_outcome: success | denied | failed | timed_out | cancelled | malformed
     safe_message: String
     reply_observation_id: String
@@ -855,6 +861,9 @@ surface MctCallProtocolReplyProjection {
         reply.protocol_request_id
         reply.decision_id
         reply.result_ref
+        reply.route_taken.node_id
+        reply.route_taken.child_id
+        reply.route_taken.runtime_kind
         reply.reply_outcome
         reply.safe_message
         reply.reply_observation_id
@@ -952,6 +961,14 @@ contract MctCallProtocol {
 
     @invariant CallerReceivesSafeResultOnly
         -- Peer replies contain caller-safe result information and opaque references, not internal route reasoning or topology.
+
+    @invariant RouteTakenReplyPresenceFollowsExecution
+        -- A reply may project the caller-safe route only when execution was attempted. Denied,
+        -- cancelled-before-execution, and malformed replies expose no route.
+
+    @invariant RouteTakenReplyDoesNotGrantPeerAuthority
+        -- A reply route projection reports where an attempted execution ran; it cannot establish
+        -- admission, publication, candidacy, or authority for a later call.
 
     @invariant PeerCallObservationsCoverLifecycle
         -- Receipt, malformed rejection, call construction, authorization, route/no-route, execution result, and reply are all observable facts.
