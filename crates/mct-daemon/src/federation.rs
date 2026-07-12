@@ -280,8 +280,9 @@ mod tests {
         assert!(view.callable_surfaces.is_empty());
     }
 
+    /// Covers `CapabilityPublicationRelationship.HonestLocalExecutionOffer`.
     #[test]
-    fn federation_view_publishes_only_vision_scoped_callable_surfaces() {
+    fn honest_local_execution_offer_excludes_approved_assigned_non_ready_child() {
         let mut config = MctDaemonConfig::default();
         config.child_approvals.insert(
             "resident-wit".into(),
@@ -317,6 +318,21 @@ mod tests {
                 updated_at: "2026-07-09T00:00:00Z".into(),
             },
         );
+        let mut loading_approval = config.child_approvals["resident-wit"].clone();
+        loading_approval.child_name = "resident-loading".into();
+        loading_approval.artifact_id = ComponentArtifactId::new("artifact-resident-loading")
+            .expect("string ID literal/generated value must be non-empty");
+        config
+            .child_approvals
+            .insert("resident-loading".into(), loading_approval);
+        let mut loading_assignment = config.child_assignments["resident-wit"].clone();
+        loading_assignment.child_name = "resident-loading".into();
+        loading_assignment.artifact_id = ComponentArtifactId::new("artifact-resident-loading")
+            .expect("string ID literal/generated value must be non-empty");
+        config
+            .child_assignments
+            .insert("resident-loading".into(), loading_assignment);
+
         let child = loaded_child(
             "resident-wit",
             MctChildInstanceState::Ready,
