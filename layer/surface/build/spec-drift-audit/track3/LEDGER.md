@@ -111,7 +111,7 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 | `PeerRelationshipTaxonomy.RolesAreCurrentProjections` | GAP | Existing tests remove individual authority facts, but no single focused property proves every role/candidate is recomputed from the full current conjunction. |
 | `PeerOperationalRoleDerivation.EligibleRouteCandidateDerivation` | GAP | S3 must prove the positive candidate and independently remove local admission, reverse admission/proof, fresh publication, Vision agreement, call scope, and ticket reachability. |
 | `SelectedExecutorDerivation` | COVERED | `mct_daemon_bin::resident::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello` revalidates after selection and before egress. |
-| `OperatorPointedSubmissionIsDistinct` | LAW-LEADS-CODE | `mct-daemon iroh call` / `call-peer` perform explicit egress without a local durable individual-decision observation. |
+| `OperatorPointedSubmissionIsDistinct` | COVERED | `mct_daemon_bin::ingress::tests::operator_pointed_egress_is_durable_before_send` proves the operator decision is durable before the receiver observes `mct/call/0`; both manual CLI paths use the same recording boundary. |
 
 ### Terminal peer submission
 
@@ -157,9 +157,9 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 
 | Status | Rows |
 |---|---:|
-| COVERED | 62 |
+| COVERED | 63 |
 | GAP | 10 |
-| LAW-LEADS-CODE | 1 |
+| LAW-LEADS-CODE | 0 |
 | DEFERRED | 2 |
 
-S2.1 resolved both mandatory-expiry rows through one contract change. The remaining LAW-LEADS-CODE row is operator-pointed egress. The ten GAP rows collapse to five focused test groups: current-authority-before-replay edge classes, complete candidacy/role/bilateral conjunction, per-hop upstream identity projection, publication honesty, and publication freshness.
+S2 resolved both mandatory-expiry rows through one contract change and the operator-pointed egress row through a shared before-effect recording boundary. The ten GAP rows collapse to five focused test groups: current-authority-before-replay edge classes, complete candidacy/role/bilateral conjunction, per-hop upstream identity projection, publication honesty, and publication freshness.

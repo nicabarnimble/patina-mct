@@ -625,12 +625,62 @@ pub(super) async fn serve_iroh_process_with_ready(
     Ok(())
 }
 
+fn operator_pointed_egress_observation(
+    request: &MctCallProtocolRequest,
+    peer_subject: impl Into<String>,
+) -> MctObservation {
+    let call = &request.call;
+    MctObservation {
+        observation_id: ObservationId::new(format!("obs-operator-pointed-egress-{}", call.call_id))
+            .expect("call IDs are non-empty"),
+        observed_at: current_timestamp(),
+        kind: ObservationKind::OperatorActionRecorded,
+        source_plane: SourcePlane::Operator,
+        trace: ObservationTraceRef {
+            trace_id: call.trace_context.trace_id.clone(),
+            span_id: Some(call.trace_context.span_id.clone()),
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: Some(call.call_id.clone()),
+        decision_id: Some(
+            DecisionId::new(format!("decision-operator-pointed-egress-{}", call.call_id))
+                .expect("call IDs are non-empty"),
+        ),
+        subject_id: Some(peer_subject.into()),
+        resource_id: Some(format!(
+            "{}:{}/{}",
+            call.target.namespace, call.target.interface_name, call.target.function_name
+        )),
+        policy_revision: Some(call.authority_context.policy_revision),
+        grants_revision: None,
+        outcome: ObservationOutcome::Allowed,
+        visibility: ObservationVisibility::NodeOperator,
+        safe_message: "operator authorized one peer call egress".into(),
+        detail_ref: None,
+    }
+}
+
+fn record_operator_pointed_egress(
+    ledger_path: &Path,
+    request: &MctCallProtocolRequest,
+    peer_subject: impl Into<String>,
+) -> Result<()> {
+    append_ledger_observations(
+        ledger_path,
+        &[operator_pointed_egress_observation(request, peer_subject)],
+    )
+}
+
 pub(super) async fn call_iroh(mut args: Vec<String>) -> Result<()> {
     let relay_default = take_flag(&mut args, "--relay-default");
     let binding_signature_ref = take_option(&mut args, "--signature-ref");
+    let ledger_path = take_option(&mut args, "--ledger")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_observation_ledger_path);
     if args.len() < 5 {
         bail!(
-            "expected: mct-daemon iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function] [--signature-ref proof]"
+            "expected: mct-daemon iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function] [--signature-ref proof] [--ledger path]"
         );
     }
     let identity_path = PathBuf::from(&args[0]);
@@ -673,6 +723,11 @@ pub(super) async fn call_iroh(mut args: Vec<String>) -> Result<()> {
         target,
         &hello_response,
     );
+    record_operator_pointed_egress(
+        &ledger_path,
+        &call_request,
+        peer_ticket.endpoint_id.to_string(),
+    )?;
     let call_reply = endpoint.send_call(&peer_ticket, &call_request).await?;
     println!("{}", serde_json::to_string_pretty(&call_reply)?);
     endpoint.close().await;
@@ -690,9 +745,12 @@ pub(super) async fn call_iroh_peer(mut args: Vec<String>) -> Result<()> {
     let state_path = take_option(&mut args, "--state")
         .map(PathBuf::from)
         .unwrap_or_else(default_state_path);
+    let ledger_path = take_option(&mut args, "--ledger")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_observation_ledger_path);
     if args.len() < 2 {
         bail!(
-            "expected: mct-daemon iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path] [--children-dir path] [--state path]"
+            "expected: mct-daemon iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path] [--children-dir path] [--state path] [--ledger path]"
         );
     }
     let identity_path = PathBuf::from(args.remove(0));
@@ -749,6 +807,7 @@ pub(super) async fn call_iroh_peer(mut args: Vec<String>) -> Result<()> {
         target,
         &hello_response,
     );
+    record_operator_pointed_egress(&ledger_path, &call_request, peer_node_id.to_string())?;
     let call_reply = endpoint.send_call(&peer_ticket, &call_request).await?;
     println!("{}", serde_json::to_string_pretty(&call_reply)?);
     endpoint.close().await;
@@ -1068,6 +1127,84 @@ mod tests {
         let ledger_text = std::fs::read_to_string(ledger_path).unwrap();
         assert!(ledger_text.contains("operator_action_recorded"));
         assert!(!ledger_text.contains(secret.trim()));
+    }
+
+    /// Covers `OperatorPointedSubmissionIsDistinct` and
+    /// `MctIrohPeerBindingAuthority.OperatorPointedEgressIsOneObservedDecision`.
+    #[tokio::test]
+    async fn operator_pointed_egress_is_durable_before_send() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = tempfile::tempdir().unwrap();
+        let identity_path = dir.path().join("client-identity.hex");
+        let ticket_path = dir.path().join("peer-ticket.json");
+        let ledger_path = dir.path().join("observations.jsonl");
+
+        let client_secret = load_or_create_node_secret_key_hex(&identity_path).unwrap();
+        let mut client_probe = MotherIrohEndpoint::bind(iroh_config(client_secret, false))
+            .await
+            .unwrap();
+        let client_endpoint_id = client_probe.snapshot().endpoint_id;
+        client_probe.close().await;
+
+        let server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        std::fs::write(&ticket_path, server.ticket().to_json().unwrap()).unwrap();
+        let binding = cli_peer_binding(
+            PeerBindingId::new("binding-operator-pointed").unwrap(),
+            client_endpoint_id,
+            MctNodeId::new("operator-client").unwrap(),
+            VisionId::new("vision-local").unwrap(),
+            identity_path.clone(),
+            server.snapshot().endpoint_id,
+            Timestamp::new("2099-01-01T00:00:00Z").unwrap(),
+        );
+        let observed_before_send = Arc::new(AtomicBool::new(false));
+        let handler_observed = Arc::clone(&observed_before_send);
+        let handler_ledger_path = ledger_path.clone();
+        let serve_task = tokio::spawn(async move {
+            server
+                .serve_concurrent_with_call_handler(
+                    MctIrohServeState::new(),
+                    vec![binding],
+                    MctIrohConcurrentServeConfig::new(MctIrohObservationSink::new(|_| async {
+                        Ok::<(), std::io::Error>(())
+                    })),
+                    current_timestamp,
+                    move |_, _, _| {
+                        let observed = JsonlObservationLedger::open_read_only(
+                            &handler_ledger_path,
+                            "ledger-local",
+                            "local-mct",
+                        )
+                        .and_then(|ledger| ledger.entries())
+                        .is_ok_and(|entries| {
+                            entries.iter().any(|entry| {
+                                entry.observation.kind == ObservationKind::OperatorActionRecorded
+                                    && entry.durability_class == DurabilityClass::BeforeEffect
+                            })
+                        });
+                        handler_observed.store(observed, Ordering::SeqCst);
+                        async { MctIrohCallHandlerResult::accepted_for_routing(None) }
+                    },
+                )
+                .await
+        });
+
+        call_iroh(vec![
+            identity_path.display().to_string(),
+            ticket_path.display().to_string(),
+            "binding-operator-pointed".into(),
+            "operator-client".into(),
+            "vision-local".into(),
+            "--ledger".into(),
+            ledger_path.display().to_string(),
+        ])
+        .await
+        .unwrap();
+
+        assert!(observed_before_send.load(Ordering::SeqCst));
+        serve_task.abort();
     }
 
     #[tokio::test]
