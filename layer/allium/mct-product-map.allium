@@ -252,6 +252,14 @@ contract NodeProfileAndTelemetry {
 -- Decision: Iroh endpoint hooks and relay access control may reject unknown, banned, or malformed peers early, but the MCT authority decision remains a kernel peer-admission decision that records an observation.
 -- Decision: RCAN-style signed capability tokens are useful evidence and a design pattern for attenuation, but MCT peer bindings and ToyGrants remain the authority records for MCT calls, observations, thoughts, and child/toy access.
 -- Decision: Binding creation, admission, rejection, revocation, expiry, and stale-policy denial are observed facts before protected peer effects such as `mct/call/0`, `mct/thought/0`, or `mct/observe/0` proceed.
+-- Decision: 2026-07-12 tend disposition of REPORT B4: the landed binding proof is an
+-- Ed25519 signature reference prefixed `mct-ed25519-binding-v1:` over canonical JSON carrying a
+-- versioned context plus binding id, issuer node and endpoint, peer node and endpoint, Vision,
+-- allowed ALPNs, policy revision, and expiry. The issuer endpoint's Iroh public key verifies it.
+-- Decision: This encoding proves the presented directional binding record; it does not replace
+-- that record or expand its scope. When signed binding enforcement applies, a missing, malformed,
+-- wrong-key, or tampered proof denies hello before admission with internal `capability_invalid`
+-- and caller-safe `not authorized`.
 
 value IrohConnectionPresentation {
     endpoint_id: String
@@ -366,6 +374,18 @@ contract MctIrohPeerBindingAuthority {
 
     @invariant CapabilityTokensDoNotReplaceToyGrants
         -- Signed tokens may prove delegated peer facts, but MCT ToyGrants and peer bindings remain the authority records used by the kernel.
+
+    @invariant BindingProofCoversCanonicalDirectionalRecord
+        -- The Ed25519 proof authenticates the canonical binding identity, issuer and peer node and
+        -- endpoint identities, Vision, ALPN scope, policy revision, and time bound.
+
+    @invariant InvalidBindingProofFailsClosed
+        -- When proof enforcement applies, a missing, malformed, wrong-key, or tampered proof
+        -- prevents admission and exposes only the safe denial projection.
+
+    @invariant ProofDoesNotBecomeRelationshipOntology
+        -- Cryptographic encoding proves an issued directional binding but does not define peer
+        -- roles, publication meaning, call authority, or another Mother's consent.
 }
 
 -- Decision: Iroh intentionally stops at reliable public-key-addressed connectivity, endpoint discovery, relay/direct path continuity, and ALPN protocol composition. MCT should not push Vision membership, child authorization, thought acceptance, or ToyGrant authority into Iroh transport identity.

@@ -152,7 +152,7 @@ The operator reviews the full diff before this becomes law.
 - [x] T3/B1: describe bounded payload integrity and local content-addressed storage.
 - [x] T3/B2: describe the effect-boundary revision guard.
 - [x] T3/B3: describe caller-safe `route_taken` reply projection.
-- [ ] T3/B4: describe the concrete signed binding proof.
+- [x] T3/B4: describe the concrete signed binding proof.
 - [ ] T3/B5: describe callable-surface publication evidence by companion reference.
 - [ ] T4: disposition all 22 peer-ontology tend inputs without semantic duplication.
 - [ ] T5: defer A4 to C2, close B1-B5 audit rows, and record terminal disposition tally.
