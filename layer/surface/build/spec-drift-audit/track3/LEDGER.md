@@ -98,7 +98,7 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 
 | Invariant / obligation | Status | Evidence |
 |---|---|---|
-| `MctHelloProtocol.HelloObservationsBeforeEffects` | COVERED | `mct_daemon_bin::resident::tests::resident_hello_observations_are_durable_before_responses`; `mct_iroh::tests::failed_hello_observation_prevents_response_and_remembered_admission` |
+| `MctHelloProtocol.HelloObservationsBeforeEffects` | COVERED | `mct_daemon_bin::resident::observation::tests::resident_hello_observations_are_durable_before_responses`; `mct_iroh::tests::failed_hello_observation_prevents_response_and_remembered_admission` |
 | `MctLocalFirstObservationLedger.AuthorityFactsAreDurableBeforeEffect` | COVERED | `mct_iroh::tests::denied_call_fact_is_recorded_before_reply`; `mct_daemon_bin::control::tests::live_child_authority_mutations_are_durable_before_config_effect`; `mct_daemon_bin::control::tests::resident_append_failure_prevents_peer_config_effect` |
 | `MctObservabilitySpine.AuthorityDecisionsAreObserved` | COVERED | `mct_kernel::observation::tests::kernel_denial_evaluations_become_observations`; `mct_daemon_bin::control::tests::live_uds_peer_mutations_are_durable_and_secret_free`; `mct_daemon_bin::control::tests::live_toy_grants_and_composition_state_are_observed_before_effects` |
 | `MctObservabilitySpine.AdapterEffectsAreObserved` | COVERED | `mct_iroh::tests::iroh_adapter_observations_cover_endpoint_and_protocol_events`; `mct_daemon::process::tests::process_harness_timeout_returns_typed_result_and_observation`; `mct_daemon::toy::tests::toy_backend_failure_is_adapter_observation_not_kernel_denial` |
