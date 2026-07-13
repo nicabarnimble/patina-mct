@@ -91,8 +91,8 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 |---|---|---|
 | `MctIrohPeerBindingAuthority.EveryPeerBindingIsTimeBounded` | COVERED | `mct_kernel::peer::tests::binding_without_expiry_fails_closed`; `mct_kernel::peer::tests::active_binding_past_expiry_is_denied`; `mct_iroh::tests::call_rechecks_binding_expiry_after_hello` |
 | `BindingProofCoversCanonicalDirectionalRecord` | COVERED | `mct_iroh::identity::tests::peer_binding_signature_ref_roundtrips_and_fails_on_tamper` |
-| `InvalidBindingProofFailsClosed` | COVERED | `mct_iroh::tests::concurrent_serve_requires_signed_peer_binding_when_configured`; `mct_daemon_bin::resident::tests::resident_mother_rejects_unsigned_peer_binding`; `mct_daemon_bin::resident::tests::resident_remote_route_candidates_reject_unsigned_peer_binding` |
-| `ProofDoesNotBecomeRelationshipOntology` | COVERED | `mct_daemon_bin::resident::tests::resident_remote_surface_candidate_becomes_admissible_when_all_checks_pass` requires proof plus independent authority/publication/reachability facts. |
+| `InvalidBindingProofFailsClosed` | COVERED | `mct_iroh::tests::concurrent_serve_requires_signed_peer_binding_when_configured`; `mct_daemon_bin::resident::tests::resident_mother_rejects_unsigned_peer_binding`; `mct_daemon_bin::resident::candidates::tests::resident_remote_route_candidates_reject_unsigned_peer_binding` |
+| `ProofDoesNotBecomeRelationshipOntology` | COVERED | `mct_daemon_bin::resident::candidates::tests::resident_remote_surface_candidate_becomes_admissible_when_all_checks_pass` requires proof plus independent authority/publication/reachability facts. |
 
 ### Observation durability and coverage
 
@@ -109,8 +109,8 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 
 | Invariant / obligation | Status | Evidence |
 |---|---|---|
-| `PeerRelationshipTaxonomy.RolesAreCurrentProjections` | COVERED | `mct_daemon_bin::resident::tests::eligible_route_candidate_requires_every_current_conjunct` mutates current facts independently and immediately loses candidacy. |
-| `PeerOperationalRoleDerivation.EligibleRouteCandidateDerivation` | COVERED | `mct_daemon_bin::resident::tests::eligible_route_candidate_requires_every_current_conjunct` proves the positive candidate and independently removes local admission, reverse admission/proof, fresh publication, Vision agreement, call scope, and ticket reachability. |
+| `PeerRelationshipTaxonomy.RolesAreCurrentProjections` | COVERED | `mct_daemon_bin::resident::candidates::tests::eligible_route_candidate_requires_every_current_conjunct` mutates current facts independently and immediately loses candidacy. |
+| `PeerOperationalRoleDerivation.EligibleRouteCandidateDerivation` | COVERED | `mct_daemon_bin::resident::candidates::tests::eligible_route_candidate_requires_every_current_conjunct` proves the positive candidate and independently removes local admission, reverse admission/proof, fresh publication, Vision agreement, call scope, and ticket reachability. |
 | `SelectedExecutorDerivation` | COVERED | `mct_daemon_bin::resident::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello` revalidates after selection and before egress. |
 | `OperatorPointedSubmissionIsDistinct` | COVERED | `mct_daemon_bin::ingress::tests::operator_pointed_egress_is_durable_before_send` proves the operator decision is durable before the receiver observes `mct/call/0`; both manual CLI paths use the same recording boundary. |
 
@@ -138,21 +138,21 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 
 | Invariant / obligation | Status | Evidence |
 |---|---|---|
-| `TwoExposuresRequireTwoSovereignConsents` | COVERED | `mct_daemon_bin::resident::tests::resident_remote_surface_candidate_becomes_admissible_when_all_checks_pass`; missing terms are consolidated by the candidacy GAP above. |
-| `MutualAdmissionPreventsExternallyWritableRouting` | COVERED | `mct_daemon_bin::resident::tests::resident_remote_route_candidates_reject_unsigned_peer_binding`; `mct_daemon_bin::resident::tests::two_mother_unauthorized_operation_fails_closed` |
-| `OneWayStatesRemainMeaningful` | COVERED | `mct_daemon_bin::resident::tests::eligible_route_candidate_requires_every_current_conjunct` independently removes each directional admission. |
-| `BilateralStateIsDerivedNotStored` | COVERED | `mct_daemon_bin::resident::tests::eligible_route_candidate_requires_every_current_conjunct` derives candidacy from current directional records rather than a stored pair state. |
-| `EitherDirectionEndsCandidacyImmediately` | COVERED | `mct_daemon_bin::resident::tests::two_mother_revoked_or_expired_binding_fails_closed`; `mct_daemon_bin::resident::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello` |
-| `ReachabilityIsNotAuthority` | COVERED | `mct_daemon_bin::resident::tests::eligible_route_candidate_requires_every_current_conjunct` proves publication plus reachability cannot replace either consent and omission of the ticket removes candidacy. |
+| `TwoExposuresRequireTwoSovereignConsents` | COVERED | `mct_daemon_bin::resident::candidates::tests::resident_remote_surface_candidate_becomes_admissible_when_all_checks_pass`; missing terms are consolidated by the candidacy GAP above. |
+| `MutualAdmissionPreventsExternallyWritableRouting` | COVERED | `mct_daemon_bin::resident::candidates::tests::resident_remote_route_candidates_reject_unsigned_peer_binding`; `mct_daemon_bin::resident::candidates::tests::two_mother_unauthorized_operation_fails_closed` |
+| `OneWayStatesRemainMeaningful` | COVERED | `mct_daemon_bin::resident::candidates::tests::eligible_route_candidate_requires_every_current_conjunct` independently removes each directional admission. |
+| `BilateralStateIsDerivedNotStored` | COVERED | `mct_daemon_bin::resident::candidates::tests::eligible_route_candidate_requires_every_current_conjunct` derives candidacy from current directional records rather than a stored pair state. |
+| `EitherDirectionEndsCandidacyImmediately` | COVERED | `mct_daemon_bin::resident::candidates::tests::two_mother_revoked_or_expired_binding_fails_closed`; `mct_daemon_bin::resident::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello` |
+| `ReachabilityIsNotAuthority` | COVERED | `mct_daemon_bin::resident::candidates::tests::eligible_route_candidate_requires_every_current_conjunct` proves publication plus reachability cannot replace either consent and omission of the ticket removes candidacy. |
 
 ### Capability publication
 
 | Invariant / obligation | Status | Evidence |
 |---|---|---|
 | `CapabilityPublicationRelationship.HonestLocalExecutionOffer` | COVERED | `mct_daemon::federation::tests::honest_local_execution_offer_excludes_approved_assigned_non_ready_child` proves approval and assignment cannot publish a non-ready instance. |
-| `AdvertisementNeverGrantsAuthority` | COVERED | `mct_daemon_bin::resident::tests::eligible_route_candidate_requires_every_current_conjunct` retains fresh publication while independently removing each directional consent. |
-| `OfferIsVisionScoped` | COVERED | `mct_daemon::federation::tests::federation_view_is_vision_scoped`; `mct_daemon_bin::resident::tests::two_mother_wrong_vision_fails_closed` |
-| `OfferLapsesAtFreshnessBoundary` | COVERED | `mct_daemon_bin::resident::tests::capability_offer_lapses_at_freshness_boundary` proves candidacy is absent exactly at and after `stale_at`. |
+| `AdvertisementNeverGrantsAuthority` | COVERED | `mct_daemon_bin::resident::candidates::tests::eligible_route_candidate_requires_every_current_conjunct` retains fresh publication while independently removing each directional consent. |
+| `OfferIsVisionScoped` | COVERED | `mct_daemon::federation::tests::federation_view_is_vision_scoped`; `mct_daemon_bin::resident::candidates::tests::two_mother_wrong_vision_fails_closed` |
+| `OfferLapsesAtFreshnessBoundary` | COVERED | `mct_daemon_bin::resident::candidates::tests::capability_offer_lapses_at_freshness_boundary` proves candidacy is absent exactly at and after `stale_at`. |
 
 ## Current status summary
 

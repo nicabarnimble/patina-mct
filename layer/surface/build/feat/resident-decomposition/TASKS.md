@@ -142,7 +142,7 @@ pushes, PRs, or merges.
 - [x] R2.2: extract resident payload.
 - [x] R2.3: extract resident publication.
 - [x] R2.4: extract resident idempotency.
-- [ ] R2.5: extract resident candidates.
+- [x] R2.5: extract resident candidates.
 - [ ] R2.6: extract resident decision.
 - [ ] R2.7: extract resident execution.
 - [ ] R2.8: extract resident forwarding.
@@ -697,4 +697,75 @@ warning: unused import: `idempotency::*`
 For more information about this error, try `rustc --explain E0425`.
 warning: `mct-daemon` (bin "mct-daemon") generated 1 warning
 error: could not compile `mct-daemon` (bin "mct-daemon") due to 8 previous errors; 1 warning emitted
+```
+
+### R2.5 candidates extraction compile failure
+
+```text
+$ cargo check --workspace
+    Checking mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0433]: cannot find type `ResidentRemoteCandidateSource` in this scope
+   --> crates/mct-daemon/src/daemon/resident.rs:854:24
+    |
+854 |     let remote_plans = ResidentRemoteCandidateSource::for_call(call)
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `ResidentRemoteCandidateSource`
+    |
+note: struct `crate::resident::candidates::ResidentRemoteCandidateSource` exists but is inaccessible
+   --> crates/mct-daemon/src/daemon/resident/candidates.rs:20:1
+    |
+ 20 | struct ResidentRemoteCandidateSource<'a> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not accessible
+
+error[E0425]: cannot find function `resident_remote_candidate_plans_from_source` in this scope
+   --> crates/mct-daemon/src/daemon/resident.rs:856:13
+    |
+856 |               resident_remote_candidate_plans_from_source(config, state, source, now.clone())
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: crates/mct-daemon/src/daemon/resident/candidates.rs:342:1
+    |
+342 | / pub(super) fn resident_remote_candidate_observations(
+343 | |     call: &MctCall,
+344 | |     plans: &[RemoteCandidatePlan],
+345 | | ) -> Vec<MctObservation> {
+...   |
+375 | |     observations
+376 | | }
+    | |_- similarly named function `resident_remote_candidate_observations` defined here
+    |
+note: function `crate::resident::candidates::resident_remote_candidate_plans_from_source` exists but is inaccessible
+   --> crates/mct-daemon/src/daemon/resident/candidates.rs:65:1
+    |
+ 65 | / fn resident_remote_candidate_plans_from_source(
+ 66 | |     config: &mct_daemon::MctDaemonConfig,
+ 67 | |     state: Option<&MctRuntimeStateStore>,
+ 68 | |     source: ResidentRemoteCandidateSource<'_>,
+...   |
+104 | |     Ok(plans)
+105 | | }
+    | |_^ not accessible
+help: a function with a similar name exists
+    |
+856 -             resident_remote_candidate_plans_from_source(config, state, source, now.clone())
+856 +             resident_remote_candidate_observations(config, state, source, now.clone())
+    |
+
+warning: glob import doesn't reexport anything with visibility `pub(crate)` because no imported item is public enough
+  --> crates/mct-daemon/src/daemon/resident.rs:21:16
+   |
+21 | pub(super) use candidates::*;
+   |                ^^^^^^^^^^^^^
+   |
+note: the most public imported item is `pub(self)`
+  --> crates/mct-daemon/src/daemon/resident.rs:21:16
+   |
+21 | pub(super) use candidates::*;
+   |                ^^^^^^^^^^^^^
+   = help: reduce the glob import's visibility or increase visibility of imported items
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+Some errors have detailed explanations: E0425, E0433.
+For more information about an error, try `rustc --explain E0425`.
+warning: `mct-daemon` (bin "mct-daemon") generated 1 warning
+error: could not compile `mct-daemon` (bin "mct-daemon") due to 2 previous errors; 1 warning emitted
 ```

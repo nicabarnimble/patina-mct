@@ -16,6 +16,10 @@ pub(super) use publication::*;
 mod idempotency;
 pub(super) use idempotency::*;
 
+#[path = "resident/candidates.rs"]
+mod candidates;
+use candidates::*;
+
 pub(super) async fn run_serve(mut args: Vec<String>) -> Result<()> {
     let relay_default = take_flag(&mut args, "--relay-default");
     let config_path = take_option(&mut args, "--config")
@@ -471,13 +475,13 @@ pub(super) struct ResidentAuthorizedRemoteExecution {
 }
 
 #[derive(Debug)]
-pub(super) enum ResidentSelectedCandidate {
-    Local(Box<ResidentCandidatePlan>),
-    Remote(ResidentRemoteCandidatePlan),
+enum ResidentSelectedCandidate {
+    Local(Box<LocalCandidatePlan>),
+    Remote(RemoteCandidatePlan),
 }
 
 impl ResidentSelectedCandidate {
-    pub(super) fn candidate(&self) -> &CandidateRoute {
+    fn candidate(&self) -> &CandidateRoute {
         match self {
             Self::Local(plan) => &plan.candidate,
             Self::Remote(plan) => &plan.candidate,
@@ -777,33 +781,6 @@ pub(super) async fn authorize_resident_child(
         .context("join resident child authorization")?
 }
 
-#[derive(Debug)]
-pub(super) struct ResidentCandidatePlan {
-    pub(super) child: mct_daemon::MctLoadedChild,
-    pub(super) candidate: CandidateRoute,
-    pub(super) authority: CandidateAuthorityEvaluation,
-    pub(super) child_authority: ChildCallAuthorityResult,
-}
-
-#[derive(Debug)]
-pub(super) struct ResidentRemoteCandidatePlan {
-    pub(super) candidate: CandidateRoute,
-    pub(super) authority: CandidateAuthorityEvaluation,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(super) struct ResidentRemoteCandidateSource<'a> {
-    pub(super) call: &'a MctCall,
-}
-
-impl<'a> ResidentRemoteCandidateSource<'a> {
-    pub(super) fn for_call(call: &'a MctCall) -> Option<Self> {
-        call.origin
-            .allows_remote_candidate_sourcing()
-            .then_some(Self { call })
-    }
-}
-
 pub(super) fn authorize_resident_child_blocking(
     paths: &ResidentExecutionPaths,
     call: &MctCall,
@@ -866,7 +843,7 @@ pub(super) fn authorize_resident_child_from_loaded_with_state(
                 call.authority_context.grants_revision,
             )
         };
-        plans.push(ResidentCandidatePlan {
+        plans.push(LocalCandidatePlan {
             child,
             candidate,
             authority,
@@ -874,12 +851,7 @@ pub(super) fn authorize_resident_child_from_loaded_with_state(
         });
     }
 
-    let remote_plans = ResidentRemoteCandidateSource::for_call(call)
-        .map(|source| {
-            resident_remote_candidate_plans_from_source(config, state, source, now.clone())
-        })
-        .transpose()?
-        .unwrap_or_default();
+    let remote_plans = resident_remote_candidate_plans_for_call(config, state, call, now.clone())?;
     let mut observations = resident_candidate_observations(call, &plans);
     observations.extend(resident_remote_candidate_observations(call, &remote_plans));
     let mut authority_evaluations = plans
@@ -1004,352 +976,6 @@ pub(super) fn authorize_resident_child_from_loaded_with_state(
             )))
         }
     }
-}
-
-pub(super) fn resident_child_scope(config: &mct_daemon::MctDaemonConfig) -> MctOperatorChildScope {
-    config
-        .local_identity
-        .as_ref()
-        .map(|identity| MctOperatorChildScope {
-            vision_id: identity.vision_id.clone(),
-            node_id: identity.node_id.clone(),
-            project_id: None,
-            policy_revision: identity.policy_revision,
-        })
-        .unwrap_or_default()
-}
-
-pub(super) fn resident_candidate_for_child(
-    projection: &MctConfigChildAuthorityProjection,
-    child: &mct_daemon::MctLoadedChild,
-) -> CandidateRoute {
-    let child_id = ChildId::new(child.name.clone())
-        .expect("string ID literal/generated value must be non-empty");
-    CandidateRoute {
-        candidate_id: format!("child:{}", child.name),
-        node_id: projection.local_node_id.clone(),
-        child_id: Some(child_id),
-        runtime_kind: match child.ingress_mode {
-            mct_daemon::MctChildIngressMode::Handle => RuntimeKind::Process,
-            mct_daemon::MctChildIngressMode::Hybrid | mct_daemon::MctChildIngressMode::WitOnly => {
-                RuntimeKind::WasmComponent
-            }
-        },
-        network_path: NetworkPathClass::Local,
-    }
-}
-
-pub(super) fn resident_remote_candidate_plans_from_source(
-    config: &mct_daemon::MctDaemonConfig,
-    state: Option<&MctRuntimeStateStore>,
-    source: ResidentRemoteCandidateSource<'_>,
-    now: Timestamp,
-) -> Result<Vec<ResidentRemoteCandidatePlan>> {
-    let call = source.call;
-    let Some(identity) = config.local_identity.as_ref() else {
-        return Ok(Vec::new());
-    };
-    let Some(state) = state else {
-        return Ok(Vec::new());
-    };
-
-    let operation_id = mct_daemon::operation_id_from_target(&call.target);
-    let surfaces = state.fresh_remote_callable_surfaces_for_operation(
-        &call.caller.vision_id,
-        &operation_id,
-        &now,
-    )?;
-    let mut plans = Vec::new();
-    for surface in surfaces {
-        let Some(peer) = config.peers.get(surface.peer_node_id.as_str()) else {
-            continue;
-        };
-        let candidate = resident_candidate_for_remote_surface(peer, &surface);
-        let authority = resident_remote_candidate_authority(
-            identity,
-            peer,
-            &surface,
-            candidate.clone(),
-            call,
-            &now,
-        )?;
-        plans.push(ResidentRemoteCandidatePlan {
-            candidate,
-            authority,
-        });
-    }
-    Ok(plans)
-}
-
-#[cfg(test)]
-pub(super) fn resident_remote_candidate_plans(
-    config: &mct_daemon::MctDaemonConfig,
-    state: Option<&MctRuntimeStateStore>,
-    call: &MctCall,
-    now: Timestamp,
-) -> Result<Vec<ResidentRemoteCandidatePlan>> {
-    let source = ResidentRemoteCandidateSource::for_call(call)
-        .context("test call must have a local origin to source remote candidates")?;
-    resident_remote_candidate_plans_from_source(config, state, source, now)
-}
-
-pub(super) fn resident_candidate_for_remote_surface(
-    peer: &mct_daemon::MctPeerAddressBookEntry,
-    surface: &MctRemoteCallableSurfaceRecord,
-) -> CandidateRoute {
-    CandidateRoute {
-        candidate_id: format!(
-            "peer:{}:{}:{}:{}",
-            surface.peer_node_id, surface.binding_id, surface.operation_id, surface.child_name
-        ),
-        node_id: peer.peer_node_id.clone(),
-        child_id: Some(
-            ChildId::new(surface.child_name.clone())
-                .expect("string ID literal/generated value must be non-empty"),
-        ),
-        runtime_kind: RuntimeKind::RemotePeer,
-        network_path: resident_peer_network_path(peer),
-    }
-}
-
-pub(super) fn resident_peer_network_path(
-    peer: &mct_daemon::MctPeerAddressBookEntry,
-) -> NetworkPathClass {
-    let Some(ticket) = peer.ticket.as_ref() else {
-        return NetworkPathClass::Unknown;
-    };
-    if !ticket.direct_addresses.is_empty() {
-        NetworkPathClass::Direct
-    } else if !ticket.relay_urls.is_empty() {
-        NetworkPathClass::Relayed
-    } else {
-        NetworkPathClass::Unknown
-    }
-}
-
-pub(super) fn resident_remote_candidate_authority(
-    identity: &MctLocalNodeIdentity,
-    peer: &mct_daemon::MctPeerAddressBookEntry,
-    surface: &MctRemoteCallableSurfaceRecord,
-    candidate: CandidateRoute,
-    call: &MctCall,
-    now: &Timestamp,
-) -> Result<CandidateAuthorityEvaluation> {
-    let local_binding = peer.to_peer_binding(identity)?;
-    let outbound_binding = peer
-        .outbound_binding
-        .as_ref()
-        .map(|outbound| outbound_peer_binding_for_local(identity, peer, outbound))
-        .transpose()?;
-    let operation_id = mct_daemon::operation_id_from_target(&call.target);
-    let reason = match verify_peer_binding_signature_ref(
-        peer.binding_signature_ref.as_deref(),
-        &local_binding,
-        &identity.endpoint_id,
-    ) {
-        MctPeerBindingSignatureVerification::Valid => None,
-        MctPeerBindingSignatureVerification::Missing
-        | MctPeerBindingSignatureVerification::Malformed
-        | MctPeerBindingSignatureVerification::Invalid => {
-            Some(CandidateEliminationReason::PeerNotAdmitted)
-        }
-    }
-    .or_else(|| {
-        let Some(outbound_binding) = outbound_binding.as_ref() else {
-            return Some(CandidateEliminationReason::PeerNotAdmitted);
-        };
-        match verify_peer_binding_signature_ref(
-            peer.outbound_binding
-                .as_ref()
-                .map(|outbound| outbound.signature_ref.as_str()),
-            outbound_binding,
-            &peer.endpoint_id,
-        ) {
-            MctPeerBindingSignatureVerification::Valid => None,
-            MctPeerBindingSignatureVerification::Missing
-            | MctPeerBindingSignatureVerification::Malformed
-            | MctPeerBindingSignatureVerification::Invalid => {
-                Some(CandidateEliminationReason::PeerNotAdmitted)
-            }
-        }
-    })
-    .or_else(|| {
-        peer.outbound_binding.as_ref().and_then(|outbound| {
-            match timestamp_not_after(&outbound.expires_at, now) {
-                Ok(true) => Some(CandidateEliminationReason::PeerNotAdmitted),
-                Ok(false) => None,
-                Err(_) => Some(CandidateEliminationReason::PeerNotAdmitted),
-            }
-        })
-    })
-    .or_else(|| {
-        (peer.binding_state != BindingState::Admitted)
-            .then_some(CandidateEliminationReason::PeerNotAdmitted)
-    })
-    .or_else(|| {
-        (surface.binding_id != peer.binding_id || surface.endpoint_id != peer.endpoint_id)
-            .then_some(CandidateEliminationReason::PeerNotAdmitted)
-    })
-    .or_else(|| {
-        (!local_binding
-            .scope
-            .allowed_alpns
-            .iter()
-            .any(|alpn| alpn == MCT_CALL_ALPN)
-            || !outbound_binding.as_ref().is_some_and(|binding| {
-                binding
-                    .scope
-                    .allowed_alpns
-                    .iter()
-                    .any(|alpn| alpn == MCT_CALL_ALPN)
-            }))
-        .then_some(CandidateEliminationReason::PeerNotAdmitted)
-    })
-    .or_else(|| {
-        (peer.vision_id != call.caller.vision_id || surface.vision_id != call.caller.vision_id)
-            .then_some(CandidateEliminationReason::VisionPolicyDenied)
-    })
-    .or_else(|| {
-        (peer.policy_revision != call.authority_context.policy_revision)
-            .then_some(CandidateEliminationReason::PolicyRevisionStale)
-    })
-    .or_else(|| {
-        call.payload_metadata
-            .contains_secret_scoped_material
-            .then_some(CandidateEliminationReason::SecretScopeForbidden)
-    })
-    .or_else(|| {
-        (surface.operation_id != operation_id || surface.visibility != "vision_scoped")
-            .then_some(CandidateEliminationReason::CapabilityUnavailable)
-    })
-    .or_else(|| {
-        peer.ticket
-            .is_none()
-            .then_some(CandidateEliminationReason::CapabilityUnavailable)
-    });
-
-    Ok(match reason {
-        Some(reason) => CandidateAuthorityEvaluation::eliminated(
-            candidate,
-            reason,
-            peer.policy_revision,
-            call.authority_context.grants_revision,
-        ),
-        None => CandidateAuthorityEvaluation::admissible(
-            candidate,
-            peer.policy_revision,
-            call.authority_context.grants_revision,
-        ),
-    })
-}
-
-pub(super) fn timestamp_not_after(timestamp: &Timestamp, now: &Timestamp) -> Result<bool> {
-    let timestamp = timestamp
-        .as_str()
-        .parse::<jiff::Timestamp>()
-        .context("parse timestamp")?;
-    let now = now
-        .as_str()
-        .parse::<jiff::Timestamp>()
-        .context("parse current timestamp")?;
-    Ok(timestamp <= now)
-}
-
-pub(super) fn child_elimination_reason(reason: ChildCallReasonCode) -> CandidateEliminationReason {
-    match reason {
-        ChildCallReasonCode::ReadyAuthorizedInstance => CandidateEliminationReason::RouteMismatch,
-        ChildCallReasonCode::InstanceNotReady => CandidateEliminationReason::CapabilityUnavailable,
-        ChildCallReasonCode::StalePolicy => CandidateEliminationReason::PolicyRevisionStale,
-        ChildCallReasonCode::OperationNotExported
-        | ChildCallReasonCode::UnknownInstance
-        | ChildCallReasonCode::MissingAssignment
-        | ChildCallReasonCode::AssignmentRevoked
-        | ChildCallReasonCode::MissingApproval
-        | ChildCallReasonCode::ApprovalNotApproved
-        | ChildCallReasonCode::ApprovalScopeMismatch
-        | ChildCallReasonCode::ArtifactMissing
-        | ChildCallReasonCode::ArtifactRejected
-        | ChildCallReasonCode::WrongNode
-        | ChildCallReasonCode::WrongProject
-        | ChildCallReasonCode::VersionMismatch => CandidateEliminationReason::ChildNotApproved,
-    }
-}
-
-pub(super) fn resident_candidate_observations(
-    call: &MctCall,
-    plans: &[ResidentCandidatePlan],
-) -> Vec<MctObservation> {
-    let mut observations = Vec::new();
-    for plan in plans {
-        observations.push(candidate_considered_observation(
-            call.trace_context.trace_id.clone(),
-            current_timestamp(),
-            call,
-            &plan.candidate,
-            ObservationId::new(format!(
-                "obs-route-candidate-considered:{}:{}",
-                call.call_id, plan.candidate.candidate_id
-            ))
-            .expect("string ID literal/generated value must be non-empty"),
-            plan.authority.policy_revision,
-            plan.authority.grants_revision,
-        ));
-        if plan.authority.outcome == CandidateAuthorityOutcome::Eliminated {
-            observations.push(candidate_eliminated_observation(
-                call.trace_context.trace_id.clone(),
-                current_timestamp(),
-                call,
-                &plan.authority,
-                ObservationId::new(format!(
-                    "obs-route-candidate-eliminated:{}:{}",
-                    call.call_id, plan.candidate.candidate_id
-                ))
-                .expect("string ID literal/generated value must be non-empty"),
-            ));
-            observations.push(child_call_authority_observation(
-                call.trace_context.trace_id.clone(),
-                current_timestamp(),
-                &plan.child_authority.evaluation,
-            ));
-        }
-    }
-    observations
-}
-
-pub(super) fn resident_remote_candidate_observations(
-    call: &MctCall,
-    plans: &[ResidentRemoteCandidatePlan],
-) -> Vec<MctObservation> {
-    let mut observations = Vec::new();
-    for plan in plans {
-        observations.push(candidate_considered_observation(
-            call.trace_context.trace_id.clone(),
-            current_timestamp(),
-            call,
-            &plan.candidate,
-            ObservationId::new(format!(
-                "obs-route-candidate-considered:{}:{}",
-                call.call_id, plan.candidate.candidate_id
-            ))
-            .expect("string ID literal/generated value must be non-empty"),
-            plan.authority.policy_revision,
-            plan.authority.grants_revision,
-        ));
-        if plan.authority.outcome == CandidateAuthorityOutcome::Eliminated {
-            observations.push(candidate_eliminated_observation(
-                call.trace_context.trace_id.clone(),
-                current_timestamp(),
-                call,
-                &plan.authority,
-                ObservationId::new(format!(
-                    "obs-route-candidate-eliminated:{}:{}",
-                    call.call_id, plan.candidate.candidate_id
-                ))
-                .expect("string ID literal/generated value must be non-empty"),
-            ));
-        }
-    }
-    observations
 }
 
 pub(super) fn resident_route_rank_key(candidate: &CandidateRoute) -> (u8, u8, String, String) {
@@ -1884,25 +1510,6 @@ pub(super) fn remote_reply_to_call_handler_result(
         CallProtocolReplyOutcome::Malformed => {
             MctIrohCallHandlerResult::failed(reply.reply.safe_message)
                 .with_route(Some(route_decision_id), None)
-        }
-    }
-}
-
-pub(super) fn resident_child_accepts_call(
-    child: &mct_daemon::MctLoadedChild,
-    call: &MctCall,
-) -> bool {
-    let operation_id = mct_daemon::operation_id_from_target(&call.target);
-    match child.ingress_mode {
-        mct_daemon::MctChildIngressMode::Handle => {
-            child.allowed_operations.is_empty()
-                || child
-                    .allowed_operations
-                    .iter()
-                    .any(|allowed| allowed == &operation_id)
-        }
-        mct_daemon::MctChildIngressMode::Hybrid | mct_daemon::MctChildIngressMode::WitOnly => {
-            child.allows_operation_target(&call.target)
         }
     }
 }
@@ -4166,33 +3773,6 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn resident_authorized_unavailable_is_temporal_no_route() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("config.json");
-        let children_dir = dir.path().join("children");
-        write_resident_process_child(&children_dir);
-        let mut loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir));
-        MctDaemonConfigStore::new(&config_path)
-            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
-            .unwrap();
-        loaded.children[0].instance_state = mct_daemon::MctChildInstanceState::Loading;
-        let config = MctDaemonConfigStore::new(&config_path).load().unwrap();
-        let call = resident_test_call(
-            TraceId::new("trace-route-unavailable")
-                .expect("string ID literal/generated value must be non-empty"),
-        );
-
-        let outcome =
-            authorize_resident_child_from_loaded(&config, loaded.children, &call).unwrap();
-        let ResidentAuthorizationOutcome::Denied { observations, .. } = outcome else {
-            panic!("loading child should produce temporal no-route")
-        };
-        let text = serde_json::to_string(&observations).unwrap();
-        assert!(text.contains("CapabilityUnavailable"));
-        assert!(text.contains("denial_class:temporal"));
-    }
-
-    #[test]
     fn forwarded_arrival_with_unavailable_local_candidate_is_terminal() {
         let fixture = remote_surface_candidate_fixture();
         let mut unavailable_child = test_child();
@@ -4217,110 +3797,6 @@ pub(super) mod tests {
         assert!(text.contains("denial_class:temporal"));
         assert!(!text.contains("peer:remote-mct"));
         assert!(!text.contains("peer_call_sent"));
-    }
-
-    #[test]
-    fn resident_remote_surface_candidate_becomes_admissible_when_all_checks_pass() {
-        let fixture = remote_surface_candidate_fixture();
-
-        let plans = resident_remote_candidate_plans(
-            &fixture.config,
-            Some(&fixture.state),
-            &fixture.call,
-            Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
-        )
-        .unwrap();
-
-        assert_eq!(plans.len(), 1);
-        assert_eq!(
-            plans[0].candidate.candidate_id,
-            "peer:remote-mct:binding-remote:patina:demo/control@0.1.0.run:remote-child"
-        );
-        assert_eq!(plans[0].candidate.runtime_kind, RuntimeKind::RemotePeer);
-        assert_eq!(plans[0].candidate.network_path, NetworkPathClass::Direct);
-        assert_eq!(
-            plans[0].authority.outcome,
-            CandidateAuthorityOutcome::Admissible
-        );
-        assert_eq!(plans[0].authority.reason, None);
-    }
-
-    /// Covers `PeerOperationalRoleDerivation.EligibleRouteCandidateDerivation`,
-    /// `PeerRelationshipTaxonomy.RolesAreCurrentProjections`, and
-    /// `BilateralExecutableRouting` by removing each current conjunct independently.
-    #[test]
-    fn eligible_route_candidate_requires_every_current_conjunct() {
-        let fixture = remote_surface_candidate_fixture();
-        let now = Timestamp::new("2026-07-09T00:01:00Z").unwrap();
-        let is_admissible =
-            |config: &mct_daemon::MctDaemonConfig, state: &MctRuntimeStateStore, call: &MctCall| {
-                resident_remote_candidate_plans(config, Some(state), call, now.clone())
-                    .unwrap()
-                    .iter()
-                    .any(|plan| plan.authority.outcome == CandidateAuthorityOutcome::Admissible)
-            };
-
-        assert!(is_admissible(
-            &fixture.config,
-            &fixture.state,
-            &fixture.call
-        ));
-
-        let mut without_local_admission = fixture.config.clone();
-        without_local_admission
-            .peers
-            .get_mut("remote-mct")
-            .unwrap()
-            .binding_state = BindingState::Pending;
-        assert!(!is_admissible(
-            &without_local_admission,
-            &fixture.state,
-            &fixture.call
-        ));
-
-        let mut without_reverse_admission = fixture.config.clone();
-        without_reverse_admission
-            .peers
-            .get_mut("remote-mct")
-            .unwrap()
-            .outbound_binding = None;
-        assert!(!is_admissible(
-            &without_reverse_admission,
-            &fixture.state,
-            &fixture.call
-        ));
-
-        let empty_state =
-            MctRuntimeStateStore::open(fixture._dir.path().join("empty.sqlite")).unwrap();
-        assert!(!is_admissible(&fixture.config, &empty_state, &fixture.call));
-
-        let mut wrong_vision = fixture.call.clone();
-        wrong_vision.caller.vision_id = VisionId::new("vision-other").unwrap();
-        assert!(!is_admissible(
-            &fixture.config,
-            &fixture.state,
-            &wrong_vision
-        ));
-
-        let mut outside_call_scope = fixture.call.clone();
-        outside_call_scope.target.function_name = "not-published".into();
-        assert!(!is_admissible(
-            &fixture.config,
-            &fixture.state,
-            &outside_call_scope
-        ));
-
-        let mut without_reachability = fixture.config.clone();
-        without_reachability
-            .peers
-            .get_mut("remote-mct")
-            .unwrap()
-            .ticket = None;
-        assert!(!is_admissible(
-            &without_reachability,
-            &fixture.state,
-            &fixture.call
-        ));
     }
 
     /// Covers `PerHopPeerAccountability.UpstreamIdentityRemainsAtItsVerifier`.
@@ -4366,148 +3842,6 @@ pub(super) mod tests {
             forwarded.call.trace_context.trace_id,
             original.call.trace_context.trace_id
         );
-    }
-
-    /// Covers `CapabilityPublicationRelationship.OfferLapsesAtFreshnessBoundary`.
-    #[test]
-    fn capability_offer_lapses_at_freshness_boundary() {
-        let fixture = remote_surface_candidate_fixture();
-
-        for now in ["2026-07-09T00:05:00Z", "2026-07-09T00:05:01Z"] {
-            let plans = resident_remote_candidate_plans(
-                &fixture.config,
-                Some(&fixture.state),
-                &fixture.call,
-                Timestamp::new(now).unwrap(),
-            )
-            .unwrap();
-            assert!(
-                !plans.iter().any(|plan| {
-                    plan.authority.outcome == CandidateAuthorityOutcome::Admissible
-                }),
-                "publication must not remain admissible at {now}"
-            );
-        }
-    }
-
-    #[test]
-    fn resident_remote_surface_candidate_forbids_secret_scope() {
-        let mut fixture = remote_surface_candidate_fixture();
-        fixture
-            .call
-            .payload_metadata
-            .contains_secret_scoped_material = true;
-
-        let plans = resident_remote_candidate_plans(
-            &fixture.config,
-            Some(&fixture.state),
-            &fixture.call,
-            Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
-        )
-        .unwrap();
-
-        assert_eq!(plans.len(), 1);
-        assert_eq!(
-            plans[0].authority.reason,
-            Some(CandidateEliminationReason::SecretScopeForbidden)
-        );
-    }
-
-    #[test]
-    fn resident_remote_route_candidates_reject_unsigned_peer_binding() {
-        let mut fixture = remote_surface_candidate_fixture();
-        fixture
-            .config
-            .peers
-            .get_mut("remote-mct")
-            .unwrap()
-            .binding_signature_ref = None;
-
-        let plans = resident_remote_candidate_plans(
-            &fixture.config,
-            Some(&fixture.state),
-            &fixture.call,
-            Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
-        )
-        .unwrap();
-
-        assert_eq!(plans.len(), 1);
-        assert_eq!(
-            plans[0].authority.reason,
-            Some(CandidateEliminationReason::PeerNotAdmitted)
-        );
-    }
-
-    #[test]
-    fn two_mother_wrong_vision_fails_closed() {
-        let mut fixture = remote_surface_candidate_fixture();
-        fixture.call.caller.vision_id = VisionId::new("vision-other")
-            .expect("string ID literal/generated value must be non-empty");
-
-        let plans = resident_remote_candidate_plans(
-            &fixture.config,
-            Some(&fixture.state),
-            &fixture.call,
-            Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
-        )
-        .unwrap();
-
-        assert!(plans.is_empty());
-    }
-
-    #[test]
-    fn two_mother_revoked_or_expired_binding_fails_closed() {
-        let mut fixture = remote_surface_candidate_fixture();
-        fixture
-            .config
-            .peers
-            .get_mut("remote-mct")
-            .unwrap()
-            .binding_state = BindingState::Revoked;
-
-        let revoked = resident_remote_candidate_plans(
-            &fixture.config,
-            Some(&fixture.state),
-            &fixture.call,
-            Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            revoked[0].authority.reason,
-            Some(CandidateEliminationReason::PeerNotAdmitted)
-        );
-
-        let peer = fixture.config.peers.get_mut("remote-mct").unwrap();
-        peer.binding_state = BindingState::Admitted;
-        peer.outbound_binding.as_mut().unwrap().expires_at =
-            Timestamp::new("2026-07-08T00:00:00Z").unwrap();
-        let expired = resident_remote_candidate_plans(
-            &fixture.config,
-            Some(&fixture.state),
-            &fixture.call,
-            Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            expired[0].authority.reason,
-            Some(CandidateEliminationReason::PeerNotAdmitted)
-        );
-    }
-
-    #[test]
-    fn two_mother_unauthorized_operation_fails_closed() {
-        let mut fixture = remote_surface_candidate_fixture();
-        fixture.call.target.function_name = "missing".into();
-
-        let plans = resident_remote_candidate_plans(
-            &fixture.config,
-            Some(&fixture.state),
-            &fixture.call,
-            Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
-        )
-        .unwrap();
-
-        assert!(plans.is_empty());
     }
 
     #[test]
