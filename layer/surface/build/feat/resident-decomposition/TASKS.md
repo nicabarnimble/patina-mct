@@ -139,7 +139,7 @@ pushes, PRs, or merges.
 - [x] GATE: operator approved R1 with four binding conditions.
 - [x] R2.0: amend the SPEC with the gate conditions and validate.
 - [x] R2.1: extract resident observation.
-- [ ] R2.2: extract resident payload.
+- [x] R2.2: extract resident payload.
 - [ ] R2.3: extract resident publication.
 - [ ] R2.4: extract resident idempotency.
 - [ ] R2.5: extract resident candidates.
@@ -399,4 +399,77 @@ failures:
 test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 64 filtered out; finished in 0.23s
 
 error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
+### R2.2 payload extraction compile failure
+
+```text
+$ cargo check --workspace
+    Checking mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0425]: cannot find function `blake3_hex` in this scope
+   --> crates/mct-daemon/src/daemon/ingress.rs:219:36
+    |
+219 |                 blake3_digest_hex: blake3_hex(&payload),
+    |                                    ^^^^^^^^^^ not found in this scope
+    |
+note: function `crate::resident::blake3_hex` exists but is inaccessible
+   --> crates/mct-daemon/src/daemon/resident/payload.rs:36:1
+    |
+ 36 | pub(super) fn blake3_hex(bytes: &[u8]) -> String {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not accessible
+
+error[E0433]: cannot find type `ResidentRequestPayload` in this scope
+   --> crates/mct-daemon/src/daemon/ingress.rs:140:9
+    |
+140 |         ResidentRequestPayload::local(inline_payload),
+    |         ^^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `ResidentRequestPayload`
+
+Some errors have detailed explanations: E0425, E0433.
+For more information about an error, try `rustc --explain E0425`.
+error: could not compile `mct-daemon` (bin "mct-daemon") due to 2 previous errors
+```
+
+### R2.2 payload test relocation compile failure
+
+```text
+$ cargo test -p mct-daemon --bin mct-daemon resident::payload::tests -- --nocapture
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0433]: cannot find type `ResidentRequestPayload` in this scope
+   --> crates/mct-daemon/src/daemon/resident/payload.rs:435:13
+    |
+435 |             ResidentRequestPayload::local(None),
+    |             ^^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `ResidentRequestPayload`
+    |
+help: a struct with a similar name exists
+    |
+435 -             ResidentRequestPayload::local(None),
+435 +             VerifiedRequestPayload::local(None),
+    |
+
+error[E0433]: cannot find type `ResidentRequestPayload` in this scope
+   --> crates/mct-daemon/src/daemon/resident/payload.rs:500:13
+    |
+500 |             ResidentRequestPayload::local(None),
+    |             ^^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `ResidentRequestPayload`
+    |
+help: a struct with a similar name exists
+    |
+500 -             ResidentRequestPayload::local(None),
+500 +             VerifiedRequestPayload::local(None),
+    |
+
+error[E0433]: cannot find type `ResidentRequestPayload` in this scope
+   --> crates/mct-daemon/src/daemon/resident/payload.rs:557:13
+    |
+557 |             ResidentRequestPayload::local(None),
+    |             ^^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `ResidentRequestPayload`
+    |
+help: a struct with a similar name exists
+    |
+557 -             ResidentRequestPayload::local(None),
+557 +             VerifiedRequestPayload::local(None),
+    |
+
+For more information about this error, try `rustc --explain E0433`.
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 3 previous errors
 ```

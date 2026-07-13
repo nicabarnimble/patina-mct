@@ -137,7 +137,7 @@ async fn execute_jvm_resident_call(
         paths,
         ledger,
         request,
-        ResidentRequestPayload::local(inline_payload),
+        ResidentPayloadIngress::local(inline_payload),
     )
     .await
 }
