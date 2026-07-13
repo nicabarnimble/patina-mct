@@ -80,7 +80,7 @@ pub(super) enum RouteDisposition {
 }
 
 pub(super) async fn authorize_resident_child(
-    paths: ResidentExecutionPaths,
+    paths: ResidentRuntimePaths,
     call: MctCall,
 ) -> Result<RouteDisposition> {
     tokio::task::spawn_blocking(move || authorize_resident_child_blocking(&paths, &call))
@@ -89,12 +89,13 @@ pub(super) async fn authorize_resident_child(
 }
 
 pub(super) fn authorize_resident_child_blocking(
-    paths: &ResidentExecutionPaths,
+    paths: &ResidentRuntimePaths,
     call: &MctCall,
 ) -> Result<RouteDisposition> {
-    let config = MctDaemonConfigStore::new(&paths.config_path).load()?;
-    let state = MctRuntimeStateStore::open(&paths.state_path)?;
-    let load_report = load_children_from_dir(MctChildLoadOptions::new(paths.children_dir.clone()));
+    let config = MctDaemonConfigStore::new(paths.config_path()).load()?;
+    let state = MctRuntimeStateStore::open(paths.state_path())?;
+    let load_report =
+        load_children_from_dir(MctChildLoadOptions::new(paths.children_dir().to_path_buf()));
     authorize_resident_child_from_loaded_with_state(
         &config,
         Some(&state),
@@ -669,11 +670,7 @@ listens = []
         let request = resident_test_protocol_request(resident_test_call(trace_id));
 
         let result = execute_resident_call(
-            ResidentExecutionPaths {
-                config_path,
-                children_dir,
-                state_path,
-            },
+            ResidentRuntimePaths::new(config_path, children_dir, state_path),
             ledger.clone(),
             request,
             ResidentPayloadIngress::remote(None),
@@ -711,11 +708,7 @@ listens = []
         let request = resident_test_protocol_request(resident_test_call(trace_id));
 
         let result = execute_resident_call(
-            ResidentExecutionPaths {
-                config_path,
-                children_dir,
-                state_path,
-            },
+            ResidentRuntimePaths::new(config_path, children_dir, state_path),
             ledger.clone(),
             request,
             ResidentPayloadIngress::remote(None),

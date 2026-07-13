@@ -2291,11 +2291,11 @@ mod tests {
         MctDaemonConfigStore::new(&config_path)
             .approve_and_assign_loaded_child(&child, MctOperatorChildScope::default())
             .unwrap();
-        let paths = crate::resident::ResidentExecutionPaths {
-            config_path: config_path.clone(),
-            children_dir: children_dir.clone(),
+        let paths = crate::resident::ResidentRuntimePaths::new(
+            config_path.clone(),
+            children_dir.clone(),
             state_path,
-        };
+        );
         let call = crate::resident::tests::resident_test_call(
             TraceId::new("trace-live-child-revoke").unwrap(),
         );
