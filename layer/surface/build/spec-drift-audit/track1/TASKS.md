@@ -2296,3 +2296,378 @@ Every Slice 4 commit passed `cargo test --workspace`, workspace/all-target Clipp
 Flakes: none. Expected red tests, deterministic compile/Clippy findings, fixture corrections, and the CRLF `git diff --check` refusal are captured verbatim above.
 
 A6 is fully fixed. A7/Slice 5 and A3/Slice 6 remain untouched. Live node identity rotation is recorded in the ROADMAP and requires endpoint rebind plus peer re-admission design. Stop after S4.2.
+
+# Slice 5 — replacement-ready child reload ordering
+
+Starting state: `patina` at `ab067ee` (`Merge pull request #19 from nicabarnimble/patina`), clean and synchronized with `origin/patina`.
+
+## S5.1 mechanism specification
+
+### Corrected transition and commit point
+
+Reload constructs a distinct generation at `current.generation + 1` in `Loading`, verifies it against current artifact/approval/assignment authority, and transitions that replacement to `Ready` while the predecessor remains `Ready`. Only then does swap begin: the predecessor transitions to `Draining`, then `Stopped`, and the state store atomically persists the ready replacement and stopped predecessor. The state transaction commit is the point of no return. Before commit, readers continue to see the predecessor as the sole ready generation; after commit, readers see the replacement ready and the predecessor stopped. Lifecycle observations retain the causal order replacement ready → predecessor draining → predecessor stopped.
+
+Every construction, authority-verification, or readiness-transition failure occurs before swap. The typed failure is returned to the command, the predecessor object is not transitioned, and no replacement or predecessor state is persisted. Consequently durable state cannot pass through a snapshot with zero ready generations when a ready predecessor existed before reload.
+
+### Caller enumeration
+
+- `children reload` → `run_children_reload` → `run_child_lifecycle(..., "reload")` is the only caller of `reload_configured_child` and the only path that persists a replacement generation. It receives both the replacement-ready ordering and the atomic state swap.
+- `children warmup` calls the separate `warmup_configured_child` path. It transitions one configured loading generation to ready and performs no replacement or predecessor drain, so it does not share or require this fix.
+- `MctProcessSupervisor` supervises already-authorized process invocations and has independent spawn/status/stop/recovery states. It does not call component-generation lifecycle transitions or reload.
+- `run_child_task_cycle` drains event queues, ticks intents, leases tasks, and records task/metric state. Its `drain` vocabulary is not child-generation draining and it does not call reload transitions.
+- Resident routing reloads current config/children authority for each call but does not mutate instance generations. No resident warmup, reload, supervisor restart, or task-cycle generation caller exists.
+
+### Existing drain semantics
+
+At swap, the lifecycle model records the predecessor's allowed `Ready → Draining → Stopped` transitions. The current implementation has no drain timer, in-flight counter, cancellation, or wait loop: already-started work is not synchronously interrupted by these model transitions, while subsequent persisted-state selection excludes the stopped predecessor. This slice preserves that behavior; drain execution/timeout redesign is separate work.
+
+### Out of scope
+
+- A3/Slice 6 idempotency and replay behavior.
+- New observation kinds; existing child lifecycle report observations already cover these transitions.
+- Drain timeout, in-flight work tracking, or cancellation redesign.
+- Supervisor restart/recovery policy.
+
+## Slice 5 checklist
+
+- [x] Re-establish `ab067ee`; read A7/map contracts, lifecycle model, all callers, persistence ordering, and the Slice 4 observation disposition.
+- [x] Record corrected sequencing, failure semantics, caller enumeration, drain behavior, and exclusions.
+- [x] Land failing ready-before-drain, failed-replacement, persistence, and post-failure routing regressions before implementation.
+- [x] Implement replacement-first preparation and atomic persisted swap with minimal library surface.
+- [x] Mark A7 fixed, validate every commit, and stop after S5.2.
+
+## Slice 5 failure log
+
+Initial targeted red-test invocation incorrectly supplied two positional test filters:
+
+```text
+error: unexpected argument 'state::tests::child_reload_swap_is_atomic_and_failed_swap_keeps_persisted_predecessor_ready' found
+
+Usage: cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]
+
+For more information, try '--help'.
+```
+
+Expected red compile after adding the Slice 5 regressions before the replacement verifier and atomic state swap existed:
+
+```text
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0425]: cannot find type `MctChildReloadError` in this scope
+   --> crates/mct-daemon/src/lifecycle.rs:354:34
+    |
+ 14 | pub struct MctChildReloadReport {
+    | ------------------------------- similarly named struct `MctChildReloadReport` defined here
+...
+354 |             error.downcast_ref::<MctChildReloadError>(),
+    |                                  ^^^^^^^^^^^^^^^^^^^
+
+error[E0425]: cannot find function `reload_configured_child_with_verifier` in this scope
+   --> crates/mct-daemon/src/lifecycle.rs:339:21
+    |
+339 |         let error = reload_configured_child_with_verifier(
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0599]: no method named `swap_ready_child_generation` found for struct `state::MctRuntimeStateStore` in the current scope
+    --> crates/mct-daemon/src/state.rs:2209:14
+     |
+  20 |   pub struct MctRuntimeStateStore {
+     |   ------------------------------- method `swap_ready_child_generation` not found for this struct
+...
+2209 | |             .swap_ready_child_generation(&stopped, &invalid_replacement)
+     | |             -^^^^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `state::MctRuntimeStateStore`
+
+error[E0599]: no method named `swap_ready_child_generation` found for struct `state::MctRuntimeStateStore` in the current scope
+    --> crates/mct-daemon/src/state.rs:2232:14
+     |
+  20 |   pub struct MctRuntimeStateStore {
+     |   ------------------------------- method `swap_ready_child_generation` not found for this struct
+...
+2232 | |             .swap_ready_child_generation(&stopped, &replacement)
+     | |             -^^^^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `state::MctRuntimeStateStore`
+
+error[E0433]: cannot find type `MctChildReloadError` in this scope
+   --> crates/mct-daemon/src/lifecycle.rs:345:21
+    |
+345 |                 Err(MctChildReloadError::ReplacementVerification {
+    |                     ^^^^^^^^^^^^^^^^^^^ use of undeclared type `MctChildReloadError`
+
+error[E0433]: cannot find type `MctChildReloadError` in this scope
+   --> crates/mct-daemon/src/lifecycle.rs:355:18
+    |
+355 |             Some(MctChildReloadError::ReplacementVerification { .. })
+    |                  ^^^^^^^^^^^^^^^^^^^ use of undeclared type `MctChildReloadError`
+
+Some errors have detailed explanations: E0425, E0433, E0599.
+For more information about an error, try `rustc --explain E0425`.
+error: could not compile `mct-daemon` (lib test) due to 6 previous errors
+```
+
+Expected red compile after adding the command-path poison-prevention regression before extracting the shared reload executor:
+
+```text
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0425]: cannot find function `execute_child_reload` in this scope
+    --> crates/mct-daemon/src/daemon/cli_runtime.rs:1074:21
+     |
+1074 |         let error = execute_child_reload(
+     |                     ^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 1 previous error
+```
+
+The first command-path run used `u64::MAX` to inject generation construction failure, but SQLite rejected that predecessor generation before reload because its integer representation is signed. The typed reload assertion therefore failed:
+
+```text
+running 1 test
+test cli_runtime::tests::reload_command_failure_keeps_persisted_generation_ready_and_routable ... FAILED
+
+failures:
+
+---- cli_runtime::tests::reload_command_failure_keeps_persisted_generation_ready_and_routable stdout ----
+
+thread 'cli_runtime::tests::reload_command_failure_keeps_persisted_generation_ready_and_routable' (1435287) panicked at crates/mct-daemon/src/daemon/cli_runtime.rs:1102:9:
+assertion failed: matches!(error.downcast_ref::<mct_daemon::MctChildReloadError>(),
+    Some(mct_daemon::MctChildReloadError::ReplacementConstruction { .. }))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+failures:
+    cli_runtime::tests::reload_command_failure_keeps_persisted_generation_ready_and_routable
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 57 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
+The fixture was corrected to the largest persistable SQLite generation (`i64::MAX`), and replacement construction now rejects advancing beyond that durable representation.
+
+## S5.2 implementation record
+
+### Commits
+
+- `d68454e` — `docs: specify replacement-ready reload ordering`
+- `3df5245` — `fix(daemon): load replacement before child swap`
+
+### Ordering and failure outcome
+
+`reload_configured_child` now clones the ready predecessor into a distinct `generation + 1` loading record without mutating the predecessor. It verifies current artifact/approval/assignment authority for that replacement and transitions it to ready first. Only after replacement readiness succeeds does it derive the predecessor's draining and stopped records. The report's existing lifecycle facts are ordered replacement `ChildInstanceReady` → predecessor `ChildInstanceDraining` → predecessor `ChildInstanceStopped`; no new observation kind was added.
+
+`execute_child_reload` persists the current ready generation before preparation, then delegates the successful pair to `MctRuntimeStateStore::swap_ready_child_generation`. That method rejects any pair that is not stopped predecessor plus ready direct successor with matching child, assignment, artifact, and node. Within one SQLite transaction it verifies the persisted predecessor is still ready, writes the ready replacement first, writes the stopped predecessor second, and commits. The commit is the point of no return and the transaction makes a zero-ready durable snapshot unrepresentable.
+
+Construction and verification failures use the typed public `MctChildReloadError`; the command propagates them without calling the swap. The only new public library surfaces are that error and the atomic state-store method required across the library/binary crate boundary. Warmup, process supervision, task cycling, and resident routing do not call component reload and were not changed.
+
+### Regression and ordering evidence
+
+- `reload_records_replacement_ready_before_predecessor_drain` asserts generation `1 → 2`, leaves the input predecessor ready, and reconstructs the report order as replacement ready before predecessor draining/stopped.
+- `failed_replacement_keeps_current_generation_ready_and_callable` injects typed replacement verification failure, asserts the in-memory predecessor remains ready, and obtains an allowed child-call authority result from it afterward.
+- `child_reload_swap_is_atomic_and_failed_swap_keeps_persisted_predecessor_ready` rejects a non-ready replacement without changing the stored predecessor, then proves successful swap leaves exactly generation 1 stopped and generation 2 ready with one ready instance.
+- `reload_command_failure_keeps_persisted_generation_ready_and_routable` drives the command's shared executor through typed construction failure, asserts the SQLite row remains the ready predecessor with one ready instance, and proves the immediately following call remains authorized.
+- Existing Slice 4 authority/composition regressions, including `live_child_revocation_is_visible_to_the_immediately_following_route`, remain green.
+
+### Validation and flakes
+
+Both Slice 5 commits passed `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, and `./scripts/ci-tier0.sh`. Final implementation validation passed **281 tests** (281 passed, 0 ignored), and Allium check returned empty diagnostics/findings.
+
+Flakes: none. The invalid two-filter test invocation, expected red compile failures, and deterministic signed-SQLite fixture correction are captured verbatim above.
+
+A7 is fixed in `3df5245`. A3/Slice 6 remains untouched. Stop after S5.2.
+
+# Slice 6 — request-scoped idempotent replay
+
+Starting state: `patina` at `add7600` (`docs: close replacement-ready reload slice`), clean and three commits ahead of `origin/patina`. The operator-defined 2026-07-10 idempotency contract is binding and is Track 2 tend-pass input: the map's single `IdempotencyIsRequestScoped` line must grow to carry this contract.
+
+## S6.1 mechanism specification
+
+### Validated order and scope
+
+The merged peer-call order is decode/shape validation → payload-integrity validation → current hello/binding authority evaluation → durable call authority prefix → idempotency reserve/replay decision → route decision/revalidation → child or forwarding effect → idempotency completion → result/reply observations. Thus replay can avoid route/execution work but cannot bypass current binding authority. Local CLI/JVM/control requests enter the same resident execution seam after their local admission construction; their scope is the canonical local caller identity. Peer arrivals scope by the currently authorized peer binding id. Forwarded arrivals consequently scope by the forwarding Mother's binding at the receiving Mother.
+
+The fingerprint is the canonical target identity (`namespace/interface.function`), semantic call id, and declared payload digest. Empty payload uses a named empty digest marker. Neither the scope nor fingerprint stores request payload bytes.
+
+### Durable state and atomic reservation
+
+The existing runtime SQLite gains `call_idempotency_entries` keyed by `(caller_scope, idempotency_key)`, with target identity, call id, payload digest, state (`in_flight` or `completed`), canonical recorded handler reply JSON, optional capped inline result payload BLOB, `created_at`, `completed_at`, and `expires_at`. Completed data contains only caller-safe outcome/message/result/route facts and at most the existing 32 KiB result payload.
+
+Reservation runs in an SQLite `IMMEDIATE` transaction. It deletes expired entries, reads the composite key and the caller's unexpired count, asks the kernel to decide from those stored facts, and inserts `in_flight` before commit only for `ExecuteFresh`. A concurrent duplicate therefore sees `in_flight`; two adapters cannot both reserve execution. Completion updates that exact fingerprint from `in_flight` to `completed` with the bounded reply. A process that dies before completion leaves `in_flight`; it returns in-progress until TTL expiry, then is forgotten and may execute fresh.
+
+The state machine is absent/expired → `in_flight` → `completed`; there is no eviction transition. Within TTL and budget, a keyed retry replays or is refused and never silently re-executes. After TTL, reuse is explicitly fresh execution. Un-keyed calls bypass this subsystem.
+
+### Kernel decisions and caller-safe projection
+
+The kernel receives caller scope, requested fingerprint, optional stored entry facts, caller entry count, budget, and injected current time. It returns one of:
+
+- `ExecuteFresh`: reserve and execute.
+- `ReplayCompleted`: return the stored caller-safe reply and result payload without routing/execution.
+- `IdempotencyKeyReuseMismatch`: malformed-family refusal, safe text `idempotency key does not match request`.
+- `IdempotencyBudgetFull`: retriable failed response, safe text `idempotency capacity unavailable; retry later`; no entry is evicted.
+- `IdempotencyInProgress`: retriable failed response, safe text `request already in progress; retry later`; no wait and no second execution.
+
+These add wire-observable call-protocol reason variants and safe texts under the normal 0.x compatibility policy. They do not widen authority.
+
+### Bounds
+
+- `MCT_IDEMPOTENCY_TTL_SECONDS = 12 * 60`: twelve minutes is the midpoint of the operator's 10–15 minute network retry window while bounding crash-held reservations.
+- `MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER = 256`: 256 independently retryable calls per authenticated caller bounds durable state while leaving ample room for concurrent CLI and network retries.
+
+The existing `MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES = 32 * 1024` remains the replay payload bound.
+
+### Observation mapping and exclusions
+
+Replay appends an existing `ResultRecorded` fact with typed `idempotency_replay_completed` detail before returning the recorded result. Mismatch, budget-full, and in-progress refusals append existing `CallDenied` facts with their typed reason and safe text. Facts contain scope/fingerprint digests and key digests where correlation is needed, never raw idempotency keys or request/result payload bytes. Existing transport result and reply facts continue to describe the response actually emitted.
+
+Cross-Mother idempotency after forwarding failover is explicitly out of scope and belongs in the ROADMAP federation follow-on. A3 is the only implementation finding in this slice; A1 and A4 remain open.
+
+## Slice 6 checklist
+
+- [x] Re-establish `add7600`; read A3/map, kernel validation, forwarding, real serve order, reply bounds, state transactions, and injected-time seams.
+- [x] Record placement, scope, schema/state machine, atomic reservation, typed outcomes, constants, observations, and crash recovery.
+- [x] Land failing kernel, state, serving/resident, restart, authority-precedence, and secret-exclusion regressions.
+- [x] Implement request-scoped persistent replay without changing un-keyed behavior.
+- [x] Update A3, ROADMAP, Track 2 input, validation/flake record, and stop after S6.2.
+
+## Slice 6 failure log
+
+Expected red kernel compile after adding the decision-matrix regression before the idempotency facts and evaluator existed:
+
+```text
+   Compiling mct-kernel v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-kernel)
+error[E0422]: cannot find struct, variant or union type `MctIdempotencyFingerprint` in this scope
+    --> crates/mct-kernel/src/call/mod.rs:1741:27
+error[E0422]: cannot find struct, variant or union type `MctIdempotencyStoredEntry` in this scope
+    --> crates/mct-kernel/src/call/mod.rs:1746:25
+error[E0433]: cannot find type `MctIdempotencyEntryState` in this scope
+    --> crates/mct-kernel/src/call/mod.rs:1748:20
+error[E0425]: cannot find function `evaluate_idempotency_request` in this scope
+    --> crates/mct-kernel/src/call/mod.rs:1752:13
+error[E0433]: cannot find type `MctIdempotencyReason` in this scope
+    --> crates/mct-kernel/src/call/mod.rs:1760:13
+
+Some errors have detailed explanations: E0422, E0425, E0433.
+For more information about an error, try `rustc --explain E0422`.
+error: could not compile `mct-kernel` (lib test) due to 15 previous errors
+```
+
+The first resident integration run exposed that the observation detail used Rust `Debug` casing instead of the specified stable typed code:
+
+```text
+running 1 test
+test resident::tests::resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage ... FAILED
+
+failures:
+
+---- resident::tests::resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage stdout ----
+
+thread 'resident::tests::resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage' (1653747) panicked at crates/mct-daemon/src/daemon/resident.rs:4936:9:
+assertion failed: ledger_text.contains("idempotency_replay_completed")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+failures:
+    resident::tests::resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 58 filtered out; finished in 0.54s
+
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
+The next resident run correctly stored the capped result payload, but the fixture echoed the request marker into that result, making a raw SQLite byte assertion unable to distinguish permitted result bytes from forbidden request bytes:
+
+```text
+running 1 test
+test resident::tests::resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage ... FAILED
+
+failures:
+
+---- resident::tests::resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage stdout ----
+
+thread 'resident::tests::resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage' (1654532) panicked at crates/mct-daemon/src/daemon/resident.rs:4955:9:
+assertion failed: !state_bytes.windows(b"request-secret-marker".len()).any(|window|
+            window == b"request-secret-marker")
+
+failures:
+    resident::tests::resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 58 filtered out; finished in 0.57s
+
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
+The counting fixture was corrected to consume but not echo request bytes, preserving a distinct result payload for replay assertions.
+
+Expected full-gate Clippy failure after the initial replay record was stored inline in the reservation enum:
+
+```text
+error: large size difference between variants
+  --> crates/mct-daemon/src/state.rs:30:1
+   |
+30 | / pub enum MctIdempotencyReservation {
+31 | |     ExecuteFresh,
+32 | |     Replay(MctRecordedCallReply),
+   | |     ---------------------------- the largest variant contains at least 248 bytes
+33 | |     Refused(MctIdempotencyReason),
+   | |     ----------------------------- the second-largest variant contains at least 1 bytes
+34 | | }
+   | |_^ the entire enum is at least 248 bytes
+   |
+   = note: `-D clippy::large-enum-variant` implied by `-D warnings`
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+   |
+32 -     Replay(MctRecordedCallReply),
+32 +     Replay(Box<MctRecordedCallReply>),
+   |
+
+error: could not compile `mct-daemon` (lib) due to 1 previous error
+error: could not compile `mct-daemon` (lib test) due to 1 previous error
+```
+
+The authority-precedence extension changed the lifecycle fixture from one call to an original plus revoked retry; the expected sequence included `CallDenied` but the test's lifecycle-kind filter had not yet admitted that existing kind:
+
+```text
+thread 'resident::tests::resident_mother_payload_roundtrip_verifies_result_digest' (1662744) panicked at crates/mct-daemon/src/daemon/resident.rs:4799:9:
+assertion `left == right` failed
+  left: [PeerCallReceived, CallConstructed, CallAuthorized, RouteRevalidated, RouteSelected, RouteRevalidated, RouteRevalidated, ResultRecorded, PeerCallReplied, PeerCallReceived, CallConstructed, ResultRecorded, PeerCallReplied]
+ right: [PeerCallReceived, CallConstructed, CallAuthorized, RouteRevalidated, RouteSelected, RouteRevalidated, RouteRevalidated, ResultRecorded, PeerCallReplied, PeerCallReceived, CallConstructed, CallDenied, ResultRecorded, PeerCallReplied]
+
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
+## S6.2 implementation record
+
+### Commits
+
+- `2eb2ce2` — `docs: specify request-scoped idempotent replay`
+- `2ed18af` — `fix(call): persist request-scoped idempotent replay`
+
+### Implemented call order and boundaries
+
+The real peer path now runs request decode/validation → payload-integrity decision → current hello/binding authority evaluation → durable receipt/construction/authority prefix → shared daemon idempotency decision → route decision/revalidation → local child or one-hop forwarding effect → durable idempotency completion → transport result/reply facts. The Iroh transport still invokes the handler only for `AcceptedForRouting`, so a revoked, expired, narrowed, or stale binding cannot reach replay. `resident_mother_payload_roundtrip_verifies_result_digest` now records an original keyed result, revokes the peer, retries the identical request, and receives `not authorized` with no cached payload.
+
+Resident, standalone `iroh serve`, and standalone `iroh serve-process` use the shared decomposed `execute_idempotent_call` seam. `iroh serve` now accepts `--state` so its keyed peer requests also use the existing runtime SQLite rather than an in-memory exception. Local calls scope by stable adapter/caller/Vision/project identity; peer and forwarded arrivals scope by the currently authorized peer binding.
+
+### Kernel and storage outcome
+
+The kernel owns `MctIdempotencyFingerprint`, stored-entry facts, state/reason enums, and `evaluate_idempotency_request`. The adapter owns schema v6 `call_idempotency_entries`, `IMMEDIATE` reservation transactions, expiration cleanup, and bounded reply persistence. Fingerprints contain canonical target, semantic call id, and payload digest/reference digest only. Entries move absent/expired → `in_flight` → `completed`; no unexpired entry is evicted.
+
+The stable typed reasons are `idempotency_key_reuse_mismatch`, `idempotency_budget_full`, `idempotency_in_progress`, and `idempotency_replay_completed`. `MctIrohCallHandlerResult` carries an optional protocol reason so the serving evaluation and wire-safe outcome preserve these 0.x-visible distinctions. Mismatch maps to malformed; budget and in-progress map to retriable failed replies; replay returns the recorded outcome, safe message, result reference/handle, route projection, and capped inline result bytes without executing the handler.
+
+Constants are `MCT_IDEMPOTENCY_TTL_SECONDS = 720`, `MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER = 256`, and the existing 32 KiB inline-result cap. Crash-left `in_flight` entries refuse retries until their injected-time TTL expires, then execute fresh.
+
+### Regression evidence
+
+- `idempotency_decision_replays_matches_and_refuses_other_cases`: pure kernel replay, mismatch, in-progress, budget, and expiry decisions.
+- `idempotency_store_scopes_reserves_replays_expires_and_survives_reopen`: caller isolation, atomic reservation, restart replay, mismatch, no-eviction budget behavior, and injected expiry.
+- `in_flight_idempotency_duplicate_refuses_without_second_execution`: a held original plus concurrent duplicate yields one execution and typed in-progress refusal without waiting.
+- `resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage`: exact semantic result replay, execution counter, peer-binding scope isolation, mismatch refusal, TTL fresh execution, un-keyed repeated execution, typed observations, and no key/request bytes in ledger or SQLite.
+- `standalone_serve_process_persists_hello_and_call_lifecycle`: duplicate network request replays after one persisted process run, proving the standalone path shares the mechanism.
+- Existing current-binding revocation/expiry/narrowing tests plus the post-original revocation extension prove authority precedence.
+
+### Audit and follow-on
+
+A3 is fixed in `2ed18af`. The full operator-defined contract is explicitly Track 2 tend-pass input because `IdempotencyIsRequestScoped` remains only one line in the product map. Cross-Mother replay after forwarding failover is recorded under ROADMAP item 6 and remains out of scope. A1 and A4 remain deliberately open for peer ontology and planner-evidence work.
+
+### Validation and flakes
+
+Both Slice 6 commits passed `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, and `./scripts/ci-tier0.sh`. Final implementation validation passed **285 tests** (285 passed, 0 ignored); Allium check returned empty diagnostics/findings.
+
+Flakes: none. Expected red kernel compilation, two deterministic fixture/assertion corrections, the lifecycle filter correction, and the large-enum Clippy correction are captured verbatim above.
+
+Track 1 implementation slices are complete. Stop after S6.2.

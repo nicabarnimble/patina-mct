@@ -118,7 +118,7 @@ pub enum BindingState {
 /// Durable authority record tying an Iroh endpoint to an MCT node and Vision.
 ///
 /// Hello admission requires `Admitted`, matching endpoint/binding claims, fresh
-/// policy revision, and `expires_at > now`; `None` expiry means no time limit.
+/// policy revision, and the mandatory `expires_at > now` time bound.
 pub struct MctPeerBinding {
     /// Stable identifier for this binding authority record.
     pub binding_id: PeerBindingId,
@@ -134,8 +134,8 @@ pub struct MctPeerBinding {
     pub binding_state: BindingState,
     /// Time the binding was issued, for audit.
     pub issued_at: Timestamp,
-    /// Expiry compared against adapter-supplied `now`; `None` means no expiry.
-    pub expires_at: Option<Timestamp>,
+    /// Mandatory expiry compared against adapter-supplied `now`.
+    pub expires_at: Timestamp,
     /// Observation that created or admitted this binding.
     pub created_by_observation_id: ObservationId,
     /// Observation that superseded this binding, if it has been replaced.
@@ -618,7 +618,7 @@ mod tests {
             policy_revision: 1,
             binding_state: state,
             issued_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
-            expires_at: None,
+            expires_at: Timestamp::new("2026-05-31T00:05:00Z").unwrap(),
             created_by_observation_id: ObservationId::new("obs-binding")
                 .expect("string ID literal/generated value must be non-empty"),
             superseded_by_observation_id: None,
@@ -714,6 +714,15 @@ mod tests {
         assert_eq!(evaluation.safe_reason, SafeHelloReason::NotAuthorized);
     }
 
+    /// Contract: `MctIrohPeerBindingAuthority.EveryPeerBindingIsTimeBounded`.
+    #[test]
+    fn binding_without_expiry_fails_closed() {
+        let mut value = serde_json::to_value(binding(BindingState::Admitted)).unwrap();
+        value.as_object_mut().unwrap().remove("expires_at");
+
+        assert!(serde_json::from_value::<MctPeerBinding>(value).is_err());
+    }
+
     #[test]
     fn active_binding_admits_intersection_of_requested_policy_and_binding_alpns() {
         let mut binding = binding(BindingState::Admitted);
@@ -769,7 +778,7 @@ mod tests {
     #[test]
     fn active_binding_past_expiry_is_denied() {
         let mut binding = binding(BindingState::Admitted);
-        binding.expires_at = Some(Timestamp::new("2026-05-31T00:00:29Z").unwrap());
+        binding.expires_at = Timestamp::new("2026-05-31T00:00:29Z").unwrap();
         let evaluation = evaluate_hello(
             &request("endpoint-a"),
             &[binding],

@@ -1110,11 +1110,220 @@ pub(super) fn resident_payload_resolution_failure(
     }
 }
 
+fn resident_idempotency_caller_scope(request: &MctCallProtocolRequest) -> String {
+    if request.call.origin == CallOrigin::Iroh {
+        format!("peer-binding:{}", request.authority.peer_binding_id)
+    } else {
+        format!(
+            "local:{}:{}:{}:{}:{}",
+            match request.call.origin {
+                CallOrigin::JvmAdapter => "jvm",
+                CallOrigin::WasmHost => "wasm",
+                CallOrigin::ProcessHarness => "process",
+                CallOrigin::Cli => "cli",
+                CallOrigin::Iroh => "iroh",
+            },
+            request.call.caller.node_id,
+            request
+                .call
+                .caller
+                .user_id
+                .as_ref()
+                .map_or("-", UserId::as_str),
+            request.call.caller.vision_id,
+            request
+                .call
+                .caller
+                .project_id
+                .as_ref()
+                .map_or("-", ProjectId::as_str),
+        )
+    }
+}
+
+fn resident_idempotency_fingerprint(request: &MctCallProtocolRequest) -> MctIdempotencyFingerprint {
+    let payload_digest = match &request.payload {
+        MctCallPayloadHandle::InlinePayload {
+            blake3_digest_hex, ..
+        } => format!("blake3:{blake3_digest_hex}"),
+        MctCallPayloadHandle::ContentAddressedBlob { digest, .. } => digest.clone(),
+        MctCallPayloadHandle::ExternalReference { external_ref, .. } => {
+            format!(
+                "external-ref:blake3:{}",
+                blake3_hex(external_ref.as_bytes())
+            )
+        }
+        MctCallPayloadHandle::Empty => "empty".into(),
+    };
+    MctIdempotencyFingerprint {
+        target: mct_daemon::operation_id_from_target(&request.call.target),
+        call_id: request.call.call_id.clone(),
+        payload_digest,
+    }
+}
+
+fn idempotency_expiry(now: &Timestamp) -> Result<Timestamp> {
+    let now = now.as_str().parse::<jiff::Timestamp>()?;
+    let expires = now.checked_add(jiff::SignedDuration::from_secs(MCT_IDEMPOTENCY_TTL_SECONDS))?;
+    Timestamp::new(expires.to_string()).map_err(anyhow::Error::from)
+}
+
+fn handler_result_to_recorded_reply(result: &MctIrohCallHandlerResult) -> MctRecordedCallReply {
+    MctRecordedCallReply {
+        result_ref: result.result_ref.clone(),
+        result_payload: result.result_payload.clone(),
+        inline_result_payload: result.inline_result_payload.clone(),
+        route_decision_id: result.route_decision_id.clone(),
+        route_taken: result.route_taken.clone(),
+        outcome: result.outcome,
+        protocol_reason: result.protocol_reason,
+        safe_message: result.safe_message.clone(),
+    }
+}
+
+fn recorded_reply_to_handler_result(reply: MctRecordedCallReply) -> MctIrohCallHandlerResult {
+    MctIrohCallHandlerResult {
+        result_ref: reply.result_ref,
+        result_payload: reply.result_payload,
+        inline_result_payload: reply.inline_result_payload,
+        route_decision_id: reply.route_decision_id,
+        route_taken: reply.route_taken,
+        outcome: reply.outcome,
+        protocol_reason: reply.protocol_reason,
+        safe_message: reply.safe_message,
+    }
+}
+
+fn idempotency_refusal_result(reason: MctIdempotencyReason) -> MctIrohCallHandlerResult {
+    let (outcome, protocol_reason, safe_message) = match reason {
+        MctIdempotencyReason::IdempotencyKeyReuseMismatch => (
+            CallProtocolOutcome::Malformed,
+            CallProtocolReason::IdempotencyKeyReuseMismatch,
+            "idempotency key does not match request",
+        ),
+        MctIdempotencyReason::IdempotencyBudgetFull => (
+            CallProtocolOutcome::Failed,
+            CallProtocolReason::IdempotencyBudgetFull,
+            "idempotency capacity unavailable; retry later",
+        ),
+        MctIdempotencyReason::IdempotencyInProgress => (
+            CallProtocolOutcome::Failed,
+            CallProtocolReason::IdempotencyInProgress,
+            "request already in progress; retry later",
+        ),
+        MctIdempotencyReason::ExecuteFresh | MctIdempotencyReason::ReplayCompleted => (
+            CallProtocolOutcome::Failed,
+            CallProtocolReason::ExecutionFailed,
+            "runtime unavailable",
+        ),
+    };
+    MctIrohCallHandlerResult {
+        result_ref: None,
+        result_payload: MctCallPayloadHandle::Empty,
+        inline_result_payload: None,
+        route_decision_id: None,
+        route_taken: None,
+        outcome,
+        protocol_reason: Some(protocol_reason),
+        safe_message: safe_message.into(),
+    }
+}
+
+fn idempotency_reason_code(reason: MctIdempotencyReason) -> &'static str {
+    match reason {
+        MctIdempotencyReason::ExecuteFresh => "idempotency_execute_fresh",
+        MctIdempotencyReason::ReplayCompleted => "idempotency_replay_completed",
+        MctIdempotencyReason::IdempotencyKeyReuseMismatch => "idempotency_key_reuse_mismatch",
+        MctIdempotencyReason::IdempotencyBudgetFull => "idempotency_budget_full",
+        MctIdempotencyReason::IdempotencyInProgress => "idempotency_in_progress",
+    }
+}
+
+fn resident_idempotency_observation(
+    request: &MctCallProtocolRequest,
+    caller_scope: &str,
+    fingerprint: &MctIdempotencyFingerprint,
+    reason: MctIdempotencyReason,
+) -> MctObservation {
+    let replay = reason == MctIdempotencyReason::ReplayCompleted;
+    let safe_message = match reason {
+        MctIdempotencyReason::ExecuteFresh => "idempotency key reserved",
+        MctIdempotencyReason::ReplayCompleted => "recorded result replayed",
+        MctIdempotencyReason::IdempotencyKeyReuseMismatch => {
+            "idempotency key does not match request"
+        }
+        MctIdempotencyReason::IdempotencyBudgetFull => {
+            "idempotency capacity unavailable; retry later"
+        }
+        MctIdempotencyReason::IdempotencyInProgress => "request already in progress; retry later",
+    };
+    MctObservation {
+        observation_id: ObservationId::new(format!(
+            "obs:{}:{}",
+            idempotency_reason_code(reason),
+            request.protocol_request_id
+        ))
+        .expect("generated observation ID must be non-empty"),
+        observed_at: current_timestamp(),
+        kind: if replay {
+            ObservationKind::ResultRecorded
+        } else {
+            ObservationKind::CallDenied
+        },
+        source_plane: SourcePlane::Kernel,
+        trace: ObservationTraceRef {
+            trace_id: request.call.trace_context.trace_id.clone(),
+            span_id: Some(request.call.trace_context.span_id.clone()),
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: Some(request.call.call_id.clone()),
+        decision_id: None,
+        subject_id: Some(format!(
+            "scope-blake3:{}",
+            blake3_hex(caller_scope.as_bytes())
+        )),
+        resource_id: Some(format!(
+            "fingerprint-blake3:{}",
+            blake3_hex(
+                format!(
+                    "{}:{}:{}",
+                    fingerprint.target, fingerprint.call_id, fingerprint.payload_digest
+                )
+                .as_bytes()
+            )
+        )),
+        policy_revision: Some(request.call.authority_context.policy_revision),
+        grants_revision: Some(request.call.authority_context.grants_revision),
+        outcome: if replay {
+            ObservationOutcome::Completed
+        } else {
+            ObservationOutcome::Denied
+        },
+        visibility: ObservationVisibility::InternalOnly,
+        safe_message: safe_message.into(),
+        detail_ref: Some(format!(
+            "idempotency_reason:{}",
+            idempotency_reason_code(reason)
+        )),
+    }
+}
+
 pub(super) async fn execute_resident_call(
     paths: ResidentExecutionPaths,
     ledger: ResidentLedgerWriter,
     request: MctCallProtocolRequest,
     payload: ResidentRequestPayload,
+) -> MctIrohCallHandlerResult {
+    execute_resident_call_at(paths, ledger, request, payload, current_timestamp()).await
+}
+
+pub(super) async fn execute_resident_call_at(
+    paths: ResidentExecutionPaths,
+    ledger: ResidentLedgerWriter,
+    request: MctCallProtocolRequest,
+    payload: ResidentRequestPayload,
+    now: Timestamp,
 ) -> MctIrohCallHandlerResult {
     let inline_payload = match resolve_resident_request_payload(&paths, &request, payload).await {
         Ok(inline_payload) => inline_payload,
@@ -1127,6 +1336,117 @@ pub(super) async fn execute_resident_call(
         }
     };
 
+    let state_path = paths.state_path.clone();
+    let idempotency_request = request.clone();
+    let idempotency_ledger = ledger.clone();
+    execute_idempotent_call(
+        state_path,
+        idempotency_ledger,
+        idempotency_request,
+        now,
+        move || execute_resident_call_after_payload(paths, ledger, request, inline_payload),
+    )
+    .await
+}
+
+pub(super) async fn execute_idempotent_call<F, Fut>(
+    state_path: PathBuf,
+    ledger: ResidentLedgerWriter,
+    request: MctCallProtocolRequest,
+    now: Timestamp,
+    execute: F,
+) -> MctIrohCallHandlerResult
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = MctIrohCallHandlerResult>,
+{
+    let Some(idempotency_key) = request.idempotency_key.clone() else {
+        return execute().await;
+    };
+    let caller_scope = resident_idempotency_caller_scope(&request);
+    let fingerprint = resident_idempotency_fingerprint(&request);
+    let expires_at = match idempotency_expiry(&now) {
+        Ok(expires_at) => expires_at,
+        Err(error) => {
+            eprintln!("resident idempotency expiry failed: {error}");
+            return MctIrohCallHandlerResult::failed("runtime unavailable");
+        }
+    };
+    let reservation = match MctRuntimeStateStore::open(&state_path).and_then(|state| {
+        state.reserve_call_idempotency(
+            &caller_scope,
+            &idempotency_key,
+            &fingerprint,
+            &now,
+            &expires_at,
+            MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER,
+        )
+    }) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            eprintln!("resident idempotency reservation failed: {error}");
+            return MctIrohCallHandlerResult::failed("runtime unavailable");
+        }
+    };
+
+    match reservation {
+        MctIdempotencyReservation::Replay(reply) => {
+            if let Err(error) = ledger
+                .append(vec![resident_idempotency_observation(
+                    &request,
+                    &caller_scope,
+                    &fingerprint,
+                    MctIdempotencyReason::ReplayCompleted,
+                )])
+                .await
+            {
+                eprintln!("resident idempotency replay observation failed: {error}");
+                return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+            }
+            recorded_reply_to_handler_result(*reply)
+                .with_protocol_reason(CallProtocolReason::IdempotencyReplayCompleted)
+        }
+        MctIdempotencyReservation::Refused(reason) => {
+            if let Err(error) = ledger
+                .append(vec![resident_idempotency_observation(
+                    &request,
+                    &caller_scope,
+                    &fingerprint,
+                    reason,
+                )])
+                .await
+            {
+                eprintln!("resident idempotency refusal observation failed: {error}");
+                return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+            }
+            idempotency_refusal_result(reason)
+        }
+        MctIdempotencyReservation::ExecuteFresh => {
+            let result = execute().await;
+            let recorded = handler_result_to_recorded_reply(&result);
+            if let Err(error) = MctRuntimeStateStore::open(&state_path).and_then(|state| {
+                state.complete_call_idempotency(
+                    &caller_scope,
+                    &idempotency_key,
+                    &fingerprint,
+                    &recorded,
+                    &now,
+                )
+            }) {
+                eprintln!("resident idempotency completion failed: {error}");
+                return MctIrohCallHandlerResult::failed("runtime unavailable");
+            }
+            result
+        }
+    }
+}
+
+async fn execute_resident_call_after_payload(
+    paths: ResidentExecutionPaths,
+    ledger: ResidentLedgerWriter,
+    request: MctCallProtocolRequest,
+    inline_payload: Option<Vec<u8>>,
+) -> MctIrohCallHandlerResult {
     let authorization = match authorize_resident_child(paths.clone(), request.call.clone()).await {
         Ok(authorization) => authorization,
         Err(error) => {
@@ -1615,14 +1935,13 @@ pub(super) fn resident_remote_candidate_authority(
         }
     })
     .or_else(|| {
-        peer.outbound_binding
-            .as_ref()
-            .and_then(|outbound| outbound.expires_at.as_ref())
-            .and_then(|expires_at| match timestamp_not_after(expires_at, now) {
+        peer.outbound_binding.as_ref().and_then(|outbound| {
+            match timestamp_not_after(&outbound.expires_at, now) {
                 Ok(true) => Some(CandidateEliminationReason::PeerNotAdmitted),
                 Ok(false) => None,
                 Err(_) => Some(CandidateEliminationReason::PeerNotAdmitted),
-            })
+            }
+        })
     })
     .or_else(|| {
         (peer.binding_state != BindingState::Admitted)
@@ -2211,7 +2530,7 @@ pub(super) fn resident_forwarding_hello_request(
             policy_revision: Some(outbound_binding.policy_revision),
             allowed_alpns_claim: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
             signature_ref: Some(outbound_binding.signature_ref.clone()),
-            expires_at: outbound_binding.expires_at.clone(),
+            expires_at: Some(outbound_binding.expires_at.clone()),
         },
         capability_view,
         local_policy_revision_seen: Some(local_identity.policy_revision),
@@ -2829,6 +3148,10 @@ pub(super) mod tests {
         assert!(!identity_path.exists());
     }
 
+    fn contract_peer_expiry() -> Timestamp {
+        Timestamp::new("2099-01-01T00:00:00Z").unwrap()
+    }
+
     fn test_call() -> MctCall {
         MctCall {
             call_id: CallId::new("call-cli-toy-expiry")
@@ -3001,7 +3324,7 @@ pub(super) mod tests {
             policy_revision: 1,
             binding_state: BindingState::Admitted,
             issued_at: Timestamp::new("2026-07-09T00:00:00Z").unwrap(),
-            expires_at: None,
+            expires_at: contract_peer_expiry(),
             created_by_observation_id: ObservationId::new("obs-binding-durable-hello")
                 .expect("string ID literal/generated value must be non-empty"),
             superseded_by_observation_id: None,
@@ -3123,6 +3446,7 @@ pub(super) mod tests {
                 outbound_binding: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
+                expires_at: contract_peer_expiry(),
                 updated_at: mct_daemon::current_timestamp_string(),
             })
             .unwrap();
@@ -3309,6 +3633,7 @@ pub(super) mod tests {
                 outbound_binding: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
+                expires_at: contract_peer_expiry(),
                 updated_at: mct_daemon::current_timestamp_string(),
             })
             .unwrap();
@@ -3590,6 +3915,7 @@ pub(super) mod tests {
                 outbound_binding: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
+                expires_at: contract_peer_expiry(),
                 updated_at: mct_daemon::current_timestamp_string(),
             })
             .unwrap();
@@ -3729,6 +4055,7 @@ pub(super) mod tests {
                 outbound_binding: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
+                expires_at: contract_peer_expiry(),
                 updated_at: mct_daemon::current_timestamp_string(),
             })
             .unwrap();
@@ -3772,6 +4099,7 @@ pub(super) mod tests {
                 outbound_binding: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
+                expires_at: contract_peer_expiry(),
                 updated_at: mct_daemon::current_timestamp_string(),
             })
             .unwrap();
@@ -3783,7 +4111,7 @@ pub(super) mod tests {
                         .expect("string ID literal/generated value must be non-empty"),
                     policy_revision: 1,
                     signature_ref: mother_b_proof_for_a,
-                    expires_at: None,
+                    expires_at: contract_peer_expiry(),
                 },
             )
             .unwrap();
@@ -4108,6 +4436,7 @@ pub(super) mod tests {
                 outbound_binding: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
+                expires_at: contract_peer_expiry(),
                 updated_at: mct_daemon::current_timestamp_string(),
             })
             .unwrap();
@@ -4126,6 +4455,7 @@ pub(super) mod tests {
                 outbound_binding: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
+                expires_at: contract_peer_expiry(),
                 updated_at: mct_daemon::current_timestamp_string(),
             })
             .unwrap();
@@ -4140,7 +4470,7 @@ pub(super) mod tests {
                     binding_id: PeerBindingId::new("binding-b-admits-a").unwrap(),
                     policy_revision: 1,
                     signature_ref: b_proof_for_a,
-                    expires_at: None,
+                    expires_at: contract_peer_expiry(),
                 },
             )
             .unwrap();
@@ -4151,7 +4481,7 @@ pub(super) mod tests {
                     binding_id: PeerBindingId::new("binding-a-admits-b").unwrap(),
                     policy_revision: 1,
                     signature_ref: a_proof_for_b,
-                    expires_at: None,
+                    expires_at: contract_peer_expiry(),
                 },
             )
             .unwrap();
@@ -4314,6 +4644,8 @@ pub(super) mod tests {
         assert_eq!(forward_count, 1, "the same call_id must be forwarded once");
     }
 
+    /// Covers `MctCallProtocol.CurrentAuthorityPrecedesReplay` for revocation,
+    /// binding expiry, and Vision narrowing on the real resident peer path.
     #[tokio::test]
     async fn resident_mother_payload_roundtrip_verifies_result_digest() {
         let dir = tempfile::tempdir().unwrap();
@@ -4350,6 +4682,7 @@ pub(super) mod tests {
                 outbound_binding: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: 1,
+                expires_at: contract_peer_expiry(),
                 updated_at: mct_daemon::current_timestamp_string(),
             })
             .unwrap();
@@ -4424,9 +4757,10 @@ pub(super) mod tests {
             size_bytes: payload.len() as u64,
             blake3_digest_hex: blake3_hex(&payload),
         };
+        call.idempotency_key = Some("resident-payload-replay".into());
 
         let call_reply = client
-            .send_call_with_inline_payload(&ticket, &call, payload)
+            .send_call_with_inline_payload(&ticket, &call, payload.clone())
             .await
             .unwrap();
         let result_payload = call_reply
@@ -4448,6 +4782,49 @@ pub(super) mod tests {
             MctCallPayloadHandle::InlinePayload { ref blake3_digest_hex, .. }
                 if blake3_digest_hex == &blake3_hex(&expected_result)
         ));
+
+        let admitted_peer = store.load().unwrap().peers[client_node_id.as_str()].clone();
+
+        let mut expired_peer = admitted_peer.clone();
+        expired_peer.expires_at = Timestamp::new("2026-07-08T00:00:00Z").unwrap();
+        expired_peer.binding_signature_ref = None;
+        store.upsert_peer(expired_peer).unwrap();
+        let expired_retry = client
+            .send_call_with_inline_payload(&ticket, &call, payload.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            expired_retry.reply.reply_outcome,
+            CallProtocolReplyOutcome::Denied
+        );
+        assert!(expired_retry.inline_result_payload.is_none());
+
+        let mut wrong_vision_peer = admitted_peer.clone();
+        wrong_vision_peer.vision_id = VisionId::new("vision-other").unwrap();
+        wrong_vision_peer.binding_signature_ref = None;
+        store.upsert_peer(wrong_vision_peer).unwrap();
+        let narrowed_vision_retry = client
+            .send_call_with_inline_payload(&ticket, &call, payload.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            narrowed_vision_retry.reply.reply_outcome,
+            CallProtocolReplyOutcome::Denied
+        );
+        assert!(narrowed_vision_retry.inline_result_payload.is_none());
+
+        store.upsert_peer(admitted_peer).unwrap();
+        store.revoke_peer(&client_node_id).unwrap();
+        let revoked_retry = client
+            .send_call_with_inline_payload(&ticket, &call, payload)
+            .await
+            .unwrap();
+        assert_eq!(
+            revoked_retry.reply.reply_outcome,
+            CallProtocolReplyOutcome::Denied
+        );
+        assert_eq!(revoked_retry.reply.safe_message, "not authorized");
+        assert!(revoked_retry.inline_result_payload.is_none());
 
         let _ = shutdown_tx.send(());
         tokio::time::timeout(Duration::from_secs(10), resident)
@@ -4478,6 +4855,7 @@ pub(super) mod tests {
                     ObservationKind::PeerCallReceived
                         | ObservationKind::CallConstructed
                         | ObservationKind::CallAuthorized
+                        | ObservationKind::CallDenied
                         | ObservationKind::RouteSelected
                         | ObservationKind::RouteRevalidated
                         | ObservationKind::NoRouteRecorded
@@ -4496,6 +4874,21 @@ pub(super) mod tests {
                 ObservationKind::RouteSelected,
                 ObservationKind::RouteRevalidated,
                 ObservationKind::RouteRevalidated,
+                ObservationKind::ResultRecorded,
+                ObservationKind::PeerCallReplied,
+                ObservationKind::PeerCallReceived,
+                ObservationKind::CallConstructed,
+                ObservationKind::CallDenied,
+                ObservationKind::ResultRecorded,
+                ObservationKind::PeerCallReplied,
+                ObservationKind::PeerCallReceived,
+                ObservationKind::CallConstructed,
+                ObservationKind::CallDenied,
+                ObservationKind::ResultRecorded,
+                ObservationKind::PeerCallReplied,
+                ObservationKind::PeerCallReceived,
+                ObservationKind::CallConstructed,
+                ObservationKind::CallDenied,
                 ObservationKind::ResultRecorded,
                 ObservationKind::PeerCallReplied,
             ]
@@ -4520,6 +4913,209 @@ pub(super) mod tests {
         assert!(!ledger_text.contains(&payload_base64));
         assert!(!ledger_text.contains(&expected_result_base64));
         assert!(!ledger_text.contains(&signature_marker));
+    }
+
+    #[tokio::test]
+    async fn in_flight_idempotency_duplicate_refuses_without_second_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("state.sqlite");
+        let ledger = ResidentLedgerWriter::spawn(dir.path().join("observations.jsonl")).unwrap();
+        let mut request = resident_test_protocol_request(resident_test_call(
+            TraceId::new("trace-idempotency-in-flight").unwrap(),
+        ));
+        request.idempotency_key = Some("in-flight-key".into());
+        let execution_count = Arc::new(AtomicU64::new(0));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+
+        let first = tokio::spawn(execute_idempotent_call(
+            state_path.clone(),
+            ledger.clone(),
+            request.clone(),
+            Timestamp::new("2026-07-10T00:00:00Z").unwrap(),
+            {
+                let execution_count = Arc::clone(&execution_count);
+                let started = Arc::clone(&started);
+                let release = Arc::clone(&release);
+                move || async move {
+                    execution_count.fetch_add(1, Ordering::SeqCst);
+                    started.notify_one();
+                    release.notified().await;
+                    MctIrohCallHandlerResult::completed(ResultRef::new("result-first").unwrap())
+                }
+            },
+        ));
+        started.notified().await;
+        let duplicate = execute_idempotent_call(
+            state_path,
+            ledger.clone(),
+            request,
+            Timestamp::new("2026-07-10T00:00:01Z").unwrap(),
+            {
+                let execution_count = Arc::clone(&execution_count);
+                move || async move {
+                    execution_count.fetch_add(1, Ordering::SeqCst);
+                    MctIrohCallHandlerResult::completed(ResultRef::new("result-duplicate").unwrap())
+                }
+            },
+        )
+        .await;
+        assert_eq!(duplicate.outcome, CallProtocolOutcome::Failed);
+        assert_eq!(
+            duplicate.protocol_reason,
+            Some(CallProtocolReason::IdempotencyInProgress)
+        );
+        assert_eq!(execution_count.load(Ordering::SeqCst), 1);
+
+        release.notify_one();
+        assert_eq!(first.await.unwrap().outcome, CallProtocolOutcome::Completed);
+        assert_eq!(execution_count.load(Ordering::SeqCst), 1);
+        ledger.close().await;
+    }
+
+    #[tokio::test]
+    async fn resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        write_resident_counting_process_child(&children_dir);
+
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        assert_eq!(loaded.loaded, 1, "{loaded:?}");
+        MctDaemonConfigStore::new(&config_path)
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let paths = ResidentExecutionPaths {
+            config_path,
+            children_dir: children_dir.clone(),
+            state_path: state_path.clone(),
+        };
+        let payload = br#"{"request-secret-marker":true}"#.to_vec();
+        let mut call = resident_test_call(TraceId::new("trace-idempotency").unwrap());
+        call.call_id = CallId::new("call-idempotency").unwrap();
+        call.payload_metadata.size_bytes = payload.len() as u64;
+        let mut request = resident_test_protocol_request(call);
+        request.idempotency_key = Some("same-key".into());
+        request.payload = MctCallPayloadHandle::InlinePayload {
+            inline_payload_ref: "payload-idempotency".into(),
+            content_type: "application/json".into(),
+            size_bytes: payload.len() as u64,
+            blake3_digest_hex: blake3_hex(&payload),
+        };
+        let now = Timestamp::new("2026-07-10T00:00:00Z").unwrap();
+
+        let first = execute_resident_call_at(
+            paths.clone(),
+            ledger.clone(),
+            request.clone(),
+            ResidentRequestPayload::remote(Some(payload.clone())),
+            now.clone(),
+        )
+        .await;
+        let replay = execute_resident_call_at(
+            paths.clone(),
+            ledger.clone(),
+            request.clone(),
+            ResidentRequestPayload::remote(Some(payload.clone())),
+            now.clone(),
+        )
+        .await;
+        assert_eq!(replay.outcome, first.outcome);
+        assert_eq!(replay.safe_message, first.safe_message);
+        assert_eq!(replay.result_ref, first.result_ref);
+        assert_eq!(replay.result_payload, first.result_payload);
+        assert_eq!(replay.inline_result_payload, first.inline_result_payload);
+        assert_eq!(replay.route_taken, first.route_taken);
+        assert_eq!(first.outcome, CallProtocolOutcome::Completed);
+        assert_eq!(
+            String::from_utf8(first.inline_result_payload.clone().unwrap()).unwrap(),
+            "result-run-1"
+        );
+        let counter_path = children_dir
+            .join("resident-counting")
+            .join("resident-counting.wasm.count");
+        assert_eq!(std::fs::read_to_string(&counter_path).unwrap().trim(), "1");
+
+        let mut other_caller = request.clone();
+        other_caller.authority.peer_binding_id = PeerBindingId::new("binding-other").unwrap();
+        other_caller.call.call_id = CallId::new("call-idempotency-other").unwrap();
+        let isolated = execute_resident_call_at(
+            paths.clone(),
+            ledger.clone(),
+            other_caller,
+            ResidentRequestPayload::remote(Some(payload.clone())),
+            now.clone(),
+        )
+        .await;
+        assert_eq!(isolated.outcome, CallProtocolOutcome::Completed);
+        assert_eq!(std::fs::read_to_string(&counter_path).unwrap().trim(), "2");
+
+        let mut mismatch = request.clone();
+        mismatch.call.call_id = CallId::new("call-idempotency-mismatch").unwrap();
+        let mismatch = execute_resident_call_at(
+            paths.clone(),
+            ledger.clone(),
+            mismatch,
+            ResidentRequestPayload::remote(Some(payload.clone())),
+            now.clone(),
+        )
+        .await;
+        assert_eq!(mismatch.outcome, CallProtocolOutcome::Malformed);
+        assert_eq!(
+            mismatch.protocol_reason,
+            Some(CallProtocolReason::IdempotencyKeyReuseMismatch)
+        );
+        assert_eq!(std::fs::read_to_string(&counter_path).unwrap().trim(), "2");
+
+        let expired = execute_resident_call_at(
+            paths.clone(),
+            ledger.clone(),
+            request.clone(),
+            ResidentRequestPayload::remote(Some(payload.clone())),
+            Timestamp::new("2026-07-10T00:13:00Z").unwrap(),
+        )
+        .await;
+        assert_eq!(expired.outcome, CallProtocolOutcome::Completed);
+        assert_eq!(std::fs::read_to_string(&counter_path).unwrap().trim(), "3");
+
+        let mut unkeyed = request;
+        unkeyed.idempotency_key = None;
+        unkeyed.call.call_id = CallId::new("call-unkeyed-repeat").unwrap();
+        let first_unkeyed = execute_resident_call_at(
+            paths.clone(),
+            ledger.clone(),
+            unkeyed.clone(),
+            ResidentRequestPayload::remote(Some(payload.clone())),
+            now.clone(),
+        )
+        .await;
+        let second_unkeyed = execute_resident_call_at(
+            paths,
+            ledger.clone(),
+            unkeyed,
+            ResidentRequestPayload::remote(Some(payload)),
+            now,
+        )
+        .await;
+        assert_eq!(first_unkeyed.outcome, CallProtocolOutcome::Completed);
+        assert_eq!(second_unkeyed.outcome, CallProtocolOutcome::Completed);
+        assert_eq!(std::fs::read_to_string(&counter_path).unwrap().trim(), "5");
+        ledger.close().await;
+
+        let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
+        assert!(ledger_text.contains("idempotency_replay_completed"));
+        assert!(ledger_text.contains("idempotency_key_reuse_mismatch"));
+        assert!(!ledger_text.contains("same-key"));
+        assert!(!ledger_text.contains("request-secret-marker"));
+        let state_bytes = std::fs::read(&state_path).unwrap();
+        assert!(
+            !state_bytes
+                .windows(b"request-secret-marker".len())
+                .any(|window| window == b"request-secret-marker")
+        );
     }
 
     #[tokio::test]
@@ -5087,6 +5683,151 @@ pub(super) mod tests {
         assert_eq!(plans[0].authority.reason, None);
     }
 
+    /// Covers `PeerOperationalRoleDerivation.EligibleRouteCandidateDerivation`,
+    /// `PeerRelationshipTaxonomy.RolesAreCurrentProjections`, and
+    /// `BilateralExecutableRouting` by removing each current conjunct independently.
+    #[test]
+    fn eligible_route_candidate_requires_every_current_conjunct() {
+        let fixture = remote_surface_candidate_fixture();
+        let now = Timestamp::new("2026-07-09T00:01:00Z").unwrap();
+        let is_admissible =
+            |config: &mct_daemon::MctDaemonConfig, state: &MctRuntimeStateStore, call: &MctCall| {
+                resident_remote_candidate_plans(config, Some(state), call, now.clone())
+                    .unwrap()
+                    .iter()
+                    .any(|plan| plan.authority.outcome == CandidateAuthorityOutcome::Admissible)
+            };
+
+        assert!(is_admissible(
+            &fixture.config,
+            &fixture.state,
+            &fixture.call
+        ));
+
+        let mut without_local_admission = fixture.config.clone();
+        without_local_admission
+            .peers
+            .get_mut("remote-mct")
+            .unwrap()
+            .binding_state = BindingState::Pending;
+        assert!(!is_admissible(
+            &without_local_admission,
+            &fixture.state,
+            &fixture.call
+        ));
+
+        let mut without_reverse_admission = fixture.config.clone();
+        without_reverse_admission
+            .peers
+            .get_mut("remote-mct")
+            .unwrap()
+            .outbound_binding = None;
+        assert!(!is_admissible(
+            &without_reverse_admission,
+            &fixture.state,
+            &fixture.call
+        ));
+
+        let empty_state =
+            MctRuntimeStateStore::open(fixture._dir.path().join("empty.sqlite")).unwrap();
+        assert!(!is_admissible(&fixture.config, &empty_state, &fixture.call));
+
+        let mut wrong_vision = fixture.call.clone();
+        wrong_vision.caller.vision_id = VisionId::new("vision-other").unwrap();
+        assert!(!is_admissible(
+            &fixture.config,
+            &fixture.state,
+            &wrong_vision
+        ));
+
+        let mut outside_call_scope = fixture.call.clone();
+        outside_call_scope.target.function_name = "not-published".into();
+        assert!(!is_admissible(
+            &fixture.config,
+            &fixture.state,
+            &outside_call_scope
+        ));
+
+        let mut without_reachability = fixture.config.clone();
+        without_reachability
+            .peers
+            .get_mut("remote-mct")
+            .unwrap()
+            .ticket = None;
+        assert!(!is_admissible(
+            &without_reachability,
+            &fixture.state,
+            &fixture.call
+        ));
+    }
+
+    /// Covers `PerHopPeerAccountability.UpstreamIdentityRemainsAtItsVerifier`.
+    #[test]
+    fn forwarded_envelope_clears_upstream_user_identity() {
+        let fixture = remote_surface_candidate_fixture();
+        let local_identity = fixture.config.local_identity.as_ref().unwrap();
+        let peer = &fixture.config.peers["remote-mct"];
+        let outbound = peer.outbound_binding.as_ref().unwrap();
+        let mut original = resident_test_protocol_request(fixture.call.clone());
+        original.call.caller.user_id = Some(UserId::new("upstream-user").unwrap());
+        let hello = MctHelloResponse {
+            response_id: "response-forwarded-identity".into(),
+            request_id: "hello-forwarded-identity".into(),
+            decision_id: DecisionId::new("decision-forwarded-identity").unwrap(),
+            hello_outcome: HelloOutcome::Admitted,
+            negotiated_protocol: Some(HelloPolicy::default().protocol),
+            accepted_alpns: vec![MCT_CALL_ALPN.into()],
+            safe_message: "admitted".into(),
+            retry_after: None,
+            capability_view: None,
+            response_observation_id: ObservationId::new("obs-forwarded-identity").unwrap(),
+        };
+
+        let forwarded = resident_forwarded_call_request(
+            &original,
+            local_identity,
+            peer,
+            outbound,
+            &local_identity.endpoint_id,
+            &hello,
+            None,
+        );
+
+        assert_eq!(
+            original.call.caller.user_id.as_ref().unwrap().as_str(),
+            "upstream-user"
+        );
+        assert!(forwarded.call.caller.user_id.is_none());
+        assert_eq!(forwarded.call.caller.node_id, local_identity.node_id);
+        assert_eq!(forwarded.call.call_id, original.call.call_id);
+        assert_eq!(
+            forwarded.call.trace_context.trace_id,
+            original.call.trace_context.trace_id
+        );
+    }
+
+    /// Covers `CapabilityPublicationRelationship.OfferLapsesAtFreshnessBoundary`.
+    #[test]
+    fn capability_offer_lapses_at_freshness_boundary() {
+        let fixture = remote_surface_candidate_fixture();
+
+        for now in ["2026-07-09T00:05:00Z", "2026-07-09T00:05:01Z"] {
+            let plans = resident_remote_candidate_plans(
+                &fixture.config,
+                Some(&fixture.state),
+                &fixture.call,
+                Timestamp::new(now).unwrap(),
+            )
+            .unwrap();
+            assert!(
+                !plans.iter().any(|plan| {
+                    plan.authority.outcome == CandidateAuthorityOutcome::Admissible
+                }),
+                "publication must not remain admissible at {now}"
+            );
+        }
+    }
+
     #[test]
     fn resident_remote_surface_candidate_forbids_secret_scope() {
         let mut fixture = remote_surface_candidate_fixture();
@@ -5177,7 +5918,7 @@ pub(super) mod tests {
         let peer = fixture.config.peers.get_mut("remote-mct").unwrap();
         peer.binding_state = BindingState::Admitted;
         peer.outbound_binding.as_mut().unwrap().expires_at =
-            Some(Timestamp::new("2026-07-08T00:00:00Z").unwrap());
+            Timestamp::new("2026-07-08T00:00:00Z").unwrap();
         let expired = resident_remote_candidate_plans(
             &fixture.config,
             Some(&fixture.state),
@@ -5539,7 +6280,7 @@ pub(super) mod tests {
                 .expect("string ID literal/generated value must be non-empty"),
             policy_revision: 1,
             signature_ref: String::new(),
-            expires_at: None,
+            expires_at: contract_peer_expiry(),
         };
         let outbound_binding_to_sign =
             outbound_peer_binding_for_local(&local_identity, &peer, &outbound_binding).unwrap();
@@ -5621,6 +6362,7 @@ pub(super) mod tests {
             outbound_binding: None,
             binding_state,
             policy_revision: 1,
+            expires_at: contract_peer_expiry(),
             updated_at: "2026-07-09T00:00:00Z".into(),
         }
     }
@@ -5763,6 +6505,14 @@ pub(super) mod tests {
             children_dir,
             "resident-echo",
             b"#!/bin/sh\ncat >/dev/null\nprintf '{\\\"ok\\\":true}'\n",
+        );
+    }
+
+    fn write_resident_counting_process_child(children_dir: &Path) {
+        write_resident_process_child_script(
+            children_dir,
+            "resident-counting",
+            b"#!/bin/sh\ncounter=\"$0.count\"\ncount=$(cat \"$counter\" 2>/dev/null || printf 0)\ncount=$((count + 1))\nprintf '%s' \"$count\" >\"$counter\"\ncat >/dev/null\nprintf 'result-run-%s' \"$count\"\n",
         );
     }
 

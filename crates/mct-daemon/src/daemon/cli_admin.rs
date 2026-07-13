@@ -812,9 +812,12 @@ pub(super) fn run_peers_add(mut args: Vec<String>) -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(default_control_uds_path);
     let binding_signature_ref = take_option(&mut args, "--signature-ref");
+    let expires_at = take_option(&mut args, "--expires-at")
+        .ok_or_else(|| anyhow::anyhow!("peers add requires --expires-at <timestamp>"))
+        .and_then(|value| Timestamp::new(value).context("parse --expires-at timestamp"))?;
     if args.len() < 4 {
         bail!(
-            "expected: mct-daemon peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--signature-ref proof] [--config path] [--ledger path] [--uds socket-path]"
+            "expected: mct-daemon peers add <peer-node-id> <binding-id> <endpoint-id> <vision-id> [ticket-file] [--signature-ref proof] --expires-at ts [--config path] [--ledger path] [--uds socket-path]"
         );
     }
     let peer_node_id = MctNodeId::new(args.remove(0))
@@ -845,6 +848,7 @@ pub(super) fn run_peers_add(mut args: Vec<String>) -> Result<()> {
             ticket,
             binding_signature_ref,
             policy_revision: 1,
+            expires_at,
         },
     )?;
     println!(
@@ -871,12 +875,13 @@ pub(super) fn run_peers_set_outbound_proof(mut args: Vec<String>) -> Result<()> 
         anyhow::anyhow!("peers set-outbound-proof requires --signature-ref proof")
     })?;
     let expires_at = take_option(&mut args, "--expires-at")
-        .map(Timestamp::new)
-        .transpose()
-        .context("parse --expires-at timestamp")?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("peers set-outbound-proof requires --expires-at <timestamp>")
+        })
+        .and_then(|value| Timestamp::new(value).context("parse --expires-at timestamp"))?;
     if args.len() < 2 {
         bail!(
-            "expected: mct-daemon peers set-outbound-proof <peer-node-id> <binding-id> --signature-ref proof [--expires-at ts] [--config path] [--ledger path] [--uds socket-path]"
+            "expected: mct-daemon peers set-outbound-proof <peer-node-id> <binding-id> --signature-ref proof --expires-at ts [--config path] [--ledger path] [--uds socket-path]"
         );
     }
     let peer_node_id = MctNodeId::new(args.remove(0))

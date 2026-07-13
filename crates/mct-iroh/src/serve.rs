@@ -269,6 +269,7 @@ pub struct MctIrohCallHandlerResult {
     pub route_decision_id: Option<DecisionId>,
     pub route_taken: Option<RouteTaken>,
     pub outcome: CallProtocolOutcome,
+    pub protocol_reason: Option<CallProtocolReason>,
     pub safe_message: String,
 }
 
@@ -707,6 +708,7 @@ impl MctIrohCallHandlerResult {
             route_decision_id: None,
             route_taken: None,
             outcome: CallProtocolOutcome::AcceptedForRouting,
+            protocol_reason: None,
             safe_message: "accepted for routing".into(),
         }
     }
@@ -719,6 +721,7 @@ impl MctIrohCallHandlerResult {
             route_decision_id: None,
             route_taken: None,
             outcome: CallProtocolOutcome::Completed,
+            protocol_reason: None,
             safe_message: "call completed".into(),
         }
     }
@@ -735,6 +738,7 @@ impl MctIrohCallHandlerResult {
             route_decision_id: None,
             route_taken: None,
             outcome: CallProtocolOutcome::Completed,
+            protocol_reason: None,
             safe_message: "call completed".into(),
         }
     }
@@ -747,6 +751,7 @@ impl MctIrohCallHandlerResult {
             route_decision_id: None,
             route_taken: None,
             outcome: CallProtocolOutcome::Failed,
+            protocol_reason: None,
             safe_message: safe_message.into(),
         }
     }
@@ -759,6 +764,7 @@ impl MctIrohCallHandlerResult {
             route_decision_id: None,
             route_taken: None,
             outcome: CallProtocolOutcome::Denied,
+            protocol_reason: None,
             safe_message: "not authorized".into(),
         }
     }
@@ -771,8 +777,14 @@ impl MctIrohCallHandlerResult {
             route_decision_id: None,
             route_taken: None,
             outcome: CallProtocolOutcome::TimedOut,
+            protocol_reason: None,
             safe_message: "call timed out".into(),
         }
+    }
+
+    pub fn with_protocol_reason(mut self, reason: CallProtocolReason) -> Self {
+        self.protocol_reason = Some(reason);
+        self
     }
 
     pub fn with_route(
@@ -1529,6 +1541,9 @@ impl MotherIrohEndpoint {
                                     };
                                     if let Some(handled) = handled.as_ref() {
                                         evaluation.outcome = handled.outcome;
+                                        if let Some(reason) = handled.protocol_reason {
+                                            evaluation.reason = reason;
+                                        }
                                         evaluation.safe_message = handled.safe_message.clone();
                                         evaluation.route_decision_id =
                                             handled.route_decision_id.clone();
@@ -2037,6 +2052,9 @@ impl MotherIrohEndpoint {
                     };
                     if let Some(handled) = handled.as_ref() {
                         evaluation.outcome = handled.outcome;
+                        if let Some(reason) = handled.protocol_reason {
+                            evaluation.reason = reason;
+                        }
                         evaluation.safe_message = handled.safe_message.clone();
                         evaluation.route_decision_id = handled.route_decision_id.clone();
                     }

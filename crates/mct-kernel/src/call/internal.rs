@@ -275,11 +275,7 @@ fn current_binding_denial_reason(
         }
     }
 
-    if binding
-        .expires_at
-        .as_ref()
-        .is_some_and(|expires_at| expires_at <= now)
-    {
+    if &binding.expires_at <= now {
         return Some(CallProtocolReason::BindingExpired);
     }
 
@@ -334,8 +330,11 @@ fn denied(
             | CallProtocolReason::PayloadDigestMismatch
             | CallProtocolReason::PayloadMissingInlineBytes
             | CallProtocolReason::PayloadUnexpectedInlineBytes
-            | CallProtocolReason::InvalidPayloadDigest => CallProtocolOutcome::Malformed,
-            CallProtocolReason::ChildPayloadContentTypeUnsupported
+            | CallProtocolReason::InvalidPayloadDigest
+            | CallProtocolReason::IdempotencyKeyReuseMismatch => CallProtocolOutcome::Malformed,
+            CallProtocolReason::IdempotencyBudgetFull
+            | CallProtocolReason::IdempotencyInProgress
+            | CallProtocolReason::ChildPayloadContentTypeUnsupported
             | CallProtocolReason::ResultPayloadTooLarge
             | CallProtocolReason::ResultPayloadIntegrityMismatch
             | CallProtocolReason::ExecutionFailed => CallProtocolOutcome::Failed,

@@ -1,6 +1,16 @@
 -- allium: 3
 -- mct-product-map.allium
 
+-- Epistemic status:
+-- `allium check` and `allium analyse` establish well-formedness and internal analysis only.
+-- Intent/code alignment is evidenced by dated weed audits and named contract tests.
+-- The first weed audit was recorded on 2026-07-09 at
+-- `layer/surface/build/spec-drift-audit/REPORT.md`.
+-- Decision: 2026-07-12, peer-relationship semantics are governed by the ratified companion
+-- law `mct-peer-ontology.allium`, reviewed in session `20260712-112719-785420000`.
+-- Product-map peer records and protocols reference that law's contracts by name rather than
+-- duplicating its relationship semantics.
+
 -- Scope: Whole MCT product map as guiding behavioural principles.
 -- Includes:
 --   - Mother/Child/Toy authority boundary
@@ -129,6 +139,13 @@ contract MctRuntimeShape {
 -- Decision: Phase 2 must not feed new permissions back into Phase 1. It may report that authorized routes are unavailable, degraded, or deadline-impossible, causing the no-route path to run.
 -- Decision: Runtime policy checks may short-circuit for speed, while debug/dry-run checks may accumulate all violations for explanation.
 -- Decision: Routing decisions operate on snapshots. Execution must revalidate authority because stale authority is a security bug; stale optimization is a performance miss.
+-- Decision: 2026-07-12 tend disposition of REPORT B2: local child execution has a distinct
+-- effect-boundary revision guard after route revalidation mints execution authority and
+-- immediately before the child adapter effect. It rereads current policy and grant revisions and
+-- compares them with the minted authority; either mismatch denies before execution.
+-- Decision: Effect-boundary revision guarding composes with route revalidation rather than
+-- replacing it. Revalidation proves the selected route, child, and toys against its authority
+-- facts; the final guard proves that those minted revisions are still current at the effect seam.
 
 contract TwoPhaseRouting {
     @invariant AuthorityPrecedesOptimization
@@ -145,6 +162,19 @@ contract TwoPhaseRouting {
 
     @invariant ExecutionRevalidatesAuthority
         -- Authority is rechecked at execution time so expired grants, revoked peers, revoked children, or changed data policy cannot be bypassed by a stale routing decision.
+
+    @invariant EffectBoundaryRevisionGuardIsDistinct
+        -- After route revalidation and immediately before a local child effect, current policy and
+        -- grant revisions must still match the revisions carried by the minted execution authority.
+
+    @invariant EffectBoundaryGuardCannotRepairStaleAuthority
+        -- A revision mismatch denies before the child effect; the adapter cannot refresh, widen,
+        -- or reinterpret the already-minted authority token as current.
+
+    @invariant PeerEgressAndLocalChildEffectGuardsAreDistinct
+        -- Derived peer candidacy and its complete current-record authority are revalidated before
+        -- outbound submission under `PeerOperationalRoleDerivation`; this route-egress guard is
+        -- distinct from the local policy/grant revision guard immediately before a child effect.
 }
 
 -- Decision: If Phase 1 eliminates every route, the default no-route result is hard denial with a clear policy reason.
@@ -227,6 +257,35 @@ contract NodeProfileAndTelemetry {
 -- Decision: Iroh endpoint hooks and relay access control may reject unknown, banned, or malformed peers early, but the MCT authority decision remains a kernel peer-admission decision that records an observation.
 -- Decision: RCAN-style signed capability tokens are useful evidence and a design pattern for attenuation, but MCT peer bindings and ToyGrants remain the authority records for MCT calls, observations, thoughts, and child/toy access.
 -- Decision: Binding creation, admission, rejection, revocation, expiry, and stale-policy denial are observed facts before protected peer effects such as `mct/call/0`, `mct/thought/0`, or `mct/observe/0` proceed.
+-- Decision: 2026-07-12 session `20260712-112719-785420000` governs peer relationships
+-- through companion contracts `PeerRelationshipTaxonomy`, `PeerOperationalRoleDerivation`, and
+-- `BilateralExecutableRouting`. `CallSubmissionAdmission` is the receiving Mother's directional
+-- binding; `OutboundCallAuthorization` is possession of the reverse admission; and
+-- `CapabilityPublication` is the separately governed publication record.
+-- Decision: Every peer relationship is explicit, issued, scoped, time-bounded, and revocable.
+-- A binding admitting `mct/call/0` permits submission for evaluation only and grants no call,
+-- route, child, toy, data movement, result-ingress, or effect authority.
+-- Decision: ImmediateCaller, CapabilityPublisher, EligibleRouteCandidate, SelectedExecutor, and
+-- bilateral pair states are current projections under the companion law, never stored role or
+-- routable authority. The exact derived candidacy conjunction is
+-- `PeerOperationalRoleDerivation.EligibleRouteCandidateDerivation` and is revalidated before
+-- outbound submission.
+-- Decision: Mutual directional admission is two-sovereign consent because peer routing sends
+-- bounded payload bytes to the executor and imports its result into the sender's fabric. The
+-- receiver's binding is ingress consent; the sender's binding is her egress, peer-trust, and data-
+-- placement decision. Either direction may end independently and removes candidacy on the next
+-- current-record evaluation.
+-- Decision: An operator-pointed peer call is an explicit, scoped, durably observed individual
+-- egress decision under `PeerOperationalRoleDerivation.OperatorPointedSubmissionIsDistinct`.
+-- It creates no ambient relationship and does not waive receiver admission or per-call authority.
+-- Decision: 2026-07-12 tend disposition of REPORT B4: the landed binding proof is an
+-- Ed25519 signature reference prefixed `mct-ed25519-binding-v1:` over canonical JSON carrying a
+-- versioned context plus binding id, issuer node and endpoint, peer node and endpoint, Vision,
+-- allowed ALPNs, policy revision, and expiry. The issuer endpoint's Iroh public key verifies it.
+-- Decision: This encoding proves the presented directional binding record; it does not replace
+-- that record or expand its scope. When signed binding enforcement applies, a missing, malformed,
+-- wrong-key, or tampered proof denies hello before admission with internal `capability_invalid`
+-- and caller-safe `not authorized`.
 
 value IrohConnectionPresentation {
     endpoint_id: String
@@ -253,7 +312,7 @@ entity MctPeerBinding {
     policy_revision: Integer
     binding_state: pending | admitted | denied | expired | revoked
     issued_at: Timestamp
-    expires_at: Timestamp?
+    expires_at: Timestamp
     created_by_observation_id: String
     superseded_by_observation_id: String?
 }
@@ -341,11 +400,53 @@ contract MctIrohPeerBindingAuthority {
 
     @invariant CapabilityTokensDoNotReplaceToyGrants
         -- Signed tokens may prove delegated peer facts, but MCT ToyGrants and peer bindings remain the authority records used by the kernel.
+
+    @invariant PeerRelationshipsUseCompanionTaxonomy
+        -- Durable call relationships, publication, operational roles, pair states, and derived
+        -- candidacy are governed by the named companion contracts rather than duplicated here.
+
+    @invariant EveryPeerBindingIsTimeBounded
+        -- A peer binding always has an expiry; omission cannot create an indefinite relationship.
+
+    @invariant CallBindingAdmitsSubmissionOnly
+        -- A current call-scoped binding allows the peer to submit for evaluation and grants no
+        -- call execution, route, child, toy, data movement, result ingress, or adapter effect.
+
+    @invariant PeerRolesAndPairStatesAreDerived
+        -- Immediate caller, publisher, candidate, executor, stranger, one-way, mutual, and
+        -- routable states are current projections and are never persisted as authority.
+
+    @invariant DerivedRoutingRequiresCompanionConjunction
+        -- Resident peer candidacy uses the complete current conjunction named by
+        -- `EligibleRouteCandidateDerivation`; no one term, including publication or ticket,
+        -- establishes candidacy alone.
+
+    @invariant OperatorPointedEgressIsOneObservedDecision
+        -- Explicit operator direction authorizes only that scoped, durably observed egress and
+        -- creates no continuing peer relationship or receiver-side authority.
+
+    @invariant BindingProofCoversCanonicalDirectionalRecord
+        -- The Ed25519 proof authenticates the canonical binding identity, issuer and peer node and
+        -- endpoint identities, Vision, ALPN scope, policy revision, and time bound.
+
+    @invariant InvalidBindingProofFailsClosed
+        -- When proof enforcement applies, a missing, malformed, wrong-key, or tampered proof
+        -- prevents admission and exposes only the safe denial projection.
+
+    @invariant ProofDoesNotBecomeRelationshipOntology
+        -- Cryptographic encoding proves an issued directional binding but does not define peer
+        -- roles, publication meaning, call authority, or another Mother's consent.
 }
 
 -- Decision: Iroh intentionally stops at reliable public-key-addressed connectivity, endpoint discovery, relay/direct path continuity, and ALPN protocol composition. MCT should not push Vision membership, child authorization, thought acceptance, or ToyGrant authority into Iroh transport identity.
 -- Decision: MCT is the protocol/runtime/authority layer above Iroh. It defines MCT ALPN protocols, WIT-shaped calls, thought semantics, observation replication, admission, and grants.
 -- Decision: ALPN is the composition seam. Candidate MCT-over-Iroh ALPNs include `mct/hello/0` for admission/version/capability exchange, `mct/call/0` for WIT-shaped remote calls, `mct/thought/0` for immutable thought/fact exchange, `mct/observe/0` for selected observation replication, and `mct/federation/0` for federation control.
+-- Decision: 2026-07-12 session `20260712-112719-785420000` reserves the named future
+-- relationships `ThoughtExchangeAuthorization`, `ObservationReplicationAuthorization`, and
+-- `FederationControlAuthorization` under companion contract `FuturePeerRelationshipSlots`.
+-- A generic peer binding or successful ALPN negotiation can admit protocol negotiation but never
+-- supplies that protocol's domain authority. Each future relationship requires its own explicit,
+-- issued, scoped, time-bounded, and revocable authority record before implementation.
 -- Decision: MCT whole-app nodes may use public relays for development/bootstrap, managed relays for convenience, or self-hosted/federated relays for production boundaries. Relay choice changes reachability and metadata exposure, not MCT authority.
 -- Decision: noq/Iroh own direct-vs-relay switching, multipath continuity, address discovery, and future path types such as WebRTC or Wi-Fi-aware transport. MCT policy may constrain acceptable path classes and observe path facts, but it does not schedule packets.
 -- Decision: Iroh blobs/content addressing are optional payload and artifact tools. MCT may use them for immutable artifacts, bulk data, or thought payload material, but live calls, admission, and observation streams remain protocol flows with their own authority.
@@ -398,6 +499,16 @@ contract MctIrohProtocolLayer {
     @invariant AlpnIsProtocolCompositionSeam
         -- MCT-over-Iroh behaviour is declared through ALPN-specific protocols whose authority requirements are explicit.
 
+    @invariant GenericBindingDoesNotSupplyProtocolDomainAuthority
+        -- A peer binding or negotiated ALPN can admit protocol use at the transport/application
+        -- seam but cannot instantiate thought, observation-replication, or federation-control
+        -- authority.
+
+    @invariant FutureProtocolsRequireNamedRelationshipRecords
+        -- ThoughtExchangeAuthorization, ObservationReplicationAuthorization, and
+        -- FederationControlAuthorization each require a separate explicit, scoped, expiring,
+        -- revocable record before their protected protocol effects exist.
+
     @invariant ChildrenUseCapabilitiesNotTransport
         -- Children consume peer networking through scoped WIT/Toy capabilities and MCT protocols, not through raw Iroh endpoint or socket handles.
 
@@ -416,6 +527,20 @@ contract MctIrohProtocolLayer {
 -- Decision: A successful hello admits only the negotiated protocol version, Vision scope, peer binding, and ALPN set recorded in its decision. Later peer messages must reference that admission decision or a derived session capability.
 -- Decision: A denied hello returns only a safe reason such as `not authorized`, `unsupported version`, or `retry later`; internal observations retain the precise reason.
 -- Decision: `mct/hello/0` may advertise a policy-filtered capability view, but capability advertisement is not a grant. Child access, toy use, thought acceptance, and observation replication still require their own authority checks.
+-- Decision: 2026-07-10 Track-1 hello-observation gate: the hello response is the first
+-- protected effect because a peer can immediately use an admitted response. Receipt and the typed
+-- admission or denial decision are durably appended before admission is remembered or response
+-- bytes are sent. Append failure sends no response, remembers no admission, and is not retried or
+-- downgraded to observe-after-effect.
+-- Decision: 2026-07-12 tend disposition of REPORT B5: hello capability views may carry
+-- expiring, Vision-scoped callable-surface evidence naming operation, local runtime class, and
+-- publisher policy revision. Received evidence is stored and refreshed transactionally and is
+-- usable for candidacy only while fresh.
+-- Decision: The meaning of each callable surface is governed by
+-- `mct-peer-ontology.allium` contract `CapabilityPublicationRelationship`: it is an honest local
+-- execution offer contributing capability, never authority or brokerage. The current consumer
+-- window is 300 seconds as a disclosed implementation value; exact freshness policy and explicit
+-- revocation remain the companion law's open questions and are not frozen here.
 
 value MctProtocolVersion {
     protocol_name: String
@@ -435,10 +560,24 @@ value MctPeerBindingPresentation {
     expires_at: Timestamp?
 }
 
+value MctHelloCallableSurface {
+    child_name: String
+    operation_id: String
+    runtime_kind: process | jvm_child | wasm_component | remote_peer | internal
+    vision_id: String
+    policy_revision: Integer
+    visibility: String
+}
+
 value MctHelloCapabilityView {
+    node_id: String
+    vision_id: String
+    published_at: Timestamp
+    policy_revision: Integer
     supported_alpns: List<String>
     supported_wit_worlds: List<String>
     supported_observation_modes: List<String>
+    callable_surfaces: List<MctHelloCallableSurface>
     capability_view_ref: String?
 }
 
@@ -517,6 +656,11 @@ surface MctHelloRequestProjection {
         request.presented_binding.vision_id
         request.presented_binding.policy_revision
         request.presented_binding.allowed_alpns_claim
+        request.capability_view.node_id
+        request.capability_view.vision_id
+        request.capability_view.published_at
+        request.capability_view.policy_revision
+        request.capability_view.callable_surfaces
         request.capability_view.capability_view_ref
         request.local_policy_revision_seen
         request.trace_id
@@ -579,11 +723,29 @@ contract MctHelloProtocol {
     @invariant CapabilityViewIsNotGrant
         -- Capability advertisements during hello do not grant child, toy, thought, observation, or data authority.
 
+    @invariant CallableSurfacesUseCompanionPublicationMeaning
+        -- Each callable surface is interpreted through `CapabilityPublicationRelationship` as a
+        -- Vision-scoped local execution offer, never as call, route, child, toy, or data authority.
+
+    @invariant StaleCallableSurfaceIsNotCandidateEvidence
+        -- A callable surface contributes capability evidence only within the consumer's current
+        -- freshness policy; stale evidence is removed from candidacy without attributing fault.
+
+    @invariant PublicationPolicyRevisionIsEvidence
+        -- A publisher's policy revision is retained for evidence and change detection and is not
+        -- treated as cross-Mother equality with the consumer's local policy revision.
+
     @invariant SafeDenialOnlyToPeer
         -- The peer receives only safe denial or retry information while internal observations retain precise policy and topology reasons.
 
     @invariant HelloObservationsBeforeEffects
-        -- Hello receipt, admission, denial, negotiated protocol, and response facts are observed before subsequent protected peer effects proceed.
+        -- Hello receipt and the admission or denial decision are durable before admission is
+        -- remembered or response bytes are sent; negotiated protocol and truthful response facts
+        -- preserve that write-ahead lifecycle before later protected peer effects.
+
+    @invariant FailedHelloObservationPreventsAdmissionAndResponse
+        -- Failure to durably append the hello authority facts closes the attempt without response,
+        -- remembered admission, retry, or observe-after-effect fallback.
 
     @invariant AdmissionScopeIsNarrow
         -- A hello admission authorizes only the negotiated protocol version, selected binding, Vision scope, and accepted ALPN set recorded in the decision.
@@ -597,6 +759,11 @@ contract MctHelloProtocol {
 -- Decision: `MctCall` is not the result. The return path is a separate future concept, likely `MctResult` or `MctReply`.
 -- Decision: Actual payload bytes may travel separately. Routing consumes payload metadata so it can authorize and cost movement without deserializing business data.
 -- Decision: `origin` records which adapter produced the call for audit and telemetry, but must not create adapter-specific routing authority.
+-- Decision: 2026-07-12 A1 resolution in session `20260712-112719-785420000` preserves
+-- `OriginIsForObservationNotPermission`. Origin is the adapter's mechanical observation and
+-- dispatch witness for which protocol question arrived; it creates and removes no authority.
+-- For Iroh arrivals, local-only evaluation follows from the submitted `mct/call/0` question under
+-- companion contract `TerminalPeerCallSubmission`, not from an origin-specific permission gate.
 
 value CallerIdentity {
     node_id: String
@@ -683,7 +850,9 @@ contract MctCallAtomicity {
         -- Iroh, JVM adapter, WASM host, process harness, and CLI calls enter the same authority pipeline after translation to `MctCall`.
 
     @invariant OriginIsForObservationNotPermission
-        -- The origin adapter may be used for audit and telemetry but not as a shortcut around Vision, data, peer, child, toy, or secret policy.
+        -- The origin adapter may be used for audit, telemetry, and dispatch of the protocol
+        -- semantics that arrived, but it neither grants nor removes Vision, data, peer, child,
+        -- toy, secret, or route authority.
 
     @invariant PayloadMetadataPrecedesPayloadInspection
         -- Routing can evaluate classification and movement cost from metadata without requiring business payload deserialization.
@@ -693,9 +862,42 @@ contract MctCallAtomicity {
 -- Decision: `mct/call/0` is a transport envelope around the semantic `MctCall`; it does not create a second call model. The receiving Mother constructs or rejects one immutable `MctCall` before authority routing.
 -- Decision: Remote calls are WIT-shaped: namespace, interface, function. Iroh stream details, relay/direct path facts, and endpoint ids remain adapter evidence and authority context, not operation identity.
 -- Decision: Payload bytes may be inline, content-addressed, or referenced out of band. Payload metadata used by authority must match the payload handle before execution proceeds.
+-- Decision: 2026-07-12 tend disposition of REPORT B1: payload frames, inline request bytes,
+-- inline result bytes, and local content-addressed blobs are each bounded by named disclosed
+-- constants. Current disclosed values are 96 KiB, 32 KiB, 32 KiB, and 8 MiB respectively;
+-- implementations may revise values without weakening the named-bound obligation.
+-- Decision: Inline and content-addressed payload integrity uses exact observed byte count and
+-- BLAKE3 digest. Declared size/digest disagreement, malformed digest, or exceeded bound fails
+-- closed before execution or result acceptance.
+-- Decision: The local BLAKE3 content-addressed store writes to a non-visible temporary object,
+-- computes and verifies exact size and digest, and only then atomically renames the object into
+-- digest-addressed visibility. Failed or partial verification never publishes the object.
 -- Decision: A peer call reply carries a caller-safe `MctResult` reference or safe adapter error. Internal route decisions, candidate elimination, child details, and topology stay in observations.
+-- Decision: 2026-07-12 tend disposition of REPORT B3: `route_taken` is a caller-safe
+-- `mct/call/0` reply projection. It may identify the execution route for success, failure, or
+-- timeout after execution was attempted; denied, cancelled-before-execution, and malformed
+-- replies carry no route. The projection does not expose candidate reasoning or grant peer
+-- authority.
 -- Decision: `mct/call/0` requires observations for peer call receipt, malformed rejection, constructed call, authorization/denial, route selection/no-route, result recording, and peer reply.
 -- Decision: A hello admission narrows but does not pre-authorize a call. Every `mct/call/0` request still passes the normal MCT authority filter, ToyGrant checks, child assignment checks, data policy, and execution-time revalidation.
+-- Decision: 2026-07-12 session `20260712-112719-785420000` defines `mct/call/0` as
+-- “I propose this receiving Mother as local executor.” Under companion contract
+-- `TerminalPeerCallSubmission`, every admitted arrival is terminal: the receiver evaluates local
+-- candidates and never sources another peer; local unavailability returns the normal safe no-route
+-- or denial outcome.
+-- Decision: Per-hop vouching under companion contract `PerHopPeerAccountability` is permanent
+-- `mct/call/0` semantics. The receiver authorizes and records the authenticated ImmediateCaller;
+-- upstream identity stays in the ledger that verified it and is not carried as an originator claim.
+-- Preserved call and trace identifiers, not propagated identity, correlate bilateral ledgers.
+-- Decision: Authorized cross-Mother ledger reconstruction belongs to future
+-- `ObservationReplicationAuthorization` over `mct/observe/0`, under each Mother's own disclosure
+-- authority. It is not smuggled through the call envelope.
+-- Decision: Brokered multi-hop submission is a distinct future relationship requiring
+-- authenticated end-to-end identity, executor-held originator authority, and explicit transitive
+-- routing policy. It cannot extend or mutate `mct/call/0` terminal and per-hop semantics.
+-- Decision: A future call envelope may reference the `CapabilityPublication` that informed
+-- receiver selection solely to strengthen route audit. Whether to add that reference remains the
+-- companion law's open route-audit question; it would grant no authority or alter terminality.
 
 value MctCallProtocolAuthority {
     hello_decision_id: String
@@ -711,6 +913,7 @@ value MctCallPayloadHandle {
     payload_kind: inline_payload | content_addressed_blob | external_reference | empty
     content_type: String?
     approximate_size_bytes: Integer
+    exact_size_bytes: Integer?
     digest: String?
     blob_ref: String?
     external_ref: String?
@@ -734,7 +937,7 @@ entity MctCallProtocolEvaluation {
     route_decision_id: String?
     result_ref: String?
     outcome: accepted_for_routing | malformed | denied | failed | timed_out | completed
-    reason: hello_not_admitted | alpn_not_admitted | endpoint_mismatch | binding_revoked | binding_expired | policy_revision_stale | malformed_call | payload_metadata_mismatch | authority_denied | no_route | execution_failed | execution_timed_out | result_recorded
+    reason: hello_not_admitted | alpn_not_admitted | endpoint_mismatch | binding_revoked | binding_expired | policy_revision_stale | malformed_call | payload_metadata_mismatch | authority_denied | no_route | execution_failed | execution_timed_out | result_recorded | idempotency_key_reuse_mismatch | idempotency_budget_full | idempotency_in_progress | idempotency_replay_completed
     safe_message: String
     observation_id: String
 }
@@ -744,6 +947,7 @@ entity MctCallProtocolReply {
     protocol_request_id: String
     decision_id: String
     result_ref: String?
+    route_taken: RouteTaken?
     reply_outcome: success | denied | failed | timed_out | cancelled | malformed
     safe_message: String
     reply_observation_id: String
@@ -788,6 +992,7 @@ surface MctCallProtocolRequestProjection {
         request.call.payload_metadata.data_classification
         request.payload.payload_kind
         request.payload.approximate_size_bytes
+        request.payload.exact_size_bytes
         request.payload.digest
         request.idempotency_key
         request.received_observation_id
@@ -818,10 +1023,42 @@ surface MctCallProtocolReplyProjection {
         reply.protocol_request_id
         reply.decision_id
         reply.result_ref
+        reply.route_taken.node_id
+        reply.route_taken.child_id
+        reply.route_taken.runtime_kind
         reply.reply_outcome
         reply.safe_message
         reply.reply_observation_id
 }
+
+-- Decision: 2026-07-10 Track-1 Slice 6 grows `IdempotencyIsRequestScoped` from its
+-- original deduplication rule into durable replay semantics. The old meaning remains: a key
+-- deduplicates retry of the same protocol request and never authorizes a different call or
+-- bypasses revalidation.
+-- Decision: A matching completed retry returns the recorded caller-safe reply, including its
+-- outcome, safe message, result reference or handle, route projection, and bounded inline result
+-- payload, without routing or executing the child again.
+-- Decision: Idempotency scope is the current authenticated caller identity. Peer requests use
+-- the current immediate peer binding; local adapters use their canonical local caller identity.
+-- One caller can never receive another caller's recorded result.
+-- Decision: The request fingerprint covers canonical WIT target identity, semantic call id, and
+-- declared payload digest or named empty marker. A key reused with a different fingerprint fails
+-- closed and never returns the prior result.
+-- Decision: Entries have a named TTL and named per-caller budget. Current disclosed values are
+-- 720 seconds and 256 unexpired entries per caller; these values are implementation policy, not
+-- frozen protocol constants. A full budget refuses the new keyed request and never evicts a
+-- current entry. Within its TTL, a keyed retry replays or is typed-refused and never silently
+-- re-executes; after expiry, reuse is explicitly fresh execution.
+-- Decision: An in-flight duplicate is typed-refused without waiting and without a second
+-- execution. Durable completed entries survive process restart; crash-left in-flight entries
+-- refuse until expiry.
+-- Decision: Current payload and peer-binding authority evaluation precedes every idempotency
+-- reserve or replay decision. Replay can avoid routing and execution but cannot revive revoked,
+-- expired, narrowed, or stale authority.
+-- Decision: The 0.x wire disclosure names `idempotency_key_reuse_mismatch`,
+-- `idempotency_budget_full`, `idempotency_in_progress`, and
+-- `idempotency_replay_completed`. Cross-Mother replay after forwarding failover is excluded from
+-- request-scoped idempotency and remains a federation follow-on.
 
 contract MctCallProtocol {
     @invariant RequiresHelloAdmission
@@ -836,17 +1073,104 @@ contract MctCallProtocol {
     @invariant HelloDoesNotPreAuthorizeCall
         -- Hello admission permits the peer to submit a call envelope, but each call still passes authority, routing, ToyGrant, child assignment, data policy, and revalidation checks.
 
+    @invariant PeerSubmissionProposesReceiverAsLocalExecutor
+        -- `mct/call/0` uses `TerminalPeerCallSubmission`: the admitted ImmediateCaller asks this
+        -- receiving Mother to evaluate the call for local execution.
+
+    @invariant PeerSubmissionIsTerminalAtReceiver
+        -- A received `mct/call/0` request never sources another peer candidate; inability to run
+        -- locally produces the normal safe no-route or denial result.
+
+    @invariant PeerCallUsesPermanentPerHopVouching
+        -- The receiver authorizes only the admitted ImmediateCaller. Upstream identity remains
+        -- with its verifier, while call and trace identifiers support authorized ledger joining.
+
+    @invariant ObservationReplicationOwnsCrossLedgerSharing
+        -- Cross-Mother ledger-slice disclosure requires future
+        -- `ObservationReplicationAuthorization`; call submission conveys no observation access.
+
+    @invariant BrokeredSubmissionCannotExtendCallProtocol
+        -- Multi-hop brokerage requires a separate relationship, protocol, end-to-end identity,
+        -- executor-held authority, and transitive policy and cannot alter `mct/call/0` semantics.
+
     @invariant PayloadMetadataMatchesHandle
         -- Payload metadata used for routing and authority is checked against the payload handle before execution proceeds.
 
+    @invariant PayloadBytesAreBoundedByNamedConstants
+        -- Protocol frames, inline request bytes, inline result bytes, and local blob objects each
+        -- refuse input beyond their named disclosed bound.
+
+    @invariant PayloadIntegrityIsVerifiedAtIngress
+        -- Inline and content-addressed request bytes, and inline result bytes, are accepted only
+        -- when exact observed size and BLAKE3 digest match their declaration.
+
     @invariant IdempotencyIsRequestScoped
-        -- Idempotency keys deduplicate retry of the same protocol request; they do not authorize a different call or bypass revalidation.
+        -- Idempotency keys deduplicate retry only within the current authenticated caller scope;
+        -- they do not authorize a different request, expose another caller's result, or bypass
+        -- current authority and revalidation.
+
+    @invariant MatchingCompletedRetryReplaysRecordedReply
+        -- A completed matching fingerprint returns the original caller-safe reply and bounded
+        -- result payload without route selection or child execution.
+
+    @invariant IdempotencyFingerprintMustMatch
+        -- Reuse of a key for a different canonical target, semantic call id, or payload digest
+        -- fails closed and never reveals or substitutes the stored result.
+
+    @invariant IdempotencyBoundsRefuseRatherThanEvict
+        -- TTL and per-caller capacity are bounded by named disclosed constants. Capacity pressure
+        -- refuses new keyed work and never evicts a current entry to make room.
+
+    @invariant CurrentIdempotencyEntryNeverSilentlyReexecutes
+        -- Before expiry, a keyed retry either replays the completed reply or receives a typed
+        -- refusal; fresh execution after expiry is explicit.
+
+    @invariant InFlightDuplicateIsRefused
+        -- A duplicate of an in-flight request receives a typed retry-later failure without
+        -- waiting and without a second execution.
+
+    @invariant IdempotencyStateSurvivesRestart
+        -- Completed replay state is durable across restart; an incomplete crash-held reservation
+        -- remains in flight until its bounded expiry rather than being treated as fresh.
+
+    @invariant CurrentAuthorityPrecedesReplay
+        -- Payload integrity and current caller or peer-binding authority are evaluated before
+        -- replay so cached success cannot become stale authority.
+
+    @invariant CrossMotherReplayRequiresFederationContract
+        -- Request-scoped idempotency does not deduplicate across Mothers after forwarding or
+        -- failover; that behaviour requires a separate federation contract.
 
     @invariant CallerReceivesSafeResultOnly
         -- Peer replies contain caller-safe result information and opaque references, not internal route reasoning or topology.
 
+    @invariant RouteTakenReplyPresenceFollowsExecution
+        -- A reply may project the caller-safe route only when execution was attempted. Denied,
+        -- cancelled-before-execution, and malformed replies expose no route.
+
+    @invariant RouteTakenReplyDoesNotGrantPeerAuthority
+        -- A reply route projection reports where an attempted execution ran; it cannot establish
+        -- admission, publication, candidacy, or authority for a later call.
+
     @invariant PeerCallObservationsCoverLifecycle
         -- Receipt, malformed rejection, call construction, authorization, route/no-route, execution result, and reply are all observable facts.
+}
+
+contract MctPayloadIntegrityAndLocalCas {
+    @invariant ExactSizeAndDigestBeforeUse
+        -- Inline or local content-addressed bytes cannot reach execution or result consumption
+        -- until exact size and BLAKE3 digest have been verified against the declared handle.
+
+    @invariant StorageIsBoundedByNamedConstant
+        -- Local content-addressed ingest and fetch refuse objects beyond the named blob bound.
+
+    @invariant VerifyThenAtomicallyPublish
+        -- Local CAS ingest writes to a non-visible temporary object, verifies the complete size
+        -- and digest, and atomically publishes under the digest path only after verification.
+
+    @invariant FailedVerificationIsNotVisible
+        -- Oversized, incomplete, size-mismatched, digest-mismatched, or malformed objects never
+        -- become visible as successful content-addressed payloads.
 }
 
 -- Decision: The terminal return concept is `MctResult`, not `MctReply`, because denial, timeout, failure, and cancellation are outcomes even when no component replies.
@@ -933,6 +1257,12 @@ contract MctResultTerminality {
 -- Decision: `MctResult.authority_decision_ref` is an opaque reference to `RouteDecision`; it is not permission to read the decision.
 -- Decision: Full `RouteDecision` access is itself governed by authority: a node operator may see decisions involving their node, a Vision operator may see decisions in their Vision, and a system operator may see broader records.
 -- Decision: `RouteDecision` retention may have full-fidelity and compacted forms later. This is storage policy; the domain structure should still capture the complete reasoning.
+-- Decision: 2026-07-12 tend disposition of REPORT A4: complete phase-2 planner evaluations
+-- and decision snapshot evidence remain the governing target above, but their implementation is
+-- deliberately deferred to the C2 capability-profile, telemetry, and environment-planner future.
+-- The current deterministic tie-break records candidate eliminations and selected route but does
+-- not claim real planner scoring or full snapshots. When phase 2 gains capability/telemetry inputs,
+-- this record and its tests MUST be revisited to carry the complete comparison and revisions.
 
 value CandidateRoute {
     candidate_id: String
@@ -1013,6 +1343,14 @@ contract RouteDecisionPrivacy {
 
     @invariant RevalidationIsSeparateDecision
         -- Pre-execution revalidation records a separate decision linked to the initial decision.
+
+    @invariant PlannerEvidenceDeferralCannotClaimFullScoring
+        -- Until C2 lands real capability-profile and telemetry inputs, deterministic selection
+        -- cannot be represented or described as complete phase-2 scoring and snapshot evidence.
+
+    @invariant PlannerEvidenceMustGrowWithPlannerInputs
+        -- Introducing real phase-2 inputs requires RouteDecision and its contract tests to record
+        -- the compared candidates, planner reasons or ranks, and governing snapshot revisions.
 
     @invariant SafeSummaryOnlyToRequester
         -- Requesters receive only `outcome`, safe requester message, and opaque references through `MctResult`.
@@ -1233,6 +1571,46 @@ contract MctObservabilitySpine {
 -- Decision: Storage observes append success/failure and observation backpressure. Observation sink failure must become visible through bounded backpressure, health, or fallback diagnostic evidence.
 -- Decision: Node health and telemetry exports are projections or reported conditions derived from observations and telemetry facts; they do not become the authority record.
 -- Decision: Operator actions that alter policy, approvals, grants, peers, or visibility produce observations with the acting identity and policy/grant revision.
+-- Decision: 2026-07-10 Track-1 control-plane gate: while Mother is running, her resident
+-- authenticated local control surface owns live authority, registry, grant, composition, and
+-- storage mutations; CLI commands are clients of that owner. When Mother is unavailable, an
+-- offline-capable command may mutate only while holding the free exclusive ledger-writer lock.
+-- A connected resident response, including rejection, is authoritative and never falls back to
+-- offline mutation.
+-- Decision: Protected mutation order is validate current facts, durably append the typed decision,
+-- apply the config/state/storage effect, append any required success or failure fact, then report
+-- success. Decision append failure leaves the protected effect untouched.
+-- Decision: 2026-07-10 Track-1 identity gate: node identity creation and rotation are offline-only
+-- under exclusive ledger ownership. First resident bootstrap opens the ledger writer, prepares
+-- public identity, durably records it, and only then writes key/config material. A bound resident
+-- refuses live identity rotation. Coordinated live rotation remains future work requiring endpoint
+-- rebind and peer re-admission design.
+
+contract MctAuthorityMutationOwnership {
+    @invariant ResidentOwnsLiveMutations
+        -- While Mother is running, one authenticated local resident control owner serializes
+        -- protected mutations through her observation writer and state/config/storage adapters.
+
+    @invariant OfflineMutationRequiresExclusiveLedgerOwnership
+        -- An offline-capable command mutates only when the resident is unavailable and it holds
+        -- the exclusive ledger writer across validation, decision append, effect, and outcome.
+
+    @invariant ConnectedResidentResponseNeverFallsBack
+        -- Any connected resident response, including denial or failure, is authoritative and
+        -- cannot trigger a second offline mutation path.
+
+    @invariant MutationDecisionIsDurableBeforeEffect
+        -- A protected mutation becomes visible only after its typed decision is durable; append
+        -- failure leaves config, state, package, grant, composition, identity, or blob untouched.
+
+    @invariant IdentityMutationIsOfflineOnly
+        -- A bound Mother does not create or rotate node identity; offline administration holds
+        -- exclusive ledger ownership, and live rotation requires a future rebind/re-admission law.
+
+    @invariant IdentityBootstrapObservationPrecedesPersistence
+        -- First bootstrap records the public identity decision before writing new key or config
+        -- material and fails startup without those effects if durable append fails.
+}
 
 value ObservationRequiredLinks {
     trace_id: Boolean
