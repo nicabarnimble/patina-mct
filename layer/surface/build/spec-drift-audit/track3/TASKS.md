@@ -395,3 +395,60 @@ error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
 - S3 added or strengthened candidacy-conjunction, freshness-boundary, publication-honesty, per-hop identity, and replay-authority coverage.
 - ROADMAP candidate: configurable peer-binding ALPN scope is required before narrowed-ALPN replay can be exercised through the persisted resident authority path.
 - No PR was opened or updated; nothing was merged.
+
+# Track 3 slice 2 — full contract ledger extension
+
+## Operator scope
+
+Extend the existing slice-1 ledger without restructuring it so every named invariant in both Allium laws has an honest row, then resolve only bounded gaps through real paths and stage-local helpers. Preserve monotonic tests from 291, add no mct-daemon library public surface, cite every new test in the same commit, and validate every commit with workspace tests, Clippy with warnings denied, Tier 0, and diff hygiene. No push, PR, or merge.
+
+## Slice 2 checklist
+
+- [x] S0: exact clean `patina` baseline at `e73704f`, synchronized with `origin/patina` and `origin/main`.
+- [x] S0: operator baseline re-established at 291 passed, 0 ignored.
+- [x] S0: read both Allium laws in full, including all 223 `@invariant` declarations and 32 load-bearing Decision clusters.
+- [x] S0: read the slice-1 ledger conventions and resident-decomposition close-out/itch list.
+- [x] S0: rerun and record Allium plan/model obligation categories for both laws.
+- [x] S1: extend the ledger to every named invariant and bulk structural obligation.
+- [ ] S2.1: resolve required external fixture compatibility disposition.
+- [ ] S2.2: resolve complete result-observation matrix gap.
+- [ ] S2.3: resolve complete child-lifecycle observation matrix gaps.
+- [ ] S2.4: resolve bounded resident observation buffering gap.
+- [ ] S2.5: resolve typed toy-grant expiry/revocation observation gap.
+- [ ] S2.x: end every remaining GAP as COVERED, DEFERRED with reason, or STOP for adjudication.
+- [ ] S3: close the ledger extension with final counts, running test record, drift disposition, REPORT/ROADMAP updates, and final validation.
+
+## Slice 2 Allium inventory
+
+- `mct-product-map.allium`: 188 named contract invariants; 217 `-- Decision:` statements grouped into 26 adjacent load-bearing clusters.
+- `mct-peer-ontology.allium`: 35 named contract invariants; 19 `-- Decision:` statements grouped into 6 adjacent load-bearing clusters.
+- `allium plan layer/allium/mct-product-map.allium`: 179 structural obligations.
+  - `entity_fields`: 56
+  - `entity_optional`: 38
+  - `surface_actor`: 27
+  - `surface_exposure`: 27
+  - `value_equality`: 29
+  - `when_presence`: 2
+- `allium model layer/allium/mct-product-map.allium`: 27 entities and 29 value types.
+- `allium plan layer/allium/mct-peer-ontology.allium`: zero structural obligations.
+- `allium model layer/allium/mct-peer-ontology.allium`: zero entities and zero value types.
+- The CLI still does not emit prose contract invariants; all 223 were inventoried directly from the law files.
+
+## Slice 2 running test count
+
+| Commit / boundary | Tests added | Running passed + ignored | Result |
+|---|---:|---:|---|
+| Baseline `e73704f` | — | 291 | 291 passed, 0 ignored |
+| S1 `docs: extend contract ledger to full spec coverage` | 0 | 291 | pending commit validation |
+
+## Slice 2 S1 inventory result
+
+- Named invariant universe: 223/223 attributed.
+- Structural plan universe: 179/179 attributed through 14 existing bulk rows; the companion emits none.
+- Citation audit: 125 distinct named test citations resolve; no stale resident paths.
+- Initial full-universe disposition: 195 COVERED, 6 GAP, 0 LAW-LEADS-CODE, 22 DEFERRED.
+- The absence of a new LAW-LEADS-CODE row was checked against the implementation rather than assumed. The newly exposed unresolved obligations are missing complete named evidence over landed behavior (GAP) or explicitly unbuilt/governance-only surfaces (DEFERRED), not observed contradictory execution.
+
+## Slice 2 failure and flake log
+
+Capture every failure verbatim here before rerunning. No slice-2 failures yet.
