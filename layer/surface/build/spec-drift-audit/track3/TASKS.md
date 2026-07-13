@@ -350,5 +350,16 @@ error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
 
 ### S3 honest local execution publication
 
-- Added `honest_local_execution_offer_excludes_approved_assigned_non_ready_child`.
-- Validation gate pending commit.
+- Strengthened and renamed coverage as `honest_local_execution_offer_excludes_approved_assigned_non_ready_child`.
+- `cargo test --workspace`: 289 passed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `./scripts/ci-tier0.sh`: clean, including both Allium laws.
+- `git diff --check`: clean.
+
+### S3 per-hop upstream identity
+
+- Added `forwarded_envelope_clears_upstream_user_identity`.
+- `cargo test --workspace`: 290 passed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `./scripts/ci-tier0.sh`: clean, including both Allium laws.
+- `git diff --check`: clean.

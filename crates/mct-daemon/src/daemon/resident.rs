@@ -5717,6 +5717,51 @@ pub(super) mod tests {
         ));
     }
 
+    /// Covers `PerHopPeerAccountability.UpstreamIdentityRemainsAtItsVerifier`.
+    #[test]
+    fn forwarded_envelope_clears_upstream_user_identity() {
+        let fixture = remote_surface_candidate_fixture();
+        let local_identity = fixture.config.local_identity.as_ref().unwrap();
+        let peer = &fixture.config.peers["remote-mct"];
+        let outbound = peer.outbound_binding.as_ref().unwrap();
+        let mut original = resident_test_protocol_request(fixture.call.clone());
+        original.call.caller.user_id = Some(UserId::new("upstream-user").unwrap());
+        let hello = MctHelloResponse {
+            response_id: "response-forwarded-identity".into(),
+            request_id: "hello-forwarded-identity".into(),
+            decision_id: DecisionId::new("decision-forwarded-identity").unwrap(),
+            hello_outcome: HelloOutcome::Admitted,
+            negotiated_protocol: Some(HelloPolicy::default().protocol),
+            accepted_alpns: vec![MCT_CALL_ALPN.into()],
+            safe_message: "admitted".into(),
+            retry_after: None,
+            capability_view: None,
+            response_observation_id: ObservationId::new("obs-forwarded-identity").unwrap(),
+        };
+
+        let forwarded = resident_forwarded_call_request(
+            &original,
+            local_identity,
+            peer,
+            outbound,
+            &local_identity.endpoint_id,
+            &hello,
+            None,
+        );
+
+        assert_eq!(
+            original.call.caller.user_id.as_ref().unwrap().as_str(),
+            "upstream-user"
+        );
+        assert!(forwarded.call.caller.user_id.is_none());
+        assert_eq!(forwarded.call.caller.node_id, local_identity.node_id);
+        assert_eq!(forwarded.call.call_id, original.call.call_id);
+        assert_eq!(
+            forwarded.call.trace_context.trace_id,
+            original.call.trace_context.trace_id
+        );
+    }
+
     /// Covers `CapabilityPublicationRelationship.OfferLapsesAtFreshnessBoundary`.
     #[test]
     fn capability_offer_lapses_at_freshness_boundary() {
