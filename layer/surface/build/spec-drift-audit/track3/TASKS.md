@@ -410,7 +410,7 @@ Extend the existing slice-1 ledger without restructuring it so every named invar
 - [x] S0: read the slice-1 ledger conventions and resident-decomposition close-out/itch list.
 - [x] S0: rerun and record Allium plan/model obligation categories for both laws.
 - [x] S1: extend the ledger to every named invariant and bulk structural obligation.
-- [ ] S2.1: resolve required external fixture compatibility disposition.
+- [x] S2.1: resolve required external fixture compatibility disposition.
 - [ ] S2.2: resolve complete result-observation matrix gap.
 - [ ] S2.3: resolve complete child-lifecycle observation matrix gaps.
 - [ ] S2.4: resolve bounded resident observation buffering gap.
@@ -439,7 +439,8 @@ Extend the existing slice-1 ledger without restructuring it so every named invar
 | Commit / boundary | Tests added | Running passed + ignored | Result |
 |---|---:|---:|---|
 | Baseline `e73704f` | — | 291 | 291 passed, 0 ignored |
-| S1 `docs: extend contract ledger to full spec coverage` | 0 | 291 | pending commit validation |
+| S1 `6f574c4` | 0 | 291 | 291 passed, 0 ignored |
+| S2.1 `docs: defer external fixture execution coverage` | 0 | 291 | pending commit validation |
 
 ## Slice 2 S1 inventory result
 
@@ -448,6 +449,10 @@ Extend the existing slice-1 ledger without restructuring it so every named invar
 - Citation audit: 125 distinct named test citations resolve; no stale resident paths.
 - Initial full-universe disposition: 195 COVERED, 6 GAP, 0 LAW-LEADS-CODE, 22 DEFERRED.
 - The absence of a new LAW-LEADS-CODE row was checked against the implementation rather than assumed. The newly exposed unresolved obligations are missing complete named evidence over landed behavior (GAP) or explicitly unbuilt/governance-only surfaces (DEFERRED), not observed contradictory execution.
+
+## Slice 2 S2 triage record
+
+- `ExternalChildCompatibility.RequiredFixturesDoNotRegress`: converted GAP → DEFERRED. The repository contains a real `slate-manager` invocation path but not the versioned `folder-watch-actor` and `watch-null-sink` artifacts; generated lookalikes would prove only the generic loader and would overstate external compatibility.
 
 ## Slice 2 failure and flake log
 
