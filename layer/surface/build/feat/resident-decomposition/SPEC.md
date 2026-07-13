@@ -91,11 +91,13 @@ The pipeline's outer contract continues to use existing boundary types:
 
 `MctCallProtocolRequest` and `MctIrohCallHandlerResult` remain the semantic/wire adapter boundaries. `CandidateRoute`, `RouteDecision`, `AuthorizedRouteExecution`, `MctCallPayloadHandle`, and `RouteTaken` remain the kernel-owned authority/projection records. Resident records may carry these types but must not duplicate their fields as a second source of truth.
 
+`pipeline.rs` owns sequencing only: it orders stage calls, enforces the existing durability barriers, and maps completed stage outputs into `MctIrohCallHandlerResult`. It owns no candidate sourcing or ranking, authority evaluation, payload handling, or observation construction beyond composing the batches returned by stages. If extraction leaves any such stage logic wanting to accumulate in `pipeline`, that is evidence of a wrong seam and work stops for operator review rather than creating a successor god-file.
+
 ## Stage contracts
 
 ### Payload
 
-`ResidentPayloadIngress` is an enum with `Local { inline_payload }` and `Remote { inline_payload }` variants. This replaces the independent `allow_local_content_addressed_blob` boolean, so a peer arrival cannot accidentally be constructed with local-CAS dereference authority. Resolution returns a private `VerifiedRequestPayload` newtype; only payload code can construct it after the existing integrity path. `PayloadFailure` carries the unchanged caller-safe message and observations to the pipeline.
+`ResidentPayloadIngress` is an enum with `Local { inline_payload }` and `Remote { inline_payload }` variants. This replaces the independent `allow_local_content_addressed_blob` boolean, so a peer arrival cannot accidentally be constructed with local-CAS dereference authority. The mapping is semantics-identical to the baseline: `Local` permits CAS dereference and `Remote` does not, exactly matching the current boolean paths without changing reachable behavior. Every current constructor must be checked during extraction; if any constructor sets the baseline boolean contrary to its origin, that is a latent bug and work stops for operator review rather than silently correcting it. Resolution returns a private `VerifiedRequestPayload` newtype; only payload code can construct it after the existing integrity path. `PayloadFailure` carries the unchanged caller-safe message and observations to the pipeline.
 
 ### Candidates and decision
 
@@ -107,7 +109,7 @@ The pipeline's outer contract continues to use existing boundary types:
 - `Local { plan: LocalExecutionPlan, observations }`;
 - `Remote { plan: RemoteExecutionPlan, observations }`.
 
-This makes the observation batch explicit at the pipeline boundary. `LocalExecutionPlan` carries the loaded child, kernel `AuthorizedRouteExecution`, and child-authority observation reference. It does not carry a second `RouteTaken`; execution derives that projection from the authorized kernel route. `RemoteExecutionPlan` keeps the selected `CandidateRoute` beside the initial `RouteDecision`, but construction is private and checks that the decision selected that same route; the kernel has no remote execution capability token, so this is the minimal adapter-owned invariant.
+This makes the observation batch explicit at the pipeline boundary. Relocating `route_observations` into `RouteDisposition` and narrowing the local/remote plans must preserve the exact baseline observation sequence and every durability class on every path. Observation order is law rather than a consequence of file layout: all current `BeforeEffect` barriers remain before the same effects, and the ledger-order tests plus the Track 3 contract net are the proof. `LocalExecutionPlan` carries the loaded child, kernel `AuthorizedRouteExecution`, and child-authority observation reference. It does not carry a second `RouteTaken`; execution derives that projection from the authorized kernel route. `RemoteExecutionPlan` keeps the selected `CandidateRoute` beside the initial `RouteDecision`, but construction is private and checks that the decision selected that same route; the kernel has no remote execution capability token, so this is the minimal adapter-owned invariant.
 
 ### Execution and forwarding
 
@@ -118,6 +120,8 @@ This makes the observation batch explicit at the pipeline boundary. `LocalExecut
 ### Observation
 
 Only writer mechanics, durability mapping, the mandatory Iroh sink, and generic endpoint lifecycle projection are shared. Candidate, payload, idempotency, execution, and forwarding observation constructors stay with the stage that owns their typed fact. There is no catch-all projection module and no duplicated observation constructor.
+
+The approved `cfg(test)` ledger-writer failure constructor is exclusively a binary-local adapter I/O failure seam needed by fail-closed tests. It does not weaken the audit law forbidding test constructors for kernel-minted sealed authority, and this pattern must never migrate toward kernel capability types.
 
 ## Disposition of all 15 `Resident*` structs
 
@@ -239,6 +243,17 @@ A test and every corresponding ledger citation move in the subject's commit. The
 - no new tests and no renamed tests in this phase; only fixture split and relocation with unchanged assertions.
 
 The only S2.5 itch resolved here is broad resident fixture ownership. All other itch-list entries remain follow-up work.
+
+## Gate amendment
+
+Approved at the R1 operator gate with four binding conditions now incorporated above:
+
+1. `pipeline.rs` is sequencing and handler-result mapping only; stage logic accumulating there is a stop condition.
+2. observation sequence and durability are behavioral law across record relocation, not layout details.
+3. the test-only writer failure seam is permitted solely for binary adapter I/O and cannot extend to kernel-minted authority.
+4. `ResidentPayloadIngress::{Local, Remote}` preserves the baseline CAS-permission mapping exactly; a contrary baseline constructor is reported, not repaired.
+
+The zero-promotion decision, forwarding-client keep-local justification, declared record/enum mappings, test relocations, and private terminality constructor are approved. `forwarding.rs` must retain the keep-local policy rationale in its module documentation.
 
 ## Gate questions for the operator
 
