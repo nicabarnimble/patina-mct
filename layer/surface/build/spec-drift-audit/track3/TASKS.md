@@ -132,7 +132,7 @@ ROADMAP. No PR, no merge, no further pushes.
 - [x] S2.2: operator-pointed egress observation contract test and spec-ward fix.
 - [x] S2.x: no additional LAW-LEADS-CODE seams found by S1.
 - [x] S3: fill every priority GAP or explicitly defer it with reason.
-- [ ] Final validation and report; no PR, merge, or further push.
+- [x] Final validation and report; no PR, merge, or further push.
 
 ## Allium 3.5.0 propagation baseline
 
@@ -386,3 +386,12 @@ error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
 - `cargo clippy --workspace --all-targets -- -D warnings`: clean.
 - `./scripts/ci-tier0.sh`: clean, including both Allium laws.
 - `git diff --check`: clean.
+
+## Slice result
+
+- One authorized push completed at S0: `502defd` to `origin/patina`; no later commit was pushed.
+- Ledger terminal state: 73 COVERED, 0 GAP, 0 LAW-LEADS-CODE, 3 DEFERRED.
+- Mandatory binding expiry and operator-pointed egress both moved from law-leads-code to enforced, named contract tests.
+- S3 added or strengthened candidacy-conjunction, freshness-boundary, publication-honesty, per-hop identity, and replay-authority coverage.
+- ROADMAP candidate: configurable peer-binding ALPN scope is required before narrowed-ALPN replay can be exercised through the persisted resident authority path.
+- No PR was opened or updated; nothing was merged.
