@@ -481,7 +481,7 @@ pub(super) fn result_to_call_handler_result(
         ResultOutcome::Failed => MctIrohCallHandlerResult::failed(result.requester_message.clone())
             .with_route(route_decision_id, route_taken),
         ResultOutcome::Cancelled => {
-            MctIrohCallHandlerResult::failed(result.requester_message.clone())
+            MctIrohCallHandlerResult::cancelled(result.requester_message.clone())
                 .with_route(route_decision_id, None)
         }
     }
@@ -930,5 +930,31 @@ listens = []
         assert!(reply.route_taken.is_none());
         assert_eq!(observation.kind, ObservationKind::RouteSelected);
         assert_eq!(observation.resource_id, Some("child:resident-echo".into()));
+    }
+
+    /// Covers `MctResultTerminality.ClosedOutcomeSet`.
+    #[test]
+    fn cancelled_result_projection_preserves_cancelled_outcome() {
+        let result = MctResult {
+            call_id: CallId::new("call-cancelled-projection").unwrap(),
+            outcome: ResultOutcome::Cancelled,
+            route_taken: None,
+            authority_decision_ref: DecisionId::new("decision-cancelled-projection").unwrap(),
+            execution_summary: ExecutionSummary {
+                wall_time_ms: 0,
+                execution_time_ms: None,
+                queue_wait_ms: None,
+                input_size_bytes: 0,
+                output_size_bytes: None,
+            },
+            result_payload: MctCallPayloadHandle::Empty,
+            requester_message: "cancelled".into(),
+            audit_ref: AuditRef::new("audit-cancelled-projection").unwrap(),
+        };
+
+        let projected = result_to_call_handler_result("result", &result, None);
+
+        assert_eq!(projected.outcome, CallProtocolOutcome::Cancelled);
+        assert!(projected.route_taken.is_none());
     }
 }

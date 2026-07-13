@@ -40,7 +40,7 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 | Invariant / obligation | Status | Evidence |
 |---|---|---|
 | `MctCallProtocol.IdempotencyIsRequestScoped` | COVERED | `mct_kernel::call::tests::idempotency_decision_replays_matches_and_refuses_other_cases`; `mct_daemon::state::tests::idempotency_store_scopes_reserves_replays_expires_and_survives_reopen` |
-| `MatchingCompletedRetryReplaysRecordedReply` | COVERED | `mct_daemon_bin::resident::idempotency::tests::resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage`; `mct_daemon_bin::ingress::tests::standalone_serve_process_persists_hello_and_call_lifecycle` |
+| `MatchingCompletedRetryReplaysRecordedReply` | COVERED | `mct_daemon_bin::resident::idempotency::tests::resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage`; `mct_daemon_bin::resident::idempotency::tests::cancelled_idempotent_reply_replays_cancelled_with_durable_observation`; `mct_daemon_bin::ingress::tests::standalone_serve_process_persists_hello_and_call_lifecycle` |
 | `IdempotencyFingerprintMustMatch` | COVERED | `mct_kernel::call::tests::idempotency_decision_replays_matches_and_refuses_other_cases`; `mct_daemon::state::tests::idempotency_store_scopes_reserves_replays_expires_and_survives_reopen` |
 | `IdempotencyBoundsRefuseRatherThanEvict` | COVERED | `mct_kernel::call::tests::idempotency_decision_replays_matches_and_refuses_other_cases`; `mct_daemon::state::tests::idempotency_store_scopes_reserves_replays_expires_and_survives_reopen` |
 | `CurrentIdempotencyEntryNeverSilentlyReexecutes` | COVERED | `mct_daemon_bin::resident::idempotency::tests::resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage`; `mct_daemon_bin::resident::idempotency::tests::in_flight_idempotency_duplicate_refuses_without_second_execution` |
@@ -82,7 +82,7 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 
 | Invariant / obligation | Status | Evidence |
 |---|---|---|
-| `MctCallProtocol.RouteTakenReplyPresenceFollowsExecution` | COVERED | `mct_kernel::call::tests::reply_validation_enforces_route_taken_presence_rule`; `mct_daemon_bin::resident::execution::tests::route_taken_projection_follows_outcome_matrix`; `mct_daemon_bin::resident::execution::tests::cancelled_result_and_reply_hide_route_while_ledger_keeps_selection` |
+| `MctCallProtocol.RouteTakenReplyPresenceFollowsExecution` | COVERED | `mct_kernel::call::tests::reply_validation_enforces_route_taken_presence_rule`; `mct_daemon_bin::resident::execution::tests::route_taken_projection_follows_outcome_matrix`; `mct_daemon_bin::resident::execution::tests::cancelled_result_and_reply_hide_route_while_ledger_keeps_selection`; `mct_iroh::tests::cancelled_call_preserves_wire_outcome_route_absence_and_buffered_observations` |
 | `RouteTakenReplyDoesNotGrantPeerAuthority` | COVERED | `mct_kernel::call::tests::call_without_admitted_hello_is_denied`; `mct_kernel::call::tests::call_protocol_reply_roundtrips_route_taken_wire_field` |
 
 ### Signed binding proof and mandatory expiry
@@ -279,7 +279,7 @@ The 236 load-bearing `-- Decision:` statements were also read in full and groupe
 |---|---|---|
 | `ResultRequiresCall` | COVERED | `mct_daemon_bin::resident::execution::tests::resident_execution_runs_wit_child_and_records_trace` |
 | `ResultIsTerminal` | COVERED | `mct_daemon::tests::fake_echo_slice_records_trace_and_result`; `mct_daemon_bin::resident::serving::tests::resident_mother_payload_roundtrip_verifies_result_digest` |
-| `ClosedOutcomeSet` | LAW-LEADS-CODE | The expected-red probe `cancelled_result_projection_preserves_cancelled_outcome`, captured verbatim in `TASKS.md` and removed after the structural stop, proves resident result projection collapses `ResultOutcome::Cancelled` to `CallProtocolOutcome::Failed`. The route-presence helper covers all five result variants, but the actual consumer does not preserve cancellation. Fix is structurally blocked because `MctCallProtocolEvaluation.outcome` and Rust `CallProtocolOutcome` have no cancelled variant while `MctCallProtocolReply` does; operator adjudication is required before changing the model or wire. |
+| `ClosedOutcomeSet` | COVERED | Adjudicated Option 1 and resolved spec-ward in this slice: `mct_daemon_bin::resident::execution::tests::cancelled_result_projection_preserves_cancelled_outcome`; `mct_iroh::tests::cancelled_call_preserves_wire_outcome_route_absence_and_buffered_observations`; `mct_daemon_bin::resident::idempotency::tests::cancelled_idempotent_reply_replays_cancelled_with_durable_observation`. |
 | `DeniedResultHasNoRouteTaken` | COVERED | `mct_kernel::call::tests::denied_result_has_no_route_taken` |
 | `CallerSafeResult` | COVERED | `mct_daemon_bin::resident::forwarding::tests::two_mother_remote_denial_fails_closed` |
 | `MalformedAdapterInputIsNotMctResult` | COVERED | `mct_kernel::call::tests::call_protocol_json_edge_rejects_invalid_domain_values_with_typed_kernel_error`; `mct_iroh::tests::malformed_frames_are_observed_before_safe_reply_and_append_failure_suppresses_reply` |
@@ -356,7 +356,7 @@ The 236 load-bearing `-- Decision:` statements were also read in full and groupe
 | `CallIngressCoverage` | COVERED | `mct_iroh::tests::malformed_frames_are_observed_before_safe_reply_and_append_failure_suppresses_reply`; `mct_daemon_bin::ingress::tests::standalone_serve_process_persists_hello_and_call_lifecycle` |
 | `AuthorityCoverage` | COVERED | `mct_kernel::observation::tests::kernel_denial_evaluations_become_observations`; `mct_iroh::tests::iroh_adapter_observations_cover_endpoint_and_protocol_events` |
 | `RoutingCoverage` | COVERED | `mct_kernel::observation::tests::candidate_observations_record_specific_elimination_class`; `mct_kernel::observation::tests::route_revalidation_observation_records_allowed_and_denied_outcomes` |
-| `ResultCoverage` | LAW-LEADS-CODE | Triage rule applied: landed behavior was exercised through the real resident result consumer. The expected-red probe `cancelled_result_projection_preserves_cancelled_outcome`, captured verbatim in `TASKS.md` and removed after the structural stop, shows cancellation becomes failure before the Iroh evaluation/result observation path. This is the same structural cancelled-outcome mismatch as `MctResultTerminality.ClosedOutcomeSet`, so gap filling stops for operator adjudication rather than adding a misleading matrix. |
+| `ResultCoverage` | COVERED | Triage rule applied through the real resident and Iroh paths. `mct_iroh::tests::cancelled_call_preserves_wire_outcome_route_absence_and_buffered_observations` proves cancelled result and reply facts retain `cancelled` under buffered durability; `mct_daemon_bin::resident::idempotency::tests::cancelled_idempotent_reply_replays_cancelled_with_durable_observation` proves replay retains the outcome under before-effect durability. |
 | `ChildLifecycleCoverage` | GAP | Lifecycle tests cover reload order, but no named test proves the complete artifact/approval/assignment/instance observation matrix. |
 | `ToyCoverage` | COVERED | `mct_kernel::observation::tests::toy_grant_evaluations_become_observations`; `mct_daemon::toy::tests::toy_backend_failure_is_adapter_observation_not_kernel_denial` |
 | `PeerCoverage` | COVERED | `mct_iroh::tests::iroh_adapter_observations_cover_endpoint_and_protocol_events`; `mct_daemon_bin::ingress::tests::standalone_serve_process_persists_hello_and_call_lifecycle` |
@@ -456,9 +456,9 @@ The 236 load-bearing `-- Decision:` statements were also read in full and groupe
 
 | Status | Invariants |
 |---|---:|
-| COVERED | 194 |
+| COVERED | 196 |
 | GAP | 4 |
-| LAW-LEADS-CODE | 2 |
+| LAW-LEADS-CODE | 0 |
 | DEFERRED | 23 |
 
 ### Tool-derived structural obligations

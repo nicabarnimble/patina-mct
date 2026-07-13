@@ -653,6 +653,7 @@ fn call_result_fact(
         CallProtocolOutcome::Malformed | CallProtocolOutcome::Denied => ObservationOutcome::Denied,
         CallProtocolOutcome::Failed => ObservationOutcome::Failed,
         CallProtocolOutcome::TimedOut => ObservationOutcome::TimedOut,
+        CallProtocolOutcome::Cancelled => ObservationOutcome::Cancelled,
     };
     call_lifecycle_fact(
         MctIrohCallLifecycleStage::ResultRecorded,
@@ -779,6 +780,19 @@ impl MctIrohCallHandlerResult {
             outcome: CallProtocolOutcome::TimedOut,
             protocol_reason: None,
             safe_message: "call timed out".into(),
+        }
+    }
+
+    pub fn cancelled(safe_message: impl Into<String>) -> Self {
+        Self {
+            result_ref: None,
+            result_payload: MctCallPayloadHandle::Empty,
+            inline_result_payload: None,
+            route_decision_id: None,
+            route_taken: None,
+            outcome: CallProtocolOutcome::Cancelled,
+            protocol_reason: None,
+            safe_message: safe_message.into(),
         }
     }
 
