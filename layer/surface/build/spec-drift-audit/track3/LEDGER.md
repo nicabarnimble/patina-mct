@@ -128,7 +128,7 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 |---|---|---|
 | `SubmissionIsTheImmediateCallersAct` | COVERED | `mct_daemon_bin::resident::tests::two_mother_forwards_selected_call_over_iroh_and_maps_reply` records `forwarded_from:mother-a` at the executor. |
 | `ReceiverTrustsOnlyLocallyVerifiableAuthority` | COVERED | `mct_daemon_bin::resident::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello` |
-| `UpstreamIdentityRemainsAtItsVerifier` | GAP | No focused test starts with a non-null upstream user identity and proves the forwarded envelope clears it while preserving local evidence. |
+| `UpstreamIdentityRemainsAtItsVerifier` | COVERED | `mct_daemon_bin::resident::tests::forwarded_envelope_clears_upstream_user_identity` proves the original verifier retains its user fact while the per-hop envelope carries only the submitting Mother and correlation IDs. |
 | `BilateralAuditUsesCorrelationNotIdentityPropagation` | COVERED | `mct_daemon_bin::resident::tests::two_mother_forwards_selected_call_over_iroh_and_maps_reply` checks both ledgers and the shared route chain. |
 | `ObservationReplicationIsTheSharingChannel` | DEFERRED | `mct/observe/0` and ObservationReplicationAuthorization are audit C4 future scope; current call envelopes grant no observation access. |
 | `BrokeredIdentityBelongsToBrokeredSubmission` | DEFERRED | Brokered submission is explicitly future law and cannot be implemented by this terminal `mct/call/0` slice. |
@@ -157,9 +157,9 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 
 | Status | Rows |
 |---|---:|
-| COVERED | 71 |
-| GAP | 2 |
+| COVERED | 72 |
+| GAP | 1 |
 | LAW-LEADS-CODE | 0 |
 | DEFERRED | 2 |
 
-S2 resolved both mandatory-expiry rows through one contract change and the operator-pointed egress row through a shared before-effect recording boundary. The two remaining GAP rows are current-authority-before-replay edge classes and per-hop upstream identity projection.
+S2 resolved both mandatory-expiry rows through one contract change and the operator-pointed egress row through a shared before-effect recording boundary. The remaining GAP row is current-authority-before-replay edge classes.
