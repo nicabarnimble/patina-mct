@@ -100,7 +100,7 @@ pub(super) async fn run_jvm_call_json(mut args: Vec<String>) -> Result<()> {
     let args_json = args.remove(0);
     let (request, payload) = jvm_bridge_protocol_request(&operation_id, &args_json)?;
     let ledger = ResidentLedgerWriter::spawn(ledger_path.clone())?;
-    let result = execute_resident_call(
+    let result = execute_jvm_resident_call(
         ResidentExecutionPaths {
             config_path,
             children_dir,
@@ -108,7 +108,7 @@ pub(super) async fn run_jvm_call_json(mut args: Vec<String>) -> Result<()> {
         },
         ledger.clone(),
         request,
-        ResidentRequestPayload::remote(Some(payload)),
+        Some(payload),
     )
     .await;
     ledger.close().await;
@@ -125,6 +125,21 @@ pub(super) async fn run_jvm_call_json(mut args: Vec<String>) -> Result<()> {
         }))?
     );
     Ok(())
+}
+
+async fn execute_jvm_resident_call(
+    paths: ResidentExecutionPaths,
+    ledger: ResidentLedgerWriter,
+    request: MctCallProtocolRequest,
+    inline_payload: Option<Vec<u8>>,
+) -> MctIrohCallHandlerResult {
+    execute_resident_call(
+        paths,
+        ledger,
+        request,
+        ResidentRequestPayload::local(inline_payload),
+    )
+    .await
 }
 
 pub(super) fn jvm_bridge_protocol_request(
@@ -1099,6 +1114,57 @@ pub(super) fn read_ticket(path: &Path) -> Result<MotherIrohEndpointTicket> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn jvm_ingress_dereferences_local_content_addressed_blob() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        crate::resident::tests::write_resident_process_child(&children_dir);
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        MctDaemonConfigStore::new(&config_path)
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+
+        let payload = br#"{"from":"jvm-cas"}"#.to_vec();
+        let digest = blake3::hash(&payload).to_hex().to_string();
+        let handle = local_blob_store_for_state_path(&state_path)
+            .ingest_reader(
+                &digest,
+                payload.len() as u64,
+                "application/json",
+                std::io::Cursor::new(&payload),
+            )
+            .unwrap();
+        let (mut request, _) =
+            jvm_bridge_protocol_request("patina:demo/control@0.1.0.run", "[]").unwrap();
+        request.call.payload_metadata.size_bytes = payload.len() as u64;
+        request.payload = handle;
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+
+        let result = execute_jvm_resident_call(
+            ResidentExecutionPaths {
+                config_path,
+                children_dir,
+                state_path,
+            },
+            ledger.clone(),
+            request,
+            None,
+        )
+        .await;
+        ledger.close().await;
+
+        assert_eq!(result.outcome, CallProtocolOutcome::Completed);
+        assert!(result.route_taken.is_some());
+        let ledger_text = std::fs::read_to_string(ledger_path).unwrap();
+        assert!(ledger_text.contains(&format!(
+            "payload:request:size={}:digest={digest}",
+            payload.len()
+        )));
+    }
 
     #[tokio::test]
     async fn offline_identity_cli_observes_before_creating_key_and_config() {
