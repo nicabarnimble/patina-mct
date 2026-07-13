@@ -131,11 +131,24 @@ fn idempotency_reason_code(reason: MctIdempotencyReason) -> &'static str {
     }
 }
 
+fn idempotency_replay_observation_outcome(outcome: CallProtocolOutcome) -> ObservationOutcome {
+    match outcome {
+        CallProtocolOutcome::AcceptedForRouting | CallProtocolOutcome::Completed => {
+            ObservationOutcome::Completed
+        }
+        CallProtocolOutcome::Malformed | CallProtocolOutcome::Denied => ObservationOutcome::Denied,
+        CallProtocolOutcome::Failed => ObservationOutcome::Failed,
+        CallProtocolOutcome::TimedOut => ObservationOutcome::TimedOut,
+        CallProtocolOutcome::Cancelled => ObservationOutcome::Cancelled,
+    }
+}
+
 fn resident_idempotency_observation(
     request: &MctCallProtocolRequest,
     caller_scope: &str,
     fingerprint: &MctIdempotencyFingerprint,
     reason: MctIdempotencyReason,
+    outcome: ObservationOutcome,
 ) -> MctObservation {
     let replay = reason == MctIdempotencyReason::ReplayCompleted;
     let safe_message = match reason {
@@ -187,11 +200,7 @@ fn resident_idempotency_observation(
         )),
         policy_revision: Some(request.call.authority_context.policy_revision),
         grants_revision: Some(request.call.authority_context.grants_revision),
-        outcome: if replay {
-            ObservationOutcome::Completed
-        } else {
-            ObservationOutcome::Denied
-        },
+        outcome,
         visibility: ObservationVisibility::InternalOnly,
         safe_message: safe_message.into(),
         detail_ref: Some(format!(
@@ -243,12 +252,14 @@ where
 
     match reservation {
         MctIdempotencyReservation::Replay(reply) => {
+            let replay_outcome = idempotency_replay_observation_outcome(reply.outcome);
             if let Err(error) = ledger
                 .append(vec![resident_idempotency_observation(
                     &request,
                     &caller_scope,
                     &fingerprint,
                     MctIdempotencyReason::ReplayCompleted,
+                    replay_outcome,
                 )])
                 .await
             {
@@ -265,6 +276,7 @@ where
                     &caller_scope,
                     &fingerprint,
                     reason,
+                    ObservationOutcome::Denied,
                 )])
                 .await
             {
@@ -608,5 +620,70 @@ listens = []
                 .windows(b"request-secret-marker".len())
                 .any(|window| window == b"request-secret-marker")
         );
+    }
+
+    /// Covers `MctCallProtocol.MatchingCompletedRetryReplaysRecordedReply` for cancellation.
+    #[tokio::test]
+    async fn cancelled_idempotent_reply_replays_cancelled_with_durable_observation() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let mut request = resident_test_protocol_request(resident_test_call(
+            TraceId::new("trace-idempotency-cancelled").unwrap(),
+        ));
+        request.idempotency_key = Some("cancelled-key".into());
+        let execution_count = Arc::new(AtomicU64::new(0));
+        let now = Timestamp::new("2026-07-10T00:00:00Z").unwrap();
+
+        let first = execute_idempotent_call(
+            state_path.clone(),
+            ledger.clone(),
+            request.clone(),
+            now.clone(),
+            {
+                let execution_count = Arc::clone(&execution_count);
+                move || async move {
+                    execution_count.fetch_add(1, Ordering::SeqCst);
+                    MctIrohCallHandlerResult::cancelled("cancelled")
+                }
+            },
+        )
+        .await;
+        let replay = execute_idempotent_call(state_path, ledger.clone(), request, now, {
+            let execution_count = Arc::clone(&execution_count);
+            move || async move {
+                execution_count.fetch_add(1, Ordering::SeqCst);
+                MctIrohCallHandlerResult::failed("must not execute")
+            }
+        })
+        .await;
+
+        assert_eq!(first.outcome, CallProtocolOutcome::Cancelled);
+        assert_eq!(replay.outcome, CallProtocolOutcome::Cancelled);
+        assert_eq!(
+            replay.protocol_reason,
+            Some(CallProtocolReason::IdempotencyReplayCompleted)
+        );
+        assert_eq!(execution_count.load(Ordering::SeqCst), 1);
+        ledger.close().await;
+
+        let entries =
+            JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
+                .unwrap()
+                .entries()
+                .unwrap();
+        let replay_entry = entries
+            .iter()
+            .find(|entry| {
+                entry.observation.kind == ObservationKind::ResultRecorded
+                    && entry.observation.safe_message == "recorded result replayed"
+            })
+            .unwrap();
+        assert_eq!(
+            replay_entry.observation.outcome,
+            ObservationOutcome::Cancelled
+        );
+        assert_eq!(replay_entry.durability_class, DurabilityClass::BeforeEffect);
     }
 }

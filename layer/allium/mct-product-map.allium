@@ -873,6 +873,10 @@ contract MctCallAtomicity {
 -- computes and verifies exact size and digest, and only then atomically renames the object into
 -- digest-addressed visibility. Failed or partial verification never publishes the object.
 -- Decision: A peer call reply carries a caller-safe `MctResult` reference or safe adapter error. Internal route decisions, candidate elimination, child details, and topology stay in observations.
+-- Decision: 2026-07-12 Track 3 slice 2 drift disposition: the protocol evaluation outcome
+-- gains `cancelled` to preserve the already-governed closed `MctResult` outcome set through
+-- reply projection, idempotent replay, and result observations without collapsing cancellation
+-- into failure.
 -- Decision: 2026-07-12 tend disposition of REPORT B3: `route_taken` is a caller-safe
 -- `mct/call/0` reply projection. It may identify the execution route for success, failure, or
 -- timeout after execution was attempted; denied, cancelled-before-execution, and malformed
@@ -936,7 +940,7 @@ entity MctCallProtocolEvaluation {
     call_id: String?
     route_decision_id: String?
     result_ref: String?
-    outcome: accepted_for_routing | malformed | denied | failed | timed_out | completed
+    outcome: accepted_for_routing | malformed | denied | failed | timed_out | cancelled | completed
     reason: hello_not_admitted | alpn_not_admitted | endpoint_mismatch | binding_revoked | binding_expired | policy_revision_stale | malformed_call | payload_metadata_mismatch | authority_denied | no_route | execution_failed | execution_timed_out | result_recorded | idempotency_key_reuse_mismatch | idempotency_budget_full | idempotency_in_progress | idempotency_replay_completed
     safe_message: String
     observation_id: String
