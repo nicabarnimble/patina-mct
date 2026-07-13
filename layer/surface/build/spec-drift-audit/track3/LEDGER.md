@@ -47,7 +47,8 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 | `InFlightDuplicateIsRefused` | COVERED | `mct_daemon_bin::resident::tests::in_flight_idempotency_duplicate_refuses_without_second_execution` |
 | `IdempotencyStateSurvivesRestart` | COVERED | `mct_daemon::state::tests::idempotency_store_scopes_reserves_replays_expires_and_survives_reopen` |
 | `CurrentAuthorityPrecedesReplay` — revocation | COVERED | `mct_daemon_bin::resident::tests::resident_mother_payload_roundtrip_verifies_result_digest` |
-| `CurrentAuthorityPrecedesReplay` — expiry and narrowed ALPN/Vision | GAP | Existing current-binding tests cover fresh execution, but no replay test proves cached success stays unavailable after these authority changes. |
+| `CurrentAuthorityPrecedesReplay` — expiry and narrowed Vision | COVERED | `mct_daemon_bin::resident::tests::resident_mother_payload_roundtrip_verifies_result_digest` records one keyed success, then proves identical retries after expiry and Vision narrowing are denied without cached payload. |
+| `CurrentAuthorityPrecedesReplay` — narrowed ALPN | DEFERRED | Persisted peer bindings currently expose the fixed `mct/hello/0` + `mct/call/0` protocol scope and have no operator ALPN-narrowing surface. A replay test requires the future configurable binding-scope model; inventing that authority surface is outside propagation. Current call-time ALPN revalidation remains covered by `mct_iroh::tests::call_rechecks_narrowed_alpn_scope_after_hello`. |
 | `CrossMotherReplayRequiresFederationContract` | COVERED | `mct_daemon::state::tests::idempotency_store_scopes_reserves_replays_expires_and_survives_reopen` proves caller/store isolation; `mct_daemon_bin::resident::tests::two_mother_forwards_selected_call_over_iroh_and_maps_reply` uses separate Mother stores. |
 
 ### Payload integrity and local CAS
@@ -157,9 +158,9 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 
 | Status | Rows |
 |---|---:|
-| COVERED | 72 |
-| GAP | 1 |
+| COVERED | 73 |
+| GAP | 0 |
 | LAW-LEADS-CODE | 0 |
-| DEFERRED | 2 |
+| DEFERRED | 3 |
 
-S2 resolved both mandatory-expiry rows through one contract change and the operator-pointed egress row through a shared before-effect recording boundary. The remaining GAP row is current-authority-before-replay edge classes.
+S2 resolved both mandatory-expiry rows through one contract change and the operator-pointed egress row through a shared before-effect recording boundary. Every S3 GAP is now covered except narrowed-ALPN replay, which is explicitly deferred until peer binding scope becomes configurable.

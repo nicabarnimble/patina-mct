@@ -4644,6 +4644,8 @@ pub(super) mod tests {
         assert_eq!(forward_count, 1, "the same call_id must be forwarded once");
     }
 
+    /// Covers `MctCallProtocol.CurrentAuthorityPrecedesReplay` for revocation,
+    /// binding expiry, and Vision narrowing on the real resident peer path.
     #[tokio::test]
     async fn resident_mother_payload_roundtrip_verifies_result_digest() {
         let dir = tempfile::tempdir().unwrap();
@@ -4755,6 +4757,7 @@ pub(super) mod tests {
             size_bytes: payload.len() as u64,
             blake3_digest_hex: blake3_hex(&payload),
         };
+        call.idempotency_key = Some("resident-payload-replay".into());
 
         let call_reply = client
             .send_call_with_inline_payload(&ticket, &call, payload.clone())
@@ -4780,6 +4783,37 @@ pub(super) mod tests {
                 if blake3_digest_hex == &blake3_hex(&expected_result)
         ));
 
+        let admitted_peer = store.load().unwrap().peers[client_node_id.as_str()].clone();
+
+        let mut expired_peer = admitted_peer.clone();
+        expired_peer.expires_at = Timestamp::new("2026-07-08T00:00:00Z").unwrap();
+        expired_peer.binding_signature_ref = None;
+        store.upsert_peer(expired_peer).unwrap();
+        let expired_retry = client
+            .send_call_with_inline_payload(&ticket, &call, payload.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            expired_retry.reply.reply_outcome,
+            CallProtocolReplyOutcome::Denied
+        );
+        assert!(expired_retry.inline_result_payload.is_none());
+
+        let mut wrong_vision_peer = admitted_peer.clone();
+        wrong_vision_peer.vision_id = VisionId::new("vision-other").unwrap();
+        wrong_vision_peer.binding_signature_ref = None;
+        store.upsert_peer(wrong_vision_peer).unwrap();
+        let narrowed_vision_retry = client
+            .send_call_with_inline_payload(&ticket, &call, payload.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            narrowed_vision_retry.reply.reply_outcome,
+            CallProtocolReplyOutcome::Denied
+        );
+        assert!(narrowed_vision_retry.inline_result_payload.is_none());
+
+        store.upsert_peer(admitted_peer).unwrap();
         store.revoke_peer(&client_node_id).unwrap();
         let revoked_retry = client
             .send_call_with_inline_payload(&ticket, &call, payload)
@@ -4840,6 +4874,16 @@ pub(super) mod tests {
                 ObservationKind::RouteSelected,
                 ObservationKind::RouteRevalidated,
                 ObservationKind::RouteRevalidated,
+                ObservationKind::ResultRecorded,
+                ObservationKind::PeerCallReplied,
+                ObservationKind::PeerCallReceived,
+                ObservationKind::CallConstructed,
+                ObservationKind::CallDenied,
+                ObservationKind::ResultRecorded,
+                ObservationKind::PeerCallReplied,
+                ObservationKind::PeerCallReceived,
+                ObservationKind::CallConstructed,
+                ObservationKind::CallDenied,
                 ObservationKind::ResultRecorded,
                 ObservationKind::PeerCallReplied,
                 ObservationKind::PeerCallReceived,

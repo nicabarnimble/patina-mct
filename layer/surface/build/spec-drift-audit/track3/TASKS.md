@@ -131,7 +131,7 @@ ROADMAP. No PR, no merge, no further pushes.
 - [x] S2.1: mandatory peer-binding expiry contract test and spec-ward fix.
 - [x] S2.2: operator-pointed egress observation contract test and spec-ward fix.
 - [x] S2.x: no additional LAW-LEADS-CODE seams found by S1.
-- [ ] S3: fill every priority GAP or explicitly defer it with reason.
+- [x] S3: fill every priority GAP or explicitly defer it with reason.
 - [ ] Final validation and report; no PR, merge, or further push.
 
 ## Allium 3.5.0 propagation baseline
@@ -324,6 +324,20 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 60 filtered out
 error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
 ```
 
+### S3 replay authority lifecycle expectation
+
+```text
+$ cargo test -p mct-daemon --bin mct-daemon resident_mother_payload_roundtrip_verifies_result_digest -- --nocapture
+thread 'resident::tests::resident_mother_payload_roundtrip_verifies_result_digest' panicked at crates/mct-daemon/src/daemon/resident.rs:4867:9:
+assertion `left == right` failed
+  left: [PeerCallReceived, CallConstructed, CallAuthorized, RouteRevalidated, RouteSelected, RouteRevalidated, RouteRevalidated, ResultRecorded, PeerCallReplied, PeerCallReceived, CallConstructed, CallDenied, ResultRecorded, PeerCallReplied, PeerCallReceived, CallConstructed, CallDenied, ResultRecorded, PeerCallReplied, PeerCallReceived, CallConstructed, CallDenied, ResultRecorded, PeerCallReplied]
+ right: [PeerCallReceived, CallConstructed, CallAuthorized, RouteRevalidated, RouteSelected, RouteRevalidated, RouteRevalidated, ResultRecorded, PeerCallReplied, PeerCallReceived, CallConstructed, CallDenied, ResultRecorded, PeerCallReplied]
+test resident::tests::resident_mother_payload_roundtrip_verifies_result_digest ... FAILED
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 63 filtered out
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
 ## Completed validation
 
 ### S2.1 mandatory binding expiry
@@ -359,6 +373,15 @@ error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
 ### S3 per-hop upstream identity
 
 - Added `forwarded_envelope_clears_upstream_user_identity`.
+- `cargo test --workspace`: 290 passed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `./scripts/ci-tier0.sh`: clean, including both Allium laws.
+- `git diff --check`: clean.
+
+### S3 current authority before replay
+
+- Strengthened `resident_mother_payload_roundtrip_verifies_result_digest` with a keyed success followed by expiry-, Vision-, and revocation-denied retries.
+- Narrowed-ALPN replay is explicitly deferred in the ledger because persisted peer bindings have no configurable ALPN scope; call-time narrowing remains covered.
 - `cargo test --workspace`: 290 passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: clean.
 - `./scripts/ci-tier0.sh`: clean, including both Allium laws.
