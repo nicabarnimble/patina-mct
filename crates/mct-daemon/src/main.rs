@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
 mod cli_runtime;
 use cli_runtime::*;
 
-#[path = "daemon/resident.rs"]
+#[path = "daemon/resident/mod.rs"]
 mod resident;
 use resident::*;
 

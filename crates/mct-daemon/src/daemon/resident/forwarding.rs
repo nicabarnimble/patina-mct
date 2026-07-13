@@ -1004,17 +1004,15 @@ listens = []
 
         let (mother_b_ready_tx, mother_b_ready_rx) = tokio::sync::oneshot::channel();
         let (mother_b_shutdown_tx, mother_b_shutdown_rx) = tokio::sync::oneshot::channel();
-        let mother_b = tokio::spawn(run_resident_mother(
-            ResidentMotherConfig {
-                config_path: mother_b_config_path.clone(),
-                identity_path: mother_b_identity_path.clone(),
-                children_dir: mother_b_children_dir.clone(),
-                state_path: mother_b_state_path.clone(),
-                ledger_path: mother_b_ledger_path.clone(),
-                control: ResidentControlTransport::Uds(mother_b_socket_path),
-                relay_default: false,
-                max_concurrent_connections: 8,
-            },
+        let mother_b = tokio::spawn(run_test_resident_mother(
+            ResidentRuntimePaths::new(
+                mother_b_config_path.clone(),
+                mother_b_children_dir.clone(),
+                mother_b_state_path.clone(),
+            ),
+            mother_b_identity_path.clone(),
+            mother_b_ledger_path.clone(),
+            mother_b_socket_path,
             async move {
                 let _ = mother_b_shutdown_rx.await;
             },
