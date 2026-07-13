@@ -138,7 +138,7 @@ pushes, PRs, or merges.
 - [x] GATE: stop for operator review before moving code.
 - [x] GATE: operator approved R1 with four binding conditions.
 - [x] R2.0: amend the SPEC with the gate conditions and validate.
-- [ ] R2.1: extract resident observation.
+- [x] R2.1: extract resident observation.
 - [ ] R2.2: extract resident payload.
 - [ ] R2.3: extract resident publication.
 - [ ] R2.4: extract resident idempotency.
@@ -159,3 +159,210 @@ pushes, PRs, or merges.
 ## Failure log
 
 Capture validation failures verbatim here before rerunning. None observed through R1.
+
+### R2.1 observation extraction compile failure
+
+```text
+$ cargo check --workspace
+    Checking mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0583]: file not found for module `observation`
+ --> crates/mct-daemon/src/daemon/resident.rs:3:1
+  |
+3 | mod observation;
+  | ^^^^^^^^^^^^^^^^
+  |
+  = help: to create the module `observation`, create file "crates/mct-daemon/src/daemon/observation.rs" or "crates/mct-daemon/src/daemon/observation/mod.rs"
+  = note: if there is a `mod observation` elsewhere in the crate already, import it with `use crate::...` instead
+
+error[E0425]: cannot find type `ResidentLedgerWriter` in this scope
+   --> crates/mct-daemon/src/daemon/resident.rs:401:13
+    |
+401 |     ledger: ResidentLedgerWriter,
+    |             ^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `ResidentLedgerWriter` in this scope
+   --> crates/mct-daemon/src/daemon/resident.rs:503:13
+    |
+503 |     ledger: ResidentLedgerWriter,
+    |             ^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `ResidentLedgerWriter` in this scope
+    --> crates/mct-daemon/src/daemon/resident.rs:1187:13
+     |
+1187 |     ledger: ResidentLedgerWriter,
+     |             ^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `ResidentLedgerWriter` in this scope
+    --> crates/mct-daemon/src/daemon/resident.rs:1196:13
+     |
+1196 |     ledger: ResidentLedgerWriter,
+     |             ^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `ResidentLedgerWriter` in this scope
+    --> crates/mct-daemon/src/daemon/resident.rs:1227:13
+     |
+1227 |     ledger: ResidentLedgerWriter,
+     |             ^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `ResidentLedgerWriter` in this scope
+    --> crates/mct-daemon/src/daemon/resident.rs:1319:13
+     |
+1319 |     ledger: ResidentLedgerWriter,
+     |             ^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `ResidentLedgerWriter` in this scope
+    --> crates/mct-daemon/src/daemon/resident.rs:2065:13
+     |
+2065 |     ledger: ResidentLedgerWriter,
+     |             ^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `ResidentLedgerWriter` in this scope
+   --> crates/mct-daemon/src/daemon/control.rs:348:14
+    |
+348 |     ledger: &ResidentLedgerWriter,
+    |              ^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `ResidentLedgerWriter` in this scope
+   --> crates/mct-daemon/src/daemon/control.rs:656:14
+    |
+656 |     ledger: &ResidentLedgerWriter,
+    |              ^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `ResidentLedgerWriter` in this scope
+   --> crates/mct-daemon/src/daemon/control.rs:748:14
+    |
+748 |     ledger: &ResidentLedgerWriter,
+    |              ^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `ResidentLedgerWriter` in this scope
+   --> crates/mct-daemon/src/daemon/control.rs:770:14
+    |
+770 |     ledger: &ResidentLedgerWriter,
+    |              ^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `ResidentLedgerWriter` in this scope
+    --> crates/mct-daemon/src/daemon/control.rs:1080:14
+     |
+1080 |     ledger: &ResidentLedgerWriter,
+     |              ^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `ResidentLedgerWriter` in this scope
+    --> crates/mct-daemon/src/daemon/control.rs:1376:14
+     |
+1376 |     ledger: &ResidentLedgerWriter,
+     |              ^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `ResidentLedgerWriter` in this scope
+    --> crates/mct-daemon/src/daemon/control.rs:1449:13
+     |
+1449 |     ledger: ResidentLedgerWriter,
+     |             ^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `ResidentLedgerWriter` in this scope
+    --> crates/mct-daemon/src/daemon/control.rs:1536:13
+     |
+1536 |     ledger: ResidentLedgerWriter,
+     |             ^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `ResidentLedgerWriter` in this scope
+    --> crates/mct-daemon/src/daemon/control.rs:1658:14
+     |
+1658 |     ledger: &ResidentLedgerWriter,
+     |              ^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `ResidentLedgerWriter` in this scope
+    --> crates/mct-daemon/src/daemon/control.rs:1778:13
+     |
+1778 |     ledger: ResidentLedgerWriter,
+     |             ^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+warning: unused imports: `MctIrohObservationBatch`, `MctIrohObservationDurability`, and `MctIrohObservationSink`
+  --> crates/mct-daemon/src/main.rs:27:35
+   |
+27 |     MctIrohConcurrentServeConfig, MctIrohObservationBatch, MctIrohObservationDurability,
+   |                                   ^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+28 |     MctIrohObservationSink, MctIrohServeEvent, MctIrohServeState, MctIrohServedProtocol,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `DurabilityClass` and `ExportStatus`
+  --> crates/mct-daemon/src/main.rs:36:23
+   |
+36 | use mct_observation::{DurabilityClass, ExportStatus, JsonlObservationLedger};
+   |                       ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^
+
+warning: unused import: `observation::*`
+ --> crates/mct-daemon/src/daemon/resident.rs:4:16
+  |
+4 | pub(super) use observation::*;
+  |                ^^^^^^^^^^^^^^
+
+error[E0433]: cannot find type `ResidentLedgerWriter` in this scope
+   --> crates/mct-daemon/src/daemon/resident.rs:233:18
+    |
+233 |     let ledger = ResidentLedgerWriter::spawn(config.ledger_path.clone())?;
+    |                  ^^^^^^^^^^^^^^^^^^^^ use of undeclared type `ResidentLedgerWriter`
+
+error[E0425]: cannot find function `resident_iroh_observation_sink` in this scope
+   --> crates/mct-daemon/src/daemon/resident.rs:338:28
+    |
+338 |     let observation_sink = resident_iroh_observation_sink(ledger.clone());
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `resident_endpoint_observation` in this scope
+    --> crates/mct-daemon/src/daemon/resident.rs:377:22
+     |
+ 377 |           .append(vec![resident_endpoint_observation(
+     |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1912 | / pub(super) fn resident_candidate_observations(
+1913 | |     call: &MctCall,
+1914 | |     plans: &[ResidentCandidatePlan],
+1915 | | ) -> Vec<MctObservation> {
+...    |
+1950 | |     observations
+1951 | | }
+     | |_- similarly named function `resident_candidate_observations` defined here
+     |
+help: a function with a similar name exists
+     |
+ 377 -         .append(vec![resident_endpoint_observation(
+ 377 +         .append(vec![resident_candidate_observations(
+     |
+
+error[E0433]: cannot find type `ResidentLedgerWriter` in this scope
+   --> crates/mct-daemon/src/daemon/ingress.rs:102:18
+    |
+102 |     let ledger = ResidentLedgerWriter::spawn(ledger_path.clone())?;
+    |                  ^^^^^^^^^^^^^^^^^^^^ use of undeclared type `ResidentLedgerWriter`
+
+error[E0433]: cannot find type `ResidentLedgerWriter` in this scope
+   --> crates/mct-daemon/src/daemon/ingress.rs:310:18
+    |
+310 |     let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).with_context(|| {
+    |                  ^^^^^^^^^^^^^^^^^^^^ use of undeclared type `ResidentLedgerWriter`
+
+error[E0425]: cannot find function `resident_iroh_observation_sink` in this scope
+   --> crates/mct-daemon/src/daemon/ingress.rs:316:28
+    |
+316 |     let observation_sink = resident_iroh_observation_sink(ledger.clone());
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0433]: cannot find type `ResidentLedgerWriter` in this scope
+   --> crates/mct-daemon/src/daemon/ingress.rs:420:18
+    |
+420 |     let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).with_context(|| {
+    |                  ^^^^^^^^^^^^^^^^^^^^ use of undeclared type `ResidentLedgerWriter`
+
+error[E0425]: cannot find function `resident_iroh_observation_sink` in this scope
+   --> crates/mct-daemon/src/daemon/ingress.rs:426:28
+    |
+426 |     let observation_sink = resident_iroh_observation_sink(ledger.clone());
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+Some errors have detailed explanations: E0425, E0433, E0583.
+For more information about an error, try `rustc --explain E0425`.
+warning: `mct-daemon` (bin "mct-daemon") generated 3 warnings
+error: could not compile `mct-daemon` (bin "mct-daemon") due to 26 previous errors; 3 warnings emitted
+```

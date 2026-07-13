@@ -2070,10 +2070,8 @@ mod tests {
         let config_path = dir.path().join("config.json");
         let socket_path = dir.path().join("control.sock");
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
-        let (sender, receiver) = tokio::sync::mpsc::channel(1);
-        drop(receiver);
-        let handler =
-            resident_peer_mutation_handler(config_path.clone(), ResidentLedgerWriter { sender });
+        let failed_ledger = ResidentLedgerWriter::failed_for_test();
+        let handler = resident_peer_mutation_handler(config_path.clone(), failed_ledger);
 
         let (status, _) = post_mutation(
             listener,
@@ -2363,12 +2361,11 @@ mod tests {
         let socket_path = dir.path().join("control.sock");
         crate::resident::tests::write_resident_process_child(&children_dir);
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
-        let (sender, receiver) = tokio::sync::mpsc::channel(1);
-        drop(receiver);
+        let failed_ledger = ResidentLedgerWriter::failed_for_test();
         let handler = resident_authority_mutation_handler(
             config_path.clone(),
             children_dir.clone(),
-            ResidentLedgerWriter { sender },
+            failed_ledger,
         );
 
         let (status, _) = post_mutation(
@@ -2488,13 +2485,12 @@ mod tests {
             .approve_and_assign_loaded_child(&child, MctOperatorChildScope::default())
             .unwrap();
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
-        let (sender, receiver) = tokio::sync::mpsc::channel(1);
-        drop(receiver);
+        let failed_ledger = ResidentLedgerWriter::failed_for_test();
         let handler = resident_observed_mutation_handler(
             config_path.clone(),
             children_dir.clone(),
             state_path.clone(),
-            ResidentLedgerWriter { sender },
+            failed_ledger,
         );
         let request = ToyAuthorizeSecretRequest {
             expected_config_path: config_path.clone(),
@@ -2655,13 +2651,12 @@ mod tests {
         let socket_path = dir.path().join("control.sock");
         crate::resident::tests::write_resident_process_child(&source_parent);
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
-        let (sender, receiver) = tokio::sync::mpsc::channel(1);
-        drop(receiver);
+        let failed_ledger = ResidentLedgerWriter::failed_for_test();
         let handler = resident_observed_mutation_handler(
             config_path,
             children_dir.clone(),
             state_path.clone(),
-            ResidentLedgerWriter { sender },
+            failed_ledger,
         );
         let request = RegistryInstallRequest {
             expected_children_dir: children_dir.clone(),
@@ -2785,13 +2780,12 @@ mod tests {
         let state_path = dir.path().join("state.sqlite");
         let socket_path = dir.path().join("control.sock");
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
-        let (sender, receiver) = tokio::sync::mpsc::channel(1);
-        drop(receiver);
+        let failed_ledger = ResidentLedgerWriter::failed_for_test();
         let handler = resident_observed_mutation_handler(
             config_path,
             children_dir,
             state_path.clone(),
-            ResidentLedgerWriter { sender },
+            failed_ledger,
         );
         let payload = b"not-visible";
         let digest = blake3::hash(payload).to_hex().to_string();
