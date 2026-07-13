@@ -279,7 +279,7 @@ The 236 load-bearing `-- Decision:` statements were also read in full and groupe
 |---|---|---|
 | `ResultRequiresCall` | COVERED | `mct_daemon_bin::resident::execution::tests::resident_execution_runs_wit_child_and_records_trace` |
 | `ResultIsTerminal` | COVERED | `mct_daemon::tests::fake_echo_slice_records_trace_and_result`; `mct_daemon_bin::resident::serving::tests::resident_mother_payload_roundtrip_verifies_result_digest` |
-| `ClosedOutcomeSet` | COVERED | `mct_daemon_bin::resident::execution::tests::route_taken_projection_follows_outcome_matrix` |
+| `ClosedOutcomeSet` | LAW-LEADS-CODE | The expected-red probe `cancelled_result_projection_preserves_cancelled_outcome`, captured verbatim in `TASKS.md` and removed after the structural stop, proves resident result projection collapses `ResultOutcome::Cancelled` to `CallProtocolOutcome::Failed`. The route-presence helper covers all five result variants, but the actual consumer does not preserve cancellation. Fix is structurally blocked because `MctCallProtocolEvaluation.outcome` and Rust `CallProtocolOutcome` have no cancelled variant while `MctCallProtocolReply` does; operator adjudication is required before changing the model or wire. |
 | `DeniedResultHasNoRouteTaken` | COVERED | `mct_kernel::call::tests::denied_result_has_no_route_taken` |
 | `CallerSafeResult` | COVERED | `mct_daemon_bin::resident::forwarding::tests::two_mother_remote_denial_fails_closed` |
 | `MalformedAdapterInputIsNotMctResult` | COVERED | `mct_kernel::call::tests::call_protocol_json_edge_rejects_invalid_domain_values_with_typed_kernel_error`; `mct_iroh::tests::malformed_frames_are_observed_before_safe_reply_and_append_failure_suppresses_reply` |
@@ -356,7 +356,7 @@ The 236 load-bearing `-- Decision:` statements were also read in full and groupe
 | `CallIngressCoverage` | COVERED | `mct_iroh::tests::malformed_frames_are_observed_before_safe_reply_and_append_failure_suppresses_reply`; `mct_daemon_bin::ingress::tests::standalone_serve_process_persists_hello_and_call_lifecycle` |
 | `AuthorityCoverage` | COVERED | `mct_kernel::observation::tests::kernel_denial_evaluations_become_observations`; `mct_iroh::tests::iroh_adapter_observations_cover_endpoint_and_protocol_events` |
 | `RoutingCoverage` | COVERED | `mct_kernel::observation::tests::candidate_observations_record_specific_elimination_class`; `mct_kernel::observation::tests::route_revalidation_observation_records_allowed_and_denied_outcomes` |
-| `ResultCoverage` | GAP | Named tests cover individual outcomes, but no single matrix proves typed result observations for every terminal outcome. |
+| `ResultCoverage` | LAW-LEADS-CODE | Triage rule applied: landed behavior was exercised through the real resident result consumer. The expected-red probe `cancelled_result_projection_preserves_cancelled_outcome`, captured verbatim in `TASKS.md` and removed after the structural stop, shows cancellation becomes failure before the Iroh evaluation/result observation path. This is the same structural cancelled-outcome mismatch as `MctResultTerminality.ClosedOutcomeSet`, so gap filling stops for operator adjudication rather than adding a misleading matrix. |
 | `ChildLifecycleCoverage` | GAP | Lifecycle tests cover reload order, but no named test proves the complete artifact/approval/assignment/instance observation matrix. |
 | `ToyCoverage` | COVERED | `mct_kernel::observation::tests::toy_grant_evaluations_become_observations`; `mct_daemon::toy::tests::toy_backend_failure_is_adapter_observation_not_kernel_denial` |
 | `PeerCoverage` | COVERED | `mct_iroh::tests::iroh_adapter_observations_cover_endpoint_and_protocol_events`; `mct_daemon_bin::ingress::tests::standalone_serve_process_persists_hello_and_call_lifecycle` |
@@ -456,9 +456,9 @@ The 236 load-bearing `-- Decision:` statements were also read in full and groupe
 
 | Status | Invariants |
 |---|---:|
-| COVERED | 195 |
-| GAP | 5 |
-| LAW-LEADS-CODE | 0 |
+| COVERED | 194 |
+| GAP | 4 |
+| LAW-LEADS-CODE | 2 |
 | DEFERRED | 23 |
 
 ### Tool-derived structural obligations
