@@ -144,7 +144,7 @@ pushes, PRs, or merges.
 - [x] R2.4: extract resident idempotency.
 - [x] R2.5: extract resident candidates.
 - [x] R2.6: extract resident decision.
-- [ ] R2.7: extract resident execution.
+- [x] R2.7: extract resident execution.
 - [ ] R2.8: extract resident forwarding.
 - [ ] R2.9: extract resident pipeline.
 - [ ] R2.10: extract resident serving.
@@ -964,4 +964,50 @@ help: consider boxing the large fields or introducing indirection in some other 
 error: could not compile `mct-daemon` (bin "mct-daemon") due to 1 previous error
 warning: build failed, waiting for other jobs to finish...
 error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 1 previous error
+```
+
+### R2.7 execution extraction compile failure
+
+```text
+$ cargo check --workspace
+    Checking mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0425]: cannot find value `child_child_authority_observation_id` in this scope
+   --> crates/mct-daemon/src/daemon/resident/execution.rs:152:9
+    |
+152 |         child_child_authority_observation_id.clone(),
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: a local variable with a similar name exists
+    |
+152 -         child_child_authority_observation_id.clone(),
+152 +         child_authority_observation_id.clone(),
+    |
+
+error[E0423]: expected value, found module `child`
+   --> crates/mct-daemon/src/daemon/resident/execution.rs:279:10
+    |
+279 |         &child,
+    |          ^^^^^ not a value
+
+error[E0616]: field `authorized_route` of struct `decision::LocalExecutionPlan` is private
+   --> crates/mct-daemon/src/daemon/resident/execution.rs:112:18
+    |
+112 |                 .authorized_route
+    |                  ^^^^^^^^^^^^^^^^ private field
+
+error[E0616]: field `authorized_route` of struct `decision::LocalExecutionPlan` is private
+   --> crates/mct-daemon/src/daemon/resident/execution.rs:127:18
+    |
+127 |                 .authorized_route
+    |                  ^^^^^^^^^^^^^^^^ private field
+
+error[E0616]: field `authorized_route` of struct `decision::LocalExecutionPlan` is private
+   --> crates/mct-daemon/src/daemon/resident/execution.rs:139:10
+    |
+139 |         .authorized_route
+    |          ^^^^^^^^^^^^^^^^ private field
+
+Some errors have detailed explanations: E0423, E0425, E0616.
+For more information about an error, try `rustc --explain E0423`.
+error: could not compile `mct-daemon` (bin "mct-daemon") due to 5 previous errors
 ```
