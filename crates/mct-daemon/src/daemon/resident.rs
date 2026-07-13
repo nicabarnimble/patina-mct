@@ -4,6 +4,10 @@ use super::*;
 mod observation;
 pub(super) use observation::*;
 
+#[path = "resident/payload.rs"]
+mod payload;
+pub(super) use payload::*;
+
 pub(super) async fn run_serve(mut args: Vec<String>) -> Result<()> {
     let relay_default = take_flag(&mut args, "--relay-default");
     let config_path = take_option(&mut args, "--config")
@@ -360,7 +364,7 @@ where
                         execution_paths,
                         execution_ledger,
                         request,
-                        ResidentRequestPayload::remote(inline_payload),
+                        ResidentPayloadIngress::remote(inline_payload),
                     )
                     .await
                 }
@@ -551,28 +555,6 @@ pub(super) struct ResidentExecutionPaths {
     pub(super) state_path: PathBuf,
 }
 
-#[derive(Clone, Debug)]
-pub(super) struct ResidentRequestPayload {
-    pub(super) inline_payload: Option<Vec<u8>>,
-    pub(super) allow_local_content_addressed_blob: bool,
-}
-
-impl ResidentRequestPayload {
-    pub(super) fn remote(inline_payload: Option<Vec<u8>>) -> Self {
-        Self {
-            inline_payload,
-            allow_local_content_addressed_blob: false,
-        }
-    }
-
-    pub(super) fn local(inline_payload: Option<Vec<u8>>) -> Self {
-        Self {
-            inline_payload,
-            allow_local_content_addressed_blob: true,
-        }
-    }
-}
-
 #[derive(Debug)]
 pub(super) struct ResidentAuthorizedExecution {
     pub(super) child: mct_daemon::MctLoadedChild,
@@ -628,32 +610,6 @@ pub(super) struct ResidentExecutionReport {
     pub(super) result: MctResult,
     pub(super) observations: Vec<MctObservation>,
     pub(super) inline_result_payload: Option<Vec<u8>>,
-}
-
-pub(super) fn blake3_hex(bytes: &[u8]) -> String {
-    blake3::hash(bytes).to_hex().to_string()
-}
-
-pub(super) fn inline_payload_content_type(handle: &MctCallPayloadHandle) -> Option<&str> {
-    match handle {
-        MctCallPayloadHandle::InlinePayload { content_type, .. }
-        | MctCallPayloadHandle::ContentAddressedBlob { content_type, .. } => Some(content_type),
-        MctCallPayloadHandle::ExternalReference { content_type, .. } => content_type.as_deref(),
-        MctCallPayloadHandle::Empty => None,
-    }
-}
-
-pub(super) fn inline_result_payload_handle(
-    reference: impl Into<String>,
-    content_type: impl Into<String>,
-    bytes: &[u8],
-) -> MctCallPayloadHandle {
-    MctCallPayloadHandle::InlinePayload {
-        inline_payload_ref: reference.into(),
-        content_type: content_type.into(),
-        size_bytes: bytes.len() as u64,
-        blake3_digest_hex: blake3_hex(bytes),
-    }
 }
 
 pub(super) fn resident_forwarded_call_sent_observation(
@@ -781,205 +737,6 @@ pub(super) fn resident_executed_on_observation(
             "executed_on:{};forwarded_from:{};operation:{operation_id}",
             route.node_id, call.caller.node_id
         )),
-    }
-}
-
-pub(super) fn resident_payload_fact_observation(
-    call: &MctCall,
-    direction: &str,
-    bytes: &[u8],
-    classification: &str,
-) -> MctObservation {
-    let digest = blake3_hex(bytes);
-    MctObservation {
-        observation_id: ObservationId::new(format!(
-            "obs-resident-payload-{direction}:{}",
-            call.call_id
-        ))
-        .expect("string ID literal/generated value must be non-empty"),
-        observed_at: current_timestamp(),
-        kind: ObservationKind::AdapterEffectCompleted,
-        source_plane: SourcePlane::Adapter,
-        trace: ObservationTraceRef {
-            trace_id: call.trace_context.trace_id.clone(),
-            span_id: Some(call.trace_context.span_id.clone()),
-            parent_span_id: None,
-            external_trace_id: None,
-        },
-        call_id: Some(call.call_id.clone()),
-        decision_id: None,
-        subject_id: Some(direction.into()),
-        resource_id: Some(format!(
-            "payload:{direction}:size={}:digest={digest}:class={classification}",
-            bytes.len()
-        )),
-        policy_revision: Some(call.authority_context.policy_revision),
-        grants_revision: Some(call.authority_context.grants_revision),
-        outcome: ObservationOutcome::Completed,
-        visibility: ObservationVisibility::InternalOnly,
-        safe_message: format!("{direction} payload integrity facts recorded"),
-        detail_ref: None,
-    }
-}
-
-pub(super) fn observed_local_blob_payload(bytes: &[u8]) -> MctPayloadIntegrityObservation {
-    MctPayloadIntegrityObservation {
-        inline_bytes_present: true,
-        content_addressed_blob_fetch_attempted: true,
-        observed_size_bytes: Some(bytes.len() as u64),
-        observed_blake3_digest_hex: Some(blake3_hex(bytes)),
-    }
-}
-
-pub(super) fn resident_payload_integrity_failure_observation(
-    call: &MctCall,
-    direction: &str,
-    handle: &MctCallPayloadHandle,
-    decision: &MctPayloadIntegrityDecision,
-) -> MctObservation {
-    MctObservation {
-        observation_id: ObservationId::new(format!(
-            "obs-resident-payload-{direction}-failed:{}",
-            call.call_id
-        ))
-        .expect("string ID literal/generated value must be non-empty"),
-        observed_at: current_timestamp(),
-        kind: ObservationKind::AdapterEffectCompleted,
-        source_plane: SourcePlane::Adapter,
-        trace: ObservationTraceRef {
-            trace_id: call.trace_context.trace_id.clone(),
-            span_id: Some(call.trace_context.span_id.clone()),
-            parent_span_id: None,
-            external_trace_id: None,
-        },
-        call_id: Some(call.call_id.clone()),
-        decision_id: None,
-        subject_id: Some(direction.into()),
-        resource_id: Some(format!(
-            "payload:{direction}:size={}:digest={}:class={}:reason={:?}",
-            handle.declared_size_bytes(),
-            declared_payload_digest(handle).unwrap_or("none"),
-            call.payload_metadata.data_classification,
-            decision.reason
-        )),
-        policy_revision: Some(call.authority_context.policy_revision),
-        grants_revision: Some(call.authority_context.grants_revision),
-        outcome: ObservationOutcome::Failed,
-        visibility: ObservationVisibility::InternalOnly,
-        safe_message: decision.safe_message.clone(),
-        detail_ref: None,
-    }
-}
-
-pub(super) fn declared_payload_digest(handle: &MctCallPayloadHandle) -> Option<&str> {
-    match handle {
-        MctCallPayloadHandle::InlinePayload {
-            blake3_digest_hex, ..
-        } => Some(blake3_digest_hex),
-        MctCallPayloadHandle::ContentAddressedBlob { digest, .. } => Some(digest),
-        MctCallPayloadHandle::ExternalReference { .. } | MctCallPayloadHandle::Empty => None,
-    }
-}
-
-pub(super) struct ResidentPayloadResolutionFailure {
-    pub(super) safe_message: String,
-    pub(super) observations: Vec<MctObservation>,
-}
-
-pub(super) async fn resolve_resident_request_payload(
-    paths: &ResidentExecutionPaths,
-    request: &MctCallProtocolRequest,
-    payload: ResidentRequestPayload,
-) -> std::result::Result<Option<Vec<u8>>, ResidentPayloadResolutionFailure> {
-    if !payload.allow_local_content_addressed_blob
-        || !matches!(
-            request.payload,
-            MctCallPayloadHandle::ContentAddressedBlob { .. }
-        )
-    {
-        return Ok(payload.inline_payload);
-    }
-
-    let state_path = paths.state_path.clone();
-    let handle = request.payload.clone();
-    let fetched = tokio::task::spawn_blocking(move || {
-        local_blob_store_for_state_path(state_path).fetch(&handle)
-    })
-    .await
-    .map_err(|error| {
-        resident_payload_resolution_failure(
-            &request.call,
-            &request.payload,
-            PayloadIntegrityReason::PayloadBlobUnavailable,
-            format!("join local blob fetch: {error}"),
-        )
-    })?;
-
-    let mut fetched_bytes = None;
-    let observed = match fetched {
-        Ok(bytes) => {
-            let observed = observed_local_blob_payload(&bytes);
-            fetched_bytes = Some(bytes);
-            observed
-        }
-        Err(MctLocalBlobStoreError::PayloadBlobUnavailable) => {
-            MctPayloadIntegrityObservation::missing_content_addressed_blob()
-        }
-        Err(MctLocalBlobStoreError::BlobTooLarge) => MctPayloadIntegrityObservation {
-            inline_bytes_present: true,
-            content_addressed_blob_fetch_attempted: true,
-            observed_size_bytes: Some(MCT_BLOB_MAX_BYTES as u64 + 1),
-            observed_blake3_digest_hex: declared_payload_digest(&request.payload)
-                .map(str::to_owned),
-        },
-        Err(_) => {
-            return Err(resident_payload_resolution_failure(
-                &request.call,
-                &request.payload,
-                PayloadIntegrityReason::PayloadBlobUnavailable,
-                "blob store unavailable".into(),
-            ));
-        }
-    };
-
-    let decision = evaluate_payload_integrity(
-        PayloadIntegritySubject::Request,
-        &request.payload,
-        &observed,
-        MCT_BLOB_MAX_BYTES as u64,
-    );
-    if decision.outcome != PayloadIntegrityOutcome::Matched {
-        return Err(ResidentPayloadResolutionFailure {
-            safe_message: decision.safe_message.clone(),
-            observations: vec![resident_payload_integrity_failure_observation(
-                &request.call,
-                "request",
-                &request.payload,
-                &decision,
-            )],
-        });
-    }
-
-    Ok(fetched_bytes)
-}
-
-pub(super) fn resident_payload_resolution_failure(
-    call: &MctCall,
-    handle: &MctCallPayloadHandle,
-    reason: PayloadIntegrityReason,
-    safe_message: String,
-) -> ResidentPayloadResolutionFailure {
-    let decision = MctPayloadIntegrityDecision {
-        subject: PayloadIntegritySubject::Request,
-        outcome: PayloadIntegrityOutcome::Mismatch,
-        reason,
-        safe_message: safe_message.clone(),
-    };
-    ResidentPayloadResolutionFailure {
-        safe_message,
-        observations: vec![resident_payload_integrity_failure_observation(
-            call, "request", handle, &decision,
-        )],
     }
 }
 
@@ -1186,7 +943,7 @@ pub(super) async fn execute_resident_call(
     paths: ResidentExecutionPaths,
     ledger: ResidentLedgerWriter,
     request: MctCallProtocolRequest,
-    payload: ResidentRequestPayload,
+    payload: ResidentPayloadIngress,
 ) -> MctIrohCallHandlerResult {
     execute_resident_call_at(paths, ledger, request, payload, current_timestamp()).await
 }
@@ -1195,17 +952,18 @@ pub(super) async fn execute_resident_call_at(
     paths: ResidentExecutionPaths,
     ledger: ResidentLedgerWriter,
     request: MctCallProtocolRequest,
-    payload: ResidentRequestPayload,
+    payload: ResidentPayloadIngress,
     now: Timestamp,
 ) -> MctIrohCallHandlerResult {
     let inline_payload = match resolve_resident_request_payload(&paths, &request, payload).await {
-        Ok(inline_payload) => inline_payload,
+        Ok(payload) => payload.into_inner(),
         Err(report) => {
-            if let Err(error) = ledger.append(report.observations).await {
+            let (safe_message, observations) = report.into_parts();
+            if let Err(error) = ledger.append(observations).await {
                 eprintln!("resident payload failure ledger write failed: {error}");
                 return MctIrohCallHandlerResult::failed("observation ledger unavailable");
             }
-            return MctIrohCallHandlerResult::failed(report.safe_message);
+            return MctIrohCallHandlerResult::failed(safe_message);
         }
     };
 
@@ -3932,7 +3690,7 @@ pub(super) mod tests {
             },
             mother_a_ledger.clone(),
             call,
-            ResidentRequestPayload::remote(Some(payload)),
+            ResidentPayloadIngress::remote(Some(payload)),
         )
         .await;
         mother_a_ledger.close().await;
@@ -4768,7 +4526,7 @@ pub(super) mod tests {
             paths.clone(),
             ledger.clone(),
             request.clone(),
-            ResidentRequestPayload::remote(Some(payload.clone())),
+            ResidentPayloadIngress::remote(Some(payload.clone())),
             now.clone(),
         )
         .await;
@@ -4776,7 +4534,7 @@ pub(super) mod tests {
             paths.clone(),
             ledger.clone(),
             request.clone(),
-            ResidentRequestPayload::remote(Some(payload.clone())),
+            ResidentPayloadIngress::remote(Some(payload.clone())),
             now.clone(),
         )
         .await;
@@ -4803,7 +4561,7 @@ pub(super) mod tests {
             paths.clone(),
             ledger.clone(),
             other_caller,
-            ResidentRequestPayload::remote(Some(payload.clone())),
+            ResidentPayloadIngress::remote(Some(payload.clone())),
             now.clone(),
         )
         .await;
@@ -4816,7 +4574,7 @@ pub(super) mod tests {
             paths.clone(),
             ledger.clone(),
             mismatch,
-            ResidentRequestPayload::remote(Some(payload.clone())),
+            ResidentPayloadIngress::remote(Some(payload.clone())),
             now.clone(),
         )
         .await;
@@ -4831,7 +4589,7 @@ pub(super) mod tests {
             paths.clone(),
             ledger.clone(),
             request.clone(),
-            ResidentRequestPayload::remote(Some(payload.clone())),
+            ResidentPayloadIngress::remote(Some(payload.clone())),
             Timestamp::new("2026-07-10T00:13:00Z").unwrap(),
         )
         .await;
@@ -4845,7 +4603,7 @@ pub(super) mod tests {
             paths.clone(),
             ledger.clone(),
             unkeyed.clone(),
-            ResidentRequestPayload::remote(Some(payload.clone())),
+            ResidentPayloadIngress::remote(Some(payload.clone())),
             now.clone(),
         )
         .await;
@@ -4853,7 +4611,7 @@ pub(super) mod tests {
             paths,
             ledger.clone(),
             unkeyed,
-            ResidentRequestPayload::remote(Some(payload)),
+            ResidentPayloadIngress::remote(Some(payload)),
             now,
         )
         .await;
@@ -4914,7 +4672,7 @@ pub(super) mod tests {
             },
             ledger.clone(),
             request,
-            ResidentRequestPayload::remote(Some(payload)),
+            ResidentPayloadIngress::remote(Some(payload)),
         )
         .await;
         assert_eq!(result.outcome, CallProtocolOutcome::Completed);
@@ -4971,7 +4729,7 @@ pub(super) mod tests {
             },
             ledger.clone(),
             request,
-            ResidentRequestPayload::local(Some(payload)),
+            ResidentPayloadIngress::local(Some(payload)),
         )
         .await;
         assert_eq!(result.outcome, CallProtocolOutcome::Completed);
@@ -4989,185 +4747,6 @@ pub(super) mod tests {
         assert!(
             ledger_text.contains("RouteRevalidated") || ledger_text.contains("route_revalidated")
         );
-    }
-
-    #[tokio::test]
-    async fn resident_local_blob_payload_delivery_returns_digest_and_keeps_ledger_byte_free() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("config.json");
-        let children_dir = dir.path().join("children");
-        let state_path = dir.path().join("state.sqlite");
-        let ledger_path = dir.path().join("observations.jsonl");
-        write_resident_payload_process_child(&children_dir);
-
-        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
-        assert_eq!(loaded.loaded, 1, "{loaded:?}");
-        MctDaemonConfigStore::new(&config_path)
-            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
-            .unwrap();
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
-        let payload = br#"{"secret":"blob-marker"}"#.to_vec();
-        let payload_base64 = BASE64_STANDARD.encode(&payload);
-        let payload_digest = blake3_hex(&payload);
-        let handle = local_blob_store_for_state_path(&state_path)
-            .ingest_reader(
-                &payload_digest,
-                payload.len() as u64,
-                "application/json",
-                std::io::Cursor::new(&payload),
-            )
-            .unwrap();
-        let trace_id = TraceId::new("trace-resident-blob-payload")
-            .expect("string ID literal/generated value must be non-empty");
-        let mut call = resident_test_call(trace_id);
-        call.call_id = CallId::new("call-resident-blob-payload")
-            .expect("string ID literal/generated value must be non-empty");
-        call.payload_metadata.size_bytes = payload.len() as u64;
-        let mut request = resident_test_protocol_request(call);
-        request.payload = handle;
-
-        let result = execute_resident_call(
-            ResidentExecutionPaths {
-                config_path,
-                children_dir,
-                state_path,
-            },
-            ledger.clone(),
-            request,
-            ResidentRequestPayload::local(None),
-        )
-        .await;
-        assert_eq!(result.outcome, CallProtocolOutcome::Completed);
-        let result_payload = result
-            .inline_result_payload
-            .expect("result payload returned");
-        let expected_result = br#"processed:{"secret":"blob-marker"}"#.to_vec();
-        let expected_result_base64 = BASE64_STANDARD.encode(&expected_result);
-        assert_eq!(result_payload, expected_result);
-        assert!(matches!(
-            result.result_payload,
-            MctCallPayloadHandle::InlinePayload { ref blake3_digest_hex, .. }
-                if blake3_digest_hex == &blake3_hex(&expected_result)
-        ));
-        ledger.close().await;
-
-        let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
-        assert!(ledger_text.contains("call-resident-blob-payload"));
-        assert!(ledger_text.contains(&payload_digest));
-        assert!(ledger_text.contains("payload:request:size="));
-        assert!(ledger_text.contains("payload:result:size="));
-        assert!(!ledger_text.contains("blob-marker"));
-        assert!(!ledger_text.contains("processed:"));
-        assert!(!ledger_text.contains(&payload_base64));
-        assert!(!ledger_text.contains(&expected_result_base64));
-    }
-
-    #[tokio::test]
-    async fn resident_local_blob_absent_fails_closed_before_delivery() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("config.json");
-        let children_dir = dir.path().join("children");
-        let state_path = dir.path().join("state.sqlite");
-        let ledger_path = dir.path().join("observations.jsonl");
-        write_resident_payload_process_child(&children_dir);
-
-        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
-        MctDaemonConfigStore::new(&config_path)
-            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
-            .unwrap();
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
-        let payload = b"missing blob bytes";
-        let payload_digest = blake3_hex(payload);
-        let trace_id = TraceId::new("trace-resident-blob-missing")
-            .expect("string ID literal/generated value must be non-empty");
-        let mut call = resident_test_call(trace_id);
-        call.call_id = CallId::new("call-resident-blob-missing")
-            .expect("string ID literal/generated value must be non-empty");
-        call.payload_metadata.size_bytes = payload.len() as u64;
-        let mut request = resident_test_protocol_request(call);
-        request.payload = mct_daemon::content_addressed_blob_handle(
-            payload_digest,
-            "application/json",
-            payload.len() as u64,
-        );
-
-        let result = execute_resident_call(
-            ResidentExecutionPaths {
-                config_path,
-                children_dir,
-                state_path,
-            },
-            ledger.clone(),
-            request,
-            ResidentRequestPayload::local(None),
-        )
-        .await;
-        assert_eq!(result.outcome, CallProtocolOutcome::Failed);
-        assert_eq!(result.safe_message, "payload blob unavailable");
-        ledger.close().await;
-
-        let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
-        assert!(ledger_text.contains("PayloadBlobUnavailable"));
-        assert!(!ledger_text.contains("missing blob bytes"));
-        assert!(!ledger_text.contains(&BASE64_STANDARD.encode(payload)));
-    }
-
-    #[tokio::test]
-    async fn resident_local_blob_tamper_fails_closed_via_digest_mismatch() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("config.json");
-        let children_dir = dir.path().join("children");
-        let state_path = dir.path().join("state.sqlite");
-        let ledger_path = dir.path().join("observations.jsonl");
-        write_resident_payload_process_child(&children_dir);
-
-        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
-        MctDaemonConfigStore::new(&config_path)
-            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
-            .unwrap();
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
-        let payload = br#"{"secret":"trusted-blob"}"#.to_vec();
-        let payload_digest = blake3_hex(&payload);
-        let store = local_blob_store_for_state_path(&state_path);
-        let handle = store
-            .ingest_reader(
-                &payload_digest,
-                payload.len() as u64,
-                "application/json",
-                std::io::Cursor::new(&payload),
-            )
-            .unwrap();
-        let tampered = vec![b'x'; payload.len()];
-        std::fs::write(store.visible_path(&payload_digest).unwrap(), &tampered).unwrap();
-        let trace_id = TraceId::new("trace-resident-blob-tamper")
-            .expect("string ID literal/generated value must be non-empty");
-        let mut call = resident_test_call(trace_id);
-        call.call_id = CallId::new("call-resident-blob-tamper")
-            .expect("string ID literal/generated value must be non-empty");
-        call.payload_metadata.size_bytes = payload.len() as u64;
-        let mut request = resident_test_protocol_request(call);
-        request.payload = handle;
-
-        let result = execute_resident_call(
-            ResidentExecutionPaths {
-                config_path,
-                children_dir,
-                state_path,
-            },
-            ledger.clone(),
-            request,
-            ResidentRequestPayload::local(None),
-        )
-        .await;
-        assert_eq!(result.outcome, CallProtocolOutcome::Failed);
-        assert_eq!(result.safe_message, "malformed call payload");
-        ledger.close().await;
-
-        let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
-        assert!(ledger_text.contains("PayloadDigestMismatch"));
-        assert!(!ledger_text.contains("trusted-blob"));
-        assert!(!ledger_text.contains(&BASE64_STANDARD.encode(&payload)));
-        assert!(!ledger_text.contains(&BASE64_STANDARD.encode(&tampered)));
     }
 
     #[tokio::test]
@@ -5205,7 +4784,7 @@ pub(super) mod tests {
             },
             ledger.clone(),
             request,
-            ResidentRequestPayload::remote(Some(payload)),
+            ResidentPayloadIngress::remote(Some(payload)),
         )
         .await;
         assert_eq!(result.outcome, CallProtocolOutcome::Failed);
@@ -5241,7 +4820,7 @@ pub(super) mod tests {
             },
             ledger.clone(),
             request,
-            ResidentRequestPayload::remote(None),
+            ResidentPayloadIngress::remote(None),
         )
         .await;
         assert_eq!(result.outcome, CallProtocolOutcome::Completed);
@@ -5304,7 +4883,7 @@ pub(super) mod tests {
             },
             ledger.clone(),
             request,
-            ResidentRequestPayload::remote(None),
+            ResidentPayloadIngress::remote(None),
         )
         .await;
         assert_eq!(result.outcome, CallProtocolOutcome::Completed);
@@ -5346,7 +4925,7 @@ pub(super) mod tests {
             },
             ledger.clone(),
             request,
-            ResidentRequestPayload::remote(None),
+            ResidentPayloadIngress::remote(None),
         )
         .await;
         assert_eq!(result.outcome, CallProtocolOutcome::Denied);
