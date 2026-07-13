@@ -10,6 +10,7 @@ Baseline: branch `patina`, `bcb4778` (`docs: close multi-mother forwarding phase
 
 - **2026-07-12 — mandatory peer-binding expiry:** Track 3's `mct_kernel::peer::tests::binding_without_expiry_fails_closed` caught that Rust/config/CLI representations still permitted an unbounded binding despite `MctIrohPeerBindingAuthority.EveryPeerBindingIsTimeBounded`. The representation now requires expiry end-to-end, including signed canonical records and outbound presentations.
 - **2026-07-12 — operator-pointed egress observation:** `mct_daemon_bin::ingress::tests::operator_pointed_egress_is_durable_before_send` caught that manual `iroh call` and `call-peer` submitted without a local individual-decision fact. Both paths now append a node-operator-safe `OperatorActionRecorded` observation before `mct/call/0` egress.
+- **2026-07-12 — JVM local-CAS ingress permission:** the resident-decomposition gate's condition-4 constructor audit caught a latent origin/payload-permission mismatch: production JVM ingress used the peer/remote payload path and would fail closed for a local `ContentAddressedBlob`. Fixed in `2a43b0f` (`fix(daemon): allow local CAS for jvm ingress`) with an observable local-CAS execution regression.
 
 ## Scope and method
 

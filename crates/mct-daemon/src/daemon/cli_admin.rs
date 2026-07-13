@@ -1014,3 +1014,120 @@ pub(super) fn run_peers_remove(mut args: Vec<String>) -> Result<()> {
     );
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    pub(crate) fn write_resident_process_child(children_dir: &Path) {
+        write_resident_process_child_script(
+            children_dir,
+            "resident-echo",
+            b"#!/bin/sh\ncat >/dev/null\nprintf '{\\\"ok\\\":true}'\n",
+        );
+    }
+    fn write_resident_process_child_script(children_dir: &Path, name: &str, script: &[u8]) {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+
+        let child_dir = children_dir.join(name);
+        std::fs::create_dir_all(&child_dir).unwrap();
+        let artifact_path = child_dir.join(format!("{name}.wasm"));
+        let manifest_path = child_dir.join("child.toml");
+        std::fs::write(&artifact_path, script).unwrap();
+        #[cfg(unix)]
+        {
+            let mut permissions = std::fs::metadata(&artifact_path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&artifact_path, permissions).unwrap();
+        }
+        write_resident_child_manifest(&manifest_path, name, "handle");
+        write_sha256_sidecar(&artifact_path, script);
+        let manifest_bytes = std::fs::read(&manifest_path).unwrap();
+        write_sha256_sidecar(&manifest_path, &manifest_bytes);
+    }
+    fn write_resident_child_manifest(manifest_path: &Path, name: &str, mode: &str) {
+        std::fs::write(
+            manifest_path,
+            format!(
+                r#"[child]
+name = "{name}"
+version = "0.1.0"
+description = "resident test child"
+kind = "child"
+role = "app"
+
+[child.ingress]
+mode = "{mode}"
+
+[child.artifact]
+wasm = "{name}.wasm"
+
+[child.contract]
+allow = ["patina:demo/control@0.1.0.run"]
+
+[needs]
+toys = []
+
+[relationships]
+listens = []
+"#
+            ),
+        )
+        .unwrap();
+    }
+    fn write_sha256_sidecar(path: &Path, bytes: &[u8]) {
+        use sha2::{Digest, Sha256};
+
+        let mut sidecar = path.as_os_str().to_os_string();
+        sidecar.push(".sha256");
+        std::fs::write(
+            PathBuf::from(sidecar),
+            format!("{:x}", Sha256::digest(bytes)),
+        )
+        .unwrap();
+    }
+    #[test]
+    fn authorize_secret_cli_persists_scoped_grant_without_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let state_path = dir.path().join("state.sqlite");
+        let children_dir = dir.path().join("children");
+        write_resident_process_child(&children_dir);
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        let child = loaded
+            .children
+            .iter()
+            .find(|child| child.name == "resident-echo")
+            .unwrap();
+        MctDaemonConfigStore::new(&config_path)
+            .approve_and_assign_loaded_child(child, MctOperatorChildScope::default())
+            .unwrap();
+
+        run_toys_authorize_secret(vec![
+            "resident-echo".into(),
+            "api-token".into(),
+            "--children-dir".into(),
+            children_dir.display().to_string(),
+            "--config".into(),
+            config_path.display().to_string(),
+            "--state".into(),
+            state_path.display().to_string(),
+            "--ledger".into(),
+            dir.path().join("observations.jsonl").display().to_string(),
+            "--uds".into(),
+            dir.path().join("missing.sock").display().to_string(),
+        ])
+        .unwrap();
+
+        let state = MctRuntimeStateStore::open(&state_path).unwrap();
+        let contracts = state.toy_contracts().unwrap();
+        let grants = state.toy_grant_snapshots().unwrap();
+        assert_eq!(contracts, vec![mct_secrets_toy_contract()]);
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].toy_id.as_str(), MCT_SECRETS_TOY_ID);
+        assert_eq!(grants[0].scope.resource_id.as_deref(), Some("api-token"));
+        let grant_json = serde_json::to_string(&grants).unwrap();
+        assert!(!grant_json.contains("super-secret"));
+    }
+}

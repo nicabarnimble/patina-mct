@@ -100,15 +100,11 @@ pub(super) async fn run_jvm_call_json(mut args: Vec<String>) -> Result<()> {
     let args_json = args.remove(0);
     let (request, payload) = jvm_bridge_protocol_request(&operation_id, &args_json)?;
     let ledger = ResidentLedgerWriter::spawn(ledger_path.clone())?;
-    let result = execute_resident_call(
-        ResidentExecutionPaths {
-            config_path,
-            children_dir,
-            state_path,
-        },
+    let result = execute_jvm_resident_call(
+        ResidentRuntimePaths::new(config_path, children_dir, state_path),
         ledger.clone(),
         request,
-        ResidentRequestPayload::remote(Some(payload)),
+        Some(payload),
     )
     .await;
     ledger.close().await;
@@ -125,6 +121,21 @@ pub(super) async fn run_jvm_call_json(mut args: Vec<String>) -> Result<()> {
         }))?
     );
     Ok(())
+}
+
+async fn execute_jvm_resident_call(
+    paths: ResidentRuntimePaths,
+    ledger: ResidentLedgerWriter,
+    request: MctCallProtocolRequest,
+    inline_payload: Option<Vec<u8>>,
+) -> MctIrohCallHandlerResult {
+    execute_resident_call(
+        paths,
+        ledger,
+        request,
+        ResidentPayloadIngress::local(inline_payload),
+    )
+    .await
 }
 
 pub(super) fn jvm_bridge_protocol_request(
@@ -1100,6 +1111,122 @@ pub(super) fn read_ticket(path: &Path) -> Result<MotherIrohEndpointTicket> {
 mod tests {
     use super::*;
 
+    fn write_resident_process_child(children_dir: &Path) {
+        write_resident_process_child_script(
+            children_dir,
+            "resident-echo",
+            b"#!/bin/sh\ncat >/dev/null\nprintf '{\\\"ok\\\":true}'\n",
+        );
+    }
+    fn write_resident_process_child_script(children_dir: &Path, name: &str, script: &[u8]) {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+
+        let child_dir = children_dir.join(name);
+        std::fs::create_dir_all(&child_dir).unwrap();
+        let artifact_path = child_dir.join(format!("{name}.wasm"));
+        let manifest_path = child_dir.join("child.toml");
+        std::fs::write(&artifact_path, script).unwrap();
+        #[cfg(unix)]
+        {
+            let mut permissions = std::fs::metadata(&artifact_path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&artifact_path, permissions).unwrap();
+        }
+        write_resident_child_manifest(&manifest_path, name, "handle");
+        write_sha256_sidecar(&artifact_path, script);
+        let manifest_bytes = std::fs::read(&manifest_path).unwrap();
+        write_sha256_sidecar(&manifest_path, &manifest_bytes);
+    }
+    fn write_resident_child_manifest(manifest_path: &Path, name: &str, mode: &str) {
+        std::fs::write(
+            manifest_path,
+            format!(
+                r#"[child]
+name = "{name}"
+version = "0.1.0"
+description = "resident test child"
+kind = "child"
+role = "app"
+
+[child.ingress]
+mode = "{mode}"
+
+[child.artifact]
+wasm = "{name}.wasm"
+
+[child.contract]
+allow = ["patina:demo/control@0.1.0.run"]
+
+[needs]
+toys = []
+
+[relationships]
+listens = []
+"#
+            ),
+        )
+        .unwrap();
+    }
+    fn write_sha256_sidecar(path: &Path, bytes: &[u8]) {
+        use sha2::{Digest, Sha256};
+
+        let mut sidecar = path.as_os_str().to_os_string();
+        sidecar.push(".sha256");
+        std::fs::write(
+            PathBuf::from(sidecar),
+            format!("{:x}", Sha256::digest(bytes)),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn jvm_ingress_dereferences_local_content_addressed_blob() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        write_resident_process_child(&children_dir);
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        MctDaemonConfigStore::new(&config_path)
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+
+        let payload = br#"{"from":"jvm-cas"}"#.to_vec();
+        let digest = blake3::hash(&payload).to_hex().to_string();
+        let handle = local_blob_store_for_state_path(&state_path)
+            .ingest_reader(
+                &digest,
+                payload.len() as u64,
+                "application/json",
+                std::io::Cursor::new(&payload),
+            )
+            .unwrap();
+        let (mut request, _) =
+            jvm_bridge_protocol_request("patina:demo/control@0.1.0.run", "[]").unwrap();
+        request.call.payload_metadata.size_bytes = payload.len() as u64;
+        request.payload = handle;
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+
+        let result = execute_jvm_resident_call(
+            ResidentRuntimePaths::new(config_path, children_dir, state_path),
+            ledger.clone(),
+            request,
+            None,
+        )
+        .await;
+        ledger.close().await;
+
+        assert_eq!(result.outcome, CallProtocolOutcome::Completed);
+        assert!(result.route_taken.is_some());
+        let ledger_text = std::fs::read_to_string(ledger_path).unwrap();
+        assert!(ledger_text.contains(&format!(
+            "payload:request:size={}:digest={digest}",
+            payload.len()
+        )));
+    }
+
     #[tokio::test]
     async fn offline_identity_cli_observes_before_creating_key_and_config() {
         let dir = tempfile::tempdir().unwrap();
@@ -1246,7 +1373,7 @@ mod tests {
         let children_dir = dir.path().join("children");
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
-        crate::resident::tests::write_resident_process_child(&children_dir);
+        write_resident_process_child(&children_dir);
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
         MctDaemonConfigStore::new(&config_path)
             .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
