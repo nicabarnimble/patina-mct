@@ -101,11 +101,7 @@ pub(super) async fn run_jvm_call_json(mut args: Vec<String>) -> Result<()> {
     let (request, payload) = jvm_bridge_protocol_request(&operation_id, &args_json)?;
     let ledger = ResidentLedgerWriter::spawn(ledger_path.clone())?;
     let result = execute_jvm_resident_call(
-        ResidentExecutionPaths {
-            config_path,
-            children_dir,
-            state_path,
-        },
+        ResidentRuntimePaths::new(config_path, children_dir, state_path),
         ledger.clone(),
         request,
         Some(payload),
@@ -128,7 +124,7 @@ pub(super) async fn run_jvm_call_json(mut args: Vec<String>) -> Result<()> {
 }
 
 async fn execute_jvm_resident_call(
-    paths: ResidentExecutionPaths,
+    paths: ResidentRuntimePaths,
     ledger: ResidentLedgerWriter,
     request: MctCallProtocolRequest,
     inline_payload: Option<Vec<u8>>,
@@ -1145,11 +1141,7 @@ mod tests {
         let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
 
         let result = execute_jvm_resident_call(
-            ResidentExecutionPaths {
-                config_path,
-                children_dir,
-                state_path,
-            },
+            ResidentRuntimePaths::new(config_path, children_dir, state_path),
             ledger.clone(),
             request,
             None,

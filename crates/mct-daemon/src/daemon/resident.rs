@@ -32,6 +32,10 @@ use execution::*;
 mod forwarding;
 use forwarding::*;
 
+#[path = "resident/pipeline.rs"]
+mod pipeline;
+pub(super) use pipeline::*;
+
 pub(super) async fn run_serve(mut args: Vec<String>) -> Result<()> {
     let relay_default = take_flag(&mut args, "--relay-default");
     let config_path = take_option(&mut args, "--config")
@@ -249,11 +253,11 @@ where
     }
 
     let config_path = config.config_path.clone();
-    let execution_paths = ResidentExecutionPaths {
-        config_path: config.config_path.clone(),
-        children_dir: config.children_dir.clone(),
-        state_path: config.state_path.clone(),
-    };
+    let execution_paths = ResidentRuntimePaths::new(
+        config.config_path.clone(),
+        config.children_dir.clone(),
+        config.state_path.clone(),
+    );
     let execution_ledger = ledger.clone();
     let observation_sink = resident_iroh_observation_sink(ledger.clone());
     let serve_result = tokio::select! {
@@ -461,133 +465,6 @@ pub(super) fn resident_observations_for_served_protocol(
 ) -> Vec<MctObservation> {
     // Hello and call lifecycle facts are written by the awaited mandatory sink.
     Vec::new()
-}
-
-#[derive(Clone, Debug)]
-pub(super) struct ResidentExecutionPaths {
-    pub(super) config_path: PathBuf,
-    pub(super) children_dir: PathBuf,
-    pub(super) state_path: PathBuf,
-}
-
-pub(super) async fn execute_resident_call(
-    paths: ResidentExecutionPaths,
-    ledger: ResidentLedgerWriter,
-    request: MctCallProtocolRequest,
-    payload: ResidentPayloadIngress,
-) -> MctIrohCallHandlerResult {
-    execute_resident_call_at(paths, ledger, request, payload, current_timestamp()).await
-}
-
-pub(super) async fn execute_resident_call_at(
-    paths: ResidentExecutionPaths,
-    ledger: ResidentLedgerWriter,
-    request: MctCallProtocolRequest,
-    payload: ResidentPayloadIngress,
-    now: Timestamp,
-) -> MctIrohCallHandlerResult {
-    let inline_payload = match resolve_resident_request_payload(&paths, &request, payload).await {
-        Ok(payload) => payload.into_inner(),
-        Err(report) => {
-            let (safe_message, observations) = report.into_parts();
-            if let Err(error) = ledger.append(observations).await {
-                eprintln!("resident payload failure ledger write failed: {error}");
-                return MctIrohCallHandlerResult::failed("observation ledger unavailable");
-            }
-            return MctIrohCallHandlerResult::failed(safe_message);
-        }
-    };
-
-    let state_path = paths.state_path.clone();
-    let idempotency_request = request.clone();
-    let idempotency_ledger = ledger.clone();
-    execute_idempotent_call(
-        state_path,
-        idempotency_ledger,
-        idempotency_request,
-        now,
-        move || execute_resident_call_after_payload(paths, ledger, request, inline_payload),
-    )
-    .await
-}
-
-async fn execute_resident_call_after_payload(
-    paths: ResidentExecutionPaths,
-    ledger: ResidentLedgerWriter,
-    request: MctCallProtocolRequest,
-    inline_payload: Option<Vec<u8>>,
-) -> MctIrohCallHandlerResult {
-    let authorization = match authorize_resident_child(paths.clone(), request.call.clone()).await {
-        Ok(authorization) => authorization,
-        Err(error) => {
-            eprintln!("resident child authorization unavailable: {error}");
-            return MctIrohCallHandlerResult::failed("runtime unavailable");
-        }
-    };
-
-    match authorization {
-        RouteDisposition::Denied {
-            decision,
-            observations,
-        } => {
-            if let Err(error) = ledger.append(observations).await {
-                eprintln!("resident route denial ledger write failed: {error}");
-                return MctIrohCallHandlerResult::failed("observation ledger unavailable");
-            }
-            MctIrohCallHandlerResult::denied().with_route(Some(decision.decision_id), None)
-        }
-        RouteDisposition::Local { plan, observations } => {
-            if let Err(error) = ledger.append(observations).await {
-                eprintln!("resident route ledger write failed: {error}");
-                return MctIrohCallHandlerResult::failed("observation ledger unavailable");
-            }
-
-            let current_revisions = match current_resident_route_revisions(&paths, &request.call) {
-                Ok(revisions) => revisions,
-                Err(error) => {
-                    eprintln!("resident route revision read failed: {error}");
-                    return MctIrohCallHandlerResult::failed("runtime unavailable");
-                }
-            };
-            let execution = match tokio::task::spawn_blocking(move || {
-                execute_authorized_resident_child(
-                    paths,
-                    *plan,
-                    request,
-                    inline_payload,
-                    current_revisions,
-                )
-            })
-            .await
-            {
-                Ok(Ok(report)) => report,
-                Ok(Err(error)) => {
-                    eprintln!("resident child execution failed: {error}");
-                    return MctIrohCallHandlerResult::failed("runtime execution failed");
-                }
-                Err(error) => {
-                    eprintln!("resident child execution task failed: {error}");
-                    return MctIrohCallHandlerResult::failed("runtime execution failed");
-                }
-            };
-
-            let (result, observations, inline_result_payload) = execution.into_parts();
-            if let Err(error) = ledger.append(observations).await {
-                eprintln!("resident execution ledger write failed: {error}");
-                return MctIrohCallHandlerResult::failed("observation ledger unavailable");
-            }
-
-            result_to_call_handler_result("result-resident", &result, inline_result_payload)
-        }
-        RouteDisposition::Remote { plan, observations } => {
-            if let Err(error) = ledger.append(observations).await {
-                eprintln!("resident remote route ledger write failed: {error}");
-                return MctIrohCallHandlerResult::failed("observation ledger unavailable");
-            }
-            execute_authorized_resident_remote_call(paths, *plan, request, inline_payload, ledger)
-                .await
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1464,56 +1341,6 @@ pub(super) mod tests {
         assert!(!ledger_text.contains(&payload_base64));
         assert!(!ledger_text.contains(&expected_result_base64));
         assert!(!ledger_text.contains(&signature_marker));
-    }
-
-    #[tokio::test]
-    async fn jvm_bridge_json_call_enters_resident_route_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("config.json");
-        let children_dir = dir.path().join("children");
-        let state_path = dir.path().join("state.sqlite");
-        let ledger_path = dir.path().join("observations.jsonl");
-        write_resident_payload_process_child(&children_dir);
-
-        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
-        assert_eq!(loaded.loaded, 1, "{loaded:?}");
-        MctDaemonConfigStore::new(&config_path)
-            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
-            .unwrap();
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
-        let (mut request, payload) =
-            jvm_bridge_protocol_request("patina:demo/control@0.1.0.run", r#"[{"from":"jvm"}]"#)
-                .unwrap();
-        request.call.call_id = CallId::new("call-jvm-bridge-test")
-            .expect("string ID literal/generated value must be non-empty");
-        assert_eq!(request.call.origin, CallOrigin::JvmAdapter);
-
-        let result = execute_resident_call(
-            ResidentExecutionPaths {
-                config_path,
-                children_dir,
-                state_path,
-            },
-            ledger.clone(),
-            request,
-            ResidentPayloadIngress::local(Some(payload)),
-        )
-        .await;
-        assert_eq!(result.outcome, CallProtocolOutcome::Completed);
-        let result_payload = result
-            .inline_result_payload
-            .expect("result payload returned");
-        assert_eq!(
-            String::from_utf8(result_payload).unwrap(),
-            r#"processed:[{"from":"jvm"}]"#
-        );
-        ledger.close().await;
-
-        let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
-        assert!(ledger_text.contains("call-jvm-bridge-test"));
-        assert!(
-            ledger_text.contains("RouteRevalidated") || ledger_text.contains("route_revalidated")
-        );
     }
 
     async fn post_resident_peer_mutation(

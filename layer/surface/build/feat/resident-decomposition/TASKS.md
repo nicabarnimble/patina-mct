@@ -146,7 +146,7 @@ pushes, PRs, or merges.
 - [x] R2.6: extract resident decision.
 - [x] R2.7: extract resident execution.
 - [x] R2.8: extract resident forwarding.
-- [ ] R2.9: extract resident pipeline.
+- [x] R2.9: extract resident pipeline.
 - [ ] R2.10: extract resident serving.
 - [ ] R2.11: close with line counts, test counts, implemented record table, itch list, and ROADMAP disposition.
 
@@ -1058,4 +1058,153 @@ error: unused imports: `endpoint_id_for_secret_key_hex` and `sign_peer_binding_s
     = help: to override `-D warnings` add `#[allow(unused_imports)]`
 
 error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 1 previous error
+```
+
+### R2.9 pipeline extraction compile failure
+
+```text
+$ cargo check --workspace
+    Checking mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0425]: cannot find function `execute_resident_call` in this scope
+   --> crates/mct-daemon/src/daemon/ingress.rs:136:5
+    |
+136 |     execute_resident_call(
+    |     ^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+    |
+note: function `crate::resident::execute_resident_call` exists but is inaccessible
+   --> crates/mct-daemon/src/daemon/resident/pipeline.rs:35:1
+    |
+ 35 | / pub(super) async fn execute_resident_call(
+ 36 | |     paths: ResidentRuntimePaths,
+ 37 | |     ledger: ResidentLedgerWriter,
+ 38 | |     request: MctCallProtocolRequest,
+...   |
+ 41 | |     execute_resident_call_at(paths, ledger, request, payload, current_timestamp()).await
+ 42 | | }
+    | |_^ not accessible
+
+error[E0616]: field `state_path` of struct `pipeline::ResidentRuntimePaths` is private
+   --> crates/mct-daemon/src/daemon/resident/payload.rs:185:28
+    |
+185 |     let state_path = paths.state_path.clone();
+    |                            ^^^^^^^^^^ private field
+    |
+help: a method `state_path` also exists, call it with parentheses
+    |
+185 |     let state_path = paths.state_path().clone();
+    |                                      ++
+
+error[E0616]: field `state_path` of struct `pipeline::ResidentRuntimePaths` is private
+   --> crates/mct-daemon/src/daemon/resident/forwarding.rs:196:16
+    |
+196 |         &paths.state_path,
+    |                ^^^^^^^^^^ private field
+    |
+help: a method `state_path` also exists, call it with parentheses
+    |
+196 |         &paths.state_path(),
+    |                          ++
+
+error[E0616]: field `config_path` of struct `pipeline::ResidentRuntimePaths` is private
+  --> crates/mct-daemon/src/daemon/resident/decision.rs:95:51
+   |
+95 |     let config = MctDaemonConfigStore::new(&paths.config_path).load()?;
+   |                                                   ^^^^^^^^^^^ private field
+   |
+help: a method `config_path` also exists, call it with parentheses
+   |
+95 |     let config = MctDaemonConfigStore::new(&paths.config_path()).load()?;
+   |                                                              ++
+
+error[E0616]: field `state_path` of struct `pipeline::ResidentRuntimePaths` is private
+  --> crates/mct-daemon/src/daemon/resident/decision.rs:96:51
+   |
+96 |     let state = MctRuntimeStateStore::open(&paths.state_path)?;
+   |                                                   ^^^^^^^^^^ private field
+   |
+help: a method `state_path` also exists, call it with parentheses
+   |
+96 |     let state = MctRuntimeStateStore::open(&paths.state_path())?;
+   |                                                             ++
+
+error[E0616]: field `children_dir` of struct `pipeline::ResidentRuntimePaths` is private
+  --> crates/mct-daemon/src/daemon/resident/decision.rs:97:77
+   |
+97 |     let load_report = load_children_from_dir(MctChildLoadOptions::new(paths.children_dir.clone()));
+   |                                                                             ^^^^^^^^^^^^ private field
+   |
+help: a method `children_dir` also exists, call it with parentheses
+   |
+97 |     let load_report = load_children_from_dir(MctChildLoadOptions::new(paths.children_dir().clone()));
+   |                                                                                         ++
+
+error[E0616]: field `config_path` of struct `pipeline::ResidentRuntimePaths` is private
+  --> crates/mct-daemon/src/daemon/resident/execution.rs:80:51
+   |
+80 |     let config = MctDaemonConfigStore::new(&paths.config_path).load()?;
+   |                                                   ^^^^^^^^^^^ private field
+   |
+help: a method `config_path` also exists, call it with parentheses
+   |
+80 |     let config = MctDaemonConfigStore::new(&paths.config_path()).load()?;
+   |                                                              ++
+
+error[E0616]: field `state_path` of struct `pipeline::ResidentRuntimePaths` is private
+  --> crates/mct-daemon/src/daemon/resident/execution.rs:97:51
+   |
+97 |     let state = MctRuntimeStateStore::open(&paths.state_path)?;
+   |                                                   ^^^^^^^^^^ private field
+   |
+help: a method `state_path` also exists, call it with parentheses
+   |
+97 |     let state = MctRuntimeStateStore::open(&paths.state_path())?;
+   |                                                             ++
+
+error[E0616]: field `config_path` of struct `pipeline::ResidentRuntimePaths` is private
+   --> crates/mct-daemon/src/daemon/resident/forwarding.rs:280:51
+    |
+280 |     let config = MctDaemonConfigStore::new(&paths.config_path).load()?;
+    |                                                   ^^^^^^^^^^^ private field
+    |
+help: a method `config_path` also exists, call it with parentheses
+    |
+280 |     let config = MctDaemonConfigStore::new(&paths.config_path()).load()?;
+    |                                                              ++
+
+error[E0616]: field `state_path` of struct `pipeline::ResidentRuntimePaths` is private
+   --> crates/mct-daemon/src/daemon/resident/forwarding.rs:305:51
+    |
+305 |     let state = MctRuntimeStateStore::open(&paths.state_path)?;
+    |                                                   ^^^^^^^^^^ private field
+    |
+help: a method `state_path` also exists, call it with parentheses
+    |
+305 |     let state = MctRuntimeStateStore::open(&paths.state_path())?;
+    |                                                             ++
+
+error[E0616]: field `state_path` of struct `pipeline::ResidentRuntimePaths` is private
+   --> crates/mct-daemon/src/daemon/resident/forwarding.rs:362:65
+    |
+362 |         local_hello_capability_view_from_config(&config, &paths.state_path, &paths.children_dir)?;
+    |                                                                 ^^^^^^^^^^ private field
+    |
+help: a method `state_path` also exists, call it with parentheses
+    |
+362 |         local_hello_capability_view_from_config(&config, &paths.state_path(), &paths.children_dir)?;
+    |                                                                           ++
+
+error[E0616]: field `children_dir` of struct `pipeline::ResidentRuntimePaths` is private
+   --> crates/mct-daemon/src/daemon/resident/forwarding.rs:362:84
+    |
+362 |         local_hello_capability_view_from_config(&config, &paths.state_path, &paths.children_dir)?;
+    |                                                                                    ^^^^^^^^^^^^ private field
+    |
+help: a method `children_dir` also exists, call it with parentheses
+    |
+362 |         local_hello_capability_view_from_config(&config, &paths.state_path, &paths.children_dir())?;
+    |                                                                                                ++
+
+Some errors have detailed explanations: E0425, E0616.
+For more information about an error, try `rustc --explain E0425`.
+error: could not compile `mct-daemon` (bin "mct-daemon") due to 12 previous errors
 ```

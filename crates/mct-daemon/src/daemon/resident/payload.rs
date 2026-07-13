@@ -168,7 +168,7 @@ impl PayloadFailure {
 }
 
 pub(super) async fn resolve_resident_request_payload(
-    paths: &ResidentExecutionPaths,
+    paths: &ResidentRuntimePaths,
     request: &MctCallProtocolRequest,
     payload: ResidentPayloadIngress,
 ) -> std::result::Result<VerifiedRequestPayload, PayloadFailure> {
@@ -182,7 +182,7 @@ pub(super) async fn resolve_resident_request_payload(
         return Ok(VerifiedRequestPayload(inline_payload));
     }
 
-    let state_path = paths.state_path.clone();
+    let state_path = paths.state_path().to_path_buf();
     let handle = request.payload.clone();
     let fetched = tokio::task::spawn_blocking(move || {
         local_blob_store_for_state_path(state_path).fetch(&handle)
@@ -425,11 +425,7 @@ listens = []
         request.payload = handle;
 
         let result = execute_resident_call(
-            ResidentExecutionPaths {
-                config_path,
-                children_dir,
-                state_path,
-            },
+            ResidentRuntimePaths::new(config_path, children_dir, state_path),
             ledger.clone(),
             request,
             ResidentPayloadIngress::local(None),
@@ -490,11 +486,7 @@ listens = []
         );
 
         let result = execute_resident_call(
-            ResidentExecutionPaths {
-                config_path,
-                children_dir,
-                state_path,
-            },
+            ResidentRuntimePaths::new(config_path, children_dir, state_path),
             ledger.clone(),
             request,
             ResidentPayloadIngress::local(None),
@@ -547,11 +539,7 @@ listens = []
         request.payload = handle;
 
         let result = execute_resident_call(
-            ResidentExecutionPaths {
-                config_path,
-                children_dir,
-                state_path,
-            },
+            ResidentRuntimePaths::new(config_path, children_dir, state_path),
             ledger.clone(),
             request,
             ResidentPayloadIngress::local(None),

@@ -74,10 +74,10 @@ pub(super) fn resident_executed_on_observation(
 }
 
 pub(super) fn current_resident_route_revisions(
-    paths: &ResidentExecutionPaths,
+    paths: &ResidentRuntimePaths,
     call: &MctCall,
 ) -> Result<AuthorityContextSnapshot> {
-    let config = MctDaemonConfigStore::new(&paths.config_path).load()?;
+    let config = MctDaemonConfigStore::new(paths.config_path()).load()?;
     let scope = resident_child_scope(&config);
     Ok(AuthorityContextSnapshot {
         policy_revision: scope.policy_revision,
@@ -87,14 +87,14 @@ pub(super) fn current_resident_route_revisions(
 }
 
 pub(super) fn execute_authorized_resident_child(
-    paths: ResidentExecutionPaths,
+    paths: ResidentRuntimePaths,
     execution: LocalExecutionPlan,
     request: MctCallProtocolRequest,
     inline_payload: Option<Vec<u8>>,
     current_revisions: AuthorityContextSnapshot,
 ) -> Result<LocalExecutionReport> {
     let call = request.call.clone();
-    let state = MctRuntimeStateStore::open(&paths.state_path)?;
+    let state = MctRuntimeStateStore::open(paths.state_path())?;
     let (child, authorized_route, child_authority_observation_id) = execution.into_parts();
     let route_taken = RouteTaken {
         node_id: authorized_route.route().node_id.clone(),
@@ -659,11 +659,7 @@ listens = []
         };
 
         let result = execute_resident_call(
-            ResidentExecutionPaths {
-                config_path,
-                children_dir,
-                state_path,
-            },
+            ResidentRuntimePaths::new(config_path, children_dir, state_path),
             ledger.clone(),
             request,
             ResidentPayloadIngress::remote(Some(payload)),
@@ -721,11 +717,7 @@ listens = []
         };
 
         let result = execute_resident_call(
-            ResidentExecutionPaths {
-                config_path,
-                children_dir,
-                state_path,
-            },
+            ResidentRuntimePaths::new(config_path, children_dir, state_path),
             ledger.clone(),
             request,
             ResidentPayloadIngress::remote(Some(payload)),
@@ -757,11 +749,7 @@ listens = []
         let request = resident_test_protocol_request(call);
 
         let result = execute_resident_call(
-            ResidentExecutionPaths {
-                config_path,
-                children_dir,
-                state_path,
-            },
+            ResidentRuntimePaths::new(config_path, children_dir, state_path),
             ledger.clone(),
             request,
             ResidentPayloadIngress::remote(None),
@@ -834,11 +822,7 @@ listens = []
         };
 
         let report = execute_authorized_resident_child(
-            ResidentExecutionPaths {
-                config_path,
-                children_dir,
-                state_path,
-            },
+            ResidentRuntimePaths::new(config_path, children_dir, state_path),
             *authorized,
             request,
             None,

@@ -483,11 +483,8 @@ listens = []
             .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
             .unwrap();
         let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
-        let paths = ResidentExecutionPaths {
-            config_path,
-            children_dir: children_dir.clone(),
-            state_path: state_path.clone(),
-        };
+        let paths =
+            ResidentRuntimePaths::new(config_path, children_dir.clone(), state_path.clone());
         let payload = br#"{"request-secret-marker":true}"#.to_vec();
         let mut call = resident_test_call(TraceId::new("trace-idempotency").unwrap());
         call.call_id = CallId::new("call-idempotency").unwrap();

@@ -100,7 +100,7 @@ enum RemoteRevalidation {
 }
 
 pub(super) async fn execute_authorized_resident_remote_call(
-    paths: ResidentExecutionPaths,
+    paths: ResidentRuntimePaths,
     execution: RemoteExecutionPlan,
     request: MctCallProtocolRequest,
     inline_payload: Option<Vec<u8>>,
@@ -193,7 +193,7 @@ pub(super) async fn execute_authorized_resident_remote_call(
         }
     };
     if let Err(error) = refresh_remote_surfaces_from_admitted_hello_response(
-        &paths.state_path,
+        paths.state_path(),
         &authorized.peer,
         &hello_response,
         current_timestamp(),
@@ -273,11 +273,11 @@ pub(super) async fn execute_authorized_resident_remote_call(
 }
 
 fn revalidate_resident_remote_route(
-    paths: &ResidentExecutionPaths,
+    paths: &ResidentRuntimePaths,
     execution: &RemoteExecutionPlan,
     call: &MctCall,
 ) -> Result<RemoteRevalidation> {
-    let config = MctDaemonConfigStore::new(&paths.config_path).load()?;
+    let config = MctDaemonConfigStore::new(paths.config_path()).load()?;
     let Some(local_identity) = config.local_identity.clone() else {
         return Ok(RemoteRevalidation::Denied(Box::new(
             remote_revalidation_denied_decision(
@@ -302,7 +302,7 @@ fn revalidate_resident_remote_route(
             ),
         )));
     };
-    let state = MctRuntimeStateStore::open(&paths.state_path)?;
+    let state = MctRuntimeStateStore::open(paths.state_path())?;
     let now = current_timestamp();
     let operation_id = mct_daemon::operation_id_from_target(&call.target);
     let surfaces = state.fresh_remote_callable_surfaces_for_operation(
@@ -359,7 +359,7 @@ fn revalidate_resident_remote_route(
         runtime_kind: candidate.runtime_kind,
     };
     let capability_view =
-        local_hello_capability_view_from_config(&config, &paths.state_path, &paths.children_dir)?;
+        local_hello_capability_view_from_config(&config, paths.state_path(), paths.children_dir())?;
     Ok(RemoteRevalidation::Authorized(Box::new(
         RevalidatedRemoteRoute {
             decision,
@@ -1106,11 +1106,11 @@ listens = []
         };
         let mother_a_ledger = ResidentLedgerWriter::spawn(mother_a_ledger_path.clone()).unwrap();
         let call_reply = execute_resident_call(
-            ResidentExecutionPaths {
-                config_path: mother_a_config_path,
-                children_dir: mother_a_children_dir,
-                state_path: mother_a_state_path,
-            },
+            ResidentRuntimePaths::new(
+                mother_a_config_path,
+                mother_a_children_dir,
+                mother_a_state_path,
+            ),
             mother_a_ledger.clone(),
             call,
             ResidentPayloadIngress::remote(Some(payload)),
@@ -1248,11 +1248,11 @@ listens = []
         let ledger = ResidentLedgerWriter::spawn(ledger_path).unwrap();
         ledger.append(observations).await.unwrap();
         let result = execute_authorized_resident_remote_call(
-            ResidentExecutionPaths {
-                config_path: fixture.config_path.clone(),
-                children_dir: fixture._dir.path().join("children"),
-                state_path: fixture.state_path.clone(),
-            },
+            ResidentRuntimePaths::new(
+                fixture.config_path.clone(),
+                fixture._dir.path().join("children"),
+                fixture.state_path.clone(),
+            ),
             *execution,
             resident_test_protocol_request(fixture.call.clone()),
             None,
@@ -1542,11 +1542,7 @@ listens = []
         let result = tokio::time::timeout(
             Duration::from_secs(5),
             execute_authorized_resident_remote_call(
-                ResidentExecutionPaths {
-                    config_path: a_config_path,
-                    children_dir: a_children_dir,
-                    state_path: a_state_path,
-                },
+                ResidentRuntimePaths::new(a_config_path, a_children_dir, a_state_path),
                 *authorized,
                 request,
                 None,
