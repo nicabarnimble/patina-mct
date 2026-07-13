@@ -152,7 +152,7 @@ struct PeerBindingSignaturePayload<'a> {
     vision_id: &'a str,
     allowed_alpns: &'a [String],
     policy_revision: u64,
-    expires_at: Option<&'a str>,
+    expires_at: &'a str,
 }
 
 fn peer_binding_signature_message(
@@ -169,10 +169,7 @@ fn peer_binding_signature_message(
         vision_id: binding.scope.vision_id.as_str(),
         allowed_alpns: &binding.scope.allowed_alpns,
         policy_revision: binding.policy_revision,
-        expires_at: binding
-            .expires_at
-            .as_ref()
-            .map(|timestamp| timestamp.as_str()),
+        expires_at: binding.expires_at.as_str(),
     };
     serde_json::to_vec(&payload).map_err(|source| MotherIrohEndpointError::ProtocolJson {
         action: "encode peer binding signature payload",
@@ -267,7 +264,7 @@ mod tests {
             policy_revision: 7,
             binding_state: BindingState::Admitted,
             issued_at: Timestamp::new("2026-07-09T00:00:00Z").unwrap(),
-            expires_at: None,
+            expires_at: Timestamp::new("2026-07-09T00:05:00Z").unwrap(),
             created_by_observation_id: ObservationId::new("obs-binding-signed")
                 .expect("string ID literal/generated value must be non-empty"),
             superseded_by_observation_id: None,

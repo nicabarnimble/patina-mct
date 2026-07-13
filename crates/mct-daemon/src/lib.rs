@@ -80,7 +80,8 @@ pub use inspector::{
     MctInspectorObservationQuery, MctInspectorObservationView, inspect_observation_entries,
 };
 pub use lifecycle::{
-    MctChildReloadReport, MctChildWarmupReport, reload_configured_child, warmup_configured_child,
+    MctChildReloadError, MctChildReloadReport, MctChildWarmupReport, reload_configured_child,
+    warmup_configured_child,
 };
 pub use metrics::{MctMetricsSnapshot, build_metrics_snapshot};
 pub use process::{
@@ -92,10 +93,11 @@ pub use registry::{
     sync_child_registry_source,
 };
 pub use state::{
-    ChildInvocationProvenance, MctCompositionRunRecord, MctMetricPoint, MctQueuedTaskRecord,
-    MctRegistrySourceRecord, MctRemoteCallableSurfaceRecord, MctRemoteSurfaceRefresh,
-    MctRuntimeRunRecord, MctRuntimeRunState, MctRuntimeStateStore, MctRuntimeStateSummary,
-    MctTaskIntentRecord, MctTaskStatus, default_state_path,
+    ChildInvocationProvenance, MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER, MCT_IDEMPOTENCY_TTL_SECONDS,
+    MctCompositionRunRecord, MctIdempotencyReservation, MctMetricPoint, MctQueuedTaskRecord,
+    MctRecordedCallReply, MctRegistrySourceRecord, MctRemoteCallableSurfaceRecord,
+    MctRemoteSurfaceRefresh, MctRuntimeRunRecord, MctRuntimeRunState, MctRuntimeStateStore,
+    MctRuntimeStateSummary, MctTaskIntentRecord, MctTaskStatus, default_state_path,
 };
 pub use status::{
     MctDaemonHealth, MctDaemonReadiness, MctDaemonStatus, MctResidentStatus, daemon_status,

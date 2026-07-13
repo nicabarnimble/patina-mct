@@ -1206,7 +1206,7 @@ mod tests {
             policy_revision: 7,
             binding_state: state,
             issued_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
-            expires_at: None,
+            expires_at: Timestamp::new("2026-05-31T00:05:00Z").unwrap(),
             created_by_observation_id: ObservationId::new("obs-binding-created")
                 .expect("string ID literal/generated value must be non-empty"),
             superseded_by_observation_id: Some(

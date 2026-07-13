@@ -1,0 +1,278 @@
+-- allium: 3
+-- mct-peer-ontology.allium
+
+-- Status: ratified companion law for `mct-product-map.allium`.
+-- Review: decisions and tend-pass acceptance are recorded in session
+-- `20260712-112719-785420000`; the 2026-07-12 product-map tend pass references this
+-- module's contracts by name and does not duplicate their relationship semantics.
+-- Scope: The explicit relationships sovereign MCT Mothers instantiate with each other.
+-- Includes:
+--   - Directional call admission and outbound authorization
+--   - Capability publication as a local execution offer
+--   - Immediate-caller, capability-publisher, route-candidate, and selected-executor roles
+--   - Terminal `mct/call/0` semantics and per-hop accountability
+--   - Bilateral executable-routing authority
+--   - Named relationship slots for future peer protocols
+-- Excludes:
+--   - Intra-node Mother/Child/Toy authority
+--   - Wire schemas and cryptographic encodings
+--   - Multi-hop or brokered call semantics
+--   - Full thought, observation-replication, and federation-control semantics
+-- Existing constructs remain governed by `mct-product-map.allium` and are referenced here by name:
+-- `MctPeerBinding`, `MctPeerAdmissionDecision`, `MctHelloProtocol`, `MctCallProtocol`,
+-- `MctCallAtomicity`, `MctIrohProtocolLayer`, `NodeProfileAndTelemetry`, and
+-- `MctIrohPeerBindingAuthority`. This draft does not duplicate those declarations.
+
+-- Binding law: nothing is ambient. Every durable peer relationship is instantiated by
+-- explicit, issued, scoped, time-bounded, revocable records.
+-- Binding law: deny is the passive default; capability advertisement is not a grant.
+-- Binding law: Vision is the sharing boundary and is not reducible to tenant.
+-- Binding law: each Mother is sovereign and never adopts another Mother's decisions as
+-- her own authority.
+
+------------------------------------------------------------
+-- Relationship taxonomy
+------------------------------------------------------------
+
+-- Decision: `CallSubmissionAdmission` is directional. A receiving Mother issues an active
+-- `MctPeerBinding` that admits a specific peer to submit `mct/call/0` requests within its
+-- Vision, ALPN, policy-revision, and time scope.
+-- Decision: `OutboundCallAuthorization` is the submitting Mother's possession of the
+-- receiving peer's active admission of her. It is not a third authority-record kind.
+-- Decision: `CapabilityPublication` is an issued, Vision-scoped, time-bounded, revocable
+-- offer to evaluate an advertised operation for local execution.
+-- Decision: `ImmediateCaller`, `CapabilityPublisher`, `EligibleRouteCandidate`, and
+-- `SelectedExecutor` are contextual roles derived from current records, never issued statuses.
+
+contract PeerRelationshipTaxonomy {
+    @invariant RolesAreCurrentProjections
+        -- Every peer role is totally derived from explicit current records at evaluation time.
+        -- No caller, publisher, route-candidate, executor, or routable flag is stored as authority.
+
+    @invariant MissingDerivationMeansMissingRecord
+        -- If a role cannot be totally derived, the ontology lacks an authority or evidence record.
+        -- Ambient status and cached derivations are not valid substitutes.
+
+    @invariant DirectionalRecordsRemainIndependent
+        -- Each Mother issues, scopes, expires, supersedes, and revokes her own directional
+        -- relationship records without treating the peer's decisions as her authority.
+
+    @invariant AdmissionDenialIsNonBeginning
+        -- Revocation, expiry, or supersession ends an existing admission. A denied hello or
+        -- admission evaluation means the relationship did not begin.
+}
+
+contract PeerOperationalRoleDerivation {
+    @invariant ImmediateCallerDerivation
+        -- The ImmediateCaller is the authenticated peer that presented this admitted
+        -- `mct/call/0` request under the receiver's current CallSubmissionAdmission.
+
+    @invariant CapabilityPublisherDerivation
+        -- The CapabilityPublisher is the Mother that issued the current CapabilityPublication
+        -- containing the operation under consideration in the selected Vision.
+
+    @invariant EligibleRouteCandidateDerivation
+        -- For derived resident routing, peer B is an EligibleRouteCandidate at Mother A for
+        -- operation X if and only if all current per-call facts hold: A actively admits B as
+        -- peer-trust and egress authority; B actively admits A as witnessed by the outbound
+        -- proof A possesses; B has a fresh CapabilityPublication offering X for local execution;
+        -- all three records agree on Vision and required call scope; and current reachability
+        -- evidence provides a ticket. Publication contributes capability, never authority.
+
+    @invariant SelectedExecutorDerivation
+        -- A peer is the SelectedExecutor only after it was an EligibleRouteCandidate for this
+        -- call, the planner selected it, and the complete authority derivation was revalidated
+        -- immediately before the outbound submission effect.
+
+    @invariant OperatorPointedSubmissionIsDistinct
+        -- An operator explicitly directing a call at a peer exercises explicit, scoped, durable-
+        -- observed local authority for that individual egress decision rather than using derived
+        -- route candidacy. It creates no ambient or continuing peer relationship. The receiver's
+        -- current admission of the submitting Mother and all receiver-side per-call authority
+        -- remain mandatory.
+}
+
+------------------------------------------------------------
+-- Capability publication
+------------------------------------------------------------
+
+-- Decision: CapabilityPublication is a revocable local execution offer, not guaranteed
+-- execution and not merely a historical observation.
+-- Decision: Publication contributes the capability term to route candidacy but never grants
+-- permission to submit, route, execute, use a child or toy, or move data.
+-- Decision: A Mother publishes only operations she would evaluate for local execution. The
+-- publication does not advertise brokerage.
+-- Decision: Freshness is the offer's currency window. Lapse withdraws the offer without fault;
+-- ceasing republication is passive withdrawal bounded by that window.
+
+contract CapabilityPublicationRelationship {
+    @invariant HonestLocalExecutionOffer
+        -- A current publication asserts that its issuer offers to evaluate conforming calls for
+        -- local execution of the named operation. Publishing an operation the issuer cannot or
+        -- will not evaluate locally violates the relationship.
+
+    @invariant OfferIsNotExecutionGuarantee
+        -- Publication reserves no capacity and promises no successful result. Current authority,
+        -- readiness, data policy, availability, and effect authority are evaluated per call.
+
+    @invariant AdvertisementNeverGrantsAuthority
+        -- A publication is necessary capability evidence for derived route candidacy but is
+        -- never sufficient without both sovereigns' current directional authority records.
+
+    @invariant OfferIsVisionScoped
+        -- The issuer, consumer, operation, and directional admissions must agree on the Vision;
+        -- a publication is not global discovery or cross-Vision permission.
+
+    @invariant OfferLapsesAtFreshnessBoundary
+        -- After its freshness boundary a publication is not current, consumers remove the peer
+        -- from candidacy, and lapse alone attributes no fault to the publisher.
+
+    @invariant BrokerageRequiresDifferentOntology
+        -- A Mother does not publish an operation through CapabilityPublication when she proposes
+        -- to forward rather than execute it locally. Future brokerage requires a distinct
+        -- relationship, protocol semantics, and authority records.
+}
+
+------------------------------------------------------------
+-- Terminal call submission and origin
+------------------------------------------------------------
+
+-- Decision: `mct/call/0` means “I propose you as the local executor of this call.”
+-- Decision: Every admitted `mct/call/0` arrival is terminal at its receiver, whether the caller
+-- selected the receiver from a publication or directed the call without one.
+-- Decision: `CallOrigin` remains observation and dispatch context, never routing authority.
+-- Decision: Multi-hop is not an extension of `mct/call/0`; it requires a distinct brokered-
+-- submission relationship with authenticated end-to-end identity and transitive-routing policy.
+
+contract TerminalPeerCallSubmission {
+    @invariant SubmissionProposesReceiverAsLocalExecutor
+        -- CallSubmissionAdmission licenses a peer to ask the receiving Mother to execute locally.
+        -- The receiver evaluates local candidates because that is the protocol question submitted.
+
+    @invariant PeerArrivalsDoNotSourceAnotherPeer
+        -- A receiving Mother never answers an `mct/call/0` submission by selecting another Mother.
+        -- Local unavailability produces the normal caller-safe no-route or denial outcome.
+
+    @invariant OriginDoesNotChangeAuthority
+        -- Origin may identify that the peer protocol question arrived and dispatch its semantics,
+        -- but it neither expands nor constrains the authority granted by current domain records.
+
+    @invariant PublicationReferenceIsNotRequiredForTerminality
+        -- A call need not identify the CapabilityPublication that informed selection. Such a
+        -- reference may strengthen route audit but cannot grant authority or alter terminality.
+}
+
+------------------------------------------------------------
+-- Per-hop accountability
+------------------------------------------------------------
+
+-- Decision: Per-hop vouching is the permanent trust algebra of `mct/call/0`.
+-- Decision: The receiver authorizes and records only the admitted ImmediateCaller. Upstream
+-- identities do not cross in this protocol.
+-- Decision: Call and trace identifiers correlate bilateral ledgers; identity does not.
+
+contract PerHopPeerAccountability {
+    @invariant SubmissionIsTheImmediateCallersAct
+        -- By submitting, the ImmediateCaller asserts that her own authority evaluation allowed
+        -- the submission. The receiver attributes misuse to that Mother and may revoke the
+        -- bilateral relationship. No assertion about an upstream caller is made to the receiver.
+
+    @invariant ReceiverTrustsOnlyLocallyVerifiableAuthority
+        -- A Mother authorizes from her own records about the peer she admitted. She does not
+        -- adopt another Mother's user, caller, routing, or policy decisions as her authority.
+
+    @invariant UpstreamIdentityRemainsAtItsVerifier
+        -- Upstream identity context remains in the ledger of the Mother that verified it and is
+        -- not copied into `mct/call/0` as a fact on another Mother's assertion.
+
+    @invariant BilateralAuditUsesCorrelationNotIdentityPropagation
+        -- Cross-node reconstruction joins ledgers using preserved call and trace identifiers.
+        -- Each ledger discloses under its own authority and SafeRequesterDisclosure obligations.
+
+    @invariant ObservationReplicationIsTheSharingChannel
+        -- Authorized sharing of ledger slices belongs to ObservationReplicationAuthorization
+        -- over `mct/observe/0`, never to unverified identity fields in `mct/call/0`.
+
+    @invariant BrokeredIdentityBelongsToBrokeredSubmission
+        -- Authenticated end-to-end identity and executor-held originator grants are prerequisites
+        -- of a future brokered-submission relationship, not additions to `mct/call/0`.
+}
+
+------------------------------------------------------------
+-- Bilateral call relationship
+------------------------------------------------------------
+
+-- Decision: Executable resident routing requires mutual admission as two sovereign consents.
+-- Decision: The receiver's admission is ingress consent. The sender's admission of the receiver
+-- is her own peer-trust and egress/data-placement authority.
+-- Decision: The pair contains two directional `MctPeerBinding` records; the outbound proof is
+-- possession of the peer-issued admission, not a third record kind.
+
+contract BilateralExecutableRouting {
+    @invariant TwoExposuresRequireTwoSovereignConsents
+        -- B's admission of A authorizes ingress at B. A's admission of B authorizes A to treat B
+        -- as a fit destination and result source for this Vision. Neither sovereign can issue the
+        -- other's consent.
+
+    @invariant MutualAdmissionPreventsExternallyWritableRouting
+        -- A peer cannot install itself in another Mother's routing fabric merely by admitting
+        -- that Mother and publishing capabilities. The routing Mother must hold her own current
+        -- peer-trust record for the destination.
+
+    @invariant OneWayStatesRemainMeaningful
+        -- With only B's admission of A, B may serve admitted submissions from A, but B is not a
+        -- derived route candidate at A. With only A's admission of B, B may submit to A, but A
+        -- lacks B's ingress consent and cannot derive B as an outbound route candidate.
+
+    @invariant BilateralStateIsDerivedNotStored
+        -- Stranger, inbound-admitted, outbound-authorized, and mutually-admitted are projections
+        -- of the two current directional records. Routable-for-operation is further derived from
+        -- mutual admission, current publication, Vision agreement, and reachability.
+
+    @invariant EitherDirectionEndsCandidacyImmediately
+        -- Revocation, expiry, or supersession of either required directional admission removes
+        -- the peer from candidacy at the next current-record per-call evaluation. It does not
+        -- wait for a cached role or publication to expire.
+
+    @invariant ReachabilityIsNotAuthority
+        -- A ticket is required reachability evidence for derived routing but never substitutes
+        -- for either admission, publication, Vision agreement, or per-call authority.
+}
+
+------------------------------------------------------------
+-- Future relationship slots
+------------------------------------------------------------
+
+-- Decision: A generic peer binding may admit negotiation of a future ALPN but never defines that
+-- protocol's domain authority. Each relationship needs its own explicit, scoped, time-bounded,
+-- revocable authority record before implementation.
+
+contract FuturePeerRelationshipSlots {
+    @invariant ThoughtExchangeHasIndependentAuthority
+        -- ThoughtExchangeAuthorization governs `mct/thought/0`. Its instantiating record and the
+        -- conclusions each side may draw remain open; call admission does not grant thought use.
+
+    @invariant ObservationReplicationHasIndependentAuthority
+        -- ObservationReplicationAuthorization governs selected ledger-slice replication over
+        -- `mct/observe/0`. Its record must preserve each Mother's disclosure sovereignty.
+
+    @invariant FederationControlHasIndependentAuthority
+        -- FederationControlAuthorization governs `mct/federation/0`. Its record cannot make a
+        -- remote Mother's decisions local authority merely because control negotiation is admitted.
+
+    @invariant BrokeredSubmissionIsANewRelationship
+        -- Multi-hop submission requires a separately named relationship and protocol semantics,
+        -- authenticated end-to-end identity, executor-held authority, and explicit transitive policy.
+}
+
+------------------------------------------------------------
+-- Open questions
+------------------------------------------------------------
+
+open question "CapabilityPublication revocation — what explicit revocation record or signal complements bounded passive withdrawal, and when do consumers treat it as effective?"
+open question "CapabilityPublication freshness — is the current 300-second window fixed protocol law, issuer-declared, negotiated, or local consumer policy?"
+open question "ThoughtExchangeAuthorization — which issued record instantiates it, and what may publisher and receiver conclude?"
+open question "ObservationReplicationAuthorization — which record scopes ledger slices, audiences, retention, onward disclosure, and revocation?"
+open question "FederationControlAuthorization — which record scopes control actions without delegating a Mother's sovereignty?"
+open question "Brokered submission — what relationship record and protocol carry verifiable end-to-end identity and transitive-routing authority?"
+open question "Route audit — should a future call envelope carry the CapabilityPublication reference that informed selection?"

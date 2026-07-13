@@ -14,6 +14,7 @@ pub(super) struct PeerAddRequest {
     pub(super) ticket: Option<MotherIrohEndpointTicket>,
     pub(super) binding_signature_ref: Option<String>,
     pub(super) policy_revision: u64,
+    pub(super) expires_at: Timestamp,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -24,7 +25,7 @@ pub(super) struct PeerProofRequest {
     pub(super) binding_id: PeerBindingId,
     pub(super) policy_revision: u64,
     pub(super) signature_ref: String,
-    pub(super) expires_at: Option<Timestamp>,
+    pub(super) expires_at: Timestamp,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -195,6 +196,7 @@ fn prepare_peer_mutation(
                 outbound_binding: None,
                 binding_state: BindingState::Admitted,
                 policy_revision: request.policy_revision,
+                expires_at: request.expires_at.clone(),
                 updated_at: mct_daemon::current_timestamp_string(),
             };
             (
@@ -205,7 +207,7 @@ fn prepare_peer_mutation(
                 request.vision_id,
                 request.policy_revision,
                 BindingState::Admitted,
-                None,
+                Some(request.expires_at),
                 PreparedPeerMutationEffect::Add(Box::new(entry)),
             )
         }
@@ -238,7 +240,7 @@ fn prepare_peer_mutation(
                 peer.vision_id.clone(),
                 request.policy_revision,
                 peer.binding_state,
-                request.expires_at,
+                Some(request.expires_at),
                 PreparedPeerMutationEffect::Proof {
                     peer_node_id: request.peer_node_id,
                     outbound,
@@ -1955,7 +1957,8 @@ mod tests {
             "vision_id": "vision-local",
             "ticket": null,
             "binding_signature_ref": proof,
-            "policy_revision": 1
+            "policy_revision": 1,
+            "expires_at": "2099-01-01T00:00:00Z"
         })
     }
 
@@ -2139,6 +2142,8 @@ mod tests {
             "binding-a-admits-b".into(),
             "endpoint-b".into(),
             "vision-local".into(),
+            "--expires-at".into(),
+            "2099-01-01T00:00:00Z".into(),
             "--signature-ref".into(),
             "offline-secret-proof".into(),
             "--config".into(),
@@ -2169,6 +2174,8 @@ mod tests {
             "binding-a-admits-c".into(),
             "endpoint-c".into(),
             "vision-local".into(),
+            "--expires-at".into(),
+            "2099-01-01T00:00:00Z".into(),
             "--signature-ref".into(),
             "secret-proof".into(),
             "--config".into(),

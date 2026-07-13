@@ -4,11 +4,34 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use mct_kernel::*;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
+
+pub const MCT_IDEMPOTENCY_TTL_SECONDS: i64 = 12 * 60;
+pub const MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER: usize = 256;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctRecordedCallReply {
+    pub result_ref: Option<ResultRef>,
+    pub result_payload: MctCallPayloadHandle,
+    #[serde(skip)]
+    pub inline_result_payload: Option<Vec<u8>>,
+    pub route_decision_id: Option<DecisionId>,
+    pub route_taken: Option<RouteTaken>,
+    pub outcome: CallProtocolOutcome,
+    pub protocol_reason: Option<CallProtocolReason>,
+    pub safe_message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MctIdempotencyReservation {
+    ExecuteFresh,
+    Replay(Box<MctRecordedCallReply>),
+    Refused(MctIdempotencyReason),
+}
 
 /// Project-local durable runtime state for one standalone MCT node.
 ///
@@ -369,6 +392,24 @@ impl MctRuntimeStateStore {
             CREATE INDEX IF NOT EXISTS idx_remote_callable_surfaces_operation
             ON remote_callable_surfaces(vision_id, operation_id, stale_at);
 
+            CREATE TABLE IF NOT EXISTS call_idempotency_entries (
+                caller_scope TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                target_identity TEXT NOT NULL,
+                call_id TEXT NOT NULL,
+                payload_digest TEXT NOT NULL,
+                entry_state TEXT NOT NULL CHECK(entry_state IN ('in_flight', 'completed')),
+                recorded_reply_json TEXT,
+                inline_result_payload BLOB,
+                created_at TEXT NOT NULL,
+                completed_at TEXT,
+                expires_at TEXT NOT NULL,
+                PRIMARY KEY (caller_scope, idempotency_key)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_call_idempotency_expiry
+            ON call_idempotency_entries(caller_scope, expires_at);
+
             CREATE TABLE IF NOT EXISTS runtime_runs (
                 run_id TEXT PRIMARY KEY,
                 call_id TEXT NOT NULL,
@@ -701,6 +742,162 @@ impl MctRuntimeStateStore {
         value.parse().context("parse schema version")
     }
 
+    pub fn reserve_call_idempotency(
+        &self,
+        caller_scope: &str,
+        idempotency_key: &str,
+        fingerprint: &MctIdempotencyFingerprint,
+        now: &Timestamp,
+        expires_at: &Timestamp,
+        caller_budget: usize,
+    ) -> Result<MctIdempotencyReservation> {
+        if caller_scope.trim().is_empty() || idempotency_key.trim().is_empty() {
+            bail!("idempotency scope and key must not be blank");
+        }
+        if expires_at <= now {
+            bail!("idempotency expiry must follow reservation time");
+        }
+
+        let transaction =
+            rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "DELETE FROM call_idempotency_entries WHERE expires_at <= ?1",
+            params![now.as_str()],
+        )?;
+        let stored = transaction
+            .query_row(
+                r#"
+                SELECT target_identity, call_id, payload_digest, entry_state,
+                       recorded_reply_json, inline_result_payload, expires_at
+                FROM call_idempotency_entries
+                WHERE caller_scope = ?1 AND idempotency_key = ?2
+                "#,
+                params![caller_scope, idempotency_key],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<Vec<u8>>>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let entry_count = transaction.query_row(
+            "SELECT COUNT(*) FROM call_idempotency_entries WHERE caller_scope = ?1",
+            params![caller_scope],
+            |row| row.get::<_, i64>(0),
+        )? as usize;
+        let stored_facts = stored
+            .as_ref()
+            .map(
+                |(target, call_id, payload_digest, state, _, _, expires_at)| {
+                    Ok(MctIdempotencyStoredEntry {
+                        fingerprint: MctIdempotencyFingerprint {
+                            target: target.clone(),
+                            call_id: CallId::new(call_id.clone())?,
+                            payload_digest: payload_digest.clone(),
+                        },
+                        state: match state.as_str() {
+                            "in_flight" => MctIdempotencyEntryState::InFlight,
+                            "completed" => MctIdempotencyEntryState::Completed,
+                            other => bail!("unknown idempotency entry state '{other}'"),
+                        },
+                        expires_at: Timestamp::new(expires_at.clone())?,
+                    })
+                },
+            )
+            .transpose()?;
+        let decision = evaluate_idempotency_request(
+            fingerprint,
+            stored_facts.as_ref(),
+            entry_count,
+            caller_budget,
+            now,
+        );
+
+        let reservation = match decision.reason {
+            MctIdempotencyReason::ExecuteFresh => {
+                transaction.execute(
+                    r#"
+                    INSERT INTO call_idempotency_entries(
+                        caller_scope, idempotency_key, target_identity, call_id,
+                        payload_digest, entry_state, recorded_reply_json,
+                        inline_result_payload, created_at, completed_at, expires_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, 'in_flight', NULL, NULL, ?6, NULL, ?7)
+                    "#,
+                    params![
+                        caller_scope,
+                        idempotency_key,
+                        fingerprint.target,
+                        fingerprint.call_id.as_str(),
+                        fingerprint.payload_digest,
+                        now.as_str(),
+                        expires_at.as_str(),
+                    ],
+                )?;
+                MctIdempotencyReservation::ExecuteFresh
+            }
+            MctIdempotencyReason::ReplayCompleted => {
+                let (_, _, _, _, reply_json, inline_payload, _) = stored
+                    .ok_or_else(|| anyhow::anyhow!("completed idempotency entry disappeared"))?;
+                let mut reply: MctRecordedCallReply =
+                    serde_json::from_str(reply_json.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!("completed idempotency reply is missing")
+                    })?)?;
+                reply.inline_result_payload = inline_payload;
+                MctIdempotencyReservation::Replay(Box::new(reply))
+            }
+            reason => MctIdempotencyReservation::Refused(reason),
+        };
+        transaction.commit()?;
+        Ok(reservation)
+    }
+
+    pub fn complete_call_idempotency(
+        &self,
+        caller_scope: &str,
+        idempotency_key: &str,
+        fingerprint: &MctIdempotencyFingerprint,
+        reply: &MctRecordedCallReply,
+        completed_at: &Timestamp,
+    ) -> Result<()> {
+        if reply
+            .inline_result_payload
+            .as_ref()
+            .is_some_and(|payload| payload.len() > mct_iroh::MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES)
+        {
+            bail!("recorded idempotency reply payload exceeds inline result cap");
+        }
+        let changed = self.conn.execute(
+            r#"
+            UPDATE call_idempotency_entries
+            SET entry_state = 'completed', recorded_reply_json = ?1,
+                inline_result_payload = ?2, completed_at = ?3
+            WHERE caller_scope = ?4 AND idempotency_key = ?5
+              AND target_identity = ?6 AND call_id = ?7 AND payload_digest = ?8
+              AND entry_state = 'in_flight'
+            "#,
+            params![
+                serde_json::to_string(reply)?,
+                reply.inline_result_payload,
+                completed_at.as_str(),
+                caller_scope,
+                idempotency_key,
+                fingerprint.target,
+                fingerprint.call_id.as_str(),
+                fingerprint.payload_digest,
+            ],
+        )?;
+        if changed != 1 {
+            bail!("idempotency completion did not match one in-flight reservation");
+        }
+        Ok(())
+    }
+
     pub fn upsert_artifact(&self, artifact: &ComponentArtifact) -> Result<()> {
         self.conn.execute(
             r#"
@@ -834,39 +1031,50 @@ impl MctRuntimeStateStore {
     }
 
     pub fn upsert_child_instance(&self, instance: &ChildInstance) -> Result<()> {
-        self.conn.execute(
-            r#"
-            INSERT INTO child_instances(
-                instance_id, assignment_id, artifact_id, child_name, generation, node_id,
-                instance_state, readiness_observation_id, last_lifecycle_observation_id, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-            ON CONFLICT(instance_id) DO UPDATE SET
-                assignment_id = excluded.assignment_id,
-                artifact_id = excluded.artifact_id,
-                child_name = excluded.child_name,
-                generation = excluded.generation,
-                node_id = excluded.node_id,
-                instance_state = excluded.instance_state,
-                readiness_observation_id = excluded.readiness_observation_id,
-                last_lifecycle_observation_id = excluded.last_lifecycle_observation_id,
-                updated_at = excluded.updated_at
-            "#,
-            params![
-                instance.instance_id.as_str(),
-                instance.assignment_id.as_str(),
-                instance.artifact_id.as_str(),
-                instance.child_name,
-                instance.generation,
-                instance.node_id.as_str(),
-                json_atom(&instance.instance_state)?,
-                instance
-                    .readiness_observation_id
-                    .as_ref()
-                    .map(ObservationId::as_str),
-                instance.last_lifecycle_observation_id.as_str(),
-                current_timestamp_string(),
-            ],
-        )?;
+        upsert_child_instance_on(&self.conn, instance)
+    }
+
+    /// Atomically commits a verified replacement generation and retires its ready predecessor.
+    ///
+    /// The replacement is written first inside the transaction. The predecessor must still be
+    /// durably ready, so readers observe either the old ready generation or the committed pair of
+    /// stopped predecessor and ready replacement, never a child with no ready generation.
+    pub fn swap_ready_child_generation(
+        &self,
+        stopped_predecessor: &ChildInstance,
+        ready_replacement: &ChildInstance,
+    ) -> Result<()> {
+        if stopped_predecessor.instance_state != ChildInstanceState::Stopped {
+            bail!("predecessor generation must be stopped before persisted swap");
+        }
+        if ready_replacement.instance_state != ChildInstanceState::Ready {
+            bail!("replacement generation must be ready before persisted swap");
+        }
+        if stopped_predecessor.instance_id == ready_replacement.instance_id
+            || stopped_predecessor.child_name != ready_replacement.child_name
+            || stopped_predecessor.assignment_id != ready_replacement.assignment_id
+            || stopped_predecessor.artifact_id != ready_replacement.artifact_id
+            || stopped_predecessor.node_id != ready_replacement.node_id
+            || stopped_predecessor.generation.checked_add(1) != Some(ready_replacement.generation)
+        {
+            bail!("replacement generation does not directly succeed its predecessor");
+        }
+
+        let transaction = self.conn.unchecked_transaction()?;
+        let persisted_state: String = transaction
+            .query_row(
+                "SELECT instance_state FROM child_instances WHERE instance_id = ?1",
+                params![stopped_predecessor.instance_id.as_str()],
+                |row| row.get(0),
+            )
+            .context("read persisted predecessor generation")?;
+        if persisted_state != "ready" {
+            bail!("persisted predecessor generation is not ready");
+        }
+
+        upsert_child_instance_on(&transaction, ready_replacement)?;
+        upsert_child_instance_on(&transaction, stopped_predecessor)?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -1842,6 +2050,43 @@ fn toy_grant_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToyGrant> {
     })
 }
 
+fn upsert_child_instance_on(connection: &Connection, instance: &ChildInstance) -> Result<()> {
+    connection.execute(
+        r#"
+        INSERT INTO child_instances(
+            instance_id, assignment_id, artifact_id, child_name, generation, node_id,
+            instance_state, readiness_observation_id, last_lifecycle_observation_id, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        ON CONFLICT(instance_id) DO UPDATE SET
+            assignment_id = excluded.assignment_id,
+            artifact_id = excluded.artifact_id,
+            child_name = excluded.child_name,
+            generation = excluded.generation,
+            node_id = excluded.node_id,
+            instance_state = excluded.instance_state,
+            readiness_observation_id = excluded.readiness_observation_id,
+            last_lifecycle_observation_id = excluded.last_lifecycle_observation_id,
+            updated_at = excluded.updated_at
+        "#,
+        params![
+            instance.instance_id.as_str(),
+            instance.assignment_id.as_str(),
+            instance.artifact_id.as_str(),
+            instance.child_name,
+            instance.generation,
+            instance.node_id.as_str(),
+            json_atom(&instance.instance_state)?,
+            instance
+                .readiness_observation_id
+                .as_ref()
+                .map(ObservationId::as_str),
+            instance.last_lifecycle_observation_id.as_str(),
+            current_timestamp_string(),
+        ],
+    )?;
+    Ok(())
+}
+
 fn json_string<T: Serialize>(value: &T) -> Result<String> {
     serde_json::to_string(value).context("encode json cell")
 }
@@ -2180,6 +2425,71 @@ mod tests {
     }
 
     #[test]
+    fn child_reload_swap_is_atomic_and_failed_swap_keeps_persisted_predecessor_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.sqlite");
+        let store = MctRuntimeStateStore::open(&path).unwrap();
+        store.upsert_artifact(&artifact()).unwrap();
+        store
+            .upsert_child_approval(&approval(ChildApprovalState::Approved))
+            .unwrap();
+        store
+            .upsert_child_assignment(&assignment(ChildAssignmentState::Active))
+            .unwrap();
+        let predecessor = instance(ChildInstanceState::Ready);
+        store.upsert_child_instance(&predecessor).unwrap();
+
+        let mut stopped = predecessor.clone();
+        stopped.instance_state = ChildInstanceState::Stopped;
+        stopped.last_lifecycle_observation_id = ObservationId::new("obs-stopped").unwrap();
+        let mut invalid_replacement = predecessor.clone();
+        invalid_replacement.instance_id = ChildInstanceId::new("instance-b").unwrap();
+        invalid_replacement.generation = 2;
+        invalid_replacement.instance_state = ChildInstanceState::Loading;
+        invalid_replacement.readiness_observation_id = None;
+        invalid_replacement.last_lifecycle_observation_id =
+            ObservationId::new("obs-loading-b").unwrap();
+
+        let error = store
+            .swap_ready_child_generation(&stopped, &invalid_replacement)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("replacement generation must be ready")
+        );
+        assert_eq!(store.summary().unwrap().ready_instances, 1);
+        let persisted: Vec<(String, String)> = store
+            .conn
+            .prepare("SELECT instance_id, instance_state FROM child_instances ORDER BY generation")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(persisted, vec![("instance-a".into(), "ready".into())]);
+
+        let mut replacement = invalid_replacement;
+        replacement.instance_state = ChildInstanceState::Ready;
+        replacement.readiness_observation_id = Some(ObservationId::new("obs-ready-b").unwrap());
+        replacement.last_lifecycle_observation_id = ObservationId::new("obs-ready-b").unwrap();
+        store
+            .swap_ready_child_generation(&stopped, &replacement)
+            .unwrap();
+
+        let persisted: Vec<(u64, String)> = store
+            .conn
+            .prepare("SELECT generation, instance_state FROM child_instances ORDER BY generation")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(persisted, vec![(1, "stopped".into()), (2, "ready".into())]);
+        assert_eq!(store.summary().unwrap().ready_instances, 1);
+    }
+
+    #[test]
     fn state_store_persists_toy_grant_snapshots() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.sqlite");
@@ -2441,6 +2751,112 @@ mod tests {
         let summary = store.summary().unwrap();
         assert_eq!(summary.child_state_keys, 1);
         assert_eq!(summary.child_subscriptions, 1);
+    }
+
+    #[test]
+    fn idempotency_store_scopes_reserves_replays_expires_and_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.sqlite");
+        let store = MctRuntimeStateStore::open(&path).unwrap();
+        let fingerprint = MctIdempotencyFingerprint {
+            target: "patina/echo.echo".into(),
+            call_id: CallId::new("call-idem-store").unwrap(),
+            payload_digest: "digest-store".into(),
+        };
+        let now = Timestamp::new("2026-07-10T00:00:00Z").unwrap();
+        let expires = Timestamp::new("2026-07-10T00:12:00Z").unwrap();
+
+        assert!(matches!(
+            store
+                .reserve_call_idempotency("binding-a", "key-a", &fingerprint, &now, &expires, 1)
+                .unwrap(),
+            MctIdempotencyReservation::ExecuteFresh
+        ));
+        assert!(matches!(
+            store
+                .reserve_call_idempotency("binding-a", "key-a", &fingerprint, &now, &expires, 1)
+                .unwrap(),
+            MctIdempotencyReservation::Refused(MctIdempotencyReason::IdempotencyInProgress)
+        ));
+        assert!(matches!(
+            store
+                .reserve_call_idempotency("binding-b", "key-a", &fingerprint, &now, &expires, 1)
+                .unwrap(),
+            MctIdempotencyReservation::ExecuteFresh
+        ));
+
+        let recorded = MctRecordedCallReply {
+            result_ref: Some(ResultRef::new("result-idem").unwrap()),
+            result_payload: MctCallPayloadHandle::InlinePayload {
+                inline_payload_ref: "result-payload-idem".into(),
+                content_type: "application/json".into(),
+                size_bytes: 2,
+                blake3_digest_hex: blake3::hash(b"{}").to_hex().to_string(),
+            },
+            inline_result_payload: Some(b"{}".to_vec()),
+            route_decision_id: None,
+            route_taken: None,
+            outcome: CallProtocolOutcome::Completed,
+            protocol_reason: None,
+            safe_message: "completed".into(),
+        };
+        store
+            .complete_call_idempotency(
+                "binding-a",
+                "key-a",
+                &fingerprint,
+                &recorded,
+                &Timestamp::new("2026-07-10T00:01:00Z").unwrap(),
+            )
+            .unwrap();
+        drop(store);
+
+        let reopened = MctRuntimeStateStore::open(&path).unwrap();
+        assert_eq!(
+            reopened
+                .reserve_call_idempotency("binding-a", "key-a", &fingerprint, &now, &expires, 1)
+                .unwrap(),
+            MctIdempotencyReservation::Replay(Box::new(recorded.clone()))
+        );
+        let mut mismatch = fingerprint.clone();
+        mismatch.call_id = CallId::new("different-call").unwrap();
+        assert!(matches!(
+            reopened
+                .reserve_call_idempotency("binding-a", "key-a", &mismatch, &now, &expires, 1)
+                .unwrap(),
+            MctIdempotencyReservation::Refused(MctIdempotencyReason::IdempotencyKeyReuseMismatch)
+        ));
+        assert!(matches!(
+            reopened
+                .reserve_call_idempotency("binding-a", "new-key", &fingerprint, &now, &expires, 1)
+                .unwrap(),
+            MctIdempotencyReservation::Refused(MctIdempotencyReason::IdempotencyBudgetFull)
+        ));
+        assert_eq!(
+            reopened
+                .reserve_call_idempotency("binding-a", "key-a", &fingerprint, &now, &expires, 1)
+                .unwrap(),
+            MctIdempotencyReservation::Replay(Box::new(recorded))
+        );
+        assert!(matches!(
+            reopened
+                .reserve_call_idempotency(
+                    "binding-a",
+                    "key-a",
+                    &fingerprint,
+                    &Timestamp::new("2026-07-10T00:13:00Z").unwrap(),
+                    &Timestamp::new("2026-07-10T00:25:00Z").unwrap(),
+                    1,
+                )
+                .unwrap(),
+            MctIdempotencyReservation::ExecuteFresh
+        ));
+
+        let raw = std::fs::read(&path).unwrap();
+        assert!(
+            !raw.windows(b"request-secret".len())
+                .any(|window| window == b"request-secret")
+        );
     }
 
     #[test]
