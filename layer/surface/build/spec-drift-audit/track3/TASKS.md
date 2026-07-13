@@ -413,7 +413,7 @@ Extend the existing slice-1 ledger without restructuring it so every named invar
 - [x] S2.1: resolve required external fixture compatibility disposition.
 - [x] S2.2: Option 1 adjudicated — preserve cancelled through protocol evaluation, wire reply, replay, and observations.
 - [x] S2.3: resolve complete child-lifecycle observation matrix gaps.
-- [ ] S2.4: resolve bounded resident observation buffering gap.
+- [x] S2.4: resolve bounded resident observation buffering gap.
 - [ ] S2.5: resolve typed toy-grant expiry/revocation observation gap.
 - [ ] S2.x: end every remaining GAP as COVERED, DEFERRED with reason, or STOP for adjudication.
 - [ ] S3: close the ledger extension with final counts, running test record, drift disposition, REPORT/ROADMAP updates, and final validation.
@@ -444,7 +444,8 @@ Extend the existing slice-1 ledger without restructuring it so every named invar
 | S2.2 STOP record `01b470b` | 0 | 291 | 291 passed, 0 ignored |
 | S2.2 fix `8565636` | 3 | 294 | 294 passed, 0 ignored |
 | S2.2 disposition `342cabc` | 0 | 294 | 294 passed, 0 ignored |
-| S2.3 `fix(control): complete child lifecycle observations` | 2 | 296 | pending commit validation |
+| S2.3 `4e992e6` | 2 | 296 | 296 passed, 0 ignored |
+| S2.4 `test(daemon): cover bounded observation buffering` | 1 | 297 | pending commit validation |
 
 ## Slice 2 S1 inventory result
 
@@ -462,6 +463,7 @@ Extend the existing slice-1 ledger without restructuring it so every named invar
 - Structural stop (resolved): `MctCallProtocolReply` and `ResultOutcome` included cancellation, but `MctCallProtocolEvaluation.outcome` in the law and `CallProtocolOutcome` in Rust did not.
 - Operator adjudication selected Option 1. The protocol evaluation model now carries `cancelled`; resident projection, wire reply route suppression, durable idempotent replay, and buffered/before-effect observations preserve it end-to-end. Options 2 and 3 were rejected because projection indirection would hide the model gap, while failure collapse would violate route projection and replay semantics.
 - `MctChildComponentLifecycle.LifecycleTransitionsAreObserved` and `MctObservationSubsystemCoverage.ChildLifecycleCoverage`: the full authority/instance matrix was testable with a small kernel-local fixture and is now covered. The real strict registry-sync test caught an additional spec-ward drift: failed artifact loads were not projected because the decision batch iterated only successfully loaded children. The small fix adds typed before-effect `ArtifactRejected` facts without exposing failure detail or adding public surface.
+- `MctLocalFirstObservationLedger.BufferedEffectsAreBounded`: filled with a resident-observation-local test over the actual writer. The queue now has a named private capacity constant; the test proves finite capacity, acknowledged buffered persistence, and the existing closed-sink test proves visible failure before protected effects.
 
 ## Slice 2 failure and flake log
 

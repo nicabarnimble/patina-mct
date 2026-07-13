@@ -373,7 +373,7 @@ The 236 load-bearing `-- Decision:` statements were also read in full and groupe
 | `AppendOnlyEvidence` | COVERED | `mct_observation::tests::reopens_existing_hash_chain` |
 | `LocalSequenceIsNotGlobalTime` | COVERED | `mct_observation::tests::reopens_existing_hash_chain`; `mct_daemon_bin::resident::forwarding::tests::two_mother_forwards_selected_call_over_iroh_and_maps_reply` |
 | `TraceReconstructsFromLedger` | COVERED | `mct_observation::tests::queries_by_trace_and_call`; `mct_daemon_bin::resident::forwarding::tests::two_mother_forwards_selected_call_over_iroh_and_maps_reply` |
-| `BufferedEffectsAreBounded` | GAP | The resident writer uses a bounded 256-entry channel, but no named test proves bounded buffering/backpressure behavior. |
+| `BufferedEffectsAreBounded` | COVERED | `mct_daemon_bin::resident::observation::tests::resident_observation_queue_is_bounded_and_acknowledged` proves the named finite queue and acknowledged buffered append; `mct_daemon_bin::control::tests::resident_append_failure_prevents_peer_config_effect` proves a closed sink is visible and prevents the protected effect. |
 | `ProjectionFailureDoesNotChangeTruth` | DEFERRED | No external projection/export retry subsystem exists yet; the local ledger path is covered independently. |
 
 #### `MctImmutabilityModel`
@@ -456,8 +456,8 @@ The 236 load-bearing `-- Decision:` statements were also read in full and groupe
 
 | Status | Invariants |
 |---|---:|
-| COVERED | 198 |
-| GAP | 2 |
+| COVERED | 199 |
+| GAP | 1 |
 | LAW-LEADS-CODE | 0 |
 | DEFERRED | 23 |
 
