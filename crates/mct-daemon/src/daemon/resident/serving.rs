@@ -1,42 +1,8 @@
+//! Resident Mother process bootstrap, endpoint/control/event tasks, shutdown, and status.
+
 use super::*;
 
-#[path = "resident/observation.rs"]
-mod observation;
-pub(super) use observation::*;
-
-#[path = "resident/payload.rs"]
-mod payload;
-pub(super) use payload::*;
-
-#[path = "resident/publication.rs"]
-mod publication;
-pub(super) use publication::*;
-
-#[path = "resident/idempotency.rs"]
-mod idempotency;
-pub(super) use idempotency::*;
-
-#[path = "resident/candidates.rs"]
-mod candidates;
-use candidates::*;
-
-#[path = "resident/decision.rs"]
-mod decision;
-use decision::*;
-
-#[path = "resident/execution.rs"]
-mod execution;
-use execution::*;
-
-#[path = "resident/forwarding.rs"]
-mod forwarding;
-use forwarding::*;
-
-#[path = "resident/pipeline.rs"]
-mod pipeline;
-pub(super) use pipeline::*;
-
-pub(super) async fn run_serve(mut args: Vec<String>) -> Result<()> {
+pub(crate) async fn run_serve(mut args: Vec<String>) -> Result<()> {
     let relay_default = take_flag(&mut args, "--relay-default");
     let config_path = take_option(&mut args, "--config")
         .map(PathBuf::from)
@@ -87,35 +53,53 @@ pub(super) async fn run_serve(mut args: Vec<String>) -> Result<()> {
 }
 
 #[derive(Clone, Debug)]
-pub(super) enum ResidentControlTransport {
+enum ResidentControlTransport {
     Http(String),
     Uds(PathBuf),
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct ResidentMotherConfig {
+struct ResidentMotherConfig {
     pub(super) config_path: PathBuf,
     pub(super) identity_path: PathBuf,
     pub(super) children_dir: PathBuf,
     pub(super) state_path: PathBuf,
-    pub(super) ledger_path: PathBuf,
+    ledger_path: PathBuf,
     pub(super) control: ResidentControlTransport,
     pub(super) relay_default: bool,
     pub(super) max_concurrent_connections: usize,
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct ResidentStatusSource {
-    pub(super) endpoint: Arc<Mutex<MotherIrohEndpointSnapshot>>,
-    pub(super) accepted_connection_count: Arc<AtomicU64>,
-    pub(super) loaded_child_count: usize,
-    pub(super) approved_child_count: usize,
-    pub(super) binding_count: usize,
-    pub(super) ledger_path: PathBuf,
+pub(crate) struct ResidentStatusSource {
+    endpoint: Arc<Mutex<MotherIrohEndpointSnapshot>>,
+    accepted_connection_count: Arc<AtomicU64>,
+    loaded_child_count: usize,
+    approved_child_count: usize,
+    binding_count: usize,
+    ledger_path: PathBuf,
 }
 
 impl ResidentStatusSource {
-    pub(super) fn status(&self) -> MctDaemonStatus {
+    fn new(
+        endpoint: Arc<Mutex<MotherIrohEndpointSnapshot>>,
+        accepted_connection_count: Arc<AtomicU64>,
+        loaded_child_count: usize,
+        approved_child_count: usize,
+        binding_count: usize,
+        ledger_path: PathBuf,
+    ) -> Self {
+        Self {
+            endpoint,
+            accepted_connection_count,
+            loaded_child_count,
+            approved_child_count,
+            binding_count,
+            ledger_path,
+        }
+    }
+
+    pub(crate) fn status(&self) -> MctDaemonStatus {
         daemon_status_with_resident(
             Some(
                 self.endpoint
@@ -142,7 +126,36 @@ pub(super) fn ledger_sequence_tip(path: &Path) -> u64 {
         .unwrap_or(0)
 }
 
-pub(super) async fn run_resident_mother<S>(
+#[cfg(test)]
+pub(super) async fn run_test_resident_mother<S>(
+    paths: ResidentRuntimePaths,
+    identity_path: PathBuf,
+    ledger_path: PathBuf,
+    socket_path: PathBuf,
+    shutdown: S,
+    ready: Option<tokio::sync::oneshot::Sender<MotherIrohEndpointTicket>>,
+) -> Result<()>
+where
+    S: std::future::Future<Output = ()> + Send,
+{
+    run_resident_mother(
+        ResidentMotherConfig {
+            config_path: paths.config_path().to_path_buf(),
+            identity_path,
+            children_dir: paths.children_dir().to_path_buf(),
+            state_path: paths.state_path().to_path_buf(),
+            ledger_path,
+            control: ResidentControlTransport::Uds(socket_path),
+            relay_default: false,
+            max_concurrent_connections: 8,
+        },
+        shutdown,
+        ready,
+    )
+    .await
+}
+
+async fn run_resident_mother<S>(
     config: ResidentMotherConfig,
     shutdown: S,
     ready: Option<tokio::sync::oneshot::Sender<MotherIrohEndpointTicket>>,
@@ -208,14 +221,14 @@ where
     let binding_count = resident_config.peers.len();
     let accepted_connection_count = Arc::new(AtomicU64::new(0));
     let endpoint_status = Arc::new(Mutex::new(snapshot.clone()));
-    let status_source = Arc::new(ResidentStatusSource {
-        endpoint: Arc::clone(&endpoint_status),
-        accepted_connection_count: Arc::clone(&accepted_connection_count),
+    let status_source = Arc::new(ResidentStatusSource::new(
+        Arc::clone(&endpoint_status),
+        Arc::clone(&accepted_connection_count),
         loaded_child_count,
         approved_child_count,
         binding_count,
-        ledger_path: config.ledger_path.clone(),
-    });
+        config.ledger_path.clone(),
+    ));
 
     let (events, event_rx) = tokio::sync::mpsc::channel(256);
     let event_ledger = ledger.clone();
@@ -317,7 +330,7 @@ where
     serve_result
 }
 
-pub(super) fn spawn_resident_control_task(
+fn spawn_resident_control_task(
     control: ResidentControlTransport,
     state_path: PathBuf,
     config_path: PathBuf,
@@ -388,40 +401,6 @@ pub(super) async fn resident_shutdown_signal() {
     }
 }
 
-pub(super) async fn serve_http_control_loop(state_path: &Path, addr: &str) -> Result<()> {
-    let listener = TcpListener::bind(addr).await?;
-    let snapshot_source = ControlSnapshotSource::open(state_path);
-    println!("mct daemon serving control http on {addr}");
-    loop {
-        serve_http_control_once_with_snapshot_result(
-            &listener,
-            control_snapshot(&snapshot_source).await,
-        )
-        .await?;
-    }
-}
-
-pub(super) async fn serve_http_control_loop_until(
-    state_path: PathBuf,
-    addr: String,
-    mut shutdown: broadcast::Receiver<()>,
-    status_source: Option<Arc<ResidentStatusSource>>,
-) -> Result<()> {
-    let listener = TcpListener::bind(&addr).await?;
-    let snapshot_source = ControlSnapshotSource::open_with_status(&state_path, status_source);
-    println!("mct daemon serving control http on {addr}");
-    loop {
-        tokio::select! {
-            _ = shutdown.recv() => break,
-            result = serve_http_control_once_with_snapshot_result(
-                &listener,
-                control_snapshot(&snapshot_source).await,
-            ) => result?,
-        }
-    }
-    Ok(())
-}
-
 pub(super) async fn record_iroh_serve_events(
     mut events: tokio::sync::mpsc::Receiver<MctIrohServeEvent>,
     ledger: ResidentLedgerWriter,
@@ -468,10 +447,144 @@ pub(super) fn resident_observations_for_served_protocol(
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+mod tests {
     use super::*;
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 
+    fn contract_peer_expiry() -> Timestamp {
+        Timestamp::new("2099-01-01T00:00:00Z").unwrap()
+    }
+    async fn post_resident_peer_mutation(
+        socket_path: &Path,
+        path: &str,
+        body: serde_json::Value,
+    ) -> serde_json::Value {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let body = serde_json::to_vec(&body).unwrap();
+        let mut control = tokio::net::UnixStream::connect(socket_path).await.unwrap();
+        control
+            .write_all(
+                format!(
+                    "POST {path} HTTP/1.1\r\nHost: local\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        control.write_all(&body).await.unwrap();
+        let mut response = Vec::new();
+        control.read_to_end(&mut response).await.unwrap();
+        let response = String::from_utf8(response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap()
+    }
+    async fn poll_resident_status(
+        socket_path: &Path,
+        ready: impl Fn(&MctDaemonStatus) -> bool,
+    ) -> MctDaemonStatus {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut last = None;
+        for _ in 0..40 {
+            let mut control = tokio::net::UnixStream::connect(socket_path).await.unwrap();
+            control
+                .write_all(b"GET /status HTTP/1.1\r\nHost: local\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = vec![0; 4096];
+            let read = control.read(&mut response).await.unwrap();
+            let response = String::from_utf8_lossy(&response[..read]);
+            assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+            let (_, body) = response
+                .split_once("\r\n\r\n")
+                .expect("HTTP response separates headers from body");
+            let status: MctDaemonStatus = serde_json::from_str(body).unwrap();
+            if ready(&status) {
+                return status;
+            }
+            last = Some(status);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("resident status did not become ready: {last:?}");
+    }
+    fn write_resident_process_child(children_dir: &Path) {
+        write_resident_process_child_script(
+            children_dir,
+            "resident-echo",
+            b"#!/bin/sh\ncat >/dev/null\nprintf '{\\\"ok\\\":true}'\n",
+        );
+    }
+
+    fn write_resident_payload_process_child(children_dir: &Path) {
+        write_resident_process_child_script(
+            children_dir,
+            "resident-payload-echo",
+            b"#!/bin/sh\npayload=$(cat)\nprintf 'processed:%s' \"$payload\"\n",
+        );
+    }
+    fn write_resident_process_child_script(children_dir: &Path, name: &str, script: &[u8]) {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+
+        let child_dir = children_dir.join(name);
+        std::fs::create_dir_all(&child_dir).unwrap();
+        let artifact_path = child_dir.join(format!("{name}.wasm"));
+        let manifest_path = child_dir.join("child.toml");
+        std::fs::write(&artifact_path, script).unwrap();
+        #[cfg(unix)]
+        {
+            let mut permissions = std::fs::metadata(&artifact_path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&artifact_path, permissions).unwrap();
+        }
+        write_resident_child_manifest(&manifest_path, name, "handle");
+        write_sha256_sidecar(&artifact_path, script);
+        let manifest_bytes = std::fs::read(&manifest_path).unwrap();
+        write_sha256_sidecar(&manifest_path, &manifest_bytes);
+    }
+    fn write_resident_child_manifest(manifest_path: &Path, name: &str, mode: &str) {
+        std::fs::write(
+            manifest_path,
+            format!(
+                r#"[child]
+name = "{name}"
+version = "0.1.0"
+description = "resident test child"
+kind = "child"
+role = "app"
+
+[child.ingress]
+mode = "{mode}"
+
+[child.artifact]
+wasm = "{name}.wasm"
+
+[child.contract]
+allow = ["patina:demo/control@0.1.0.run"]
+
+[needs]
+toys = []
+
+[relationships]
+listens = []
+"#
+            ),
+        )
+        .unwrap();
+    }
+    fn write_sha256_sidecar(path: &Path, bytes: &[u8]) {
+        use sha2::{Digest, Sha256};
+
+        let mut sidecar = path.as_os_str().to_os_string();
+        sidecar.push(".sha256");
+        std::fs::write(
+            PathBuf::from(sidecar),
+            format!("{:x}", Sha256::digest(bytes)),
+        )
+        .unwrap();
+    }
     #[tokio::test]
     async fn first_boot_identity_is_durable_and_secret_free() {
         let dir = tempfile::tempdir().unwrap();
@@ -534,153 +647,6 @@ pub(super) mod tests {
         assert!(format!("{error:#}").contains("ledger"));
         assert!(!config_path.exists());
         assert!(!identity_path.exists());
-    }
-
-    fn contract_peer_expiry() -> Timestamp {
-        Timestamp::new("2099-01-01T00:00:00Z").unwrap()
-    }
-
-    fn test_call() -> MctCall {
-        MctCall {
-            call_id: CallId::new("call-cli-toy-expiry")
-                .expect("string ID literal/generated value must be non-empty"),
-            caller: CallerIdentity {
-                node_id: MctNodeId::new("local-mct")
-                    .expect("string ID literal/generated value must be non-empty"),
-                user_id: None,
-                vision_id: VisionId::new("vision-local")
-                    .expect("string ID literal/generated value must be non-empty"),
-                project_id: None,
-            },
-            target: OperationTarget {
-                namespace: "patina:demo".into(),
-                interface_name: "control@0.1.0".into(),
-                function_name: "run".into(),
-            },
-            payload_metadata: PayloadMetadata {
-                data_classification: "public".into(),
-                size_bytes: 0,
-                contains_secret_scoped_material: false,
-            },
-            authority_context: AuthorityContextSnapshot {
-                policy_revision: 1,
-                grants_revision: 1,
-                vision_policy_revision: 1,
-            },
-            deadline: Timestamp::new("2026-07-02T00:01:00Z").unwrap(),
-            trace_context: TraceContext {
-                trace_id: TraceId::new("trace-cli-toy-expiry")
-                    .expect("string ID literal/generated value must be non-empty"),
-                span_id: SpanId::new("span-cli-toy-expiry")
-                    .expect("string ID literal/generated value must be non-empty"),
-            },
-            origin: CallOrigin::Cli,
-        }
-    }
-
-    fn test_child() -> mct_daemon::MctLoadedChild {
-        mct_daemon::MctLoadedChild {
-            child_id: ChildId::new("child-demo")
-                .expect("string ID literal/generated value must be non-empty"),
-            name: "child-demo".into(),
-            version: "0.1.0".into(),
-            description: None,
-            kind: "wasm".into(),
-            role: None,
-            wasm_path: PathBuf::from("child-demo.wasm"),
-            manifest_path: PathBuf::from("child.toml"),
-            wasm_digest: mct_daemon::MctChildFileDigest {
-                sha256: "wasm".into(),
-                sidecar_present: true,
-                verified: true,
-            },
-            manifest_digest: mct_daemon::MctChildFileDigest {
-                sha256: "manifest".into(),
-                sidecar_present: true,
-                verified: true,
-            },
-            artifact_id: "artifact-demo".into(),
-            ingress_mode: mct_daemon::MctChildIngressMode::WitOnly,
-            allowed_operations: vec!["patina:demo/control@0.1.0.run".into()],
-            requested_toys: Vec::new(),
-            subscribed_streams: Vec::new(),
-            relationship_listens: Vec::new(),
-            wasm_size_bytes: 1,
-            instance_state: mct_daemon::MctChildInstanceState::Ready,
-        }
-    }
-
-    fn test_authorized_child() -> AuthorizedChildInvocation {
-        authority_test_fixture::authorized_child_for_call(
-            &test_call(),
-            "child-demo",
-            MctNodeId::new("local-mct")
-                .expect("string ID literal/generated value must be non-empty"),
-            "child",
-        )
-    }
-
-    fn test_contract(toy_id: &ToyId) -> CanonicalToyContract {
-        CanonicalToyContract {
-            toy_id: toy_id.clone(),
-            contract: ToyContractIdentity {
-                namespace: "patina".into(),
-                interface_name: "demo-toy".into(),
-                version: "0.1.0".into(),
-                function_name: Some("read".into()),
-                resource_name: None,
-            },
-            authority_bearing: true,
-            catalog_revision: 1,
-            admitted_by_observation_id: ObservationId::new("obs-contract")
-                .expect("string ID literal/generated value must be non-empty"),
-        }
-    }
-
-    fn expired_grant(toy_id: &ToyId) -> ToyGrant {
-        ToyGrant {
-            grant_id: ToyGrantId::new("grant-expired")
-                .expect("string ID literal/generated value must be non-empty"),
-            toy_id: toy_id.clone(),
-            subject: ToyGrantSubject {
-                child_name: "child-demo".into(),
-                artifact_id: "artifact-demo".into(),
-                artifact_version: "0.1.0".into(),
-                assignment_id: Some(
-                    ChildAssignmentId::new("assignment-child")
-                        .expect("string ID literal/generated value must be non-empty"),
-                ),
-                caller_node_id: Some(
-                    MctNodeId::new("local-mct")
-                        .expect("string ID literal/generated value must be non-empty"),
-                ),
-            },
-            scope: ToyGrantScope {
-                vision_id: VisionId::new("vision-local")
-                    .expect("string ID literal/generated value must be non-empty"),
-                node_id: Some(
-                    MctNodeId::new("local-mct")
-                        .expect("string ID literal/generated value must be non-empty"),
-                ),
-                project_id: None,
-                data_classification: Some("public".into()),
-                resource_id: Some("resource-a".into()),
-                allowed_actions: vec!["read".into()],
-            },
-            constraints: ToyGrantConstraints {
-                starts_at: None,
-                expires_at: Some(Timestamp::new("2026-06-01T00:00:00Z").unwrap()),
-                max_uses: None,
-                max_duration_ms: None,
-                locality_required: false,
-            },
-            grant_state: ToyGrantState::Active,
-            issuer_id: "issuer".into(),
-            policy_revision: 1,
-            grants_revision: 1,
-            authority_observation_id: ObservationId::new("obs-grant")
-                .expect("string ID literal/generated value must be non-empty"),
-        }
     }
 
     #[tokio::test]
@@ -1072,8 +1038,6 @@ pub(super) mod tests {
         client.close().await;
     }
 
-    /// Covers `MctCallProtocol.CurrentAuthorityPrecedesReplay` for revocation,
-    /// binding expiry, and Vision narrowing on the real resident peer path.
     #[tokio::test]
     async fn resident_mother_payload_roundtrip_verifies_result_digest() {
         let dir = tempfile::tempdir().unwrap();
@@ -1343,190 +1307,6 @@ pub(super) mod tests {
         assert!(!ledger_text.contains(&signature_marker));
     }
 
-    async fn post_resident_peer_mutation(
-        socket_path: &Path,
-        path: &str,
-        body: serde_json::Value,
-    ) -> serde_json::Value {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-        let body = serde_json::to_vec(&body).unwrap();
-        let mut control = tokio::net::UnixStream::connect(socket_path).await.unwrap();
-        control
-            .write_all(
-                format!(
-                    "POST {path} HTTP/1.1\r\nHost: local\r\nContent-Length: {}\r\n\r\n",
-                    body.len()
-                )
-                .as_bytes(),
-            )
-            .await
-            .unwrap();
-        control.write_all(&body).await.unwrap();
-        let mut response = Vec::new();
-        control.read_to_end(&mut response).await.unwrap();
-        let response = String::from_utf8(response).unwrap();
-        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-        serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap()
-    }
-
-    async fn poll_resident_status(
-        socket_path: &Path,
-        ready: impl Fn(&MctDaemonStatus) -> bool,
-    ) -> MctDaemonStatus {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-        let mut last = None;
-        for _ in 0..40 {
-            let mut control = tokio::net::UnixStream::connect(socket_path).await.unwrap();
-            control
-                .write_all(b"GET /status HTTP/1.1\r\nHost: local\r\n\r\n")
-                .await
-                .unwrap();
-            let mut response = vec![0; 4096];
-            let read = control.read(&mut response).await.unwrap();
-            let response = String::from_utf8_lossy(&response[..read]);
-            assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-            let (_, body) = response
-                .split_once("\r\n\r\n")
-                .expect("HTTP response separates headers from body");
-            let status: MctDaemonStatus = serde_json::from_str(body).unwrap();
-            if ready(&status) {
-                return status;
-            }
-            last = Some(status);
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        panic!("resident status did not become ready: {last:?}");
-    }
-
-    pub(crate) fn resident_test_call(trace_id: TraceId) -> MctCall {
-        let mut call = local_wasm_call(OperationTarget {
-            namespace: "patina:demo".into(),
-            interface_name: "control@0.1.0".into(),
-            function_name: "run".into(),
-        });
-        call.call_id = CallId::new("call-resident-wit")
-            .expect("string ID literal/generated value must be non-empty");
-        call.trace_context.trace_id = trace_id;
-        call.origin = CallOrigin::Iroh;
-        call
-    }
-
-    pub(crate) fn resident_test_protocol_request(call: MctCall) -> MctCallProtocolRequest {
-        MctCallProtocolRequest {
-            protocol_request_id: ProtocolRequestId::new("proto-resident-wit")
-                .expect("string ID literal/generated value must be non-empty"),
-            authority: MctCallProtocolAuthority {
-                hello_decision_id: DecisionId::new("decision-resident-wit-hello")
-                    .expect("string ID literal/generated value must be non-empty"),
-                peer_binding_id: PeerBindingId::new("binding-resident-wit")
-                    .expect("string ID literal/generated value must be non-empty"),
-                vision_id: VisionId::new("vision-local")
-                    .expect("string ID literal/generated value must be non-empty"),
-                accepted_alpn: MCT_CALL_ALPN.into(),
-                endpoint_id: EndpointIdText::new("endpoint-resident-wit")
-                    .expect("string ID literal/generated value must be non-empty"),
-                policy_revision: 1,
-                grants_revision: 1,
-            },
-            received_over: IrohConnectionPresentation {
-                endpoint_id: EndpointIdText::new("endpoint-resident-wit")
-                    .expect("string ID literal/generated value must be non-empty"),
-                alpn: MCT_CALL_ALPN.into(),
-                connection_side: ConnectionSide::Incoming,
-                path_class: PathClass::Direct,
-                relay_url: None,
-                presented_capability_ref: None,
-            },
-            call,
-            payload: MctCallPayloadHandle::Empty,
-            idempotency_key: None,
-            received_observation_id: ObservationId::new("obs-resident-wit-received")
-                .expect("string ID literal/generated value must be non-empty"),
-        }
-    }
-
-    pub(crate) fn write_resident_process_child(children_dir: &Path) {
-        write_resident_process_child_script(
-            children_dir,
-            "resident-echo",
-            b"#!/bin/sh\ncat >/dev/null\nprintf '{\\\"ok\\\":true}'\n",
-        );
-    }
-
-    fn write_resident_payload_process_child(children_dir: &Path) {
-        write_resident_process_child_script(
-            children_dir,
-            "resident-payload-echo",
-            b"#!/bin/sh\npayload=$(cat)\nprintf 'processed:%s' \"$payload\"\n",
-        );
-    }
-
-    fn write_resident_process_child_script(children_dir: &Path, name: &str, script: &[u8]) {
-        #[cfg(unix)]
-        use std::os::unix::fs::PermissionsExt;
-
-        let child_dir = children_dir.join(name);
-        std::fs::create_dir_all(&child_dir).unwrap();
-        let artifact_path = child_dir.join(format!("{name}.wasm"));
-        let manifest_path = child_dir.join("child.toml");
-        std::fs::write(&artifact_path, script).unwrap();
-        #[cfg(unix)]
-        {
-            let mut permissions = std::fs::metadata(&artifact_path).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&artifact_path, permissions).unwrap();
-        }
-        write_resident_child_manifest(&manifest_path, name, "handle");
-        write_sha256_sidecar(&artifact_path, script);
-        let manifest_bytes = std::fs::read(&manifest_path).unwrap();
-        write_sha256_sidecar(&manifest_path, &manifest_bytes);
-    }
-
-    fn write_resident_child_manifest(manifest_path: &Path, name: &str, mode: &str) {
-        std::fs::write(
-            manifest_path,
-            format!(
-                r#"[child]
-name = "{name}"
-version = "0.1.0"
-description = "resident test child"
-kind = "child"
-role = "app"
-
-[child.ingress]
-mode = "{mode}"
-
-[child.artifact]
-wasm = "{name}.wasm"
-
-[child.contract]
-allow = ["patina:demo/control@0.1.0.run"]
-
-[needs]
-toys = []
-
-[relationships]
-listens = []
-"#
-            ),
-        )
-        .unwrap();
-    }
-
-    fn write_sha256_sidecar(path: &Path, bytes: &[u8]) {
-        use sha2::{Digest, Sha256};
-
-        let mut sidecar = path.as_os_str().to_os_string();
-        sidecar.push(".sha256");
-        std::fs::write(
-            PathBuf::from(sidecar),
-            format!("{:x}", Sha256::digest(bytes)),
-        )
-        .unwrap();
-    }
-
     #[test]
     fn resident_status_source_reflects_closed_endpoint() {
         let endpoint = Arc::new(Mutex::new(MotherIrohEndpointSnapshot {
@@ -1538,14 +1318,14 @@ listens = []
             relay_urls: Vec::new(),
             relay_mode: MotherIrohRelayMode::Disabled,
         }));
-        let source = ResidentStatusSource {
-            endpoint: Arc::clone(&endpoint),
-            accepted_connection_count: Arc::new(AtomicU64::new(3)),
-            loaded_child_count: 2,
-            approved_child_count: 1,
-            binding_count: 4,
-            ledger_path: PathBuf::from("/path/that/does/not/exist.jsonl"),
-        };
+        let source = ResidentStatusSource::new(
+            Arc::clone(&endpoint),
+            Arc::new(AtomicU64::new(3)),
+            2,
+            1,
+            4,
+            PathBuf::from("/path/that/does/not/exist.jsonl"),
+        );
 
         let live = source.status();
         assert_eq!(live.readiness, mct_daemon::MctDaemonReadiness::Ready);
@@ -1555,102 +1335,5 @@ listens = []
         let closed = source.status();
         assert_eq!(closed.readiness, mct_daemon::MctDaemonReadiness::NotReady);
         assert_eq!(closed.safe_message, "iroh endpoint not ready");
-    }
-
-    #[tokio::test]
-    async fn control_snapshot_unopenable_state_projects_error_response() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = ControlSnapshotSource::open(dir.path());
-
-        let snapshot = control_snapshot(&source).await;
-        let response = mct_daemon::handle_control_plane_path_result_with_auth(
-            "GET",
-            "/snapshot",
-            snapshot.as_ref(),
-            &mct_daemon::MctControlPlaneAuthPolicy::open_local(),
-            None,
-        );
-
-        assert!(matches!(
-            snapshot,
-            Err(MctControlPlaneSnapshotError::RuntimeStateUnavailable { .. })
-        ));
-        assert_eq!(response.status_code, 503);
-        assert!(response.body.contains("runtime state unavailable"));
-        assert!(response.body.contains("not_ready"));
-        assert!(!response.body.contains("\"ready\""));
-    }
-
-    #[test]
-    fn authorize_secret_cli_persists_scoped_grant_without_value() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("config.json");
-        let state_path = dir.path().join("state.sqlite");
-        let children_dir = dir.path().join("children");
-        write_resident_process_child(&children_dir);
-        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
-        let child = loaded
-            .children
-            .iter()
-            .find(|child| child.name == "resident-echo")
-            .unwrap();
-        MctDaemonConfigStore::new(&config_path)
-            .approve_and_assign_loaded_child(child, MctOperatorChildScope::default())
-            .unwrap();
-
-        run_toys_authorize_secret(vec![
-            "resident-echo".into(),
-            "api-token".into(),
-            "--children-dir".into(),
-            children_dir.display().to_string(),
-            "--config".into(),
-            config_path.display().to_string(),
-            "--state".into(),
-            state_path.display().to_string(),
-            "--ledger".into(),
-            dir.path().join("observations.jsonl").display().to_string(),
-            "--uds".into(),
-            dir.path().join("missing.sock").display().to_string(),
-        ])
-        .unwrap();
-
-        let state = MctRuntimeStateStore::open(&state_path).unwrap();
-        let contracts = state.toy_contracts().unwrap();
-        let grants = state.toy_grant_snapshots().unwrap();
-        assert_eq!(contracts, vec![mct_secrets_toy_contract()]);
-        assert_eq!(grants.len(), 1);
-        assert_eq!(grants[0].toy_id.as_str(), MCT_SECRETS_TOY_ID);
-        assert_eq!(grants[0].scope.resource_id.as_deref(), Some("api-token"));
-        let grant_json = serde_json::to_string(&grants).unwrap();
-        assert!(!grant_json.contains("super-secret"));
-    }
-
-    #[test]
-    fn authorize_cli_toy_denies_expired_grant_against_current_time() {
-        let child = test_child();
-        let authorized_child = test_authorized_child();
-        let call = test_call();
-        let toy_id =
-            ToyId::new("toy-demo").expect("string ID literal/generated value must be non-empty");
-        let contracts = vec![test_contract(&toy_id)];
-        let grants = vec![expired_grant(&toy_id)];
-
-        let result = authorize_cli_toy(CliToyAuthorizationRequest {
-            child: &child,
-            authorized_child: &authorized_child,
-            call: &call,
-            contracts: &contracts,
-            grants: &grants,
-            toy_id,
-            action: "read",
-            resource_id: Some("resource-a".into()),
-            label: "expired",
-        });
-
-        let Err(error) = result else {
-            panic!("expired grant must deny");
-        };
-        assert!(error.safe_message.contains("ExpiredGrant"));
-        assert_eq!(error.observations[0].outcome, ObservationOutcome::Denied);
     }
 }

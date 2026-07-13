@@ -147,7 +147,7 @@ pushes, PRs, or merges.
 - [x] R2.7: extract resident execution.
 - [x] R2.8: extract resident forwarding.
 - [x] R2.9: extract resident pipeline.
-- [ ] R2.10: extract resident serving.
+- [x] R2.10: extract resident serving.
 - [ ] R2.11: close with line counts, test counts, implemented record table, itch list, and ROADMAP disposition.
 
 ## Validation log
@@ -1207,4 +1207,208 @@ help: a method `children_dir` also exists, call it with parentheses
 Some errors have detailed explanations: E0425, E0616.
 For more information about an error, try `rustc --explain E0425`.
 error: could not compile `mct-daemon` (bin "mct-daemon") due to 12 previous errors
+```
+
+### R2.10 serving test relocation compile failure
+
+```text
+$ cargo test -p mct-daemon --bin mct-daemon --no-run
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0425]: cannot find function `run_resident_mother` in this scope
+    --> crates/mct-daemon/src/daemon/resident/forwarding.rs:1007:37
+     |
+1007 |         let mother_b = tokio::spawn(run_resident_mother(
+     |                                     ^^^^^^^^^^^^^^^^^^^ not found in this scope
+     |
+note: function `crate::resident::serving::run_resident_mother` exists but is inaccessible
+    --> crates/mct-daemon/src/daemon/resident/serving.rs:129:1
+     |
+ 129 | / async fn run_resident_mother<S>(
+ 130 | |     config: ResidentMotherConfig,
+ 131 | |     shutdown: S,
+ 132 | |     ready: Option<tokio::sync::oneshot::Sender<MotherIrohEndpointTicket>>,
+...    |
+ 301 | |     serve_result
+ 302 | | }
+     | |_^ not accessible
+
+error[E0422]: cannot find struct, variant or union type `ResidentMotherConfig` in this scope
+    --> crates/mct-daemon/src/daemon/resident/forwarding.rs:1008:13
+     |
+1008 |             ResidentMotherConfig {
+     |             ^^^^^^^^^^^^^^^^^^^^ not found in this scope
+     |
+note: struct `crate::resident::serving::ResidentMotherConfig` exists but is inaccessible
+    --> crates/mct-daemon/src/daemon/resident/serving.rs:62:1
+     |
+  62 | struct ResidentMotherConfig {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ not accessible
+
+error[E0433]: cannot find type `ResidentControlTransport` in this scope
+    --> crates/mct-daemon/src/daemon/resident/forwarding.rs:1014:26
+     |
+1014 |                 control: ResidentControlTransport::Uds(mother_b_socket_path),
+     |                          ^^^^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `ResidentControlTransport`
+     |
+note: enum `crate::resident::serving::ResidentControlTransport` exists but is inaccessible
+    --> crates/mct-daemon/src/daemon/resident/serving.rs:56:1
+     |
+  56 | enum ResidentControlTransport {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not accessible
+
+error[E0425]: cannot find function `write_resident_process_child` in this scope
+    --> crates/mct-daemon/src/daemon/resident/serving.rs:624:9
+     |
+ 490 |     fn write_resident_process_child_script(children_dir: &Path, name: &str, script: &[u8]) {
+     |     -------------------------------------------------------------------------------------- similarly named function `write_resident_process_child_script` defined here
+...
+ 624 |         write_resident_process_child(&children_dir);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+note: these functions exist but are inaccessible
+    --> crates/mct-daemon/src/daemon/resident/candidates.rs:609:5
+     |
+ 609 |     fn write_resident_process_child(children_dir: &Path) {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `crate::resident::candidates::tests::write_resident_process_child`: not accessible
+     |
+    ::: crates/mct-daemon/src/daemon/cli_admin.rs:1022:5
+     |
+1022 |     pub(crate) fn write_resident_process_child(children_dir: &Path) {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `crate::cli_admin::tests::write_resident_process_child`: not accessible
+     |
+    ::: crates/mct-daemon/src/daemon/resident/decision.rs:558:5
+     |
+ 558 |     fn write_resident_process_child(children_dir: &Path) {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `crate::resident::decision::tests::write_resident_process_child`: not accessible
+     |
+    ::: crates/mct-daemon/src/daemon/resident/forwarding.rs:844:5
+     |
+ 844 |     fn write_resident_process_child(children_dir: &Path) {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `crate::resident::forwarding::tests::write_resident_process_child`: not accessible
+help: a function with a similar name exists
+     |
+ 624 |         write_resident_process_child_script(&children_dir);
+     |                                     +++++++
+help: consider importing this function
+     |
+ 422 +     use crate::tests::write_resident_process_child;
+     |
+
+error[E0425]: cannot find function `write_resident_process_child` in this scope
+    --> crates/mct-daemon/src/daemon/resident/serving.rs:811:9
+     |
+ 490 |     fn write_resident_process_child_script(children_dir: &Path, name: &str, script: &[u8]) {
+     |     -------------------------------------------------------------------------------------- similarly named function `write_resident_process_child_script` defined here
+...
+ 811 |         write_resident_process_child(&children_dir);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+note: these functions exist but are inaccessible
+    --> crates/mct-daemon/src/daemon/resident/candidates.rs:609:5
+     |
+ 609 |     fn write_resident_process_child(children_dir: &Path) {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `crate::resident::candidates::tests::write_resident_process_child`: not accessible
+     |
+    ::: crates/mct-daemon/src/daemon/cli_admin.rs:1022:5
+     |
+1022 |     pub(crate) fn write_resident_process_child(children_dir: &Path) {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `crate::cli_admin::tests::write_resident_process_child`: not accessible
+     |
+    ::: crates/mct-daemon/src/daemon/resident/decision.rs:558:5
+     |
+ 558 |     fn write_resident_process_child(children_dir: &Path) {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `crate::resident::decision::tests::write_resident_process_child`: not accessible
+     |
+    ::: crates/mct-daemon/src/daemon/resident/forwarding.rs:844:5
+     |
+ 844 |     fn write_resident_process_child(children_dir: &Path) {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `crate::resident::forwarding::tests::write_resident_process_child`: not accessible
+help: a function with a similar name exists
+     |
+ 811 |         write_resident_process_child_script(&children_dir);
+     |                                     +++++++
+help: consider importing this function
+     |
+ 422 +     use crate::tests::write_resident_process_child;
+     |
+
+warning: unused import: `base64::engine::general_purpose::STANDARD as BASE64_STANDARD`
+  --> crates/mct-daemon/src/daemon/resident.rs:46:9
+   |
+46 |     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+Some errors have detailed explanations: E0422, E0425, E0433.
+For more information about an error, try `rustc --explain E0422`.
+warning: `mct-daemon` (bin "mct-daemon" test) generated 1 warning
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 5 previous errors; 1 warning emitted
+```
+
+### R2.10 serving extraction Clippy failure
+
+```text
+$ cargo clippy --workspace --all-targets -- -D warnings
+    Checking mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error: this function has too many arguments (9/7)
+   --> crates/mct-daemon/src/daemon/resident/serving.rs:130:1
+    |
+130 | / pub(super) async fn run_test_resident_mother<S>(
+131 | |     config_path: PathBuf,
+132 | |     identity_path: PathBuf,
+133 | |     children_dir: PathBuf,
+...   |
+141 | | where
+142 | |     S: std::future::Future<Output = ()> + Send,
+    | |_______________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#too_many_arguments
+    = note: `-D clippy::too-many-arguments` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::too_many_arguments)]`
+
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 1 previous error
+```
+
+### R2.10 façade relocation compile failure
+
+```text
+$ cargo check --workspace
+    Checking mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error: couldn't read `crates/mct-daemon/src/daemon/resident.rs`: No such file or directory (os error 2)
+  --> crates/mct-daemon/src/main.rs:93:1
+   |
+93 | mod resident;
+   | ^^^^^^^^^^^^^
+
+error: could not compile `mct-daemon` (bin "mct-daemon") due to 1 previous error
+```
+
+### R2.10 façade narrowing Clippy failure
+
+```text
+$ cargo clippy --workspace --all-targets -- -D warnings
+    Checking mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error: unused imports: `PayloadFailure`, `VerifiedRequestPayload`, `declared_payload_digest`, `observed_local_blob_payload`, `resident_payload_integrity_failure_observation`, and `resident_payload_resolution_failure`
+  --> crates/mct-daemon/src/daemon/resident/mod.rs:9:5
+   |
+ 9 |     PayloadFailure, VerifiedRequestPayload, declared_payload_digest, inline_payload_content_type,
+   |     ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^
+10 |     inline_result_payload_handle, observed_local_blob_payload, resident_payload_fact_observation,
+   |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+11 |     resident_payload_integrity_failure_observation, resident_payload_resolution_failure,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `-D unused-imports` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(unused_imports)]`
+
+error: unused import: `remote_surface_stale_at`
+  --> crates/mct-daemon/src/daemon/resident/mod.rs:21:58
+   |
+21 |     refresh_remote_surfaces_from_admitted_hello_request, remote_surface_stale_at,
+   |                                                          ^^^^^^^^^^^^^^^^^^^^^^^
+
+error: could not compile `mct-daemon` (bin "mct-daemon") due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 1 previous error
 ```

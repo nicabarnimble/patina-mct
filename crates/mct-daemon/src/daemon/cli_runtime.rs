@@ -1176,4 +1176,170 @@ mod tests {
         );
         assert!(authority.is_allowed(), "{:#?}", authority.evaluation);
     }
+    fn test_call() -> MctCall {
+        MctCall {
+            call_id: CallId::new("call-cli-toy-expiry")
+                .expect("string ID literal/generated value must be non-empty"),
+            caller: CallerIdentity {
+                node_id: MctNodeId::new("local-mct")
+                    .expect("string ID literal/generated value must be non-empty"),
+                user_id: None,
+                vision_id: VisionId::new("vision-local")
+                    .expect("string ID literal/generated value must be non-empty"),
+                project_id: None,
+            },
+            target: OperationTarget {
+                namespace: "patina:demo".into(),
+                interface_name: "control@0.1.0".into(),
+                function_name: "run".into(),
+            },
+            payload_metadata: PayloadMetadata {
+                data_classification: "public".into(),
+                size_bytes: 0,
+                contains_secret_scoped_material: false,
+            },
+            authority_context: AuthorityContextSnapshot {
+                policy_revision: 1,
+                grants_revision: 1,
+                vision_policy_revision: 1,
+            },
+            deadline: Timestamp::new("2026-07-02T00:01:00Z").unwrap(),
+            trace_context: TraceContext {
+                trace_id: TraceId::new("trace-cli-toy-expiry")
+                    .expect("string ID literal/generated value must be non-empty"),
+                span_id: SpanId::new("span-cli-toy-expiry")
+                    .expect("string ID literal/generated value must be non-empty"),
+            },
+            origin: CallOrigin::Cli,
+        }
+    }
+    fn test_child() -> mct_daemon::MctLoadedChild {
+        mct_daemon::MctLoadedChild {
+            child_id: ChildId::new("child-demo")
+                .expect("string ID literal/generated value must be non-empty"),
+            name: "child-demo".into(),
+            version: "0.1.0".into(),
+            description: None,
+            kind: "wasm".into(),
+            role: None,
+            wasm_path: PathBuf::from("child-demo.wasm"),
+            manifest_path: PathBuf::from("child.toml"),
+            wasm_digest: mct_daemon::MctChildFileDigest {
+                sha256: "wasm".into(),
+                sidecar_present: true,
+                verified: true,
+            },
+            manifest_digest: mct_daemon::MctChildFileDigest {
+                sha256: "manifest".into(),
+                sidecar_present: true,
+                verified: true,
+            },
+            artifact_id: "artifact-demo".into(),
+            ingress_mode: mct_daemon::MctChildIngressMode::WitOnly,
+            allowed_operations: vec!["patina:demo/control@0.1.0.run".into()],
+            requested_toys: Vec::new(),
+            subscribed_streams: Vec::new(),
+            relationship_listens: Vec::new(),
+            wasm_size_bytes: 1,
+            instance_state: mct_daemon::MctChildInstanceState::Ready,
+        }
+    }
+    fn test_authorized_child() -> AuthorizedChildInvocation {
+        authority_test_fixture::authorized_child_for_call(
+            &test_call(),
+            "child-demo",
+            MctNodeId::new("local-mct")
+                .expect("string ID literal/generated value must be non-empty"),
+            "child",
+        )
+    }
+    fn test_contract(toy_id: &ToyId) -> CanonicalToyContract {
+        CanonicalToyContract {
+            toy_id: toy_id.clone(),
+            contract: ToyContractIdentity {
+                namespace: "patina".into(),
+                interface_name: "demo-toy".into(),
+                version: "0.1.0".into(),
+                function_name: Some("read".into()),
+                resource_name: None,
+            },
+            authority_bearing: true,
+            catalog_revision: 1,
+            admitted_by_observation_id: ObservationId::new("obs-contract")
+                .expect("string ID literal/generated value must be non-empty"),
+        }
+    }
+    fn expired_grant(toy_id: &ToyId) -> ToyGrant {
+        ToyGrant {
+            grant_id: ToyGrantId::new("grant-expired")
+                .expect("string ID literal/generated value must be non-empty"),
+            toy_id: toy_id.clone(),
+            subject: ToyGrantSubject {
+                child_name: "child-demo".into(),
+                artifact_id: "artifact-demo".into(),
+                artifact_version: "0.1.0".into(),
+                assignment_id: Some(
+                    ChildAssignmentId::new("assignment-child")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
+                caller_node_id: Some(
+                    MctNodeId::new("local-mct")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
+            },
+            scope: ToyGrantScope {
+                vision_id: VisionId::new("vision-local")
+                    .expect("string ID literal/generated value must be non-empty"),
+                node_id: Some(
+                    MctNodeId::new("local-mct")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
+                project_id: None,
+                data_classification: Some("public".into()),
+                resource_id: Some("resource-a".into()),
+                allowed_actions: vec!["read".into()],
+            },
+            constraints: ToyGrantConstraints {
+                starts_at: None,
+                expires_at: Some(Timestamp::new("2026-06-01T00:00:00Z").unwrap()),
+                max_uses: None,
+                max_duration_ms: None,
+                locality_required: false,
+            },
+            grant_state: ToyGrantState::Active,
+            issuer_id: "issuer".into(),
+            policy_revision: 1,
+            grants_revision: 1,
+            authority_observation_id: ObservationId::new("obs-grant")
+                .expect("string ID literal/generated value must be non-empty"),
+        }
+    }
+    #[test]
+    fn authorize_cli_toy_denies_expired_grant_against_current_time() {
+        let child = test_child();
+        let authorized_child = test_authorized_child();
+        let call = test_call();
+        let toy_id =
+            ToyId::new("toy-demo").expect("string ID literal/generated value must be non-empty");
+        let contracts = vec![test_contract(&toy_id)];
+        let grants = vec![expired_grant(&toy_id)];
+
+        let result = authorize_cli_toy(CliToyAuthorizationRequest {
+            child: &child,
+            authorized_child: &authorized_child,
+            call: &call,
+            contracts: &contracts,
+            grants: &grants,
+            toy_id,
+            action: "read",
+            resource_id: Some("resource-a".into()),
+            label: "expired",
+        });
+
+        let Err(error) = result else {
+            panic!("expired grant must deny");
+        };
+        assert!(error.safe_message.contains("ExpiredGrant"));
+        assert_eq!(error.observations[0].outcome, ObservationOutcome::Denied);
+    }
 }

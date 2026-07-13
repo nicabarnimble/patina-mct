@@ -46,8 +46,8 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 | `CurrentIdempotencyEntryNeverSilentlyReexecutes` | COVERED | `mct_daemon_bin::resident::idempotency::tests::resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage`; `mct_daemon_bin::resident::idempotency::tests::in_flight_idempotency_duplicate_refuses_without_second_execution` |
 | `InFlightDuplicateIsRefused` | COVERED | `mct_daemon_bin::resident::idempotency::tests::in_flight_idempotency_duplicate_refuses_without_second_execution` |
 | `IdempotencyStateSurvivesRestart` | COVERED | `mct_daemon::state::tests::idempotency_store_scopes_reserves_replays_expires_and_survives_reopen` |
-| `CurrentAuthorityPrecedesReplay` — revocation | COVERED | `mct_daemon_bin::resident::tests::resident_mother_payload_roundtrip_verifies_result_digest` |
-| `CurrentAuthorityPrecedesReplay` — expiry and narrowed Vision | COVERED | `mct_daemon_bin::resident::tests::resident_mother_payload_roundtrip_verifies_result_digest` records one keyed success, then proves identical retries after expiry and Vision narrowing are denied without cached payload. |
+| `CurrentAuthorityPrecedesReplay` — revocation | COVERED | `mct_daemon_bin::resident::serving::tests::resident_mother_payload_roundtrip_verifies_result_digest` |
+| `CurrentAuthorityPrecedesReplay` — expiry and narrowed Vision | COVERED | `mct_daemon_bin::resident::serving::tests::resident_mother_payload_roundtrip_verifies_result_digest` records one keyed success, then proves identical retries after expiry and Vision narrowing are denied without cached payload. |
 | `CurrentAuthorityPrecedesReplay` — narrowed ALPN | DEFERRED | Persisted peer bindings currently expose the fixed `mct/hello/0` + `mct/call/0` protocol scope and have no operator ALPN-narrowing surface. A replay test requires the future configurable binding-scope model; inventing that authority surface is outside propagation. Current call-time ALPN revalidation remains covered by `mct_iroh::tests::call_rechecks_narrowed_alpn_scope_after_hello`. |
 | `CrossMotherReplayRequiresFederationContract` | COVERED | `mct_daemon::state::tests::idempotency_store_scopes_reserves_replays_expires_and_survives_reopen` proves caller/store isolation; `mct_daemon_bin::resident::forwarding::tests::two_mother_forwards_selected_call_over_iroh_and_maps_reply` uses separate Mother stores. |
 
@@ -56,7 +56,7 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 | Invariant / obligation | Status | Evidence |
 |---|---|---|
 | `MctCallProtocol.PayloadBytesAreBoundedByNamedConstants` | COVERED | `mct_iroh::tests::call_frame_budget_refuses_oversized_request`; `mct_iroh::tests::call_payload_caps_fail_closed`; `mct_iroh::tests::caller_rejects_reply_digest_mismatch_and_oversized_result`; `mct_daemon::blob_store::tests::ingest_rejects_oversized_input_before_visibility` |
-| `MctCallProtocol.PayloadIntegrityIsVerifiedAtIngress` | COVERED | `mct_iroh::tests::call_payload_integrity_failures_are_malformed_before_authority`; `mct_daemon_bin::resident::tests::resident_mother_payload_roundtrip_verifies_result_digest` |
+| `MctCallProtocol.PayloadIntegrityIsVerifiedAtIngress` | COVERED | `mct_iroh::tests::call_payload_integrity_failures_are_malformed_before_authority`; `mct_daemon_bin::resident::serving::tests::resident_mother_payload_roundtrip_verifies_result_digest` |
 | `MctPayloadIntegrityAndLocalCas.ExactSizeAndDigestBeforeUse` | COVERED | `mct_kernel::call::tests::payload_integrity_decisions_cover_request_mismatch_classes`; `mct_kernel::call::tests::payload_integrity_decisions_cover_reply_result_mismatch_classes` |
 | `StorageIsBoundedByNamedConstant` | COVERED | `mct_daemon::blob_store::tests::ingest_rejects_oversized_input_before_visibility` |
 | `VerifyThenAtomicallyPublish` | COVERED | `mct_daemon::blob_store::tests::ingest_rejects_digest_mismatch_without_visible_blob`; `mct_daemon_bin::control::tests::resident_blob_ingest_observes_success_and_typed_rejections_without_bytes` |
@@ -91,7 +91,7 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 |---|---|---|
 | `MctIrohPeerBindingAuthority.EveryPeerBindingIsTimeBounded` | COVERED | `mct_kernel::peer::tests::binding_without_expiry_fails_closed`; `mct_kernel::peer::tests::active_binding_past_expiry_is_denied`; `mct_iroh::tests::call_rechecks_binding_expiry_after_hello` |
 | `BindingProofCoversCanonicalDirectionalRecord` | COVERED | `mct_iroh::identity::tests::peer_binding_signature_ref_roundtrips_and_fails_on_tamper` |
-| `InvalidBindingProofFailsClosed` | COVERED | `mct_iroh::tests::concurrent_serve_requires_signed_peer_binding_when_configured`; `mct_daemon_bin::resident::tests::resident_mother_rejects_unsigned_peer_binding`; `mct_daemon_bin::resident::candidates::tests::resident_remote_route_candidates_reject_unsigned_peer_binding` |
+| `InvalidBindingProofFailsClosed` | COVERED | `mct_iroh::tests::concurrent_serve_requires_signed_peer_binding_when_configured`; `mct_daemon_bin::resident::serving::tests::resident_mother_rejects_unsigned_peer_binding`; `mct_daemon_bin::resident::candidates::tests::resident_remote_route_candidates_reject_unsigned_peer_binding` |
 | `ProofDoesNotBecomeRelationshipOntology` | COVERED | `mct_daemon_bin::resident::candidates::tests::resident_remote_surface_candidate_becomes_admissible_when_all_checks_pass` requires proof plus independent authority/publication/reachability facts. |
 
 ### Observation durability and coverage
