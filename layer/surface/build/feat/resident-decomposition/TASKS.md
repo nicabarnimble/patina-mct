@@ -153,8 +153,13 @@ pushes, PRs, or merges.
 ## Validation log
 
 - Baseline at `97e3041`: 290 passed, 0 ignored, total 290.
+- Baseline after the approved JVM local-CAS behavior fix `2a43b0f`: 291 passed, 0 ignored, total 291. All R2 extraction commits and close-out compare against 291.
 - First phase commit: workspace tests 290, Clippy clean with warnings denied, Tier 0 clean, diff check clean.
 - R1 pre-commit gate: workspace tests 290, Clippy clean with warnings denied, Tier 0 clean, diff check clean.
+
+## Condition-4 finding
+
+- The production JVM adapter constructed `ResidentRequestPayload::remote` despite being a local ingress origin. The operator adjudicated the production constructor as the bug; `2a43b0f` now uses the local-CAS-permitting path, covered by `ingress::tests::jvm_ingress_dereferences_local_content_addressed_blob`.
 
 ## Failure log
 
