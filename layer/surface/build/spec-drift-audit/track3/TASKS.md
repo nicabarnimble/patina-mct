@@ -442,7 +442,8 @@ Extend the existing slice-1 ledger without restructuring it so every named invar
 | S1 `6f574c4` | 0 | 291 | 291 passed, 0 ignored |
 | S2.1 `6c687da` | 0 | 291 | 291 passed, 0 ignored |
 | S2.2 STOP record `01b470b` | 0 | 291 | 291 passed, 0 ignored |
-| S2.2 fix `fix(kernel): preserve cancelled protocol outcomes` | 3 | 294 | pending commit validation |
+| S2.2 fix `8565636` | 3 | 294 | 294 passed, 0 ignored |
+| S2.2 disposition `docs: record cancelled outcome adjudication` | 0 | 294 | pending commit validation |
 
 ## Slice 2 S1 inventory result
 
