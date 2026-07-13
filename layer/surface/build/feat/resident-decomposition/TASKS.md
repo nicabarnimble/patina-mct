@@ -140,7 +140,7 @@ pushes, PRs, or merges.
 - [x] R2.0: amend the SPEC with the gate conditions and validate.
 - [x] R2.1: extract resident observation.
 - [x] R2.2: extract resident payload.
-- [ ] R2.3: extract resident publication.
+- [x] R2.3: extract resident publication.
 - [ ] R2.4: extract resident idempotency.
 - [ ] R2.5: extract resident candidates.
 - [ ] R2.6: extract resident decision.
@@ -472,4 +472,57 @@ help: a struct with a similar name exists
 
 For more information about this error, try `rustc --explain E0433`.
 error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 3 previous errors
+```
+
+### R2.3 publication extraction compile failure
+
+```text
+$ cargo check --workspace
+    Checking mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0425]: cannot find function `refresh_remote_surfaces_from_admitted_hello_response` in this scope
+   --> crates/mct-daemon/src/daemon/ingress.rs:808:5
+    |
+808 |     refresh_remote_surfaces_from_admitted_hello_response(
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+    |
+note: function `crate::resident::refresh_remote_surfaces_from_admitted_hello_response` exists but is inaccessible
+   --> crates/mct-daemon/src/daemon/resident/publication.rs:85:1
+    |
+ 85 | / pub(super) fn refresh_remote_surfaces_from_admitted_hello_response(
+ 86 | |     state_path: &Path,
+ 87 | |     peer: &MctPeerAddressBookEntry,
+ 88 | |     response: &MctHelloResponse,
+...   |
+111 | |     Ok(true)
+112 | | }
+    | |_^ not accessible
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `mct-daemon` (bin "mct-daemon") due to 1 previous error
+```
+
+### R2.3 publication test relocation compile failure
+
+```text
+$ cargo test -p mct-daemon --bin mct-daemon resident::publication::tests
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0425]: cannot find function `contract_peer_expiry` in this scope
+    --> crates/mct-daemon/src/daemon/resident/publication.rs:145:25
+     |
+ 145 |             expires_at: contract_peer_expiry(),
+     |                         ^^^^^^^^^^^^^^^^^^^^ not found in this scope
+     |
+note: these functions exist but are inaccessible
+    --> crates/mct-daemon/src/daemon/resident.rs:2676:5
+     |
+2676 |     fn contract_peer_expiry() -> Timestamp {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `crate::tests::contract_peer_expiry`: not accessible
+     |
+    ::: crates/mct-daemon/src/daemon/resident/observation.rs:146:5
+     |
+ 146 |     fn contract_peer_expiry() -> Timestamp {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `crate::resident::observation::tests::contract_peer_expiry`: not accessible
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 1 previous error
 ```
