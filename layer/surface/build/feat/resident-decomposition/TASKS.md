@@ -127,16 +127,22 @@ pushes, PRs, or merges.
 - [x] R0: verify `patina` at `97e3041`, aligned with `origin/patina` and `origin/main`, with a clean tree.
 - [x] R0: establish the independent workspace baseline: 290 passed + ignored (290 passed, 0 ignored).
 - [x] R0: commit this phase task surface as the first phase commit.
-- [ ] R1: read all of `crates/mct-daemon/src/daemon/resident.rs`.
-- [ ] R1: read the Track 1 S2.5 seam plan and itch list.
-- [ ] R1: inventory all 15 `Resident*` records and every would-be stage-boundary crossing.
-- [ ] R1: inspect existing kernel boundary types and avoid duplicate binary-local contracts.
-- [ ] R1: map Track 3 ledger test citations to proposed test destinations.
-- [ ] R1: write `SPEC.md` with the module tree, record dispositions, promotions, test/fixture plan, and explicit non-goals.
-- [ ] R1: validate 290 tests, Clippy with warnings denied, Tier 0, and diff hygiene.
-- [ ] R1: commit `docs: specify resident decomposition`.
-- [ ] GATE: stop for operator review before moving code.
+- [x] R1: read all of `crates/mct-daemon/src/daemon/resident.rs`.
+- [x] R1: read the Track 1 S2.5 seam plan and itch list.
+- [x] R1: inventory all 15 `Resident*` records and every would-be stage-boundary crossing.
+- [x] R1: inspect existing kernel boundary types and avoid duplicate binary-local contracts.
+- [x] R1: map Track 3 ledger test citations to proposed test destinations.
+- [x] R1: write `SPEC.md` with the module tree, record dispositions, promotions, test/fixture plan, and explicit non-goals.
+- [x] R1: validate 290 tests, Clippy with warnings denied, Tier 0, and diff hygiene.
+- [x] R1: commit `docs: specify resident decomposition`.
+- [x] GATE: stop for operator review before moving code.
+
+## Validation log
+
+- Baseline at `97e3041`: 290 passed, 0 ignored, total 290.
+- First phase commit: workspace tests 290, Clippy clean with warnings denied, Tier 0 clean, diff check clean.
+- R1 pre-commit gate: workspace tests 290, Clippy clean with warnings denied, Tier 0 clean, diff check clean.
 
 ## Failure log
 
-Capture validation failures verbatim here before rerunning.
+Capture validation failures verbatim here before rerunning. None observed through R1.
