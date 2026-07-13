@@ -366,3 +366,32 @@ For more information about an error, try `rustc --explain E0425`.
 warning: `mct-daemon` (bin "mct-daemon") generated 3 warnings
 error: could not compile `mct-daemon` (bin "mct-daemon") due to 26 previous errors; 3 warnings emitted
 ```
+
+### JVM local-CAS origin mismatch expected red
+
+```text
+$ cargo test -p mct-daemon --bin mct-daemon ingress::tests::jvm_ingress_dereferences_local_content_addressed_blob -- --exact
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.38s
+     Running unittests src/main.rs (target/debug/deps/mct_daemon-701d058281c133f0)
+
+running 1 test
+test ingress::tests::jvm_ingress_dereferences_local_content_addressed_blob ... FAILED
+
+failures:
+
+---- ingress::tests::jvm_ingress_dereferences_local_content_addressed_blob stdout ----
+
+thread 'ingress::tests::jvm_ingress_dereferences_local_content_addressed_blob' (1347929) panicked at crates/mct-daemon/src/daemon/ingress.rs:1163:9:
+assertion failed: ledger_text.contains(&format!("payload:request:size={}:digest={digest}",
+            payload.len()))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    ingress::tests::jvm_ingress_dereferences_local_content_addressed_blob
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 64 filtered out; finished in 0.23s
+
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```

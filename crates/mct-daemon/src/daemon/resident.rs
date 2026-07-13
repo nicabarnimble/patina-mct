@@ -565,7 +565,6 @@ impl ResidentRequestPayload {
         }
     }
 
-    #[cfg(test)]
     pub(super) fn local(inline_payload: Option<Vec<u8>>) -> Self {
         Self {
             inline_payload,
