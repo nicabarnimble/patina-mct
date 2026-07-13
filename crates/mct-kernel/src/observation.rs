@@ -1563,6 +1563,62 @@ mod tests {
         assert_eq!(denied_observation.observed_at, supplied_observed_at());
     }
 
+    /// Covers `MctToyGrantAuthority.ToyGrantDecisionsAreObserved`.
+    #[test]
+    fn toy_grant_observation_matrix_distinguishes_expiry_and_revocation() {
+        let mut evaluation = ToyGrantEvaluation {
+            evaluation_id: ToyGrantEvaluationId::new("toy-eval-matrix").unwrap(),
+            call_id: CallId::new("call-toy-matrix").unwrap(),
+            decision_id: DecisionId::new("decision-toy-matrix").unwrap(),
+            grant_id: Some(ToyGrantId::new("grant-toy-matrix").unwrap()),
+            toy_id: ToyId::new("toy-matrix").unwrap(),
+            subject_child_name: "matrix-child".into(),
+            verdict: ToyGrantVerdict::Allowed,
+            reason_code: ToyGrantReasonCode::ActiveGrant,
+            policy_revision: 3,
+            grants_revision: 7,
+            observation_id: ObservationId::new("obs-toy-matrix").unwrap(),
+        };
+
+        for (verdict, reason, kind, outcome) in [
+            (
+                ToyGrantVerdict::Allowed,
+                ToyGrantReasonCode::ActiveGrant,
+                ObservationKind::ToyGrantAllowed,
+                ObservationOutcome::Allowed,
+            ),
+            (
+                ToyGrantVerdict::Denied,
+                ToyGrantReasonCode::MissingGrant,
+                ObservationKind::ToyGrantDenied,
+                ObservationOutcome::Denied,
+            ),
+            (
+                ToyGrantVerdict::Denied,
+                ToyGrantReasonCode::ExpiredGrant,
+                ObservationKind::ToyGrantExpired,
+                ObservationOutcome::Denied,
+            ),
+            (
+                ToyGrantVerdict::Denied,
+                ToyGrantReasonCode::RevokedGrant,
+                ObservationKind::ToyGrantRevoked,
+                ObservationOutcome::Denied,
+            ),
+        ] {
+            evaluation.verdict = verdict;
+            evaluation.reason_code = reason;
+            let observation = toy_grant_evaluation_observation(
+                TraceId::new("trace-toy-matrix").unwrap(),
+                supplied_observed_at(),
+                &evaluation,
+            );
+            assert_eq!((observation.kind, observation.outcome), (kind, outcome));
+            assert_eq!(observation.policy_revision, Some(3));
+            assert_eq!(observation.grants_revision, Some(7));
+        }
+    }
+
     #[test]
     fn child_lifecycle_and_call_authority_become_observations() {
         let approval = ChildApproval {
