@@ -4,9 +4,25 @@ use super::*;
 
 #[derive(Debug)]
 pub(super) struct LocalExecutionPlan {
-    pub(super) child: mct_daemon::MctLoadedChild,
-    pub(super) authorized_route: AuthorizedRouteExecution,
-    pub(super) child_authority_observation_id: ObservationId,
+    child: mct_daemon::MctLoadedChild,
+    authorized_route: AuthorizedRouteExecution,
+    child_authority_observation_id: ObservationId,
+}
+
+impl LocalExecutionPlan {
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        mct_daemon::MctLoadedChild,
+        AuthorizedRouteExecution,
+        ObservationId,
+    ) {
+        (
+            self.child,
+            self.authorized_route,
+            self.child_authority_observation_id,
+        )
+    }
 }
 
 #[derive(Debug)]

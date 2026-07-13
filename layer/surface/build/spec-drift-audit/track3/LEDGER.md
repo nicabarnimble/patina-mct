@@ -71,9 +71,9 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 | `OptimizationCannotGrantAuthority` | COVERED | `mct_daemon_bin::resident::decision::tests::resident_route_optimization_cannot_grant_authority` |
 | `DenyReasonsArePolicyReasons` | COVERED | `mct_daemon_bin::resident::decision::tests::resident_no_route_records_specific_elimination`; `mct_kernel::route::tests::candidate_elimination_reasons_expose_denial_class` |
 | `ExecutionRevalidatesAuthority` | COVERED | `mct_kernel::route::tests::route_revalidation_denies_stale_policy_before_execution`; `mct_daemon_bin::resident::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello` |
-| `EffectBoundaryRevisionGuardIsDistinct` | COVERED | `mct_daemon_bin::resident::tests::resident_route_revision_guard_denies_before_effect` |
-| `EffectBoundaryGuardCannotRepairStaleAuthority` | COVERED | `mct_daemon_bin::resident::tests::resident_route_revision_guard_denies_before_effect` |
-| `PeerEgressAndLocalChildEffectGuardsAreDistinct` | COVERED | `mct_daemon_bin::resident::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello`; `mct_daemon_bin::resident::tests::resident_route_revision_guard_denies_before_effect` |
+| `EffectBoundaryRevisionGuardIsDistinct` | COVERED | `mct_daemon_bin::resident::execution::tests::resident_route_revision_guard_denies_before_effect` |
+| `EffectBoundaryGuardCannotRepairStaleAuthority` | COVERED | `mct_daemon_bin::resident::execution::tests::resident_route_revision_guard_denies_before_effect` |
+| `PeerEgressAndLocalChildEffectGuardsAreDistinct` | COVERED | `mct_daemon_bin::resident::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello`; `mct_daemon_bin::resident::execution::tests::resident_route_revision_guard_denies_before_effect` |
 | `NoRouteDecision.DenyByDefault` | COVERED | `mct_kernel::route::tests::no_route_decision_denies_by_default_without_route_taken` |
 | `RetryRequiresPolicy`, `GrantRequestRequiresAuthority`, `GrantResponsesAreScopedAndBounded`, `NoSilentEscalation` | COVERED | `mct_kernel::route::tests::no_route_decision_denies_by_default_without_route_taken` proves the current passive default. Active retry/grant/escalation paths remain explicitly deferred under audit C3. |
 | `SafeRequesterDisclosure` | COVERED | `mct_kernel::route::tests::candidate_elimination_reasons_expose_denial_class`; `mct_daemon_bin::resident::decision::tests::resident_no_route_records_specific_elimination` |
@@ -82,7 +82,7 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 
 | Invariant / obligation | Status | Evidence |
 |---|---|---|
-| `MctCallProtocol.RouteTakenReplyPresenceFollowsExecution` | COVERED | `mct_kernel::call::tests::reply_validation_enforces_route_taken_presence_rule`; `mct_daemon_bin::resident::tests::route_taken_projection_follows_outcome_matrix`; `mct_daemon_bin::resident::tests::cancelled_result_and_reply_hide_route_while_ledger_keeps_selection` |
+| `MctCallProtocol.RouteTakenReplyPresenceFollowsExecution` | COVERED | `mct_kernel::call::tests::reply_validation_enforces_route_taken_presence_rule`; `mct_daemon_bin::resident::execution::tests::route_taken_projection_follows_outcome_matrix`; `mct_daemon_bin::resident::execution::tests::cancelled_result_and_reply_hide_route_while_ledger_keeps_selection` |
 | `RouteTakenReplyDoesNotGrantPeerAuthority` | COVERED | `mct_kernel::call::tests::call_without_admitted_hello_is_denied`; `mct_kernel::call::tests::call_protocol_reply_roundtrips_route_taken_wire_field` |
 
 ### Signed binding proof and mandatory expiry
