@@ -1711,6 +1711,40 @@ pub(super) fn execute_offline_identity_mutation(
     }
 }
 
+pub(super) async fn serve_http_control_loop(state_path: &Path, addr: &str) -> Result<()> {
+    let listener = TcpListener::bind(addr).await?;
+    let snapshot_source = ControlSnapshotSource::open(state_path);
+    println!("mct daemon serving control http on {addr}");
+    loop {
+        serve_http_control_once_with_snapshot_result(
+            &listener,
+            control_snapshot(&snapshot_source).await,
+        )
+        .await?;
+    }
+}
+
+pub(super) async fn serve_http_control_loop_until(
+    state_path: PathBuf,
+    addr: String,
+    mut shutdown: broadcast::Receiver<()>,
+    status_source: Option<Arc<ResidentStatusSource>>,
+) -> Result<()> {
+    let listener = TcpListener::bind(&addr).await?;
+    let snapshot_source = ControlSnapshotSource::open_with_status(&state_path, status_source);
+    println!("mct daemon serving control http on {addr}");
+    loop {
+        tokio::select! {
+            _ = shutdown.recv() => break,
+            result = serve_http_control_once_with_snapshot_result(
+                &listener,
+                control_snapshot(&snapshot_source).await,
+            ) => result?,
+        }
+    }
+    Ok(())
+}
+
 pub(super) async fn run_control(mut args: Vec<String>) -> Result<()> {
     if args.is_empty() {
         bail!("expected control subcommand: serve-http | serve-uds");
@@ -1906,6 +1940,120 @@ pub(super) fn control_snapshot_from_state(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    fn write_resident_process_child(children_dir: &Path) {
+        write_resident_process_child_script(
+            children_dir,
+            "resident-echo",
+            b"#!/bin/sh\ncat >/dev/null\nprintf '{\\\"ok\\\":true}'\n",
+        );
+    }
+    fn write_resident_process_child_script(children_dir: &Path, name: &str, script: &[u8]) {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+
+        let child_dir = children_dir.join(name);
+        std::fs::create_dir_all(&child_dir).unwrap();
+        let artifact_path = child_dir.join(format!("{name}.wasm"));
+        let manifest_path = child_dir.join("child.toml");
+        std::fs::write(&artifact_path, script).unwrap();
+        #[cfg(unix)]
+        {
+            let mut permissions = std::fs::metadata(&artifact_path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&artifact_path, permissions).unwrap();
+        }
+        write_resident_child_manifest(&manifest_path, name, "handle");
+        write_sha256_sidecar(&artifact_path, script);
+        let manifest_bytes = std::fs::read(&manifest_path).unwrap();
+        write_sha256_sidecar(&manifest_path, &manifest_bytes);
+    }
+    fn write_resident_child_manifest(manifest_path: &Path, name: &str, mode: &str) {
+        std::fs::write(
+            manifest_path,
+            format!(
+                r#"[child]
+name = "{name}"
+version = "0.1.0"
+description = "resident test child"
+kind = "child"
+role = "app"
+
+[child.ingress]
+mode = "{mode}"
+
+[child.artifact]
+wasm = "{name}.wasm"
+
+[child.contract]
+allow = ["patina:demo/control@0.1.0.run"]
+
+[needs]
+toys = []
+
+[relationships]
+listens = []
+"#
+            ),
+        )
+        .unwrap();
+    }
+    fn write_sha256_sidecar(path: &Path, bytes: &[u8]) {
+        use sha2::{Digest, Sha256};
+
+        let mut sidecar = path.as_os_str().to_os_string();
+        sidecar.push(".sha256");
+        std::fs::write(
+            PathBuf::from(sidecar),
+            format!("{:x}", Sha256::digest(bytes)),
+        )
+        .unwrap();
+    }
+    fn resident_test_call(trace_id: TraceId) -> MctCall {
+        let mut call = local_wasm_call(OperationTarget {
+            namespace: "patina:demo".into(),
+            interface_name: "control@0.1.0".into(),
+            function_name: "run".into(),
+        });
+        call.call_id = CallId::new("call-resident-wit")
+            .expect("string ID literal/generated value must be non-empty");
+        call.trace_context.trace_id = trace_id;
+        call.origin = CallOrigin::Iroh;
+        call
+    }
+    fn resident_test_protocol_request(call: MctCall) -> MctCallProtocolRequest {
+        MctCallProtocolRequest {
+            protocol_request_id: ProtocolRequestId::new("proto-resident-wit")
+                .expect("string ID literal/generated value must be non-empty"),
+            authority: MctCallProtocolAuthority {
+                hello_decision_id: DecisionId::new("decision-resident-wit-hello")
+                    .expect("string ID literal/generated value must be non-empty"),
+                peer_binding_id: PeerBindingId::new("binding-resident-wit")
+                    .expect("string ID literal/generated value must be non-empty"),
+                vision_id: VisionId::new("vision-local")
+                    .expect("string ID literal/generated value must be non-empty"),
+                accepted_alpn: MCT_CALL_ALPN.into(),
+                endpoint_id: EndpointIdText::new("endpoint-resident-wit")
+                    .expect("string ID literal/generated value must be non-empty"),
+                policy_revision: 1,
+                grants_revision: 1,
+            },
+            received_over: IrohConnectionPresentation {
+                endpoint_id: EndpointIdText::new("endpoint-resident-wit")
+                    .expect("string ID literal/generated value must be non-empty"),
+                alpn: MCT_CALL_ALPN.into(),
+                connection_side: ConnectionSide::Incoming,
+                path_class: PathClass::Direct,
+                relay_url: None,
+                presented_capability_ref: None,
+            },
+            call,
+            payload: MctCallPayloadHandle::Empty,
+            idempotency_key: None,
+            received_observation_id: ObservationId::new("obs-resident-wit-received")
+                .expect("string ID literal/generated value must be non-empty"),
+        }
+    }
     use mct_observation::DurabilityClass;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -2070,10 +2218,8 @@ mod tests {
         let config_path = dir.path().join("config.json");
         let socket_path = dir.path().join("control.sock");
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
-        let (sender, receiver) = tokio::sync::mpsc::channel(1);
-        drop(receiver);
-        let handler =
-            resident_peer_mutation_handler(config_path.clone(), ResidentLedgerWriter { sender });
+        let failed_ledger = ResidentLedgerWriter::failed_for_test();
+        let handler = resident_peer_mutation_handler(config_path.clone(), failed_ledger);
 
         let (status, _) = post_mutation(
             listener,
@@ -2197,7 +2343,7 @@ mod tests {
         let children_dir = dir.path().join("children");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
-        crate::resident::tests::write_resident_process_child(&children_dir);
+        write_resident_process_child(&children_dir);
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
         let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
         let handler = resident_authority_mutation_handler(
@@ -2283,7 +2429,7 @@ mod tests {
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
-        crate::resident::tests::write_resident_process_child(&children_dir);
+        write_resident_process_child(&children_dir);
         let child =
             load_children_from_dir(MctChildLoadOptions::new(&children_dir).strict_integrity())
                 .children
@@ -2293,21 +2439,24 @@ mod tests {
         MctDaemonConfigStore::new(&config_path)
             .approve_and_assign_loaded_child(&child, MctOperatorChildScope::default())
             .unwrap();
-        let paths = crate::resident::ResidentExecutionPaths {
-            config_path: config_path.clone(),
-            children_dir: children_dir.clone(),
+        let paths = crate::resident::ResidentRuntimePaths::new(
+            config_path.clone(),
+            children_dir.clone(),
             state_path,
-        };
-        let call = crate::resident::tests::resident_test_call(
-            TraceId::new("trace-live-child-revoke").unwrap(),
         );
-        assert!(matches!(
-            crate::resident::authorize_resident_child_blocking(&paths, &call).unwrap(),
-            crate::resident::ResidentAuthorizationOutcome::Authorized(_)
-        ));
+        let call = resident_test_call(TraceId::new("trace-live-child-revoke").unwrap());
+        let request = resident_test_protocol_request(call);
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let before = crate::resident::execute_resident_call(
+            paths.clone(),
+            ledger.clone(),
+            request.clone(),
+            crate::resident::ResidentPayloadIngress::remote(None),
+        )
+        .await;
+        assert_eq!(before.outcome, CallProtocolOutcome::Completed);
 
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
         let handler =
             resident_authority_mutation_handler(config_path.clone(), children_dir, ledger.clone());
         let (status, response) = post_mutation(
@@ -2323,33 +2472,42 @@ mod tests {
         .await;
         assert_eq!(status, 200, "{response}");
 
-        let denial_observations =
-            match crate::resident::authorize_resident_child_blocking(&paths, &call).unwrap() {
-                crate::resident::ResidentAuthorizationOutcome::Denied { observations, .. } => {
-                    observations
-                }
-                other => panic!("expected child revocation denial, got {other:?}"),
-            };
-        assert!(
-            denial_observations.iter().any(|observation| {
-                observation.kind == ObservationKind::CandidateEliminated
-                    && observation
-                        .detail_ref
-                        .as_deref()
-                        .is_some_and(|detail| detail.contains("ChildNotApproved"))
-            }),
-            "{denial_observations:#?}"
-        );
+        let after = crate::resident::execute_resident_call(
+            paths,
+            ledger.clone(),
+            request,
+            crate::resident::ResidentPayloadIngress::remote(None),
+        )
+        .await;
+        assert_eq!(after.outcome, CallProtocolOutcome::Denied);
         let entries =
             JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
                 .unwrap()
                 .entries()
                 .unwrap();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].observation.kind, ObservationKind::ChildRevoked);
+        assert!(entries.iter().any(|entry| {
+            entry.observation.kind == ObservationKind::CandidateEliminated
+                && entry
+                    .observation
+                    .detail_ref
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("ChildNotApproved"))
+        }));
+        let mutation_kinds = entries
+            .iter()
+            .filter_map(|entry| match entry.observation.kind {
+                ObservationKind::ChildRevoked | ObservationKind::ChildAssignmentRevoked => {
+                    Some(entry.observation.kind)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         assert_eq!(
-            entries[1].observation.kind,
-            ObservationKind::ChildAssignmentRevoked
+            mutation_kinds,
+            vec![
+                ObservationKind::ChildRevoked,
+                ObservationKind::ChildAssignmentRevoked,
+            ]
         );
         drop(handler);
         ledger.close().await;
@@ -2361,14 +2519,13 @@ mod tests {
         let config_path = dir.path().join("config.json");
         let children_dir = dir.path().join("children");
         let socket_path = dir.path().join("control.sock");
-        crate::resident::tests::write_resident_process_child(&children_dir);
+        write_resident_process_child(&children_dir);
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
-        let (sender, receiver) = tokio::sync::mpsc::channel(1);
-        drop(receiver);
+        let failed_ledger = ResidentLedgerWriter::failed_for_test();
         let handler = resident_authority_mutation_handler(
             config_path.clone(),
             children_dir.clone(),
-            ResidentLedgerWriter { sender },
+            failed_ledger,
         );
 
         let (status, _) = post_mutation(
@@ -2396,7 +2553,7 @@ mod tests {
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
-        crate::resident::tests::write_resident_process_child(&children_dir);
+        write_resident_process_child(&children_dir);
         let child =
             load_children_from_dir(MctChildLoadOptions::new(&children_dir).strict_integrity())
                 .children
@@ -2477,7 +2634,7 @@ mod tests {
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
-        crate::resident::tests::write_resident_process_child(&children_dir);
+        write_resident_process_child(&children_dir);
         let child =
             load_children_from_dir(MctChildLoadOptions::new(&children_dir).strict_integrity())
                 .children
@@ -2488,13 +2645,12 @@ mod tests {
             .approve_and_assign_loaded_child(&child, MctOperatorChildScope::default())
             .unwrap();
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
-        let (sender, receiver) = tokio::sync::mpsc::channel(1);
-        drop(receiver);
+        let failed_ledger = ResidentLedgerWriter::failed_for_test();
         let handler = resident_observed_mutation_handler(
             config_path.clone(),
             children_dir.clone(),
             state_path.clone(),
-            ResidentLedgerWriter { sender },
+            failed_ledger,
         );
         let request = ToyAuthorizeSecretRequest {
             expected_config_path: config_path.clone(),
@@ -2565,7 +2721,7 @@ mod tests {
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
-        crate::resident::tests::write_resident_process_child(&source_dir);
+        write_resident_process_child(&source_dir);
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
         let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
         let handler = resident_observed_mutation_handler(
@@ -2653,15 +2809,14 @@ mod tests {
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
-        crate::resident::tests::write_resident_process_child(&source_parent);
+        write_resident_process_child(&source_parent);
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
-        let (sender, receiver) = tokio::sync::mpsc::channel(1);
-        drop(receiver);
+        let failed_ledger = ResidentLedgerWriter::failed_for_test();
         let handler = resident_observed_mutation_handler(
             config_path,
             children_dir.clone(),
             state_path.clone(),
-            ResidentLedgerWriter { sender },
+            failed_ledger,
         );
         let request = RegistryInstallRequest {
             expected_children_dir: children_dir.clone(),
@@ -2785,13 +2940,12 @@ mod tests {
         let state_path = dir.path().join("state.sqlite");
         let socket_path = dir.path().join("control.sock");
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
-        let (sender, receiver) = tokio::sync::mpsc::channel(1);
-        drop(receiver);
+        let failed_ledger = ResidentLedgerWriter::failed_for_test();
         let handler = resident_observed_mutation_handler(
             config_path,
             children_dir,
             state_path.clone(),
-            ResidentLedgerWriter { sender },
+            failed_ledger,
         );
         let payload = b"not-visible";
         let digest = blake3::hash(payload).to_hex().to_string();
@@ -2871,7 +3025,7 @@ mod tests {
         let children_dir = dir.path().join("children");
         let identity_path = dir.path().join("node.key");
         let ledger_path = dir.path().join("observations.jsonl");
-        crate::resident::tests::write_resident_process_child(&children_dir);
+        write_resident_process_child(&children_dir);
 
         execute_offline_child_mutation(
             &config_path,
@@ -2907,5 +3061,28 @@ mod tests {
         assert!(format!("{error:#}").contains("writer lock"));
         assert!(!locked_config.exists());
         assert!(!locked_identity.exists());
+    }
+    #[tokio::test]
+    async fn control_snapshot_unopenable_state_projects_error_response() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = ControlSnapshotSource::open(dir.path());
+
+        let snapshot = control_snapshot(&source).await;
+        let response = mct_daemon::handle_control_plane_path_result_with_auth(
+            "GET",
+            "/snapshot",
+            snapshot.as_ref(),
+            &mct_daemon::MctControlPlaneAuthPolicy::open_local(),
+            None,
+        );
+
+        assert!(matches!(
+            snapshot,
+            Err(MctControlPlaneSnapshotError::RuntimeStateUnavailable { .. })
+        ));
+        assert_eq!(response.status_code, 503);
+        assert!(response.body.contains("runtime state unavailable"));
+        assert!(response.body.contains("not_ready"));
+        assert!(!response.body.contains("\"ready\""));
     }
 }
