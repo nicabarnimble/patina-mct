@@ -136,6 +136,19 @@ pushes, PRs, or merges.
 - [x] R1: validate 290 tests, Clippy with warnings denied, Tier 0, and diff hygiene.
 - [x] R1: commit `docs: specify resident decomposition`.
 - [x] GATE: stop for operator review before moving code.
+- [x] GATE: operator approved R1 with four binding conditions.
+- [x] R2.0: amend the SPEC with the gate conditions and validate.
+- [ ] R2.1: extract resident observation.
+- [ ] R2.2: extract resident payload.
+- [ ] R2.3: extract resident publication.
+- [ ] R2.4: extract resident idempotency.
+- [ ] R2.5: extract resident candidates.
+- [ ] R2.6: extract resident decision.
+- [ ] R2.7: extract resident execution.
+- [ ] R2.8: extract resident forwarding.
+- [ ] R2.9: extract resident pipeline.
+- [ ] R2.10: extract resident serving.
+- [ ] R2.11: close with line counts, test counts, implemented record table, itch list, and ROADMAP disposition.
 
 ## Validation log
 
