@@ -309,7 +309,7 @@ The 236 load-bearing `-- Decision:` statements were also read in full and groupe
 
 | Invariant | Status | Evidence / reason |
 |---|---|---|
-| `RequiredFixturesDoNotRegress` | GAP | Generic and slate-manager coverage exists, but no named test proves all three required fixture identities are both loadable and callable. |
+| `RequiredFixturesDoNotRegress` | DEFERRED | `slate-manager` has a real WIT invocation test, but the required versioned `folder-watch-actor` and `watch-null-sink` artifacts are not vendored in this repository. Generated generic modules can prove loader shape, not those external packages' call compatibility; full three-fixture execution coverage must land with the external fixture artifacts rather than a counterfeit local authority surface. |
 | `WitOnlyDoesNotRequireLegacyLifecycle` | COVERED | `mct_daemon::children::tests::loads_standalone_wasm_children_from_directory` |
 | `LifecycleExportsAreCompatibilityNotIdentity` | COVERED | `mct_daemon::wasm::tests::mct_wit_runtime_invokes_typed_component_export` |
 | `ExactWitOperationIds` | COVERED | `mct_daemon::children::tests::registry_routes_only_allowlisted_ready_children`; `mct_daemon::wasm::tests::mct_wit_runtime_resolves_versioned_component_export` |
@@ -457,9 +457,9 @@ The 236 load-bearing `-- Decision:` statements were also read in full and groupe
 | Status | Invariants |
 |---|---:|
 | COVERED | 195 |
-| GAP | 6 |
+| GAP | 5 |
 | LAW-LEADS-CODE | 0 |
-| DEFERRED | 22 |
+| DEFERRED | 23 |
 
 ### Tool-derived structural obligations
 
