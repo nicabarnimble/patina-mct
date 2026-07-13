@@ -148,7 +148,7 @@ pushes, PRs, or merges.
 - [x] R2.8: extract resident forwarding.
 - [x] R2.9: extract resident pipeline.
 - [x] R2.10: extract resident serving.
-- [ ] R2.11: close with line counts, test counts, implemented record table, itch list, and ROADMAP disposition.
+- [x] R2.11: close with line counts, test counts, implemented record table, itch list, and ROADMAP disposition.
 
 ## Validation log
 
@@ -1412,3 +1412,348 @@ error: could not compile `mct-daemon` (bin "mct-daemon") due to 2 previous error
 warning: build failed, waiting for other jobs to finish...
 error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 1 previous error
 ```
+
+### R2.9 pipeline production-constructor compile failure
+
+```text
+$ cargo check --workspace
+    Checking mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+warning: associated function `new` is never used
+  --> crates/mct-daemon/src/daemon/resident/pipeline.rs:16:19
+   |
+15 | impl ResidentRuntimePaths {
+   | ------------------------- associated function in this implementation
+16 |     pub(crate) fn new(config_path: PathBuf, children_dir: PathBuf, state_path: PathBuf) -> Self {
+   |                   ^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+error[E0451]: fields `config_path`, `children_dir` and `state_path` of struct `pipeline::ResidentRuntimePaths` are private
+   --> crates/mct-daemon/src/daemon/resident.rs:257:9
+    |
+256 |     let execution_paths = ResidentRuntimePaths {
+    |                           -------------------- in this type
+257 |         config_path: config.config_path.clone(),
+    |         ^^^^^^^^^^^ private field
+258 |         children_dir: config.children_dir.clone(),
+    |         ^^^^^^^^^^^^ private field
+259 |         state_path: config.state_path.clone(),
+    |         ^^^^^^^^^^ private field
+
+error[E0451]: fields `config_path`, `children_dir` and `state_path` of struct `pipeline::ResidentRuntimePaths` are private
+   --> crates/mct-daemon/src/daemon/ingress.rs:105:13
+    |
+104 |         ResidentRuntimePaths {
+    |         -------------------- in this type
+105 |             config_path,
+    |             ^^^^^^^^^^^ private field
+106 |             children_dir,
+    |             ^^^^^^^^^^^^ private field
+107 |             state_path,
+    |             ^^^^^^^^^^ private field
+
+For more information about this error, try `rustc --explain E0451`.
+warning: `mct-daemon` (bin "mct-daemon") generated 1 warning
+error: could not compile `mct-daemon` (bin "mct-daemon") due to 2 previous errors; 1 warning emitted
+```
+
+### R2.9 pipeline test stale-name compile failure
+
+```text
+$ cargo test -p mct-daemon --bin mct-daemon --no-run
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0422]: cannot find struct, variant or union type `ResidentExecutionPaths` in this scope
+   --> crates/mct-daemon/src/daemon/resident/pipeline.rs:250:13
+    |
+  9 | pub(crate) struct ResidentRuntimePaths {
+    | -------------------------------------- similarly named struct `ResidentRuntimePaths` defined here
+...
+250 |             ResidentExecutionPaths {
+    |             ^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: a struct with a similar name exists
+    |
+250 -             ResidentExecutionPaths {
+250 +             ResidentRuntimePaths {
+    |
+
+For more information about this error, try `rustc --explain E0422`.
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 1 previous error
+```
+
+### R2.9 pipeline test-constructor compile failure
+
+```text
+$ cargo test -p mct-daemon --bin mct-daemon --no-run
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0451]: fields `config_path`, `children_dir` and `state_path` of struct `pipeline::ResidentRuntimePaths` are private
+   --> crates/mct-daemon/src/daemon/resident/payload.rs:429:17
+    |
+428 |             ResidentRuntimePaths {
+    |             -------------------- in this type
+429 |                 config_path,
+    |                 ^^^^^^^^^^^ private field
+430 |                 children_dir,
+    |                 ^^^^^^^^^^^^ private field
+431 |                 state_path,
+    |                 ^^^^^^^^^^ private field
+
+error[E0451]: fields `config_path`, `children_dir` and `state_path` of struct `pipeline::ResidentRuntimePaths` are private
+   --> crates/mct-daemon/src/daemon/resident/payload.rs:494:17
+    |
+493 |             ResidentRuntimePaths {
+    |             -------------------- in this type
+494 |                 config_path,
+    |                 ^^^^^^^^^^^ private field
+495 |                 children_dir,
+    |                 ^^^^^^^^^^^^ private field
+496 |                 state_path,
+    |                 ^^^^^^^^^^ private field
+
+error[E0451]: fields `config_path`, `children_dir` and `state_path` of struct `pipeline::ResidentRuntimePaths` are private
+   --> crates/mct-daemon/src/daemon/resident/payload.rs:551:17
+    |
+550 |             ResidentRuntimePaths {
+    |             -------------------- in this type
+551 |                 config_path,
+    |                 ^^^^^^^^^^^ private field
+552 |                 children_dir,
+    |                 ^^^^^^^^^^^^ private field
+553 |                 state_path,
+    |                 ^^^^^^^^^^ private field
+
+error[E0451]: fields `config_path`, `children_dir` and `state_path` of struct `pipeline::ResidentRuntimePaths` are private
+   --> crates/mct-daemon/src/daemon/resident/idempotency.rs:487:13
+    |
+486 |         let paths = ResidentRuntimePaths {
+    |                     -------------------- in this type
+487 |             config_path,
+    |             ^^^^^^^^^^^ private field
+488 |             children_dir: children_dir.clone(),
+    |             ^^^^^^^^^^^^ private field
+489 |             state_path: state_path.clone(),
+    |             ^^^^^^^^^^ private field
+
+error[E0451]: fields `config_path`, `children_dir` and `state_path` of struct `pipeline::ResidentRuntimePaths` are private
+   --> crates/mct-daemon/src/daemon/resident/decision.rs:674:17
+    |
+673 |             ResidentRuntimePaths {
+    |             -------------------- in this type
+674 |                 config_path,
+    |                 ^^^^^^^^^^^ private field
+675 |                 children_dir,
+    |                 ^^^^^^^^^^^^ private field
+676 |                 state_path,
+    |                 ^^^^^^^^^^ private field
+
+error[E0451]: fields `config_path`, `children_dir` and `state_path` of struct `pipeline::ResidentRuntimePaths` are private
+   --> crates/mct-daemon/src/daemon/resident/decision.rs:716:17
+    |
+715 |             ResidentRuntimePaths {
+    |             -------------------- in this type
+716 |                 config_path,
+    |                 ^^^^^^^^^^^ private field
+717 |                 children_dir,
+    |                 ^^^^^^^^^^^^ private field
+718 |                 state_path,
+    |                 ^^^^^^^^^^ private field
+
+error[E0451]: fields `config_path`, `children_dir` and `state_path` of struct `pipeline::ResidentRuntimePaths` are private
+   --> crates/mct-daemon/src/daemon/resident/execution.rs:663:17
+    |
+662 |             ResidentRuntimePaths {
+    |             -------------------- in this type
+663 |                 config_path,
+    |                 ^^^^^^^^^^^ private field
+664 |                 children_dir,
+    |                 ^^^^^^^^^^^^ private field
+665 |                 state_path,
+    |                 ^^^^^^^^^^ private field
+
+error[E0451]: fields `config_path`, `children_dir` and `state_path` of struct `pipeline::ResidentRuntimePaths` are private
+   --> crates/mct-daemon/src/daemon/resident/execution.rs:725:17
+    |
+724 |             ResidentRuntimePaths {
+    |             -------------------- in this type
+725 |                 config_path,
+    |                 ^^^^^^^^^^^ private field
+726 |                 children_dir,
+    |                 ^^^^^^^^^^^^ private field
+727 |                 state_path,
+    |                 ^^^^^^^^^^ private field
+
+error[E0451]: fields `config_path`, `children_dir` and `state_path` of struct `pipeline::ResidentRuntimePaths` are private
+   --> crates/mct-daemon/src/daemon/resident/execution.rs:761:17
+    |
+760 |             ResidentRuntimePaths {
+    |             -------------------- in this type
+761 |                 config_path,
+    |                 ^^^^^^^^^^^ private field
+762 |                 children_dir,
+    |                 ^^^^^^^^^^^^ private field
+763 |                 state_path,
+    |                 ^^^^^^^^^^ private field
+
+error[E0451]: fields `config_path`, `children_dir` and `state_path` of struct `pipeline::ResidentRuntimePaths` are private
+   --> crates/mct-daemon/src/daemon/resident/execution.rs:838:17
+    |
+837 |             ResidentRuntimePaths {
+    |             -------------------- in this type
+838 |                 config_path,
+    |                 ^^^^^^^^^^^ private field
+839 |                 children_dir,
+    |                 ^^^^^^^^^^^^ private field
+840 |                 state_path,
+    |                 ^^^^^^^^^^ private field
+
+error[E0451]: fields `config_path`, `children_dir` and `state_path` of struct `pipeline::ResidentRuntimePaths` are private
+    --> crates/mct-daemon/src/daemon/resident/forwarding.rs:1110:17
+     |
+1109 |             ResidentRuntimePaths {
+     |             -------------------- in this type
+1110 |                 config_path: mother_a_config_path,
+     |                 ^^^^^^^^^^^ private field
+1111 |                 children_dir: mother_a_children_dir,
+     |                 ^^^^^^^^^^^^ private field
+1112 |                 state_path: mother_a_state_path,
+     |                 ^^^^^^^^^^ private field
+
+error[E0451]: fields `config_path`, `children_dir` and `state_path` of struct `pipeline::ResidentRuntimePaths` are private
+    --> crates/mct-daemon/src/daemon/resident/forwarding.rs:1252:17
+     |
+1251 |             ResidentRuntimePaths {
+     |             -------------------- in this type
+1252 |                 config_path: fixture.config_path.clone(),
+     |                 ^^^^^^^^^^^ private field
+1253 |                 children_dir: fixture._dir.path().join("children"),
+     |                 ^^^^^^^^^^^^ private field
+1254 |                 state_path: fixture.state_path.clone(),
+     |                 ^^^^^^^^^^ private field
+
+error[E0451]: fields `config_path`, `children_dir` and `state_path` of struct `pipeline::ResidentRuntimePaths` are private
+    --> crates/mct-daemon/src/daemon/resident/forwarding.rs:1546:21
+     |
+1545 |                 ResidentRuntimePaths {
+     |                 -------------------- in this type
+1546 |                     config_path: a_config_path,
+     |                     ^^^^^^^^^^^ private field
+1547 |                     children_dir: a_children_dir,
+     |                     ^^^^^^^^^^^^ private field
+1548 |                     state_path: a_state_path,
+     |                     ^^^^^^^^^^ private field
+
+error[E0451]: fields `config_path`, `children_dir` and `state_path` of struct `pipeline::ResidentRuntimePaths` are private
+    --> crates/mct-daemon/src/daemon/control.rs:2295:13
+     |
+2294 |         let paths = crate::resident::ResidentRuntimePaths {
+     |                     ------------------------------------- in this type
+2295 |             config_path: config_path.clone(),
+     |             ^^^^^^^^^^^ private field
+2296 |             children_dir: children_dir.clone(),
+     |             ^^^^^^^^^^^^ private field
+2297 |             state_path,
+     |             ^^^^^^^^^^ private field
+
+error[E0451]: fields `config_path`, `children_dir` and `state_path` of struct `pipeline::ResidentRuntimePaths` are private
+    --> crates/mct-daemon/src/daemon/ingress.rs:1145:17
+     |
+1144 |             ResidentRuntimePaths {
+     |             -------------------- in this type
+1145 |                 config_path,
+     |                 ^^^^^^^^^^^ private field
+1146 |                 children_dir,
+     |                 ^^^^^^^^^^^^ private field
+1147 |                 state_path,
+     |                 ^^^^^^^^^^ private field
+
+For more information about this error, try `rustc --explain E0451`.
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 15 previous errors
+```
+
+## R2 close-out
+
+### Final shape and line counts
+
+The 6,740-line baseline `daemon/resident.rs` is now the following binary-local tree. `main.rs` remained at its 146-line baseline and did not regrow.
+
+```text
+      47 crates/mct-daemon/src/daemon/resident/mod.rs
+     264 crates/mct-daemon/src/daemon/resident/observation.rs
+     558 crates/mct-daemon/src/daemon/resident/payload.rs
+     427 crates/mct-daemon/src/daemon/resident/publication.rs
+     612 crates/mct-daemon/src/daemon/resident/idempotency.rs
+     949 crates/mct-daemon/src/daemon/resident/candidates.rs
+     754 crates/mct-daemon/src/daemon/resident/decision.rs
+     934 crates/mct-daemon/src/daemon/resident/execution.rs
+    1653 crates/mct-daemon/src/daemon/resident/forwarding.rs
+     272 crates/mct-daemon/src/daemon/resident/pipeline.rs
+    1339 crates/mct-daemon/src/daemon/resident/serving.rs
+     146 crates/mct-daemon/src/main.rs
+```
+
+The larger forwarding and serving files are dominated by their deliberately colocated end-to-end tests; the production façade is 47 lines and `pipeline.rs` contains sequencing, durability barriers, and handler-result mapping only.
+
+### Verification
+
+- Adjusted behavior baseline after `2a43b0f`: **291 passed + ignored** (291 passed, 0 ignored).
+- Final R2 result: **291 passed + ignored** (291 passed, 0 ignored).
+- Every stage commit passed workspace tests, Clippy with warnings denied, Tier 0 (including both Allium laws), and `git diff --check`.
+- The mct-daemon library files have no phase diff from `97e3041`; library public-surface delta is **zero**. All new resident APIs remain binary-local.
+- Track 3 ledger spot check found 23 resident citations, zero missing test paths, and zero stale `resident::tests` citations.
+
+### Implemented record dispositions
+
+| Baseline record | Implemented disposition |
+|---|---|
+| `ResidentMotherConfig` | Private to `serving`; unchanged bootstrap facts. |
+| `ResidentStatusSource` | Owned by `serving`, binary-visible only to control through the narrow façade; private fields and a serving-owned constructor. |
+| `ResidentLedgerWriter` | Owned by `observation`; binary-local façade item with private queue sender and the adapter-I/O-only `cfg(test)` failure constructor. |
+| `ResidentLedgerWrite` | Private queue protocol in `observation`. |
+| `ResidentExecutionPaths` | Renamed `ResidentRuntimePaths`; private path fields, one complete constructor, and read-only accessors. |
+| `ResidentRequestPayload` | Replaced by semantics-preserving `ResidentPayloadIngress::{Local, Remote}` on the corrected JVM base. |
+| `ResidentAuthorizedExecution` | Renamed/narrowed to `LocalExecutionPlan`; no duplicate `RouteTaken` or observation batch. |
+| `ResidentAuthorizedRemoteExecution` | Renamed/narrowed to `RemoteExecutionPlan`; private invariant-checking constructor ties candidate to initial decision. |
+| `ResidentChildExecution` | Renamed `PreparedChildExecution`, private to `execution`. |
+| `ResidentExecutionReport` | Renamed `LocalExecutionReport`, consumed by pipeline through a private-field split. |
+| `ResidentPayloadResolutionFailure` | Renamed `PayloadFailure`, with private fields and a consuming split. |
+| `ResidentCandidatePlan` | Renamed `LocalCandidatePlan`, exchanged only from candidates to decision. |
+| `ResidentRemoteCandidatePlan` | Renamed `RemoteCandidatePlan`, exchanged only from candidates to decision. |
+| `ResidentRemoteCandidateSource<'a>` | Kept under its exact name, private to candidates, with the origin/terminality constructor check intact. |
+| `ResidentRemoteRevalidationAuthorized` | Renamed `RevalidatedRemoteRoute`, private to forwarding and obtainable only through authorized `RemoteRevalidation`. |
+
+Related enums landed as approved: `RouteDisposition`, private `SelectedCandidate`, and private `RemoteRevalidation`. `RouteDisposition::Denied.decision` is boxed solely to satisfy the denied-vs-plan enum size invariant; this is an internal representation detail with no semantic or observation effect.
+
+### Stage commits
+
+- `10924a7` — `refactor(daemon): extract resident observation`
+- `7f96386` — `refactor(daemon): extract resident payload`
+- `84823e3` — `refactor(daemon): extract resident publication`
+- `c501639` — `refactor(daemon): extract resident idempotency`
+- `a1fdbd6` — `refactor(daemon): extract resident candidates`
+- `6e97c5b` — `refactor(daemon): extract resident decision`
+- `e9fb3f4` — `refactor(daemon): extract resident execution`
+- `cfde758` — `refactor(daemon): extract resident forwarding`
+- `5babdff` — `refactor(daemon): extract resident pipeline`
+- `0f8dc12` — `refactor(daemon): extract resident serving`
+
+The adjudicated prerequisite was `2a43b0f` (`fix(daemon): allow local CAS for jvm ingress`); its one regression raised the governed baseline from 290 to 291 before payload extraction.
+
+### Explicit implementation notes and deviations
+
+- The approved named fixture ownership was implemented as stage-local fixture state plus stage-local constructors/writers. Several small stages use local helper functions rather than wrapping those facts in a nominal `PayloadFixture`, `ExecutionFixture`, or `IdempotencyFixture`; no broad `resident/test_support.rs` or cross-stage fixture API was introduced.
+- Forwarding's one full resident receiver uses a narrowly scoped `cfg(test)` serving helper that accepts complete runtime paths and constructs the private `ResidentMotherConfig`. It exposes no production authority constructor and does not weaken the kernel-authority prohibition.
+- `serve_http_control_loop{,_until}` now live in `daemon/control.rs`. The three mislocated tests now live in `control`, `cli_admin`, and `cli_runtime` under their unchanged names.
+
+### Remaining itch list
+
+- Iroh blob transfer between Mothers remains future data-plane work.
+- Configurable ALPN binding scope and narrowed-ALPN replay remain deferred.
+- Cross-Mother replay/failover needs a federation contract.
+- Live identity rotation still requires endpoint rebind and peer re-admission design.
+- Concurrent and single-connection Iroh serving still merit a separate reviewed lifecycle consolidation.
+- Stage-local child manifest/script helpers intentionally repeat where ownership differs; do not replace them with a broad resident fixture module.
+- `forwarding.rs` and `serving.rs` may later split their test modules mechanically if test-file size becomes costly, but their production stage boundaries should remain intact.
+
+### ROADMAP disposition
+
+No product milestone changed: this phase decomposed already-landed resident behavior. The standing backlog now records that binary-local resident stage ownership is complete; all remaining product work stays under toy breadth, multi-Vision federation, and the itch list above.
