@@ -141,7 +141,7 @@ pushes, PRs, or merges.
 - [x] R2.1: extract resident observation.
 - [x] R2.2: extract resident payload.
 - [x] R2.3: extract resident publication.
-- [ ] R2.4: extract resident idempotency.
+- [x] R2.4: extract resident idempotency.
 - [ ] R2.5: extract resident candidates.
 - [ ] R2.6: extract resident decision.
 - [ ] R2.7: extract resident execution.
@@ -525,4 +525,176 @@ note: these functions exist but are inaccessible
 
 For more information about this error, try `rustc --explain E0425`.
 error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 1 previous error
+```
+
+### R2.4 idempotency extraction compile failure
+
+```text
+$ cargo check --workspace
+    Checking mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0425]: cannot find function `resident_idempotency_caller_scope` in this scope
+   --> crates/mct-daemon/src/daemon/resident.rs:697:24
+    |
+697 |     let caller_scope = resident_idempotency_caller_scope(&request);
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+    |
+note: function `crate::resident::idempotency::resident_idempotency_caller_scope` exists but is inaccessible
+   --> crates/mct-daemon/src/daemon/resident/idempotency.rs:5:1
+    |
+  5 | fn resident_idempotency_caller_scope(request: &MctCallProtocolRequest) -> String {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not accessible
+
+error[E0425]: cannot find function `resident_idempotency_fingerprint` in this scope
+   --> crates/mct-daemon/src/daemon/resident.rs:698:23
+    |
+698 |     let fingerprint = resident_idempotency_fingerprint(&request);
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+    |
+note: function `crate::resident::idempotency::resident_idempotency_fingerprint` exists but is inaccessible
+   --> crates/mct-daemon/src/daemon/resident/idempotency.rs:36:1
+    |
+ 36 | fn resident_idempotency_fingerprint(request: &MctCallProtocolRequest) -> MctIdempotencyFingerprint {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not accessible
+
+error[E0425]: cannot find function `idempotency_expiry` in this scope
+   --> crates/mct-daemon/src/daemon/resident.rs:699:28
+    |
+699 |     let expires_at = match idempotency_expiry(&now) {
+    |                            ^^^^^^^^^^^^^^^^^^
+    |
+note: function `crate::resident::idempotency::idempotency_expiry` exists but is inaccessible
+   --> crates/mct-daemon/src/daemon/resident/idempotency.rs:57:1
+    |
+ 57 | fn idempotency_expiry(now: &Timestamp) -> Result<Timestamp> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not accessible
+help: a local variable with a similar name exists
+    |
+699 -     let expires_at = match idempotency_expiry(&now) {
+699 +     let expires_at = match idempotency_key(&now) {
+    |
+
+error[E0425]: cannot find function `resident_idempotency_observation` in this scope
+   --> crates/mct-daemon/src/daemon/resident.rs:726:30
+    |
+726 |                   .append(vec![resident_idempotency_observation(
+    |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: crates/mct-daemon/src/daemon/resident/observation.rs:110:1
+    |
+110 | / pub(super) fn resident_endpoint_observation(
+111 | |     observation_id: &'static str,
+112 | |     endpoint_id: EndpointIdText,
+113 | |     outcome: ObservationOutcome,
+...   |
+140 | | }
+    | |_- similarly named function `resident_endpoint_observation` defined here
+    |
+note: function `crate::resident::idempotency::resident_idempotency_observation` exists but is inaccessible
+   --> crates/mct-daemon/src/daemon/resident/idempotency.rs:134:1
+    |
+134 | / fn resident_idempotency_observation(
+135 | |     request: &MctCallProtocolRequest,
+136 | |     caller_scope: &str,
+137 | |     fingerprint: &MctIdempotencyFingerprint,
+...   |
+202 | | }
+    | |_^ not accessible
+help: a function with a similar name exists
+    |
+726 -                 .append(vec![resident_idempotency_observation(
+726 +                 .append(vec![resident_endpoint_observation(
+    |
+
+error[E0425]: cannot find function `recorded_reply_to_handler_result` in this scope
+    --> crates/mct-daemon/src/daemon/resident.rs:737:13
+     |
+ 737 |               recorded_reply_to_handler_result(*reply)
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1939 | / pub(super) fn remote_reply_to_call_handler_result(
+1940 | |     reply: MctIrohCallPayloadReply,
+1941 | |     route_decision_id: DecisionId,
+1942 | |     route_taken: RouteTaken,
+...    |
+1981 | | }
+     | |_- similarly named function `remote_reply_to_call_handler_result` defined here
+     |
+note: function `crate::resident::idempotency::recorded_reply_to_handler_result` exists but is inaccessible
+    --> crates/mct-daemon/src/daemon/resident/idempotency.rs:76:1
+     |
+  76 | fn recorded_reply_to_handler_result(reply: MctRecordedCallReply) -> MctIrohCallHandlerResult {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not accessible
+help: a function with a similar name exists
+     |
+ 737 -             recorded_reply_to_handler_result(*reply)
+ 737 +             remote_reply_to_call_handler_result(*reply)
+     |
+
+error[E0425]: cannot find function `resident_idempotency_observation` in this scope
+   --> crates/mct-daemon/src/daemon/resident.rs:742:30
+    |
+742 |                   .append(vec![resident_idempotency_observation(
+    |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: crates/mct-daemon/src/daemon/resident/observation.rs:110:1
+    |
+110 | / pub(super) fn resident_endpoint_observation(
+111 | |     observation_id: &'static str,
+112 | |     endpoint_id: EndpointIdText,
+113 | |     outcome: ObservationOutcome,
+...   |
+140 | | }
+    | |_- similarly named function `resident_endpoint_observation` defined here
+    |
+note: function `crate::resident::idempotency::resident_idempotency_observation` exists but is inaccessible
+   --> crates/mct-daemon/src/daemon/resident/idempotency.rs:134:1
+    |
+134 | / fn resident_idempotency_observation(
+135 | |     request: &MctCallProtocolRequest,
+136 | |     caller_scope: &str,
+137 | |     fingerprint: &MctIdempotencyFingerprint,
+...   |
+202 | | }
+    | |_^ not accessible
+help: a function with a similar name exists
+    |
+742 -                 .append(vec![resident_idempotency_observation(
+742 +                 .append(vec![resident_endpoint_observation(
+    |
+
+error[E0425]: cannot find function `idempotency_refusal_result` in this scope
+   --> crates/mct-daemon/src/daemon/resident.rs:753:13
+    |
+753 |             idempotency_refusal_result(reason)
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+    |
+note: function `crate::resident::idempotency::idempotency_refusal_result` exists but is inaccessible
+   --> crates/mct-daemon/src/daemon/resident/idempotency.rs:89:1
+    |
+ 89 | fn idempotency_refusal_result(reason: MctIdempotencyReason) -> MctIrohCallHandlerResult {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not accessible
+
+error[E0425]: cannot find function `handler_result_to_recorded_reply` in this scope
+   --> crates/mct-daemon/src/daemon/resident.rs:757:28
+    |
+757 |             let recorded = handler_result_to_recorded_reply(&result);
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+    |
+note: function `crate::resident::idempotency::handler_result_to_recorded_reply` exists but is inaccessible
+   --> crates/mct-daemon/src/daemon/resident/idempotency.rs:63:1
+    |
+ 63 | fn handler_result_to_recorded_reply(result: &MctIrohCallHandlerResult) -> MctRecordedCallReply {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not accessible
+
+warning: unused import: `idempotency::*`
+  --> crates/mct-daemon/src/daemon/resident.rs:17:16
+   |
+17 | pub(super) use idempotency::*;
+   |                ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0425`.
+warning: `mct-daemon` (bin "mct-daemon") generated 1 warning
+error: could not compile `mct-daemon` (bin "mct-daemon") due to 8 previous errors; 1 warning emitted
 ```
