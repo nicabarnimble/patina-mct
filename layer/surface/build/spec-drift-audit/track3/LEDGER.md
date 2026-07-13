@@ -413,7 +413,7 @@ The 236 load-bearing `-- Decision:` statements were also read in full and groupe
 | `RoutePlannerCannotGrantToys` | COVERED | `mct_kernel::route::tests::route_revalidation_denies_failed_toy_evidence` |
 | `ExpiryAndRevocationAreFacts` | COVERED | `mct_kernel::toy::tests::expired_time_window_denies_without_authorization`; `mct_kernel::toy::tests::revoked_grant_denies_without_authorization` |
 | `GrantSnapshotsAreCacheNotTruth` | COVERED | `mct_daemon::state::tests::state_store_persists_toy_grant_snapshots`; `mct_kernel::toy::tests::stale_grant_revision_denies_without_authorization` |
-| `ToyGrantDecisionsAreObserved` | GAP | The existing observation test proves allow and generic deny only, not expired and revoked typed facts. |
+| `ToyGrantDecisionsAreObserved` | COVERED | `mct_kernel::observation::tests::toy_grant_observation_matrix_distinguishes_expiry_and_revocation` proves allow, generic deny, expired, and revoked decisions retain distinct typed facts and authority revisions. |
 | `ToyBackendFailureIsAdapterEffect` | COVERED | `mct_daemon::toy::tests::toy_backend_failure_is_adapter_observation_not_kernel_denial` |
 | `FixtureCompatibilityUsesExplicitGrants` | COVERED | `mct_daemon::wasm::tests::slate_manager_list_work_runs_through_mct_wit_runtime`; `mct_kernel::toy::tests::manifest_need_without_grant_denies_as_missing_grant` |
 
@@ -456,8 +456,8 @@ The 236 load-bearing `-- Decision:` statements were also read in full and groupe
 
 | Status | Invariants |
 |---|---:|
-| COVERED | 199 |
-| GAP | 1 |
+| COVERED | 200 |
+| GAP | 0 |
 | LAW-LEADS-CODE | 0 |
 | DEFERRED | 23 |
 
