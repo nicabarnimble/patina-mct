@@ -411,7 +411,7 @@ Extend the existing slice-1 ledger without restructuring it so every named invar
 - [x] S0: rerun and record Allium plan/model obligation categories for both laws.
 - [x] S1: extend the ledger to every named invariant and bulk structural obligation.
 - [x] S2.1: resolve required external fixture compatibility disposition.
-- [ ] S2.2: resolve complete result-observation matrix gap.
+- [!] S2.2: STOP — cancelled `MctResult` is collapsed to failed by the real resident/Iroh projection, while the evaluation model has no cancelled outcome.
 - [ ] S2.3: resolve complete child-lifecycle observation matrix gaps.
 - [ ] S2.4: resolve bounded resident observation buffering gap.
 - [ ] S2.5: resolve typed toy-grant expiry/revocation observation gap.
@@ -440,7 +440,8 @@ Extend the existing slice-1 ledger without restructuring it so every named invar
 |---|---:|---:|---|
 | Baseline `e73704f` | — | 291 | 291 passed, 0 ignored |
 | S1 `6f574c4` | 0 | 291 | 291 passed, 0 ignored |
-| S2.1 `docs: defer external fixture execution coverage` | 0 | 291 | pending commit validation |
+| S2.1 `6c687da` | 0 | 291 | 291 passed, 0 ignored |
+| S2.2 STOP record `docs: record cancelled outcome projection drift` | 0 | 291 | pending commit validation |
 
 ## Slice 2 S1 inventory result
 
@@ -453,7 +454,37 @@ Extend the existing slice-1 ledger without restructuring it so every named invar
 ## Slice 2 S2 triage record
 
 - `ExternalChildCompatibility.RequiredFixturesDoNotRegress`: converted GAP → DEFERRED. The repository contains a real `slate-manager` invocation path but not the versioned `folder-watch-actor` and `watch-null-sink` artifacts; generated lookalikes would prove only the generic loader and would overstate external compatibility.
+- `MctObservationSubsystemCoverage.ResultCoverage`: real-path triage exposed a structural LAW-LEADS-CODE mismatch instead of a missing matrix. `result_to_call_handler_result` maps `ResultOutcome::Cancelled` to `MctIrohCallHandlerResult::failed`, so the downstream result observation is failed rather than cancelled.
+- `MctResultTerminality.ClosedOutcomeSet`: also moved COVERED → LAW-LEADS-CODE. The existing helper test proves route presence for all five result variants but did not prove actual result-consumer projection.
+- Structural stop: `MctCallProtocolReply` and `ResultOutcome` include cancellation, but `MctCallProtocolEvaluation.outcome` in the law and `CallProtocolOutcome` in Rust do not. Adding a cancelled evaluation variant changes the kernel/wire model; preserving cancellation by another route requires a newly adjudicated representation. The expected-red test was removed after capture so the branch remains green; no behavior was changed.
 
 ## Slice 2 failure and flake log
 
-Capture every failure verbatim here before rerunning. No slice-2 failures yet.
+Capture every failure verbatim here before rerunning.
+
+### S2.2 expected red — cancelled result projection
+
+```text
+$ cargo test -p mct-daemon --bin mct-daemon resident::execution::tests::cancelled_result_projection_preserves_cancelled_outcome -- --nocapture
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.74s
+     Running unittests src/main.rs (target/debug/deps/mct_daemon-701d058281c133f0)
+
+running 1 test
+
+thread 'resident::execution::tests::cancelled_result_projection_preserves_cancelled_outcome' (1619908) panicked at crates/mct-daemon/src/daemon/resident/execution.rs:957:9:
+assertion `left != right` failed
+  left: Failed
+ right: Failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test resident::execution::tests::cancelled_result_projection_preserves_cancelled_outcome ... FAILED
+
+failures:
+
+failures:
+    resident::execution::tests::cancelled_result_projection_preserves_cancelled_outcome
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 65 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
