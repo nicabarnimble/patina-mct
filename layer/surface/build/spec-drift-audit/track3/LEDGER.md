@@ -49,7 +49,7 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 | `CurrentAuthorityPrecedesReplay` — revocation | COVERED | `mct_daemon_bin::resident::tests::resident_mother_payload_roundtrip_verifies_result_digest` |
 | `CurrentAuthorityPrecedesReplay` — expiry and narrowed Vision | COVERED | `mct_daemon_bin::resident::tests::resident_mother_payload_roundtrip_verifies_result_digest` records one keyed success, then proves identical retries after expiry and Vision narrowing are denied without cached payload. |
 | `CurrentAuthorityPrecedesReplay` — narrowed ALPN | DEFERRED | Persisted peer bindings currently expose the fixed `mct/hello/0` + `mct/call/0` protocol scope and have no operator ALPN-narrowing surface. A replay test requires the future configurable binding-scope model; inventing that authority surface is outside propagation. Current call-time ALPN revalidation remains covered by `mct_iroh::tests::call_rechecks_narrowed_alpn_scope_after_hello`. |
-| `CrossMotherReplayRequiresFederationContract` | COVERED | `mct_daemon::state::tests::idempotency_store_scopes_reserves_replays_expires_and_survives_reopen` proves caller/store isolation; `mct_daemon_bin::resident::tests::two_mother_forwards_selected_call_over_iroh_and_maps_reply` uses separate Mother stores. |
+| `CrossMotherReplayRequiresFederationContract` | COVERED | `mct_daemon::state::tests::idempotency_store_scopes_reserves_replays_expires_and_survives_reopen` proves caller/store isolation; `mct_daemon_bin::resident::forwarding::tests::two_mother_forwards_selected_call_over_iroh_and_maps_reply` uses separate Mother stores. |
 
 ### Payload integrity and local CAS
 
@@ -70,10 +70,10 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 | `PlannerRanksOnlyAdmissibleRoutes` | COVERED | `mct_kernel::route::tests::route_decision_records_selected_candidate_and_authority_evidence`; `mct_daemon_bin::resident::decision::tests::resident_route_optimization_cannot_grant_authority` |
 | `OptimizationCannotGrantAuthority` | COVERED | `mct_daemon_bin::resident::decision::tests::resident_route_optimization_cannot_grant_authority` |
 | `DenyReasonsArePolicyReasons` | COVERED | `mct_daemon_bin::resident::decision::tests::resident_no_route_records_specific_elimination`; `mct_kernel::route::tests::candidate_elimination_reasons_expose_denial_class` |
-| `ExecutionRevalidatesAuthority` | COVERED | `mct_kernel::route::tests::route_revalidation_denies_stale_policy_before_execution`; `mct_daemon_bin::resident::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello` |
+| `ExecutionRevalidatesAuthority` | COVERED | `mct_kernel::route::tests::route_revalidation_denies_stale_policy_before_execution`; `mct_daemon_bin::resident::forwarding::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello` |
 | `EffectBoundaryRevisionGuardIsDistinct` | COVERED | `mct_daemon_bin::resident::execution::tests::resident_route_revision_guard_denies_before_effect` |
 | `EffectBoundaryGuardCannotRepairStaleAuthority` | COVERED | `mct_daemon_bin::resident::execution::tests::resident_route_revision_guard_denies_before_effect` |
-| `PeerEgressAndLocalChildEffectGuardsAreDistinct` | COVERED | `mct_daemon_bin::resident::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello`; `mct_daemon_bin::resident::execution::tests::resident_route_revision_guard_denies_before_effect` |
+| `PeerEgressAndLocalChildEffectGuardsAreDistinct` | COVERED | `mct_daemon_bin::resident::forwarding::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello`; `mct_daemon_bin::resident::execution::tests::resident_route_revision_guard_denies_before_effect` |
 | `NoRouteDecision.DenyByDefault` | COVERED | `mct_kernel::route::tests::no_route_decision_denies_by_default_without_route_taken` |
 | `RetryRequiresPolicy`, `GrantRequestRequiresAuthority`, `GrantResponsesAreScopedAndBounded`, `NoSilentEscalation` | COVERED | `mct_kernel::route::tests::no_route_decision_denies_by_default_without_route_taken` proves the current passive default. Active retry/grant/escalation paths remain explicitly deferred under audit C3. |
 | `SafeRequesterDisclosure` | COVERED | `mct_kernel::route::tests::candidate_elimination_reasons_expose_denial_class`; `mct_daemon_bin::resident::decision::tests::resident_no_route_records_specific_elimination` |
@@ -111,15 +111,15 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 |---|---|---|
 | `PeerRelationshipTaxonomy.RolesAreCurrentProjections` | COVERED | `mct_daemon_bin::resident::candidates::tests::eligible_route_candidate_requires_every_current_conjunct` mutates current facts independently and immediately loses candidacy. |
 | `PeerOperationalRoleDerivation.EligibleRouteCandidateDerivation` | COVERED | `mct_daemon_bin::resident::candidates::tests::eligible_route_candidate_requires_every_current_conjunct` proves the positive candidate and independently removes local admission, reverse admission/proof, fresh publication, Vision agreement, call scope, and ticket reachability. |
-| `SelectedExecutorDerivation` | COVERED | `mct_daemon_bin::resident::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello` revalidates after selection and before egress. |
+| `SelectedExecutorDerivation` | COVERED | `mct_daemon_bin::resident::forwarding::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello` revalidates after selection and before egress. |
 | `OperatorPointedSubmissionIsDistinct` | COVERED | `mct_daemon_bin::ingress::tests::operator_pointed_egress_is_durable_before_send` proves the operator decision is durable before the receiver observes `mct/call/0`; both manual CLI paths use the same recording boundary. |
 
 ### Terminal peer submission
 
 | Invariant / obligation | Status | Evidence |
 |---|---|---|
-| `SubmissionProposesReceiverAsLocalExecutor` | COVERED | `mct_daemon_bin::resident::tests::two_mother_forwards_selected_call_over_iroh_and_maps_reply` |
-| `PeerArrivalsDoNotSourceAnotherPeer` | COVERED | `mct_daemon_bin::resident::decision::tests::forwarded_arrival_with_unavailable_local_candidate_is_terminal`; `mct_daemon_bin::resident::tests::two_mother_mutual_publication_with_unready_children_terminates_single_hop` |
+| `SubmissionProposesReceiverAsLocalExecutor` | COVERED | `mct_daemon_bin::resident::forwarding::tests::two_mother_forwards_selected_call_over_iroh_and_maps_reply` |
+| `PeerArrivalsDoNotSourceAnotherPeer` | COVERED | `mct_daemon_bin::resident::decision::tests::forwarded_arrival_with_unavailable_local_candidate_is_terminal`; `mct_daemon_bin::resident::forwarding::tests::two_mother_mutual_publication_with_unready_children_terminates_single_hop` |
 | `OriginDoesNotChangeAuthority` | COVERED | `mct_kernel::call::tests::only_local_call_origins_allow_remote_candidate_sourcing` together with terminal-arrival tests proves origin dispatches the submitted protocol meaning rather than bypassing authority. |
 | `PublicationReferenceIsNotRequiredForTerminality` | COVERED | `mct_daemon_bin::resident::decision::tests::forwarded_arrival_with_unavailable_local_candidate_is_terminal` uses no publication reference in the arriving envelope. |
 
@@ -127,10 +127,10 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 
 | Invariant / obligation | Status | Evidence |
 |---|---|---|
-| `SubmissionIsTheImmediateCallersAct` | COVERED | `mct_daemon_bin::resident::tests::two_mother_forwards_selected_call_over_iroh_and_maps_reply` records `forwarded_from:mother-a` at the executor. |
-| `ReceiverTrustsOnlyLocallyVerifiableAuthority` | COVERED | `mct_daemon_bin::resident::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello` |
-| `UpstreamIdentityRemainsAtItsVerifier` | COVERED | `mct_daemon_bin::resident::tests::forwarded_envelope_clears_upstream_user_identity` proves the original verifier retains its user fact while the per-hop envelope carries only the submitting Mother and correlation IDs. |
-| `BilateralAuditUsesCorrelationNotIdentityPropagation` | COVERED | `mct_daemon_bin::resident::tests::two_mother_forwards_selected_call_over_iroh_and_maps_reply` checks both ledgers and the shared route chain. |
+| `SubmissionIsTheImmediateCallersAct` | COVERED | `mct_daemon_bin::resident::forwarding::tests::two_mother_forwards_selected_call_over_iroh_and_maps_reply` records `forwarded_from:mother-a` at the executor. |
+| `ReceiverTrustsOnlyLocallyVerifiableAuthority` | COVERED | `mct_daemon_bin::resident::forwarding::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello` |
+| `UpstreamIdentityRemainsAtItsVerifier` | COVERED | `mct_daemon_bin::resident::forwarding::tests::forwarded_envelope_clears_upstream_user_identity` proves the original verifier retains its user fact while the per-hop envelope carries only the submitting Mother and correlation IDs. |
+| `BilateralAuditUsesCorrelationNotIdentityPropagation` | COVERED | `mct_daemon_bin::resident::forwarding::tests::two_mother_forwards_selected_call_over_iroh_and_maps_reply` checks both ledgers and the shared route chain. |
 | `ObservationReplicationIsTheSharingChannel` | DEFERRED | `mct/observe/0` and ObservationReplicationAuthorization are audit C4 future scope; current call envelopes grant no observation access. |
 | `BrokeredIdentityBelongsToBrokeredSubmission` | DEFERRED | Brokered submission is explicitly future law and cannot be implemented by this terminal `mct/call/0` slice. |
 
@@ -142,7 +142,7 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 | `MutualAdmissionPreventsExternallyWritableRouting` | COVERED | `mct_daemon_bin::resident::candidates::tests::resident_remote_route_candidates_reject_unsigned_peer_binding`; `mct_daemon_bin::resident::candidates::tests::two_mother_unauthorized_operation_fails_closed` |
 | `OneWayStatesRemainMeaningful` | COVERED | `mct_daemon_bin::resident::candidates::tests::eligible_route_candidate_requires_every_current_conjunct` independently removes each directional admission. |
 | `BilateralStateIsDerivedNotStored` | COVERED | `mct_daemon_bin::resident::candidates::tests::eligible_route_candidate_requires_every_current_conjunct` derives candidacy from current directional records rather than a stored pair state. |
-| `EitherDirectionEndsCandidacyImmediately` | COVERED | `mct_daemon_bin::resident::candidates::tests::two_mother_revoked_or_expired_binding_fails_closed`; `mct_daemon_bin::resident::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello` |
+| `EitherDirectionEndsCandidacyImmediately` | COVERED | `mct_daemon_bin::resident::candidates::tests::two_mother_revoked_or_expired_binding_fails_closed`; `mct_daemon_bin::resident::forwarding::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello` |
 | `ReachabilityIsNotAuthority` | COVERED | `mct_daemon_bin::resident::candidates::tests::eligible_route_candidate_requires_every_current_conjunct` proves publication plus reachability cannot replace either consent and omission of the ticket removes candidacy. |
 
 ### Capability publication

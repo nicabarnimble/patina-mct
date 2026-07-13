@@ -145,7 +145,7 @@ pushes, PRs, or merges.
 - [x] R2.5: extract resident candidates.
 - [x] R2.6: extract resident decision.
 - [x] R2.7: extract resident execution.
-- [ ] R2.8: extract resident forwarding.
+- [x] R2.8: extract resident forwarding.
 - [ ] R2.9: extract resident pipeline.
 - [ ] R2.10: extract resident serving.
 - [ ] R2.11: close with line counts, test counts, implemented record table, itch list, and ROADMAP disposition.
@@ -1010,4 +1010,52 @@ error[E0616]: field `authorized_route` of struct `decision::LocalExecutionPlan` 
 Some errors have detailed explanations: E0423, E0425, E0616.
 For more information about an error, try `rustc --explain E0423`.
 error: could not compile `mct-daemon` (bin "mct-daemon") due to 5 previous errors
+```
+
+### R2.8 forwarding test relocation compile failure
+
+```text
+$ cargo test -p mct-daemon --bin mct-daemon resident::forwarding::tests
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0425]: cannot find function `test_child` in this scope
+   --> crates/mct-daemon/src/daemon/resident/forwarding.rs:691:47
+    |
+691 |             .approve_and_assign_loaded_child(&test_child(), MctOperatorChildScope::default())
+    |                                               ^^^^^^^^^^ not found in this scope
+    |
+note: these functions exist but are inaccessible
+   --> crates/mct-daemon/src/daemon/resident.rs:709:5
+    |
+709 |     fn test_child() -> mct_daemon::MctLoadedChild {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `crate::tests::test_child`: not accessible
+    |
+   ::: crates/mct-daemon/src/daemon/resident/decision.rs:339:5
+    |
+339 |     fn test_child() -> mct_daemon::MctLoadedChild {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `crate::resident::decision::tests::test_child`: not accessible
+    |
+   ::: crates/mct-daemon/src/daemon/resident/candidates.rs:424:5
+    |
+424 |     fn test_child() -> mct_daemon::MctLoadedChild {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `crate::resident::candidates::tests::test_child`: not accessible
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 1 previous error
+```
+
+### R2.8 forwarding extraction Clippy failure
+
+```text
+$ cargo clippy --workspace --all-targets -- -D warnings
+    Checking mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error: unused imports: `endpoint_id_for_secret_key_hex` and `sign_peer_binding_signature_ref`
+   --> crates/mct-daemon/src/daemon/resident.rs:597:20
+    |
+597 |     use mct_iroh::{endpoint_id_for_secret_key_hex, sign_peer_binding_signature_ref};
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `-D unused-imports` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(unused_imports)]`
+
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 1 previous error
 ```
