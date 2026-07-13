@@ -395,3 +395,258 @@ error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
 - S3 added or strengthened candidacy-conjunction, freshness-boundary, publication-honesty, per-hop identity, and replay-authority coverage.
 - ROADMAP candidate: configurable peer-binding ALPN scope is required before narrowed-ALPN replay can be exercised through the persisted resident authority path.
 - No PR was opened or updated; nothing was merged.
+
+# Track 3 slice 2 — full contract ledger extension
+
+## Operator scope
+
+Extend the existing slice-1 ledger without restructuring it so every named invariant in both Allium laws has an honest row, then resolve only bounded gaps through real paths and stage-local helpers. Preserve monotonic tests from 291, add no mct-daemon library public surface, cite every new test in the same commit, and validate every commit with workspace tests, Clippy with warnings denied, Tier 0, and diff hygiene. No push, PR, or merge.
+
+## Slice 2 checklist
+
+- [x] S0: exact clean `patina` baseline at `e73704f`, synchronized with `origin/patina` and `origin/main`.
+- [x] S0: operator baseline re-established at 291 passed, 0 ignored.
+- [x] S0: read both Allium laws in full, including all 223 `@invariant` declarations and 32 load-bearing Decision clusters.
+- [x] S0: read the slice-1 ledger conventions and resident-decomposition close-out/itch list.
+- [x] S0: rerun and record Allium plan/model obligation categories for both laws.
+- [x] S1: extend the ledger to every named invariant and bulk structural obligation.
+- [x] S2.1: resolve required external fixture compatibility disposition.
+- [x] S2.2: Option 1 adjudicated — preserve cancelled through protocol evaluation, wire reply, replay, and observations.
+- [x] S2.3: resolve complete child-lifecycle observation matrix gaps.
+- [x] S2.4: resolve bounded resident observation buffering gap.
+- [x] S2.5: resolve typed toy-grant expiry/revocation observation gap.
+- [x] S2.x: end every remaining GAP as COVERED, DEFERRED with reason, or STOP for adjudication.
+- [x] S3: close the ledger extension with final counts, running test record, drift disposition, REPORT/ROADMAP updates, and final validation.
+
+## Slice 2 Allium inventory
+
+- `mct-product-map.allium`: 188 named contract invariants; 217 `-- Decision:` statements grouped into 26 adjacent load-bearing clusters.
+- `mct-peer-ontology.allium`: 35 named contract invariants; 19 `-- Decision:` statements grouped into 6 adjacent load-bearing clusters.
+- `allium plan layer/allium/mct-product-map.allium`: 179 structural obligations.
+  - `entity_fields`: 56
+  - `entity_optional`: 38
+  - `surface_actor`: 27
+  - `surface_exposure`: 27
+  - `value_equality`: 29
+  - `when_presence`: 2
+- `allium model layer/allium/mct-product-map.allium`: 27 entities and 29 value types.
+- `allium plan layer/allium/mct-peer-ontology.allium`: zero structural obligations.
+- `allium model layer/allium/mct-peer-ontology.allium`: zero entities and zero value types.
+- The CLI still does not emit prose contract invariants; all 223 were inventoried directly from the law files.
+
+## Slice 2 running test count
+
+| Commit / boundary | Tests added | Running passed + ignored | Result |
+|---|---:|---:|---|
+| Baseline `e73704f` | — | 291 | 291 passed, 0 ignored |
+| S1 `6f574c4` | 0 | 291 | 291 passed, 0 ignored |
+| S2.1 `6c687da` | 0 | 291 | 291 passed, 0 ignored |
+| S2.2 STOP record `01b470b` | 0 | 291 | 291 passed, 0 ignored |
+| S2.2 fix `8565636` | 3 | 294 | 294 passed, 0 ignored |
+| S2.2 disposition `342cabc` | 0 | 294 | 294 passed, 0 ignored |
+| S2.3 `4e992e6` | 2 | 296 | 296 passed, 0 ignored |
+| S2.4 `5612ccc` | 1 | 297 | 297 passed, 0 ignored |
+| S2.5 `6b82e9d` | 1 | 298 | 298 passed, 0 ignored |
+| S3 `docs: close contract ledger extension` | 0 | 298 | 298 passed, 0 ignored |
+
+## Slice 2 S1 inventory result
+
+- Named invariant universe: 223/223 attributed.
+- Structural plan universe: 179/179 attributed through 14 existing bulk rows; the companion emits none.
+- Citation audit: 125 distinct named test citations resolve; no stale resident paths.
+- Initial full-universe disposition: 195 COVERED, 6 GAP, 0 LAW-LEADS-CODE, 22 DEFERRED.
+- The absence of a new LAW-LEADS-CODE row was checked against the implementation rather than assumed. The newly exposed unresolved obligations are missing complete named evidence over landed behavior (GAP) or explicitly unbuilt/governance-only surfaces (DEFERRED), not observed contradictory execution.
+
+## Slice 2 S2 triage record
+
+- `ExternalChildCompatibility.RequiredFixturesDoNotRegress`: converted GAP → DEFERRED. The repository contains a real `slate-manager` invocation path but not the versioned `folder-watch-actor` and `watch-null-sink` artifacts; generated lookalikes would prove only the generic loader and would overstate external compatibility.
+- `MctObservationSubsystemCoverage.ResultCoverage`: real-path triage exposed a structural LAW-LEADS-CODE mismatch instead of a missing matrix. `result_to_call_handler_result` maps `ResultOutcome::Cancelled` to `MctIrohCallHandlerResult::failed`, so the downstream result observation is failed rather than cancelled.
+- `MctResultTerminality.ClosedOutcomeSet`: also moved COVERED → LAW-LEADS-CODE. The existing helper test proves route presence for all five result variants but did not prove actual result-consumer projection.
+- Structural stop (resolved): `MctCallProtocolReply` and `ResultOutcome` included cancellation, but `MctCallProtocolEvaluation.outcome` in the law and `CallProtocolOutcome` in Rust did not.
+- Operator adjudication selected Option 1. The protocol evaluation model now carries `cancelled`; resident projection, wire reply route suppression, durable idempotent replay, and buffered/before-effect observations preserve it end-to-end. Options 2 and 3 were rejected because projection indirection would hide the model gap, while failure collapse would violate route projection and replay semantics.
+- `MctChildComponentLifecycle.LifecycleTransitionsAreObserved` and `MctObservationSubsystemCoverage.ChildLifecycleCoverage`: the full authority/instance matrix was testable with a small kernel-local fixture and is now covered. The real strict registry-sync test caught an additional spec-ward drift: failed artifact loads were not projected because the decision batch iterated only successfully loaded children. The small fix adds typed before-effect `ArtifactRejected` facts without exposing failure detail or adding public surface.
+- `MctLocalFirstObservationLedger.BufferedEffectsAreBounded`: filled with a resident-observation-local test over the actual writer. The queue now has a named private capacity constant; the test proves finite capacity, acknowledged buffered persistence, and the existing closed-sink test proves visible failure before protected effects.
+- `MctToyGrantAuthority.ToyGrantDecisionsAreObserved`: filled with a kernel-local matrix proving allowed, generic-denied, expired, and revoked grant decisions retain distinct observation kinds plus policy/grant revisions.
+
+## Slice 2 failure and flake log
+
+Capture every failure verbatim here before rerunning.
+
+### S2.2 expected red — cancelled result projection
+
+```text
+$ cargo test -p mct-daemon --bin mct-daemon resident::execution::tests::cancelled_result_projection_preserves_cancelled_outcome -- --nocapture
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.74s
+     Running unittests src/main.rs (target/debug/deps/mct_daemon-701d058281c133f0)
+
+running 1 test
+
+thread 'resident::execution::tests::cancelled_result_projection_preserves_cancelled_outcome' (1619908) panicked at crates/mct-daemon/src/daemon/resident/execution.rs:957:9:
+assertion `left != right` failed
+  left: Failed
+ right: Failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test resident::execution::tests::cancelled_result_projection_preserves_cancelled_outcome ... FAILED
+
+failures:
+
+failures:
+    resident::execution::tests::cancelled_result_projection_preserves_cancelled_outcome
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 65 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
+### S2.2 adjudicated expected red — restored cancelled result probe
+
+```text
+$ cargo test -p mct-daemon --bin mct-daemon resident::execution::tests::cancelled_result_projection_preserves_cancelled_outcome -- --nocapture
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.17s
+     Running unittests src/main.rs (target/debug/deps/mct_daemon-701d058281c133f0)
+
+running 1 test
+
+thread 'resident::execution::tests::cancelled_result_projection_preserves_cancelled_outcome' (1632652) panicked at crates/mct-daemon/src/daemon/resident/execution.rs:957:9:
+assertion `left != right` failed
+  left: Failed
+ right: Failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test resident::execution::tests::cancelled_result_projection_preserves_cancelled_outcome ... FAILED
+
+failures:
+
+failures:
+    resident::execution::tests::cancelled_result_projection_preserves_cancelled_outcome
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 65 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
+### S2.2 cancelled observation test Clippy failure
+
+```text
+$ cargo clippy --workspace --all-targets -- -D warnings
+    Checking mct-iroh v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-iroh)
+    Checking mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error: this `MutexGuard` is held across an await point
+   --> crates/mct-iroh/src/lib.rs:642:13
+    |
+642 |         let batches = batches.lock().unwrap();
+    |             ^^^^^^^
+    |
+    = help: consider using an async-aware `Mutex` type or ensuring the `MutexGuard` is dropped before calling `await`
+note: these are all the await points this lock is held through
+   --> crates/mct-iroh/src/lib.rs:686:24
+    |
+686 |         client.close().await;
+    |                        ^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#await_holding_lock
+    = note: `-D clippy::await-holding-lock` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::await_holding_lock)]`
+
+error: could not compile `mct-iroh` (lib test) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+```
+
+### S2.3 artifact rejection observation expectation
+
+```text
+$ cargo test -p mct-daemon --bin mct-daemon control::tests::live_registry_sync_observes_artifact_rejection_before_state_effect -- --nocapture
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+     Running unittests src/main.rs (target/debug/deps/mct_daemon-701d058281c133f0)
+
+running 1 test
+
+thread 'control::tests::live_registry_sync_observes_artifact_rejection_before_state_effect' (1653992) panicked at crates/mct-daemon/src/daemon/control.rs:2861:14:
+called `Option::unwrap()` on a `None` value
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test control::tests::live_registry_sync_observes_artifact_rejection_before_state_effect ... FAILED
+
+failures:
+
+failures:
+    control::tests::live_registry_sync_observes_artifact_rejection_before_state_effect
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 67 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
+### S3 citation audit script assumption
+
+```text
+$ cargo test --workspace -- --list ... && python3 citation-audit
+ tests 295 invariants 223 missing [] citations 132 unresolved []
+Traceback (most recent call last):
+  File "<stdin>", line 11, in <module>
+AssertionError
+```
+
+The script incorrectly compared the deduplicated set of unqualified Cargo test paths with the governed count; three crates share unqualified names such as `tests::exposes_version`. The line count remains 298, and the citation resolution itself reported zero unresolved paths.
+
+## Slice 2 close-out
+
+### Complete universe and terminal status
+
+All 223 named invariants are attributed by exact spec spelling: 188 from `mct-product-map.allium` and 35 from `mct-peer-ontology.allium`. All 179 product-map structural plan obligations remain covered through the 14 bulk wire/entity rows; the companion emits zero structural obligations.
+
+| Status | Invariants |
+|---|---:|
+| COVERED | 200 |
+| GAP | 0 |
+| LAW-LEADS-CODE | 0 |
+| DEFERRED | 23 |
+
+Every DEFERRED row carries its own one-line reason. The reasons are bounded to unbuilt C2 planner/telemetry inputs, future thought/observation/federation/brokered protocols, unavailable exact external child artifacts, future projection/export machinery, and non-executable design-governance constraints. No authority or fixture surface was invented solely to make a row testable.
+
+### Running test result
+
+- Baseline: 291 passed, 0 ignored.
+- Added: 7 named tests.
+- Final: 298 passed, 0 ignored.
+- Monotonic sequence by behavior commit: 291 → 294 → 296 → 297 → 298.
+- Documentation-only commits retained the preceding count exactly.
+
+### Drift caught and resolved
+
+1. **Cancelled outcome projection** — the real resident result consumer collapsed `ResultOutcome::Cancelled` to failed. Operator adjudication selected Option 1. `8565636` added cancelled to protocol evaluation and preserved it through caller-safe reply projection, route suppression, idempotent replay, and both buffered and before-effect observation paths. The product map carries the dated 0.x wire decision.
+2. **Rejected child artifact observation** — strict registry-sync failures were omitted because the decision batch iterated only successfully loaded children. `4e992e6` now records typed `ArtifactRejected` facts before the registry state effect without exposing diagnostic detail.
+
+Both catches are recorded in `REPORT.md`; no LAW-LEADS-CODE row remains.
+
+### Gap dispositions
+
+- Required three-fixture external compatibility: DEFERRED because two exact versioned artifacts are absent; ROADMAP now records the CI/artifact follow-up.
+- Result coverage: COVERED by cancelled resident, wire, replay, and durability tests.
+- Child lifecycle coverage and lifecycle transition observation: COVERED by the full kernel authority/instance matrix plus real verified/rejected registry paths and the existing A7 reload tests.
+- Buffered effects: COVERED by the actual resident bounded queue/ack path plus existing closed-sink before-effect failure coverage.
+- Toy grant decision observations: COVERED by the allow/deny/expired/revoked matrix.
+
+### Surface and citation checks
+
+- mct-daemon library public-surface additions: **zero**. New daemon helpers/tests remain binary-local or private.
+- The intentional 0.x protocol correction adds `CallProtocolOutcome::Cancelled` and the matching Iroh handler constructor so the already-public closed outcome model is consistent end-to-end.
+- Citation audit: 132 distinct qualified test citations resolve; zero stale resident paths and zero unresolved citations.
+- Invariant inventory audit: 223 parsed, 223 present, zero missing.
+- Final Allium output is unchanged structurally: product plan 179; product model 27 entities/29 value types; companion plan/model zero.
+
+### Validation and flake record
+
+Every commit passed `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `./scripts/ci-tier0.sh`, and `git diff --check` at its governed running count. Expected-red and incidental failures are captured verbatim above. There were no nondeterministic flakes.
+
+### Slice 2 commits
+
+- `6f574c4` — `docs: extend contract ledger to full spec coverage`
+- `6c687da` — `docs: defer external fixture execution coverage`
+- `01b470b` — `docs: record cancelled outcome projection drift`
+- `8565636` — `fix(kernel): preserve cancelled protocol outcomes`
+- `342cabc` — `docs: record cancelled outcome adjudication`
+- `4e992e6` — `fix(control): complete child lifecycle observations`
+- `5612ccc` — `test(daemon): cover bounded observation buffering`
+- `6b82e9d` — `test(kernel): cover toy grant observation matrix`
+
+No push, PR, or merge was performed.

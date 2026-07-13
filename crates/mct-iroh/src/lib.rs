@@ -582,6 +582,111 @@ mod tests {
         serve_task.abort();
     }
 
+    /// Covers `MctResultTerminality.ClosedOutcomeSet`,
+    /// `MctCallProtocol.RouteTakenReplyPresenceFollowsExecution`, and
+    /// `MctObservationSubsystemCoverage.ResultCoverage` for cancellation.
+    #[tokio::test]
+    async fn cancelled_call_preserves_wire_outcome_route_absence_and_buffered_observations() {
+        let server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let server_ticket = server.ticket();
+        let client_endpoint_id = client.snapshot().endpoint_id;
+        let binding = test_peer_binding(&client_endpoint_id);
+        let batches = Arc::new(Mutex::new(Vec::new()));
+        let sink = collecting_observation_sink(Arc::clone(&batches));
+        let serve_task = tokio::spawn(async move {
+            server
+                .serve_concurrent_with_call_handler(
+                    MctIrohServeState::new(),
+                    vec![binding],
+                    MctIrohConcurrentServeConfig::new(sink),
+                    || Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
+                    |_, _, _| async {
+                        MctIrohCallHandlerResult::cancelled("cancelled").with_route(
+                            Some(DecisionId::new("decision-cancelled-route").unwrap()),
+                            Some(RouteTaken {
+                                node_id: MctNodeId::new("node-cancelled-route").unwrap(),
+                                child_id: None,
+                                runtime_kind: RuntimeKind::Process,
+                            }),
+                        )
+                    },
+                )
+                .await
+        });
+
+        let trace_id = TraceId::new("trace-call-cancelled").unwrap();
+        let hello = test_hello_request(&client_endpoint_id, &trace_id);
+        let hello_response = client.send_hello(&server_ticket, &hello).await.unwrap();
+        let call = test_call_request(&client_endpoint_id, &trace_id, &hello_response);
+        let reply = client.send_call(&server_ticket, &call).await.unwrap();
+
+        assert_eq!(reply.reply_outcome, CallProtocolReplyOutcome::Cancelled);
+        assert!(reply.route_taken.is_none());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let has_reply = batches.lock().unwrap().iter().any(|batch| {
+                    batch.facts.iter().any(|fact| {
+                        fact.call_stage() == Some(MctIrohCallLifecycleStage::ReplyEmitted)
+                    })
+                });
+                if has_reply {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        {
+            let batches = batches.lock().unwrap();
+            let terminal_batches = batches
+                .iter()
+                .filter(|batch| {
+                    batch.facts.iter().any(|fact| {
+                        matches!(
+                            fact.call_stage(),
+                            Some(
+                                MctIrohCallLifecycleStage::ResultRecorded
+                                    | MctIrohCallLifecycleStage::ReplyEmitted
+                            )
+                        )
+                    })
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(terminal_batches.len(), 2);
+            assert!(
+                terminal_batches
+                    .iter()
+                    .all(|batch| batch.durability == MctIrohObservationDurability::Buffered)
+            );
+            let terminal_outcomes = terminal_batches
+                .iter()
+                .flat_map(|batch| batch.facts.iter())
+                .filter(|fact| {
+                    matches!(
+                        fact.call_stage(),
+                        Some(
+                            MctIrohCallLifecycleStage::ResultRecorded
+                                | MctIrohCallLifecycleStage::ReplyEmitted
+                        )
+                    )
+                })
+                .map(|fact| {
+                    fact.to_observation(Timestamp::new("2026-05-31T00:00:03Z").unwrap())
+                        .outcome
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                terminal_outcomes,
+                vec![ObservationOutcome::Cancelled, ObservationOutcome::Cancelled]
+            );
+        }
+        client.close().await;
+        serve_task.abort();
+    }
+
     #[tokio::test]
     async fn denied_call_fact_is_recorded_before_reply() {
         let server = MotherIrohEndpoint::bind_local_mct().await.unwrap();

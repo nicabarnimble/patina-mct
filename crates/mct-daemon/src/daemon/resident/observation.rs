@@ -2,6 +2,8 @@
 
 use super::*;
 
+const RESIDENT_LEDGER_QUEUE_CAPACITY: usize = 256;
+
 #[derive(Clone)]
 pub(crate) struct ResidentLedgerWriter {
     sender: tokio::sync::mpsc::Sender<ResidentLedgerWrite>,
@@ -24,7 +26,8 @@ impl ResidentLedgerWriter {
     pub(crate) fn spawn(path: PathBuf) -> Result<Self> {
         let mut ledger = JsonlObservationLedger::open(&path, "ledger-local", "local-mct")
             .with_context(|| format!("open observation ledger {}", path.display()))?;
-        let (sender, mut receiver) = tokio::sync::mpsc::channel::<ResidentLedgerWrite>(256);
+        let (sender, mut receiver) =
+            tokio::sync::mpsc::channel::<ResidentLedgerWrite>(RESIDENT_LEDGER_QUEUE_CAPACITY);
         tokio::task::spawn_blocking(move || {
             while let Some(write) = receiver.blocking_recv() {
                 let appended_at = mct_daemon::current_timestamp_string();
@@ -145,6 +148,41 @@ mod tests {
 
     fn contract_peer_expiry() -> Timestamp {
         Timestamp::new("2099-01-01T00:00:00Z").unwrap()
+    }
+
+    /// Covers `MctLocalFirstObservationLedger.BufferedEffectsAreBounded`.
+    #[tokio::test]
+    async fn resident_observation_queue_is_bounded_and_acknowledged() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = ResidentLedgerWriter::spawn(dir.path().join("observations.jsonl")).unwrap();
+
+        assert_eq!(ledger.sender.max_capacity(), RESIDENT_LEDGER_QUEUE_CAPACITY);
+        assert_eq!(ledger.sender.capacity(), RESIDENT_LEDGER_QUEUE_CAPACITY);
+        ledger
+            .append_with_durability(
+                vec![resident_endpoint_observation(
+                    "obs-bounded-resident-writer",
+                    EndpointIdText::new("endpoint-bounded-resident-writer").unwrap(),
+                    ObservationOutcome::Completed,
+                    "bounded resident writer",
+                )],
+                DurabilityClass::Buffered,
+            )
+            .await
+            .unwrap();
+        assert_eq!(ledger.sender.capacity(), RESIDENT_LEDGER_QUEUE_CAPACITY);
+        ledger.close().await;
+
+        let entries = JsonlObservationLedger::open_read_only(
+            dir.path().join("observations.jsonl"),
+            "ledger-local",
+            "local-mct",
+        )
+        .unwrap()
+        .entries()
+        .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].durability_class, DurabilityClass::Buffered);
     }
 
     #[tokio::test]

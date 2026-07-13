@@ -695,6 +695,10 @@ pub fn call_protocol_evaluation_observation(
             ObservationKind::AdapterEffectFailed,
             ObservationOutcome::TimedOut,
         ),
+        CallProtocolOutcome::Cancelled => (
+            ObservationKind::ResultRecorded,
+            ObservationOutcome::Cancelled,
+        ),
     };
 
     MctObservation {
@@ -1559,6 +1563,62 @@ mod tests {
         assert_eq!(denied_observation.observed_at, supplied_observed_at());
     }
 
+    /// Covers `MctToyGrantAuthority.ToyGrantDecisionsAreObserved`.
+    #[test]
+    fn toy_grant_observation_matrix_distinguishes_expiry_and_revocation() {
+        let mut evaluation = ToyGrantEvaluation {
+            evaluation_id: ToyGrantEvaluationId::new("toy-eval-matrix").unwrap(),
+            call_id: CallId::new("call-toy-matrix").unwrap(),
+            decision_id: DecisionId::new("decision-toy-matrix").unwrap(),
+            grant_id: Some(ToyGrantId::new("grant-toy-matrix").unwrap()),
+            toy_id: ToyId::new("toy-matrix").unwrap(),
+            subject_child_name: "matrix-child".into(),
+            verdict: ToyGrantVerdict::Allowed,
+            reason_code: ToyGrantReasonCode::ActiveGrant,
+            policy_revision: 3,
+            grants_revision: 7,
+            observation_id: ObservationId::new("obs-toy-matrix").unwrap(),
+        };
+
+        for (verdict, reason, kind, outcome) in [
+            (
+                ToyGrantVerdict::Allowed,
+                ToyGrantReasonCode::ActiveGrant,
+                ObservationKind::ToyGrantAllowed,
+                ObservationOutcome::Allowed,
+            ),
+            (
+                ToyGrantVerdict::Denied,
+                ToyGrantReasonCode::MissingGrant,
+                ObservationKind::ToyGrantDenied,
+                ObservationOutcome::Denied,
+            ),
+            (
+                ToyGrantVerdict::Denied,
+                ToyGrantReasonCode::ExpiredGrant,
+                ObservationKind::ToyGrantExpired,
+                ObservationOutcome::Denied,
+            ),
+            (
+                ToyGrantVerdict::Denied,
+                ToyGrantReasonCode::RevokedGrant,
+                ObservationKind::ToyGrantRevoked,
+                ObservationOutcome::Denied,
+            ),
+        ] {
+            evaluation.verdict = verdict;
+            evaluation.reason_code = reason;
+            let observation = toy_grant_evaluation_observation(
+                TraceId::new("trace-toy-matrix").unwrap(),
+                supplied_observed_at(),
+                &evaluation,
+            );
+            assert_eq!((observation.kind, observation.outcome), (kind, outcome));
+            assert_eq!(observation.policy_revision, Some(3));
+            assert_eq!(observation.grants_revision, Some(7));
+        }
+    }
+
     #[test]
     fn child_lifecycle_and_call_authority_become_observations() {
         let approval = ChildApproval {
@@ -1698,6 +1758,144 @@ mod tests {
         assert_eq!(denial_observation.outcome, ObservationOutcome::Denied);
         assert_eq!(denial_observation.safe_message, "not authorized");
         assert_eq!(denial_observation.observed_at, supplied_observed_at());
+    }
+
+    /// Covers `MctChildComponentLifecycle.LifecycleTransitionsAreObserved` and
+    /// `MctObservationSubsystemCoverage.ChildLifecycleCoverage`.
+    #[test]
+    fn child_authority_and_instance_observation_matrix_is_typed() {
+        let mut approval = ChildApproval {
+            approval_id: ChildApprovalId::new("approval-matrix").unwrap(),
+            artifact_id: ComponentArtifactId::new("artifact-matrix").unwrap(),
+            child_name: "matrix-child".into(),
+            artifact_version: "1.0.0".into(),
+            scope_vision_id: None,
+            scope_node_id: None,
+            scope_project_id: None,
+            approval_state: ChildApprovalState::Candidate,
+            policy_revision: 1,
+            authority_observation_id: ObservationId::new("obs-approval-matrix").unwrap(),
+        };
+        for (state, kind, outcome) in [
+            (
+                ChildApprovalState::Candidate,
+                ObservationKind::LifecycleTransitionRecorded,
+                ObservationOutcome::Informational,
+            ),
+            (
+                ChildApprovalState::Approved,
+                ObservationKind::ChildApproved,
+                ObservationOutcome::Allowed,
+            ),
+            (
+                ChildApprovalState::Blocked,
+                ObservationKind::ChildRevoked,
+                ObservationOutcome::Denied,
+            ),
+            (
+                ChildApprovalState::Revoked,
+                ObservationKind::ChildRevoked,
+                ObservationOutcome::Denied,
+            ),
+            (
+                ChildApprovalState::Deprecated,
+                ObservationKind::LifecycleTransitionRecorded,
+                ObservationOutcome::Informational,
+            ),
+        ] {
+            approval.approval_state = state;
+            let observation = child_approval_observation(
+                TraceId::new("trace-child-matrix").unwrap(),
+                supplied_observed_at(),
+                &approval,
+            );
+            assert_eq!((observation.kind, observation.outcome), (kind, outcome));
+        }
+
+        let mut assignment = ChildAssignment {
+            assignment_id: ChildAssignmentId::new("assignment-matrix").unwrap(),
+            approval_id: approval.approval_id.clone(),
+            artifact_id: approval.artifact_id.clone(),
+            child_name: approval.child_name.clone(),
+            vision_id: VisionId::new("vision-matrix").unwrap(),
+            node_id: None,
+            project_id: None,
+            assignment_state: ChildAssignmentState::Active,
+            pinned_artifact_version: approval.artifact_version.clone(),
+            assignment_observation_id: ObservationId::new("obs-assignment-matrix").unwrap(),
+        };
+        for (state, kind, outcome) in [
+            (
+                ChildAssignmentState::Active,
+                ObservationKind::ChildAssigned,
+                ObservationOutcome::Allowed,
+            ),
+            (
+                ChildAssignmentState::Revoked,
+                ObservationKind::ChildAssignmentRevoked,
+                ObservationOutcome::Denied,
+            ),
+        ] {
+            assignment.assignment_state = state;
+            let observation = child_assignment_observation(
+                TraceId::new("trace-child-matrix").unwrap(),
+                supplied_observed_at(),
+                &assignment,
+            );
+            assert_eq!((observation.kind, observation.outcome), (kind, outcome));
+        }
+
+        let mut instance = ChildInstance {
+            instance_id: ChildInstanceId::new("instance-matrix").unwrap(),
+            assignment_id: assignment.assignment_id,
+            artifact_id: approval.artifact_id,
+            child_name: approval.child_name,
+            generation: 1,
+            node_id: MctNodeId::new("node-matrix").unwrap(),
+            instance_state: ChildInstanceState::Loading,
+            readiness_observation_id: None,
+            last_lifecycle_observation_id: ObservationId::new("obs-instance-matrix").unwrap(),
+        };
+        for (state, kind, outcome) in [
+            (
+                ChildInstanceState::Loading,
+                ObservationKind::ChildInstanceLoading,
+                ObservationOutcome::Started,
+            ),
+            (
+                ChildInstanceState::Ready,
+                ObservationKind::ChildInstanceReady,
+                ObservationOutcome::Allowed,
+            ),
+            (
+                ChildInstanceState::Degraded,
+                ObservationKind::ChildInstanceDegraded,
+                ObservationOutcome::Failed,
+            ),
+            (
+                ChildInstanceState::Draining,
+                ObservationKind::ChildInstanceDraining,
+                ObservationOutcome::Started,
+            ),
+            (
+                ChildInstanceState::Stopped,
+                ObservationKind::ChildInstanceStopped,
+                ObservationOutcome::Completed,
+            ),
+            (
+                ChildInstanceState::Failed,
+                ObservationKind::ChildInstanceFailed,
+                ObservationOutcome::Failed,
+            ),
+        ] {
+            instance.instance_state = state;
+            let observation = child_instance_observation(
+                TraceId::new("trace-child-matrix").unwrap(),
+                supplied_observed_at(),
+                &instance,
+            );
+            assert_eq!((observation.kind, observation.outcome), (kind, outcome));
+        }
     }
 
     #[test]
