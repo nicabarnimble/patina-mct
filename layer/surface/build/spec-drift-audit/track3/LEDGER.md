@@ -66,17 +66,17 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 
 | Invariant / obligation | Status | Evidence |
 |---|---|---|
-| `TwoPhaseRouting.AuthorityPrecedesOptimization` | COVERED | `mct_daemon_bin::resident::tests::resident_route_optimization_cannot_grant_authority` |
-| `PlannerRanksOnlyAdmissibleRoutes` | COVERED | `mct_kernel::route::tests::route_decision_records_selected_candidate_and_authority_evidence`; `mct_daemon_bin::resident::tests::resident_route_optimization_cannot_grant_authority` |
-| `OptimizationCannotGrantAuthority` | COVERED | `mct_daemon_bin::resident::tests::resident_route_optimization_cannot_grant_authority` |
-| `DenyReasonsArePolicyReasons` | COVERED | `mct_daemon_bin::resident::tests::resident_no_route_records_specific_elimination`; `mct_kernel::route::tests::candidate_elimination_reasons_expose_denial_class` |
+| `TwoPhaseRouting.AuthorityPrecedesOptimization` | COVERED | `mct_daemon_bin::resident::decision::tests::resident_route_optimization_cannot_grant_authority` |
+| `PlannerRanksOnlyAdmissibleRoutes` | COVERED | `mct_kernel::route::tests::route_decision_records_selected_candidate_and_authority_evidence`; `mct_daemon_bin::resident::decision::tests::resident_route_optimization_cannot_grant_authority` |
+| `OptimizationCannotGrantAuthority` | COVERED | `mct_daemon_bin::resident::decision::tests::resident_route_optimization_cannot_grant_authority` |
+| `DenyReasonsArePolicyReasons` | COVERED | `mct_daemon_bin::resident::decision::tests::resident_no_route_records_specific_elimination`; `mct_kernel::route::tests::candidate_elimination_reasons_expose_denial_class` |
 | `ExecutionRevalidatesAuthority` | COVERED | `mct_kernel::route::tests::route_revalidation_denies_stale_policy_before_execution`; `mct_daemon_bin::resident::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello` |
 | `EffectBoundaryRevisionGuardIsDistinct` | COVERED | `mct_daemon_bin::resident::tests::resident_route_revision_guard_denies_before_effect` |
 | `EffectBoundaryGuardCannotRepairStaleAuthority` | COVERED | `mct_daemon_bin::resident::tests::resident_route_revision_guard_denies_before_effect` |
 | `PeerEgressAndLocalChildEffectGuardsAreDistinct` | COVERED | `mct_daemon_bin::resident::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello`; `mct_daemon_bin::resident::tests::resident_route_revision_guard_denies_before_effect` |
 | `NoRouteDecision.DenyByDefault` | COVERED | `mct_kernel::route::tests::no_route_decision_denies_by_default_without_route_taken` |
 | `RetryRequiresPolicy`, `GrantRequestRequiresAuthority`, `GrantResponsesAreScopedAndBounded`, `NoSilentEscalation` | COVERED | `mct_kernel::route::tests::no_route_decision_denies_by_default_without_route_taken` proves the current passive default. Active retry/grant/escalation paths remain explicitly deferred under audit C3. |
-| `SafeRequesterDisclosure` | COVERED | `mct_kernel::route::tests::candidate_elimination_reasons_expose_denial_class`; `mct_daemon_bin::resident::tests::resident_no_route_records_specific_elimination` |
+| `SafeRequesterDisclosure` | COVERED | `mct_kernel::route::tests::candidate_elimination_reasons_expose_denial_class`; `mct_daemon_bin::resident::decision::tests::resident_no_route_records_specific_elimination` |
 
 ### Caller-safe route projection
 
@@ -119,9 +119,9 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 | Invariant / obligation | Status | Evidence |
 |---|---|---|
 | `SubmissionProposesReceiverAsLocalExecutor` | COVERED | `mct_daemon_bin::resident::tests::two_mother_forwards_selected_call_over_iroh_and_maps_reply` |
-| `PeerArrivalsDoNotSourceAnotherPeer` | COVERED | `mct_daemon_bin::resident::tests::forwarded_arrival_with_unavailable_local_candidate_is_terminal`; `mct_daemon_bin::resident::tests::two_mother_mutual_publication_with_unready_children_terminates_single_hop` |
+| `PeerArrivalsDoNotSourceAnotherPeer` | COVERED | `mct_daemon_bin::resident::decision::tests::forwarded_arrival_with_unavailable_local_candidate_is_terminal`; `mct_daemon_bin::resident::tests::two_mother_mutual_publication_with_unready_children_terminates_single_hop` |
 | `OriginDoesNotChangeAuthority` | COVERED | `mct_kernel::call::tests::only_local_call_origins_allow_remote_candidate_sourcing` together with terminal-arrival tests proves origin dispatches the submitted protocol meaning rather than bypassing authority. |
-| `PublicationReferenceIsNotRequiredForTerminality` | COVERED | `mct_daemon_bin::resident::tests::forwarded_arrival_with_unavailable_local_candidate_is_terminal` uses no publication reference in the arriving envelope. |
+| `PublicationReferenceIsNotRequiredForTerminality` | COVERED | `mct_daemon_bin::resident::decision::tests::forwarded_arrival_with_unavailable_local_candidate_is_terminal` uses no publication reference in the arriving envelope. |
 
 ### Per-hop accountability
 

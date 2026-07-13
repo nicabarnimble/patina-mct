@@ -143,7 +143,7 @@ pushes, PRs, or merges.
 - [x] R2.3: extract resident publication.
 - [x] R2.4: extract resident idempotency.
 - [x] R2.5: extract resident candidates.
-- [ ] R2.6: extract resident decision.
+- [x] R2.6: extract resident decision.
 - [ ] R2.7: extract resident execution.
 - [ ] R2.8: extract resident forwarding.
 - [ ] R2.9: extract resident pipeline.
@@ -768,4 +768,200 @@ Some errors have detailed explanations: E0425, E0433.
 For more information about an error, try `rustc --explain E0425`.
 warning: `mct-daemon` (bin "mct-daemon") generated 1 warning
 error: could not compile `mct-daemon` (bin "mct-daemon") due to 2 previous errors; 1 warning emitted
+```
+
+### R2.6 decision extraction compile failure
+
+```text
+$ cargo check --workspace
+    Checking mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error[E0616]: field `candidate` of struct `decision::RemoteExecutionPlan` is private
+   --> crates/mct-daemon/src/daemon/resident.rs:824:24
+    |
+824 |             &execution.candidate,
+    |                        ^^^^^^^^^ private field
+    |
+help: a method `candidate` also exists, call it with parentheses
+    |
+824 |             &execution.candidate(),
+    |                                 ++
+
+error[E0616]: field `candidate` of struct `decision::RemoteExecutionPlan` is private
+   --> crates/mct-daemon/src/daemon/resident.rs:899:32
+    |
+899 |                     &execution.candidate,
+    |                                ^^^^^^^^^ private field
+    |
+help: a method `candidate` also exists, call it with parentheses
+    |
+899 |                     &execution.candidate(),
+    |                                         ++
+
+error[E0616]: field `initial_decision` of struct `decision::RemoteExecutionPlan` is private
+   --> crates/mct-daemon/src/daemon/resident.rs:941:28
+    |
+941 |                 &execution.initial_decision,
+    |                            ^^^^^^^^^^^^^^^^ private field
+    |
+help: a method `initial_decision` also exists, call it with parentheses
+    |
+941 |                 &execution.initial_decision(),
+    |                                            ++
+
+error[E0616]: field `candidate` of struct `decision::RemoteExecutionPlan` is private
+   --> crates/mct-daemon/src/daemon/resident.rs:942:27
+    |
+942 |                 execution.candidate.clone(),
+    |                           ^^^^^^^^^ private field
+    |
+help: a method `candidate` also exists, call it with parentheses
+    |
+942 |                 execution.candidate().clone(),
+    |                                    ++
+
+error[E0616]: field `candidate` of struct `decision::RemoteExecutionPlan` is private
+   --> crates/mct-daemon/src/daemon/resident.rs:949:24
+    |
+949 |         .get(execution.candidate.node_id.as_str())
+    |                        ^^^^^^^^^ private field
+    |
+help: a method `candidate` also exists, call it with parentheses
+    |
+949 |         .get(execution.candidate().node_id.as_str())
+    |                                 ++
+
+error[E0616]: field `initial_decision` of struct `decision::RemoteExecutionPlan` is private
+   --> crates/mct-daemon/src/daemon/resident.rs:955:28
+    |
+955 |                 &execution.initial_decision,
+    |                            ^^^^^^^^^^^^^^^^ private field
+    |
+help: a method `initial_decision` also exists, call it with parentheses
+    |
+955 |                 &execution.initial_decision(),
+    |                                            ++
+
+error[E0616]: field `candidate` of struct `decision::RemoteExecutionPlan` is private
+   --> crates/mct-daemon/src/daemon/resident.rs:956:27
+    |
+956 |                 execution.candidate.clone(),
+    |                           ^^^^^^^^^ private field
+    |
+help: a method `candidate` also exists, call it with parentheses
+    |
+956 |                 execution.candidate().clone(),
+    |                                    ++
+
+error[E0616]: field `candidate` of struct `decision::RemoteExecutionPlan` is private
+   --> crates/mct-daemon/src/daemon/resident.rs:971:83
+    |
+971 |             && resident_candidate_for_remote_surface(&peer, surface) == execution.candidate
+    |                                                                                   ^^^^^^^^^ private field
+    |
+help: a method `candidate` also exists, call it with parentheses
+    |
+971 |             && resident_candidate_for_remote_surface(&peer, surface) == execution.candidate()
+    |                                                                                            ++
+
+error[E0616]: field `initial_decision` of struct `decision::RemoteExecutionPlan` is private
+   --> crates/mct-daemon/src/daemon/resident.rs:976:28
+    |
+976 |                 &execution.initial_decision,
+    |                            ^^^^^^^^^^^^^^^^ private field
+    |
+help: a method `initial_decision` also exists, call it with parentheses
+    |
+976 |                 &execution.initial_decision(),
+    |                                            ++
+
+error[E0616]: field `candidate` of struct `decision::RemoteExecutionPlan` is private
+   --> crates/mct-daemon/src/daemon/resident.rs:977:27
+    |
+977 |                 execution.candidate.clone(),
+    |                           ^^^^^^^^^ private field
+    |
+help: a method `candidate` also exists, call it with parentheses
+    |
+977 |                 execution.candidate().clone(),
+    |                                    ++
+
+error[E0616]: field `initial_decision` of struct `decision::RemoteExecutionPlan` is private
+   --> crates/mct-daemon/src/daemon/resident.rs:995:28
+    |
+995 |                 &execution.initial_decision,
+    |                            ^^^^^^^^^^^^^^^^ private field
+    |
+help: a method `initial_decision` also exists, call it with parentheses
+    |
+995 |                 &execution.initial_decision(),
+    |                                            ++
+
+error[E0616]: field `initial_decision` of struct `decision::RemoteExecutionPlan` is private
+    --> crates/mct-daemon/src/daemon/resident.rs:1006:20
+     |
+1006 |         &execution.initial_decision,
+     |                    ^^^^^^^^^^^^^^^^ private field
+     |
+help: a method `initial_decision` also exists, call it with parentheses
+     |
+1006 |         &execution.initial_decision(),
+     |                                    ++
+
+error[E0609]: no field `route_taken` on type `decision::LocalExecutionPlan`
+    --> crates/mct-daemon/src/daemon/resident.rs:1232:34
+     |
+1232 |     let runtime_kind = execution.route_taken.runtime_kind;
+     |                                  ^^^^^^^^^^^ unknown field
+     |
+     = note: available fields are: `child`, `authorized_route`, `child_authority_observation_id`
+
+error[E0609]: no field `route_taken` on type `decision::LocalExecutionPlan`
+    --> crates/mct-daemon/src/daemon/resident.rs:1270:33
+     |
+1270 |     let route_taken = execution.route_taken.clone();
+     |                                 ^^^^^^^^^^^ unknown field
+     |
+     = note: available fields are: `child`, `authorized_route`, `child_authority_observation_id`
+
+Some errors have detailed explanations: E0609, E0616.
+For more information about an error, try `rustc --explain E0609`.
+error: could not compile `mct-daemon` (bin "mct-daemon") due to 14 previous errors
+```
+
+### R2.6 decision extraction Clippy failure
+
+```text
+$ cargo clippy --workspace --all-targets -- -D warnings
+    Checking mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error: large size difference between variants
+  --> crates/mct-daemon/src/daemon/resident/decision.rs:51:1
+   |
+51 | /   pub(super) enum RouteDisposition {
+52 | | /     Denied {
+53 | | |         decision: RouteDecision,
+54 | | |         observations: Vec<MctObservation>,
+55 | | |     },
+   | | |_____- the largest variant contains at least 256 bytes
+56 | | /     Local {
+57 | | |         plan: Box<LocalExecutionPlan>,
+58 | | |         observations: Vec<MctObservation>,
+59 | | |     },
+   | | |_____- the second-largest variant contains at least 32 bytes
+...  |
+63 | |       },
+64 | |   }
+   | |___^ the entire enum is at least 256 bytes
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#large_enum_variant
+   = note: `-D clippy::large-enum-variant` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::large_enum_variant)]`
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+   |
+53 -         decision: RouteDecision,
+53 +         decision: Box<RouteDecision>,
+   |
+
+error: could not compile `mct-daemon` (bin "mct-daemon") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `mct-daemon` (bin "mct-daemon" test) due to 1 previous error
 ```
