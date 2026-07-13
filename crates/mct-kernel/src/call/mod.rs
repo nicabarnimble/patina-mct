@@ -744,6 +744,8 @@ pub enum CallProtocolOutcome {
     Failed,
     /// Downstream execution timed out after protocol admission.
     TimedOut,
+    /// Downstream execution was cancelled before a terminal reply was projected.
+    Cancelled,
     /// Downstream execution completed and a result reference may be present.
     Completed,
 }
@@ -1033,7 +1035,7 @@ fn validate_optional_string_field(
 /// Projects a protocol evaluation into the caller-safe reply shape.
 ///
 /// Accepted and completed evaluations map to success; malformed, denied,
-/// failed, and timed-out evaluations retain their caller-safe outcome class.
+/// failed, timed-out, and cancelled evaluations retain their caller-safe outcome class.
 pub fn call_reply_from_evaluation(
     reply_id: ReplyId,
     evaluation: &MctCallProtocolEvaluation,
@@ -1084,6 +1086,15 @@ pub fn call_reply_from_evaluation_with_result_payload_and_route(
         CallProtocolOutcome::Denied => CallProtocolReplyOutcome::Denied,
         CallProtocolOutcome::Failed => CallProtocolReplyOutcome::Failed,
         CallProtocolOutcome::TimedOut => CallProtocolReplyOutcome::TimedOut,
+        CallProtocolOutcome::Cancelled => CallProtocolReplyOutcome::Cancelled,
+    };
+    let route_taken = match reply_outcome {
+        CallProtocolReplyOutcome::Denied
+        | CallProtocolReplyOutcome::Cancelled
+        | CallProtocolReplyOutcome::Malformed => None,
+        CallProtocolReplyOutcome::Success
+        | CallProtocolReplyOutcome::Failed
+        | CallProtocolReplyOutcome::TimedOut => route_taken,
     };
 
     MctCallProtocolReply {

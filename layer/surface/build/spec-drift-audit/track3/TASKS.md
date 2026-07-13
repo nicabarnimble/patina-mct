@@ -411,7 +411,7 @@ Extend the existing slice-1 ledger without restructuring it so every named invar
 - [x] S0: rerun and record Allium plan/model obligation categories for both laws.
 - [x] S1: extend the ledger to every named invariant and bulk structural obligation.
 - [x] S2.1: resolve required external fixture compatibility disposition.
-- [!] S2.2: STOP — cancelled `MctResult` is collapsed to failed by the real resident/Iroh projection, while the evaluation model has no cancelled outcome.
+- [x] S2.2: Option 1 adjudicated — preserve cancelled through protocol evaluation, wire reply, replay, and observations.
 - [ ] S2.3: resolve complete child-lifecycle observation matrix gaps.
 - [ ] S2.4: resolve bounded resident observation buffering gap.
 - [ ] S2.5: resolve typed toy-grant expiry/revocation observation gap.
@@ -441,7 +441,8 @@ Extend the existing slice-1 ledger without restructuring it so every named invar
 | Baseline `e73704f` | — | 291 | 291 passed, 0 ignored |
 | S1 `6f574c4` | 0 | 291 | 291 passed, 0 ignored |
 | S2.1 `6c687da` | 0 | 291 | 291 passed, 0 ignored |
-| S2.2 STOP record `docs: record cancelled outcome projection drift` | 0 | 291 | pending commit validation |
+| S2.2 STOP record `01b470b` | 0 | 291 | 291 passed, 0 ignored |
+| S2.2 fix `fix(kernel): preserve cancelled protocol outcomes` | 3 | 294 | pending commit validation |
 
 ## Slice 2 S1 inventory result
 
@@ -456,7 +457,8 @@ Extend the existing slice-1 ledger without restructuring it so every named invar
 - `ExternalChildCompatibility.RequiredFixturesDoNotRegress`: converted GAP → DEFERRED. The repository contains a real `slate-manager` invocation path but not the versioned `folder-watch-actor` and `watch-null-sink` artifacts; generated lookalikes would prove only the generic loader and would overstate external compatibility.
 - `MctObservationSubsystemCoverage.ResultCoverage`: real-path triage exposed a structural LAW-LEADS-CODE mismatch instead of a missing matrix. `result_to_call_handler_result` maps `ResultOutcome::Cancelled` to `MctIrohCallHandlerResult::failed`, so the downstream result observation is failed rather than cancelled.
 - `MctResultTerminality.ClosedOutcomeSet`: also moved COVERED → LAW-LEADS-CODE. The existing helper test proves route presence for all five result variants but did not prove actual result-consumer projection.
-- Structural stop: `MctCallProtocolReply` and `ResultOutcome` include cancellation, but `MctCallProtocolEvaluation.outcome` in the law and `CallProtocolOutcome` in Rust do not. Adding a cancelled evaluation variant changes the kernel/wire model; preserving cancellation by another route requires a newly adjudicated representation. The expected-red test was removed after capture so the branch remains green; no behavior was changed.
+- Structural stop (resolved): `MctCallProtocolReply` and `ResultOutcome` included cancellation, but `MctCallProtocolEvaluation.outcome` in the law and `CallProtocolOutcome` in Rust did not.
+- Operator adjudication selected Option 1. The protocol evaluation model now carries `cancelled`; resident projection, wire reply route suppression, durable idempotent replay, and buffered/before-effect observations preserve it end-to-end. Options 2 and 3 were rejected because projection indirection would hide the model gap, while failure collapse would violate route projection and replay semantics.
 
 ## Slice 2 failure and flake log
 
@@ -487,4 +489,57 @@ failures:
 test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 65 filtered out; finished in 0.00s
 
 error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
+### S2.2 adjudicated expected red — restored cancelled result probe
+
+```text
+$ cargo test -p mct-daemon --bin mct-daemon resident::execution::tests::cancelled_result_projection_preserves_cancelled_outcome -- --nocapture
+   Compiling mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.17s
+     Running unittests src/main.rs (target/debug/deps/mct_daemon-701d058281c133f0)
+
+running 1 test
+
+thread 'resident::execution::tests::cancelled_result_projection_preserves_cancelled_outcome' (1632652) panicked at crates/mct-daemon/src/daemon/resident/execution.rs:957:9:
+assertion `left != right` failed
+  left: Failed
+ right: Failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test resident::execution::tests::cancelled_result_projection_preserves_cancelled_outcome ... FAILED
+
+failures:
+
+failures:
+    resident::execution::tests::cancelled_result_projection_preserves_cancelled_outcome
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 65 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
+```
+
+### S2.2 cancelled observation test Clippy failure
+
+```text
+$ cargo clippy --workspace --all-targets -- -D warnings
+    Checking mct-iroh v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-iroh)
+    Checking mct-daemon v0.1.0 (/Users/nicabar/Projects/Patina/patina-mct/crates/mct-daemon)
+error: this `MutexGuard` is held across an await point
+   --> crates/mct-iroh/src/lib.rs:642:13
+    |
+642 |         let batches = batches.lock().unwrap();
+    |             ^^^^^^^
+    |
+    = help: consider using an async-aware `Mutex` type or ensuring the `MutexGuard` is dropped before calling `await`
+note: these are all the await points this lock is held through
+   --> crates/mct-iroh/src/lib.rs:686:24
+    |
+686 |         client.close().await;
+    |                        ^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#await_holding_lock
+    = note: `-D clippy::await-holding-lock` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::await_holding_lock)]`
+
+error: could not compile `mct-iroh` (lib test) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
 ```

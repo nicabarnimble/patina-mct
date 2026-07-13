@@ -695,6 +695,10 @@ pub fn call_protocol_evaluation_observation(
             ObservationKind::AdapterEffectFailed,
             ObservationOutcome::TimedOut,
         ),
+        CallProtocolOutcome::Cancelled => (
+            ObservationKind::ResultRecorded,
+            ObservationOutcome::Cancelled,
+        ),
     };
 
     MctObservation {
