@@ -693,7 +693,7 @@ listens = []
 
         let outcome =
             authorize_resident_child_from_loaded(&config, loaded.children, &call).unwrap();
-        let ResidentAuthorizationOutcome::Denied { observations, .. } = outcome else {
+        let RouteDisposition::Denied { observations, .. } = outcome else {
             panic!("loading child should produce temporal no-route")
         };
         let text = serde_json::to_string(&observations).unwrap();

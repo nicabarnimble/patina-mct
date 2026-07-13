@@ -20,6 +20,10 @@ pub(super) use idempotency::*;
 mod candidates;
 use candidates::*;
 
+#[path = "resident/decision.rs"]
+mod decision;
+use decision::*;
+
 pub(super) async fn run_serve(mut args: Vec<String>) -> Result<()> {
     let relay_default = take_flag(&mut args, "--relay-default");
     let config_path = take_option(&mut args, "--config")
@@ -459,53 +463,12 @@ pub(super) struct ResidentExecutionPaths {
 }
 
 #[derive(Debug)]
-pub(super) struct ResidentAuthorizedExecution {
-    pub(super) child: mct_daemon::MctLoadedChild,
-    pub(super) authorized_route: AuthorizedRouteExecution,
-    pub(super) route_taken: RouteTaken,
-    pub(super) child_authority_observation_id: ObservationId,
-    pub(super) route_observations: Vec<MctObservation>,
-}
-
-#[derive(Debug)]
-pub(super) struct ResidentAuthorizedRemoteExecution {
-    pub(super) candidate: CandidateRoute,
-    pub(super) initial_decision: RouteDecision,
-    pub(super) route_observations: Vec<MctObservation>,
-}
-
-#[derive(Debug)]
-enum ResidentSelectedCandidate {
-    Local(Box<LocalCandidatePlan>),
-    Remote(RemoteCandidatePlan),
-}
-
-impl ResidentSelectedCandidate {
-    fn candidate(&self) -> &CandidateRoute {
-        match self {
-            Self::Local(plan) => &plan.candidate,
-            Self::Remote(plan) => &plan.candidate,
-        }
-    }
-}
-
-#[derive(Debug)]
 pub(super) struct ResidentChildExecution {
     pub(super) child: mct_daemon::MctLoadedChild,
     pub(super) authorized: AuthorizedChildInvocation,
     pub(super) child_authority_observation_id: ObservationId,
     pub(super) route_taken: RouteTaken,
     pub(super) route_decision_id: DecisionId,
-}
-
-#[derive(Debug)]
-pub(super) enum ResidentAuthorizationOutcome {
-    Authorized(Box<ResidentAuthorizedExecution>),
-    RemoteAuthorized(Box<ResidentAuthorizedRemoteExecution>),
-    Denied {
-        route_decision_id: DecisionId,
-        observations: Vec<MctObservation>,
-    },
 }
 
 #[derive(Clone, Debug)]
@@ -699,18 +662,18 @@ async fn execute_resident_call_after_payload(
     };
 
     match authorization {
-        ResidentAuthorizationOutcome::Denied {
-            route_decision_id,
+        RouteDisposition::Denied {
+            decision,
             observations,
         } => {
             if let Err(error) = ledger.append(observations).await {
                 eprintln!("resident route denial ledger write failed: {error}");
                 return MctIrohCallHandlerResult::failed("observation ledger unavailable");
             }
-            MctIrohCallHandlerResult::denied().with_route(Some(route_decision_id), None)
+            MctIrohCallHandlerResult::denied().with_route(Some(decision.decision_id), None)
         }
-        ResidentAuthorizationOutcome::Authorized(authorized) => {
-            if let Err(error) = ledger.append(authorized.route_observations.clone()).await {
+        RouteDisposition::Local { plan, observations } => {
+            if let Err(error) = ledger.append(observations).await {
                 eprintln!("resident route ledger write failed: {error}");
                 return MctIrohCallHandlerResult::failed("observation ledger unavailable");
             }
@@ -725,7 +688,7 @@ async fn execute_resident_call_after_payload(
             let execution = match tokio::task::spawn_blocking(move || {
                 execute_authorized_resident_child(
                     paths,
-                    *authorized,
+                    *plan,
                     request,
                     inline_payload,
                     current_revisions,
@@ -755,271 +718,14 @@ async fn execute_resident_call_after_payload(
                 execution.inline_result_payload,
             )
         }
-        ResidentAuthorizationOutcome::RemoteAuthorized(authorized) => {
-            if let Err(error) = ledger.append(authorized.route_observations.clone()).await {
+        RouteDisposition::Remote { plan, observations } => {
+            if let Err(error) = ledger.append(observations).await {
                 eprintln!("resident remote route ledger write failed: {error}");
                 return MctIrohCallHandlerResult::failed("observation ledger unavailable");
             }
-            execute_authorized_resident_remote_call(
-                paths,
-                *authorized,
-                request,
-                inline_payload,
-                ledger,
-            )
-            .await
+            execute_authorized_resident_remote_call(paths, *plan, request, inline_payload, ledger)
+                .await
         }
-    }
-}
-
-pub(super) async fn authorize_resident_child(
-    paths: ResidentExecutionPaths,
-    call: MctCall,
-) -> Result<ResidentAuthorizationOutcome> {
-    tokio::task::spawn_blocking(move || authorize_resident_child_blocking(&paths, &call))
-        .await
-        .context("join resident child authorization")?
-}
-
-pub(super) fn authorize_resident_child_blocking(
-    paths: &ResidentExecutionPaths,
-    call: &MctCall,
-) -> Result<ResidentAuthorizationOutcome> {
-    let config = MctDaemonConfigStore::new(&paths.config_path).load()?;
-    let state = MctRuntimeStateStore::open(&paths.state_path)?;
-    let load_report = load_children_from_dir(MctChildLoadOptions::new(paths.children_dir.clone()));
-    authorize_resident_child_from_loaded_with_state(
-        &config,
-        Some(&state),
-        load_report.children,
-        call,
-        current_timestamp(),
-    )
-}
-
-#[cfg(test)]
-pub(super) fn authorize_resident_child_from_loaded(
-    config: &mct_daemon::MctDaemonConfig,
-    children: Vec<mct_daemon::MctLoadedChild>,
-    call: &MctCall,
-) -> Result<ResidentAuthorizationOutcome> {
-    authorize_resident_child_from_loaded_with_state(
-        config,
-        None,
-        children,
-        call,
-        current_timestamp(),
-    )
-}
-
-pub(super) fn authorize_resident_child_from_loaded_with_state(
-    config: &mct_daemon::MctDaemonConfig,
-    state: Option<&MctRuntimeStateStore>,
-    children: Vec<mct_daemon::MctLoadedChild>,
-    call: &MctCall,
-    now: Timestamp,
-) -> Result<ResidentAuthorizationOutcome> {
-    let scope = resident_child_scope(config);
-    let projection = config.authority_projection_for_loaded_children(children.iter(), scope);
-    let mut plans = Vec::new();
-
-    for child in children
-        .into_iter()
-        .filter(|child| resident_child_accepts_call(child, call))
-    {
-        let child_authority = projection.authorize_child_for_call(&child.name, call);
-        let candidate = resident_candidate_for_child(&projection, &child);
-        let authority = if child_authority.is_allowed() {
-            CandidateAuthorityEvaluation::admissible(
-                candidate.clone(),
-                child_authority.evaluation.policy_revision,
-                call.authority_context.grants_revision,
-            )
-        } else {
-            CandidateAuthorityEvaluation::eliminated(
-                candidate.clone(),
-                child_elimination_reason(child_authority.evaluation.reason_code),
-                child_authority.evaluation.policy_revision,
-                call.authority_context.grants_revision,
-            )
-        };
-        plans.push(LocalCandidatePlan {
-            child,
-            candidate,
-            authority,
-            child_authority,
-        });
-    }
-
-    let remote_plans = resident_remote_candidate_plans_for_call(config, state, call, now.clone())?;
-    let mut observations = resident_candidate_observations(call, &plans);
-    observations.extend(resident_remote_candidate_observations(call, &remote_plans));
-    let mut authority_evaluations = plans
-        .iter()
-        .map(|plan| plan.authority.clone())
-        .collect::<Vec<_>>();
-    authority_evaluations.extend(remote_plans.iter().map(|plan| plan.authority.clone()));
-    let mut admissible = plans
-        .into_iter()
-        .filter(|plan| plan.authority.outcome == CandidateAuthorityOutcome::Admissible)
-        .map(|plan| ResidentSelectedCandidate::Local(Box::new(plan)))
-        .collect::<Vec<_>>();
-    admissible.extend(
-        remote_plans
-            .into_iter()
-            .filter(|plan| plan.authority.outcome == CandidateAuthorityOutcome::Admissible)
-            .map(ResidentSelectedCandidate::Remote),
-    );
-
-    if admissible.is_empty() {
-        let no_route_reason = authority_evaluations
-            .iter()
-            .find_map(|evaluation| evaluation.reason)
-            .unwrap_or(CandidateEliminationReason::ChildNotApproved);
-        let decision = RouteDecision::no_route(
-            call,
-            authority_evaluations,
-            no_route_reason,
-            resident_route_decision_ids("initial", call),
-        );
-        observations.push(route_decision_observation(
-            call.trace_context.trace_id.clone(),
-            current_timestamp(),
-            &decision,
-        ));
-        return Ok(ResidentAuthorizationOutcome::Denied {
-            route_decision_id: decision.decision_id,
-            observations,
-        });
-    }
-
-    admissible.sort_by_key(|plan| resident_route_rank_key(plan.candidate()));
-    match admissible.remove(0) {
-        ResidentSelectedCandidate::Local(selected) => {
-            let initial = RouteDecision::selected(
-                call,
-                selected.candidate.clone(),
-                authority_evaluations,
-                resident_route_decision_ids("initial", call),
-            );
-            observations.push(child_call_authority_observation(
-                call.trace_context.trace_id.clone(),
-                current_timestamp(),
-                &selected.child_authority.evaluation,
-            ));
-            observations.push(route_decision_observation(
-                call.trace_context.trace_id.clone(),
-                current_timestamp(),
-                &initial,
-            ));
-
-            let revalidated_child = projection.authorize_child_for_call(&selected.child.name, call);
-            let child_authority_observation_id =
-                revalidated_child.evaluation.observation_id.clone();
-            observations.push(child_call_authority_observation(
-                call.trace_context.trace_id.clone(),
-                current_timestamp(),
-                &revalidated_child.evaluation,
-            ));
-            let revalidation = revalidate_route_for_execution(
-                call,
-                &initial,
-                revalidated_child,
-                Vec::new(),
-                resident_route_revalidation_ids(call),
-            );
-            observations.push(route_decision_observation(
-                call.trace_context.trace_id.clone(),
-                current_timestamp(),
-                &revalidation.decision,
-            ));
-
-            let Some(authorized_route) = revalidation.authorized else {
-                return Ok(ResidentAuthorizationOutcome::Denied {
-                    route_decision_id: revalidation.decision.decision_id,
-                    observations,
-                });
-            };
-            let route_taken = RouteTaken {
-                node_id: selected.candidate.node_id.clone(),
-                child_id: selected.candidate.child_id.clone(),
-                runtime_kind: selected.candidate.runtime_kind,
-            };
-            Ok(ResidentAuthorizationOutcome::Authorized(Box::new(
-                ResidentAuthorizedExecution {
-                    child: selected.child,
-                    authorized_route,
-                    route_taken,
-                    child_authority_observation_id,
-                    route_observations: observations,
-                },
-            )))
-        }
-        ResidentSelectedCandidate::Remote(selected) => {
-            let initial = RouteDecision::selected(
-                call,
-                selected.candidate.clone(),
-                authority_evaluations,
-                resident_route_decision_ids("initial", call),
-            );
-            observations.push(route_decision_observation(
-                call.trace_context.trace_id.clone(),
-                current_timestamp(),
-                &initial,
-            ));
-            Ok(ResidentAuthorizationOutcome::RemoteAuthorized(Box::new(
-                ResidentAuthorizedRemoteExecution {
-                    candidate: selected.candidate,
-                    initial_decision: initial,
-                    route_observations: observations,
-                },
-            )))
-        }
-    }
-}
-
-pub(super) fn resident_route_rank_key(candidate: &CandidateRoute) -> (u8, u8, String, String) {
-    let network = match candidate.network_path {
-        NetworkPathClass::Local => 0,
-        NetworkPathClass::Direct => 1,
-        NetworkPathClass::Relayed => 2,
-        NetworkPathClass::Unknown => 3,
-    };
-    let runtime = match candidate.runtime_kind {
-        RuntimeKind::WasmComponent => 0,
-        RuntimeKind::Process => 1,
-        RuntimeKind::JvmChild => 2,
-        RuntimeKind::RemotePeer => 3,
-        RuntimeKind::Internal => 4,
-    };
-    let child_id = candidate
-        .child_id
-        .as_ref()
-        .map(ToString::to_string)
-        .unwrap_or_default();
-    (network, runtime, child_id, candidate.candidate_id.clone())
-}
-
-pub(super) fn resident_route_decision_ids(kind: &str, call: &MctCall) -> RouteDecisionIds {
-    RouteDecisionIds {
-        decision_id: DecisionId::new(format!("route-{kind}:{}", call.call_id))
-            .expect("string ID literal/generated value must be non-empty"),
-        observation_id: ObservationId::new(format!("obs-route-{kind}:{}", call.call_id))
-            .expect("string ID literal/generated value must be non-empty"),
-    }
-}
-
-pub(super) fn resident_route_revalidation_ids(call: &MctCall) -> RouteRevalidationIds {
-    RouteRevalidationIds {
-        decision_id: DecisionId::new(format!("route-revalidation:{}", call.call_id))
-            .expect("string ID literal/generated value must be non-empty"),
-        observation_id: ObservationId::new(format!("obs-route-revalidation:{}", call.call_id))
-            .expect("string ID literal/generated value must be non-empty"),
-        authorized_route_execution_id: AuthorizedRouteExecutionId::new(format!(
-            "authorized-route:{}",
-            call.call_id
-        ))
-        .expect("string ID literal/generated value must be non-empty"),
     }
 }
 
@@ -1049,9 +755,9 @@ pub(super) enum ResidentRemoteRevalidation {
     Denied(Box<RouteDecision>),
 }
 
-pub(super) async fn execute_authorized_resident_remote_call(
+async fn execute_authorized_resident_remote_call(
     paths: ResidentExecutionPaths,
-    execution: ResidentAuthorizedRemoteExecution,
+    execution: RemoteExecutionPlan,
     request: MctCallProtocolRequest,
     inline_payload: Option<Vec<u8>>,
     ledger: ResidentLedgerWriter,
@@ -1115,7 +821,7 @@ pub(super) async fn execute_authorized_resident_remote_call(
     if let Err(error) = ledger
         .append(vec![resident_forwarded_call_sent_observation(
             &request.call,
-            &execution.candidate,
+            execution.candidate(),
             &authorized.local_identity.node_id,
             &authorized.peer.peer_node_id,
         )])
@@ -1190,7 +896,7 @@ pub(super) async fn execute_authorized_resident_remote_call(
             if let Err(error) = ledger
                 .append(vec![resident_remote_reply_observation(
                     &request.call,
-                    &execution.candidate,
+                    execution.candidate(),
                     &authorized.local_identity.node_id,
                     &authorized.peer.peer_node_id,
                     &reply.reply,
@@ -1222,9 +928,9 @@ pub(super) async fn execute_authorized_resident_remote_call(
     }
 }
 
-pub(super) fn revalidate_resident_remote_route(
+fn revalidate_resident_remote_route(
     paths: &ResidentExecutionPaths,
-    execution: &ResidentAuthorizedRemoteExecution,
+    execution: &RemoteExecutionPlan,
     call: &MctCall,
 ) -> Result<ResidentRemoteRevalidation> {
     let config = MctDaemonConfigStore::new(&paths.config_path).load()?;
@@ -1232,22 +938,22 @@ pub(super) fn revalidate_resident_remote_route(
         return Ok(ResidentRemoteRevalidation::Denied(Box::new(
             remote_revalidation_denied_decision(
                 call,
-                &execution.initial_decision,
-                execution.candidate.clone(),
+                execution.initial_decision(),
+                execution.candidate().clone(),
                 CandidateEliminationReason::PeerNotAdmitted,
             ),
         )));
     };
     let Some(peer) = config
         .peers
-        .get(execution.candidate.node_id.as_str())
+        .get(execution.candidate().node_id.as_str())
         .cloned()
     else {
         return Ok(ResidentRemoteRevalidation::Denied(Box::new(
             remote_revalidation_denied_decision(
                 call,
-                &execution.initial_decision,
-                execution.candidate.clone(),
+                execution.initial_decision(),
+                execution.candidate().clone(),
                 CandidateEliminationReason::PeerNotAdmitted,
             ),
         )));
@@ -1262,13 +968,14 @@ pub(super) fn revalidate_resident_remote_route(
     )?;
     let Some(surface) = surfaces.into_iter().find(|surface| {
         surface.peer_node_id == peer.peer_node_id
-            && resident_candidate_for_remote_surface(&peer, surface) == execution.candidate
+            && resident_candidate_for_remote_surface(&peer, surface)
+                == execution.candidate().clone()
     }) else {
         return Ok(ResidentRemoteRevalidation::Denied(Box::new(
             remote_revalidation_denied_decision(
                 call,
-                &execution.initial_decision,
-                execution.candidate.clone(),
+                execution.initial_decision(),
+                execution.candidate().clone(),
                 CandidateEliminationReason::CapabilityUnavailable,
             ),
         )));
@@ -1286,7 +993,7 @@ pub(super) fn revalidate_resident_remote_route(
         return Ok(ResidentRemoteRevalidation::Denied(Box::new(
             remote_revalidation_decision(
                 call,
-                &execution.initial_decision,
+                execution.initial_decision(),
                 None,
                 authority
                     .reason
@@ -1297,7 +1004,7 @@ pub(super) fn revalidate_resident_remote_route(
     }
     let decision = remote_revalidation_decision(
         call,
-        &execution.initial_decision,
+        execution.initial_decision(),
         Some(candidate.clone()),
         CandidateEliminationReason::CapabilityUnavailable,
         authority,
@@ -1514,16 +1221,21 @@ pub(super) fn remote_reply_to_call_handler_result(
     }
 }
 
-pub(super) fn execute_authorized_resident_child(
+fn execute_authorized_resident_child(
     paths: ResidentExecutionPaths,
-    execution: ResidentAuthorizedExecution,
+    execution: LocalExecutionPlan,
     request: MctCallProtocolRequest,
     inline_payload: Option<Vec<u8>>,
     current_revisions: AuthorityContextSnapshot,
 ) -> Result<ResidentExecutionReport> {
     let call = request.call.clone();
     let state = MctRuntimeStateStore::open(&paths.state_path)?;
-    let runtime_kind = execution.route_taken.runtime_kind;
+    let route_taken = RouteTaken {
+        node_id: execution.authorized_route.route().node_id.clone(),
+        child_id: execution.authorized_route.route().child_id.clone(),
+        runtime_kind: execution.authorized_route.route().runtime_kind,
+    };
+    let runtime_kind = route_taken.runtime_kind;
     let run_id = run_id_for_call("resident", &call);
 
     if execution.authorized_route.policy_revision() != current_revisions.policy_revision {
@@ -1561,7 +1273,6 @@ pub(super) fn execute_authorized_resident_child(
         .authorized_route
         .revalidation_decision_id()
         .clone();
-    let route_taken = execution.route_taken.clone();
     let child_invocation = execution.authorized_route.into_child_invocation();
     let child_execution = ResidentChildExecution {
         child: execution.child,
@@ -2850,15 +2561,16 @@ pub(super) mod tests {
             current_timestamp(),
         )
         .unwrap();
-        let ResidentAuthorizationOutcome::RemoteAuthorized(execution) = outcome else {
+        let RouteDisposition::Remote {
+            plan: execution,
+            observations,
+        } = outcome
+        else {
             panic!("fresh published executor should be selected before revocation");
         };
         let ledger_path = fixture._dir.path().join("forwarding-observations.jsonl");
         let ledger = ResidentLedgerWriter::spawn(ledger_path).unwrap();
-        ledger
-            .append(execution.route_observations.clone())
-            .await
-            .unwrap();
+        ledger.append(observations).await.unwrap();
         let result = execute_authorized_resident_remote_call(
             ResidentExecutionPaths {
                 config_path: fixture.config_path.clone(),
@@ -3103,21 +2815,19 @@ pub(super) mod tests {
                             )
                             .unwrap()
                             {
-                                ResidentAuthorizationOutcome::Denied {
-                                    route_decision_id,
+                                RouteDisposition::Denied {
+                                    decision,
                                     observations,
                                 } => {
                                     ledger.append(observations).await.unwrap();
                                     MctIrohCallHandlerResult::denied()
-                                        .with_route(Some(route_decision_id), None)
+                                        .with_route(Some(decision.decision_id), None)
                                 }
-                                ResidentAuthorizationOutcome::Authorized(_) => {
-                                    MctIrohCallHandlerResult::failed(
-                                        "unready local child unexpectedly authorized",
-                                    )
-                                }
-                                ResidentAuthorizationOutcome::RemoteAuthorized(authorized) => {
-                                    ledger.append(authorized.route_observations).await.unwrap();
+                                RouteDisposition::Local { .. } => MctIrohCallHandlerResult::failed(
+                                    "unready local child unexpectedly authorized",
+                                ),
+                                RouteDisposition::Remote { observations, .. } => {
+                                    ledger.append(observations).await.unwrap();
                                     MctIrohCallHandlerResult::failed(
                                         "forwarded arrival unexpectedly selected a remote route",
                                     )
@@ -3137,23 +2847,22 @@ pub(super) mod tests {
         call.origin = CallOrigin::Cli;
         let request = resident_test_protocol_request(call.clone());
         let a_state = MctRuntimeStateStore::open(&a_state_path).unwrap();
-        let ResidentAuthorizationOutcome::RemoteAuthorized(authorized) =
-            authorize_resident_child_from_loaded_with_state(
-                &a_config,
-                Some(&a_state),
-                loaded_a.children,
-                &call,
-                current_timestamp(),
-            )
-            .unwrap()
+        let RouteDisposition::Remote {
+            plan: authorized,
+            observations,
+        } = authorize_resident_child_from_loaded_with_state(
+            &a_config,
+            Some(&a_state),
+            loaded_a.children,
+            &call,
+            current_timestamp(),
+        )
+        .unwrap()
         else {
             panic!("originating Mother should select its published remote executor")
         };
         let a_ledger = ResidentLedgerWriter::spawn(a_ledger_path.clone()).unwrap();
-        a_ledger
-            .append(authorized.route_observations.clone())
-            .await
-            .unwrap();
+        a_ledger.append(observations).await.unwrap();
         let result = tokio::time::timeout(
             Duration::from_secs(5),
             execute_authorized_resident_remote_call(
@@ -3684,121 +3393,6 @@ pub(super) mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn resident_route_optimization_cannot_grant_authority() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("config.json");
-        let children_dir = dir.path().join("children");
-        let state_path = dir.path().join("state.sqlite");
-        let ledger_path = dir.path().join("observations.jsonl");
-        write_resident_wit_child(&children_dir);
-        write_resident_process_child(&children_dir);
-
-        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
-        let process_child = loaded
-            .children
-            .iter()
-            .find(|child| child.name == "resident-echo")
-            .unwrap();
-        MctDaemonConfigStore::new(&config_path)
-            .approve_and_assign_loaded_child(process_child, MctOperatorChildScope::default())
-            .unwrap();
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
-        let trace_id = TraceId::new("trace-route-optimization-cannot-grant")
-            .expect("string ID literal/generated value must be non-empty");
-        let request = resident_test_protocol_request(resident_test_call(trace_id));
-
-        let result = execute_resident_call(
-            ResidentExecutionPaths {
-                config_path,
-                children_dir,
-                state_path,
-            },
-            ledger.clone(),
-            request,
-            ResidentPayloadIngress::remote(None),
-        )
-        .await;
-        assert_eq!(result.outcome, CallProtocolOutcome::Completed);
-        assert!(matches!(
-            result.route_taken,
-            Some(RouteTaken {
-                runtime_kind: RuntimeKind::Process,
-                ..
-            })
-        ));
-        ledger.close().await;
-
-        let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
-        assert!(ledger_text.contains("child:resident-wit"));
-        assert!(ledger_text.contains("candidate_eliminated"));
-        assert!(ledger_text.contains("ChildNotApproved"));
-        assert!(ledger_text.contains("child:resident-echo"));
-        assert!(ledger_text.contains("route_selected"));
-    }
-
-    #[tokio::test]
-    async fn resident_no_route_records_specific_elimination() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("config.json");
-        let children_dir = dir.path().join("children");
-        let state_path = dir.path().join("state.sqlite");
-        let ledger_path = dir.path().join("observations.jsonl");
-        write_resident_process_child(&children_dir);
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
-        let trace_id = TraceId::new("trace-route-no-route-specific")
-            .expect("string ID literal/generated value must be non-empty");
-        let request = resident_test_protocol_request(resident_test_call(trace_id));
-
-        let result = execute_resident_call(
-            ResidentExecutionPaths {
-                config_path,
-                children_dir,
-                state_path,
-            },
-            ledger.clone(),
-            request,
-            ResidentPayloadIngress::remote(None),
-        )
-        .await;
-        assert_eq!(result.outcome, CallProtocolOutcome::Denied);
-        assert_eq!(result.safe_message, "not authorized");
-        assert!(result.route_taken.is_none());
-        ledger.close().await;
-
-        let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
-        assert!(ledger_text.contains("candidate_eliminated"));
-        assert!(ledger_text.contains("ChildNotApproved"));
-        assert!(ledger_text.contains("no_route_recorded"));
-    }
-
-    #[test]
-    fn forwarded_arrival_with_unavailable_local_candidate_is_terminal() {
-        let fixture = remote_surface_candidate_fixture();
-        let mut unavailable_child = test_child();
-        unavailable_child.instance_state = mct_daemon::MctChildInstanceState::Loading;
-        let mut forwarded_call = fixture.call.clone();
-        forwarded_call.origin = CallOrigin::Iroh;
-
-        let outcome = authorize_resident_child_from_loaded_with_state(
-            &fixture.config,
-            Some(&fixture.state),
-            vec![unavailable_child],
-            &forwarded_call,
-            Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
-        )
-        .unwrap();
-
-        let ResidentAuthorizationOutcome::Denied { observations, .. } = outcome else {
-            panic!("forwarded arrival must be terminal when local execution is unavailable")
-        };
-        let text = serde_json::to_string(&observations).unwrap();
-        assert!(text.contains("CapabilityUnavailable"));
-        assert!(text.contains("denial_class:temporal"));
-        assert!(!text.contains("peer:remote-mct"));
-        assert!(!text.contains("peer_call_sent"));
-    }
-
     /// Covers `PerHopPeerAccountability.UpstreamIdentityRemainsAtItsVerifier`.
     #[test]
     fn forwarded_envelope_clears_upstream_user_identity() {
@@ -3902,8 +3496,9 @@ pub(super) mod tests {
                 .expect("string ID literal/generated value must be non-empty"),
         );
         let request = resident_test_protocol_request(call.clone());
-        let ResidentAuthorizationOutcome::Authorized(authorized) =
-            authorize_resident_child_from_loaded(&config, loaded.children, &call).unwrap()
+        let RouteDisposition::Local {
+            plan: authorized, ..
+        } = authorize_resident_child_from_loaded(&config, loaded.children, &call).unwrap()
         else {
             panic!("approved child should authorize")
         };
@@ -4292,7 +3887,7 @@ pub(super) mod tests {
         }
     }
 
-    fn resident_test_protocol_request(call: MctCall) -> MctCallProtocolRequest {
+    pub(crate) fn resident_test_protocol_request(call: MctCall) -> MctCallProtocolRequest {
         MctCallProtocolRequest {
             protocol_request_id: ProtocolRequestId::new("proto-resident-wit")
                 .expect("string ID literal/generated value must be non-empty"),

@@ -2299,13 +2299,18 @@ mod tests {
         let call = crate::resident::tests::resident_test_call(
             TraceId::new("trace-live-child-revoke").unwrap(),
         );
-        assert!(matches!(
-            crate::resident::authorize_resident_child_blocking(&paths, &call).unwrap(),
-            crate::resident::ResidentAuthorizationOutcome::Authorized(_)
-        ));
+        let request = crate::resident::tests::resident_test_protocol_request(call);
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let before = crate::resident::execute_resident_call(
+            paths.clone(),
+            ledger.clone(),
+            request.clone(),
+            crate::resident::ResidentPayloadIngress::remote(None),
+        )
+        .await;
+        assert_eq!(before.outcome, CallProtocolOutcome::Completed);
 
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
         let handler =
             resident_authority_mutation_handler(config_path.clone(), children_dir, ledger.clone());
         let (status, response) = post_mutation(
@@ -2321,33 +2326,42 @@ mod tests {
         .await;
         assert_eq!(status, 200, "{response}");
 
-        let denial_observations =
-            match crate::resident::authorize_resident_child_blocking(&paths, &call).unwrap() {
-                crate::resident::ResidentAuthorizationOutcome::Denied { observations, .. } => {
-                    observations
-                }
-                other => panic!("expected child revocation denial, got {other:?}"),
-            };
-        assert!(
-            denial_observations.iter().any(|observation| {
-                observation.kind == ObservationKind::CandidateEliminated
-                    && observation
-                        .detail_ref
-                        .as_deref()
-                        .is_some_and(|detail| detail.contains("ChildNotApproved"))
-            }),
-            "{denial_observations:#?}"
-        );
+        let after = crate::resident::execute_resident_call(
+            paths,
+            ledger.clone(),
+            request,
+            crate::resident::ResidentPayloadIngress::remote(None),
+        )
+        .await;
+        assert_eq!(after.outcome, CallProtocolOutcome::Denied);
         let entries =
             JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
                 .unwrap()
                 .entries()
                 .unwrap();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].observation.kind, ObservationKind::ChildRevoked);
+        assert!(entries.iter().any(|entry| {
+            entry.observation.kind == ObservationKind::CandidateEliminated
+                && entry
+                    .observation
+                    .detail_ref
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("ChildNotApproved"))
+        }));
+        let mutation_kinds = entries
+            .iter()
+            .filter_map(|entry| match entry.observation.kind {
+                ObservationKind::ChildRevoked | ObservationKind::ChildAssignmentRevoked => {
+                    Some(entry.observation.kind)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         assert_eq!(
-            entries[1].observation.kind,
-            ObservationKind::ChildAssignmentRevoked
+            mutation_kinds,
+            vec![
+                ObservationKind::ChildRevoked,
+                ObservationKind::ChildAssignmentRevoked,
+            ]
         );
         drop(handler);
         ledger.close().await;
