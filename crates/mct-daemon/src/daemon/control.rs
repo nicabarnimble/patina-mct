@@ -994,6 +994,32 @@ impl PreparedRegistryMutation {
                         })
                     })
                     .collect::<Vec<_>>();
+                observations.extend(load_report.failures.iter().map(|failure| {
+                    let artifact_path = failure
+                        .wasm_path
+                        .as_ref()
+                        .or(failure.manifest_path.as_ref());
+                    let subject_id = artifact_path
+                        .and_then(|path| path.file_stem())
+                        .and_then(|stem| stem.to_str())
+                        .unwrap_or("unknown-child-artifact")
+                        .to_owned();
+                    let resource_id = artifact_path.map_or_else(
+                        || "unknown-child-artifact".into(),
+                        |path| path.display().to_string(),
+                    );
+                    mutation_observation(MutationObservationFact {
+                        namespace: "registry-sync-artifact",
+                        kind: ObservationKind::ArtifactRejected,
+                        subject_id,
+                        resource_id,
+                        policy_revision: None,
+                        grants_revision: None,
+                        outcome: ObservationOutcome::Denied,
+                        source_plane: SourcePlane::Kernel,
+                        safe_message: failure.safe_message.clone(),
+                    })
+                }));
                 observations.push(mutation_observation(MutationObservationFact {
                     namespace: "registry-sync",
                     kind: ObservationKind::OperatorActionRecorded,
@@ -2797,6 +2823,70 @@ listens = []
                 .iter()
                 .any(|entry| { entry.observation.kind == ObservationKind::OperatorActionRecorded })
         );
+    }
+
+    /// Covers the artifact rejection edge of
+    /// `MctObservationSubsystemCoverage.ChildLifecycleCoverage`.
+    #[tokio::test]
+    async fn live_registry_sync_observes_artifact_rejection_before_state_effect() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let socket_path = dir.path().join("control.sock");
+        write_resident_process_child(&children_dir);
+        std::fs::remove_file(
+            children_dir
+                .join("resident-echo")
+                .join("resident-echo.wasm.sha256"),
+        )
+        .unwrap();
+        let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let handler = resident_observed_mutation_handler(
+            config_path,
+            children_dir.clone(),
+            state_path.clone(),
+            ledger.clone(),
+        );
+
+        let (status, response) = post_mutation(
+            listener,
+            handler.clone(),
+            &socket_path,
+            "/registry/sync",
+            serde_json::json!({
+                "expected_children_dir": children_dir,
+                "expected_state_path": state_path,
+                "source_id": "resident-registry-rejected",
+                "strict_integrity": true
+            }),
+        )
+        .await;
+
+        assert_eq!(status, 200, "{response}");
+        assert_eq!(
+            MctRuntimeStateStore::open(&state_path)
+                .unwrap()
+                .summary()
+                .unwrap()
+                .artifacts,
+            0
+        );
+        drop(handler);
+        ledger.close().await;
+        let entries =
+            JsonlObservationLedger::open_read_only(ledger_path, "ledger-local", "local-mct")
+                .unwrap()
+                .entries()
+                .unwrap();
+        let rejection = entries
+            .iter()
+            .find(|entry| entry.observation.kind == ObservationKind::ArtifactRejected)
+            .unwrap();
+        assert_eq!(rejection.observation.outcome, ObservationOutcome::Denied);
+        assert_eq!(rejection.durability_class, DurabilityClass::BeforeEffect);
     }
 
     #[tokio::test]

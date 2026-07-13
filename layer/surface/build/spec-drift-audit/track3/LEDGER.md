@@ -357,7 +357,7 @@ The 236 load-bearing `-- Decision:` statements were also read in full and groupe
 | `AuthorityCoverage` | COVERED | `mct_kernel::observation::tests::kernel_denial_evaluations_become_observations`; `mct_iroh::tests::iroh_adapter_observations_cover_endpoint_and_protocol_events` |
 | `RoutingCoverage` | COVERED | `mct_kernel::observation::tests::candidate_observations_record_specific_elimination_class`; `mct_kernel::observation::tests::route_revalidation_observation_records_allowed_and_denied_outcomes` |
 | `ResultCoverage` | COVERED | Resolved spec-ward in `8565636` after applying the triage rule through the real resident and Iroh paths. `mct_iroh::tests::cancelled_call_preserves_wire_outcome_route_absence_and_buffered_observations` proves cancelled result and reply facts retain `cancelled` under buffered durability; `mct_daemon_bin::resident::idempotency::tests::cancelled_idempotent_reply_replays_cancelled_with_durable_observation` proves replay retains the outcome under before-effect durability. |
-| `ChildLifecycleCoverage` | GAP | Lifecycle tests cover reload order, but no named test proves the complete artifact/approval/assignment/instance observation matrix. |
+| `ChildLifecycleCoverage` | COVERED | `mct_kernel::observation::tests::child_authority_and_instance_observation_matrix_is_typed` proves every approval, assignment, and instance-state projection; `mct_daemon_bin::control::tests::live_registry_sync_observes_artifact_rejection_before_state_effect` and `mct_daemon_bin::control::tests::live_registry_install_and_sync_are_observed_before_storage_effects` prove rejected and verified artifact facts through the real control path. |
 | `ToyCoverage` | COVERED | `mct_kernel::observation::tests::toy_grant_evaluations_become_observations`; `mct_daemon::toy::tests::toy_backend_failure_is_adapter_observation_not_kernel_denial` |
 | `PeerCoverage` | COVERED | `mct_iroh::tests::iroh_adapter_observations_cover_endpoint_and_protocol_events`; `mct_daemon_bin::ingress::tests::standalone_serve_process_persists_hello_and_call_lifecycle` |
 | `RuntimeAdapterCoverage` | COVERED | `mct_daemon::process::tests::process_harness_timeout_returns_typed_result_and_observation`; `mct_daemon::wasm::tests::wasm_component_runtime_trap_maps_to_adapter_observation`; `mct_daemon_bin::resident::pipeline::tests::jvm_bridge_json_call_enters_resident_route_path` |
@@ -400,7 +400,7 @@ The 236 load-bearing `-- Decision:` statements were also read in full and groupe
 | `ReplacementLoadsBeforeSwap` | COVERED | `mct_daemon::lifecycle::tests::reload_records_replacement_ready_before_predecessor_drain`; `mct_daemon::state::tests::child_reload_swap_is_atomic_and_failed_swap_keeps_persisted_predecessor_ready` |
 | `CallsRequireReadyAuthorizedInstance` | COVERED | `mct_kernel::child::tests::ready_approved_assigned_instance_produces_authorized_child_invocation`; `mct_daemon::process::tests::process_harness_denies_stale_child_capability_before_spawn` |
 | `FailedReplacementDoesNotPoisonCurrent` | COVERED | `mct_daemon_bin::cli_runtime::tests::reload_command_failure_keeps_persisted_generation_ready_and_routable` |
-| `LifecycleTransitionsAreObserved` | GAP | Current tests do not assert every artifact, authority, and instance lifecycle observation kind. |
+| `LifecycleTransitionsAreObserved` | COVERED | `mct_kernel::observation::tests::child_authority_and_instance_observation_matrix_is_typed`; `mct_daemon_bin::control::tests::live_registry_sync_observes_artifact_rejection_before_state_effect`; A7 replacement ordering remains covered by `mct_daemon::lifecycle::tests::reload_records_replacement_ready_before_predecessor_drain`. |
 
 #### `MctToyGrantAuthority`
 
@@ -456,8 +456,8 @@ The 236 load-bearing `-- Decision:` statements were also read in full and groupe
 
 | Status | Invariants |
 |---|---:|
-| COVERED | 196 |
-| GAP | 4 |
+| COVERED | 198 |
+| GAP | 2 |
 | LAW-LEADS-CODE | 0 |
 | DEFERRED | 23 |
 

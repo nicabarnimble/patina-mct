@@ -412,7 +412,7 @@ Extend the existing slice-1 ledger without restructuring it so every named invar
 - [x] S1: extend the ledger to every named invariant and bulk structural obligation.
 - [x] S2.1: resolve required external fixture compatibility disposition.
 - [x] S2.2: Option 1 adjudicated — preserve cancelled through protocol evaluation, wire reply, replay, and observations.
-- [ ] S2.3: resolve complete child-lifecycle observation matrix gaps.
+- [x] S2.3: resolve complete child-lifecycle observation matrix gaps.
 - [ ] S2.4: resolve bounded resident observation buffering gap.
 - [ ] S2.5: resolve typed toy-grant expiry/revocation observation gap.
 - [ ] S2.x: end every remaining GAP as COVERED, DEFERRED with reason, or STOP for adjudication.
@@ -443,7 +443,8 @@ Extend the existing slice-1 ledger without restructuring it so every named invar
 | S2.1 `6c687da` | 0 | 291 | 291 passed, 0 ignored |
 | S2.2 STOP record `01b470b` | 0 | 291 | 291 passed, 0 ignored |
 | S2.2 fix `8565636` | 3 | 294 | 294 passed, 0 ignored |
-| S2.2 disposition `docs: record cancelled outcome adjudication` | 0 | 294 | pending commit validation |
+| S2.2 disposition `342cabc` | 0 | 294 | 294 passed, 0 ignored |
+| S2.3 `fix(control): complete child lifecycle observations` | 2 | 296 | pending commit validation |
 
 ## Slice 2 S1 inventory result
 
@@ -460,6 +461,7 @@ Extend the existing slice-1 ledger without restructuring it so every named invar
 - `MctResultTerminality.ClosedOutcomeSet`: also moved COVERED → LAW-LEADS-CODE. The existing helper test proves route presence for all five result variants but did not prove actual result-consumer projection.
 - Structural stop (resolved): `MctCallProtocolReply` and `ResultOutcome` included cancellation, but `MctCallProtocolEvaluation.outcome` in the law and `CallProtocolOutcome` in Rust did not.
 - Operator adjudication selected Option 1. The protocol evaluation model now carries `cancelled`; resident projection, wire reply route suppression, durable idempotent replay, and buffered/before-effect observations preserve it end-to-end. Options 2 and 3 were rejected because projection indirection would hide the model gap, while failure collapse would violate route projection and replay semantics.
+- `MctChildComponentLifecycle.LifecycleTransitionsAreObserved` and `MctObservationSubsystemCoverage.ChildLifecycleCoverage`: the full authority/instance matrix was testable with a small kernel-local fixture and is now covered. The real strict registry-sync test caught an additional spec-ward drift: failed artifact loads were not projected because the decision batch iterated only successfully loaded children. The small fix adds typed before-effect `ArtifactRejected` facts without exposing failure detail or adding public surface.
 
 ## Slice 2 failure and flake log
 
@@ -543,4 +545,28 @@ note: these are all the await points this lock is held through
 
 error: could not compile `mct-iroh` (lib test) due to 1 previous error
 warning: build failed, waiting for other jobs to finish...
+```
+
+### S2.3 artifact rejection observation expectation
+
+```text
+$ cargo test -p mct-daemon --bin mct-daemon control::tests::live_registry_sync_observes_artifact_rejection_before_state_effect -- --nocapture
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+     Running unittests src/main.rs (target/debug/deps/mct_daemon-701d058281c133f0)
+
+running 1 test
+
+thread 'control::tests::live_registry_sync_observes_artifact_rejection_before_state_effect' (1653992) panicked at crates/mct-daemon/src/daemon/control.rs:2861:14:
+called `Option::unwrap()` on a `None` value
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test control::tests::live_registry_sync_observes_artifact_rejection_before_state_effect ... FAILED
+
+failures:
+
+failures:
+    control::tests::live_registry_sync_observes_artifact_rejection_before_state_effect
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 67 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `-p mct-daemon --bin mct-daemon`
 ```
