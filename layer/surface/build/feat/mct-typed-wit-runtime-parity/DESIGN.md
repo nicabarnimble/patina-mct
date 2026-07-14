@@ -2,7 +2,7 @@
 
 ## Why This Design
 
-Original Patina Mother proved the right technical direction: child behavior can live behind WIT-defined WASM components while Mother owns runtime linking and authority. The problem was coupling, not the WASM/WIT model.
+`patinaMother` proved the useful technical direction: `patinaChild` behavior can live behind WIT-defined WASM components while `mctMother` owns runtime linking and authority. The accepted responsibility should be rebuilt under MCT law; the legacy coupling and capability model are not portable.
 
 MCT should keep the model and remove the coupling:
 
@@ -34,7 +34,7 @@ This should resolve against Wasmtime component exports and be checked against th
 
 1. **No legacy handle fallback in this spec.** Strict typed WIT invocation is the canonical path.
 2. **No Wasmtime in kernel.** Wasmtime/WASI/WIT-bindgen types stay in `mct-daemon` or later adapter crates.
-3. **Use Mother as reference, not source of ownership.** Port concepts, not broad containers like `MotherRuntimeStore`.
+3. **Use `patinaMother` as behavioral evidence, not inherited ownership.** Translate requirements and rebuild them under MCT law; do not port broad containers such as `MotherRuntimeStore`.
 4. **Slate is the proof target.** The first real product fixture should be Slate-like `list-work`, not a fake generic demo forever.
 
 ## Commits

@@ -4,7 +4,7 @@
 Add shared observation constructors for adapter diagnostics so common runtime and transport failures are canonical `MctObservation` facts rather than local log strings.
 
 ## Why
-Existing Mother has practical adapter diagnostics spread through runtime code. MCT should improve by making the diagnostic shape explicit and reusable: adapters perform effects, then report structured facts. The kernel domain owns the observation shape, not the adapter implementation.
+`patinaMother` has practical adapter diagnostics spread through runtime code. `mctMother` should translate that requirement by making the diagnostic shape explicit and reusable: adapters perform effects, then report structured facts. The kernel domain owns the observation shape, not the adapter implementation.
 
 ## Direction
 - One explicit input record.

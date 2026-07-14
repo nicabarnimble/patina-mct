@@ -3,9 +3,9 @@ id: what-is-mct
 layer: core
 status: active
 created: 2026-06-09
-revised: 2026-06-09
+revised: 2026-07-14
 tags: [mct, product, mother, child, toy, authority, iroh, observations]
-references: [mct-build-boundaries, spec-driven-design, adapter-pattern, safety-boundaries]
+references: [mct-build-boundaries, spec-driven-design, adapter-pattern, safety-boundaries, migration-vocabulary]
 ---
 
 # What Is MCT
@@ -148,12 +148,14 @@ Iroh: public-key-addressed connectivity         (substrate, below)
 ```
 
 Belief internals, SDK authoring, and Clojure orchestration are explicitly out
-of MCT scope — they sit above MCT as future consumers, not inside it. The
-integrated Patina Mother (`~/Projects/Sandbox/AI/RUST/patina`) grew this
-runtime in embryo alongside those layers; it is evidence and prior art for
-MCT, never ontology. Existing children `slate-manager@0.2.0`,
-`folder-watch-actor@0.1.0`, and `watch-null-sink@0.1.0` are required
-compatibility fixtures.
+of MCT scope. They may consume MCT through its interfaces or operate as
+`mctChild` applications, but they do not become `mctMother` authority. The
+integrated [`patinaMother`](https://github.com/NicabarNimble/patina/tree/d8f90270a53047b99d12004f834b62dbc629570d)
+grew this runtime in embryo alongside those layers. It supplies operational requirements
+and prior art; accepted responsibilities are translated or rebuilt under MCT
+law rather than inherited as ontology. Existing `patinaChild` components
+`slate-manager@0.2.0`, `folder-watch-actor@0.1.0`, and
+`watch-null-sink@0.1.0` are required compatibility fixtures.
 
 ## Multi-Mother and Vision
 
@@ -179,5 +181,7 @@ example) integrate as WIT children, not as a second call model.
 - Build discipline: [MCT Build Boundaries](./mct-build-boundaries.md)
 - Design rationale narrative: `layer/sessions/` (esp. the 20260529 Allium
   foundation elicitation)
-- Comparison against integrated Mother:
+- Comparison against `patinaMother`:
   `layer/surface/mct-vs-patina-mother-deep-dive-report.html`
+- Transitional terms for comparative migration work:
+  [MCT and Integrated Patina Migration Vocabulary](./migration-vocabulary.md)

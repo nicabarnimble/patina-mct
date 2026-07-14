@@ -47,9 +47,9 @@ Adapters that receive a single legacy string such as `patina/watch.control` must
 | JVM bridge | JVM method/event request | Bridge maps JVM-facing operation into namespace/interface/function and payload metadata | JVM substrate does not create a separate authority model; Vision/node/child/toy policy still applies | Bridge returns safe result/error and records runtime adapter observations |
 | WASM/WIT host | WIT function invocation | WIT package/interface/function maps directly to `OperationTarget`; payload metadata comes from canonical host boundary | WASM child receives only authorized host capabilities/ToyGrants; raw substrate handles are not implied | Host returns WIT-compatible safe result while MCT records `MctResult`/observations |
 
-## Legacy Mother Comparison
+## `patinaMother` comparison
 
-Current Mother prior art has:
+`patinaMother` prior art has:
 
 ```rust
 pub struct ChildCallRequest {
@@ -61,14 +61,14 @@ pub struct ChildCallRequest {
 
 MCT keeps the useful part and narrows the rest:
 
-| Legacy field | MCT replacement | Change |
+| `patinaMother` field | MCT replacement | Change |
 | --- | --- | --- |
 | `operation_id: String` | `OperationTarget { namespace, interface_name, function_name }` | Avoids one string carrying all operation identity; aligns with WIT-shaped calls |
 | `args: serde_json::Value` | `PayloadMetadata` + `MctCallPayloadHandle`/adapter payload transport | Avoids forcing JSON as kernel truth; payload bytes can be inline/blob/external |
 | `correlation` | `TraceContext` plus opaque audit/observation refs | Makes tracing first-class and authority-neutral |
 | implicit caller/child context | `CallerIdentity`, `AuthorityContextSnapshot`, later route/child decisions | Makes policy revisions and caller identity explicit |
 
-Legacy `ChildCallRequest` is evidence that a typed call seam is useful, not the clean MCT envelope.
+The `patinaChild` `ChildCallRequest` is evidence that a typed call seam is useful; it does not define the `mctChild` envelope.
 
 ## Minimum Valid Adapter Translation
 

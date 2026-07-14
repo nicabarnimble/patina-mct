@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Engineering report: patina-mct versus existing Patina Mother</title>
+  <title>Engineering report: MCT versus patinaMother</title>
   <style>
     :root {
       --ink: #211607;
@@ -230,18 +230,20 @@
 </head>
 <body>
   <header>
-    <p class="small">Audience: MCT and Patina Mother maintainers - Comparative engineering report - June 2026</p>
-    <h1>Deep dive: standalone MCT versus the existing Patina Mother</h1>
+    <p class="small">Audience: MCT and <code>patinaMother</code> maintainers - Comparative engineering report - June 2026</p>
+    <p class="small">Vocabulary revised 2026-07-14: comparative roles use <code>mctMother</code>/<code>mctChild</code>/<code>mctToy</code> and <code>patinaMother</code>/<code>patinaChild</code>/<code>patinaToy</code>. This remains a June capability snapshot; current feature status lives in the product specs and roadmap.</p>
+    <h1>Deep dive: standalone MCT versus <code>patinaMother</code></h1>
     <p>
       This report compares the current <code>patina-mct</code> standalone product
-      surface against the integrated Patina Mother implementation under
-      <code>/Users/nicabar/Projects/Sandbox/AI/RUST/patina</code>. It focuses on
+      surface against the
+      <a href="https://github.com/NicabarNimble/patina/tree/d8f90270a53047b99d12004f834b62dbc629570d">published <code>patinaMother</code> revision</a>.
+      It focuses on
       authority, child lifecycle, toys, peer transport, runtime execution,
       storage, observations, and operator workflows.
     </p>
     <div class="legend">
       <span class="pill used">Standalone MCT</span>
-      <span class="pill partial">Existing Patina Mother</span>
+      <span class="pill partial"><code>patinaMother</code></span>
       <span class="pill dissolve">Authority boundary</span>
       <span class="pill not-used">Runtime depth</span>
       <span class="pill used">Code-read analysis</span>
@@ -263,8 +265,8 @@
       </p>
       <div class="callout thesis">
         Verdict: <code>patina-mct</code> is architecturally cleaner and much more
-        explicit about authority than the existing Mother, but the existing
-        Mother is still deeper operationally. The new product has the right
+        explicit about authority than <code>patinaMother</code>, but
+        <code>patinaMother</code> is still deeper operationally. The new product has the right
         shape for a standalone MCT node; it now needs hardening, not a return to
         the old broad <code>ServerState</code> model.
       </div>
@@ -273,7 +275,7 @@
     <section>
       <h2>Method and evidence</h2>
       <p>
-        I read the new MCT crates and the existing Patina Mother code paths that
+        I read the new MCT crates and the <code>patinaMother</code> code paths that
         correspond to child loading, child registry, daemon state, runtime host
         bindings, storage, toy grants, and operator workflows. I also ran the
         current workspace validation after the latest product work.
@@ -283,7 +285,7 @@
           <tr>
             <th>Evidence class</th>
             <th>Standalone MCT files</th>
-            <th>Existing Mother files</th>
+            <th><code>patinaMother</code> files</th>
           </tr>
         </thead>
         <tbody>
@@ -305,7 +307,7 @@
           <tr>
             <td>Peer connectivity</td>
             <td><code>crates/mct-iroh/src/endpoint.rs</code>, <code>crates/mct-daemon/src/main.rs</code></td>
-            <td>No comparable Iroh substrate found in the existing Mother tree.</td>
+            <td>No comparable Iroh substrate found in the <code>patinaMother</code> tree.</td>
           </tr>
           <tr>
             <td>Storage and observations</td>
@@ -328,7 +330,7 @@
           <tr>
             <th>Dimension</th>
             <th>Standalone <code>patina-mct</code></th>
-            <th>Existing Patina Mother</th>
+            <th><code>patinaMother</code></th>
             <th>Engineering read</th>
           </tr>
         </thead>
@@ -343,25 +345,25 @@
             <td>Operational depth</td>
             <td>MVP depth. Has process, supervisor, minimal Wasmtime component call, Iroh, config store, and observations.</td>
             <td>Much deeper. Has HTTP/UDS daemon, child warmup/reload, WIT/WASI host bindings, SQL state, tasks/runs, pando composition, metrics, federation, registry sync.</td>
-            <td><span class="medium">Mother wins depth.</span> Do not discard this as reference, but do not import its coupling wholesale.</td>
+            <td><span class="medium"><code>patinaMother</code> wins depth.</span> Do not discard this as reference, but do not import its coupling wholesale.</td>
           </tr>
           <tr>
             <td>Standalone defaults</td>
             <td>Project-local <code>.mct/children</code>, <code>.mct/identity/iroh-secret.hex</code>, <code>.mct/config.json</code>.</td>
-            <td>Uses <code>~/.patina</code>, project <code>.patina</code>, and Mother runtime paths.</td>
+            <td>Uses <code>~/.patina</code>, project <code>.patina</code>, and <code>patinaMother</code> runtime paths.</td>
             <td><span class="score">MCT matches the product constraint.</span></td>
           </tr>
           <tr>
             <td>Peer transport</td>
             <td>Iroh endpoint lifecycle, endpoint tickets, hello/call ALPNs, unknown-peer denial, call handler routing, address book.</td>
-            <td>No Iroh substrate found in the inspected Mother code.</td>
+            <td>No Iroh substrate found in the inspected <code>patinaMother</code> code.</td>
             <td><span class="score">MCT is ahead for multi-Mother p2p.</span></td>
           </tr>
           <tr>
             <td>Storage</td>
             <td>Append-only JSONL observation ledger and JSON config store. Narrow and local, but not yet a full state database.</td>
             <td>Large SQLite runtime store with identity, registry, installs, assignments, child state, tasks, sessions, belief state, and guardrail triggers.</td>
-            <td><span class="medium">Split decision.</span> MCT wins boundary; Mother wins completeness and relational constraints.</td>
+            <td><span class="medium">Split decision.</span> MCT wins boundary; <code>patinaMother</code> wins completeness and relational constraints.</td>
           </tr>
           <tr>
             <td>Runtime</td>
@@ -392,9 +394,9 @@
           </p>
         </div>
         <div class="tile">
-          <h3>Existing Mother</h3>
+          <h3><code>patinaMother</code></h3>
           <p>
-            Existing Mother has a broad <code>ServerState</code> in
+            <code>patinaMother</code> has a broad <code>ServerState</code> in
             <code>src/commands/mother/daemon.rs</code> containing token, registry,
             runtime stores, services, scry backend, federation runtime, pando
             registry, native commands, aliases, refresh locks, warmup state, and
@@ -419,7 +421,7 @@
         </div>
         <div class="arrow">vs</div>
         <div class="node">
-          <h3>Existing Mother</h3>
+          <h3><code>patinaMother</code></h3>
           Broad daemon state<br>Runtime store<br>Registry<br>Services<br>Pando/Federation
         </div>
       </div>
@@ -428,7 +430,7 @@
     <section>
       <h2>Authority deep dive</h2>
       <p>
-        Existing Mother already has important authority bones: users, nodes,
+        <code>patinaMother</code> already has important authority bones: users, nodes,
         visions, memberships, project identities, child registry entries, child
         installs, and project child assignments. Its SQLite schema even contains
         triggers that prevent active project assignments unless the registry
@@ -440,7 +442,7 @@
           <tr>
             <th>Authority fact</th>
             <th>MCT implementation</th>
-            <th>Existing Mother analogue</th>
+            <th><code>patinaMother</code> analogue</th>
             <th>Assessment</th>
           </tr>
         </thead>
@@ -449,13 +451,13 @@
             <td>Peer admission</td>
             <td><code>MctPeerBinding</code>, hello evaluation, call authority binding checks, Iroh unknown-peer denial.</td>
             <td>No Iroh peer authority found.</td>
-            <td>MCT adds a new authority plane Mother lacks.</td>
+            <td>MCT adds a new authority plane <code>patinaMother</code> lacks.</td>
           </tr>
           <tr>
             <td>Child approval</td>
             <td><code>ChildApproval</code> in kernel; durable <code>MctStoredChildApproval</code> in <code>.mct/config.json</code>.</td>
             <td><code>mother_child_registry_entries.state</code> with states <code>candidate</code>, <code>approved</code>, <code>blocked</code>, <code>deprecated</code>.</td>
-            <td>Mother has stronger relational durability; MCT has cleaner typed authority semantics.</td>
+            <td><code>patinaMother</code> has stronger relational durability; MCT has cleaner typed authority semantics.</td>
           </tr>
           <tr>
             <td>Assignment</td>
@@ -467,18 +469,18 @@
             <td>Runtime instance</td>
             <td><code>ChildInstance</code> with loading/ready/degraded/draining/stopped/failed; <code>AuthorizedChildInvocation</code>.</td>
             <td>Registry holds live <code>Box&lt;dyn Child&gt;</code> entries; readiness and warmup state are daemon projections.</td>
-            <td>MCT's separation is cleaner. Existing Mother has more live lifecycle behavior.</td>
+            <td>MCT's separation is cleaner. <code>patinaMother</code> has more live lifecycle behavior.</td>
           </tr>
           <tr>
             <td>Toy authority</td>
             <td><code>ToyGrant</code>, <code>ToyGrantEvaluation</code>, <code>AuthorizedToyCall</code>; manifest needs do not grant.</td>
             <td><code>GrantedToys</code> boolean struct and host checks such as "sql toy not granted".</td>
-            <td>MCT has the stronger authority model; Mother has much deeper host implementations.</td>
+            <td>MCT has the stronger authority model; <code>patinaMother</code> has much deeper host implementations.</td>
           </tr>
         </tbody>
       </table>
       <div class="callout warning">
-        The most important difference is not syntax. Existing Mother often
+        The most important difference is not syntax. <code>patinaMother</code> often
         proves authority at the point of effect with booleans and store state.
         MCT proves authority by producing explicit, typed authorization records
         before the adapter can perform the effect.
@@ -488,7 +490,7 @@
     <section>
       <h2>Child lifecycle and registry</h2>
       <p>
-        Existing Mother's <code>ChildRegistry</code> is mature. It loads child
+        <code>patinaMother</code>'s <code>ChildRegistry</code> is mature. It loads child
         entries into <code>Arc&lt;RwLock&lt;Box&lt;dyn Child&gt;&gt;&gt;</code>, stores wasm and
         manifest paths, maintains per-child reload locks, records typed call
         history, enforces ingress policy from manifests, emits metrics, runs
@@ -508,7 +510,7 @@
           <tr>
             <th>Capability</th>
             <th>MCT status</th>
-            <th>Existing Mother status</th>
+            <th><code>patinaMother</code> status</th>
             <th>Next move</th>
           </tr>
         </thead>
@@ -570,9 +572,9 @@
           </p>
         </div>
         <div class="tile">
-          <strong>Existing Mother runtime</strong>
+          <strong><code>patinaMother</code> runtime</strong>
           <p>
-            Existing Mother has deeper WIT/WASI host bindings, child engine
+            <code>patinaMother</code> has deeper WIT/WASI host bindings, child engine
             instantiation, state, events, SQL, git, measure, connect, and pando
             composition. It is much more complete as a runtime adapter.
           </p>
@@ -589,12 +591,19 @@
     <section>
       <h2>Toys and host effects</h2>
       <p>
-        Existing Mother's toy host is broad and practical. The inspected code
+        <code>patinaMother</code>'s toy host is broad and practical. The inspected code
         has host implementations that check <code>GrantedToys</code> booleans before
         SQL, messaging, measure, git, and other effects. That gives concrete
         host functionality, but authority is represented as a bundle of booleans
         carried inside runtime host state.
       </p>
+      <div class="callout warning">
+        Security-significant asymmetry: the inspected <code>patinaToy</code> outgoing HTTP path
+        uses host matching for credential injection, but unmatched hosts and requests without a
+        host fall through to the default sender. That is allow-by-default egress. It must not be
+        ported; a future network <code>mctToy</code> must be designed deny-unmatched from explicit
+        ToyGrant scope.
+      </div>
       <p>
         MCT instead makes the grant itself a kernel object. A manifest
         <code>needs</code> list is only a request. Runtime toy execution requires an
@@ -607,7 +616,7 @@
           <tr>
             <th>Question</th>
             <th>MCT answer</th>
-            <th>Mother answer</th>
+            <th><code>patinaMother</code> answer</th>
           </tr>
         </thead>
         <tbody>
@@ -638,8 +647,8 @@
     <section>
       <h2>Iroh and peer routing</h2>
       <p>
-        This is the clearest place where MCT is ahead of existing Mother. The
-        new product has Mother-owned Iroh endpoints, endpoint identity files,
+        This is the clearest place where MCT is ahead of <code>patinaMother</code>. The
+        new product has <code>mctMother</code>-owned Iroh endpoints, endpoint identity files,
         endpoint tickets, MCT hello and call ALPNs, unknown-peer denial,
         explicit <code>MctPeerBinding</code> authority, address-book persistence, and
         a handler-based serve path that can route accepted calls into runtime
@@ -661,7 +670,7 @@
           Call authority<br>runtime handler<br>reply result</div>
       </div>
       <p>
-        Existing Mother has HTTP/UDS transport and token behavior, but no Iroh
+        <code>patinaMother</code> has HTTP/UDS transport and token behavior, but no Iroh
         substrate was found in the inspected tree. MCT therefore owns the v0
         multi-Mother substrate direction.
       </p>
@@ -676,7 +685,7 @@
     <section>
       <h2>Storage and observations</h2>
       <p>
-        Existing Mother's <code>MotherRuntimeStore</code> is a powerful SQLite store.
+        <code>patinaMother</code>'s <code>MotherRuntimeStore</code> is a powerful SQLite store.
         It includes identity tables, guardrail triggers, child registry sources,
         child registry entries, installs, project assignments, audit tables,
         child state/checkpoints/subscriptions/offsets/tasks/runs, sessions,
@@ -696,7 +705,7 @@
           <tr>
             <th>Storage concern</th>
             <th>MCT</th>
-            <th>Mother</th>
+            <th><code>patinaMother</code></th>
             <th>Risk / recommendation</th>
           </tr>
         </thead>
@@ -749,10 +758,10 @@ mct-daemon wasm call &lt;component-file&gt; &lt;export-name&gt; [namespace inter
 mct-daemon iroh call-peer [--relay-default] &lt;identity-file&gt; &lt;peer-node-id&gt; [namespace interface function] [--config path]
 mct-daemon iroh serve-process [--relay-default] &lt;identity-file&gt; &lt;binding-id&gt; &lt;peer-endpoint-id&gt; &lt;peer-node-id&gt; &lt;vision-id&gt; &lt;executable&gt;</code></pre>
       <p class="small">
-        Existing Mother has broader command coverage for registry sources,
+        <code>patinaMother</code> has broader command coverage for registry sources,
         install, assign, revoke, list, sync, daemon start, HTTP/UDS, lifecycle
-        warmup, toys, graph, pando, and more. MCT should copy command intent
-        where useful, but preserve its narrower authority model.
+        warmup, toys, graph, pando, and more. MCT should translate useful
+        command intent while retaining its narrower authority model.
       </p>
     </section>
 
@@ -785,7 +794,7 @@ mct-daemon iroh serve-process [--relay-default] &lt;identity-file&gt; &lt;bindin
           <tr>
             <td>WASM runtime is minimal</td>
             <td>Only lifted <code>s32</code> export call is implemented; no WASI, WIT binding generation, host toys, payload conversion, or trap observations.</td>
-            <td>Port the useful parts of existing Mother's WIT/WASI host shape into MCT adapters, gated by <code>AuthorizedToyCall</code>.</td>
+            <td>Rebuild accepted WIT/WASI host requirements under MCT law, using <code>patinaMother</code> only as behavioral evidence and gating every effect with <code>AuthorizedToyCall</code>.</td>
           </tr>
           <tr>
             <td>Supervisor has no restart recovery</td>
@@ -794,7 +803,7 @@ mct-daemon iroh serve-process [--relay-default] &lt;identity-file&gt; &lt;bindin
           </tr>
           <tr>
             <td>JSON config lacks relational guardrails</td>
-            <td>Existing Mother has SQL triggers that prevent active assignments to non-approved registry entries.</td>
+            <td><code>patinaMother</code> has SQL triggers that prevent active assignments to non-approved registry entries.</td>
             <td>Add invariant checks on load/save now; later move to private SQLite or immutable fact replay.</td>
           </tr>
           <tr>
@@ -807,10 +816,10 @@ mct-daemon iroh serve-process [--relay-default] &lt;identity-file&gt; &lt;bindin
     </section>
 
     <section>
-      <h2>Migration lessons from existing Mother</h2>
+      <h2>Migration lessons from <code>patinaMother</code></h2>
       <div class="grid">
         <div class="tile">
-          <strong>Keep</strong>
+          <strong>Translate and rebuild</strong>
           <p>
             SQL guardrails for approved child assignment, child registry source
             sync, install records, typed WIT allowlists, child warmup/reload,
@@ -829,7 +838,7 @@ mct-daemon iroh serve-process [--relay-default] &lt;identity-file&gt; &lt;bindin
         <div class="tile">
           <strong>Translate</strong>
           <p>
-            Translate Mother runtime concepts into MCT domain facts:
+            Translate <code>patinaMother</code> runtime concepts into MCT domain facts:
             registry entry to <code>ComponentArtifact</code> + <code>ChildApproval</code>,
             project assignment to <code>ChildAssignment</code>, host grant booleans
             to <code>ToyGrant</code>, runtime child slot to <code>ChildInstance</code>.
@@ -873,7 +882,7 @@ mct-daemon iroh serve-process [--relay-default] &lt;identity-file&gt; &lt;bindin
           <tr>
             <td>3</td>
             <td>WIT/WASI host toy imports</td>
-            <td>Existing Mother's biggest practical advantage is WIT/WASI host depth.</td>
+            <td><code>patinaMother</code>'s biggest practical advantage is WIT/WASI host depth.</td>
             <td>WASM child can call one toy import only through <code>AuthorizedToyCall</code>.</td>
           </tr>
           <tr>
@@ -895,13 +904,13 @@ mct-daemon iroh serve-process [--relay-default] &lt;identity-file&gt; &lt;bindin
     <section class="spine">
       <h2>Bottom line</h2>
       <p>
-        The new product is not a clone of Patina Mother; it is a cleaner MCT
-        kernel and adapter architecture informed by Mother. That is the right
-        direction. Existing Mother should remain a reference for operational
-        depth, especially WIT/WASI host bindings, registry SQL constraints,
-        warmup/reload, and CLI workflows. The new MCT should keep its typed
-        authority-first spine and absorb only the pieces that can be translated
-        into explicit domain facts and adapter observations.
+        The new product is not a clone of <code>patinaMother</code>; it is a cleaner MCT
+        kernel and adapter architecture informed by <code>patinaMother</code>. That is the right
+        direction. <code>patinaMother</code> remains a source of operational
+        requirements, especially WIT/WASI host bindings, registry SQL constraints,
+        warmup/reload, and CLI workflows. MCT should retain its typed
+        authority-first spine and rebuild accepted responsibilities as explicit
+        domain facts, bounded adapters, and durable observations.
       </p>
       <div class="callout thesis">
         The next inflection point is config-backed end-to-end execution:
@@ -934,19 +943,19 @@ mct-daemon iroh serve-process [--relay-default] &lt;identity-file&gt; &lt;bindin
             <td><code>crates/mct-iroh/src/endpoint.rs</code></td>
           </tr>
           <tr>
-            <td>Existing Mother registry enforces manifest ingress allowlist and records typed call observations and metrics.</td>
+            <td><code>patinaMother</code> registry enforces manifest ingress allowlist and records typed call observations and metrics.</td>
             <td><code>mother/src/registry.rs</code></td>
           </tr>
           <tr>
-            <td>Existing Mother store includes SQL triggers requiring active child assignments to reference approved registry entries.</td>
+            <td><code>patinaMother</code> store includes SQL triggers requiring active child assignments to reference approved registry entries.</td>
             <td><code>mother/src/state/mod.rs</code></td>
           </tr>
           <tr>
-            <td>Existing Mother WASI host checks toy booleans such as <code>sql</code>, <code>messaging</code>, <code>measure</code>, and <code>git</code> before effects.</td>
+            <td><code>patinaMother</code> WASI host checks toy booleans such as <code>sql</code>, <code>messaging</code>, <code>measure</code>, and <code>git</code> before effects.</td>
             <td><code>src/child/internal/child.rs</code>, <code>mother/src/toys.rs</code></td>
           </tr>
           <tr>
-            <td>Existing Mother daemon state is broad and mixes registry, runtime stores, service container, pando, federation, native commands, aliases, and readiness.</td>
+            <td><code>patinaMother</code> daemon state is broad and mixes registry, runtime stores, service container, pando, federation, native commands, aliases, and readiness.</td>
             <td><code>src/commands/mother/daemon.rs</code></td>
           </tr>
         </tbody>
