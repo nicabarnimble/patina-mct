@@ -254,32 +254,32 @@ No finding was opened for these checked seams:
 
 ### U1 — whether the 96 KiB “call frame” includes the HTTP envelope
 
-D1 says the call frame is bounded before JSON/base64 decode (`SPEC.md:170-181`). The shared UDS reader allows a much larger control request budget derived from the 8 MiB blob path, `crates/mct-daemon/src/control.rs:109,416-432`, and the call handler later applies 96 KiB to the body only, `crates/mct-daemon/src/daemon/resident/local_ingress.rs:323-331`. The body is bounded before decode, so code matches one reasonable interpretation; if “frame” means headers plus body or must be enforced during streaming read, W1 should clarify the contract before treating this as A-class drift.
+D1 says the call frame is bounded before JSON/base64 decode (`SPEC.md:170-181`). The shared UDS reader allowed a much larger control request budget derived from the 8 MiB blob path, `crates/mct-daemon/src/control.rs:109,416-432`, and the call handler later applied 96 KiB to the body only, `crates/mct-daemon/src/daemon/resident/local_ingress.rs:323-331`. **W2 outcome:** W1 clarified that the `/calls` request body is bounded during streaming read; `ad133ce` authenticates before body consumption and enforces that named body bound at dispatch.
 
 ## Summary
 
-| ID | Class | Severity | Area | Proposed disposition |
+| ID | Class | Severity | Area | W2 outcome |
 |---|---|---|---|---|
-| A9 | A | critical | UDS authentication order | spec-ward fix |
-| A10 | A | high | required UDS replay/reopen proof | spec-ward fix |
-| A11 | A | critical | remote cancellation projection | spec-ward fix |
-| A12 | A | medium | live status child counts | spec-ward fix |
-| B6 | B | high | local principal/caller derivation | map tend |
-| B7 | B | high | durable local acknowledgement | map tend |
-| B8 | B | medium | `JvmAdapter` bridge lineage | map tend |
-| B9 | B | high | shared-UID idempotency scope | map tend |
-| B10 | B | medium | calls versus mutation sequencer | map tend |
-| B11 | B | high | sole resident coordinator | map tend |
-| B12 | B | high | kernel versus product placement | map tend |
-| B13 | B | medium | four quarry bins | map tend |
-| B14 | B | medium | four-question placement test | map tend / wording-only elicitation if needed |
-| E1 | E | high | Track 3 attribution gap | doc fix |
-| E2 | E | high | stale forwarding deferrals | doc fix |
-| E3 | E | high | stale replacement runbook workflow | doc fix |
-| E4 | E | medium | stale release gates | doc fix |
-| E5 | E | low | stale TODO phase heading | doc fix |
+| A9 | A | critical | UDS authentication order | fixed in `ad133ce` |
+| A10 | A | high | required UDS replay/reopen proof | fixed in `0423c5b` |
+| A11 | A | critical | remote cancellation projection | fixed in `7374980` |
+| A12 | A | medium | live status child counts | fixed in `a7f5792` |
+| B6 | B | high | local principal/caller derivation | tended in `465fc65` |
+| B7 | B | high | durable local acknowledgement | tended in `465fc65` |
+| B8 | B | medium | `JvmAdapter` bridge lineage | tended in `465fc65` |
+| B9 | B | high | shared-UID idempotency scope | tended in `465fc65` |
+| B10 | B | medium | calls versus mutation sequencer | tended in `465fc65` |
+| B11 | B | high | sole resident coordinator | tended in `bcfd5ab` |
+| B12 | B | high | kernel versus product placement | tended in `bcfd5ab` |
+| B13 | B | medium | four quarry bins | tended in `bcfd5ab` |
+| B14 | B | medium | four-question placement test | tended from operator-supplied wording in `bcfd5ab` |
+| E1 | E | high | Track 3 attribution gap | doc-fixed in `2c8fd18` |
+| E2 | E | high | stale forwarding deferrals | doc-fixed in `6817c13` |
+| E3 | E | high | stale replacement runbook workflow | doc-fixed in `6817c13` |
+| E4 | E | medium | stale release gates | doc-fixed in `6817c13` |
+| E5 | E | low | stale TODO phase heading | doc-fixed in `6817c13` |
 
-Counts: **A = 4, B = 9, C = 0, D = 0, E = 5; total = 18 findings.** One additional item is parked as an unverified lead.
+Counts: **A = 4, B = 9, C = 0, D = 0, E = 5; total = 18 findings.** U1 was not a finding and is closed by the W1 clarification and A9 remediation recorded above.
 
 ## Proposed W1 adjudication order
 
@@ -292,4 +292,8 @@ Counts: **A = 4, B = 9, C = 0, D = 0, E = 5; total = 18 findings.** One addition
 
 ## Gate W1
 
-STOP. This report proposes dispositions only. No code, Allium law, Track 3 ledger, product document, or test has been changed in this pass.
+STOP. This report originally proposed dispositions only. No code, Allium law, Track 3 ledger, product document, or test was changed during the report-only pass.
+
+## W2 remediation closeout
+
+The operator adjudicated all 18 findings at W1. Commits `ad133ce..6817c13` executed the approved code fixes, semantic tends, attribution repair, and product-document alignment; the summary table above records each terminal outcome. The final closeout commit updates this historical report without reopening any finding or item-6 deferral.
