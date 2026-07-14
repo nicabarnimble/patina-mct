@@ -106,7 +106,9 @@ pub struct MctControlPlaneResponse {
     pub body: String,
 }
 
-const MCT_UDS_CONTROL_READ_BUDGET_BYTES: usize = MCT_BLOB_MAX_BYTES.div_ceil(3) * 4 + 4096;
+const MCT_UDS_CONTROL_HEADER_READ_BUDGET_BYTES: usize = 4096;
+const MCT_UDS_CONTROL_READ_BUDGET_BYTES: usize =
+    MCT_BLOB_MAX_BYTES.div_ceil(3) * 4 + MCT_UDS_CONTROL_HEADER_READ_BUDGET_BYTES;
 
 #[cfg(unix)]
 type MctUdsControlMutationFuture =
@@ -149,37 +151,66 @@ pub struct MctUdsPeerCredentials {
 }
 
 #[cfg(unix)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MctUdsControlCallPreflight {
+    Authenticated(MctUdsPeerCredentials),
+    Refused(Option<MctControlPlaneResponse>),
+}
+
+#[cfg(unix)]
+type MctUdsControlCallPreflightFuture =
+    Pin<Box<dyn Future<Output = MctUdsControlCallPreflight> + Send + 'static>>;
+
+#[cfg(unix)]
+type MctUdsControlCallPreflightCallback = dyn Fn(Option<MctUdsPeerCredentials>, usize) -> MctUdsControlCallPreflightFuture
+    + Send
+    + Sync
+    + 'static;
+
+#[cfg(unix)]
 type MctUdsControlCallFuture =
     Pin<Box<dyn Future<Output = Option<MctControlPlaneResponse>> + Send + 'static>>;
 
 #[cfg(unix)]
-type MctUdsControlCallCallback = dyn Fn(Option<MctUdsPeerCredentials>, Vec<u8>) -> MctUdsControlCallFuture
-    + Send
-    + Sync
-    + 'static;
+type MctUdsControlCallCallback =
+    dyn Fn(MctUdsPeerCredentials, Vec<u8>) -> MctUdsControlCallFuture + Send + Sync + 'static;
 
 /// Authenticated local application-call handler owned by the resident binary.
 #[cfg(unix)]
 #[derive(Clone)]
 pub struct MctUdsControlCallHandler {
+    preflight_callback: Arc<MctUdsControlCallPreflightCallback>,
     callback: Arc<MctUdsControlCallCallback>,
 }
 
 #[cfg(unix)]
 impl MctUdsControlCallHandler {
-    pub fn new<F, Fut>(callback: F) -> Self
+    pub fn new<P, PFut, F, Fut>(preflight: P, callback: F) -> Self
     where
-        F: Fn(Option<MctUdsPeerCredentials>, Vec<u8>) -> Fut + Send + Sync + 'static,
+        P: Fn(Option<MctUdsPeerCredentials>, usize) -> PFut + Send + Sync + 'static,
+        PFut: Future<Output = MctUdsControlCallPreflight> + Send + 'static,
+        F: Fn(MctUdsPeerCredentials, Vec<u8>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Option<MctControlPlaneResponse>> + Send + 'static,
     {
         Self {
+            preflight_callback: Arc::new(move |peer, declared_body_len| {
+                Box::pin(preflight(peer, declared_body_len))
+            }),
             callback: Arc::new(move |peer, body| Box::pin(callback(peer, body))),
         }
     }
 
-    async fn handle(
+    async fn preflight(
         &self,
         peer: Option<MctUdsPeerCredentials>,
+        declared_body_len: usize,
+    ) -> MctUdsControlCallPreflight {
+        (self.preflight_callback)(peer, declared_body_len).await
+    }
+
+    async fn handle(
+        &self,
+        peer: MctUdsPeerCredentials,
         body: Vec<u8>,
     ) -> Option<MctControlPlaneResponse> {
         (self.callback)(peer, body).await
@@ -427,42 +458,53 @@ pub async fn serve_uds_control_stream_with_handlers(
             gid: credentials.gid(),
             pid: credentials.pid(),
         });
-    let request_bytes = read_http_request_bounded(&mut stream, MCT_UDS_CONTROL_READ_BUDGET_BYTES)
+    let headers = read_http_headers_bounded(&mut stream, MCT_UDS_CONTROL_HEADER_READ_BUDGET_BYTES)
         .await
-        .context("read uds control request")?;
-    let request = String::from_utf8_lossy(&request_bytes);
+        .context("read uds control request headers")?;
+    let request = String::from_utf8_lossy(&headers);
     let (method, path) = parse_http_request_line(&request)?;
     let authorization_header = parse_authorization_header(&request);
+    let content_length = parse_content_length(&request)?.unwrap_or(0);
     let response = if method == "POST" && path == "/calls" {
-        match (call_handler, request_body(&request_bytes)) {
-            (Some(handler), Ok(body)) => handler.handle(peer, body.to_vec()).await,
-            (Some(_), Err(error)) => Some(json_response(
-                400,
-                serde_json::json!({"error": error.to_string()}),
-            )),
-            (None, _) => Some(json_response(
+        match call_handler {
+            Some(handler) => match handler.preflight(peer, content_length).await {
+                MctUdsControlCallPreflight::Authenticated(peer) => {
+                    let body = read_http_body_bounded(
+                        &mut stream,
+                        content_length,
+                        mct_iroh::MCT_CALL_FRAME_READ_BUDGET_BYTES,
+                    )
+                    .await
+                    .context("read bounded uds call body")?;
+                    handler.handle(peer, body).await
+                }
+                MctUdsControlCallPreflight::Refused(response) => response,
+            },
+            None => Some(json_response(
                 405,
                 serde_json::json!({"error": "method not allowed"}),
             )),
         }
-    } else if method == "POST"
-        && let Some(handler) = mutation_handler
-    {
-        match request_body(&request_bytes) {
-            Ok(body) => Some(handler.handle(path.to_owned(), body.to_vec()).await),
-            Err(error) => Some(json_response(
-                400,
-                serde_json::json!({"error": error.to_string()}),
-            )),
-        }
     } else {
-        Some(handle_control_plane_path_result_with_auth(
-            method,
-            path,
-            snapshot.as_ref(),
-            &MctControlPlaneAuthPolicy::open_local(),
-            authorization_header,
-        ))
+        let body_budget = MCT_UDS_CONTROL_READ_BUDGET_BYTES
+            .checked_sub(headers.len())
+            .context("control request headers exceed bounded read budget")?;
+        let body = read_http_body_bounded(&mut stream, content_length, body_budget)
+            .await
+            .context("read uds control request body")?;
+        if method == "POST"
+            && let Some(handler) = mutation_handler
+        {
+            Some(handler.handle(path.to_owned(), body).await)
+        } else {
+            Some(handle_control_plane_path_result_with_auth(
+                method,
+                path,
+                snapshot.as_ref(),
+                &MctControlPlaneAuthPolicy::open_local(),
+                authorization_header,
+            ))
+        }
     };
     if let Some(response) = response {
         stream
@@ -531,51 +573,45 @@ fn parse_content_length(request: &str) -> Result<Option<usize>> {
         .context("parse content-length")
 }
 
-async fn read_http_request_bounded<S>(stream: &mut S, budget: usize) -> Result<Vec<u8>>
+async fn read_http_headers_bounded<S>(stream: &mut S, budget: usize) -> Result<Vec<u8>>
 where
     S: tokio::io::AsyncRead + Unpin,
 {
-    let mut bytes = Vec::new();
-    let mut buffer = [0_u8; 4096];
-    loop {
+    let mut headers = Vec::new();
+    let mut byte = [0_u8; 1];
+    while !headers.ends_with(b"\r\n\r\n") {
+        if headers.len() == budget {
+            bail!("control request headers exceed bounded read budget");
+        }
         let read = stream
-            .read(&mut buffer)
+            .read(&mut byte)
             .await
-            .context("read control request chunk")?;
+            .context("read control request header byte")?;
         if read == 0 {
-            break;
+            bail!("control request ended before header terminator");
         }
-        bytes.extend_from_slice(&buffer[..read]);
-        if bytes.len() > budget {
-            bail!("control request exceeds bounded read budget");
-        }
-        if let Some((headers_len, content_length)) = request_frame_shape(&bytes)?
-            && bytes.len() >= headers_len + content_length
-        {
-            break;
-        }
+        headers.push(byte[0]);
     }
-    if bytes.is_empty() {
-        bail!("empty control request");
-    }
-    Ok(bytes)
+    Ok(headers)
 }
 
-fn request_frame_shape(bytes: &[u8]) -> Result<Option<(usize, usize)>> {
-    let Some(headers_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") else {
-        return Ok(None);
-    };
-    let headers_len = headers_end + 4;
-    let headers = String::from_utf8_lossy(&bytes[..headers_len]);
-    let content_length = parse_content_length(&headers)?.unwrap_or(0);
-    Ok(Some((headers_len, content_length)))
-}
-
-fn request_body(bytes: &[u8]) -> Result<&[u8]> {
-    let Some(headers_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") else {
-        bail!("missing HTTP request body separator");
-    };
-    Ok(&bytes[headers_end + 4..])
+async fn read_http_body_bounded<S>(
+    stream: &mut S,
+    content_length: usize,
+    budget: usize,
+) -> Result<Vec<u8>>
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
+    if content_length > budget {
+        bail!("control request body exceeds bounded read budget");
+    }
+    let mut body = vec![0_u8; content_length];
+    stream
+        .read_exact(&mut body)
+        .await
+        .context("read complete control request body")?;
+    Ok(body)
 }
 
 fn http_response_bytes(response: &MctControlPlaneResponse) -> String {
