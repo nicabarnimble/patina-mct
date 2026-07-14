@@ -11,9 +11,9 @@ It is grounded in the feature map:
 
 - `layer/surface/patina-mct.org`
 
-And in the integrated Patina reference implementation:
+And in the integrated `patinaMother` reference implementation:
 
-- `/Users/nicabar/Projects/Sandbox/AI/RUST/patina`
+- [Integrated Patina reference revision](https://github.com/NicabarNimble/patina/tree/d8f90270a53047b99d12004f834b62dbc629570d)
 
 This is not an extraction plan. The integrated repo is evidence and prior art. The new MCT product should rebuild the kernel intentionally.
 
@@ -309,22 +309,22 @@ These are adapters, product integrations, or presentation layers.
 
 ## Relationship to existing integrated code
 
-The old integrated daemon demonstrates useful pieces but also shows what to avoid.
+`patinaMother` demonstrates useful operational requirements and also shows implementation shapes to avoid.
 
 Reference surfaces:
 
-- Child trait and runtime domain: `/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/runtime.rs`
-- Child registry: `/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/registry.rs`
-- Current all-in-one daemon state: `/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/daemon.rs`
-- Current broad API runtime trait: `/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/http_api.rs`
-- Current WASM child runtime: `/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/child/internal/`
-- Current feature map: `layer/surface/patina-mct.org`
+- Child trait and runtime domain: [`mother/src/runtime.rs`](https://github.com/NicabarNimble/patina/blob/d8f90270a53047b99d12004f834b62dbc629570d/mother/src/runtime.rs)
+- Child registry: [`mother/src/registry.rs`](https://github.com/NicabarNimble/patina/blob/d8f90270a53047b99d12004f834b62dbc629570d/mother/src/registry.rs)
+- `patinaMother` all-in-one daemon state: [`src/commands/mother/daemon.rs`](https://github.com/NicabarNimble/patina/blob/d8f90270a53047b99d12004f834b62dbc629570d/src/commands/mother/daemon.rs)
+- `patinaMother` broad API runtime trait: [`mother/src/http_api.rs`](https://github.com/NicabarNimble/patina/blob/d8f90270a53047b99d12004f834b62dbc629570d/mother/src/http_api.rs)
+- `patinaChild` WASM runtime: [`src/child/internal/`](https://github.com/NicabarNimble/patina/tree/d8f90270a53047b99d12004f834b62dbc629570d/src/child/internal)
+- Comparative feature map: `layer/surface/patina-mct.org`
 
-The clean kernel should preserve the good seams and reject the accidental coupling.
+The clean kernel should translate useful seams and rebuild accepted responsibilities while rejecting accidental coupling.
 
 ## Architecture overview alignment
 
-The architecture overview draft (`/Users/nicabar/Downloads/architecture-overview.docx`) sharpens this Slate with these agreed decisions:
+The architecture overview draft sharpens this Slate with these agreed decisions:
 
 1. The MCT kernel must stay tight, small, and edge-ready.
 2. Iroh is not merely future optional networking; it is the v0 Mother-to-Mother building system for node identity and node-to-node transport design.
@@ -381,10 +381,10 @@ Revised answer: Iroh is not a tiny placeholder. MCT should build a production-sh
 
 Reference repo available for study:
 
-- `/Users/nicabar/.patina/cache/repos/n0-computer/iroh`
-- `/Users/nicabar/.patina/cache/repos/n0-computer/iroh/README.md`
-- `/Users/nicabar/.patina/cache/repos/n0-computer/iroh/iroh/README.md`
-- `/Users/nicabar/.patina/cache/repos/n0-computer/iroh/TRANSPORTS.md`
+- [Iroh reference revision](https://github.com/n0-computer/iroh/tree/ee8b6a3d93608df683fb0110d885c9521d31169b)
+- [Workspace README](https://github.com/n0-computer/iroh/blob/ee8b6a3d93608df683fb0110d885c9521d31169b/README.md)
+- [Iroh crate README](https://github.com/n0-computer/iroh/blob/ee8b6a3d93608df683fb0110d885c9521d31169b/iroh/README.md)
+- [Transport notes](https://github.com/n0-computer/iroh/blob/ee8b6a3d93608df683fb0110d885c9521d31169b/TRANSPORTS.md)
 
 Facts from the cached Iroh docs that matter for MCT:
 
@@ -470,7 +470,7 @@ Rule: every authority decision is a kernel observation. Every external effect or
 
 ### Storage boundary: concrete, narrow, fast first pass
 
-The current integrated Mother already uses a concrete SQLite store, `MotherRuntimeStore`, but it mixes many concerns: sessions, beliefs, project identity, child registry, project runtime state, tasks, view buffers, and audit-ish data. Current child-call observability also writes metrics into `events.db` and keeps only a small in-memory typed-call history.
+`patinaMother` uses a concrete SQLite store, `MotherRuntimeStore`, but it mixes many concerns: sessions, beliefs, project identity, child registry, project runtime state, tasks, view buffers, and audit-ish data. Current child-call observability also writes metrics into `events.db` and keeps only a small in-memory typed-call history.
 
 Clean MCT should keep the good part — concrete boring storage — and remove the coupling.
 

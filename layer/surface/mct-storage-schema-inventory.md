@@ -3,20 +3,21 @@ id: mct-storage-schema-inventory
 layer: surface
 status: active
 created: 2026-06-28
-tags: [mct, storage, sqlite, mother-parity]
+revised: 2026-07-14
+tags: [mct, storage, sqlite, migration]
 references: [mct-storage-core, mct-build-boundaries, adapter-pattern]
 ---
 
 # MCT Storage Schema Inventory
 
-Purpose: record the private MCT state store shape and the existing-Mother tables intentionally not copied into MCT core.
+Purpose: record the private MCT state store shape and the `patinaMother` storage responsibilities intentionally translated, rebuilt, or excluded rather than copied into MCT core.
 
 ## Included in `.mct/state.sqlite`
 
 MCT stores runtime facts that support Mother/Child/Toy authority and adapter recovery:
 
 - `component_artifacts` — immutable child artifact identity, hashes, WIT export shape, runtime shape, verification status.
-- `child_approvals` — explicit Mother approval state for artifacts.
+- `child_approvals` — explicit `mctMother` approval state for artifacts.
 - `child_assignments` — Vision/Node/project placement, guarded by SQL triggers requiring approved verified artifacts.
 - `child_instances` — live generation/readiness state, guarded by SQL triggers requiring active assignments for ready instances.
 - `peers` — peer address-book/binding projection for MCT-over-Iroh calls.
@@ -31,7 +32,7 @@ MCT stores runtime facts that support Mother/Child/Toy authority and adapter rec
 
 ## Intentionally excluded from MCT core
 
-These existing integrated-Mother surfaces are reference material, not MCT-core state:
+These `patinaMother` surfaces are reference material for boundary decisions, not MCT-core state:
 
 - Belief graph/index tables (`scry`, `assay`, `oxidize`, `scrape`).
 - Session markdown/artifact tables.

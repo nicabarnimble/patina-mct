@@ -1,13 +1,13 @@
-# MCT Mother replacement finish TODO — 2026-07-09
+# MCT `patinaMother` replacement finish TODO — 2026-07-09
 
-Goal: make `patina-mct` replacement-ready for the existing Patina Mother runtime surface today, with an explicit v0 boundary. Code must stay authority-first: kernel decides, adapters perform, no Belief/scry/assay internals in MCT.
+Goal: make MCT replacement-ready for the `patinaMother` runtime surface, with an explicit v0 boundary. Code must stay authority-first: kernel decides, adapters perform, and Patina belief/scry/assay semantics do not become `mctMother` internals.
 
 ## Definition of done today
 
 - [x] No active spec remains whose exit criteria are already satisfied.
-- [x] Binding presentations are cryptographically verified before peer admission in the resident Mother path; unsigned or invalid bindings fail closed.
+- [x] Binding presentations are cryptographically verified before peer admission in the resident `mctMother` path; unsigned or invalid bindings fail closed.
 - [x] A minimal secrets authority exists as an explicit toy/grant-backed adapter with redacted observations.
-- [x] Operator lifecycle is clear enough to run MCT instead of Mother for local runtime work: identity, config, peers, children, toys, serve/status/stop docs or commands.
+- [x] Operator lifecycle is clear enough for `mctMother` to replace `patinaMother` for local runtime work: identity, config, peers, children, toys, serve/status/stop docs or commands.
 - [x] JVM bridge status is either implemented as a minimal call-envelope ingress or explicitly deferred behind a checked, documented non-blocking v0 boundary.
 - [x] `mct-interface-launcher-control` and release hardening have an explicit unblock/close path.
 - [x] `./scripts/ci-tier0.sh` passes at closeout.
@@ -23,7 +23,7 @@ Goal: make `patina-mct` replacement-ready for the existing Patina Mother runtime
 ### 1. Binding signature verification — P0 runtime gate
 
 - [x] Define canonical peer-binding signature payload and `signature_ref` format.
-- [x] Add signing/verifying helpers using the Mother Iroh endpoint key.
+- [x] Add signing/verifying helpers using the `mctMother` Iroh endpoint key.
 - [x] Persist peer binding signature refs in config/address-book entries.
 - [x] Send `signature_ref` in CLI/configured hello requests.
 - [x] Deny resident hello admission when signature is missing, malformed, or invalid.

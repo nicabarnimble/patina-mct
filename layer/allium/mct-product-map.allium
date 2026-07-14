@@ -10,6 +10,9 @@
 -- law `mct-peer-ontology.allium`, reviewed in session `20260712-112719-785420000`.
 -- Product-map peer records and protocols reference that law's contracts by name rather than
 -- duplicating its relationship semantics.
+-- Decision: 2026-07-14, comparative migration language is governed by companion law
+-- `mct-patina-migration.allium`; living prose follows `layer/core/migration-vocabulary.md`.
+-- Historical sessions and captured request records remain unchanged.
 
 -- Scope: Whole MCT product map as guiding behavioural principles.
 -- Includes:
@@ -29,6 +32,7 @@
 --   - UI rendering/view-buffer details beyond observability obligations
 -- Core build anchors:
 --   - layer/core/what-is-mct.md
+--   - layer/core/migration-vocabulary.md
 --   - layer/core/mct-build-boundaries.md
 --   - layer/core/spec-driven-design.md
 --   - layer/core/safety-boundaries.md
@@ -74,7 +78,8 @@ open question "Confirm the one-sentence product statement for MCT."
 -- Decision: Data authority has final say. If data policy says data may not leave its owning node or authority domain, MCT must not move it even when moving data would be faster.
 -- Principle: Fastest path wins only among authorized paths.
 -- Decision: When data cannot move, MCT may move or run compute near that data only if the child/component is approved for that data-owning node or authority domain. Approval is not implied by route optimization.
--- Reference finding: integrated Mother already has a tier-like identity plane in `/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/state/mod.rs`:
+-- Reference finding: `patinaMother` has a tier-like identity plane in
+-- https://github.com/NicabarNimble/patina/blob/d8f90270a53047b99d12004f834b62dbc629570d/mother/src/state/mod.rs:
 --   - `mother_users` with active/suspended/revoked status.
 --   - `mother_nodes` with active/maintenance/retired status.
 --   - `mother_node_memberships` with full_admin/admin/member roles.
@@ -82,14 +87,14 @@ open question "Confirm the one-sentence product statement for MCT."
 --   - `mother_vision_memberships` with admin/member roles.
 --   - `mother_node_visions` linking nodes to visions.
 --   - `mother_project_identities` binding projects to user + vision + node.
--- Reference finding: current Mother guardrails require each active node to keep one active full_admin, each active node to retain an active vision, and each active vision to retain an active admin.
+-- Reference finding: `patinaMother` guardrails require each active node to keep one active full_admin, each active node to retain an active vision, and each active vision to retain an active admin.
 -- Reference finding: child approval already exists separately: `mother_child_registry_entries.state` is candidate/approved/blocked/deprecated, and active project child assignments require an approved child registry entry.
 -- Reference finding: toy tiers are separate from user/node/vision: `ToyTier` is `wasi-preview2` or `patina`, and toy governance state is local/community-experimental/candidate/approved/deprecated/retired.
 open question "What routing inputs are mandatory for fastest-path decisions versus advisory heuristics?"
 -- Decision: Vision is the primary data-sharing boundary. Nodes inside the same Vision may share selected data and compute under Vision policy; cross-Vision sharing requires explicit peer/grant approval.
--- Decision: Adopt the existing Mother user/node/vision authority structure as the conceptual MCT authority spine, but rebuild it cleanly rather than copying `MotherRuntimeStore` wholesale.
+-- Decision: Translate the `patinaMother` user/node/vision authority structure into the conceptual `mctMother` authority spine, rebuilding accepted responsibilities rather than copying `MotherRuntimeStore` wholesale.
 -- Decision: MCT should preserve the bones: User, Node, Vision, node membership, vision membership, node-vision binding, project/app identity binding, role guardrails, and approved child assignment.
--- Decision: MCT must add what current Mother lacks for multi-node routing: Iroh peer identity, node capability profile, data movement policy, compute placement policy, health/load telemetry, remote trust/admission, and approval scoped by Vision/Node/data class/toy grants/child version.
+-- Decision: `mctMother` must add what `patinaMother` lacks for multi-node routing: Iroh peer identity, node capability profile, data movement policy, compute placement policy, health/load telemetry, remote trust/admission, and approval scoped by Vision/Node/data class/toy grants/child version.
 -- Principle: Same bones, cleaner body.
 
 -- Architectural shape: MCT is a modular local authority runtime.
@@ -98,7 +103,7 @@ open question "What routing inputs are mandatory for fastest-path decisions vers
 -- Decision: The daemon owns process lifetime, local control surfaces, endpoint/runtime lifecycle, and adapter wiring; it must not become the authority model itself.
 -- Decision: Adapters perform external effects such as Iroh streams, storage writes, process/JVM/WASM execution, toy backends, metrics, logs, and OpenTelemetry projection.
 -- Decision: Adapter facts enter the authority model only after translation into MCT domain records or `MctObservation` entries.
--- Decision: Current Patina Mother is evidence and prior art for daemon, registry, call, storage, secrets, and control-plane concerns, but it is not the ontology for the clean MCT repo.
+-- Decision: `patinaMother` is a source of operational requirements and prior art for daemon, registry, call, storage, secrets, and control-plane concerns. Accepted responsibilities are translated or rebuilt under MCT law; legacy implementation shapes do not define the clean MCT ontology.
 -- Decision: MCT emulates Mother's role as local authority over children, toys, calls, and observations while rebuilding the internals as smaller domain seams.
 -- Decision: The Rust implementation should follow a Jon Gjengset-style systems shape: honest signatures, domain types at boundaries, private internals, explicit state machines, typed fail-closed outcomes, and concrete implementations before speculative traits.
 -- Decision: The peer adapter should follow Iroh's general design shape: composable endpoint/protocol primitives, ALPN as the protocol seam, explicit async connection/stream handling, and application authority above transport identity.
@@ -121,7 +126,9 @@ contract MctRuntimeShape {
         -- Iroh provides endpoint connectivity and ALPN protocol composition; MCT grants authority only through explicit peer bindings, policy, and admission decisions.
 
     @invariant CurrentMotherIsEvidenceNotOntology
-        -- Existing Patina Mother implementation informs the design but does not define the clean MCT domain model.
+        -- Historical invariant identity retained for compatibility. `patinaMother` supplies
+        -- operational evidence and requirements, while accepted responsibilities are rebuilt
+        -- under MCT law rather than defining the clean MCT domain model by inheritance.
 
     @invariant ConcreteBeforeSpeculativeTraits
         -- New abstraction seams are introduced only after concrete implementations make the boundary real.
@@ -219,7 +226,7 @@ contract NoRouteDecision {
 -- Decision: Phase 1 primarily consumes capability profiles: runtime support, installed/approved children and toys, data class authorization, locality compatibility, Iroh peer identity, and per-Vision declarations.
 -- Decision: Phase 2 primarily consumes telemetry: current load, memory pressure/utilization, child health, heartbeat freshness, peer RTT/path quality, relay/direct status, throughput samples, and route-quality feedback.
 -- Decision: If telemetry is missing or stale for an authority-admissible node, the planner applies an explicit policy such as skip, assume median/unknown cost, or probe. It must not reinterpret stale telemetry as authority denial.
--- Decision: Current Mother already provides partial inputs: node id/slug/hostname/status, child and toy inventory/governance, readiness, child health, memory pressure, DB sizes, heartbeat, and uptime. MCT adds hardware inspection, locality tags, data-class authorization, Iroh peer binding, per-Vision capability declarations, CPU/load telemetry, memory utilization, and network observations.
+-- Decision: `patinaMother` provides partial inputs: node id/slug/hostname/status, `patinaChild` and `patinaToy` inventory/governance, readiness, child health, memory pressure, DB sizes, heartbeat, and uptime. `mctMother` adds hardware inspection, locality tags, data-class authorization, Iroh peer binding, per-Vision capability declarations, CPU/load telemetry, memory utilization, and network observations.
 
 -- Decision: Capability publication is per-Vision. A Mother keeps a full private node capability profile, then publishes only policy-filtered capability views to each Vision.
 -- Decision: A public or cross-Vision discovery view exposes minimal information such as node identity and reachability, not sensitive data classes, JVM-backed child details, children, toys, or topology.
