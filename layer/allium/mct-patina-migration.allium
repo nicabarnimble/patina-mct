@@ -9,12 +9,17 @@
 --   - Comparative namespace terms for Mother/Child/Toy roles
 --   - Product-name versus runtime-role distinction
 --   - Migration verb semantics
+--   - Sole-resident operational takeover and responsibility placement
+--   - Quarry disposition bins and the ordered placement test
 --   - Legacy capability asymmetry
 --   - Transitional lifetime of the comparative qualifiers
 -- Excludes:
 --   - Renaming Rust types, protocols, Allium entities, or ordinary MCT-only prose
---   - Patina belief-domain behavior
---   - Deciding which individual operational responsibilities MCT accepts
+--   - Implementing Patina belief-domain behavior inside MCT
+--   - Deciding whether a newly discovered individual responsibility is accepted before placement
+-- Decision: 2026-07-14 W1 dispositions of REPORT-2 B11-B14 extend this companion from
+-- comparative vocabulary into settled migration placement discipline. The law classifies accepted
+-- or rejected parts without selecting new responsibilities or importing Patina application meaning.
 -- Narrative guidance: `layer/core/migration-vocabulary.md`.
 
 ------------------------------------------------------------
@@ -70,6 +75,74 @@ contract MigrationVerbDiscipline {
     @invariant RetireFollowsCompletedReplacement
         -- A legacy responsibility or implementation is retired only after its accepted replacement
         -- and required migration are complete, or after an explicit decision that it is unnecessary.
+}
+
+------------------------------------------------------------
+-- Operational takeover and responsibility placement
+------------------------------------------------------------
+
+-- Decision: 2026-07-14 W1 disposition of REPORT-2 B11: `mctMother` is the sole resident
+-- coordinator. Patina remains a belief-centered application and may operate as an `mctChild`; it
+-- does not retain a competing resident authority or daemon after operational replacement.
+-- Decision: 2026-07-14 W1 disposition of REPORT-2 B12: MCT is the complete Mother/Child/Toy
+-- product, so accepted generic runtime, supervision, lifecycle, control, packaging, and diagnostic
+-- responsibilities may ship in the product. The authority kernel stays narrow: it owns MCT domain
+-- authority decisions and records, while daemon and Toy adapters perform operational effects.
+-- Decision: 2026-07-14 W1 disposition of REPORT-2 B13: every part quarried from
+-- `patinaMother` is classified into one of four disposition bins: MCT product responsibility, MCT
+-- authority-kernel law or record, Patina/Child application meaning, or rejected legacy shape.
+-- Rejection remains valid when a source shape is unnecessary, ambient, allow-by-default, or
+-- otherwise incompatible with MCT law.
+-- Decision: wording supplied by operator at W1/B14 resolution, 2026-07-14. For every
+-- responsibility quarried from `patinaMother`, ask in order: (1) Does every kind of Child need
+-- Mother to provide this? If yes, it is an MCT operational responsibility. (2) Is it access to an
+-- external resource or effect? If yes, it is a Toy. (3) Does it interpret application-specific
+-- meaning? If yes, it belongs in a Child. (4) Is it useful but optional operational tooling? If
+-- yes, it ships with the MCT product without entering the authority kernel.
+-- Decision: the same W1/B14 resolution supplies two riders. R1: the placement test runs per-part,
+-- not per-feature; a responsibility matching multiple questions is split into generic mechanism
+-- placed by Q1/Q2 and domain vocabulary or meaning placed by Q3. R2: Q2 places the adapter only;
+-- its ToyGrant authority record always belongs to the kernel regardless of where capability
+-- implementation lives.
+
+contract MigrationResponsibilityPlacement {
+    @invariant MctMotherIsSoleResidentCoordinator
+        -- Operational replacement leaves one resident coordinator: `mctMother`; Patina may run as
+        -- an `mctChild` but does not retain competing resident authority.
+
+    @invariant ProductBreadthDoesNotExpandKernel
+        -- Accepted generic operational responsibilities may belong to the complete MCT product,
+        -- while only MCT authority decisions and domain authority records enter the narrow kernel;
+        -- daemon and Toy adapters perform effects outside it.
+
+    @invariant QuarryPartsUseFourDispositionBins
+        -- Each quarried part is placed as MCT product responsibility, MCT authority-kernel law or
+        -- record, Patina/Child application meaning, or rejected legacy shape rather than inherited
+        -- wholesale.
+
+    @invariant UniversalChildNeedPlacesMctOperation
+        -- First ask whether every kind of Child needs Mother to provide the part; if yes, place it
+        -- as an MCT operational responsibility.
+
+    @invariant ExternalEffectPlacesToyAdapter
+        -- Second ask whether the part accesses an external resource or effect; if yes, place its
+        -- implementation as a Toy adapter without moving ToyGrant authority out of the kernel.
+
+    @invariant ApplicationMeaningPlacesChild
+        -- Third ask whether the part interprets application-specific meaning; if yes, place that
+        -- vocabulary and interpretation in a Child rather than Mother or the authority kernel.
+
+    @invariant OptionalToolingStaysOutsideKernel
+        -- Fourth ask whether the part is useful but optional operational tooling; if yes, it may
+        -- ship with the MCT product but cannot enter the authority kernel.
+
+    @invariant PlacementRunsPerPart
+        -- Apply the ordered questions to each part, not a whole feature; split generic mechanism
+        -- placed by Q1/Q2 from domain vocabulary or meaning placed by Q3.
+
+    @invariant ToyGrantAuthorityRemainsKernel
+        -- Q2 places only the effect adapter; the ToyGrant record and its current evaluation remain
+        -- kernel authority regardless of the capability implementation's product location.
 }
 
 ------------------------------------------------------------
