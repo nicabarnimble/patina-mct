@@ -10,7 +10,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 #[cfg(unix)]
-use tokio::net::UnixListener;
+use tokio::net::{UnixListener, UnixStream};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MctDaemonLocalControlFacts {
@@ -137,6 +137,52 @@ impl MctUdsControlMutationHandler {
 
     async fn handle(&self, path: String, body: Vec<u8>) -> MctControlPlaneResponse {
         (self.callback)(path, body).await
+    }
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MctUdsPeerCredentials {
+    pub uid: u32,
+    pub gid: u32,
+    pub pid: Option<i32>,
+}
+
+#[cfg(unix)]
+type MctUdsControlCallFuture =
+    Pin<Box<dyn Future<Output = Option<MctControlPlaneResponse>> + Send + 'static>>;
+
+#[cfg(unix)]
+type MctUdsControlCallCallback = dyn Fn(Option<MctUdsPeerCredentials>, Vec<u8>) -> MctUdsControlCallFuture
+    + Send
+    + Sync
+    + 'static;
+
+/// Authenticated local application-call handler owned by the resident binary.
+#[cfg(unix)]
+#[derive(Clone)]
+pub struct MctUdsControlCallHandler {
+    callback: Arc<MctUdsControlCallCallback>,
+}
+
+#[cfg(unix)]
+impl MctUdsControlCallHandler {
+    pub fn new<F, Fut>(callback: F) -> Self
+    where
+        F: Fn(Option<MctUdsPeerCredentials>, Vec<u8>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Option<MctControlPlaneResponse>> + Send + 'static,
+    {
+        Self {
+            callback: Arc::new(move |peer, body| Box::pin(callback(peer, body))),
+        }
+    }
+
+    async fn handle(
+        &self,
+        peer: Option<MctUdsPeerCredentials>,
+        body: Vec<u8>,
+    ) -> Option<MctControlPlaneResponse> {
+        (self.callback)(peer, body).await
     }
 }
 
@@ -341,36 +387,89 @@ pub async fn serve_uds_control_once_with_snapshot_result_and_blob_store(
 pub async fn serve_uds_control_once_with_snapshot_result_blob_store_and_mutations(
     listener: &UnixListener,
     snapshot: MctControlPlaneSnapshotResult,
-    _blob_state_path: Option<&Path>,
+    blob_state_path: Option<&Path>,
     mutation_handler: Option<&MctUdsControlMutationHandler>,
 ) -> Result<()> {
-    let (mut stream, _) = listener.accept().await.context("accept uds control")?;
+    serve_uds_control_once_with_handlers(
+        listener,
+        snapshot,
+        blob_state_path,
+        mutation_handler,
+        None,
+    )
+    .await
+}
+
+#[cfg(unix)]
+pub async fn serve_uds_control_once_with_handlers(
+    listener: &UnixListener,
+    snapshot: MctControlPlaneSnapshotResult,
+    _blob_state_path: Option<&Path>,
+    mutation_handler: Option<&MctUdsControlMutationHandler>,
+    call_handler: Option<&MctUdsControlCallHandler>,
+) -> Result<()> {
+    let (stream, _) = listener.accept().await.context("accept uds control")?;
+    serve_uds_control_stream_with_handlers(stream, snapshot, mutation_handler, call_handler).await
+}
+
+#[cfg(unix)]
+pub async fn serve_uds_control_stream_with_handlers(
+    mut stream: UnixStream,
+    snapshot: MctControlPlaneSnapshotResult,
+    mutation_handler: Option<&MctUdsControlMutationHandler>,
+    call_handler: Option<&MctUdsControlCallHandler>,
+) -> Result<()> {
+    let peer = stream
+        .peer_cred()
+        .ok()
+        .map(|credentials| MctUdsPeerCredentials {
+            uid: credentials.uid(),
+            gid: credentials.gid(),
+            pid: credentials.pid(),
+        });
     let request_bytes = read_http_request_bounded(&mut stream, MCT_UDS_CONTROL_READ_BUDGET_BYTES)
         .await
         .context("read uds control request")?;
     let request = String::from_utf8_lossy(&request_bytes);
     let (method, path) = parse_http_request_line(&request)?;
     let authorization_header = parse_authorization_header(&request);
-    let response = if method == "POST"
+    let response = if method == "POST" && path == "/calls" {
+        match (call_handler, request_body(&request_bytes)) {
+            (Some(handler), Ok(body)) => handler.handle(peer, body.to_vec()).await,
+            (Some(_), Err(error)) => Some(json_response(
+                400,
+                serde_json::json!({"error": error.to_string()}),
+            )),
+            (None, _) => Some(json_response(
+                405,
+                serde_json::json!({"error": "method not allowed"}),
+            )),
+        }
+    } else if method == "POST"
         && let Some(handler) = mutation_handler
     {
         match request_body(&request_bytes) {
-            Ok(body) => handler.handle(path.to_owned(), body.to_vec()).await,
-            Err(error) => json_response(400, serde_json::json!({"error": error.to_string()})),
+            Ok(body) => Some(handler.handle(path.to_owned(), body.to_vec()).await),
+            Err(error) => Some(json_response(
+                400,
+                serde_json::json!({"error": error.to_string()}),
+            )),
         }
     } else {
-        handle_control_plane_path_result_with_auth(
+        Some(handle_control_plane_path_result_with_auth(
             method,
             path,
             snapshot.as_ref(),
             &MctControlPlaneAuthPolicy::open_local(),
             authorization_header,
-        )
+        ))
     };
-    stream
-        .write_all(http_response_bytes(&response).as_bytes())
-        .await
-        .context("write uds control response")?;
+    if let Some(response) = response {
+        stream
+            .write_all(http_response_bytes(&response).as_bytes())
+            .await
+            .context("write uds control response")?;
+    }
     Ok(())
 }
 
