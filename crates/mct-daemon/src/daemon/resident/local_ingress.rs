@@ -293,43 +293,57 @@ fn project_local_call_result(result: MctIrohCallHandlerResult) -> MctControlPlan
     )
 }
 
+async fn preflight_local_submission(
+    ledger: &ResidentLedgerWriter,
+    expected_uid: u32,
+    peer: Option<MctUdsPeerCredentials>,
+    declared_body_len: usize,
+) -> MctUdsControlCallPreflight {
+    let Some(peer) = peer else {
+        return MctUdsControlCallPreflight::Refused(
+            append_local_refusal(
+                ledger,
+                None,
+                401,
+                "not authorized",
+                "peer_credentials_unavailable",
+            )
+            .await,
+        );
+    };
+    if peer.uid != expected_uid {
+        return MctUdsControlCallPreflight::Refused(
+            append_local_refusal(
+                ledger,
+                Some(peer.uid),
+                403,
+                "not authorized",
+                "peer_uid_mismatch",
+            )
+            .await,
+        );
+    }
+    if declared_body_len > mct_iroh::MCT_CALL_FRAME_READ_BUDGET_BYTES {
+        return MctUdsControlCallPreflight::Refused(
+            append_local_refusal(
+                ledger,
+                Some(peer.uid),
+                413,
+                "call frame too large",
+                "frame_too_large",
+            )
+            .await,
+        );
+    }
+    MctUdsControlCallPreflight::Authenticated(peer)
+}
+
 async fn execute_local_submission(
     paths: ResidentRuntimePaths,
     ledger: ResidentLedgerWriter,
-    expected_uid: u32,
-    peer: Option<MctUdsPeerCredentials>,
+    peer: MctUdsPeerCredentials,
     body: Vec<u8>,
 ) -> Option<MctControlPlaneResponse> {
-    let Some(peer) = peer else {
-        return append_local_refusal(
-            &ledger,
-            None,
-            401,
-            "not authorized",
-            "peer_credentials_unavailable",
-        )
-        .await;
-    };
-    if peer.uid != expected_uid {
-        return append_local_refusal(
-            &ledger,
-            Some(peer.uid),
-            403,
-            "not authorized",
-            "peer_uid_mismatch",
-        )
-        .await;
-    }
-    if body.len() > mct_iroh::MCT_CALL_FRAME_READ_BUDGET_BYTES {
-        return append_local_refusal(
-            &ledger,
-            Some(peer.uid),
-            413,
-            "call frame too large",
-            "frame_too_large",
-        )
-        .await;
-    }
     let identity = match MctDaemonConfigStore::new(paths.config_path()).load() {
         Ok(config) => match config.local_identity {
             Some(identity) => identity,
@@ -412,24 +426,33 @@ pub(crate) fn resident_local_call_handler(
     max_in_flight: usize,
 ) -> MctUdsControlCallHandler {
     let capacity = Arc::new(tokio::sync::Semaphore::new(max_in_flight));
-    MctUdsControlCallHandler::new(move |peer, body| {
-        let paths = paths.clone();
-        let ledger = ledger.clone();
-        let capacity = Arc::clone(&capacity);
-        async move {
-            let Ok(_permit) = capacity.try_acquire_owned() else {
-                return append_local_refusal(
-                    &ledger,
-                    peer.map(|credentials| credentials.uid),
-                    503,
-                    "resident call capacity unavailable; retry later",
-                    "capacity_unavailable",
-                )
-                .await;
-            };
-            execute_local_submission(paths, ledger, expected_uid, peer, body).await
-        }
-    })
+    let preflight_ledger = ledger.clone();
+    MctUdsControlCallHandler::new(
+        move |peer, declared_body_len| {
+            let ledger = preflight_ledger.clone();
+            async move {
+                preflight_local_submission(&ledger, expected_uid, peer, declared_body_len).await
+            }
+        },
+        move |peer, body| {
+            let paths = paths.clone();
+            let ledger = ledger.clone();
+            let capacity = Arc::clone(&capacity);
+            async move {
+                let Ok(_permit) = capacity.try_acquire_owned() else {
+                    return append_local_refusal(
+                        &ledger,
+                        Some(peer.uid),
+                        503,
+                        "resident call capacity unavailable; retry later",
+                        "capacity_unavailable",
+                    )
+                    .await;
+                };
+                execute_local_submission(paths, ledger, peer, body).await
+            }
+        },
+    )
 }
 
 pub(crate) fn resident_local_call_endpoint_observation(expected_uid: u32) -> MctObservation {
@@ -520,21 +543,23 @@ mod tests {
     #[tokio::test]
     async fn resident_call_uds_authenticates_peer_before_submission() {
         let dir = tempfile::tempdir().unwrap();
-        let (paths, _identity_path, ledger_path) = local_paths(&dir);
+        let (_paths, _identity_path, ledger_path) = local_paths(&dir);
         let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
-        let response = execute_local_submission(
-            paths,
-            ledger.clone(),
+        let response = match preflight_local_submission(
+            &ledger,
             501,
             Some(MctUdsPeerCredentials {
                 uid: 502,
                 gid: 20,
                 pid: Some(42),
             }),
-            b"not even json".to_vec(),
+            b"not even json".len(),
         )
         .await
-        .expect("durable authentication denial returns a response");
+        {
+            MctUdsControlCallPreflight::Refused(Some(response)) => response,
+            other => panic!("expected durable authentication denial, got {other:?}"),
+        };
         assert_eq!(response.status_code, 403);
         assert!(response.body.contains("not authorized"));
         assert!(!response.body.contains("malformed"));
@@ -546,6 +571,102 @@ mod tests {
         assert!(!text.contains("not even json"));
     }
 
+    async fn headers_only_call_response(
+        socket_path: &Path,
+        content_length: usize,
+    ) -> Option<String> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut client = tokio::net::UnixStream::connect(socket_path).await.unwrap();
+        client
+            .write_all(
+                format!(
+                    "POST /calls HTTP/1.1\r\nHost: local\r\nContent-Length: {content_length}\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut response = String::new();
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            client.read_to_string(&mut response),
+        )
+        .await
+        .ok()?
+        .unwrap();
+        Some(response)
+    }
+
+    #[tokio::test]
+    async fn resident_call_uds_dispatch_authenticates_and_bounds_before_body_read() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (paths, _identity_path, ledger_path) = local_paths(&dir);
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+
+        let mismatched_socket = dir.path().join("mismatched.sock");
+        let mismatched_listener = tokio::net::UnixListener::bind(&mismatched_socket).unwrap();
+        let actual_uid = std::fs::metadata(&mismatched_socket).unwrap().uid();
+        let mismatched_handler = resident_local_call_handler(
+            paths.clone(),
+            ledger.clone(),
+            actual_uid.wrapping_add(1),
+            1,
+        );
+        let mismatched_server = tokio::spawn(async move {
+            mct_daemon::serve_uds_control_once_with_handlers(
+                &mismatched_listener,
+                Err(MctControlPlaneSnapshotError::runtime_state_unavailable()),
+                None,
+                None,
+                Some(&mismatched_handler),
+            )
+            .await
+            .unwrap();
+        });
+        let mismatched_response = headers_only_call_response(&mismatched_socket, 32)
+            .await
+            .expect("UID denial must precede body consumption");
+        assert!(
+            mismatched_response.starts_with("HTTP/1.1 403"),
+            "{mismatched_response}"
+        );
+        mismatched_server.await.unwrap();
+
+        let oversized_socket = dir.path().join("oversized.sock");
+        let oversized_listener = tokio::net::UnixListener::bind(&oversized_socket).unwrap();
+        let oversized_handler = resident_local_call_handler(paths, ledger.clone(), actual_uid, 1);
+        let oversized_server = tokio::spawn(async move {
+            mct_daemon::serve_uds_control_once_with_handlers(
+                &oversized_listener,
+                Err(MctControlPlaneSnapshotError::runtime_state_unavailable()),
+                None,
+                None,
+                Some(&oversized_handler),
+            )
+            .await
+            .unwrap();
+        });
+        let oversized_response = headers_only_call_response(
+            &oversized_socket,
+            mct_iroh::MCT_CALL_FRAME_READ_BUDGET_BYTES + 1,
+        )
+        .await
+        .expect("declared call frame refusal must precede body consumption");
+        assert!(
+            oversized_response.starts_with("HTTP/1.1 413"),
+            "{oversized_response}"
+        );
+        oversized_server.await.unwrap();
+        ledger.close().await;
+
+        let text = std::fs::read_to_string(ledger_path).unwrap();
+        assert!(text.contains("peer_uid_mismatch"));
+        assert!(text.contains("frame_too_large"));
+    }
+
     #[tokio::test]
     async fn resident_call_uds_rejects_bad_payload_and_keeps_ledger_byte_free() {
         let dir = tempfile::tempdir().unwrap();
@@ -555,12 +676,11 @@ mod tests {
         let response = execute_local_submission(
             paths,
             ledger.clone(),
-            501,
-            Some(MctUdsPeerCredentials {
+            MctUdsPeerCredentials {
                 uid: 501,
                 gid: 20,
                 pid: Some(42),
-            }),
+            },
             submission_body(payload, &"0".repeat(64), "call-local-bad-payload"),
         )
         .await
@@ -583,23 +703,22 @@ mod tests {
         let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
         let payload = b"{}";
         let digest = blake3::hash(payload).to_hex().to_string();
-        let peer = Some(MctUdsPeerCredentials {
+        let peer = MctUdsPeerCredentials {
             uid: 501,
             gid: 20,
             pid: Some(42),
-        });
+        };
         let body = submission_body_with_key(
             payload,
             &digest,
             "call-local-idempotent",
             "shared-os-user-key",
         );
-        let first =
-            execute_local_submission(paths.clone(), ledger.clone(), 501, peer, body.clone())
-                .await
-                .unwrap();
+        let first = execute_local_submission(paths.clone(), ledger.clone(), peer, body.clone())
+            .await
+            .unwrap();
         assert_eq!(first.status_code, 200);
-        let replay = execute_local_submission(paths.clone(), ledger.clone(), 501, peer, body)
+        let replay = execute_local_submission(paths.clone(), ledger.clone(), peer, body)
             .await
             .unwrap();
         assert_eq!(replay.status_code, 200);
@@ -608,7 +727,6 @@ mod tests {
         let mismatch = execute_local_submission(
             paths,
             ledger.clone(),
-            501,
             peer,
             submission_body_with_key(
                 payload,
@@ -637,12 +755,11 @@ mod tests {
         let response = execute_local_submission(
             paths,
             ledger.clone(),
-            501,
-            Some(MctUdsPeerCredentials {
+            MctUdsPeerCredentials {
                 uid: 501,
                 gid: 20,
                 pid: Some(42),
-            }),
+            },
             submission_body(payload, &digest, "call-local-observed-response"),
         )
         .await
@@ -657,12 +774,11 @@ mod tests {
         let suppressed = execute_local_submission(
             paths_for_failed_writer(&dir),
             failed,
-            501,
-            Some(MctUdsPeerCredentials {
+            MctUdsPeerCredentials {
                 uid: 501,
                 gid: 20,
                 pid: Some(43),
-            }),
+            },
             submission_body(payload, &digest, "call-local-unobserved-response"),
         )
         .await;
