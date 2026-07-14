@@ -865,6 +865,51 @@ contract MctCallAtomicity {
         -- Routing can evaluate classification and movement cost from metadata without requiring business payload deserialization.
 }
 
+-- Decision: 2026-07-14 W1 disposition of REPORT-2 B6: a local application adapter
+-- authenticates its local principal before accepting caller-controlled call facts. Mother derives
+-- the canonical caller from that principal and current resident identity; client-authored caller,
+-- origin, or peer claims confer no authority.
+-- Decision: 2026-07-14 W1 disposition of REPORT-2 B7: a local refusal, admission,
+-- idempotency replay/refusal, or terminal result is acknowledged only after its required fact is
+-- durable. Failure to append suppresses the acknowledgement and every not-yet-performed protected
+-- effect rather than creating an unobserved response.
+-- Decision: 2026-07-14 W1 disposition of REPORT-2 B8: a local application origin value records
+-- truthful ingress lineage. It is not a claim about the application's implementation language and
+-- remains governed by `MctCallAtomicity.OriginIsForObservationNotPermission`.
+-- Decision: 2026-07-14 W1 disposition of REPORT-2 B9: local idempotency is scoped to the
+-- authenticated principal represented by the canonical caller. Applications sharing that
+-- principal share its keyspace and must avoid key collisions; no per-application isolation is
+-- inferred without separately authenticated application identity.
+-- Decision: 2026-07-14 W1 disposition of REPORT-2 B10: ordinary calls are bounded application
+-- work, not protected administrative mutations. Sharing a control transport cannot place calls in
+-- the serialized mutation critical section, weaken `MctAuthorityMutationOwnership`, or prevent
+-- independent control reads while a call is in flight.
+
+contract MctLocalApplicationIngress {
+    @invariant AuthenticatedLocalPrincipalDefinesCaller
+        -- Local caller identity is derived from the authenticated principal and current resident
+        -- identity before caller-controlled call facts are accepted; submitted identity,
+        -- origin, or peer claims cannot grant or select authority.
+
+    @invariant LocalAcknowledgementRequiresDurableFacts
+        -- Local refusal, admission, replay/refusal, and terminal-result acknowledgements follow
+        -- their required durable observations; append failure produces neither an unobserved
+        -- acknowledgement nor a protected effect.
+
+    @invariant AdapterOriginNamesIngressLineage
+        -- Local adapter origin truthfully identifies ingress lineage for observation and dispatch,
+        -- not caller implementation language, identity, or permission.
+
+    @invariant SharedPrincipalSharesIdempotencyScope
+        -- Applications authenticated as one local principal share one caller-scoped idempotency
+        -- namespace; separate application isolation requires separate authenticated identity.
+
+    @invariant CallsRemainOutsideMutationSequencer
+        -- Normal calls remain independently bounded outside the protected administrative mutation
+        -- sequencer, while mutation serialization and concurrent control-read availability remain
+        -- intact.
+}
+
 -- Decision: `mct/call/0` is the remote WIT-shaped call protocol. It may run only after an admitted `mct/hello/0` decision that accepted `mct/call/0` for the peer binding and Vision scope.
 -- Decision: `mct/call/0` is a transport envelope around the semantic `MctCall`; it does not create a second call model. The receiving Mother constructs or rejects one immutable `MctCall` before authority routing.
 -- Decision: Remote calls are WIT-shaped: namespace, interface, function. Iroh stream details, relay/direct path facts, and endpoint ids remain adapter evidence and authority context, not operation identity.
