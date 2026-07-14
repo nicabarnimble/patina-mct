@@ -1474,12 +1474,15 @@ fn resident_mutation_handler(
     state_path: Option<PathBuf>,
     ledger: ResidentLedgerWriter,
 ) -> mct_daemon::MctUdsControlMutationHandler {
+    let mutation_guard = Arc::new(tokio::sync::Mutex::new(()));
     mct_daemon::MctUdsControlMutationHandler::new(move |path, body| {
         let configured_path = configured_path.clone();
         let children_dir = children_dir.clone();
         let state_path = state_path.clone();
         let ledger = ledger.clone();
+        let mutation_guard = Arc::clone(&mutation_guard);
         async move {
+            let _mutation_guard = mutation_guard.lock().await;
             if path == "/blobs" {
                 match state_path {
                     Some(state_path) => {
@@ -1815,6 +1818,8 @@ pub(super) async fn run_control_serve_uds_with_state(
     }
     let _ = std::fs::remove_file(&socket_path);
     let listener = UnixListener::bind(&socket_path)?;
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
     println!(
         "mct daemon serving control uds on {}",
         socket_path.display()
@@ -1831,11 +1836,10 @@ pub(super) async fn run_control_serve_uds_with_state(
 
 #[cfg(unix)]
 pub(super) async fn run_control_serve_uds_with_state_until(
-    state_path: PathBuf,
+    paths: ResidentRuntimePaths,
     socket_path: PathBuf,
-    config_path: PathBuf,
-    children_dir: PathBuf,
     ledger: ResidentLedgerWriter,
+    max_in_flight_calls: usize,
     mut shutdown: broadcast::Receiver<()>,
     status_source: Option<Arc<ResidentStatusSource>>,
 ) -> Result<()> {
@@ -1844,23 +1848,68 @@ pub(super) async fn run_control_serve_uds_with_state_until(
     }
     let _ = std::fs::remove_file(&socket_path);
     let listener = UnixListener::bind(&socket_path)?;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
+    let expected_uid = std::fs::metadata(&socket_path)?.uid();
+    ledger
+        .append(vec![resident_local_call_endpoint_observation(expected_uid)])
+        .await
+        .context("record authenticated local call endpoint readiness")?;
     println!(
         "mct daemon serving control uds on {}",
         socket_path.display()
     );
-    let snapshot_source = ControlSnapshotSource::open_with_status(&state_path, status_source);
-    let mutation_handler =
-        resident_observed_mutation_handler(config_path, children_dir, state_path.clone(), ledger);
+    let snapshot_source =
+        ControlSnapshotSource::open_with_status(paths.state_path(), status_source);
+    let mutation_handler = resident_observed_mutation_handler(
+        paths.config_path().to_path_buf(),
+        paths.children_dir().to_path_buf(),
+        paths.state_path().to_path_buf(),
+        ledger.clone(),
+    );
+    let call_handler =
+        resident_local_call_handler(paths, ledger, expected_uid, max_in_flight_calls);
+    let mut connections = tokio::task::JoinSet::new();
     loop {
         tokio::select! {
             _ = shutdown.recv() => break,
-            result = mct_daemon::serve_uds_control_once_with_snapshot_result_blob_store_and_mutations(
-                &listener,
-                control_snapshot(&snapshot_source).await,
-                Some(&state_path),
-                Some(&mutation_handler),
-            ) => result?,
+            accepted = listener.accept() => {
+                let (stream, _) = accepted.context("accept uds control")?;
+                let snapshot_source = snapshot_source.clone();
+                let mutation_handler = mutation_handler.clone();
+                let call_handler = call_handler.clone();
+                connections.spawn(async move {
+                    mct_daemon::serve_uds_control_stream_with_handlers(
+                        stream,
+                        control_snapshot(&snapshot_source).await,
+                        Some(&mutation_handler),
+                        Some(&call_handler),
+                    )
+                    .await
+                });
+            }
+            completed = connections.join_next(), if !connections.is_empty() => {
+                match completed {
+                    Some(Ok(Ok(()))) => {}
+                    Some(Ok(Err(error))) => eprintln!("resident UDS request failed: {error}"),
+                    Some(Err(error)) => eprintln!("resident UDS request task failed: {error}"),
+                    None => {}
+                }
+            }
         }
+    }
+    let drain = async {
+        while let Some(completed) = connections.join_next().await {
+            if let Err(error) = completed {
+                eprintln!("resident UDS request task failed during shutdown: {error}");
+            }
+        }
+    };
+    if tokio::time::timeout(Duration::from_secs(2), drain)
+        .await
+        .is_err()
+    {
+        connections.abort_all();
     }
     let _ = std::fs::remove_file(&socket_path);
     Ok(())
@@ -1881,11 +1930,10 @@ pub(super) async fn run_control_serve_uds_with_state(
 
 #[cfg(not(unix))]
 pub(super) async fn run_control_serve_uds_with_state_until(
-    _state_path: PathBuf,
+    _paths: ResidentRuntimePaths,
     _socket_path: PathBuf,
-    _config_path: PathBuf,
-    _children_dir: PathBuf,
     _ledger: ResidentLedgerWriter,
+    _max_in_flight_calls: usize,
     _shutdown: broadcast::Receiver<()>,
     _status_source: Option<Arc<ResidentStatusSource>>,
 ) -> Result<()> {

@@ -21,13 +21,13 @@ impl ResidentRuntimePaths {
         }
     }
 
-    pub(super) fn config_path(&self) -> &Path {
+    pub(crate) fn config_path(&self) -> &Path {
         &self.config_path
     }
-    pub(super) fn children_dir(&self) -> &Path {
+    pub(crate) fn children_dir(&self) -> &Path {
         &self.children_dir
     }
-    pub(super) fn state_path(&self) -> &Path {
+    pub(crate) fn state_path(&self) -> &Path {
         &self.state_path
     }
 }
