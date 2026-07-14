@@ -24,6 +24,13 @@ use publication::{
 mod idempotency;
 pub(super) use idempotency::execute_idempotent_call;
 
+#[cfg(unix)]
+mod local_ingress;
+#[cfg(unix)]
+pub(crate) use local_ingress::{
+    resident_local_call_endpoint_observation, resident_local_call_handler,
+};
+
 mod candidates;
 use candidates::*;
 

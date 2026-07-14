@@ -63,10 +63,12 @@ pub use control::{
 };
 #[cfg(unix)]
 pub use control::{
-    MctUdsControlMutationHandler, serve_uds_control_once, serve_uds_control_once_with_auth,
+    MctUdsControlCallHandler, MctUdsControlMutationHandler, MctUdsPeerCredentials,
+    serve_uds_control_once, serve_uds_control_once_with_auth, serve_uds_control_once_with_handlers,
     serve_uds_control_once_with_snapshot_result,
     serve_uds_control_once_with_snapshot_result_and_blob_store,
     serve_uds_control_once_with_snapshot_result_blob_store_and_mutations,
+    serve_uds_control_stream_with_handlers,
 };
 pub use cycle::{
     MctChildTaskCycleReport, MctDrainedEvent, MctTaskCycleChild, run_child_task_cycle,
