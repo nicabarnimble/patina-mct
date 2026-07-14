@@ -9,11 +9,11 @@ sessions:
   work: []
 related:
   - layer/surface/build/feat/mct-typed-wit-runtime-parity/DESIGN.md
-  - /Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/child/internal/child.rs
-  - /Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/child/internal/typed_conversion.rs
-  - /Users/nicabar/Projects/Sandbox/AI/RUST/patina/wit/child/child.wit
-  - /Users/nicabar/Projects/Patina/patina-child-slate/child.toml
-  - /Users/nicabar/Projects/Patina/patina-child-slate/wit-contract/slate.wit
+  - https://github.com/NicabarNimble/patina/blob/d8f90270a53047b99d12004f834b62dbc629570d/src/child/internal/child.rs
+  - https://github.com/NicabarNimble/patina/blob/d8f90270a53047b99d12004f834b62dbc629570d/src/child/internal/typed_conversion.rs
+  - https://github.com/NicabarNimble/patina/blob/d8f90270a53047b99d12004f834b62dbc629570d/wit/child/child.wit
+  - https://github.com/NicabarNimble/patina-child-slate/blob/e77763d808d552ecf36566089f632ccfbb1ee44b/child.toml
+  - https://github.com/NicabarNimble/patina-child-slate/blob/e77763d808d552ecf36566089f632ccfbb1ee44b/wit-contract/slate.wit
 beliefs:
   - mother-kernel-decides-adapters-perform
   - greenfield-products-reference-legacy
@@ -54,11 +54,11 @@ exit_criteria:
 
 # feat: Restore typed WIT component runtime parity in MCT
 
-> MCT must regain the original Mother ability to run WIT-defined WASM component children like `slate-manager`, using MCT authority records and adapter observations instead of Mother's coupled runtime internals.
+> `mctMother` must regain the `patinaMother` ability to run WIT-defined WASM component applications like Slate, using MCT authority records and adapter observations instead of `patinaMother`'s coupled runtime internals.
 
 ## Problem
 
-WASM/WIT is critical to MCT. Original Patina Mother had a real Wasmtime component runtime for WIT children: component export discovery, typed operation resolution, JSON-to-WIT lowering, WIT-result lifting, WASI host imports, and child manifest contract validation.
+WASM/WIT is critical to MCT. `patinaMother` had a real Wasmtime component runtime for `patinaChild` components: component export discovery, typed operation resolution, JSON-to-WIT lowering, WIT-result lifting, WASI host imports, and child manifest contract validation.
 
 New MCT has the authority spine and a minimal Wasmtime component proof, but it currently calls only narrow test exports and does not yet run a full WIT child like `slate-manager`.
 
@@ -84,7 +84,7 @@ Complete. `patina spec check mct-typed-wit-runtime-parity --json` reports 7/7 ex
 
 ## Non-Goals
 
-- No copy-paste resurrection of Mother runtime containers.
+- No copy-paste resurrection of `patinaMother` runtime containers.
 - No Belief/scry/assay/oxidize/scrape surfaces in MCT core.
 - No raw filesystem, HTTP, Iroh, or secret handles given to children.
 - No fallback from strict WIT invocation to legacy `handle(action, payload)` unless a separate compatibility spec explicitly requires it.
@@ -117,7 +117,7 @@ and execute only if the child is approved, assigned, ready, and explicitly allow
 
 ## Solution
 
-Use the original Mother implementation as reference material, especially:
+Use the `patinaMother` implementation as reference material, especially:
 
 - `src/child/internal/child.rs`
 - `src/child/internal/typed_conversion.rs`

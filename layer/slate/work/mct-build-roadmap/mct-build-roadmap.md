@@ -11,7 +11,7 @@ The build is split into small, reviewable Slate lanes that map to the user's goa
 
 - MCT first; SDK and Belief later.
 - Greenfield build; integrated Patina is reference material only.
-- Clean Mother/Child/Toy infrastructure, not a copy of current Mother coupling.
+- Clean Mother/Child/Toy infrastructure, not a copy of `patinaMother` coupling.
 - Real Iroh v0 substrate, not a placeholder.
 - Stable child call envelope before runtime adapters multiply.
 - Explicit toy grants and authority observations.
@@ -40,11 +40,11 @@ Design influences:
 
 - **Jon Gjengset-style Rust inside**: honest signatures, domain types at boundaries, private internals, explicit state machines, typed fail-closed outcomes, concrete implementations before speculative traits.
 - **Iroh-style composable protocols outside**: endpoint lifecycle owned by the application, ALPN as the protocol seam, explicit async connection/stream handling, and application authority above transport identity.
-- **Current Patina Mother as evidence, not ontology**: emulate Mother's role as local authority over children, toys, calls, and observations without copying its coupled runtime shape.
+- **`patinaMother` as operational evidence, not inherited ontology**: translate accepted resident responsibilities into `mctMother` authority over `mctChild` applications, `mctToy` capabilities, calls, and observations without copying the coupled runtime shape.
 
 Allium anchor: `MctRuntimeShape`.
 
-## Current Mother daemon baseline
+## `patinaMother` daemon baseline
 
 Observed current runtime:
 
@@ -60,22 +60,22 @@ Control plane ready: true
 Project child manifest: missing .patina/manifest.toml
 ```
 
-Integrated Mother shape used as reference:
+Integrated `patinaMother` shape used as reference:
 
-| Current Mother area | Reference path | Clean MCT Slate lane |
+| `patinaMother` area | Reference path | Clean MCT Slate lane |
 |---|---|---|
-| CLI entry and daemon commands | `/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/mod.rs` | `mct-cli-config-packaging`, `mct-daemon-control-plane` |
-| Broad daemon state | `/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/mother/daemon.rs` | `mct-daemon-control-plane`, `mct-kernel-crate`, `mct-storage-core` |
-| UDS/TCP HTTP transport | `/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/http_daemon.rs` | `mct-daemon-control-plane` |
-| Broad `ApiRuntime` | `/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/http_api.rs` | split across kernel, daemon, inspector, bridge, launcher lanes |
-| Child trait/calls | `/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/runtime.rs` | `mct-call-envelope`, `mct-child-registry-lifecycle` |
-| Child registry and typed-call history | `/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/registry.rs` | `mct-child-registry-lifecycle`, `mct-observation-log`, `mct-inspector-observability` |
-| Concrete SQLite store | `/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/state/mod.rs` | `mct-storage-core` |
-| Child package registry | `/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/child_registry/` | `mct-child-registry-lifecycle` |
-| Secrets authority | `/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/secrets_authority_backend/` | `mct-secrets-authority` |
-| Pando | `/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/pando.rs` | `mct-pando-manifest` |
-| View buffers / display | `/Users/nicabar/Projects/Sandbox/AI/RUST/patina/mother/src/view_buffer/` | `mct-inspector-observability` later, not kernel |
-| Launcher/control | `/Users/nicabar/Projects/Sandbox/AI/RUST/patina/src/commands/ai/` | `mct-interface-launcher-control` |
+| CLI entry and daemon commands | [`src/commands/mother/mod.rs`](https://github.com/NicabarNimble/patina/blob/d8f90270a53047b99d12004f834b62dbc629570d/src/commands/mother/mod.rs) | `mct-cli-config-packaging`, `mct-daemon-control-plane` |
+| Broad daemon state | [`src/commands/mother/daemon.rs`](https://github.com/NicabarNimble/patina/blob/d8f90270a53047b99d12004f834b62dbc629570d/src/commands/mother/daemon.rs) | `mct-daemon-control-plane`, `mct-kernel-crate`, `mct-storage-core` |
+| UDS/TCP HTTP transport | [`mother/src/http_daemon.rs`](https://github.com/NicabarNimble/patina/blob/d8f90270a53047b99d12004f834b62dbc629570d/mother/src/http_daemon.rs) | `mct-daemon-control-plane` |
+| Broad `ApiRuntime` | [`mother/src/http_api.rs`](https://github.com/NicabarNimble/patina/blob/d8f90270a53047b99d12004f834b62dbc629570d/mother/src/http_api.rs) | split across kernel, daemon, inspector, bridge, launcher lanes |
+| Child trait/calls | [`mother/src/runtime.rs`](https://github.com/NicabarNimble/patina/blob/d8f90270a53047b99d12004f834b62dbc629570d/mother/src/runtime.rs) | `mct-call-envelope`, `mct-child-registry-lifecycle` |
+| Child registry and typed-call history | [`mother/src/registry.rs`](https://github.com/NicabarNimble/patina/blob/d8f90270a53047b99d12004f834b62dbc629570d/mother/src/registry.rs) | `mct-child-registry-lifecycle`, `mct-observation-log`, `mct-inspector-observability` |
+| Concrete SQLite store | [`mother/src/state/mod.rs`](https://github.com/NicabarNimble/patina/blob/d8f90270a53047b99d12004f834b62dbc629570d/mother/src/state/mod.rs) | `mct-storage-core` |
+| Child package registry | [`mother/src/child_registry/`](https://github.com/NicabarNimble/patina/tree/d8f90270a53047b99d12004f834b62dbc629570d/mother/src/child_registry) | `mct-child-registry-lifecycle` |
+| Secrets authority | [`mother/src/secrets_authority_backend/`](https://github.com/NicabarNimble/patina/tree/d8f90270a53047b99d12004f834b62dbc629570d/mother/src/secrets_authority_backend) | `mct-secrets-authority` |
+| Pando | [`mother/src/pando.rs`](https://github.com/NicabarNimble/patina/blob/d8f90270a53047b99d12004f834b62dbc629570d/mother/src/pando.rs) | `mct-pando-manifest` |
+| View buffers / display | [`mother/src/view_buffer/`](https://github.com/NicabarNimble/patina/tree/d8f90270a53047b99d12004f834b62dbc629570d/mother/src/view_buffer) | `mct-inspector-observability` later, not kernel |
+| Launcher/control | [`src/commands/ai/`](https://github.com/NicabarNimble/patina/tree/d8f90270a53047b99d12004f834b62dbc629570d/src/commands/ai) | `mct-interface-launcher-control` |
 | Belief/scry/federation builtins | multiple integrated paths | deferred/bridged; not MCT kernel |
 | Iroh | no integrated daemon code path found | `mct-iroh-substrate` new first-class lane |
 

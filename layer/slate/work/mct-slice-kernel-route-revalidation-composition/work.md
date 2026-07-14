@@ -4,7 +4,7 @@
 Add an execution-time revalidation decision that links an initial `RouteDecision` to fresh child and toy authority evidence before adapter effects execute.
 
 ## Why
-Existing Mother has practical runtime guardrails. MCT should improve on that by making the final pre-effect authority check an explicit kernel fact rather than a daemon-side convention. Stale policy, mismatched selected route, revoked child authority, or revoked toy authority must produce a denial record, not a best-effort fallback.
+`patinaMother` has practical runtime guardrails. `mctMother` should translate that requirement by making the final pre-effect authority check an explicit kernel fact rather than a daemon-side convention. Stale policy, mismatched selected route, revoked child authority, or revoked toy authority must produce a denial record, not a best-effort fallback.
 
 ## Direction
 - Initial routing remains immutable.

@@ -2,6 +2,16 @@
 
 Add project-specific notes outside the Patina block.
 
+## Comparative Architecture Vocabulary
+
+When comparing this repository with the integrated Patina architecture, use
+`mctMother`/`mctChild`/`mctToy` and
+`patinaMother`/`patinaChild`/`patinaToy`. In MCT-only contexts, retain the
+canonical bare Mother/Child/Toy vocabulary. Applications keep their product
+names: Slate is Slate, and a future belief-centered Patina would be Patina
+operating as an `mctChild`. Follow the verb discipline and full convention in
+[`layer/core/migration-vocabulary.md`](layer/core/migration-vocabulary.md).
+
 <!-- PATINA:START -->
 ## Patina
 
