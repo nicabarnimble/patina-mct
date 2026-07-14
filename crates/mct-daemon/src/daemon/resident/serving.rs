@@ -601,6 +601,18 @@ listens = []
         .unwrap();
     }
 
+    fn decode_resident_uds_response(response: Vec<u8>) -> (u16, serde_json::Value) {
+        let response = String::from_utf8(response).unwrap();
+        let status = response
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .parse::<u16>()
+            .unwrap();
+        let body = response.split_once("\r\n\r\n").unwrap().1;
+        (status, serde_json::from_str(body).unwrap())
+    }
+
     async fn resident_uds_request(
         socket_path: &Path,
         request: Vec<u8>,
@@ -611,15 +623,17 @@ listens = []
         stream.write_all(&request).await.unwrap();
         let mut response = Vec::new();
         stream.read_to_end(&mut response).await.unwrap();
-        let response = String::from_utf8(response).unwrap();
-        let status = response
-            .split_whitespace()
-            .nth(1)
-            .unwrap()
-            .parse::<u16>()
-            .unwrap();
-        let body = response.split_once("\r\n\r\n").unwrap().1;
-        (status, serde_json::from_str(body).unwrap())
+        decode_resident_uds_response(response)
+    }
+
+    async fn wait_for_ledger_fact(ledger_path: &Path, fact: &str) {
+        for _ in 0..80 {
+            if std::fs::read_to_string(ledger_path).is_ok_and(|text| text.contains(fact)) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("ledger fact did not become durable: {fact}");
     }
 
     #[tokio::test]
@@ -643,13 +657,16 @@ listens = []
             .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
             .unwrap();
 
-        let paths =
-            ResidentRuntimePaths::new(config_path.clone(), children_dir, state_path.clone());
+        let paths = ResidentRuntimePaths::new(
+            config_path.clone(),
+            children_dir.clone(),
+            state_path.clone(),
+        );
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         let resident = tokio::spawn(run_test_resident_mother(
             paths,
-            identity_path,
+            identity_path.clone(),
             ledger_path.clone(),
             socket_path.clone(),
             async move {
@@ -729,9 +746,16 @@ listens = []
             body,
         ]
         .concat();
-        let (call_status, call_reply) = resident_uds_request(&socket_path, request).await;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let mut first_call = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+        first_call.write_all(&request).await.unwrap();
+        wait_for_ledger_fact(&ledger_path, "call_constructed").await;
+        let mut first_response = Vec::new();
+        first_call.read_to_end(&mut first_response).await.unwrap();
+        let (call_status, call_reply) = decode_resident_uds_response(first_response);
         assert_eq!(call_status, 200, "{call_reply:#}");
         assert_eq!(call_reply["outcome"], "completed");
+        let first_result_ref = call_reply["result_ref"].clone();
         let result_payload = BASE64_STANDARD
             .decode(call_reply["inline_result_payload_base64"].as_str().unwrap())
             .unwrap();
@@ -778,10 +802,30 @@ listens = []
         assert_eq!(cli_status.approved_child_count, 1);
         assert!(cli_status.last_observation_sequence > sequence_before);
 
+        let (replay_status, replay_reply) =
+            resident_uds_request(&socket_path, request.clone()).await;
+        assert_eq!(replay_status, 200, "{replay_reply:#}");
+        assert_eq!(replay_reply["outcome"], "completed");
+        assert_eq!(replay_reply["result_ref"], first_result_ref);
+        assert_eq!(
+            replay_reply["protocol_reason"],
+            "idempotency_replay_completed"
+        );
+        let replay_payload = BASE64_STANDARD
+            .decode(
+                replay_reply["inline_result_payload_base64"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(replay_payload, result_payload);
+
         let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
         assert!(ledger_text.contains("call-resident-uds"));
         assert!(ledger_text.contains("call_constructed"));
         assert!(ledger_text.contains("result_recorded"));
+        assert!(ledger_text.contains("idempotency_replay_completed"));
+        assert_eq!(ledger_text.matches("runtime_execution_started").count(), 1);
         assert!(!ledger_text.contains(&BASE64_STANDARD.encode(payload)));
         assert!(!ledger_text.contains(std::str::from_utf8(payload).unwrap()));
 
@@ -791,6 +835,88 @@ listens = []
             .unwrap()
             .unwrap()
             .unwrap();
+
+        let reopened_state = MctRuntimeStateStore::open(&state_path).unwrap();
+        let reopened_runs = reopened_state.list_runs(20).unwrap();
+        let reopened_run = reopened_runs
+            .iter()
+            .find(|run| run.call_id.as_str() == "call-resident-uds")
+            .expect("run survives resident closure");
+        assert_eq!(
+            reopened_run.state,
+            mct_daemon::MctRuntimeRunState::Completed
+        );
+        assert_eq!(
+            reopened_run.result.as_ref().unwrap().outcome,
+            ResultOutcome::Success
+        );
+        drop(reopened_state);
+        let reopened_entries =
+            JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
+                .unwrap()
+                .entries()
+                .unwrap();
+        assert!(reopened_entries.iter().any(|entry| {
+            entry.observation.call_id.as_ref().is_some_and(|call_id| {
+                call_id.as_str() == "call-resident-uds"
+                    && entry.observation.kind == ObservationKind::ResultRecorded
+            })
+        }));
+
+        let (restart_ready_tx, restart_ready_rx) = tokio::sync::oneshot::channel();
+        let (restart_shutdown_tx, restart_shutdown_rx) = tokio::sync::oneshot::channel();
+        let restarted = tokio::spawn(run_test_resident_mother(
+            ResidentRuntimePaths::new(config_path, children_dir, state_path),
+            identity_path,
+            ledger_path.clone(),
+            socket_path.clone(),
+            async move {
+                let _ = restart_shutdown_rx.await;
+            },
+            Some(restart_ready_tx),
+        ));
+        tokio::time::timeout(Duration::from_secs(10), restart_ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        for _ in 0..40 {
+            if socket_path.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let (restart_replay_status, restart_replay) =
+            resident_uds_request(&socket_path, request).await;
+        assert_eq!(restart_replay_status, 200, "{restart_replay:#}");
+        assert_eq!(
+            restart_replay["protocol_reason"],
+            "idempotency_replay_completed"
+        );
+        assert_eq!(restart_replay["result_ref"], first_result_ref);
+        assert_eq!(
+            BASE64_STANDARD
+                .decode(
+                    restart_replay["inline_result_payload_base64"]
+                        .as_str()
+                        .unwrap()
+                )
+                .unwrap(),
+            result_payload
+        );
+        let _ = restart_shutdown_tx.send(());
+        tokio::time::timeout(Duration::from_secs(10), restarted)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let final_ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
+        assert_eq!(
+            final_ledger_text
+                .matches("runtime_execution_started")
+                .count(),
+            1,
+            "replay before and after restart must not execute the child twice"
+        );
     }
 
     #[tokio::test]
