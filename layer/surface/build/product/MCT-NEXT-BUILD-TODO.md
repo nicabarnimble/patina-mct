@@ -1,19 +1,19 @@
 # MCT next build TODO
 
-Goal: build the next layer after v0 Mother runtime replacement. Keep MCT focused on runtime/orchestration; Patina keeps Belief/scry/assay/spec/session knowledge-product internals.
+Goal: build the next operational layer after the v0 `patinaMother` replacement boundary. MCT becomes the complete Mother/Child/Toy product; belief/scry/assay/spec/session meaning remains Patina application behavior rather than `mctMother` internals.
 
 ## Execution order
 
 1. [x] Multi-Mother first. Completed 2026-07-09 as single-hop route forwarding; multi-Vision and transitive routing remain ROADMAP item 6 follow-ons.
-2. [x] Before Multi-Mother implementation, audit existing Patina Mother routing and record preserve/replace decisions. See audit snapshot below.
-3. [ ] During/after Multi-Mother, design storage/network toy contracts from the Patina Mother capability audit.
+2. [x] Before Multi-Mother implementation, audit `patinaMother` routing and record translate/rebuild/replace decisions. See audit snapshot below.
+3. [ ] During/after Multi-Mother, design storage/network `mctToy` contracts from the `patinaToy` capability audit.
 4. [ ] JVM SDK after/alongside the chosen Multi-Mother ingress shape, so the SDK targets the real transport instead of only the temporary CLI bridge.
 5. [ ] Supervisor install/start/stop wrappers after runtime semantics are stable, unless local daily operation becomes painful sooner.
-6. [ ] Resume the paused `mct-release-hardening` and `mct-interface-launcher-control` epics as the final gate. "Replace Patina Mother" cannot be claimed while they are paused; they are deferred, not dropped.
+6. [ ] Resume the paused `mct-release-hardening` and `mct-interface-launcher-control` epics as the final gate. Replacement of `patinaMother` cannot be claimed while they are paused; they are deferred, not dropped.
 
 ## Now: Multi-Mother
 
-Multi-Mother means one MCT Mother can safely call another Mother.
+Multi-Mother means one `mctMother` can safely call another Mother in MCT.
 
 This unlocks:
 
@@ -26,13 +26,13 @@ This unlocks:
 
 The hard part is authority. A remote Mother is not trusted just because it connects.
 
-### Preserve/replace decisions from Patina Mother routing audit
+### Translate/rebuild/replace decisions from the `patinaMother` routing audit
 
-- [x] Preserve: UDS-first local control, explicit child call surfaces, health/status readiness, and named built-in bridges where they are useful.
-- [x] Preserve: source/broker fail-closed auth resolution and domain-scoped connection thinking.
-- [x] Replace: HTTP `/child/{child}/{action}` as the trust model for cross-Mother runtime calls.
-- [x] Replace: graph/federation knowledge routing as a substitute for runtime route authority.
-- [x] Replace: local native-job `patina:peer/peer` enqueue as the remote execution path.
+- [x] Translate and rebuild: UDS-first local control, explicit child call surfaces, health/status readiness, and named bridges where they are useful.
+- [x] Translate and rebuild: source/broker fail-closed authentication resolution and domain-scoped connection use.
+- [x] Replace: `patinaMother` HTTP `/child/{child}/{action}` as the trust model for cross-Mother runtime calls.
+- [x] Replace: `patinaMother` graph/federation knowledge routing as a substitute for runtime route authority.
+- [x] Replace: `patinaToy` local native-job `patina:peer/peer` enqueue as the remote execution path.
 - [x] Build: remote `CandidateRoute` generation from admitted signed peers.
   - Executable `RuntimeKind::RemotePeer` candidates now require fresh scoped publication plus complete bidirectional binding authority and are revalidated before forwarding.
 
@@ -68,7 +68,7 @@ Build order — each step depends on the one before it:
 
 ## Next: storage/network toy contracts
 
-Use the audit below to convert useful Patina Mother capability vocabulary into MCT ToyGrant-backed contracts.
+Use the audit below to translate useful `patinaToy` use cases into newly designed, ToyGrant-backed `mctToy` contracts. Parallel names do not imply equivalent authority or reusable adapter shapes.
 
 - [ ] Directory storage toy: read-only scoped directory.
 - [ ] Directory storage toy: read-write scoped directory or write-only output directory.
@@ -122,39 +122,39 @@ client.call("patina:slate/control@0.1.0.list-work", args);
 
 ## Alignment questions before/while building
 
-- [x] Compare how existing Patina Mother handles cross-project/cross-Mother routing today versus the MCT signed-binding/route-forwarding model.
-- [x] Audit how existing Patina Mother handles storage and network capability boundaries, then map that into MCT toys.
+- [x] Compare how `patinaMother` handles cross-project/cross-Mother routing versus the `mctMother` signed-binding/route-forwarding model.
+- [x] Audit how `patinaToy` handles storage and network capability boundaries, then translate those use cases into `mctToy` designs.
 - [x] Decide which storage toys are first: directory scope, blob store, artifact store, database/keyspace, or write-only output area.
 - [x] Decide which network toys are first: domain allowlist, method allowlist, size/time limits, secret-ref attachment, or observation policy.
 - [x] Define supervisor wrapper scope separately from runtime authority: macOS launchd first, Linux systemd after, or both.
 
 ## Audit snapshot — 2026-07-09
 
-### Existing Patina Mother routing
+### `patinaMother` routing
 
-- Current Patina Mother exposes a UDS-first/TCP-optional HTTP control plane and routes explicit child requests through `/child/{child}/{action}`.
+- `patinaMother` exposes a UDS-first/TCP-optional HTTP control plane and routes explicit `patinaChild` requests through `/child/{child}/{action}`.
 - Built-in child routes exist for `spec-manager`, `lake-manager`, `doctor`, and `secrets-authority`.
 - Spec dispatch can optionally execute through `slate-manager`, but this is a named child/backend bridge rather than a general authority-first route graph.
 - Broker source routing moves configured source facts into project/lake stores; it is not generic remote child execution.
 - Graph/federation are cross-project knowledge/query surfaces, not signed cross-Mother runtime forwarding.
 - The `patina:peer/peer` toy enqueues local native jobs; it is not yet a signed remote-Mother authority path.
 
-### MCT routing target
+### `mctMother` routing result
 
-- MCT already has route decision types for local/direct/relayed/remote candidates and signed Iroh hello/call admission.
-- Resident routing currently builds local child candidates only.
-- Multi-Mother should add remote peer route candidates, explicit publish/subscribe surfaces, and Iroh call forwarding with route-chain observations.
+- `mctMother` has route decision types for local/direct/relayed/remote candidates and signed Iroh hello/call admission.
+- Resident routing builds local candidates and eligible single-hop remote peer candidates from current bilateral authority, publication, and reachability evidence.
+- Forwarded arrivals remain terminal and cannot source another peer candidate.
 
-### Existing Patina Mother storage/network capability shape
+### `patinaToy` storage/network capability shape
 
-- Patina child manifests declare toys/capabilities for keyvalue, filesystem, sql, messaging/events, measure, git, query, http/connect, graph, and belief access.
+- `patinaChild` manifests declare `patinaToy` capabilities for keyvalue, filesystem, SQL, messaging/events, measure, Git, query, HTTP/connect, graph, and belief access.
 - Many host functions have call-time checks: keyvalue, sql, messaging, events subscribe, measure, task, and git.
 - Filesystem can preopen manifest-scoped paths; the daemon loader also preopens the current project read-write when the filesystem toy is enabled.
-- HTTP/connect has an allowed-domain and credential-injection model, but the WASI outgoing HTTP handler should be treated as legacy behavior to audit before copying because unmatched hosts appear to fall through without credential injection rather than becoming an MCT ToyGrant denial.
-- MCT should preserve the useful manifest vocabulary but implement storage/network as explicit toys with ToyGrant evaluation, bounded payloads, redacted observations, and no ambient raw filesystem/network.
+- `patinaToy` HTTP/connect uses domain matching for credential injection, but unmatched hosts—and requests without a host—fall through to default outgoing HTTP rather than deny. This is allow-by-default egress and must not be ported.
+- MCT should translate useful use cases into explicit `mctToy` contracts with ToyGrant evaluation, deny-unmatched scopes, bounded payloads, redacted observations, and no ambient raw filesystem/network.
 
 ### Supervisor scope reference
 
-- Existing Patina has `mother start/stop/restart/status/install/uninstall` with launchd on macOS, systemd --user on Linux, PID/socket readiness checks, and manual-start conflict guards.
-- MCT currently has `mct-daemon serve`, SIGINT/SIGTERM shutdown, control status, and an internal child process supervisor.
+- `patinaMother` has start/stop/restart/status/install/uninstall operations with launchd on macOS, systemd --user on Linux, PID/socket readiness checks, and manual-start conflict guards.
+- `mctMother` currently has `mct-daemon serve`, SIGINT/SIGTERM shutdown, control status, and an internal child process supervisor.
 - MCT still needs daemon service wrappers; keep these separate from child supervision and runtime authority.

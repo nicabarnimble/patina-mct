@@ -7,22 +7,22 @@ entrenchment: medium
 status: active
 endorsed: true
 extracted: 2026-07-09
-revised: 2026-07-09
+revised: 2026-07-14
 ---
 
 # mct-audits-patina-before-preserve-replace
 
-MCT should audit Patina for preserve/replace decisions before building replacement runtime features; it should not port Patina internals into MCT.
+MCT should audit the integrated Patina architecture for translate/rebuild/replace decisions before building replacement runtime features; it should not port legacy internals without explicit code-reuse justification.
 
 ## Statement
 
-MCT should audit Patina for preserve/replace decisions before building replacement runtime features. Existing Patina Mother behavior is prior art and evidence, but MCT must keep its runtime/orchestration boundary clean: preserve useful operator and domain patterns, replace legacy trust/coupling with explicit MCT authority, and leave Patina knowledge-product internals in Patina.
+MCT should audit `patinaMother`, `patinaChild`, and `patinaToy` behavior before building replacement runtime features. These are sources of operational requirements and prior art: translate useful behavior, rebuild accepted responsibilities under MCT law, replace legacy trust and coupling with explicit `mctMother` authority, and leave belief-domain meaning in Patina as a potential `mctChild` application.
 
 ## Evidence
 
-- [[session-20260709-091408]] records the user clarification that MCT will not absorb Patina Belief/scry/assay internals, and that interface launching should likely become an MCT-managed child/app rather than copied Mother internals.
-- `layer/surface/build/product/MCT-NEXT-BUILD-TODO.md` records the 2026-07-09 audit comparing existing Patina Mother routing, storage/network capability handling, and supervisor wrappers against the MCT direction.
-- `layer/surface/build/product/MCT-NEXT-BUILD-TODO.md` records preserve/replace decisions for Multi-Mother: preserve UDS-first local control and fail-closed auth ideas, but replace HTTP `/child/{child}/{action}`, graph/federation knowledge routing, and local native-job peer enqueue as cross-Mother runtime trust models.
+- [[session-20260709-091408]] records the user clarification that MCT will not absorb Patina Belief/scry/assay internals, and that interface launching should likely become an MCT-managed `mctChild` application rather than copied `patinaMother` internals.
+- `layer/surface/build/product/MCT-NEXT-BUILD-TODO.md` records the 2026-07-09 audit comparing `patinaMother` routing, `patinaToy` storage/network capability handling, and supervisor wrappers against the `mctMother` direction.
+- `layer/surface/build/product/MCT-NEXT-BUILD-TODO.md` records translate/rebuild/replace decisions: rebuild UDS-first local control and fail-closed authentication requirements, but replace `patinaMother` HTTP child calls and knowledge routing plus `patinaToy` native-job peer enqueue as runtime trust models.
 
 ## Supports
 
@@ -40,8 +40,9 @@ MCT should audit Patina for preserve/replace decisions before building replaceme
 
 ## Applied-In
 
-- `layer/surface/build/product/MCT-NEXT-BUILD-TODO.md` applies this belief to sequence Multi-Mother before JVM SDK hardening and to turn Patina Mother behavior into explicit preserve/replace decisions.
+- `layer/surface/build/product/MCT-NEXT-BUILD-TODO.md` applies this belief to turn `patinaMother` behavior into explicit translate/rebuild/replace decisions.
 
 ## Revision Log
 
+- 2026-07-14: Adopted comparative namespace vocabulary and migration verb discipline.
 - 2026-07-09: Created from the post-v0 MCT next-build alignment discussion.

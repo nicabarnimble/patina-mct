@@ -20,7 +20,7 @@ Iroh EndpointId is transport identity only; MCT authority requires an explicit o
 
 ## Evidence
 
-- [[session-20260529-070316-510393000]] records the discussion that Iroh can prove a peer controls an endpoint key, but cannot decide whether that key is an authorized MCT Mother, Vision member, child caller, toy user, or observation reader.
+- [[session-20260529-070316-510393000]] records the discussion that Iroh can prove a peer controls an endpoint key, but cannot decide whether that key is an authorized Mother, Vision member, child caller, toy user, or observation reader.
 - [[session-20260529-070316-510393000]] includes a user-provided DevTools FM Iroh interview transcript where endpoint keys are described as primitives for building authorization schemes rather than as the whole authorization scheme.
 - `layer/surface/iroh-substrate-evidence.md` documents Iroh endpoint hooks, relay access control, RCAN-style capability patterns, and the boundary between Iroh transport identity and MCT application authority.
 - `layer/allium/mct-product-map.allium` now defines `MctPeerBinding`, `MctPeerAdmissionDecision`, and `MctIrohPeerBindingAuthority` as the MCT authority layer above Iroh EndpointId.

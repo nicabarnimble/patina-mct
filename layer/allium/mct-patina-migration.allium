@@ -1,0 +1,110 @@
+-- allium: 3
+-- mct-patina-migration.allium
+
+-- Status: active companion law for comparative migration work between MCT and the
+-- integrated Patina architecture.
+-- Scope: Terms and claim semantics used while MCT evaluates, translates, rebuilds,
+-- replaces, and retires responsibilities demonstrated by the integrated architecture.
+-- Includes:
+--   - Comparative namespace terms for Mother/Child/Toy roles
+--   - Product-name versus runtime-role distinction
+--   - Migration verb semantics
+--   - Legacy capability asymmetry
+--   - Transitional lifetime of the comparative qualifiers
+-- Excludes:
+--   - Renaming Rust types, protocols, Allium entities, or ordinary MCT-only prose
+--   - Patina belief-domain behavior
+--   - Deciding which individual operational responsibilities MCT accepts
+-- Narrative guidance: `layer/core/migration-vocabulary.md`.
+
+------------------------------------------------------------
+-- Comparative vocabulary
+------------------------------------------------------------
+
+contract ComparativeArchitectureVocabulary {
+    @invariant BareRolesRemainCanonicalInsideMct
+        -- MCT-only specifications and implementation use the canonical Mother, Child, and Toy
+        -- ontology without redundant namespace qualification.
+
+    @invariant ComparativeRolesAreNamespaceQualified
+        -- Work that compares both architectures identifies MCT roles as `mctMother`, `mctChild`,
+        -- and `mctToy`, and integrated Patina roles as `patinaMother`, `patinaChild`, and
+        -- `patinaToy`, so no role claim depends on an ambiguous bare qualifier such as current,
+        -- existing, original, or legacy applied to an unqualified role.
+
+    @invariant QualifiersAreCommunicationNotCodeIdentity
+        -- Comparative camelCase qualifiers are transitional communication tokens and do not
+        -- require code, protocol, WIT, Allium entity, or canonical MCT prose renames.
+
+    @invariant ApplicationsKeepProductIdentity
+        -- Slate remains Slate and Patina remains Patina; operating as an `mctChild` describes an
+        -- application's governed runtime role rather than changing its product name.
+
+    @invariant PatinaChildNamesOnlyLegacyModel
+        -- In comparative work `patinaChild` identifies the integrated architecture's legacy Child
+        -- model and never names the future belief-centered Patina product.
+}
+
+------------------------------------------------------------
+-- Migration claim semantics
+------------------------------------------------------------
+
+contract MigrationVerbDiscipline {
+    @invariant TranslateCarriesMeaningNotShape
+        -- Translate carries a concept, use case, or requirement across while allowing both its
+        -- ontology and implementation shape to change.
+
+    @invariant RebuildSubmitsToMctLaw
+        -- Rebuild implements an accepted responsibility under MCT authority, lifecycle,
+        -- observation, and safety contracts rather than preserving legacy authority by default.
+
+    @invariant PortRequiresIntentionalCodeReuse
+        -- A claim to port means implementation code will be reused and therefore requires an
+        -- explicit justification that the selected source shape is safe and appropriate.
+
+    @invariant ReplaceRequiresOperationalTakeover
+        -- A replacement claim is valid only when `mctMother` takes over an operational
+        -- responsibility previously performed by `patinaMother`; design similarity alone is not
+        -- replacement.
+
+    @invariant RetireFollowsCompletedReplacement
+        -- A legacy responsibility or implementation is retired only after its accepted replacement
+        -- and required migration are complete, or after an explicit decision that it is unnecessary.
+}
+
+------------------------------------------------------------
+-- Capability asymmetry
+------------------------------------------------------------
+
+contract LegacyCapabilityTranslation {
+    @invariant ParallelToyLabelsDoNotMeanEquivalentAuthority
+        -- `patinaToy` and `mctToy` identify concepts from different systems and do not assert
+        -- equivalent authority, safety, or legitimacy.
+
+    @invariant ManifestNeedIsNeverMctAuthority
+        -- A manifest need observed in `patinaChild` prior art remains a request when translated to
+        -- MCT and cannot create `mctToy` authority.
+
+    @invariant MctToyRequiresExplicitGrant
+        -- An `mctToy` effect requires explicit, scoped, revocable ToyGrant authority under current
+        -- MCT policy regardless of what a legacy manifest or adapter allowed.
+
+    @invariant LegacyAmbientBehaviorIsNotPortableAuthority
+        -- Allow-by-default, ambient filesystem, unmatched network, credential injection, or other
+        -- `patinaToy` behavior cannot be justified in MCT by compatibility or parallel naming.
+}
+
+------------------------------------------------------------
+-- Transitional lifetime
+------------------------------------------------------------
+
+contract ComparativeVocabularyLifecycle {
+    @invariant HistoricalEvidenceRemainsHistorical
+        -- Dated sessions, event logs, and captured historical request records are not rewritten;
+        -- current comparative guidance and living reports interpret them through this law.
+
+    @invariant QualifiersRetireWithLegacyArchitecture
+        -- The namespace qualifiers remain active while the integrated architecture is a live
+        -- migration subject and retire after `patinaMother`, `patinaChild`, and `patinaToy` no
+        -- longer create comparative ambiguity.
+}

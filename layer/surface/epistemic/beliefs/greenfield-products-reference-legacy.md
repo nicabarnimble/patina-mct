@@ -7,21 +7,21 @@ entrenchment: medium
 status: active
 endorsed: true
 extracted: 2026-05-28
-revised: 2026-05-28
+revised: 2026-07-14
 ---
 
 # greenfield-products-reference-legacy
 
-Greenfield Patina product splits should use the integrated Patina repo as evidence and prior art, not as a source tree to move wholesale.
+Greenfield product work should treat `patinaMother`, `patinaChild`, and `patinaToy` as operational evidence and prior art, translating accepted responsibilities rather than moving the integrated source tree wholesale.
 
 ## Statement
 
-Greenfield Patina product splits should use the integrated Patina repo as evidence and prior art, not as a source tree to move wholesale.
+Greenfield product work should treat `patinaMother`, `patinaChild`, and `patinaToy` as operational evidence and prior art. Accepted responsibilities are translated or rebuilt under MCT law; intentional code reuse is a port and requires explicit justification.
 
 ## Evidence
 
-- `layer/surface/patina-mct.org` records the agreed answer to build `patina-mct` greenfield and treat `/Users/nicabar/Projects/Sandbox/AI/RUST/patina` as reference material.
-- [[mother-kernel-design]] applies that boundary to the Mother kernel design by using integrated repo paths as evidence while designing a new kernel shape.
+- `layer/surface/patina-mct.org` records the agreed answer to build `patina-mct` greenfield and treat the [published integrated Patina revision](https://github.com/NicabarNimble/patina/tree/d8f90270a53047b99d12004f834b62dbc629570d) as reference material.
+- [[mother-kernel-design]] applies that boundary by using integrated repo paths as evidence while designing the `mctMother` kernel shape.
 
 ## Supports
 
@@ -38,8 +38,9 @@ Greenfield Patina product splits should use the integrated Patina repo as eviden
 ## Applied-In
 
 - `layer/surface/patina-mct.org` uses this belief to separate feature mapping from source extraction.
-- `layer/slate/work/mother-kernel-design/mother-kernel-design.md` uses this belief to reject copying current `ServerState`, `ApiRuntime`, or WASM runtime internals wholesale.
+- `layer/slate/work/mother-kernel-design/mother-kernel-design.md` uses this belief to reject copying `patinaMother` `ServerState`/`ApiRuntime` and `patinaChild` WASM runtime internals wholesale.
 
 ## Revision Log
 
+- 2026-07-14: Adopted comparative namespace vocabulary and migration verb discipline.
 - 2026-05-28: Created — metrics computed by `patina scrape`
