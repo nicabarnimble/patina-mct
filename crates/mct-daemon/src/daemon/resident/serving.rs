@@ -73,6 +73,8 @@ struct ResidentMotherConfig {
 #[derive(Clone, Debug)]
 pub(crate) struct ResidentStatusSource {
     endpoint: Arc<Mutex<MotherIrohEndpointSnapshot>>,
+    node_id: MctNodeId,
+    vision_id: VisionId,
     accepted_connection_count: Arc<AtomicU64>,
     loaded_child_count: usize,
     approved_child_count: usize,
@@ -83,6 +85,7 @@ pub(crate) struct ResidentStatusSource {
 impl ResidentStatusSource {
     fn new(
         endpoint: Arc<Mutex<MotherIrohEndpointSnapshot>>,
+        identity: (MctNodeId, VisionId),
         accepted_connection_count: Arc<AtomicU64>,
         loaded_child_count: usize,
         approved_child_count: usize,
@@ -91,6 +94,8 @@ impl ResidentStatusSource {
     ) -> Self {
         Self {
             endpoint,
+            node_id: identity.0,
+            vision_id: identity.1,
             accepted_connection_count,
             loaded_child_count,
             approved_child_count,
@@ -108,6 +113,8 @@ impl ResidentStatusSource {
                     .clone(),
             ),
             Some(MctResidentStatus {
+                node_id: self.node_id.clone(),
+                vision_id: self.vision_id.clone(),
                 accepted_connection_count: self.accepted_connection_count.load(Ordering::SeqCst),
                 loaded_child_count: self.loaded_child_count,
                 approved_child_count: self.approved_child_count,
@@ -223,6 +230,7 @@ where
     let endpoint_status = Arc::new(Mutex::new(snapshot.clone()));
     let status_source = Arc::new(ResidentStatusSource::new(
         Arc::clone(&endpoint_status),
+        (identity.node_id.clone(), identity.vision_id.clone()),
         Arc::clone(&accepted_connection_count),
         loaded_child_count,
         approved_child_count,
@@ -757,6 +765,18 @@ listens = []
         })
         .await;
         assert_eq!(status.readiness, mct_daemon::MctDaemonReadiness::Ready);
+        let cli_socket_path = socket_path.clone();
+        let cli_status =
+            tokio::task::spawn_blocking(move || query_resident_status(&cli_socket_path))
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(cli_status.readiness, MctDaemonReadiness::Ready);
+        assert_eq!(cli_status.node_id.as_str(), "local-mct");
+        assert_eq!(cli_status.vision_id.as_str(), "vision-local");
+        assert_eq!(cli_status.loaded_child_count, 1);
+        assert_eq!(cli_status.approved_child_count, 1);
+        assert!(cli_status.last_observation_sequence > sequence_before);
 
         let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
         assert!(ledger_text.contains("call-resident-uds"));
@@ -1508,6 +1528,10 @@ listens = []
         }));
         let source = ResidentStatusSource::new(
             Arc::clone(&endpoint),
+            (
+                MctNodeId::new("node-status-test").unwrap(),
+                VisionId::new("vision-status-test").unwrap(),
+            ),
             Arc::new(AtomicU64::new(3)),
             2,
             1,
