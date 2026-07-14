@@ -1,7 +1,7 @@
 ---
 type: feat
 id: resident-call-ingress
-status: approved
+status: complete
 created: 2026-07-14
 target: resident-operational-loop-slice-1
 sessions:
@@ -25,39 +25,39 @@ beliefs:
 exit_criteria:
   - id: authenticated-uds-ingress
     text: The resident exposes POST /calls only on its owner-only UDS control endpoint, verifies the connecting process UID from Unix peer credentials before reading caller claims, and fails closed when credentials, resident identity, or the observation ledger are unavailable.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon --bin mct-daemon resident_call_uds_authenticates_peer_before_submission -- --nocapture
   - id: resident-call-pipeline
     text: An authenticated local submission is translated into one immutable MctCall with canonical resident caller facts and CallOrigin::JvmAdapter, then enters the existing payload, idempotency, route-authority, revalidation, execution, result, and observation pipeline without a parallel call model.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon --bin mct-daemon resident_call_uds_executes_approved_child_and_projects_control_state -- --nocapture
   - id: payload-law-reuse
     text: Local inline/blob payload declarations use the existing named frame and payload limits and exact BLAKE3 validation; request and result bytes never enter observations, status, run records, or error text.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon --bin mct-daemon resident_call_uds_rejects_bad_payload_and_keeps_ledger_byte_free -- --nocapture
   - id: caller-scoped-idempotency
     text: UDS authentication and payload integrity precede caller-scoped idempotency; matching completed retries replay the durable caller-safe result, mismatches and in-flight duplicates refuse, and no retry executes the child twice.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon --bin mct-daemon resident_call_uds_idempotency_is_authenticated_caller_scoped -- --nocapture
   - id: durable-submission-response
     text: Local admission, malformed rejection, authority denial, idempotency replay/refusal, and terminal result decisions are durably observed before a synchronous application response is written; safe responses expose no policy internals or topology.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon --bin mct-daemon resident_call_uds_observes_decision_before_response -- --nocapture
   - id: control-read-visibility
     text: After a successful submission, GET /runs exposes the call, authority decision reference, terminal result, and route projection, while GET /status exposes an advanced observation sequence; neither read exposes payload bytes.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon --bin mct-daemon resident_call_uds_executes_approved_child_and_projects_control_state -- --nocapture
   - id: real-cli-status
     text: mct-daemon status queries the resident UDS and reports actual readiness, resident identity, child instance counts, and last observation sequence; a missing or unusable socket reports not running/not ready and never prints the former static readiness claim.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon --bin mct-daemon status_ -- --nocapture
   - id: kernel-boundary
     text: mct-kernel gains no UDS, HTTP, Unix credential, control-plane, JVM SDK, storage, or Patina application semantics.
-    checked: false
+    checked: true
     verify: bash -lc '! rg -n "UnixStream|peer_cred|POST /calls|control.sock|java|kotlin|belief|scry|assay" crates/mct-kernel/src'
   - id: workspace-validation
     text: The phase passes the required workspace validation suite.
-    checked: false
+    checked: true
     verify: cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh
 ---
 
@@ -302,4 +302,36 @@ Close-out also captures the new integration tests with `--nocapture`, reconstruc
 
 ## Build Readiness
 
-Approved at operator gate D1 on 2026-07-14. D1.1–D1.8 plus amendments D1.9–D1.10 are the implementation contract.
+Complete. The operator approved D1.1–D1.8 on 2026-07-14, then amendments D1.9–D1.10 landed before the first failing implementation test.
+
+## Close-out
+
+Resident Operational Loop — Slice 1 completed on 2026-07-14.
+
+### Commit list
+
+- `234bae3 docs: specify resident call ingress` — approved D1 contract plus D1.9/D1.10 amendments.
+- `2210e55 feat(daemon): add authenticated resident call ingress` — owner-only UDS `POST /calls`, peer-UID authentication, canonical local caller projection, bounded concurrent dispatch outside the serialized admin mutation executor, local inline integrity verification, synchronous durable replies, and disk-backed integration proof.
+- `41635c4 fix(cli): report resident status from UDS` — real `/snapshot` status client with node/Vision/endpoint identity, child counts, readiness, and last observation sequence; missing residents fail honestly.
+
+### Failing-test-first record
+
+The first integration test was added before ingress implementation. Its initial harness run reached the socket before the control task bound it and failed with `No such file or directory`; adding an explicit resident-ready/socket-ready wait fixed the test harness. The next run reached the actual missing feature and received HTTP `400 {"error":"peer mutation rejected"}` from the old mutation fallback instead of the required HTTP 200 call reply. Implementation then made the same test green.
+
+A later bad-digest test exposed that the pre-existing local inline path relied on its caller to have verified bytes. The resident local adapter now computes observed size/BLAKE3 and invokes the same kernel integrity decision used by other edges before idempotency or routing.
+
+### Flake log
+
+No intermittent flakes were observed. The socket-ready failure above was deterministic test setup, and the old-route HTTP 400 plus intermediate assertion failures were deterministic red/green implementation evidence.
+
+### Validation
+
+Every implementation commit passed:
+
+```bash
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+./scripts/ci-tier0.sh
+```
+
+The close-out transcript was reconstructed from the committed range and rerun from the final tree.
