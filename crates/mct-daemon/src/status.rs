@@ -1,4 +1,5 @@
 use mct_iroh::{MotherIrohEndpointLifecycle, MotherIrohEndpointSnapshot};
+use mct_kernel::{MctNodeId, VisionId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,6 +29,8 @@ pub struct MctDaemonStatus {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MctResidentStatus {
+    pub node_id: MctNodeId,
+    pub vision_id: VisionId,
     pub accepted_connection_count: u64,
     pub loaded_child_count: usize,
     pub approved_child_count: usize,
