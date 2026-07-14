@@ -76,9 +76,8 @@ pub(crate) struct ResidentStatusSource {
     node_id: MctNodeId,
     vision_id: VisionId,
     accepted_connection_count: Arc<AtomicU64>,
-    loaded_child_count: usize,
-    approved_child_count: usize,
-    binding_count: usize,
+    config_path: PathBuf,
+    children_dir: PathBuf,
     ledger_path: PathBuf,
 }
 
@@ -87,9 +86,8 @@ impl ResidentStatusSource {
         endpoint: Arc<Mutex<MotherIrohEndpointSnapshot>>,
         identity: (MctNodeId, VisionId),
         accepted_connection_count: Arc<AtomicU64>,
-        loaded_child_count: usize,
-        approved_child_count: usize,
-        binding_count: usize,
+        config_path: PathBuf,
+        children_dir: PathBuf,
         ledger_path: PathBuf,
     ) -> Self {
         Self {
@@ -97,15 +95,29 @@ impl ResidentStatusSource {
             node_id: identity.0,
             vision_id: identity.1,
             accepted_connection_count,
-            loaded_child_count,
-            approved_child_count,
-            binding_count,
+            config_path,
+            children_dir,
             ledger_path,
         }
     }
 
     pub(crate) fn status(&self) -> MctDaemonStatus {
-        daemon_status_with_resident(
+        let loaded_child_count =
+            load_children_from_dir(MctChildLoadOptions::new(&self.children_dir)).loaded;
+        let current_config = MctDaemonConfigStore::new(&self.config_path).load();
+        let (approved_child_count, binding_count, projection_available) = match current_config {
+            Ok(config) => (
+                config
+                    .child_approvals
+                    .values()
+                    .filter(|approval| approval.approval_state == ChildApprovalState::Approved)
+                    .count(),
+                config.peers.len(),
+                true,
+            ),
+            Err(_) => (0, 0, false),
+        };
+        let mut status = daemon_status_with_resident(
             Some(
                 self.endpoint
                     .lock()
@@ -116,12 +128,18 @@ impl ResidentStatusSource {
                 node_id: self.node_id.clone(),
                 vision_id: self.vision_id.clone(),
                 accepted_connection_count: self.accepted_connection_count.load(Ordering::SeqCst),
-                loaded_child_count: self.loaded_child_count,
-                approved_child_count: self.approved_child_count,
-                binding_count: self.binding_count,
+                loaded_child_count,
+                approved_child_count,
+                binding_count,
                 ledger_sequence_tip: ledger_sequence_tip(&self.ledger_path),
             }),
-        )
+        );
+        if !projection_available {
+            status.health = MctDaemonHealth::Unhealthy;
+            status.readiness = MctDaemonReadiness::NotReady;
+            status.safe_message = "resident child projection unavailable".into();
+        }
+        status
     }
 }
 
@@ -220,11 +238,6 @@ where
         &identity,
         &load_report.children,
     );
-    let approved_child_count = resident_config
-        .child_approvals
-        .values()
-        .filter(|approval| approval.approval_state == ChildApprovalState::Approved)
-        .count();
     let binding_count = resident_config.peers.len();
     let accepted_connection_count = Arc::new(AtomicU64::new(0));
     let endpoint_status = Arc::new(Mutex::new(snapshot.clone()));
@@ -232,9 +245,8 @@ where
         Arc::clone(&endpoint_status),
         (identity.node_id.clone(), identity.vision_id.clone()),
         Arc::clone(&accepted_connection_count),
-        loaded_child_count,
-        approved_child_count,
-        binding_count,
+        config.config_path.clone(),
+        config.children_dir.clone(),
         config.ledger_path.clone(),
     ));
 
@@ -601,6 +613,18 @@ listens = []
         .unwrap();
     }
 
+    fn decode_resident_uds_response(response: Vec<u8>) -> (u16, serde_json::Value) {
+        let response = String::from_utf8(response).unwrap();
+        let status = response
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .parse::<u16>()
+            .unwrap();
+        let body = response.split_once("\r\n\r\n").unwrap().1;
+        (status, serde_json::from_str(body).unwrap())
+    }
+
     async fn resident_uds_request(
         socket_path: &Path,
         request: Vec<u8>,
@@ -611,15 +635,17 @@ listens = []
         stream.write_all(&request).await.unwrap();
         let mut response = Vec::new();
         stream.read_to_end(&mut response).await.unwrap();
-        let response = String::from_utf8(response).unwrap();
-        let status = response
-            .split_whitespace()
-            .nth(1)
-            .unwrap()
-            .parse::<u16>()
-            .unwrap();
-        let body = response.split_once("\r\n\r\n").unwrap().1;
-        (status, serde_json::from_str(body).unwrap())
+        decode_resident_uds_response(response)
+    }
+
+    async fn wait_for_ledger_fact(ledger_path: &Path, fact: &str) {
+        for _ in 0..80 {
+            if std::fs::read_to_string(ledger_path).is_ok_and(|text| text.contains(fact)) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("ledger fact did not become durable: {fact}");
     }
 
     #[tokio::test]
@@ -643,13 +669,16 @@ listens = []
             .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
             .unwrap();
 
-        let paths =
-            ResidentRuntimePaths::new(config_path.clone(), children_dir, state_path.clone());
+        let paths = ResidentRuntimePaths::new(
+            config_path.clone(),
+            children_dir.clone(),
+            state_path.clone(),
+        );
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         let resident = tokio::spawn(run_test_resident_mother(
             paths,
-            identity_path,
+            identity_path.clone(),
             ledger_path.clone(),
             socket_path.clone(),
             async move {
@@ -729,9 +758,16 @@ listens = []
             body,
         ]
         .concat();
-        let (call_status, call_reply) = resident_uds_request(&socket_path, request).await;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let mut first_call = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+        first_call.write_all(&request).await.unwrap();
+        wait_for_ledger_fact(&ledger_path, "call_constructed").await;
+        let mut first_response = Vec::new();
+        first_call.read_to_end(&mut first_response).await.unwrap();
+        let (call_status, call_reply) = decode_resident_uds_response(first_response);
         assert_eq!(call_status, 200, "{call_reply:#}");
         assert_eq!(call_reply["outcome"], "completed");
+        let first_result_ref = call_reply["result_ref"].clone();
         let result_payload = BASE64_STANDARD
             .decode(call_reply["inline_result_payload_base64"].as_str().unwrap())
             .unwrap();
@@ -778,12 +814,219 @@ listens = []
         assert_eq!(cli_status.approved_child_count, 1);
         assert!(cli_status.last_observation_sequence > sequence_before);
 
+        let (replay_status, replay_reply) =
+            resident_uds_request(&socket_path, request.clone()).await;
+        assert_eq!(replay_status, 200, "{replay_reply:#}");
+        assert_eq!(replay_reply["outcome"], "completed");
+        assert_eq!(replay_reply["result_ref"], first_result_ref);
+        assert_eq!(
+            replay_reply["protocol_reason"],
+            "idempotency_replay_completed"
+        );
+        let replay_payload = BASE64_STANDARD
+            .decode(
+                replay_reply["inline_result_payload_base64"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(replay_payload, result_payload);
+
         let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
         assert!(ledger_text.contains("call-resident-uds"));
         assert!(ledger_text.contains("call_constructed"));
         assert!(ledger_text.contains("result_recorded"));
+        assert!(ledger_text.contains("idempotency_replay_completed"));
+        assert_eq!(ledger_text.matches("runtime_execution_started").count(), 1);
         assert!(!ledger_text.contains(&BASE64_STANDARD.encode(payload)));
         assert!(!ledger_text.contains(std::str::from_utf8(payload).unwrap()));
+
+        let _ = shutdown_tx.send(());
+        tokio::time::timeout(Duration::from_secs(10), resident)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        let reopened_state = MctRuntimeStateStore::open(&state_path).unwrap();
+        let reopened_runs = reopened_state.list_runs(20).unwrap();
+        let reopened_run = reopened_runs
+            .iter()
+            .find(|run| run.call_id.as_str() == "call-resident-uds")
+            .expect("run survives resident closure");
+        assert_eq!(
+            reopened_run.state,
+            mct_daemon::MctRuntimeRunState::Completed
+        );
+        assert_eq!(
+            reopened_run.result.as_ref().unwrap().outcome,
+            ResultOutcome::Success
+        );
+        drop(reopened_state);
+        let reopened_entries =
+            JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
+                .unwrap()
+                .entries()
+                .unwrap();
+        assert!(reopened_entries.iter().any(|entry| {
+            entry.observation.call_id.as_ref().is_some_and(|call_id| {
+                call_id.as_str() == "call-resident-uds"
+                    && entry.observation.kind == ObservationKind::ResultRecorded
+            })
+        }));
+
+        let (restart_ready_tx, restart_ready_rx) = tokio::sync::oneshot::channel();
+        let (restart_shutdown_tx, restart_shutdown_rx) = tokio::sync::oneshot::channel();
+        let restarted = tokio::spawn(run_test_resident_mother(
+            ResidentRuntimePaths::new(config_path, children_dir, state_path),
+            identity_path,
+            ledger_path.clone(),
+            socket_path.clone(),
+            async move {
+                let _ = restart_shutdown_rx.await;
+            },
+            Some(restart_ready_tx),
+        ));
+        tokio::time::timeout(Duration::from_secs(10), restart_ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        for _ in 0..40 {
+            if socket_path.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let (restart_replay_status, restart_replay) =
+            resident_uds_request(&socket_path, request).await;
+        assert_eq!(restart_replay_status, 200, "{restart_replay:#}");
+        assert_eq!(
+            restart_replay["protocol_reason"],
+            "idempotency_replay_completed"
+        );
+        assert_eq!(restart_replay["result_ref"], first_result_ref);
+        assert_eq!(
+            BASE64_STANDARD
+                .decode(
+                    restart_replay["inline_result_payload_base64"]
+                        .as_str()
+                        .unwrap()
+                )
+                .unwrap(),
+            result_payload
+        );
+        let _ = restart_shutdown_tx.send(());
+        tokio::time::timeout(Duration::from_secs(10), restarted)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let final_ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
+        assert_eq!(
+            final_ledger_text
+                .matches("runtime_execution_started")
+                .count(),
+            1,
+            "replay before and after restart must not execute the child twice"
+        );
+    }
+
+    #[tokio::test]
+    async fn resident_status_reflects_live_child_mutations() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let identity_path = dir.path().join("identity").join("iroh-secret.hex");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let socket_path = dir.path().join("control.sock");
+        write_resident_process_child(&children_dir);
+
+        let store = MctDaemonConfigStore::new(&config_path);
+        store
+            .ensure_local_identity(MctOperatorNodeScope::default(), &identity_path)
+            .unwrap();
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        store
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let resident = tokio::spawn(run_test_resident_mother(
+            ResidentRuntimePaths::new(
+                config_path.clone(),
+                children_dir.clone(),
+                state_path.clone(),
+            ),
+            identity_path,
+            ledger_path,
+            socket_path.clone(),
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            Some(ready_tx),
+        ));
+        tokio::time::timeout(Duration::from_secs(10), ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        for _ in 0..40 {
+            if socket_path.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let initial = poll_resident_status(&socket_path, |status| {
+            status.readiness == MctDaemonReadiness::Ready
+        })
+        .await;
+        let initial = initial.resident.unwrap();
+        assert_eq!(initial.loaded_child_count, 1);
+        assert_eq!(initial.approved_child_count, 1);
+
+        let package_root = dir.path().join("package");
+        write_resident_process_child_script(
+            &package_root,
+            "resident-second",
+            b"#!/bin/sh\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
+        );
+        post_resident_peer_mutation(
+            &socket_path,
+            "/registry/install",
+            serde_json::json!({
+                "expected_children_dir": children_dir,
+                "source_dir": package_root.join("resident-second"),
+                "replace": false
+            }),
+        )
+        .await;
+        let after_install = poll_resident_status(&socket_path, |status| {
+            status
+                .resident
+                .as_ref()
+                .is_some_and(|resident| resident.loaded_child_count == 2)
+        })
+        .await;
+        assert_eq!(after_install.resident.unwrap().loaded_child_count, 2);
+
+        post_resident_peer_mutation(
+            &socket_path,
+            "/children/revoke",
+            serde_json::json!({
+                "expected_config_path": config_path,
+                "child_name": "resident-echo"
+            }),
+        )
+        .await;
+        let after_revoke = poll_resident_status(&socket_path, |status| {
+            status
+                .resident
+                .as_ref()
+                .is_some_and(|resident| resident.approved_child_count == 0)
+        })
+        .await;
+        assert_eq!(after_revoke.resident.unwrap().approved_child_count, 0);
 
         let _ = shutdown_tx.send(());
         tokio::time::timeout(Duration::from_secs(10), resident)
@@ -1526,6 +1769,14 @@ listens = []
             relay_urls: Vec::new(),
             relay_mode: MotherIrohRelayMode::Disabled,
         }));
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        MctDaemonConfigStore::new(&config_path)
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity.key"),
+            )
+            .unwrap();
         let source = ResidentStatusSource::new(
             Arc::clone(&endpoint),
             (
@@ -1533,9 +1784,8 @@ listens = []
                 VisionId::new("vision-status-test").unwrap(),
             ),
             Arc::new(AtomicU64::new(3)),
-            2,
-            1,
-            4,
+            config_path,
+            dir.path().join("children"),
             PathBuf::from("/path/that/does/not/exist.jsonl"),
         );
 

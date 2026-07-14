@@ -11,7 +11,7 @@ Goal: build the next operational layer after the v0 `patinaMother` replacement b
 5. [ ] Supervisor install/start/stop wrappers after runtime semantics are stable, unless local daily operation becomes painful sooner. The daily-operation pain clock started 2026-07-14 when resident UDS call ingress and real UDS-backed status became available.
 6. [ ] Resume the paused `mct-release-hardening` and `mct-interface-launcher-control` epics as the final gate. Replacement of `patinaMother` cannot be claimed while they are paused; they are deferred, not dropped.
 
-## Now: Multi-Mother
+## Completed: Multi-Mother — single-hop forwarding
 
 Multi-Mother means one `mctMother` can safely call another Mother in MCT.
 
