@@ -8,7 +8,8 @@ Scope: replacement-ready runtime core for local Mother/Child/Toy work. This is n
 - [x] Clippy passes with warnings denied: `cargo clippy --workspace --all-targets -- -D warnings`.
 - [x] Tier-0 script passes at final closeout: `./scripts/ci-tier0.sh`.
 - [x] Allium product map parses with zero findings in final tier-0 run.
-- [x] Active spec closeout: `mct-typed-wit-runtime-parity` is marked complete after 7/7 criteria passed.
+- [x] Typed-WIT closeout: `mct-typed-wit-runtime-parity` is marked complete after 7/7 criteria passed.
+- [x] Resident ingress closeout: `resident-call-ingress` is marked complete after 9/9 criteria passed, including authenticated UDS calls, durable replay/reopen proof, and real resident status.
 
 ## Runtime replacement security gates
 
@@ -21,14 +22,18 @@ Scope: replacement-ready runtime core for local Mother/Child/Toy work. This is n
 
 ## Operator gates
 
-- [x] Runbook documents identity, child approval, toy grants, signed peers, resident serve, JVM bridge, and inspection.
-- [x] CLI help exposes peer signature refs, `toys authorize-secret`, and `jvm call-json`.
+- [x] Runbook documents identity, child approval, toy grants, signed peers, resident serve, authenticated UDS `POST /calls`, resident-backed status, compatibility JVM evidence, and inspection.
+- [x] CLI help exposes peer signature refs, `toys authorize-secret`, compatibility `jvm call-json`, and resident-backed `status`; the owner-authenticated UDS exposes the production local call ingress.
 - [x] Start/stop v0 boundary is explicit: run `mct-daemon serve`; stop with SIGINT/SIGTERM or external supervisor wrapper.
+
+## Completed v0 distributed execution
+
+- [x] Single-hop cross-Mother route forwarding with bilateral authority, fresh publication evidence, current revalidation, typed replies, and two-ledger observations.
 
 ## Deferred beyond v0
 
 - [ ] System supervisor install/uninstall wrappers.
 - [ ] Full JVM SDK/client distribution beyond `jvm call-json`.
 - [ ] Interface launcher/session/HITL orchestration.
-- [ ] Multi-Vision publication and cross-Mother remote route forwarding.
+- [ ] Multi-Vision publication and transitive/brokered routing; implemented `mct/call/0` forwarding remains deliberately single-hop.
 - [ ] Iroh blob transfer between Mothers and storage/network toy breadth.
