@@ -556,8 +556,10 @@ fn remote_reply_to_call_handler_result(
         }
         CallProtocolReplyOutcome::TimedOut => MctIrohCallHandlerResult::timed_out()
             .with_route(Some(route_decision_id), Some(route_taken)),
-        CallProtocolReplyOutcome::Cancelled => MctIrohCallHandlerResult::failed("call cancelled")
-            .with_route(Some(route_decision_id), None),
+        CallProtocolReplyOutcome::Cancelled => {
+            MctIrohCallHandlerResult::cancelled(reply.reply.safe_message)
+                .with_route(Some(route_decision_id), None)
+        }
         CallProtocolReplyOutcome::Malformed => {
             MctIrohCallHandlerResult::failed(reply.reply.safe_message)
                 .with_route(Some(route_decision_id), None)
@@ -1278,6 +1280,104 @@ listens = []
         assert_eq!(call_evaluation.reason, CallProtocolReason::BindingRevoked);
 
         executor_task.abort();
+    }
+
+    #[tokio::test]
+    async fn two_mother_forwarding_preserves_cancelled_reply() {
+        let mut fixture = forwarding_fixture();
+        let executor = MotherIrohEndpoint::bind(iroh_config(fixture.remote_secret.clone(), false))
+            .await
+            .unwrap();
+        let executor_ticket = executor.ticket();
+        let config_store = MctDaemonConfigStore::new(&fixture.config_path);
+        let mut peer = fixture.config.peers["remote-mct"].clone();
+        peer.ticket = Some(executor_ticket);
+        fixture.config = config_store.upsert_peer(peer).unwrap();
+
+        let received_at = current_timestamp();
+        let stale_at = remote_surface_stale_at(&received_at).unwrap();
+        let peer = fixture.config.peers["remote-mct"].clone();
+        let surface_view = hello_capability_view(
+            &peer.peer_node_id,
+            &peer.vision_id,
+            1,
+            &["patina:demo/control@0.1.0.run"],
+        );
+        fixture
+            .state
+            .refresh_remote_callable_surfaces(MctRemoteSurfaceRefresh {
+                peer_node_id: &peer.peer_node_id,
+                binding_id: &peer.binding_id,
+                endpoint_id: &peer.endpoint_id,
+                view: &surface_view,
+                received_at: &received_at,
+                stale_at: &stale_at,
+                view_observation_id: &ObservationId::new("obs-forward-cancelled-surface")
+                    .expect("string ID literal/generated value must be non-empty"),
+            })
+            .unwrap();
+
+        let local_identity = fixture.config.local_identity.as_ref().unwrap();
+        let outbound = peer.outbound_binding.as_ref().unwrap();
+        let executor_binding =
+            outbound_peer_binding_for_local(local_identity, &peer, outbound).unwrap();
+        let executor_task = tokio::spawn(async move {
+            executor
+                .serve_concurrent_with_call_handler(
+                    MctIrohServeState::new(),
+                    vec![executor_binding],
+                    MctIrohConcurrentServeConfig {
+                        require_binding_signature: true,
+                        ..MctIrohConcurrentServeConfig::new(test_iroh_observation_sink())
+                    },
+                    current_timestamp,
+                    |_, _, _| async { MctIrohCallHandlerResult::cancelled("call cancelled") },
+                )
+                .await
+        });
+
+        let outcome = authorize_resident_child_from_loaded_with_state(
+            &fixture.config,
+            Some(&fixture.state),
+            Vec::new(),
+            &fixture.call,
+            current_timestamp(),
+        )
+        .unwrap();
+        let RouteDisposition::Remote {
+            plan: execution,
+            observations,
+        } = outcome
+        else {
+            panic!("fresh published executor should be selected");
+        };
+        let ledger_path = fixture
+            ._dir
+            .path()
+            .join("cancelled-forwarding-observations.jsonl");
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        ledger.append(observations).await.unwrap();
+        let result = execute_authorized_resident_remote_call(
+            ResidentRuntimePaths::new(
+                fixture.config_path.clone(),
+                fixture._dir.path().join("children"),
+                fixture.state_path.clone(),
+            ),
+            *execution,
+            resident_test_protocol_request(fixture.call.clone()),
+            None,
+            ledger.clone(),
+        )
+        .await;
+        ledger.close().await;
+        executor_task.abort();
+
+        assert_eq!(result.outcome, CallProtocolOutcome::Cancelled);
+        assert_eq!(result.safe_message, "call cancelled");
+        assert!(result.route_taken.is_none());
+        let text = std::fs::read_to_string(ledger_path).unwrap();
+        assert!(text.contains("remote_reply:Cancelled"));
+        assert!(text.contains("\"outcome\":\"cancelled\""));
     }
 
     #[tokio::test]
