@@ -1,7 +1,8 @@
 # Contract obligation ledger
 
-Status date: 2026-07-12  
-Scope: complete named-invariant coverage for `mct-product-map.allium` and `mct-peer-ontology.allium`, plus bulk attribution of tool-derived structural obligations. Slice 1's priority rows are retained in place and extended below.
+Status date: 2026-07-12; W2 extension 2026-07-14
+
+Scope: complete named-invariant coverage for `mct-product-map.allium` and `mct-peer-ontology.allium`, plus bulk attribution of tool-derived structural obligations. The 2026-07-12 priority and full-inventory evidence is retained in place; the 2026-07-14 local-application-ingress invariants and W2-A remediation obligations extend it below.
 
 ## Status vocabulary
 
@@ -45,11 +46,25 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 | `IdempotencyBoundsRefuseRatherThanEvict` | COVERED | `mct_kernel::call::tests::idempotency_decision_replays_matches_and_refuses_other_cases`; `mct_daemon::state::tests::idempotency_store_scopes_reserves_replays_expires_and_survives_reopen` |
 | `CurrentIdempotencyEntryNeverSilentlyReexecutes` | COVERED | `mct_daemon_bin::resident::idempotency::tests::resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage`; `mct_daemon_bin::resident::idempotency::tests::in_flight_idempotency_duplicate_refuses_without_second_execution` |
 | `InFlightDuplicateIsRefused` | COVERED | `mct_daemon_bin::resident::idempotency::tests::in_flight_idempotency_duplicate_refuses_without_second_execution` |
-| `IdempotencyStateSurvivesRestart` | COVERED | `mct_daemon::state::tests::idempotency_store_scopes_reserves_replays_expires_and_survives_reopen` |
+| `IdempotencyStateSurvivesRestart` | COVERED | `mct_daemon::state::tests::idempotency_store_scopes_reserves_replays_expires_and_survives_reopen`; `mct_daemon_bin::resident::serving::tests::resident_call_uds_executes_approved_child_and_projects_control_state` proves the same-key UDS reply and inline result survive resident stop/restart without a second child effect. |
 | `CurrentAuthorityPrecedesReplay` — revocation | COVERED | `mct_daemon_bin::resident::serving::tests::resident_mother_payload_roundtrip_verifies_result_digest` |
 | `CurrentAuthorityPrecedesReplay` — expiry and narrowed Vision | COVERED | `mct_daemon_bin::resident::serving::tests::resident_mother_payload_roundtrip_verifies_result_digest` records one keyed success, then proves identical retries after expiry and Vision narrowing are denied without cached payload. |
 | `CurrentAuthorityPrecedesReplay` — narrowed ALPN | DEFERRED | Persisted peer bindings currently expose the fixed `mct/hello/0` + `mct/call/0` protocol scope and have no operator ALPN-narrowing surface. A replay test requires the future configurable binding-scope model; inventing that authority surface is outside propagation. Current call-time ALPN revalidation remains covered by `mct_iroh::tests::call_rechecks_narrowed_alpn_scope_after_hello`. |
 | `CrossMotherReplayRequiresFederationContract` | COVERED | `mct_daemon::state::tests::idempotency_store_scopes_reserves_replays_expires_and_survives_reopen` proves caller/store isolation; `mct_daemon_bin::resident::forwarding::tests::two_mother_forwards_selected_call_over_iroh_and_maps_reply` uses separate Mother stores. |
+
+### Local application ingress and W2-A remediation
+
+| Invariant / obligation | Status | Evidence |
+|---|---|---|
+| `MctLocalApplicationIngress.AuthenticatedLocalPrincipalDefinesCaller` | COVERED | `mct_daemon_bin::resident::local_ingress::tests::resident_call_uds_authenticates_peer_before_submission`; `mct_daemon_bin::resident::local_ingress::tests::resident_call_uds_dispatch_authenticates_and_bounds_before_body_read` |
+| `LocalAcknowledgementRequiresDurableFacts` | COVERED | `mct_daemon_bin::resident::local_ingress::tests::resident_call_uds_observes_decision_before_response`; `mct_daemon_bin::resident::serving::tests::resident_call_uds_executes_approved_child_and_projects_control_state` checks durable construction before reading the terminal UDS response. |
+| `AdapterOriginNamesIngressLineage` | COVERED | `mct_daemon_bin::resident::pipeline::tests::jvm_bridge_json_call_enters_resident_route_path` asserts the translated origin; `mct_daemon_bin::resident::serving::tests::resident_call_uds_executes_approved_child_and_projects_control_state` proves the production local bridge enters that one resident path. |
+| `SharedPrincipalSharesIdempotencyScope` | COVERED | `mct_daemon_bin::resident::local_ingress::tests::resident_call_uds_idempotency_is_authenticated_caller_scoped` proves same-principal replay and same-key/different-fingerprint refusal. |
+| `CallsRemainOutsideMutationSequencer` | COVERED | `mct_daemon_bin::resident::serving::tests::resident_call_uds_executes_approved_child_and_projects_control_state` exercises call and read requests through the concurrent resident UDS dispatcher; `mct_daemon_bin::control::tests::live_child_authority_mutations_are_durable_before_config_effect` independently proves protected mutation serialization. |
+| W2-A/A9 dispatch authentication and streaming call-body bound | COVERED | `mct_daemon_bin::resident::local_ingress::tests::resident_call_uds_dispatch_authenticates_and_bounds_before_body_read` sends headers only over a real `UnixStream` and proves UID refusal and oversized-frame refusal both occur before body consumption. |
+| W2-A/A11 forwarded cancellation projection | COVERED | `mct_daemon_bin::resident::forwarding::tests::two_mother_forwarding_preserves_cancelled_reply` proves a two-Mother executor cancellation remains `cancelled`, keeps no caller route, and is observed as cancelled at the origin. |
+| W2-A/A10 whole-path replay/reopen proof | COVERED | `mct_daemon_bin::resident::serving::tests::resident_call_uds_executes_approved_child_and_projects_control_state` proves same-key UDS replay, one child effect, state/ledger reopen, and replay with result bytes after resident restart. |
+| W2-A/A12 current resident child-count projection | COVERED | `mct_daemon_bin::resident::serving::tests::resident_status_reflects_live_child_mutations` proves live registry installation and child revocation immediately change loaded and approved status counts. |
 
 ### Payload integrity and local CAS
 
@@ -167,9 +182,9 @@ S2 resolved both mandatory-expiry rows through one contract change and the opera
 
 ## Full invariant inventory extension
 
-This slice extends the priority ledger in place. Every one of the 223 named contract invariants is now present either in the original sections above or in the rows below. Statuses remain obligation-specific where slice 1 split one invariant into independently testable edges.
+The 2026-07-12 slice extended the priority ledger in place to all 223 named contract invariants then present. The 2026-07-14 W2 extension adds the five `MctLocalApplicationIngress` invariants above, producing the current 228-invariant product-map/peer-ontology inventory. Statuses remain obligation-specific where slice 1 split one invariant into independently testable edges.
 
-The 236 load-bearing `-- Decision:` statements were also read in full and grouped by their adjacent contract/model clusters: 217 statements in 26 product-map clusters and 19 statements in 6 peer-ontology clusters. Their executable obligations are attributed through the named invariant rows; unresolved product decisions remain explicit `DEFERRED` rows rather than invented authority surfaces.
+The historical pass read 236 load-bearing `-- Decision:` statements and grouped them by their adjacent contract/model clusters: 217 statements in 26 product-map clusters and 19 statements in 6 peer-ontology clusters. W2's dated local-ingress decisions are attributed through the added invariant rows; unresolved product decisions remain explicit `DEFERRED` rows rather than invented authority surfaces.
 
 ### Product map — remaining named invariants
 
@@ -279,7 +294,7 @@ The 236 load-bearing `-- Decision:` statements were also read in full and groupe
 |---|---|---|
 | `ResultRequiresCall` | COVERED | `mct_daemon_bin::resident::execution::tests::resident_execution_runs_wit_child_and_records_trace` |
 | `ResultIsTerminal` | COVERED | `mct_daemon::tests::fake_echo_slice_records_trace_and_result`; `mct_daemon_bin::resident::serving::tests::resident_mother_payload_roundtrip_verifies_result_digest` |
-| `ClosedOutcomeSet` | COVERED | Adjudicated Option 1 and resolved spec-ward in `8565636`:  `mct_daemon_bin::resident::execution::tests::cancelled_result_projection_preserves_cancelled_outcome`; `mct_iroh::tests::cancelled_call_preserves_wire_outcome_route_absence_and_buffered_observations`; `mct_daemon_bin::resident::idempotency::tests::cancelled_idempotent_reply_replays_cancelled_with_durable_observation`. |
+| `ClosedOutcomeSet` | COVERED | Adjudicated Option 1 and resolved spec-ward in `8565636`: `mct_daemon_bin::resident::execution::tests::cancelled_result_projection_preserves_cancelled_outcome`; `mct_iroh::tests::cancelled_call_preserves_wire_outcome_route_absence_and_buffered_observations`; `mct_daemon_bin::resident::idempotency::tests::cancelled_idempotent_reply_replays_cancelled_with_durable_observation`. W2 adds `mct_daemon_bin::resident::forwarding::tests::two_mother_forwarding_preserves_cancelled_reply` for the originating resident's remote-reply projection. |
 | `DeniedResultHasNoRouteTaken` | COVERED | `mct_kernel::call::tests::denied_result_has_no_route_taken` |
 | `CallerSafeResult` | COVERED | `mct_daemon_bin::resident::forwarding::tests::two_mother_remote_denial_fails_closed` |
 | `MalformedAdapterInputIsNotMctResult` | COVERED | `mct_kernel::call::tests::call_protocol_json_edge_rejects_invalid_domain_values_with_typed_kernel_error`; `mct_iroh::tests::malformed_frames_are_observed_before_safe_reply_and_append_failure_suppresses_reply` |
@@ -452,11 +467,11 @@ The 236 load-bearing `-- Decision:` statements were also read in full and groupe
 
 ## Full-coverage status summary
 
-### Named contract invariants (223 total)
+### Named contract invariants (228 total)
 
 | Status | Invariants |
 |---|---:|
-| COVERED | 200 |
+| COVERED | 205 |
 | GAP | 0 |
 | LAW-LEADS-CODE | 0 |
 | DEFERRED | 23 |
@@ -468,4 +483,4 @@ The 236 load-bearing `-- Decision:` statements were also read in full and groupe
 | `mct-product-map.allium` | 179 (`entity_fields` 56, `entity_optional` 38, `surface_actor` 27, `surface_exposure` 27, `value_equality` 29, `when_presence` 2) | 14 | COVERED |
 | `mct-peer-ontology.allium` | 0 | 0 | COVERED (no emitted structural obligations) |
 
-Inventory check: 223 invariants parsed, 160 rows added, 63 invariant names retained from slice 1.
+Inventory check: 228 product-map/peer-ontology invariants parsed, 165 full-inventory rows plus the retained slice-1 priority names, with the 2026-07-12 evidence preserved and the five W2 invariant rows added.
