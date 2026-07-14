@@ -7,8 +7,8 @@ Goal: build the next operational layer after the v0 `patinaMother` replacement b
 1. [x] Multi-Mother first. Completed 2026-07-09 as single-hop route forwarding; multi-Vision and transitive routing remain ROADMAP item 6 follow-ons.
 2. [x] Before Multi-Mother implementation, audit `patinaMother` routing and record translate/rebuild/replace decisions. See audit snapshot below.
 3. [ ] During/after Multi-Mother, design storage/network `mctToy` contracts from the `patinaToy` capability audit.
-4. [ ] JVM SDK after/alongside the chosen Multi-Mother ingress shape, so the SDK targets the real transport instead of only the temporary CLI bridge.
-5. [ ] Supervisor install/start/stop wrappers after runtime semantics are stable, unless local daily operation becomes painful sooner.
+4. [ ] JVM SDK targeting the chosen resident ingress: synchronous JSON `POST /calls` over the owner-authenticated UDS control socket. The SDK must use UUID idempotency keys by default because `(node, UID, Vision)` scope is shared by same-user applications.
+5. [ ] Supervisor install/start/stop wrappers after runtime semantics are stable, unless local daily operation becomes painful sooner. The daily-operation pain clock started 2026-07-14 when resident UDS call ingress and real UDS-backed status became available.
 6. [ ] Resume the paused `mct-release-hardening` and `mct-interface-launcher-control` epics as the final gate. Replacement of `patinaMother` cannot be claimed while they are paused; they are deferred, not dropped.
 
 ## Now: Multi-Mother
@@ -66,6 +66,21 @@ Build order — each step depends on the one before it:
 - [x] Unauthorized, wrong-Vision, wrong-operation, expired-binding, bad-payload, and remote no-route paths fail closed.
 - [x] Both Mothers record enough observations to reconstruct the route and authority chain without leaking payload bytes or secrets.
 
+## Completed: Resident Operational Loop — Slice 1
+
+Completed 2026-07-14 under `layer/surface/build/feat/resident-call-ingress/SPEC.md`:
+
+- owner-only (`0600`) UDS control socket with Unix peer-UID authentication for local application calls;
+- synchronous JSON `POST /calls`, canonical `CallOrigin::JvmAdapter` bridge lineage, and resident node/UID/Vision caller scope;
+- unchanged inline/CAS size and BLAKE3 integrity laws, with payload bytes excluded from observations and control reads;
+- durable caller-scoped idempotency and submission/result observations before response;
+- calls execute through the existing authority, route revalidation, child execution, result, run-state, and ledger pipeline;
+- concurrent control dispatch keeps reads available while administrative mutations remain serialized;
+- `mct-daemon serve` defaults to `.mct/control.sock`; explicit HTTP mode remains read-only and has no `/calls` ingress;
+- `mct-daemon status [--uds path] [--json]` now reports real resident readiness, node/Vision/Iroh identity, loaded/approved/ready counts, and last observation sequence, and fails honestly when no resident is reachable.
+
+This is the production transport target for TODO item 4. The one-shot `mct-daemon jvm call-json` bridge remains compatibility/development evidence, not the resident operational boundary.
+
 ## Next: storage/network toy contracts
 
 Use the audit below to translate useful `patinaToy` use cases into newly designed, ToyGrant-backed `mctToy` contracts. Parallel names do not imply equivalent authority or reusable adapter shapes.
@@ -87,13 +102,13 @@ Use the audit below to translate useful `patinaToy` use cases into newly designe
 
 ## JVM SDK
 
-Current bridge:
+Chosen production ingress:
 
-```bash
-mct-daemon jvm call-json <operation-id> <args-json>
+```text
+POST /calls over .mct/control.sock
 ```
 
-This proves a JVM system can submit work into MCT using JSON and receive a caller-safe reply.
+The endpoint is synchronous, authenticates the Unix peer UID, applies existing payload and idempotency laws, and returns the caller-safe terminal reply. `mct-daemon jvm call-json <operation-id> <args-json>` remains a one-shot compatibility/development bridge.
 
 Build the production JVM SDK so Java/Kotlin callers can use MCT ergonomically:
 
@@ -105,10 +120,10 @@ client.call("patina:slate/control@0.1.0.list-work", args);
 ### SDK responsibilities
 
 - [ ] Build MCT call envelopes from Java/Kotlin inputs.
-- [ ] Connect to the chosen MCT ingress transport.
-- [ ] Sign or present identity/binding proofs when needed.
+- [ ] Connect to the owner-authenticated UDS `POST /calls` transport.
+- [ ] Treat Unix peer UID as the v0 local caller authentication boundary; do not claim per-application identity.
 - [ ] Apply deadlines/timeouts consistently.
-- [ ] Handle retries only where idempotency makes that safe.
+- [ ] Use UUID idempotency keys by default and retry only where idempotency makes that safe.
 - [ ] Decode MCT replies and result payloads into Java/Kotlin models.
 - [ ] Expose typed Java/Kotlin request/result models for common WIT operations.
 - [ ] Keep streaming observations as a later optional layer unless needed for the first SDK cut.
