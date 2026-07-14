@@ -32,7 +32,7 @@ pub(crate) async fn run_serve(mut args: Vec<String>) -> Result<()> {
     let control = match (http_addr, uds_path) {
         (Some(addr), None) => ResidentControlTransport::Http(addr),
         (None, Some(path)) => ResidentControlTransport::Uds(path),
-        (None, None) => ResidentControlTransport::Http("127.0.0.1:9173".into()),
+        (None, None) => ResidentControlTransport::Uds(default_control_uds_path()),
         (Some(_), Some(_)) => bail!("serve accepts only one control transport: --http or --uds"),
     };
     run_resident_mother(
@@ -73,6 +73,8 @@ struct ResidentMotherConfig {
 #[derive(Clone, Debug)]
 pub(crate) struct ResidentStatusSource {
     endpoint: Arc<Mutex<MotherIrohEndpointSnapshot>>,
+    node_id: MctNodeId,
+    vision_id: VisionId,
     accepted_connection_count: Arc<AtomicU64>,
     loaded_child_count: usize,
     approved_child_count: usize,
@@ -83,6 +85,7 @@ pub(crate) struct ResidentStatusSource {
 impl ResidentStatusSource {
     fn new(
         endpoint: Arc<Mutex<MotherIrohEndpointSnapshot>>,
+        identity: (MctNodeId, VisionId),
         accepted_connection_count: Arc<AtomicU64>,
         loaded_child_count: usize,
         approved_child_count: usize,
@@ -91,6 +94,8 @@ impl ResidentStatusSource {
     ) -> Self {
         Self {
             endpoint,
+            node_id: identity.0,
+            vision_id: identity.1,
             accepted_connection_count,
             loaded_child_count,
             approved_child_count,
@@ -108,6 +113,8 @@ impl ResidentStatusSource {
                     .clone(),
             ),
             Some(MctResidentStatus {
+                node_id: self.node_id.clone(),
+                vision_id: self.vision_id.clone(),
                 accepted_connection_count: self.accepted_connection_count.load(Ordering::SeqCst),
                 loaded_child_count: self.loaded_child_count,
                 approved_child_count: self.approved_child_count,
@@ -223,6 +230,7 @@ where
     let endpoint_status = Arc::new(Mutex::new(snapshot.clone()));
     let status_source = Arc::new(ResidentStatusSource::new(
         Arc::clone(&endpoint_status),
+        (identity.node_id.clone(), identity.vision_id.clone()),
         Arc::clone(&accepted_connection_count),
         loaded_child_count,
         approved_child_count,
@@ -247,10 +255,13 @@ where
     let (shutdown_tx, _) = broadcast::channel(4);
     let control_task = spawn_resident_control_task(
         config.control.clone(),
-        config.state_path.clone(),
-        config.config_path.clone(),
-        config.children_dir.clone(),
+        ResidentRuntimePaths::new(
+            config.config_path.clone(),
+            config.children_dir.clone(),
+            config.state_path.clone(),
+        ),
         ledger.clone(),
+        config.max_concurrent_connections,
         shutdown_tx.subscribe(),
         Some(status_source),
     )?;
@@ -332,24 +343,28 @@ where
 
 fn spawn_resident_control_task(
     control: ResidentControlTransport,
-    state_path: PathBuf,
-    config_path: PathBuf,
-    children_dir: PathBuf,
+    paths: ResidentRuntimePaths,
     ledger: ResidentLedgerWriter,
+    max_concurrent_connections: usize,
     shutdown: broadcast::Receiver<()>,
     status_source: Option<Arc<ResidentStatusSource>>,
 ) -> Result<tokio::task::JoinHandle<Result<()>>> {
     match control {
         ResidentControlTransport::Http(addr) => Ok(tokio::spawn(async move {
-            serve_http_control_loop_until(state_path, addr, shutdown, status_source).await
+            serve_http_control_loop_until(
+                paths.state_path().to_path_buf(),
+                addr,
+                shutdown,
+                status_source,
+            )
+            .await
         })),
         ResidentControlTransport::Uds(path) => Ok(tokio::spawn(async move {
             run_control_serve_uds_with_state_until(
-                state_path,
+                paths,
                 path,
-                config_path,
-                children_dir,
                 ledger,
+                max_concurrent_connections,
                 shutdown,
                 status_source,
             )
@@ -585,6 +600,199 @@ listens = []
         )
         .unwrap();
     }
+
+    async fn resident_uds_request(
+        socket_path: &Path,
+        request: Vec<u8>,
+    ) -> (u16, serde_json::Value) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut stream = tokio::net::UnixStream::connect(socket_path).await.unwrap();
+        stream.write_all(&request).await.unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        let response = String::from_utf8(response).unwrap();
+        let status = response
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .parse::<u16>()
+            .unwrap();
+        let body = response.split_once("\r\n\r\n").unwrap().1;
+        (status, serde_json::from_str(body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn resident_call_uds_executes_approved_child_and_projects_control_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let identity_path = dir.path().join("identity").join("iroh-secret.hex");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let socket_path = dir.path().join("control.sock");
+        write_resident_payload_process_child(&children_dir);
+
+        let store = MctDaemonConfigStore::new(&config_path);
+        store
+            .ensure_local_identity(MctOperatorNodeScope::default(), &identity_path)
+            .unwrap();
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        assert_eq!(loaded.loaded, 1, "{loaded:?}");
+        store
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+
+        let paths =
+            ResidentRuntimePaths::new(config_path.clone(), children_dir, state_path.clone());
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let resident = tokio::spawn(run_test_resident_mother(
+            paths,
+            identity_path,
+            ledger_path.clone(),
+            socket_path.clone(),
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            Some(ready_tx),
+        ));
+        tokio::time::timeout(Duration::from_secs(10), ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        for _ in 0..40 {
+            if socket_path.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let status = poll_resident_status(&socket_path, |status| {
+            status.readiness == mct_daemon::MctDaemonReadiness::Ready
+        })
+        .await;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(&socket_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        let sequence_before = status.resident.unwrap().ledger_sequence_tip;
+
+        let payload = br#"[{"from":"uds"}]"#;
+        let body = serde_json::json!({
+            "protocol_request_id": "proto-resident-uds",
+            "call_id": "call-resident-uds",
+            "target": {
+                "namespace": "patina:demo",
+                "interface_name": "control@0.1.0",
+                "function_name": "run"
+            },
+            "payload_metadata": {
+                "data_classification": "public",
+                "size_bytes": payload.len(),
+                "contains_secret_scoped_material": false
+            },
+            "authority_context": {
+                "policy_revision": 1,
+                "grants_revision": 1,
+                "vision_policy_revision": 1
+            },
+            "deadline": "2099-01-01T00:00:00Z",
+            "trace_context": {
+                "trace_id": "trace-resident-uds",
+                "span_id": "span-resident-uds"
+            },
+            "payload": {
+                "payload_kind": "inline_payload",
+                "inline_payload_ref": "payload-resident-uds",
+                "content_type": "application/json",
+                "size_bytes": payload.len(),
+                "blake3_digest_hex": blake3::hash(payload).to_hex().to_string()
+            },
+            "inline_payload_base64": BASE64_STANDARD.encode(payload),
+            "idempotency_key": "resident-uds-test-key"
+        });
+        let body = serde_json::to_vec(&body).unwrap();
+        let request = [
+            format!(
+                "POST /calls HTTP/1.1\r\nHost: local\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            )
+            .into_bytes(),
+            body,
+        ]
+        .concat();
+        let (call_status, call_reply) = resident_uds_request(&socket_path, request).await;
+        assert_eq!(call_status, 200, "{call_reply:#}");
+        assert_eq!(call_reply["outcome"], "completed");
+        let result_payload = BASE64_STANDARD
+            .decode(call_reply["inline_result_payload_base64"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(result_payload, br#"processed:[{"from":"uds"}]"#);
+        assert_eq!(
+            call_reply["result_payload"]["blake3_digest_hex"],
+            blake3::hash(&result_payload).to_hex().to_string()
+        );
+
+        let (runs_status, runs) = resident_uds_request(
+            &socket_path,
+            b"GET /runs HTTP/1.1\r\nHost: local\r\n\r\n".to_vec(),
+        )
+        .await;
+        assert_eq!(runs_status, 200);
+        let run = runs
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|run| run["call_id"] == "call-resident-uds")
+            .expect("resident call is visible through /runs");
+        assert_eq!(run["state"], "completed");
+        assert_eq!(run["result"]["outcome"], "success");
+        assert!(run["authority_decision_id"].is_string());
+
+        let status = poll_resident_status(&socket_path, |status| {
+            status
+                .resident
+                .as_ref()
+                .is_some_and(|resident| resident.ledger_sequence_tip > sequence_before)
+        })
+        .await;
+        assert_eq!(status.readiness, mct_daemon::MctDaemonReadiness::Ready);
+        let cli_socket_path = socket_path.clone();
+        let cli_status =
+            tokio::task::spawn_blocking(move || query_resident_status(&cli_socket_path))
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(cli_status.readiness, MctDaemonReadiness::Ready);
+        assert_eq!(cli_status.node_id.as_str(), "local-mct");
+        assert_eq!(cli_status.vision_id.as_str(), "vision-local");
+        assert_eq!(cli_status.loaded_child_count, 1);
+        assert_eq!(cli_status.approved_child_count, 1);
+        assert!(cli_status.last_observation_sequence > sequence_before);
+
+        let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
+        assert!(ledger_text.contains("call-resident-uds"));
+        assert!(ledger_text.contains("call_constructed"));
+        assert!(ledger_text.contains("result_recorded"));
+        assert!(!ledger_text.contains(&BASE64_STANDARD.encode(payload)));
+        assert!(!ledger_text.contains(std::str::from_utf8(payload).unwrap()));
+
+        let _ = shutdown_tx.send(());
+        tokio::time::timeout(Duration::from_secs(10), resident)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn first_boot_identity_is_durable_and_secret_free() {
         let dir = tempfile::tempdir().unwrap();
@@ -1320,6 +1528,10 @@ listens = []
         }));
         let source = ResidentStatusSource::new(
             Arc::clone(&endpoint),
+            (
+                MctNodeId::new("node-status-test").unwrap(),
+                VisionId::new("vision-status-test").unwrap(),
+            ),
             Arc::new(AtomicU64::new(3)),
             2,
             1,

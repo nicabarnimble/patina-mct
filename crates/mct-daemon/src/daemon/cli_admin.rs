@@ -695,8 +695,127 @@ pub(super) fn run_runs(mut args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Debug, serde::Serialize)]
+pub(super) struct MctCliResidentStatus {
+    pub running: bool,
+    pub version: String,
+    pub health: MctDaemonHealth,
+    pub readiness: MctDaemonReadiness,
+    pub node_id: MctNodeId,
+    pub vision_id: VisionId,
+    pub endpoint_id: EndpointIdText,
+    pub loaded_child_count: usize,
+    pub approved_child_count: usize,
+    pub ready_instance_count: u64,
+    pub last_observation_sequence: u64,
+    pub safe_message: String,
+}
+
 pub(super) fn default_control_uds_path() -> PathBuf {
     PathBuf::from(".mct").join("control.sock")
+}
+
+#[cfg(unix)]
+pub(super) fn query_resident_status(socket_path: &Path) -> Result<MctCliResidentStatus> {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+
+    let mut stream = UnixStream::connect(socket_path)
+        .with_context(|| format!("resident not running at {}", socket_path.display()))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .context("set resident status read timeout")?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .context("set resident status write timeout")?;
+    stream
+        .write_all(b"GET /snapshot HTTP/1.1\r\nHost: local\r\n\r\n")
+        .context("write resident status request")?;
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .context("finish resident status request")?;
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .context("read resident status response")?;
+    let response = std::str::from_utf8(&response).context("decode resident status response")?;
+    let (headers, body) = response
+        .split_once("\r\n\r\n")
+        .context("resident status response missing header terminator")?;
+    let status_code = headers
+        .split_whitespace()
+        .nth(1)
+        .context("resident status response missing status")?
+        .parse::<u16>()
+        .context("parse resident status response status")?;
+    if status_code != 200 {
+        bail!("resident status unavailable with HTTP status {status_code}");
+    }
+    let snapshot: MctControlPlaneSnapshot =
+        serde_json::from_str(body).context("decode resident status snapshot")?;
+    let resident = snapshot
+        .status
+        .resident
+        .context("resident status response is not from a resident Mother")?;
+    let endpoint_id = snapshot
+        .status
+        .iroh_endpoint
+        .as_ref()
+        .map(|endpoint| endpoint.endpoint_id.clone())
+        .context("resident endpoint identity unavailable")?;
+    Ok(MctCliResidentStatus {
+        running: true,
+        version: snapshot.status.version,
+        health: snapshot.status.health,
+        readiness: snapshot.status.readiness,
+        node_id: resident.node_id,
+        vision_id: resident.vision_id,
+        endpoint_id,
+        loaded_child_count: resident.loaded_child_count,
+        approved_child_count: resident.approved_child_count,
+        ready_instance_count: snapshot.state.map_or(0, |state| state.ready_instances),
+        last_observation_sequence: resident.ledger_sequence_tip,
+        safe_message: snapshot.status.safe_message,
+    })
+}
+
+#[cfg(not(unix))]
+pub(super) fn query_resident_status(_socket_path: &Path) -> Result<MctCliResidentStatus> {
+    bail!("resident UDS status is only available on Unix platforms")
+}
+
+pub(super) fn run_status(mut args: Vec<String>) -> Result<()> {
+    let socket_path = take_option(&mut args, "--uds")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_control_uds_path);
+    let as_json = take_flag(&mut args, "--json");
+    if !args.is_empty() {
+        bail!("unexpected status arguments: {}", args.join(" "));
+    }
+    let status = query_resident_status(&socket_path)?;
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&status)?);
+    } else {
+        println!(
+            "mct-daemon {} running={} health={:?} readiness={:?} node={} vision={} endpoint={} children_loaded={} children_approved={} instances_ready={} last_observation_sequence={} message={}",
+            status.version,
+            status.running,
+            status.health,
+            status.readiness,
+            status.node_id,
+            status.vision_id,
+            status.endpoint_id,
+            status.loaded_child_count,
+            status.approved_child_count,
+            status.ready_instance_count,
+            status.last_observation_sequence,
+            status.safe_message
+        );
+    }
+    if status.readiness != MctDaemonReadiness::Ready {
+        bail!("resident is not ready: {}", status.safe_message);
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -1087,6 +1206,103 @@ listens = []
         )
         .unwrap();
     }
+    #[cfg(unix)]
+    #[test]
+    fn status_reports_real_resident_snapshot() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("control.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let body = serde_json::json!({
+            "status": {
+                "version": "0.1.0-test",
+                "health": "healthy",
+                "readiness": "ready",
+                "iroh_endpoint": {
+                    "endpoint_id": "endpoint-status-test",
+                    "lifecycle": "bound",
+                    "accepted_alpns": ["mct/hello/0", "mct/call/0"],
+                    "direct_addresses": [],
+                    "relay_urls": [],
+                    "relay_mode": "disabled"
+                },
+                "resident": {
+                    "node_id": "node-status-test",
+                    "vision_id": "vision-status-test",
+                    "accepted_connection_count": 3,
+                    "loaded_child_count": 4,
+                    "approved_child_count": 2,
+                    "binding_count": 1,
+                    "ledger_sequence_tip": 17
+                },
+                "safe_message": "ready"
+            },
+            "state": {
+                "schema_version": 6,
+                "artifacts": 4,
+                "approved_children": 2,
+                "active_assignments": 2,
+                "ready_instances": 2,
+                "peers": 1,
+                "runs": 0,
+                "completed_runs": 0,
+                "failed_runs": 0,
+                "metric_points": 0,
+                "queued_tasks": 0,
+                "child_state_keys": 0,
+                "child_subscriptions": 0,
+                "toy_catalog_contracts": 0,
+                "toy_grant_snapshots": 0
+            },
+            "runs": []
+        })
+        .to_string();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 256];
+            let read = stream.read(&mut request).unwrap();
+            assert!(
+                std::str::from_utf8(&request[..read])
+                    .unwrap()
+                    .starts_with("GET /snapshot")
+            );
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+
+        let status = query_resident_status(&socket_path).unwrap();
+        server.join().unwrap();
+
+        assert!(status.running);
+        assert_eq!(status.readiness, MctDaemonReadiness::Ready);
+        assert_eq!(status.node_id.as_str(), "node-status-test");
+        assert_eq!(status.vision_id.as_str(), "vision-status-test");
+        assert_eq!(status.endpoint_id.as_str(), "endpoint-status-test");
+        assert_eq!(status.loaded_child_count, 4);
+        assert_eq!(status.approved_child_count, 2);
+        assert_eq!(status.ready_instance_count, 2);
+        assert_eq!(status.last_observation_sequence, 17);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn status_missing_resident_degrades_honestly() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("missing-control.sock");
+
+        let error = query_resident_status(&socket_path).unwrap_err();
+
+        assert!(format!("{error:#}").contains("resident not running"));
+        assert!(!format!("{error:#}").contains("ready for local child loading"));
+    }
+
     #[test]
     fn authorize_secret_cli_persists_scoped_grant_without_value() {
         let dir = tempfile::tempdir().unwrap();

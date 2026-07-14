@@ -172,13 +172,38 @@ pub(super) async fn resolve_resident_request_payload(
     request: &MctCallProtocolRequest,
     payload: ResidentPayloadIngress,
 ) -> std::result::Result<VerifiedRequestPayload, PayloadFailure> {
-    let (inline_payload, allow_local_content_addressed_blob) = payload.into_parts();
-    if !allow_local_content_addressed_blob
-        || !matches!(
-            request.payload,
-            MctCallPayloadHandle::ContentAddressedBlob { .. }
-        )
-    {
+    let (inline_payload, local_ingress) = payload.into_parts();
+    if !local_ingress {
+        // The Iroh adapter has already verified remote inline bytes before this pipeline.
+        return Ok(VerifiedRequestPayload(inline_payload));
+    }
+    if !matches!(
+        request.payload,
+        MctCallPayloadHandle::ContentAddressedBlob { .. }
+    ) {
+        let observed = MctPayloadIntegrityObservation {
+            inline_bytes_present: inline_payload.is_some(),
+            content_addressed_blob_fetch_attempted: false,
+            observed_size_bytes: inline_payload.as_ref().map(|bytes| bytes.len() as u64),
+            observed_blake3_digest_hex: inline_payload.as_ref().map(|bytes| blake3_hex(bytes)),
+        };
+        let decision = evaluate_payload_integrity(
+            PayloadIntegritySubject::Request,
+            &request.payload,
+            &observed,
+            mct_iroh::MCT_INLINE_PAYLOAD_MAX_BYTES as u64,
+        );
+        if decision.outcome != PayloadIntegrityOutcome::Matched {
+            return Err(PayloadFailure {
+                safe_message: decision.safe_message.clone(),
+                observations: vec![resident_payload_integrity_failure_observation(
+                    &request.call,
+                    "request",
+                    &request.payload,
+                    &decision,
+                )],
+            });
+        }
         return Ok(VerifiedRequestPayload(inline_payload));
     }
 
