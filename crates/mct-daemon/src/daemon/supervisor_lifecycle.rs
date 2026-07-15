@@ -1994,6 +1994,52 @@ mod tests {
             .unwrap()
     }
 
+    fn supervised_start(
+        entries: &[mct_observation::MctObservationLedgerEntry],
+        ordinal: usize,
+    ) -> (String, String) {
+        let entry = entries
+            .iter()
+            .filter(|entry| {
+                entry
+                    .observation
+                    .safe_message
+                    .starts_with("supervised resident instance started ")
+            })
+            .nth(ordinal)
+            .unwrap();
+        let instance_id = entry
+            .observation
+            .safe_message
+            .trim_start_matches("supervised resident instance started ")
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .to_owned();
+        (instance_id, entry.observation.observation_id.to_string())
+    }
+
+    fn proof_artifact() -> ComponentArtifact {
+        ComponentArtifact {
+            artifact_id: ComponentArtifactId::new("supervisor-proof-artifact").unwrap(),
+            child_name: "supervisor-proof-child".into(),
+            artifact_version: "0.1.0".into(),
+            content_hash: "blake3:supervisor-proof-artifact".into(),
+            manifest_hash: "blake3:supervisor-proof-manifest".into(),
+            primary_export: ComponentWitExport {
+                namespace: "patina".into(),
+                interface_name: "supervisor-proof".into(),
+                version: "0.1.0".into(),
+                function_names: vec!["verify".into()],
+            },
+            runtime_shape: ComponentRuntimeShape::WasmComponent,
+            ingress_mode: ChildIngressMode::WitOnly,
+            lifecycle_exports: LifecycleExports::AbsentAllowed,
+            verification_status: VerificationStatus::Verified,
+            created_by_observation_id: ObservationId::new("obs-supervisor-proof-artifact").unwrap(),
+        }
+    }
+
     #[test]
     fn supervisor_install_bootstrap_is_observed_before_every_remaining_effect() {
         let root = tempfile::tempdir().unwrap();
@@ -2071,7 +2117,34 @@ mod tests {
             entry.observation.observation_id.as_str() == record.creation_observation_id
                 && entry.observation.policy_revision == Some(1)
         }));
-        assert!(paths.config.exists() && paths.identity.exists() && paths.state.exists());
+        assert_eq!(record.owner_uid, current_uid().unwrap());
+        assert_eq!(record.created_by_uid, current_uid().unwrap());
+        assert_eq!(record.record_revision, 1);
+        assert_eq!(record.record_digest, record.canonical_digest().unwrap());
+        assert_eq!(
+            record.executable_digest,
+            file_digest(&record.executable_path).unwrap()
+        );
+        assert_eq!(
+            record.plist_digest,
+            file_digest(&record.plist_path).unwrap()
+        );
+
+        let reopened_config = MctDaemonConfigStore::new(&paths.config).load().unwrap();
+        let reopened_identity = reopened_config.local_identity.as_ref().unwrap();
+        assert_eq!(reopened_identity.identity_path, paths.identity);
+        let identity_bytes = fs::read(&paths.identity).unwrap();
+        let identity_secret = load_or_create_node_secret_key_hex(&paths.identity).unwrap();
+        assert_eq!(fs::read(&paths.identity).unwrap(), identity_bytes);
+        assert_eq!(
+            endpoint_id_for_secret_key_hex(&identity_secret).unwrap(),
+            reopened_identity.endpoint_id
+        );
+        let reopened_state = MctRuntimeStateStore::open(&paths.state).unwrap();
+        let initial_state_summary = reopened_state.summary().unwrap();
+        assert!(initial_state_summary.schema_version > 0);
+        assert_eq!(initial_state_summary.artifacts, 0);
+        drop(reopened_state);
 
         start_with_adapter(&paths, current_uid().unwrap(), adapter.as_ref(), false).unwrap();
         let operator_count_before_boot = entries(&paths.ledger)
@@ -2113,6 +2186,7 @@ mod tests {
                 record.record_id, record.creation_observation_id
             ))
         }));
+        let (first_instance_id, _) = supervised_start(&first_boot_entries, 0);
 
         let stop_paths = paths.clone();
         let stop_adapter = Arc::clone(&adapter);
@@ -2125,10 +2199,12 @@ mod tests {
         resident_one.await.unwrap().unwrap();
         let clean_entries = entries(&paths.ledger);
         assert!(clean_entries.iter().any(|entry| {
-            entry
-                .observation
-                .safe_message
-                .starts_with("supervised resident clean shutdown completed")
+            entry.observation.safe_message
+                == format!("supervised resident clean shutdown started {first_instance_id}")
+        }));
+        assert!(clean_entries.iter().any(|entry| {
+            entry.observation.safe_message
+                == format!("supervised resident clean shutdown completed {first_instance_id}")
         }));
 
         start_with_adapter(&paths, current_uid().unwrap(), adapter.as_ref(), false).unwrap();
@@ -2149,12 +2225,15 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(entries(&paths.ledger).iter().all(|entry| {
+        let second_start_entries = entries(&paths.ledger);
+        assert!(second_start_entries.iter().all(|entry| {
             !entry
                 .observation
                 .safe_message
                 .contains("reconciled unmatched prior instance")
         }));
+        let (second_instance_id, second_start_observation_id) =
+            supervised_start(&second_start_entries, 1);
         resident_two.abort();
         let _ = resident_two.await;
         drop(unclean_tx);
@@ -2186,14 +2265,12 @@ mod tests {
             .unwrap()
             .unwrap();
         let reconciled_entries = entries(&paths.ledger);
+        let expected_reconciliation = format!(
+            "supervised resident reconciled unmatched prior instance {second_instance_id} start_observation={second_start_observation_id}"
+        );
         let reconciliation = reconciled_entries
             .iter()
-            .position(|entry| {
-                entry
-                    .observation
-                    .safe_message
-                    .contains("reconciled unmatched prior instance")
-            })
+            .position(|entry| entry.observation.safe_message == expected_reconciliation)
             .unwrap();
         let third_start = reconciled_entries
             .iter()
@@ -2205,6 +2282,7 @@ mod tests {
             })
             .unwrap();
         assert!(reconciliation < third_start);
+        let (third_instance_id, _) = supervised_start(&reconciled_entries, 2);
 
         let stop_paths = paths.clone();
         let stop_adapter = Arc::clone(&adapter);
@@ -2216,19 +2294,65 @@ mod tests {
         .unwrap();
         resident_three.await.unwrap().unwrap();
 
+        let artifact_bytes = b"populated-supervisor-artifact";
+        let artifact_path = paths
+            .children
+            .join("supervisor-proof-child")
+            .join("proof.component.wasm");
+        fs::create_dir_all(artifact_path.parent().unwrap()).unwrap();
+        fs::write(&artifact_path, artifact_bytes).unwrap();
+        let proof_artifact = proof_artifact();
+        let populated_state = MctRuntimeStateStore::open(&paths.state).unwrap();
+        populated_state.upsert_artifact(&proof_artifact).unwrap();
+        assert_eq!(
+            populated_state
+                .get_artifact(&proof_artifact.artifact_id)
+                .unwrap(),
+            Some(proof_artifact.clone())
+        );
+        drop(populated_state);
+
+        let blob_bytes = b"populated-supervisor-blob";
+        let blob_digest = blake3::hash(blob_bytes).to_hex().to_string();
+        let blob_store = local_blob_store_for_state_path(&paths.state);
+        let blob_handle = blob_store
+            .ingest_reader(
+                &blob_digest,
+                blob_bytes.len() as u64,
+                "application/octet-stream",
+                &blob_bytes[..],
+            )
+            .unwrap();
+        assert_eq!(blob_store.fetch(&blob_handle).unwrap(), blob_bytes);
+
         let ledger_before_uninstall = fs::read(&paths.ledger).unwrap();
         let config_before_uninstall = fs::read(&paths.config).unwrap();
         let identity_before_uninstall = fs::read(&paths.identity).unwrap();
-        uninstall_with_adapter(&paths, current_uid().unwrap(), adapter.as_ref()).unwrap();
+        let uninstall_report =
+            uninstall_with_adapter(&paths, current_uid().unwrap(), adapter.as_ref()).unwrap();
 
         assert!(!paths.record.exists());
         assert!(!paths.plist.exists());
+        assert_eq!(
+            adapter.inspect(&record).unwrap(),
+            SupervisorLoadedState::Unloaded
+        );
         assert!(paths.ledger.exists() && paths.state.exists() && paths.children.exists());
         assert_eq!(fs::read(&paths.config).unwrap(), config_before_uninstall);
         assert_eq!(
             fs::read(&paths.identity).unwrap(),
             identity_before_uninstall
         );
+        assert_eq!(fs::read(&artifact_path).unwrap(), artifact_bytes);
+        assert_eq!(blob_store.fetch(&blob_handle).unwrap(), blob_bytes);
+        let final_state = MctRuntimeStateStore::open(&paths.state).unwrap();
+        assert_eq!(
+            final_state
+                .get_artifact(&proof_artifact.artifact_id)
+                .unwrap(),
+            Some(proof_artifact)
+        );
+        drop(final_state);
         assert_eq!(
             fs::read_to_string(&paths.stdout_log).unwrap(),
             "preserved-log"
@@ -2238,12 +2362,97 @@ mod tests {
                 .unwrap()
                 .starts_with(&ledger_before_uninstall)
         );
-        assert!(entries(&paths.ledger).iter().any(|entry| {
-            entry
-                .observation
-                .safe_message
-                .contains("uninstall completed; ledger state identity children and logs preserved")
+
+        let final_entries = entries(&paths.ledger);
+        let uninstall_entries = final_entries
+            .iter()
+            .filter(|entry| {
+                entry.observation.trace.trace_id.as_str() == uninstall_report.attempt_id
+            })
+            .collect::<Vec<_>>();
+        assert!(uninstall_entries.iter().any(|entry| {
+            entry.observation.kind == ObservationKind::OperatorActionRecorded
+                && entry.observation.outcome == ObservationOutcome::Allowed
         }));
+        assert!(uninstall_entries.iter().any(|entry| {
+            entry.observation.kind == ObservationKind::LifecycleTransitionRecorded
+                && entry.observation.outcome == ObservationOutcome::Started
+                && entry.observation.safe_message.contains("removal started")
+        }));
+        let uninstall_adapter_facts = uninstall_entries
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.observation.kind,
+                    ObservationKind::AdapterEffectStarted
+                        | ObservationKind::AdapterEffectCompleted
+                        | ObservationKind::AdapterEffectFailed
+                )
+            })
+            .map(|entry| {
+                (
+                    entry.observation.kind,
+                    entry.observation.outcome,
+                    entry.observation.safe_message.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            uninstall_adapter_facts,
+            vec![
+                (
+                    ObservationKind::AdapterEffectStarted,
+                    ObservationOutcome::Started,
+                    "launchd plist and current supervisor record removal started",
+                ),
+                (
+                    ObservationKind::AdapterEffectCompleted,
+                    ObservationOutcome::Completed,
+                    "launchd plist and current supervisor record removed",
+                ),
+            ]
+        );
+        assert!(uninstall_entries.iter().any(|entry| {
+            entry.observation.observation_id.as_str() == uninstall_report.observation_id
+                && entry.observation.kind == ObservationKind::LifecycleTransitionRecorded
+                && entry.observation.outcome == ObservationOutcome::Completed
+                && entry.observation.safe_message.contains(
+                    "uninstall completed; ledger state identity children and logs preserved",
+                )
+        }));
+
+        let messages = final_entries
+            .iter()
+            .map(|entry| entry.observation.safe_message.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("install started; discovered"))
+        );
+        assert!(messages.contains(&"supervisor install completed without starting resident"));
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.starts_with("supervised resident instance started "))
+                .count(),
+            3
+        );
+        assert!(messages.contains(
+            &format!("supervised resident clean shutdown completed {first_instance_id}").as_str()
+        ));
+        assert!(messages.contains(&expected_reconciliation.as_str()));
+        assert!(messages.contains(
+            &format!("supervised resident clean shutdown completed {third_instance_id}").as_str()
+        ));
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| **message == "supervisor stop and launchd bootout completed")
+                .count(),
+            2
+        );
+        assert!(messages.contains(&"launchd plist and current supervisor record removed"));
     }
 
     #[test]
