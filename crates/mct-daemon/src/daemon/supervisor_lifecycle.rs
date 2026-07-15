@@ -2139,6 +2139,12 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        assert!(entries(&paths.ledger).iter().all(|entry| {
+            !entry
+                .observation
+                .safe_message
+                .contains("reconciled unmatched prior instance")
+        }));
         resident_two.abort();
         let _ = resident_two.await;
         drop(unclean_tx);
