@@ -2233,7 +2233,8 @@ mod tests {
                 record.record_id, record.creation_observation_id
             ))
         }));
-        let (first_instance_id, _) = supervised_start(&first_boot_entries, 0);
+        let (first_instance_id, first_start_observation_id) =
+            supervised_start(&first_boot_entries, 0);
 
         let stop_paths = paths.clone();
         let stop_adapter = Arc::clone(&adapter);
@@ -2329,7 +2330,8 @@ mod tests {
             })
             .unwrap();
         assert!(reconciliation < third_start);
-        let (third_instance_id, _) = supervised_start(&reconciled_entries, 2);
+        let (third_instance_id, third_start_observation_id) =
+            supervised_start(&reconciled_entries, 2);
 
         let stop_paths = paths.clone();
         let stop_adapter = Arc::clone(&adapter);
@@ -2472,12 +2474,6 @@ mod tests {
             .iter()
             .map(|entry| entry.observation.safe_message.as_str())
             .collect::<Vec<_>>();
-        assert!(
-            messages
-                .iter()
-                .any(|message| message.contains("install started; discovered"))
-        );
-        assert!(messages.contains(&"supervisor install completed without starting resident"));
         assert_eq!(
             messages
                 .iter()
@@ -2485,13 +2481,6 @@ mod tests {
                 .count(),
             3
         );
-        assert!(messages.contains(
-            &format!("supervised resident clean shutdown completed {first_instance_id}").as_str()
-        ));
-        assert!(messages.contains(&expected_reconciliation.as_str()));
-        assert!(messages.contains(
-            &format!("supervised resident clean shutdown completed {third_instance_id}").as_str()
-        ));
         assert_eq!(
             messages
                 .iter()
@@ -2499,7 +2488,63 @@ mod tests {
                 .count(),
             2
         );
-        assert!(messages.contains(&"launchd plist and current supervisor record removed"));
+
+        let chain = vec![
+            "authenticated supervisor install requested".to_owned(),
+            "supervisor record revision 1 install started".to_owned(),
+            "local identity creation or validation admitted after install bootstrap fact"
+                .to_owned(),
+            "launchd supervisor record and plist publication started".to_owned(),
+            "launchd supervisor record and plist published".to_owned(),
+            "supervisor install completed without starting resident".to_owned(),
+            "direct supervisor start attempt recorded before launchd bootstrap".to_owned(),
+            "launchd bootstrap started".to_owned(),
+            format!("supervised resident instance started {first_instance_id} "),
+            format!(
+                "supervised resident ready instance={first_instance_id} start_observation={first_start_observation_id}"
+            ),
+            "supervisor stop prepared by owner-authenticated lifecycle control".to_owned(),
+            "launchd bootout effect prepared".to_owned(),
+            format!("supervised resident clean shutdown started {first_instance_id}"),
+            "resident Mother endpoint closed".to_owned(),
+            format!("supervised resident clean shutdown completed {first_instance_id}"),
+            "launchd bootout completed after clean resident shutdown".to_owned(),
+            "supervisor stop and launchd bootout completed".to_owned(),
+            "direct supervisor start attempt recorded before launchd bootstrap".to_owned(),
+            "launchd bootstrap started".to_owned(),
+            format!("supervised resident instance started {second_instance_id} "),
+            format!(
+                "supervised resident ready instance={second_instance_id} start_observation={second_start_observation_id}"
+            ),
+            "direct supervisor start attempt recorded before launchd bootstrap".to_owned(),
+            "launchd bootstrap started".to_owned(),
+            expected_reconciliation.clone(),
+            format!("supervised resident instance started {third_instance_id} "),
+            format!(
+                "supervised resident ready instance={third_instance_id} start_observation={third_start_observation_id}"
+            ),
+            "supervisor stop prepared by owner-authenticated lifecycle control".to_owned(),
+            "launchd bootout effect prepared".to_owned(),
+            format!("supervised resident clean shutdown started {third_instance_id}"),
+            "resident Mother endpoint closed".to_owned(),
+            format!("supervised resident clean shutdown completed {third_instance_id}"),
+            "launchd bootout completed after clean resident shutdown".to_owned(),
+            "supervisor stop and launchd bootout completed".to_owned(),
+            "authenticated supervisor uninstall requested".to_owned(),
+            "supervisor uninstall removal started; evidence and runtime state preserved".to_owned(),
+            "launchd plist and current supervisor record removal started".to_owned(),
+            "launchd plist and current supervisor record removed".to_owned(),
+            "supervisor uninstall completed; ledger state identity children and logs preserved"
+                .to_owned(),
+        ];
+        let mut cursor = 0;
+        for expected in chain {
+            let relative = messages[cursor..]
+                .iter()
+                .position(|message| message.contains(&expected))
+                .unwrap_or_else(|| panic!("missing ordered lifecycle fact: {expected}"));
+            cursor += relative + 1;
+        }
     }
 
     #[test]
