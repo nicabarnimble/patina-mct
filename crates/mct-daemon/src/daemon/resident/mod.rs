@@ -49,6 +49,6 @@ use pipeline::execute_resident_call_at;
 pub(super) use pipeline::{ResidentRuntimePaths, execute_resident_call};
 
 mod serving;
-#[cfg(test)]
-use serving::run_test_resident_mother;
 pub(super) use serving::{ResidentStatusSource, run_serve};
+#[cfg(test)]
+pub(crate) use serving::{run_test_resident_mother, run_test_supervised_resident_mother};
