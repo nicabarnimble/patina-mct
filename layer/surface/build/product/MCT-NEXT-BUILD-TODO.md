@@ -8,7 +8,7 @@ Goal: build the next operational layer after the v0 `patinaMother` replacement b
 2. [x] Before Multi-Mother implementation, audit `patinaMother` routing and record translate/rebuild/replace decisions. See audit snapshot below.
 3. [ ] During/after Multi-Mother, design storage/network `mctToy` contracts from the `patinaToy` capability audit.
 4. [ ] JVM SDK targeting the chosen resident ingress: synchronous JSON `POST /calls` over the owner-authenticated UDS control socket. The SDK must use UUID idempotency keys by default because `(node, UID, Vision)` scope is shared by same-user applications.
-5. [ ] Supervisor install/start/stop wrappers after runtime semantics are stable, unless local daily operation becomes painful sooner. The daily-operation pain clock started 2026-07-14 when resident UDS call ingress and real UDS-backed status became available.
+5. [x] macOS user-launchd supervisor install/start/stop/restart/uninstall completed 2026-07-15 under `layer/surface/build/feat/supervisor-lifecycle/SPEC.md`. The daily-operation pain clock that started 2026-07-14 is closed. Linux systemd and non-GUI/headless launchd domains remain separately gated future adapters.
 6. [ ] Resume the paused `mct-release-hardening` and `mct-interface-launcher-control` epics as the final gate. Replacement of `patinaMother` cannot be claimed while they are paused; they are deferred, not dropped.
 
 ## Completed: Multi-Mother — single-hop forwarding
@@ -92,13 +92,22 @@ Use the audit below to translate useful `patinaToy` use cases into newly designe
 - [ ] Network toy: credential/secret-ref attachment through the secrets authority, never raw child env.
 - [ ] Observations: record safe metadata only; no payload bytes, credentials, or secret values.
 
-## Later: supervisor wrappers
+## Completed: macOS supervisor lifecycle — Daily-Driver Slice 2
 
-- [ ] Add `mct-daemon install` / `uninstall` or an `mct` wrapper for service installation.
-- [ ] macOS launchd user service first, matching current platform.
-- [ ] Linux systemd --user after or alongside launchd.
-- [ ] Include start/stop/restart/status/logs/readiness and manual-start conflict guards.
-- [ ] Keep daemon service supervision separate from child process supervision.
+Completed 2026-07-15 under `layer/surface/build/feat/supervisor-lifecycle/SPEC.md`:
+
+- [x] Add top-level `mct-daemon install`, `uninstall`, `start`, `stop`, and `restart`.
+- [x] Install one owner-private, ledger-backed, digest-bound user-launchd record and plist in `gui/<uid>`.
+- [x] Observe fresh bootstrap, install/revision/removal, supervised boot, clean shutdown, unclean reconciliation, conflict refusal, and no-op lifecycle attempts with existing observation kinds.
+- [x] Derive boot initiator provenance from the exact installed supervisor record without fabricating boot-time authentication.
+- [x] Refuse managed/manual/duplicate coexistence before endpoint or launchd effects.
+- [x] Fence readiness and protected effects after known observation-writer loss; do not cache an in-progress result whose outcome cannot be observed.
+- [x] Preserve ledger, state, identity, children/artifacts, authority state, and logs on uninstall.
+- [x] Keep daemon service supervision separate from child process supervision.
+- [ ] Add Linux systemd user supervision through the same adapter contract in a separately gated slice.
+- [ ] Decide macOS headless/SSH-only LaunchDaemon or non-GUI domain semantics through a separate operator gate.
+
+Executable digest binding is intentionally strict: replacing binary bytes requires `install --replace`. Until revised, launchd may throttle-loop on the failed-closed digest mismatch; the replacement runbook documents diagnosis and remediation.
 
 ## JVM SDK
 

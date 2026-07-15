@@ -1,7 +1,7 @@
 ---
 type: feat
 id: supervisor-lifecycle
-status: approved
+status: complete
 created: 2026-07-15
 target: daily-driver-slice-2
 sessions:
@@ -25,51 +25,51 @@ beliefs:
 exit_criteria:
   - id: lifecycle-command-surface
     text: mct-daemon exposes install, uninstall, start, stop, and restart as macOS user-launchd lifecycle commands; serve remains the foreground resident entry point, status remains a projection, and unsupported platforms fail before effects.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon --bin mct-daemon supervisor_command_surface_is_explicit_and_macos_only -- --nocapture
   - id: governing-supervisor-record
     text: A supervised start accepts only an owner-private, ledger-backed, digest-valid current supervisor record whose exact revision binds the operator provenance, executable, launchd policy, and absolute resident paths used by the process.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon --bin mct-daemon supervised_start_rejects_unobserved_tampered_or_stale_records -- --nocapture
   - id: bootstrap-install-order
     text: Fresh install creates only the minimal observer substrate before exclusive writer acquisition and a durable first install-attempt batch; identity, runtime state, supervisor record, plist, and all other effects follow that batch, while append failure and concurrent install suppress effects.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon --bin mct-daemon supervisor_install_bootstrap_is_observed_before_every_remaining_effect -- --nocapture
   - id: resident-conflict-guards
     text: An active managed install refuses manual serve, a manual resident refuses managed start/install, a second plain install refuses, and the exclusive ledger writer remains the definitive same-node resident/bootstrap gate; each durable refusal is observation-bearing.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon --bin mct-daemon supervisor_conflicts_refuse_before_launchd_or_endpoint_effects -- --nocapture
   - id: clean-and-unclean-lifecycle
     text: Supervised boot derives initiator provenance from the exact installed record, clean stop/restart records shutdown while the writer is available, and a start after unclean death records the unmatched prior instance as reconciliation before readiness.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon --bin mct-daemon supervisor_lifecycle_install_start_stop_unclean_reconcile_uninstall_preserves_evidence -- --nocapture
   - id: uninstall-preserves-evidence
     text: Uninstall unloads and removes only current supervision policy, the managed plist, and the current supervisor record; it preserves the observation ledger, state database, identity, children, blobs, and logs, and records both no-op and state-changing attempts.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon --bin mct-daemon supervisor_lifecycle_install_start_stop_unclean_reconcile_uninstall_preserves_evidence -- --nocapture
   - id: writer-loss-fencing
     text: Known resident writer loss makes readiness false and prevents new calls and every lifecycle action except safety stop; no protected effect result is acknowledged or cached, and explicit observer recovery remains unavailable in this slice.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon --bin mct-daemon resident_writer_loss_fences_lifecycle_and_all_other_protected_effects -- --nocapture
   - id: adapter-boundary
     text: Generic lifecycle orchestration depends on a supervisor adapter contract; launchd is the only production adapter, tests use a deterministic fake, and neither launchctl nor systemd behavior enters mct-kernel.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon --bin mct-daemon launchd_adapter_maps_install_start_stop_and_restart_without_ambient_fallbacks -- --nocapture
   - id: executable-digest-strictness
     text: A binary swap without install --replace fails supervised boot before resident effects, reports the executable-digest mismatch class and remediation safely, and never blesses replacement bytes implicitly.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon --bin mct-daemon supervised_start_rejects_unblessed_binary_swap_with_replace_guidance -- --nocapture
   - id: gui-domain-limitation
     text: The launchd adapter targets only gui/<uid>; unavailable GUI domains fail without trying user, system, Homebrew, or detached-process fallbacks.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon --bin mct-daemon launchd_adapter_refuses_missing_gui_domain_without_fallback -- --nocapture
   - id: attribution-ledger
     text: Every behavior-changing MctOperationalSelfObservation obligation implemented by this slice has a COVERED Track 3 row naming landed tests, or a named operator-approved waiver.
-    checked: false
+    checked: true
     verify: bash -lc 'rg -n "MctOperationalSelfObservation|supervisor_lifecycle" layer/surface/build/spec-drift-audit/track3/LEDGER.md'
   - id: workspace-validation
     text: The phase passes the required workspace validation suite.
-    checked: false
+    checked: true
     verify: cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh
 ---
 
@@ -610,6 +610,65 @@ Close-out additionally captures the new integration and failure tests with `--no
 
 ## Build Readiness
 
-**APPROVED — implementation may proceed failing-test-first.**
+**COMPLETE — Daily-Driver Slice 2 landed 2026-07-15.**
 
 The operator ratified D1.1–D1.11 on 2026-07-15, explicitly including the owner-authenticated UDS lifecycle-control message as lifecycle-fact ingress rather than an `MctCall`, and the Track 3 `LAW-LEADS-CODE`/`DEFERRED` handling of recovery invariants. D1.12 and D1.13 record the operator's knowing acceptance of executable-digest strictness and the `gui/<uid>` limitation before the first failing test.
+
+## Close-out
+
+### Reconstructed commit range
+
+Starting tree: `32f248572251eeb0bb04ef28156cf4e3a8201a9f`.
+
+- `b80583e docs: specify launchd supervisor lifecycle` — ratified D1.1–D1.13, exit criteria, and integration proof.
+- `aec5fb7 feat(daemon): add observed launchd lifecycle` — command surface, governing record, bootstrap/install, launchd/fake adapters, lifecycle UDS facts, continuity, uninstall preservation, conflict guards, and writer fence.
+- `528403a fix(daemon): cache results only after durable observations` — terminal run/idempotency outcomes persist only after required ledger facts; fenced completion is not acknowledged or cached.
+- `07f88af test(daemon): prove clean supervised restart continuity` — explicit no-reconciliation proof after matched clean shutdown.
+- `484cdcd fix(daemon): guard global managed resident from manual serve` — default `~/.mct` policy blocks manual serve even from another working directory.
+- Final docs/attribution close-out updates the runbook, TODO item 5, this SPEC, and Track 3.
+
+### Failing-test-first record
+
+The first targeted integration compile was captured before implementation. It failed at `supervisor_lifecycle.rs` because `install_supervisor_for_test` did not exist (`E0425`), proving the test preceded the feature. After the install substrate landed, the primary test drove supervised record provenance, clean stop, unclean abort/reconciliation, and evidence-preserving uninstall.
+
+### Required Integration Proof diff
+
+| SPEC step | Landed primary-test evidence | Difference |
+|---|---|---|
+| 1 | Creates isolated absolute root/plist/log/config/identity/children/state/ledger/UDS/executable paths owned by the current UID. | None. |
+| 2 | Uses `FakeSupervisorAdapter` and the typed test-only simulated launch context. | None; production has no selection hook. |
+| 3 | Orders governing install batch before identity/state/record/plist and checks publication facts. | None. |
+| 4 | Reopens ledger, record, config, identity, and state; checks modes, digests, UID, revision, governing observation, discovery, and completion. | None. |
+| 5 | Starts the real resident task, waits for UDS readiness, checks exact record/revision/provenance, and proves no new boot-time operator fact. | None. |
+| 6 | Stops through owner-authenticated lifecycle UDS plus fake bootout, awaits writer release, and verifies matching clean-shutdown completion. | None. |
+| 7 | Starts the second instance after clean shutdown and explicitly proves no discontinuity reconciliation exists. | None. |
+| 8 | Aborts the second resident task without shutdown completion and releases its writer. | None. |
+| 9 | Starts the third instance and proves unmatched-instance reconciliation precedes third start/readiness. | None. |
+| 10 | Stops the third instance cleanly and runs uninstall. | None. |
+| 11 | Proves loaded fake policy, plist, and current record are absent. | None. |
+| 12 | Proves ledger prefix, config, identity/key, SQLite, children, and log content survive. | None. |
+| 13 | Reopens the ledger and finds uninstall adapter/lifecycle completion plus the prior chain. | None. |
+
+### Attribution and deferrals
+
+Track 3 contains an explicit row for every implemented `MctOperationalSelfObservation` invariant. No implementation behavior received a waiver. `ObservationStoreMutationIsObserved` remains deferred because no retention/export mutation exists. The five observer-restoration/recovery-continuation invariants remain explicitly `DEFERRED` under the operator-approved future recovery SPEC gate; this slice adds no repair command or parallel evidence chain.
+
+### Flake log
+
+No intermittent flake occurred. One full-suite run deterministically failed after `ResidentStatusSource` gained a Tokio-backed writer but its existing test still used plain `#[test]`:
+
+```text
+there is no reactor running, must be called from the context of a Tokio 1.x runtime
+```
+
+The test was corrected to `#[tokio::test]`; the single targeted rerun passed, and all subsequent full suites passed. No test required a second rerun.
+
+### Final validation
+
+- `cargo test --workspace`: 319 tests passed before final docs validation.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- `./scripts/ci-tier0.sh`: passed.
+- New integration/failure `--nocapture` transcripts: passed.
+- Allium law was unchanged.
+
+TODO item 5's daily-operation pain clock is closed. Linux systemd and headless/non-GUI macOS supervision remain separate future gates.

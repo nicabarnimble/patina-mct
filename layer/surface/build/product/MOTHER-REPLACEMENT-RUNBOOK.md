@@ -8,7 +8,7 @@ This is the v0 runtime replacement boundary:
 
 - MCT owns local authority, child approval/assignment, toy grants, resident serving, peer admission, routing, payload delivery, and observations.
 - Belief/scry/assay/session semantics remain the responsibility of Patina, which may operate as an `mctChild` rather than another resident coordinator.
-- Start/stop/install via a system supervisor is not in the MCT binary yet; run `mct-daemon serve` directly or wrap it with launchd/systemd until the production packaging follow-up lands.
+- On macOS, MCT owns its user-launchd installation and lifecycle through the ledger-backed `mct-daemon install|start|stop|restart|uninstall` workflow below. Linux systemd remains a future adapter.
 
 ## One-node local workflow
 
@@ -30,6 +30,36 @@ cargo run -p mct-daemon -- wasm call-wit <child-name> patina:slate/control@0.1.0
 
 ## Resident `mctMother` workflow
 
+### Supported macOS daily-driver workflow
+
+Build or install the exact binary that launchd will execute, then create the observed supervisor record and plist:
+
+```bash
+cargo build --release
+./target/release/mct-daemon install \
+  --executable "$(pwd)/target/release/mct-daemon"
+```
+
+Install creates or validates identity and state under `~/.mct`, writes the owner-private governing record at `~/.mct/supervisor.json`, and writes `~/Library/LaunchAgents/io.patina.mct.mother.plist`. It does **not** intentionally start the service in the current session. Start it explicitly:
+
+```bash
+./target/release/mct-daemon start
+./target/release/mct-daemon status --uds ~/.mct/control.sock --json
+```
+
+Normal lifecycle commands are:
+
+```bash
+./target/release/mct-daemon stop
+./target/release/mct-daemon start
+./target/release/mct-daemon restart
+./target/release/mct-daemon uninstall
+```
+
+`restart` is a clean stop followed by start; it does not force-kill with `kickstart -k`. `uninstall` removes only loaded launchd state, the managed plist, and the current supervisor record. It preserves the observation ledger, state database, identity/key, children, artifacts/blobs, authority state, and logs.
+
+The launchd slice supports only a logged-in GUI domain (`gui/<uid>`). Headless and SSH-only sessions do not fall back to another launchd domain or a detached process. Use foreground development only when no managed supervisor record is installed:
+
 ```bash
 cargo run -p mct-daemon -- serve \
   --identity .mct/identity/iroh-secret.hex \
@@ -40,26 +70,35 @@ cargo run -p mct-daemon -- serve \
   --uds .mct/control.sock
 ```
 
-The resident process owns the Iroh endpoint, authenticated local application-call ingress, current child/config projections, routing/execution state, and the single observation writer. It loads peer bindings from `.mct/config.json`, requires signed binding presentations, executes approved local process/WIT children through routing/revalidation, and removes the UDS socket on clean shutdown.
+A managed install refuses manual `serve`; uninstall supervision before returning to foreground operation.
 
-Verify the running resident through its UDS-backed projection:
+### Binary replacement and launchd throttle loops
+
+The supervisor record binds the exact executable bytes by BLAKE3 digest. Rebuilding or replacing the binary in place does not bless it. A supervised boot after such a swap fails closed before endpoint/readiness and reports `supervisor executable digest mismatch` with `install --replace` guidance. Because launchd uses `KeepAlive` with throttling, logs may show repeated throttled starts while the unblessed binary remains installed.
+
+Remediate with the exact replacement binary:
 
 ```bash
-cargo run -p mct-daemon -- status --uds .mct/control.sock --json
+./target/release/mct-daemon stop       # observed no-op when already stopped
+./target/release/mct-daemon install --replace \
+  --executable "$(pwd)/target/release/mct-daemon"
+./target/release/mct-daemon start
 ```
+
+Do not edit `supervisor.json` or the plist to repair a mismatch. Record revision is the blessing operation.
+
+The resident process owns the Iroh endpoint, authenticated local application-call ingress, current child/config projections, routing/execution state, and the single observation writer. It requires signed peer-binding presentations, executes approved local process/WIT children through routing/revalidation, and records clean shutdown or reconciles an unmatched prior instance on the next start.
 
 Submit production local application calls through owner-authenticated UDS `POST /calls`. The body is the `MctResidentCallSubmission` contract from `layer/surface/build/feat/resident-call-ingress/SPEC.md`; caller, origin, and peer authority are derived by Mother and are not accepted from JSON:
 
 ```bash
-curl --unix-socket .mct/control.sock \
+curl --unix-socket ~/.mct/control.sock \
   -H 'content-type: application/json' \
   --data-binary @call.json \
   http://localhost/calls
 ```
 
 The response is synchronous and typed. Retry a lost response with the same fingerprint and idempotency key; matching completed retries replay the durable result without another child effect.
-
-Stop v0 with SIGINT/SIGTERM. Supervisor install/start/stop wrappers are deferred production packaging follow-up.
 
 ## Peer setup
 
@@ -116,6 +155,6 @@ The observation ledger is `.mct/observations.jsonl`; payload bytes and secret va
 ## Not in v0 replacement boundary
 
 - Belief/scry/assay/session runtime internals.
-- System supervisor install/uninstall in the `mct-daemon` binary.
+- Linux systemd supervision and macOS headless/SSH-only launchd domains. User launchd in `gui/<uid>` is implemented.
 - Multi-Vision publication and transitive/brokered routing. Bilaterally authorized single-hop cross-Mother forwarding is implemented in v0.
 - Full JVM SDK/client library packaging beyond UDS `POST /calls`; `jvm call-json` remains compatibility/development evidence.
