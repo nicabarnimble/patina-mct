@@ -1209,14 +1209,24 @@ fn install_with_adapter(
     })
 }
 
-pub(super) fn refuse_manual_serve_if_managed(config_path: &Path) -> Result<()> {
-    let Some(root) = config_path.parent() else {
+pub(super) fn refuse_manual_serve_if_managed(
+    config_path: &Path,
+    include_default_global: bool,
+) -> Result<()> {
+    let mut candidates = Vec::new();
+    if include_default_global {
+        let uid = current_uid()?;
+        candidates.push(current_home(uid)?.join(".mct").join(SUPERVISOR_RECORD_FILE));
+    }
+    if let Some(root) = config_path.parent() {
+        let configured = root.join(SUPERVISOR_RECORD_FILE);
+        if !candidates.contains(&configured) {
+            candidates.push(configured);
+        }
+    }
+    let Some(record_path) = candidates.into_iter().find(|path| path.exists()) else {
         return Ok(());
     };
-    let record_path = root.join(SUPERVISOR_RECORD_FILE);
-    if !record_path.exists() {
-        return Ok(());
-    }
     let record = validate_supervisor_record(&record_path, true)?;
     let uid = current_uid()?;
     if post_lifecycle_control(&record, "manual_serve_refused", uid).is_ok() {
@@ -2323,7 +2333,7 @@ mod tests {
         );
         drop(held);
 
-        let manual = refuse_manual_serve_if_managed(&paths.config).unwrap_err();
+        let manual = refuse_manual_serve_if_managed(&paths.config, false).unwrap_err();
         assert!(manual.to_string().contains("manual serve refused"));
 
         let concurrent_root = tempfile::tempdir().unwrap();
