@@ -610,9 +610,11 @@ Close-out additionally captures the new integration and failure tests with `--no
 
 ## Build Readiness
 
-**COMPLETE — Daily-Driver Slice 2 landed 2026-07-15.**
+**COMPLETE — Daily-Driver Slice 2 proof gaps closed 2026-07-15.**
 
 The operator ratified D1.1–D1.11 on 2026-07-15, explicitly including the owner-authenticated UDS lifecycle-control message as lifecycle-fact ingress rather than an `MctCall`, and the Track 3 `LAW-LEADS-CODE`/`DEFERRED` handling of recovery invariants. D1.12 and D1.13 record the operator's knowing acceptance of executable-digest strictness and the `gui/<uid>` limitation before the first failing test.
+
+The first close-out was rejected after independent verification found that its "all 13 steps matched, no deviations" statement exceeded the landed assertions. The six implementation-era commits remained accepted and were not reverted or reworked. That evidence claim was withdrawn while the slice reopened. Commits `24dae37`, `ef285f2`, and `ae09fba` close the cited integration, failure-proof, and final-chain reconstruction gaps; this section is the replacement close-out record.
 
 ## Close-out
 
@@ -625,7 +627,11 @@ Starting tree: `32f248572251eeb0bb04ef28156cf4e3a8201a9f`.
 - `528403a fix(daemon): cache results only after durable observations` — terminal run/idempotency outcomes persist only after required ledger facts; fenced completion is not acknowledged or cached.
 - `07f88af test(daemon): prove clean supervised restart continuity` — explicit no-reconciliation proof after matched clean shutdown.
 - `484cdcd fix(daemon): guard global managed resident from manual serve` — default `~/.mct` policy blocks manual serve even from another working directory.
-- Final docs/attribution close-out updates the runbook, TODO item 5, this SPEC, and Track 3.
+- `9eefed8 docs: close launchd lifecycle slice` — preserved as the initial close-out commit; its unsupported evidence claim was subsequently withdrawn.
+- `24dae37 test(daemon): complete supervisor integration proof` — extends the primary disk-backed proof with store reopen, exact instance continuity, loaded-state, populated artifact/blob preservation, and final-chain reconstruction assertions.
+- `ef285f2 test(daemon): close supervisor failure proof gaps` — adds the five named failure/no-op proofs and the two minimal observation fixes they exposed.
+- `ae09fba test(daemon): reconstruct complete supervisor evidence chain` — proves the full bootstrap/start/readiness/stop/reconciliation/uninstall fact sequence remains ordered after final ledger reopen.
+- Final replacement close-out records line-cited evidence; Track 3 is unchanged because no invariant disposition changed.
 
 ### Failing-test-first record
 
@@ -633,25 +639,39 @@ The first targeted integration compile was captured before implementation. It fa
 
 ### Required Integration Proof diff
 
-| SPEC step | Landed primary-test evidence | Difference |
+Every matched step below cites the landed test source. Line numbers refer to `crates/mct-daemon/src/daemon/supervisor_lifecycle.rs` at the replacement close-out tree.
+
+| SPEC step | Cited landed evidence | Difference |
 |---|---|---|
-| 1 | Creates isolated absolute root/plist/log/config/identity/children/state/ledger/UDS/executable paths owned by the current UID. | None. |
-| 2 | Uses `FakeSupervisorAdapter` and the typed test-only simulated launch context. | None; production has no selection hook. |
-| 3 | Orders governing install batch before identity/state/record/plist and checks publication facts. | None. |
-| 4 | Reopens ledger, record, config, identity, and state; checks modes, digests, UID, revision, governing observation, discovery, and completion. | None. |
-| 5 | Starts the real resident task, waits for UDS readiness, checks exact record/revision/provenance, and proves no new boot-time operator fact. | None. |
-| 6 | Stops through owner-authenticated lifecycle UDS plus fake bootout, awaits writer release, and verifies matching clean-shutdown completion. | None. |
-| 7 | Starts the second instance after clean shutdown and explicitly proves no discontinuity reconciliation exists. | None. |
-| 8 | Aborts the second resident task without shutdown completion and releases its writer. | None. |
-| 9 | Starts the third instance and proves unmatched-instance reconciliation precedes third start/readiness. | None. |
-| 10 | Stops the third instance cleanly and runs uninstall. | None. |
-| 11 | Proves loaded fake policy, plist, and current record are absent. | None. |
-| 12 | Proves ledger prefix, config, identity/key, SQLite, children, and log content survive. | None. |
-| 13 | Reopens the ledger and finds uninstall adapter/lifecycle completion plus the prior chain. | None. |
+| 1 | `supervisor_lifecycle.rs:2013-2025`, `:2152-2155` create the isolated absolute path set and executable fixture; `:2092-2108` verifies owner-private root/record modes. | None. |
+| 2 | `supervisor_lifecycle.rs:1937-2009`, `:2153-2155`, `:2204-2217` use only `FakeSupervisorAdapter` and the test-only supervised resident path, which validates typed simulated context. | None; production has no adapter/context selection hook. |
+| 3 | `supervisor_lifecycle.rs:2091-2147` reopens the ledger, orders the governing install batch before identity and completion, and validates record/plist publication digests. | None. |
+| 4 | `supervisor_lifecycle.rs:2158-2198` reopens ledger and record evidence, loads config through `MctDaemonConfigStore`, validates the existing identity through the identity store loader without byte mutation, opens SQLite through `MctRuntimeStateStore`, and checks UID, revision, digests, endpoint identity, schema, and initial contents. | None. |
+| 5 | `supervisor_lifecycle.rs:2200-2236` starts the real resident, awaits UDS readiness, verifies exact record/revision/install provenance, and proves no boot-time operator-authentication fact was added. | None. |
+| 6 | `supervisor_lifecycle.rs:2236-2255` captures the exact first instance id, stops through lifecycle UDS/fake bootout, awaits exit, and matches both shutdown-started and shutdown-completed to that id. | None. |
+| 7 | `supervisor_lifecycle.rs:2257-2284` starts the second resident after the matched clean shutdown and proves no unmatched-instance reconciliation exists. | None. |
+| 8 | `supervisor_lifecycle.rs:2282-2292` captures the second instance/start observation, aborts without shutdown completion, marks fake launchd unloaded, and waits for writer release. | None. |
+| 9 | `supervisor_lifecycle.rs:2294-2332` starts the third resident and proves the one reconciliation names the exact second instance and start observation before the third resident start/readiness. | None. |
+| 10 | `supervisor_lifecycle.rs:2336-2344`, `:2376-2378` stops the third resident cleanly and then uninstalls. | None. |
+| 11 | `supervisor_lifecycle.rs:2376-2389` proves current record/plist absence and explicitly inspects the fake adapter as unloaded after uninstall. | None. |
+| 12 | `supervisor_lifecycle.rs:2346-2413` populates a child artifact file, SQLite artifact record, and content-addressed blob before uninstall, then verifies their exact bytes/record together with ledger prefix, config, identity/key, state, children, and log preservation afterward. | None. |
+| 13 | `supervisor_lifecycle.rs:2415-2547` performs the final read-only ledger reopen, correlates the uninstall trace, asserts every uninstall operator/lifecycle/adapter fact, and reconstructs the ordered bootstrap, three starts/readiness facts, two exact clean stops, one exact unclean reconciliation, and uninstall chain. | None. |
+
+### Additional Required Failure Proofs
+
+| Required proof | Named landed test and citation |
+|---|---|
+| Foreign/digest-mismatched plist uninstall observes and refuses without deletion. | `uninstall_refuses_foreign_plist_with_durable_observation`, `supervisor_lifecycle.rs:2783-2801`. |
+| Generic launchctl non-zero result is a typed observed failure with one adapter attempt and no fallback. | `launchd_non_zero_start_is_observed_once_without_fallback`, `supervisor_lifecycle.rs:2804-2841`. |
+| `install --replace` against a loaded service refuses durably. | `install_replace_refuses_loaded_service_durably`, `supervisor_lifecycle.rs:2844-2868`. |
+| Start and stop no-ops are observed successful reconciliations. | `supervisor_start_and_stop_no_ops_are_observed`, `supervisor_lifecycle.rs:2871-2932`. |
+| Shutdown append failure emits no clean claim and the next start reconciles the exact unmatched instance/start. | `shutdown_append_failure_has_no_clean_claim_and_next_start_reconciles`, `supervisor_lifecycle.rs:2935-2988`. |
 
 ### Attribution and deferrals
 
 Track 3 contains an explicit row for every implemented `MctOperationalSelfObservation` invariant. No implementation behavior received a waiver. `ObservationStoreMutationIsObserved` remains deferred because no retention/export mutation exists. The five observer-restoration/recovery-continuation invariants remain explicitly `DEFERRED` under the operator-approved future recovery SPEC gate; this slice adds no repair command or parallel evidence chain.
+
+The GAP A/B continuation changed proof depth, not invariant coverage or disposition. Track 3 therefore remains unchanged: 19 `COVERED`, 6 `DEFERRED`, no waivers.
 
 ### Flake log
 
@@ -665,10 +685,17 @@ The test was corrected to `#[tokio::test]`; the single targeted rerun passed, an
 
 ### Final validation
 
-- `cargo test --workspace`: 319 tests passed before final docs validation.
+Each continuation implementation commit passed `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `./scripts/ci-tier0.sh`, `allium check layer/allium`, and `allium analyse layer/allium` before commit.
+
+Replacement close-out standing checks:
+
+- `cargo test --workspace`: 324 tests passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
-- `./scripts/ci-tier0.sh`: passed.
-- New integration/failure `--nocapture` transcripts: passed.
-- Allium law was unchanged.
+- `./scripts/ci-tier0.sh`: passed, including format, vocabulary, 324 tests, Clippy, and Allium check.
+- `allium check layer/allium`: passed with no diagnostics or findings.
+- `allium analyse layer/allium`: passed with no diagnostics or findings.
+- Primary integration and all five new named GAP B tests passed individually with `--nocapture`.
+- No continuation test flaked or required a rerun.
+- Allium law and Track 3 dispositions were unchanged.
 
 TODO item 5's daily-operation pain clock is closed. Linux systemd and headless/non-GUI macOS supervision remain separate future gates.
