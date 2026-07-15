@@ -1475,7 +1475,7 @@ fn resident_mutation_handler(
     ledger: ResidentLedgerWriter,
 ) -> mct_daemon::MctUdsControlMutationHandler {
     let mutation_guard = Arc::new(tokio::sync::Mutex::new(()));
-    mct_daemon::MctUdsControlMutationHandler::new(move |path, body| {
+    mct_daemon::MctUdsControlMutationHandler::new_authenticated(move |peer, path, body| {
         let configured_path = configured_path.clone();
         let children_dir = children_dir.clone();
         let state_path = state_path.clone();
@@ -1483,7 +1483,9 @@ fn resident_mutation_handler(
         let mutation_guard = Arc::clone(&mutation_guard);
         async move {
             let _mutation_guard = mutation_guard.lock().await;
-            if path == "/blobs" {
+            if path == "/lifecycle/fact" {
+                execute_resident_lifecycle_fact(&ledger, peer, &body).await
+            } else if path == "/blobs" {
                 match state_path {
                     Some(state_path) => {
                         execute_resident_blob_mutation(&state_path, &ledger, &body).await
