@@ -146,6 +146,67 @@ contract MigrationResponsibilityPlacement {
 }
 
 ------------------------------------------------------------
+-- Registry-source sync quarry disposition
+------------------------------------------------------------
+
+-- Decision: 2026-07-14 operational-scope elicitation applies the placement test per part to
+-- `patinaMother` registry-source sync. Accepted mechanism is translated and rebuilt under MCT law;
+-- ambient authority and inherited implementation shape are rejected rather than ported.
+-- Decision: Generic source catalog, explicit sync and reconciliation, acquisition staging, and
+-- current-state projection are MCT product responsibilities. External filesystem, network, or
+-- content-source access is implemented by Toy adapters under current effect authority.
+-- Decision: Source-authority and operator-pointed records, ToyGrant or effect authority, the
+-- integrity floor, and exact-artifact approval are kernel law. Acquisition, verification, and
+-- lifecycle observations are product evidence and never grants.
+-- Decision: Patina-specific source graph, belief/import interpretation, and application vocabulary
+-- remain in Patina or another Child. Registry browsing, search, provenance explanation, and
+-- diagnostics may ship as optional MCT product tooling outside the kernel.
+-- Decision: Configured-source ambient trust, sync-implied installation/approval/assignment or
+-- execution, allow-by-default access, and legacy database or API shape are rejected. Periodic or
+-- event-triggered sync initiation awaits scheduling authority law.
+-- Decision: Source credentials remain under independent secrets and connection authority. A
+-- source-authority record neither stores nor implies credentials; the two authorities meet only at
+-- the acquisition adapter.
+
+contract PatinaRegistrySyncQuarryDisposition {
+    @invariant GenericRegistryMechanismBecomesMctProduct
+        -- Source catalog, explicit sync and reconciliation, acquisition staging, and current-state
+        -- projection are rebuilt as generic MCT product responsibilities.
+
+    @invariant SourceAccessBecomesToyAdapter
+        -- Filesystem, network, and content-source effects are rebuilt as explicitly authorized Toy
+        -- adapters and never inherit ambient access from `patinaMother`.
+
+    @invariant RegistryAuthorityRemainsKernel
+        -- Source trust, operator-pointed acquisition, effect authority, integrity requirements,
+        -- and exact-artifact approval remain distinct kernel authority decisions and records.
+
+    @invariant AcquisitionFactsAreEvidenceNotGrants
+        -- Acquisition, verification, and lifecycle observations prove what occurred but confer no
+        -- source, adapter, installation, approval, assignment, or execution authority.
+
+    @invariant PatinaSourceMeaningRemainsChildMeaning
+        -- Source-graph, belief/import interpretation, and application vocabulary remain in Patina
+        -- or another Child rather than entering Mother or the MCT authority kernel.
+
+    @invariant RegistryToolingIsOptionalAndOutsideKernel
+        -- Browsing, search, provenance explanation, and diagnostics may ship with the MCT product
+        -- but do not become required authority-kernel behavior.
+
+    @invariant AmbientRegistryShapeIsRejected
+        -- Config-implied trust, sync-implied lifecycle authority, allow-by-default access, and
+        -- inherited database or API shape are rejected rather than translated as authority.
+
+    @invariant RecurringSyncAwaitsSchedulingLaw
+        -- Registry law defines an explicit sync operation but grants no periodic or event-triggered
+        -- initiation; that authority belongs to separately elicited scheduling law.
+
+    @invariant SourceCredentialsRemainIndependent
+        -- Source authority contains no credential authority; independently governed secrets and
+        -- connection evidence meet source trust only at the acquisition adapter effect boundary.
+}
+
+------------------------------------------------------------
 -- Capability asymmetry
 ------------------------------------------------------------
 

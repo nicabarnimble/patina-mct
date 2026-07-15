@@ -910,6 +910,146 @@ contract MctLocalApplicationIngress {
         -- intact.
 }
 
+-- Decision: 2026-07-14 operational-scope elicitation makes a standing time or event trigger a
+-- distinct `CallTriggerAuthority` record. Only an authenticated local principal authorized by
+-- current policy may create, revise, or revoke it. A Child may request one but cannot create or
+-- activate authority.
+-- Decision: Trigger authority is explicitly scoped to one Mother and Vision, canonical caller
+-- binding, WIT target, constrained payload or template reference, trigger class and source,
+-- validity window, issuer, record revision, and policy revision. Missing scope grants nothing, and
+-- activation follows durable authority observation.
+-- Decision: A firing constructs a fresh immutable `MctCall` and re-enters current payload,
+-- idempotency, authority, routing, revalidation, and effect law. Trigger authority creates no
+-- Child, Toy, route, data, or effect authority and cannot preserve stale authority after revocation.
+-- Every firing's evidence references the governing trigger record and policy revision.
+-- Decision: Call-origin mapping for trigger-fired calls remains open for the implementing SPEC's
+-- operator gate under D1.3 truthful-origin discipline. A firing cannot default to `JvmAdapter` or
+-- any existing origin whose lineage it does not truthfully have.
+
+value CallTriggerScope {
+    mother_node_id: String
+    vision_id: String
+    canonical_caller: CallerIdentity
+    target: OperationTarget
+    payload_constraint_ref: String
+    trigger_class: temporal | event
+    trigger_source_ref: String
+}
+
+entity CallTriggerAuthority {
+    trigger_authority_id: String
+    scope: CallTriggerScope
+    issuer_principal_ref: String
+    record_revision: Integer
+    policy_revision: Integer
+    starts_at: Timestamp
+    expires_at: Timestamp
+    authority_state: requested | active | revoked | expired | superseded
+    authority_observation_id: String
+}
+
+entity CallTriggerFiringEvidence {
+    firing_id: String
+    trigger_authority_id: String
+    trigger_record_revision: Integer
+    trigger_policy_revision: Integer
+    call_id: String
+    firing_observation_id: String
+}
+
+actor CallTriggerAuthorityReader {
+    within: CallTriggerAuthority
+    identified_by: trigger.trigger_authority_id
+}
+
+actor CallTriggerFiringReader {
+    within: CallTriggerFiringEvidence
+    identified_by: firing.firing_id
+}
+
+surface CallTriggerAuthorityProjection {
+    facing reader: CallTriggerAuthorityReader
+    context trigger: CallTriggerAuthority
+
+    exposes:
+        trigger.trigger_authority_id
+        trigger.scope.mother_node_id
+        trigger.scope.vision_id
+        trigger.scope.canonical_caller.node_id
+        trigger.scope.canonical_caller.user_id
+        trigger.scope.canonical_caller.project_id
+        trigger.scope.target.namespace
+        trigger.scope.target.interface_name
+        trigger.scope.target.function_name
+        trigger.scope.payload_constraint_ref
+        trigger.scope.trigger_class
+        trigger.scope.trigger_source_ref
+        trigger.issuer_principal_ref
+        trigger.record_revision
+        trigger.policy_revision
+        trigger.starts_at
+        trigger.expires_at
+        trigger.authority_state
+        trigger.authority_observation_id
+}
+
+surface CallTriggerFiringProjection {
+    facing reader: CallTriggerFiringReader
+    context firing: CallTriggerFiringEvidence
+
+    exposes:
+        firing.firing_id
+        firing.trigger_authority_id
+        firing.trigger_record_revision
+        firing.trigger_policy_revision
+        firing.call_id
+        firing.firing_observation_id
+}
+
+contract MctCallTriggerAuthority {
+    @invariant ManagementRequiresCurrentLocalAuthority
+        -- Creation, revision, and revocation require an authenticated local principal authorized by
+        -- current policy to manage trigger records.
+
+    @invariant TriggerScopeIsExplicitAndBounded
+        -- One record explicitly scopes Mother, Vision, canonical caller, WIT target, constrained
+        -- payload, trigger class and source, validity window, issuer, record revision, and policy.
+
+    @invariant ActivationFollowsDurableAuthorityFact
+        -- Trigger authority becomes active only after its authority decision is durable; missing
+        -- scope, failed append, revocation, expiry, or supersession prevents firing.
+
+    @invariant TriggerAuthorityCannotExpandCallAuthority
+        -- A standing trigger grants no Child, Toy, route, data, payload, or effect authority beyond
+        -- permission to originate the scoped call attempt.
+
+    @invariant EachFiringCreatesFreshCall
+        -- Every firing constructs a new immutable call and passes current payload integrity,
+        -- idempotency, authority, routing, revalidation, and effect evaluation.
+
+    @invariant StaleTriggerCannotPreserveAuthority
+        -- A trigger created under older facts cannot survive its own revocation or make revoked,
+        -- expired, narrowed, or otherwise stale call authority current.
+
+    @invariant ChildRequestIsNeverTriggerGrant
+        -- A Child may request standing trigger authority, but its request cannot create, revise,
+        -- activate, or widen the governing record.
+
+    @invariant FiringEvidenceCarriesTriggerProvenance
+        -- Every fired call has evidence referencing the exact trigger record revision and governing
+        -- policy revision in addition to its fresh call facts.
+
+    @invariant TriggerOriginCannotDefaultUntruthfully
+        -- Until an implementing SPEC ratifies truthful origin telemetry, a fired call cannot be
+        -- labeled `JvmAdapter` or assigned any existing lineage by convenience.
+}
+
+open question "CallTriggerAuthority origin mapping — which truthful CallOrigin identifies time-triggered and event-triggered calls at the implementing SPEC operator gate?"
+open question "CallTriggerAuthority event-source Toy — what contract and authority bind an external event source to firing eligibility?"
+open question "CallTriggerAuthority domain cadence — how does a Child express application cadence meaning without moving that meaning into Mother?"
+open question "CallTriggerAuthority bounds — which named queue, backpressure, missed-fire, coalescing, expiry, and retry obligations govern firing?"
+open question "Registry sync initiation — which explicit schedule or event authority may initiate the already-governed registry sync operation?"
+
 -- Decision: `mct/call/0` is the remote WIT-shaped call protocol. It may run only after an admitted `mct/hello/0` decision that accepted `mct/call/0` for the peer binding and Vision scope.
 -- Decision: `mct/call/0` is a transport envelope around the semantic `MctCall`; it does not create a second call model. The receiving Mother constructs or rejects one immutable `MctCall` before authority routing.
 -- Decision: Remote calls are WIT-shaped: namespace, interface, function. Iroh stream details, relay/direct path facts, and endpoint ids remain adapter evidence and authority context, not operation identity.
@@ -1591,6 +1731,161 @@ surface MctObservationProjection {
         observation.detail_ref
 }
 
+-- Decision: 2026-07-14 operational-scope elicitation classifies every operational lifecycle
+-- action attempt as observation-bearing: install, uninstall, supervisor start, stop, restart,
+-- upgrade, schema migration, backup, repair, reconciliation, and shutdown. Failed attempts and
+-- successful no-op reconciliation remain facts. Status and readiness inspection are projections
+-- and do not create an effect zone.
+-- Decision: Ledger retention, archival, and export are reserved future actions. Any future
+-- mutation of the observation store is pre-classified as observation-bearing before its design.
+-- Decision: This classification does not settle bootstrap or ledger-unavailable ordering. Install
+-- remains subject to the observer-creation law and shutdown to the failure-edge law elicited
+-- separately. Unclean termination is reconstructed by an observed reconciliation on the next
+-- start rather than represented as an impossible crash-time observation.
+-- Decision: 2026-07-14 bootstrap ordering permits only the minimal state container, empty ledger,
+-- and exclusive-writer mechanism needed to create the observer before the first append. This
+-- substrate grants no authority and proves neither installation nor readiness. The first writer
+-- records the authenticated initiator, intended lifecycle action, and discovered pre-existing
+-- state before identity/config persistence, service registration, endpoint binding, readiness, or
+-- any other remaining bootstrap effect.
+-- Decision: Before resident identity exists, the bootstrap initiator is the authenticated local OS
+-- principal performing the action. Exclusive ledger-writer acquisition is the single-bootstrap
+-- admission gate; one attempt proceeds and concurrent attempts fail closed without effects.
+-- Decision: A pre-ledger installer receipt is discovered-state input only. It is neither authority
+-- nor a parallel evidence format. First-append failure suppresses remaining effects and success;
+-- minimal observer-substrate residue is reconciled by a later admitted attempt.
+-- Decision: 2026-07-14 post-bootstrap writer loss fences Mother from readiness, new calls,
+-- authority mutations, lifecycle actions, and unrelated cleanup effects. A protected effect that
+-- has already begun may reach its natural end, but its outcome is neither acknowledged nor cached
+-- for later delivery and is included in the recovery or next-start discontinuity reconciliation.
+-- Decision: Termination for safety may proceed without an append and cannot be represented as an
+-- observed successful shutdown. Explicit observer restoration is the only other carve-out: an
+-- authenticated local OS principal holding exclusive ledger ownership may perform only the minimum
+-- work required to restore append capability. Failure leaves Mother fenced.
+-- Decision: Recovery preserves prior ledger bytes as immutable evidence by reference. Every
+-- recovery fact or linked continuation binds those exact bytes by digest, records initiator,
+-- discovered state or damage, intended and performed repair, and outcome before readiness or
+-- ordinary effects resume. An emergency side journal is never authority or a parallel evidence
+-- chain.
+-- Decision: 2026-07-14 operational self-action facts project three distinct roles from current
+-- authenticated records and action context: subject is the installation, node, or resource being
+-- changed; initiator is the current principal or governing record that caused the action; executor
+-- is the installer, supervisor, resident, or adapter performing the attempt. Delegated actions
+-- retain each role, client-authored labels select none, and lifecycle actions are not `MctCall`s.
+-- Decision: A supervisor-initiated action derives its initiator from the governing supervisor
+-- record and that record's authenticated install-time operator provenance. Consistent process
+-- context proves use of the record at boot; the ledger cannot claim a new boot-time authentication.
+-- Before node identity exists, bootstrap uses pending local installation scope as subject and the
+-- authenticated local OS principal as initiator.
+-- Decision: Area 1 reuses existing lifecycle, operator, adapter-effect, and storage observation
+-- kinds to compose operational facts. It adds no kernel observation kind.
+
+contract MctOperationalSelfObservation {
+    @invariant LifecycleActionAttemptsAreObserved
+        -- Install, uninstall, supervisor start, stop, restart, upgrade, schema migration, backup,
+        -- repair, reconciliation, and shutdown attempts produce lifecycle observations, including
+        -- failed attempts and reconciliation that truthfully finds no state change.
+
+    @invariant ObservationStoreMutationIsObserved
+        -- Any future retention, archival, export, or other mutation of the canonical observation
+        -- store is observation-bearing and cannot be introduced as silent operational maintenance.
+
+    @invariant StatusAndReadinessAreProjections
+        -- Reading status or readiness derives a current view and does not itself create a new
+        -- operational effect or required lifecycle observation.
+
+    @invariant UncleanTerminationIsReconciledAfterward
+        -- An unclean termination is not fabricated as observed at crash time; the next start
+        -- records reconciliation evidence that reconstructs the discontinuity.
+
+    @invariant MinimalObserverSubstrateMayPrecedeFirstAppend
+        -- Before the first append, bootstrap may create only the minimal substrate required to
+        -- obtain one exclusive ledger writer; that residue grants no authority, installation,
+        -- resident identity, or readiness claim.
+
+    @invariant FirstAppendPrecedesRemainingBootstrapEffects
+        -- The first writer durably records initiator, intended lifecycle action, and discovered
+        -- state before identity or config persistence, service registration, endpoint binding,
+        -- readiness, or any other remaining install or first-start effect.
+
+    @invariant BootstrapInitiatorIsAuthenticatedLocalPrincipal
+        -- Until resident identity exists, the authenticated subject of bootstrap is the local OS
+        -- principal performing the lifecycle action; client-authored identity cannot replace it.
+
+    @invariant ExclusiveWriterAdmitsOneBootstrap
+        -- Exclusive ledger-writer ownership is the bootstrap admission gate; concurrent attempts
+        -- fail closed without effects and cannot race to establish another first fact.
+
+    @invariant ExternalReceiptIsInputNotEvidence
+        -- A receipt left outside the ledger may be represented only as discovered-state input in
+        -- the first fact and supplies neither authority nor an alternative evidence chain.
+
+    @invariant BootstrapAppendFailureSuppressesSuccess
+        -- Failure of the first append prevents remaining protected bootstrap effects, readiness,
+        -- and install or start acknowledgement; a later admitted attempt reconciles minimal residue.
+
+    @invariant WriterLossFencesMother
+        -- Known post-bootstrap writer loss removes readiness and prevents new calls, authority
+        -- mutations, lifecycle actions, protected effects, and unrelated effectful cleanup.
+
+    @invariant InProgressEffectsAreNotAcknowledgedOrCached
+        -- A protected effect already executing at detected writer loss may finish naturally, but
+        -- its outcome is not acknowledged or cached for delivery and is reconciled as discontinuity.
+
+    @invariant TerminationForSafetyMayProceed
+        -- Mother may terminate while fenced without an append, unrelated cleanup, or a claim of
+        -- observed successful shutdown; later reconciliation records the discontinuity.
+
+    @invariant ObserverRestorationIsExplicitAndMinimal
+        -- Only an authenticated local OS principal with exclusive ledger ownership may request the
+        -- minimum repair needed to restore append capability; it cannot resume ordinary operation.
+
+    @invariant RecoveryDigestBindsPreservedEvidence
+        -- Recovery preserves prior ledger bytes as immutable evidence by reference, and every
+        -- recovery fact or linked continuation identifies those exact bytes by digest.
+
+    @invariant RecoveryPrecedesReadiness
+        -- Restored append capability records initiator, discovered damage or state, intended and
+        -- performed repair, and outcome before readiness or ordinary effects resume.
+
+    @invariant FailedRecoveryRemainsFenced
+        -- Failed observer restoration may produce diagnostics but cannot acknowledge recovery,
+        -- restore readiness, or permit another protected effect.
+
+    @invariant NoParallelRecoveryEvidenceChain
+        -- Emergency journals, receipts, and diagnostics cannot become authority or an alternative
+        -- evidence chain around the canonical ledger and its digest-bound continuation.
+
+    @invariant OperationalRolesAreDistinctProjections
+        -- Subject, initiator, and executor are separately derived from current authenticated
+        -- records and action context; no submitted label can assign one of these roles.
+
+    @invariant SubjectNamesLifecycleTarget
+        -- The subject is the installation, Mother node, or operational resource whose lifecycle is
+        -- changing, including pending local installation scope before node identity exists.
+
+    @invariant InitiatorNamesCurrentCausalAuthority
+        -- Direct actions name the authenticated local principal, autonomous resident actions name
+        -- current resident identity, and delegated actions retain the governing causal record.
+
+    @invariant SupervisorInitiationUsesInstalledRecordProvenance
+        -- A boot-time supervisor action inherits initiator provenance from its current governing
+        -- record and authenticated policy installer under consistent process context; it does not
+        -- fabricate authentication at boot.
+
+    @invariant ExecutorNamesEffectPerformer
+        -- The installer, supervisor, resident, or adapter that attempts the effect is retained as
+        -- executor independently of who initiated the action and what resource it changes.
+
+    @invariant LifecycleActionsAreNotCalls
+        -- Operational subject, initiator, and executor projections never construct an `MctCall`
+        -- caller or gain call authority through lifecycle causality.
+
+    @invariant ExistingObservationKindsComposeOperationalFacts
+        -- Existing lifecycle, operator, adapter-effect, and storage kinds carry operational facts;
+        -- this contract does not introduce another kernel observation kind.
+}
+
 contract MctObservabilitySpine {
     @invariant ObservationIsSourceOfTruth
         -- MCT observations are the durable structured facts from which logs, metrics, audit views, status views, and external telemetry exports are derived.
@@ -1939,8 +2234,113 @@ contract MctImmutabilityModel {
         -- MCT domain records remain structured data suitable for replay, query, export, and human inspection.
 }
 
--- Decision: MCT separates child/component lifecycle into four distinct concepts: immutable `ComponentArtifact`, authority-bearing `ChildApproval`, scoped `ChildAssignment`, and live `ChildInstance` generation.
--- Decision: A `ComponentArtifact` is an immutable package/code/WIT-export fact identified by digest and version facts. It is not approval to run.
+-- Decision: 2026-07-14 operational-scope elicitation permits artifact acquisition only through
+-- either a current operator-issued standing source authority or one durably observed, artifact-
+-- specific operator-pointed acquisition. A standing record explicitly names source,
+-- artifact/publisher/namespace scope, allowed actions, additive integrity and provenance policy,
+-- issuer, policy revision, state, and time bounds. Missing scope grants nothing; deliberately broad
+-- scope must be stated.
+-- Decision: Connectivity, discovery, configuration, manifest references, and possession of an
+-- acquisition adapter do not create source trust. Source authority, current adapter effect
+-- authority, and byte verification are independent gates. Neither acquisition path grants
+-- installation, approval, assignment, or execution authority.
+-- Decision: Existing artifact digest verification is an unwaivable floor. Source policy may add
+-- provenance or integrity requirements but cannot weaken that floor. An operator-pointed decision
+-- binds the expected digest when known, and verification rather than source trust gates creation of
+-- an artifact record.
+-- Decision: 2026-07-14 update authority remains strict per artifact. Automated discovery,
+-- acquisition, verification, and staging cannot confer use. Every new content digest requires an
+-- explicit `ChildApproval` naming that exact artifact before assignment or execution. Approval does
+-- not transfer through child name, version, publisher, signing key, source, or update channel.
+-- Existing assignments remain pinned until explicit approved replacement; revoking or blocking an
+-- old generation cannot approve its successor. A pre-authorized update channel would be a new
+-- authority shape requiring separate elicitation.
+-- Decision: Authenticated-source credentials remain governed by existing secrets and connection
+-- authority. They are neither stored in nor implied by an artifact-source authority record. Source
+-- trust and credential authority remain independent and meet only at the acquisition adapter.
+
+contract MctArtifactAcquisitionAuthority {
+    @invariant AcquisitionRequiresExplicitAuthorityPath
+        -- Acquisition uses either a current standing source authority record or one durably
+        -- observed artifact-specific operator-pointed decision; no other source is implicitly trusted.
+
+    @invariant StandingSourceAuthorityIsExplicitAndBounded
+        -- Standing authority names source, allowed artifact, publisher and namespace scope,
+        -- actions, additive policy, issuer, revision, state, and time bound. Absent scope grants nothing.
+
+    @invariant OperatorPointedAcquisitionCreatesNoAmbientTrust
+        -- One explicit acquisition decision applies only to its named artifact attempt and cannot
+        -- establish a continuing source relationship or authorize another artifact.
+
+    @invariant SourceTrustAndAdapterAuthorityAreIndependent
+        -- Source trust cannot supply the current effect authority required by the acquisition Toy
+        -- adapter, and possession of that adapter cannot establish source trust.
+
+    @invariant DigestVerificationIsUnwaivableFloor
+        -- Every acquired artifact satisfies the baseline digest law; source and operator records
+        -- may add verification requirements but can never waive or weaken the floor.
+
+    @invariant VerificationGatesArtifactRecord
+        -- Independent byte verification gates artifact-record creation regardless of source trust;
+        -- an operator-pointed decision includes the expected digest whenever it is known.
+
+    @invariant AcquisitionGrantsNoLifecycleAuthority
+        -- Source authority and verified acquisition grant no installation, approval, assignment,
+        -- readiness, execution, or update authority.
+
+    @invariant AcquisitionIsIndependentLifecycleFact
+        -- Each attempted acquisition is immutable evidence distinct from artifact verification and
+        -- catalog publication, approval, assignment, and live instance creation.
+
+    @invariant FailedAcquisitionCreatesNoArtifact
+        -- Failed acquisition or verification remains observed evidence but cannot create or
+        -- reference a newly successful `ComponentArtifact`.
+
+    @invariant UniformAcquisitionProvenance
+        -- Every artifact created after this law references at least one acquisition record,
+        -- including locally staged bytes acquired through an operator-pointed filesystem source.
+
+    @invariant HistoricalUnknownProvenanceIsExplicit
+        -- Predating artifacts are reconciled to acquisition evidence or explicitly marked
+        -- historical provenance-unknown and are never silently represented as acquisition-backed.
+
+    @invariant UpdatesRequireExactArtifactApproval
+        -- Every new content digest requires an explicit approval naming that immutable artifact
+        -- before assignment or execution, regardless of automated acquisition and verification.
+
+    @invariant ChannelSimilarityCannotTransferApproval
+        -- Child name, version, publisher, signing key, source, and channel similarity cannot carry
+        -- approval from one artifact digest to another.
+
+    @invariant RevocationCannotApproveReplacement
+        -- Blocking or revoking one generation can end its use but grants no authority to a
+        -- discovered, staged, or verified successor.
+
+    @invariant PreauthorizedChannelsRequireNewAuthorityLaw
+        -- No update channel has latent execution authority; introducing one requires a separately
+        -- elicited authority record rather than widening source trust or artifact approval.
+
+    @invariant SourceCredentialsRemainSeparateAuthority
+        -- Source authority stores and implies no credential; independently authorized secret and
+        -- connection evidence meets source trust only at the acquisition adapter effect boundary.
+
+    @guidance
+        -- Approval tooling should present the artifact's acquisition and verification evidence at
+        -- decision time so exact-artifact approval is provenance-informed in practice.
+}
+
+-- Decision: 2026-07-14 adds immutable `ArtifactAcquisition` as the fifth independent lifecycle
+-- fact alongside `ComponentArtifact`, `ChildApproval`, `ChildAssignment`, and `ChildInstance`.
+-- Acquisition records one byte-attempt's authority paths, source and claimed identity, observed
+-- size and digest, verification decision and outcome, and observations. Acquisition stages bytes;
+-- it does not install or publish an artifact. Reacquisition may produce new evidence for the same
+-- immutable artifact.
+-- Decision: Every `ComponentArtifact` created after this law references at least one acquisition.
+-- Local staging is an operator-pointed filesystem acquisition, not an exception. Predating
+-- artifacts are reconciled or explicitly marked historical provenance-unknown and are not silently
+-- treated as equivalent to acquisition-backed artifacts.
+-- Decision: A `ComponentArtifact` is an immutable verified package/code/WIT-export and local
+-- catalog-publication fact identified by digest and version facts. It is not approval to run.
 -- Decision: `ChildApproval` is an authority decision that an artifact/version/export shape may be used under scoped policy. It is not installation, assignment, or readiness.
 -- Decision: `ChildAssignment` binds an approved child artifact to Vision, Node, project, or app scope. Active assignment requires an approved child artifact and does not imply a live ready instance.
 -- Decision: `ChildInstance` is a live runtime generation created from an assignment. Calls route only to ready, authorized instances after authority revalidation.
@@ -1956,6 +2356,58 @@ value ComponentWitExport {
     function_names: List<String>
 }
 
+value ArtifactSourceScope {
+    scope_mode: constrained | explicit_broad
+    artifact_scope: List<String>
+    publisher_scope: List<String>
+    namespace_scope: List<String>
+    allowed_actions: List<String>
+}
+
+entity ArtifactSourceAuthority {
+    source_authority_id: String
+    source_ref: String
+    scope: ArtifactSourceScope
+    integrity_policy_ref: String
+    provenance_policy_ref: String?
+    issuer_principal_ref: String
+    policy_revision: Integer
+    authority_state: pending | active | revoked | expired | superseded
+    issued_at: Timestamp
+    expires_at: Timestamp
+    authority_observation_id: String
+}
+
+entity OperatorPointedArtifactAcquisitionDecision {
+    decision_id: String
+    source_ref: String
+    claimed_child_name: String
+    claimed_artifact_version: String
+    expected_digest: String?
+    issuer_principal_ref: String
+    policy_revision: Integer
+    decision_state: active | consumed | revoked | expired
+    authority_observation_id: String
+}
+
+entity ArtifactAcquisition {
+    acquisition_id: String
+    authority_path: standing_source | operator_pointed
+    standing_source_authority_id: String?
+    operator_pointed_decision_id: String?
+    adapter_effect_authority_ref: String
+    source_ref: String
+    claimed_child_name: String
+    claimed_artifact_version: String
+    observed_size_bytes: Integer?
+    observed_digest: String?
+    acquisition_outcome: acquired | failed
+    verification_outcome: verified | rejected | not_reached
+    verification_observation_id: String?
+    acquisition_observation_id: String
+    component_artifact_id: String?
+}
+
 entity ComponentArtifact {
     artifact_id: String
     child_name: String
@@ -1967,6 +2419,8 @@ entity ComponentArtifact {
     ingress_mode: wit_only | hybrid | handle
     lifecycle_exports: required | optional | absent_allowed
     verification_status: verified | rejected
+    provenance_status: acquisition_backed | historical_unknown
+    acquisition_ids: List<String>
     created_by_observation_id: String
 }
 
@@ -2008,6 +2462,21 @@ entity ChildInstance {
     last_lifecycle_observation_id: String
 }
 
+actor ArtifactSourceAuthorityReader {
+    within: ArtifactSourceAuthority
+    identified_by: source.source_authority_id
+}
+
+actor OperatorPointedAcquisitionReader {
+    within: OperatorPointedArtifactAcquisitionDecision
+    identified_by: decision.decision_id
+}
+
+actor ArtifactAcquisitionReader {
+    within: ArtifactAcquisition
+    identified_by: acquisition.acquisition_id
+}
+
 actor ComponentCatalogReader {
     within: ComponentArtifact
     identified_by: artifact.artifact_id
@@ -2028,6 +2497,66 @@ actor ChildRuntimeReader {
     identified_by: instance.instance_id
 }
 
+surface ArtifactSourceAuthorityProjection {
+    facing reader: ArtifactSourceAuthorityReader
+    context source: ArtifactSourceAuthority
+
+    exposes:
+        source.source_authority_id
+        source.source_ref
+        source.scope.scope_mode
+        source.scope.artifact_scope
+        source.scope.publisher_scope
+        source.scope.namespace_scope
+        source.scope.allowed_actions
+        source.integrity_policy_ref
+        source.provenance_policy_ref
+        source.issuer_principal_ref
+        source.policy_revision
+        source.authority_state
+        source.issued_at
+        source.expires_at
+        source.authority_observation_id
+}
+
+surface OperatorPointedArtifactAcquisitionProjection {
+    facing reader: OperatorPointedAcquisitionReader
+    context decision: OperatorPointedArtifactAcquisitionDecision
+
+    exposes:
+        decision.decision_id
+        decision.source_ref
+        decision.claimed_child_name
+        decision.claimed_artifact_version
+        decision.expected_digest
+        decision.issuer_principal_ref
+        decision.policy_revision
+        decision.decision_state
+        decision.authority_observation_id
+}
+
+surface ArtifactAcquisitionProjection {
+    facing reader: ArtifactAcquisitionReader
+    context acquisition: ArtifactAcquisition
+
+    exposes:
+        acquisition.acquisition_id
+        acquisition.authority_path
+        acquisition.standing_source_authority_id
+        acquisition.operator_pointed_decision_id
+        acquisition.adapter_effect_authority_ref
+        acquisition.source_ref
+        acquisition.claimed_child_name
+        acquisition.claimed_artifact_version
+        acquisition.observed_size_bytes
+        acquisition.observed_digest
+        acquisition.acquisition_outcome
+        acquisition.verification_outcome
+        acquisition.verification_observation_id
+        acquisition.acquisition_observation_id
+        acquisition.component_artifact_id
+}
+
 surface ComponentArtifactCatalog {
     facing reader: ComponentCatalogReader
     context artifact: ComponentArtifact
@@ -2046,6 +2575,8 @@ surface ComponentArtifactCatalog {
         artifact.ingress_mode
         artifact.lifecycle_exports
         artifact.verification_status
+        artifact.provenance_status
+        artifact.acquisition_ids
         artifact.created_by_observation_id
 }
 
@@ -2100,6 +2631,14 @@ surface ChildInstanceProjection {
 }
 
 contract MctChildComponentLifecycle {
+    @invariant AcquisitionIsFifthIndependentFact
+        -- Artifact acquisition is immutable evidence distinct from verified local artifact
+        -- publication, approval, assignment, and live runtime generation.
+
+    @invariant NewArtifactsRequireAcquisitionProvenance
+        -- Every post-law artifact has at least one acquisition reference; historical unknown
+        -- provenance is explicit until reconciliation supplies equivalent evidence.
+
     @invariant ArtifactIsImmutableValue
         -- Component artifacts are immutable digest/version/export facts. Updating a package creates a new artifact value rather than mutating the old one.
 
