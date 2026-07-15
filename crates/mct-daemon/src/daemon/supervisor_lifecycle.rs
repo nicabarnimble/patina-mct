@@ -946,6 +946,14 @@ fn install_with_adapter(
     if let Some(predecessor) = &predecessor {
         adapter.ensure_domain_available(predecessor)?;
         if adapter.inspect(predecessor)? == SupervisorLoadedState::Loaded {
+            append_direct_lifecycle_fact(
+                &mut ledger,
+                "install-replace",
+                uid,
+                predecessor,
+                ObservationOutcome::Denied,
+                "supervisor replacement refused while launchd service is loaded",
+            )?;
             bail!("supervisor replacement refused while launchd service is loaded");
         }
         if predecessor.plist_path.exists()
@@ -1732,7 +1740,31 @@ fn uninstall_with_adapter(
         });
     }
 
-    let record = validate_supervisor_record_for_stop(&paths.record)?;
+    let record = match validate_supervisor_record_for_stop(&paths.record) {
+        Ok(record) => record,
+        Err(error)
+            if error
+                .to_string()
+                .contains("supervisor plist digest mismatch") =>
+        {
+            let record = read_record(&paths.record)?;
+            if record.owner_uid != uid {
+                return Err(error);
+            }
+            let mut ledger =
+                JsonlObservationLedger::open(&record.ledger_path, "ledger-local", "local-mct")?;
+            append_direct_lifecycle_fact(
+                &mut ledger,
+                "uninstall",
+                uid,
+                &record,
+                ObservationOutcome::Denied,
+                "supervisor uninstall refused: managed plist digest mismatch; foreign plist preserved",
+            )?;
+            return Err(error.context("supervisor uninstall refused; foreign plist preserved"));
+        }
+        Err(error) => return Err(error),
+    };
     if adapter.inspect(&record)? == SupervisorLoadedState::Loaded {
         stop_with_adapter(paths, uid, adapter)?;
     }
@@ -1905,6 +1937,8 @@ pub(super) fn run_uninstall(args: Vec<String>) -> Result<()> {
 struct FakeSupervisorAdapter {
     loaded: std::sync::Mutex<bool>,
     domain_missing: std::sync::Mutex<bool>,
+    fail_start: std::sync::Mutex<bool>,
+    start_calls: std::sync::atomic::AtomicUsize,
     shutdown: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
@@ -1920,6 +1954,14 @@ impl FakeSupervisorAdapter {
 
     fn simulate_missing_gui_domain(&self) {
         *self.domain_missing.lock().unwrap() = true;
+    }
+
+    fn simulate_start_failure(&self) {
+        *self.fail_start.lock().unwrap() = true;
+    }
+
+    fn start_call_count(&self) -> usize {
+        self.start_calls.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -1945,6 +1987,11 @@ impl SupervisorAdapter for FakeSupervisorAdapter {
     }
 
     fn start(&self, _record: &SupervisorRecordV1) -> Result<()> {
+        self.start_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if *self.fail_start.lock().unwrap() {
+            bail!("launchctl exited non-zero");
+        }
         *self.loaded.lock().unwrap() = true;
         Ok(())
     }
@@ -2685,6 +2732,214 @@ mod tests {
             replaced.executable_digest,
             file_digest(&record.executable_path).unwrap()
         );
+    }
+
+    #[test]
+    fn uninstall_refuses_foreign_plist_with_durable_observation() {
+        let root = tempfile::tempdir().unwrap();
+        let adapter = FakeSupervisorAdapter::default();
+        let (paths, _) = install_supervisor_for_test_with_adapter(root.path(), &adapter).unwrap();
+        let foreign_plist = b"foreign launchd policy";
+        fs::write(&paths.plist, foreign_plist).unwrap();
+
+        let error = uninstall_with_adapter(&paths, current_uid().unwrap(), &adapter).unwrap_err();
+
+        assert!(error.to_string().contains("foreign plist preserved"));
+        assert_eq!(fs::read(&paths.plist).unwrap(), foreign_plist);
+        assert!(paths.record.exists());
+        assert!(entries(&paths.ledger).iter().any(|entry| {
+            entry.observation.kind == ObservationKind::LifecycleTransitionRecorded
+                && entry.observation.outcome == ObservationOutcome::Denied
+                && entry.observation.safe_message
+                    == "supervisor uninstall refused: managed plist digest mismatch; foreign plist preserved"
+        }));
+    }
+
+    #[test]
+    fn launchd_non_zero_start_is_observed_once_without_fallback() {
+        let root = tempfile::tempdir().unwrap();
+        let adapter = FakeSupervisorAdapter::default();
+        let (paths, record) =
+            install_supervisor_for_test_with_adapter(root.path(), &adapter).unwrap();
+        adapter.simulate_start_failure();
+
+        let error =
+            start_with_adapter(&paths, current_uid().unwrap(), &adapter, false).unwrap_err();
+
+        assert!(error.to_string().contains("launchctl exited non-zero"));
+        assert_eq!(adapter.start_call_count(), 1);
+        assert_eq!(
+            record.launchd_domain,
+            format!("gui/{}", current_uid().unwrap())
+        );
+        assert_eq!(
+            adapter.inspect(&record).unwrap(),
+            SupervisorLoadedState::Unloaded
+        );
+        let failure_entries = entries(&paths.ledger);
+        assert!(failure_entries.iter().any(|entry| {
+            entry.observation.kind == ObservationKind::AdapterEffectFailed
+                && entry.observation.outcome == ObservationOutcome::Failed
+                && entry.observation.safe_message == "launchd bootstrap failed"
+        }));
+        assert!(failure_entries.iter().any(|entry| {
+            entry.observation.kind == ObservationKind::LifecycleTransitionRecorded
+                && entry.observation.outcome == ObservationOutcome::Failed
+                && entry.observation.safe_message
+                    == "supervisor start failed after launchd adapter refusal"
+        }));
+        assert!(failure_entries.iter().all(|entry| {
+            !entry.observation.safe_message.contains("user/")
+                && !entry.observation.safe_message.contains("system/")
+                && !entry.observation.safe_message.contains("detached")
+        }));
+    }
+
+    #[test]
+    fn install_replace_refuses_loaded_service_durably() {
+        let root = tempfile::tempdir().unwrap();
+        let adapter = FakeSupervisorAdapter::default();
+        let (paths, record) =
+            install_supervisor_for_test_with_adapter(root.path(), &adapter).unwrap();
+        start_with_adapter(&paths, current_uid().unwrap(), &adapter, false).unwrap();
+
+        let error = install_with_adapter(
+            &paths,
+            &record.executable_path,
+            current_uid().unwrap(),
+            true,
+            &adapter,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("service is loaded"));
+        assert_eq!(read_record(&paths.record).unwrap().record_revision, 1);
+        assert!(entries(&paths.ledger).iter().any(|entry| {
+            entry.observation.kind == ObservationKind::LifecycleTransitionRecorded
+                && entry.observation.outcome == ObservationOutcome::Denied
+                && entry.observation.safe_message
+                    == "supervisor replacement refused while launchd service is loaded"
+        }));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn supervisor_start_and_stop_no_ops_are_observed() {
+        let root = tempfile::tempdir().unwrap();
+        let adapter = Arc::new(FakeSupervisorAdapter::default());
+        let (paths, _) =
+            install_supervisor_for_test_with_adapter(root.path(), adapter.as_ref()).unwrap();
+        start_with_adapter(&paths, current_uid().unwrap(), adapter.as_ref(), false).unwrap();
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        adapter.arm_shutdown(shutdown_tx);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let record_path = paths.record.clone();
+        let resident = tokio::spawn(async move {
+            run_test_supervised_resident_mother(
+                &record_path,
+                async move {
+                    let _ = shutdown_rx.await;
+                },
+                Some(ready_tx),
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(15), ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let start_no_op =
+            start_with_adapter(&paths, current_uid().unwrap(), adapter.as_ref(), false).unwrap();
+        assert_eq!(start_no_op.outcome, "no_op");
+        assert_eq!(
+            start_no_op.safe_message,
+            "supervisor start completed as observed no-op: service already loaded"
+        );
+
+        let stop_paths = paths.clone();
+        let stop_adapter = Arc::clone(&adapter);
+        tokio::task::spawn_blocking(move || {
+            stop_with_adapter(&stop_paths, current_uid().unwrap(), stop_adapter.as_ref())
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        resident.await.unwrap().unwrap();
+
+        let stop_no_op =
+            stop_with_adapter(&paths, current_uid().unwrap(), adapter.as_ref()).unwrap();
+        assert_eq!(stop_no_op.outcome, "no_op");
+        assert_eq!(stop_no_op.safe_message, "supervisor already stopped");
+        let no_op_entries = entries(&paths.ledger);
+        assert!(no_op_entries.iter().any(|entry| {
+            entry.observation.kind == ObservationKind::LifecycleTransitionRecorded
+                && entry.observation.outcome == ObservationOutcome::Completed
+                && entry.observation.safe_message
+                    == "supervisor start completed as observed no-op: service already loaded"
+        }));
+        assert!(no_op_entries.iter().any(|entry| {
+            entry.observation.kind == ObservationKind::LifecycleTransitionRecorded
+                && entry.observation.outcome == ObservationOutcome::Completed
+                && entry.observation.safe_message
+                    == "supervisor stop completed as observed no-op: service already unloaded"
+        }));
+    }
+
+    #[tokio::test]
+    async fn shutdown_append_failure_has_no_clean_claim_and_next_start_reconciles() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, record) = install_supervisor_for_test(root.path()).unwrap();
+        let first_writer = ResidentLedgerWriter::spawn(paths.ledger.clone()).unwrap();
+        let first_instance = begin_supervised_resident_instance(&record, &first_writer)
+            .await
+            .unwrap();
+        first_writer.close().await;
+
+        let failed_writer = ResidentLedgerWriter::failed_for_test();
+        let shutdown_error =
+            record_supervised_clean_shutdown_started(&first_instance, &failed_writer)
+                .await
+                .unwrap_err();
+        assert!(shutdown_error.to_string().contains("fenced"));
+        assert!(entries(&paths.ledger).iter().all(|entry| {
+            entry.observation.safe_message
+                != format!(
+                    "supervised resident clean shutdown completed {}",
+                    first_instance.instance_id
+                )
+        }));
+
+        let next_writer = loop {
+            match ResidentLedgerWriter::spawn(paths.ledger.clone()) {
+                Ok(writer) => break writer,
+                Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
+            }
+        };
+        let next_instance = begin_supervised_resident_instance(&record, &next_writer)
+            .await
+            .unwrap();
+        next_writer.close().await;
+
+        let reopened = entries(&paths.ledger);
+        let reconciliation_message = format!(
+            "supervised resident reconciled unmatched prior instance {} start_observation={}",
+            first_instance.instance_id, first_instance.start_observation_id
+        );
+        let reconciliation = reopened
+            .iter()
+            .position(|entry| entry.observation.safe_message == reconciliation_message)
+            .unwrap();
+        let next_start = reopened
+            .iter()
+            .position(|entry| {
+                entry.observation.safe_message.starts_with(&format!(
+                    "supervised resident instance started {} ",
+                    next_instance.instance_id
+                ))
+            })
+            .unwrap();
+        assert!(reconciliation < next_start);
     }
 
     #[test]
