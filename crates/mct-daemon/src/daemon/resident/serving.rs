@@ -63,7 +63,7 @@ pub(crate) async fn run_serve(mut args: Vec<String>) -> Result<()> {
         (Some(_), Some(_)) => bail!("serve accepts only one control transport: --http or --uds"),
     };
     if supervisor.is_none() {
-        refuse_manual_serve_if_managed(&config_path)?;
+        refuse_manual_serve_if_managed(&config_path, true)?;
     }
     let (config_path, identity_path, children_dir, state_path, ledger_path, control) =
         match &supervisor {
