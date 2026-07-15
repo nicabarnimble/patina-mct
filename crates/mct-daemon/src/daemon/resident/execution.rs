@@ -16,11 +16,24 @@ pub(super) struct LocalExecutionReport {
     result: MctResult,
     observations: Vec<MctObservation>,
     inline_result_payload: Option<Vec<u8>>,
+    run_id: Option<String>,
 }
 
 impl LocalExecutionReport {
-    pub(super) fn into_parts(self) -> (MctResult, Vec<MctObservation>, Option<Vec<u8>>) {
-        (self.result, self.observations, self.inline_result_payload)
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        MctResult,
+        Vec<MctObservation>,
+        Option<Vec<u8>>,
+        Option<String>,
+    ) {
+        (
+            self.result,
+            self.observations,
+            self.inline_result_payload,
+            self.run_id,
+        )
     }
 }
 
@@ -181,12 +194,7 @@ pub(super) fn execute_authorized_resident_child(
             &call.payload_metadata.data_classification,
         ));
     }
-    state.append_run_observations(&run_id, &report.observations)?;
-    state.complete_run(
-        &run_id,
-        &report.result,
-        mct_daemon::current_timestamp_string(),
-    )?;
+    report.run_id = Some(run_id);
     Ok(report)
 }
 
@@ -241,6 +249,7 @@ fn execute_resident_process_child(
         result,
         observations: report.observations,
         inline_result_payload,
+        run_id: None,
     })
 }
 
@@ -302,6 +311,7 @@ fn execute_resident_wit_child(
         result,
         observations: report.observations,
         inline_result_payload,
+        run_id: None,
     })
 }
 
@@ -379,6 +389,7 @@ pub(super) fn resident_route_revision_denial_report(
         },
         observations: vec![observation],
         inline_result_payload: None,
+        run_id: None,
     }
 }
 
@@ -447,6 +458,7 @@ pub(super) fn resident_delivery_failure_report(
         },
         observations: vec![observation],
         inline_result_payload: None,
+        run_id: None,
     }
 }
 
