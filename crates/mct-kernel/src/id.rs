@@ -100,6 +100,10 @@ string_id!(ChildApprovalId);
 string_id!(ChildCallEvaluationId);
 string_id!(AuthorizedChildInvocationId);
 string_id!(AuthorizedRouteExecutionId);
+string_id!(ArtifactSourceAuthorityId);
+string_id!(ArtifactAcquisitionDecisionId);
+string_id!(ArtifactAcquisitionId);
+string_id!(AuthorizedArtifactAcquisitionId);
 
 /// RFC3339 timestamp at the domain boundary, ordered by chronological instant.
 #[derive(Clone, Debug)]

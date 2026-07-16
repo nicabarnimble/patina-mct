@@ -1038,6 +1038,8 @@ mod tests {
                 ingress_mode: ChildIngressMode::WitOnly,
                 lifecycle_exports: LifecycleExports::AbsentAllowed,
                 verification_status: VerificationStatus::Verified,
+                provenance_status: mct_kernel::ArtifactProvenanceStatus::HistoricalUnknown,
+                acquisition_ids: Vec::new(),
                 created_by_observation_id: ObservationId::new("obs-artifact-reload").unwrap(),
             }],
             approvals: vec![ChildApproval {

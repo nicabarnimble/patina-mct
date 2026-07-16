@@ -555,6 +555,8 @@ pub fn component_artifact_from_loaded_child(child: &MctLoadedChild) -> Component
         } else {
             VerificationStatus::Rejected
         },
+        provenance_status: mct_kernel::ArtifactProvenanceStatus::HistoricalUnknown,
+        acquisition_ids: Vec::new(),
         created_by_observation_id: ObservationId::new(format!("obs:artifact:{}", child.name))
             .expect("string ID literal/generated value must be non-empty"),
     }

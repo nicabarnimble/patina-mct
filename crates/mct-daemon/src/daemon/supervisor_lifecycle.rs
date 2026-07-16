@@ -2083,6 +2083,8 @@ mod tests {
             ingress_mode: ChildIngressMode::WitOnly,
             lifecycle_exports: LifecycleExports::AbsentAllowed,
             verification_status: VerificationStatus::Verified,
+            provenance_status: mct_kernel::ArtifactProvenanceStatus::HistoricalUnknown,
+            acquisition_ids: Vec::new(),
             created_by_observation_id: ObservationId::new("obs-supervisor-proof-artifact").unwrap(),
         }
     }
@@ -2985,6 +2987,59 @@ mod tests {
             })
             .unwrap();
         assert!(reconciliation < next_start);
+    }
+
+    #[tokio::test]
+    async fn supervised_slate_artifact_acquisition_executes_and_revokes_end_to_end() {
+        use sha2::{Digest, Sha256};
+
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/slate-manager-0.2.0");
+        let manifest = fixture.join("slate-manager.toml");
+        let component = fixture.join("slate-manager.wasm");
+        let manifest_bytes = fs::read(&manifest).unwrap();
+        let component_bytes = fs::read(&component).unwrap();
+        assert_eq!(component_bytes.len(), 1_338_615);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&manifest_bytes)),
+            "b6d7b4e532df5b787acd37f3ae8c25ed093552097e5cf6dbc5c7eaca360e4919"
+        );
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&component_bytes)),
+            "76b568f40491d7e3bd1dcb55644ec7c42dbc393642a5a7a2ba5b1daa1ea6966a"
+        );
+        assert_eq!(
+            blake3::hash(&component_bytes).to_hex().as_str(),
+            "e06cab5f7605f3c070ef792f67f7b71a179d8a9c7da0c45e525b39e8a3a88e7d"
+        );
+        assert!(!manifest.with_extension("toml.sha256").exists());
+        assert!(!component.with_extension("wasm.sha256").exists());
+
+        let root = tempfile::tempdir().unwrap();
+        let source_root = root.path().join("source");
+        fs::create_dir(&source_root).unwrap();
+        fs::copy(&manifest, source_root.join("slate-manager.toml")).unwrap();
+        fs::copy(&component, source_root.join("slate-manager.wasm")).unwrap();
+
+        let report =
+            mct_daemon::stage_operator_pointed_artifact(&mct_daemon::MctArtifactStageRequest {
+                source_root,
+                manifest_path: PathBuf::from("slate-manager.toml"),
+                component_path: PathBuf::from("slate-manager.wasm"),
+                claimed_child_name: "slate-manager".into(),
+                claimed_artifact_version: "0.2.0".into(),
+                expected_digest: Some(
+                    "blake3:e06cab5f7605f3c070ef792f67f7b71a179d8a9c7da0c45e525b39e8a3a88e7d"
+                        .into(),
+                ),
+                children_dir: root.path().join("children"),
+                state_path: root.path().join("state.sqlite"),
+            })
+            .unwrap();
+
+        assert_eq!(report.child_name, "slate-manager");
+        assert_eq!(report.artifact_version, "0.2.0");
+        assert_eq!(report.verification_outcome, "verified");
     }
 
     #[test]
