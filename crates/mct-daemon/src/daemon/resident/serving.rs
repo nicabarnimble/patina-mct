@@ -3,6 +3,33 @@
 use super::*;
 
 pub(crate) async fn run_serve(mut args: Vec<String>) -> Result<()> {
+    let supervisor_record_path = take_option(&mut args, "--supervisor-record").map(PathBuf::from);
+    let supervised_path_override = supervisor_record_path.is_some()
+        && args.iter().any(|arg| {
+            matches!(
+                arg.as_str(),
+                "--identity"
+                    | "--config"
+                    | "--children-dir"
+                    | "--state"
+                    | "--ledger"
+                    | "--http"
+                    | "--uds"
+            )
+        });
+    if supervised_path_override {
+        bail!("supervised serve paths come only from the governing supervisor record");
+    }
+    let supervisor = match supervisor_record_path.as_deref() {
+        Some(path) => match validate_supervisor_record(path, false) {
+            Ok(record) => Some(record),
+            Err(error) => {
+                let _ = record_supervised_boot_refusal(path, &error.to_string());
+                return Err(error);
+            }
+        },
+        None => None,
+    };
     let relay_default = take_flag(&mut args, "--relay-default");
     let config_path = take_option(&mut args, "--config")
         .map(PathBuf::from)
@@ -35,6 +62,28 @@ pub(crate) async fn run_serve(mut args: Vec<String>) -> Result<()> {
         (None, None) => ResidentControlTransport::Uds(default_control_uds_path()),
         (Some(_), Some(_)) => bail!("serve accepts only one control transport: --http or --uds"),
     };
+    if supervisor.is_none() {
+        refuse_manual_serve_if_managed(&config_path, true)?;
+    }
+    let (config_path, identity_path, children_dir, state_path, ledger_path, control) =
+        match &supervisor {
+            Some(record) => (
+                record.config_path.clone(),
+                record.identity_path.clone(),
+                record.children_dir.clone(),
+                record.state_path.clone(),
+                record.ledger_path.clone(),
+                ResidentControlTransport::Uds(record.uds_path.clone()),
+            ),
+            None => (
+                config_path,
+                identity_path,
+                children_dir,
+                state_path,
+                ledger_path,
+                control,
+            ),
+        };
     run_resident_mother(
         ResidentMotherConfig {
             config_path,
@@ -45,6 +94,7 @@ pub(crate) async fn run_serve(mut args: Vec<String>) -> Result<()> {
             control,
             relay_default,
             max_concurrent_connections,
+            supervisor,
         },
         resident_shutdown_signal(),
         None,
@@ -68,6 +118,7 @@ struct ResidentMotherConfig {
     pub(super) control: ResidentControlTransport,
     pub(super) relay_default: bool,
     pub(super) max_concurrent_connections: usize,
+    pub(super) supervisor: Option<SupervisorRecordV1>,
 }
 
 #[derive(Clone, Debug)]
@@ -79,6 +130,7 @@ pub(crate) struct ResidentStatusSource {
     config_path: PathBuf,
     children_dir: PathBuf,
     ledger_path: PathBuf,
+    ledger_writer: ResidentLedgerWriter,
 }
 
 impl ResidentStatusSource {
@@ -89,6 +141,7 @@ impl ResidentStatusSource {
         config_path: PathBuf,
         children_dir: PathBuf,
         ledger_path: PathBuf,
+        ledger_writer: ResidentLedgerWriter,
     ) -> Self {
         Self {
             endpoint,
@@ -98,6 +151,7 @@ impl ResidentStatusSource {
             config_path,
             children_dir,
             ledger_path,
+            ledger_writer,
         }
     }
 
@@ -134,7 +188,11 @@ impl ResidentStatusSource {
                 ledger_sequence_tip: ledger_sequence_tip(&self.ledger_path),
             }),
         );
-        if !projection_available {
+        if self.ledger_writer.is_fenced() {
+            status.health = MctDaemonHealth::Unhealthy;
+            status.readiness = MctDaemonReadiness::NotReady;
+            status.safe_message = "resident observation writer fenced".into();
+        } else if !projection_available {
             status.health = MctDaemonHealth::Unhealthy;
             status.readiness = MctDaemonReadiness::NotReady;
             status.safe_message = "resident child projection unavailable".into();
@@ -152,7 +210,35 @@ pub(super) fn ledger_sequence_tip(path: &Path) -> u64 {
 }
 
 #[cfg(test)]
-pub(super) async fn run_test_resident_mother<S>(
+pub(crate) async fn run_test_supervised_resident_mother<S>(
+    record_path: &Path,
+    shutdown: S,
+    ready: Option<tokio::sync::oneshot::Sender<MotherIrohEndpointTicket>>,
+) -> Result<()>
+where
+    S: std::future::Future<Output = ()> + Send,
+{
+    let record = validate_supervisor_record(record_path, true)?;
+    run_resident_mother(
+        ResidentMotherConfig {
+            config_path: record.config_path.clone(),
+            identity_path: record.identity_path.clone(),
+            children_dir: record.children_dir.clone(),
+            state_path: record.state_path.clone(),
+            ledger_path: record.ledger_path.clone(),
+            control: ResidentControlTransport::Uds(record.uds_path.clone()),
+            relay_default: false,
+            max_concurrent_connections: 8,
+            supervisor: Some(record),
+        },
+        shutdown,
+        ready,
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) async fn run_test_resident_mother<S>(
     paths: ResidentRuntimePaths,
     identity_path: PathBuf,
     ledger_path: PathBuf,
@@ -173,6 +259,7 @@ where
             control: ResidentControlTransport::Uds(socket_path),
             relay_default: false,
             max_concurrent_connections: 8,
+            supervisor: None,
         },
         shutdown,
         ready,
@@ -193,6 +280,10 @@ where
     }
 
     let ledger = ResidentLedgerWriter::spawn(config.ledger_path.clone())?;
+    let supervised_instance = match &config.supervisor {
+        Some(record) => Some(begin_supervised_resident_instance(record, &ledger).await?),
+        None => None,
+    };
     let config_store = MctDaemonConfigStore::new(&config.config_path);
     let existing_config = config_store.load()?;
     let identity_scope = existing_config
@@ -204,13 +295,27 @@ where
             policy_revision: identity.policy_revision,
         })
         .unwrap_or_default();
-    let identity = ensure_observed_local_identity(
-        &config_store,
-        identity_scope,
-        &config.identity_path,
-        &ledger,
-    )
-    .await?;
+    let identity = match &config.supervisor {
+        Some(_) => {
+            let identity = existing_config
+                .local_identity
+                .clone()
+                .context("supervised start requires the identity created by observed install")?;
+            if identity.identity_path != config.identity_path || !config.identity_path.exists() {
+                bail!("supervised start identity path does not match installed identity");
+            }
+            identity
+        }
+        None => {
+            ensure_observed_local_identity(
+                &config_store,
+                identity_scope,
+                &config.identity_path,
+                &ledger,
+            )
+            .await?
+        }
+    };
     let secret_key_hex = load_or_create_node_secret_key_hex(&config.identity_path)?;
     let mut endpoint = MotherIrohEndpoint::bind(iroh_config(secret_key_hex, config.relay_default))
         .await
@@ -248,6 +353,7 @@ where
         config.config_path.clone(),
         config.children_dir.clone(),
         config.ledger_path.clone(),
+        ledger.clone(),
     ));
 
     let (events, event_rx) = tokio::sync::mpsc::channel(256);
@@ -284,6 +390,20 @@ where
         "mct resident mother children loaded={} failed={} bindings={} max_connections={}",
         loaded_child_count, load_report.failed, binding_count, config.max_concurrent_connections
     );
+    if let Some(instance) = &supervised_instance {
+        if let ResidentControlTransport::Uds(path) = &config.control {
+            for _ in 0..100 {
+                if path.exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            if !path.exists() {
+                bail!("supervised resident control socket did not bind before readiness");
+            }
+        }
+        record_supervised_resident_ready(instance, &ledger).await?;
+    }
     if let Some(ready) = ready {
         let _ = ready.send(ticket.clone());
     }
@@ -328,6 +448,12 @@ where
         _ = shutdown => Ok(()),
     };
 
+    let clean_shutdown_observed = match &supervised_instance {
+        Some(instance) => record_supervised_clean_shutdown_started(instance, &ledger)
+            .await
+            .is_ok(),
+        None => false,
+    };
     let _ = shutdown_tx.send(());
     endpoint.close().await;
     if let Ok(mut endpoint_status) = endpoint_status.lock() {
@@ -346,6 +472,9 @@ where
     }
     let _ = tokio::time::timeout(Duration::from_secs(2), event_task).await;
     control_task.abort();
+    if clean_shutdown_observed && let Some(instance) = &supervised_instance {
+        let _ = record_supervised_clean_shutdown_completed(instance, &ledger).await;
+    }
     ledger.close().await;
     if let ResidentControlTransport::Uds(path) = &config.control {
         let _ = std::fs::remove_file(path);
@@ -1156,6 +1285,7 @@ listens = []
                 control: ResidentControlTransport::Uds(socket_path.clone()),
                 relay_default: false,
                 max_concurrent_connections: 8,
+                supervisor: None,
             },
             async move {
                 let _ = shutdown_rx.await;
@@ -1343,6 +1473,7 @@ listens = []
                 control: ResidentControlTransport::Uds(socket_path),
                 relay_default: false,
                 max_concurrent_connections: 8,
+                supervisor: None,
             },
             async move {
                 let _ = shutdown_rx.await;
@@ -1449,6 +1580,7 @@ listens = []
                 control: ResidentControlTransport::Uds(socket_path),
                 relay_default: false,
                 max_concurrent_connections: 8,
+                supervisor: None,
             },
             async move {
                 let _ = shutdown_rx.await;
@@ -1546,6 +1678,7 @@ listens = []
                 control: ResidentControlTransport::Uds(socket_path),
                 relay_default: false,
                 max_concurrent_connections: 8,
+                supervisor: None,
             },
             async move {
                 let _ = shutdown_rx.await;
@@ -1758,8 +1891,8 @@ listens = []
         assert!(!ledger_text.contains(&signature_marker));
     }
 
-    #[test]
-    fn resident_status_source_reflects_closed_endpoint() {
+    #[tokio::test]
+    async fn resident_status_source_reflects_closed_endpoint() {
         let endpoint = Arc::new(Mutex::new(MotherIrohEndpointSnapshot {
             endpoint_id: EndpointIdText::new("endpoint-resident-status")
                 .expect("string ID literal/generated value must be non-empty"),
@@ -1787,11 +1920,28 @@ listens = []
             config_path,
             dir.path().join("children"),
             PathBuf::from("/path/that/does/not/exist.jsonl"),
+            ResidentLedgerWriter::spawn(dir.path().join("writer.jsonl")).unwrap(),
         );
 
         let live = source.status();
         assert_eq!(live.readiness, mct_daemon::MctDaemonReadiness::Ready);
         assert_eq!(live.resident.unwrap().accepted_connection_count, 3);
+
+        let fenced_source = ResidentStatusSource::new(
+            Arc::clone(&endpoint),
+            (
+                MctNodeId::new("node-status-test").unwrap(),
+                VisionId::new("vision-status-test").unwrap(),
+            ),
+            Arc::new(AtomicU64::new(3)),
+            source.config_path.clone(),
+            source.children_dir.clone(),
+            source.ledger_path.clone(),
+            ResidentLedgerWriter::failed_for_test(),
+        );
+        let fenced = fenced_source.status();
+        assert_eq!(fenced.readiness, mct_daemon::MctDaemonReadiness::NotReady);
+        assert_eq!(fenced.safe_message, "resident observation writer fenced");
 
         endpoint.lock().unwrap().lifecycle = mct_iroh::MotherIrohEndpointLifecycle::Closed;
         let closed = source.status();

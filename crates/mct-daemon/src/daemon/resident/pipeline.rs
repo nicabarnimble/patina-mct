@@ -111,6 +111,7 @@ async fn execute_resident_call_after_payload(
                     return MctIrohCallHandlerResult::failed("runtime unavailable");
                 }
             };
+            let result_state_path = paths.state_path().to_path_buf();
             let execution = match tokio::task::spawn_blocking(move || {
                 execute_authorized_resident_child(
                     paths,
@@ -133,10 +134,22 @@ async fn execute_resident_call_after_payload(
                 }
             };
 
-            let (result, observations, inline_result_payload) = execution.into_parts();
+            let (result, observations, inline_result_payload, run_id) = execution.into_parts();
+            let state_observations = observations.clone();
             if let Err(error) = ledger.append(observations).await {
                 eprintln!("resident execution ledger write failed: {error}");
                 return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+            }
+            if let Some(run_id) = run_id {
+                let persist_result =
+                    MctRuntimeStateStore::open(&result_state_path).and_then(|state| {
+                        state.append_run_observations(&run_id, &state_observations)?;
+                        state.complete_run(&run_id, &result, mct_daemon::current_timestamp_string())
+                    });
+                if let Err(error) = persist_result {
+                    eprintln!("resident durable result projection failed: {error}");
+                    return MctIrohCallHandlerResult::failed("runtime state unavailable");
+                }
             }
 
             result_to_call_handler_result("result-resident", &result, inline_result_payload)

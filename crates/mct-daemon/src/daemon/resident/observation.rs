@@ -4,9 +4,11 @@ use super::*;
 
 const RESIDENT_LEDGER_QUEUE_CAPACITY: usize = 256;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct ResidentLedgerWriter {
     sender: tokio::sync::mpsc::Sender<ResidentLedgerWrite>,
+    fenced: Arc<std::sync::atomic::AtomicBool>,
+    path: Option<Arc<PathBuf>>,
 }
 
 struct ResidentLedgerWrite {
@@ -20,7 +22,11 @@ impl ResidentLedgerWriter {
     pub(crate) fn failed_for_test() -> Self {
         let (sender, receiver) = tokio::sync::mpsc::channel(1);
         drop(receiver);
-        Self { sender }
+        Self {
+            sender,
+            fenced: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            path: None,
+        }
     }
 
     pub(crate) fn spawn(path: PathBuf) -> Result<Self> {
@@ -51,7 +57,19 @@ impl ResidentLedgerWriter {
                 let _ = write.ack.send(result);
             }
         });
-        Ok(Self { sender })
+        Ok(Self {
+            sender,
+            fenced: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            path: Some(Arc::new(path)),
+        })
+    }
+
+    pub(crate) fn is_fenced(&self) -> bool {
+        self.fenced.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn path(&self) -> Option<&Path> {
+        self.path.as_deref().map(PathBuf::as_path)
     }
 
     pub(crate) async fn append(&self, observations: Vec<MctObservation>) -> Result<()> {
@@ -67,18 +85,30 @@ impl ResidentLedgerWriter {
         if observations.is_empty() {
             return Ok(());
         }
+        if self.is_fenced() {
+            bail!("resident observation writer is fenced");
+        }
         let (ack, rx) = tokio::sync::oneshot::channel();
-        self.sender
+        if let Err(error) = self
+            .sender
             .send(ResidentLedgerWrite {
                 observations,
                 durability,
                 ack,
             })
             .await
-            .context("send observations to resident ledger writer")?;
-        rx.await
-            .context("receive resident ledger writer acknowledgement")?
-            .map_err(anyhow::Error::msg)
+        {
+            self.fenced.store(true, Ordering::SeqCst);
+            return Err(error).context("send observations to resident ledger writer");
+        }
+        let result = match rx.await {
+            Ok(result) => result.map_err(anyhow::Error::msg),
+            Err(error) => Err(error).context("receive resident ledger writer acknowledgement"),
+        };
+        if result.is_err() {
+            self.fenced.store(true, Ordering::SeqCst);
+        }
+        result
     }
 
     pub(crate) async fn close(self) {

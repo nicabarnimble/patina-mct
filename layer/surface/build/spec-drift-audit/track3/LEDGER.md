@@ -1,6 +1,6 @@
 # Contract obligation ledger
 
-Status date: 2026-07-12; W2 extension 2026-07-14
+Status date: 2026-07-12; W2 extension 2026-07-14; Daily-Driver Slice 2 extension 2026-07-15
 
 Scope: complete named-invariant coverage for `mct-product-map.allium` and `mct-peer-ontology.allium`, plus bulk attribution of tool-derived structural obligations. The 2026-07-12 priority and full-inventory evidence is retained in place; the 2026-07-14 local-application-ingress invariants and W2-A remediation obligations extend it below.
 
@@ -65,6 +65,36 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 | W2-A/A11 forwarded cancellation projection | COVERED | `mct_daemon_bin::resident::forwarding::tests::two_mother_forwarding_preserves_cancelled_reply` proves a two-Mother executor cancellation remains `cancelled`, keeps no caller route, and is observed as cancelled at the origin. |
 | W2-A/A10 whole-path replay/reopen proof | COVERED | `mct_daemon_bin::resident::serving::tests::resident_call_uds_executes_approved_child_and_projects_control_state` proves same-key UDS replay, one child effect, state/ledger reopen, and replay with result bytes after resident restart. |
 | W2-A/A12 current resident child-count projection | COVERED | `mct_daemon_bin::resident::serving::tests::resident_status_reflects_live_child_mutations` proves live registry installation and child revocation immediately change loaded and approved status counts. |
+
+### Operational self-observation and macOS supervisor lifecycle
+
+| Invariant / obligation | Status | Evidence |
+|---|---|---|
+| `MctOperationalSelfObservation.LifecycleActionAttemptsAreObserved` | COVERED | `mct_daemon_bin::supervisor_lifecycle::tests::supervisor_lifecycle_install_start_stop_unclean_reconcile_uninstall_preserves_evidence`; `supervisor_conflicts_refuse_before_launchd_or_endpoint_effects`; `launchd_adapter_refuses_missing_gui_domain_without_fallback`; `supervised_start_rejects_unblessed_binary_swap_with_replace_guidance` cover successful, failed, denied, no-op, and reconciled attempts. |
+| `ObservationStoreMutationIsObserved` | DEFERRED | Ledger retention, archival, export, deletion, and compaction remain reserved future actions; Slice 2 adds no such path and uninstall preserves the complete ledger. |
+| `StatusAndReadinessAreProjections` | COVERED | `mct_daemon_bin::resident::serving::tests::resident_status_source_reflects_closed_endpoint`; `mct_daemon_bin::cli_admin::tests::status_reports_real_resident_snapshot`; status reads append no lifecycle fact. |
+| `UncleanTerminationIsReconciledAfterward` | COVERED | `mct_daemon_bin::supervisor_lifecycle::tests::supervisor_lifecycle_install_start_stop_unclean_reconcile_uninstall_preserves_evidence` aborts an instance without shutdown completion and proves the next start records reconciliation before readiness. |
+| `MinimalObserverSubstrateMayPrecedeFirstAppend` | COVERED | `mct_daemon_bin::supervisor_lifecycle::tests::supervisor_install_bootstrap_is_observed_before_every_remaining_effect` proves record, plist, config, identity, and state follow the first install batch; only the owner-private root/ledger/writer substrate precedes it. |
+| `FirstAppendPrecedesRemainingBootstrapEffects` | COVERED | `mct_daemon_bin::supervisor_lifecycle::tests::supervisor_install_bootstrap_is_observed_before_every_remaining_effect` reopens the ledger and orders governing install and identity/effect/completion facts. |
+| `BootstrapInitiatorIsAuthenticatedLocalPrincipal` | COVERED | `supervisor_install_bootstrap_is_observed_before_every_remaining_effect` verifies OS-UID provenance; `mct_daemon::control::tests::uds_authenticated_mutation_handler_receives_peer_credentials` proves authenticated mutation transport credentials reach lifecycle ingress. |
+| `ExclusiveWriterAdmitsOneBootstrap` | COVERED | `mct_daemon_bin::supervisor_lifecycle::tests::supervisor_conflicts_refuse_before_launchd_or_endpoint_effects` holds the first writer, proves the concurrent loser performs no record/plist effect, and reopens the ledger to find its durable contention refusal. |
+| `ExternalReceiptIsInputNotEvidence` | COVERED | `supervisor_install_bootstrap_is_observed_before_every_remaining_effect` proves the canonical ledger-backed record/observation chain; the implemented record and plist validators accept no installer receipt or alternative evidence channel. |
+| `BootstrapAppendFailureSuppressesSuccess` | COVERED | `mct_daemon_bin::resident::serving::tests::bootstrap_identity_append_failure_leaves_no_identity_effect` proves failed first bootstrap append suppresses identity/config effects; `supervisor_install_bootstrap_is_observed_before_every_remaining_effect` proves supervisor publication is downstream of that same mandatory append barrier. |
+| `WriterLossFencesMother` | COVERED | `mct_daemon_bin::supervisor_lifecycle::tests::resident_writer_loss_fences_lifecycle_and_all_other_protected_effects`; `mct_daemon_bin::resident::serving::tests::resident_status_source_reflects_closed_endpoint` proves fenced status is not ready. |
+| `InProgressEffectsAreNotAcknowledgedOrCached` | COVERED | `mct_daemon_bin::resident::idempotency::tests::fenced_writer_does_not_acknowledge_or_cache_an_in_progress_effect_outcome` proves one effect may finish but returns ledger-unavailable, remains in-progress, and neither replays nor executes twice; resident run completion now persists only after terminal observations append. |
+| `TerminationForSafetyMayProceed` | COVERED | The primary lifecycle integration proves unmatched termination reconciliation; supervised shutdown always closes endpoint/control even when shutdown append fails, while direct stop refuses to report clean completion unless the matching shutdown fact exists. |
+| `ObserverRestorationIsExplicitAndMinimal` | DEFERRED | Slice 2 adds no observer-recovery command or implicit repair path. Lifecycle operations remain fenced; explicit restoration is owned by a future recovery SPEC/operator gate. |
+| `RecoveryDigestBindsPreservedEvidence` | DEFERRED | Future observer-recovery slice; no recovery continuation is emitted by Slice 2. |
+| `RecoveryPrecedesReadiness` | DEFERRED | Future observer-recovery slice; ordinary supervised startup fails closed when the canonical writer cannot open. |
+| `FailedRecoveryRemainsFenced` | DEFERRED | Future observer-recovery slice; no recovery attempt exists in this command surface. |
+| `NoParallelRecoveryEvidenceChain` | DEFERRED | Slice 2 creates no receipt, side journal, or alternate evidence store; future recovery remains separately gated. |
+| `OperationalRolesAreDistinctProjections` | COVERED | Primary integration and lifecycle observation tests project installation/node subject, OS UID or exact supervisor-record initiator, and installer/resident/launchd adapter executor on shared traces. |
+| `SubjectNamesLifecycleTarget` | COVERED | `supervisor_install_bootstrap_is_observed_before_every_remaining_effect` verifies pending installation before identity; the primary integration verifies current node/record subjects after identity. |
+| `InitiatorNamesCurrentCausalAuthority` | COVERED | Direct lifecycle facts use authenticated OS peer/UID; automatic boot facts reference the exact current record id, revision, digest, and governing observation. |
+| `SupervisorInitiationUsesInstalledRecordProvenance` | COVERED | `supervisor_lifecycle_install_start_stop_unclean_reconcile_uninstall_preserves_evidence` asserts exact record/revision/install observation provenance and no additional boot-time `OperatorActionRecorded`. |
+| `ExecutorNamesEffectPerformer` | COVERED | Primary integration reopens installer/resident/launchd `AdapterEffectStarted/Completed` facts; GUI-domain and writer-failure tests cover `AdapterEffectFailed`, all separate from operator and lifecycle facts. |
+| `LifecycleActionsAreNotCalls` | COVERED | `mct_daemon::control::tests::uds_authenticated_mutation_handler_receives_peer_credentials` and primary stop/start prove owner-authenticated `POST /lifecycle/fact`; no `MctCall`, call id, target, route, or child authority is constructed. |
+| `ExistingObservationKindsComposeOperationalFacts` | COVERED | Supervisor tests assert only `OperatorActionRecorded`, `LifecycleTransitionRecorded`, and existing adapter-effect kinds; `mct-kernel` gains no observation variant. |
 
 ### Payload integrity and local CAS
 

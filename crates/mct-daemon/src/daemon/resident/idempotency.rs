@@ -287,6 +287,9 @@ where
         }
         MctIdempotencyReservation::ExecuteFresh => {
             let result = execute().await;
+            if ledger.is_fenced() {
+                return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+            }
             let recorded = handler_result_to_recorded_reply(&result);
             if let Err(error) = MctRuntimeStateStore::open(&state_path).and_then(|state| {
                 state.complete_call_idempotency(
@@ -478,6 +481,64 @@ listens = []
         assert_eq!(first.await.unwrap().outcome, CallProtocolOutcome::Completed);
         assert_eq!(execution_count.load(Ordering::SeqCst), 1);
         ledger.close().await;
+    }
+
+    #[tokio::test]
+    async fn fenced_writer_does_not_acknowledge_or_cache_an_in_progress_effect_outcome() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("state.sqlite");
+        let mut request = resident_test_protocol_request(resident_test_call(
+            TraceId::new("trace-idempotency-writer-loss").unwrap(),
+        ));
+        request.idempotency_key = Some("writer-loss-key".into());
+        let execution_count = Arc::new(AtomicU64::new(0));
+        let failed_writer = ResidentLedgerWriter::failed_for_test();
+
+        let first = execute_idempotent_call(
+            state_path.clone(),
+            failed_writer,
+            request.clone(),
+            Timestamp::new("2026-07-10T00:00:00Z").unwrap(),
+            {
+                let execution_count = Arc::clone(&execution_count);
+                move || async move {
+                    execution_count.fetch_add(1, Ordering::SeqCst);
+                    MctIrohCallHandlerResult::completed(
+                        ResultRef::new("result-must-not-cache").unwrap(),
+                    )
+                }
+            },
+        )
+        .await;
+        assert_eq!(first.outcome, CallProtocolOutcome::Failed);
+        assert_eq!(first.safe_message, "observation ledger unavailable");
+        assert_eq!(execution_count.load(Ordering::SeqCst), 1);
+
+        let healthy_writer =
+            ResidentLedgerWriter::spawn(dir.path().join("recovery-observations.jsonl")).unwrap();
+        let retry = execute_idempotent_call(
+            state_path,
+            healthy_writer.clone(),
+            request,
+            Timestamp::new("2026-07-10T00:00:01Z").unwrap(),
+            {
+                let execution_count = Arc::clone(&execution_count);
+                move || async move {
+                    execution_count.fetch_add(1, Ordering::SeqCst);
+                    MctIrohCallHandlerResult::completed(
+                        ResultRef::new("result-must-not-execute").unwrap(),
+                    )
+                }
+            },
+        )
+        .await;
+        assert_eq!(retry.outcome, CallProtocolOutcome::Failed);
+        assert_eq!(
+            retry.protocol_reason,
+            Some(CallProtocolReason::IdempotencyInProgress)
+        );
+        assert_eq!(execution_count.load(Ordering::SeqCst), 1);
+        healthy_writer.close().await;
     }
 
     #[tokio::test]

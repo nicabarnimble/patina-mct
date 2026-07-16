@@ -115,8 +115,10 @@ type MctUdsControlMutationFuture =
     Pin<Box<dyn Future<Output = MctControlPlaneResponse> + Send + 'static>>;
 
 #[cfg(unix)]
-type MctUdsControlMutationCallback =
-    dyn Fn(String, Vec<u8>) -> MctUdsControlMutationFuture + Send + Sync + 'static;
+type MctUdsControlMutationCallback = dyn Fn(Option<MctUdsPeerCredentials>, String, Vec<u8>) -> MctUdsControlMutationFuture
+    + Send
+    + Sync
+    + 'static;
 
 /// Local-only extension point for binary-owned UDS mutation handlers.
 #[cfg(unix)]
@@ -133,12 +135,27 @@ impl MctUdsControlMutationHandler {
         Fut: Future<Output = MctControlPlaneResponse> + Send + 'static,
     {
         Self {
-            callback: Arc::new(move |path, body| Box::pin(callback(path, body))),
+            callback: Arc::new(move |_peer, path, body| Box::pin(callback(path, body))),
         }
     }
 
-    async fn handle(&self, path: String, body: Vec<u8>) -> MctControlPlaneResponse {
-        (self.callback)(path, body).await
+    pub fn new_authenticated<F, Fut>(callback: F) -> Self
+    where
+        F: Fn(Option<MctUdsPeerCredentials>, String, Vec<u8>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = MctControlPlaneResponse> + Send + 'static,
+    {
+        Self {
+            callback: Arc::new(move |peer, path, body| Box::pin(callback(peer, path, body))),
+        }
+    }
+
+    async fn handle(
+        &self,
+        peer: Option<MctUdsPeerCredentials>,
+        path: String,
+        body: Vec<u8>,
+    ) -> MctControlPlaneResponse {
+        (self.callback)(peer, path, body).await
     }
 }
 
@@ -495,7 +512,7 @@ pub async fn serve_uds_control_stream_with_handlers(
         if method == "POST"
             && let Some(handler) = mutation_handler
         {
-            Some(handler.handle(path.to_owned(), body).await)
+            Some(handler.handle(peer, path.to_owned(), body).await)
         } else {
             Some(handle_control_plane_path_result_with_auth(
                 method,
@@ -826,6 +843,70 @@ mod tests {
         server.await.unwrap();
 
         assert!(called.load(Ordering::SeqCst));
+        assert!(
+            String::from_utf8(response)
+                .unwrap()
+                .starts_with("HTTP/1.1 200")
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn uds_authenticated_mutation_handler_receives_peer_credentials() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("control.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let expected_uid = String::from_utf8(
+            std::process::Command::new("/usr/bin/id")
+                .arg("-u")
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .parse::<u32>()
+        .unwrap();
+        let handler =
+            MctUdsControlMutationHandler::new_authenticated(move |peer, path, body| async move {
+                let peer = peer.expect("Unix peer credentials must be available");
+                assert_eq!(path, "/lifecycle/fact");
+                assert_eq!(body, br#"{"action":"stop_prepare"}"#);
+                assert_eq!(peer.uid, expected_uid);
+                MctControlPlaneResponse {
+                    status_code: 200,
+                    content_type: "application/json".into(),
+                    body: r#"{"status":"ok"}"#.into(),
+                }
+            });
+        let server = tokio::spawn(async move {
+            serve_uds_control_once_with_snapshot_result_blob_store_and_mutations(
+                &listener,
+                Ok(snapshot()),
+                None,
+                Some(&handler),
+            )
+            .await
+            .unwrap();
+        });
+        let mut client = tokio::net::UnixStream::connect(socket_path).await.unwrap();
+        let body = r#"{"action":"stop_prepare"}"#;
+        client
+            .write_all(
+                format!(
+                    "POST /lifecycle/fact HTTP/1.1\r\nHost: local\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        server.await.unwrap();
         assert!(
             String::from_utf8(response)
                 .unwrap()
