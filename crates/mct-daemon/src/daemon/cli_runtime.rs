@@ -88,6 +88,71 @@ fn execute_cli_child_mutation(
     })
 }
 
+pub(super) fn load_exact_catalog_approval_evidence(
+    state: &MctRuntimeStateStore,
+    children_dir: &Path,
+    artifact_id: &ComponentArtifactId,
+    child_name: &str,
+) -> Result<(ComponentArtifact, Vec<ArtifactAcquisition>, MctLoadedChild)> {
+    let artifact = state
+        .get_artifact(artifact_id)?
+        .context("exact artifact is absent from the verified catalog")?;
+    if artifact.child_name != child_name {
+        bail!("exact artifact does not belong to the requested child");
+    }
+    if artifact.provenance_status != ArtifactProvenanceStatus::AcquisitionBacked {
+        bail!("historical-unknown artifact cannot receive a new approval");
+    }
+    let acquisitions = state
+        .artifact_acquisitions()?
+        .into_iter()
+        .filter(|acquisition| {
+            acquisition.component_artifact_id.as_ref() == Some(artifact_id)
+                && acquisition.acquisition_outcome == ArtifactAcquisitionOutcome::Acquired
+                && acquisition.verification_outcome == ArtifactVerificationOutcome::Verified
+        })
+        .collect::<Vec<_>>();
+    if acquisitions.is_empty() {
+        bail!("exact artifact has no successful acquisition evidence");
+    }
+    let package = state
+        .artifact_package(artifact_id)?
+        .context("exact artifact has no immutable package projection")?;
+    let digest = artifact_id
+        .as_str()
+        .strip_prefix("sha256:")
+        .context("exact artifact id is not SHA-256 tagged")?;
+    let expected_package = children_dir.join("artifacts").join("sha256").join(digest);
+    if package.package_path != expected_package {
+        bail!("artifact package projection is outside the exact catalog path");
+    }
+    let report =
+        load_children_from_dir(MctChildLoadOptions::new(&package.package_path).strict_integrity());
+    if report.loaded != 1 || report.failed != 0 {
+        bail!("exact artifact package failed strict verification");
+    }
+    let child = report
+        .children
+        .into_iter()
+        .next()
+        .expect("loaded count checked");
+    let loaded_artifact = component_artifact_from_loaded_child(&child);
+    if child.artifact_id != artifact_id.as_str()
+        || loaded_artifact.child_name != artifact.child_name
+        || loaded_artifact.artifact_version != artifact.artifact_version
+        || loaded_artifact.content_hash != artifact.content_hash
+        || loaded_artifact.manifest_hash != artifact.manifest_hash
+        || loaded_artifact.primary_export != artifact.primary_export
+        || loaded_artifact.runtime_shape != artifact.runtime_shape
+        || loaded_artifact.ingress_mode != artifact.ingress_mode
+        || loaded_artifact.lifecycle_exports != artifact.lifecycle_exports
+        || loaded_artifact.verification_status != artifact.verification_status
+    {
+        bail!("exact artifact package facts do not match catalog evidence");
+    }
+    Ok((artifact, acquisitions, child))
+}
+
 pub(super) fn run_children_approve(mut args: Vec<String>) -> Result<()> {
     let config_path = take_option(&mut args, "--config")
         .map(PathBuf::from)
@@ -103,7 +168,7 @@ pub(super) fn run_children_approve(mut args: Vec<String>) -> Result<()> {
         .unwrap_or_else(default_state_path);
     let exact_artifact = take_option(&mut args, "--artifact")
         .context("children approve requires --artifact <sha256:digest>")?;
-    let strict = take_flag(&mut args, "--strict-integrity");
+    let _strict = take_flag(&mut args, "--strict-integrity");
     if args.is_empty() {
         bail!(
             "expected: mct-daemon children approve <child-name> [children-dir] --artifact <sha256:digest> [--config path] [--state path] [--ledger path] [--uds socket-path] [--strict-integrity]"
@@ -114,35 +179,10 @@ pub(super) fn run_children_approve(mut args: Vec<String>) -> Result<()> {
         .first()
         .map(PathBuf::from)
         .unwrap_or_else(default_children_dir);
-    let mut options = MctChildLoadOptions::new(&children_dir);
-    if strict {
-        options = options.strict_integrity();
-    }
-    let report = load_children_from_dir(options);
-    let child = report
-        .children
-        .iter()
-        .find(|child| child.name == child_name)
-        .ok_or_else(|| anyhow::anyhow!("loaded child '{child_name}' not found"))?;
-    if child.artifact_id != exact_artifact {
-        bail!("loaded child does not match exact artifact requested for approval");
-    }
     let state = MctRuntimeStateStore::open(&state_path)?;
     let artifact_id = ComponentArtifactId::new(exact_artifact.clone())?;
-    let artifact = state
-        .get_artifact(&artifact_id)?
-        .context("exact artifact is absent from the verified catalog")?;
-    if artifact.provenance_status != mct_kernel::ArtifactProvenanceStatus::AcquisitionBacked {
-        bail!("historical-unknown artifact cannot receive a new approval");
-    }
-    let acquisitions = state
-        .artifact_acquisitions()?
-        .into_iter()
-        .filter(|acquisition| acquisition.component_artifact_id.as_ref() == Some(&artifact_id))
-        .collect::<Vec<_>>();
-    if acquisitions.is_empty() {
-        bail!("exact artifact has no acquisition evidence");
-    }
+    let (artifact, acquisitions, child) =
+        load_exact_catalog_approval_evidence(&state, &children_dir, &artifact_id, &child_name)?;
     println!(
         "approval evidence artifact={} child={} version={} content={} manifest={} provenance={:?}",
         artifact.artifact_id,
@@ -176,7 +216,7 @@ pub(super) fn run_children_approve(mut args: Vec<String>) -> Result<()> {
             expected_config_path: config_path.clone(),
             expected_children_dir: children_dir.clone(),
             child_name: child.name.clone(),
-            strict_integrity: strict,
+            strict_integrity: true,
             expected_state_path: Some(state_path.clone()),
             expected_artifact_id: Some(exact_artifact),
         },

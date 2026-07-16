@@ -542,38 +542,23 @@ fn prepare_child_mutation(
             if request.child_name.trim().is_empty() {
                 bail!("child name must not be empty");
             }
-            let report = load_children_from_dir(MctChildLoadOptions {
-                children_dir: configured_children_dir.to_path_buf(),
-                integrity_mode: if request.strict_integrity {
-                    MctChildIntegrityMode::RequireSidecars
-                } else {
-                    MctChildIntegrityMode::AuditOnly
-                },
-            });
-            let child = report
-                .children
-                .iter()
-                .find(|child| child.name == request.child_name)
-                .ok_or_else(|| anyhow::anyhow!("loaded child not found"))?;
-            if let Some(expected_artifact_id) = request.expected_artifact_id.as_deref() {
-                if child.artifact_id != expected_artifact_id {
-                    bail!("loaded child does not match exact artifact approval request");
-                }
-                let state_path = configured_state_path
-                    .or(request.expected_state_path.as_deref())
-                    .context("exact artifact approval requires runtime state")?;
-                let artifact_id = ComponentArtifactId::new(expected_artifact_id)?;
-                let artifact = MctRuntimeStateStore::open(state_path)?
-                    .get_artifact(&artifact_id)?
-                    .context("exact artifact is absent from verified catalog")?;
-                if artifact.provenance_status != ArtifactProvenanceStatus::AcquisitionBacked
-                    || artifact.acquisition_ids.is_empty()
-                {
-                    bail!("historical-unknown artifact cannot receive a new approval");
-                }
-            }
+            let expected_artifact_id = request
+                .expected_artifact_id
+                .as_deref()
+                .context("child approval requires one exact artifact id")?;
+            let state_path = configured_state_path
+                .or(request.expected_state_path.as_deref())
+                .context("exact artifact approval requires runtime state")?;
+            let state = MctRuntimeStateStore::open(state_path)?;
+            let artifact_id = ComponentArtifactId::new(expected_artifact_id)?;
+            let (_, _, child) = super::cli_runtime::load_exact_catalog_approval_evidence(
+                &state,
+                configured_children_dir,
+                &artifact_id,
+                &request.child_name,
+            )?;
             let config = store
-                .prepare_approved_and_assigned_child(child, MctOperatorChildScope::default())?;
+                .prepare_approved_and_assigned_child(&child, MctOperatorChildScope::default())?;
             Ok(PreparedChildMutation {
                 config_path: configured_path.to_path_buf(),
                 child_name: request.child_name,
@@ -2777,87 +2762,45 @@ listens = []
     }
 
     #[tokio::test]
-    async fn live_child_authority_mutations_are_durable_before_config_effect() {
+    async fn child_name_only_approval_is_rejected_before_authority_or_config_effect() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.json");
         let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
         write_resident_process_child(&children_dir);
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
         let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
-        let handler = resident_authority_mutation_handler(
+        let handler = resident_observed_mutation_handler(
             config_path.clone(),
-            children_dir.clone(),
+            children_dir,
+            state_path,
             ledger.clone(),
         );
-
-        for (path, body) in [
-            (
-                "/children/approve",
-                serde_json::json!({
-                    "expected_config_path": config_path,
-                    "expected_children_dir": children_dir,
-                    "child_name": "resident-echo",
-                    "strict_integrity": true
-                }),
-            ),
-            (
-                "/children/revoke",
-                serde_json::json!({
-                    "expected_config_path": config_path,
-                    "child_name": "resident-echo"
-                }),
-            ),
-        ] {
-            let (status, response) = post_mutation(
-                Arc::clone(&listener),
-                handler.clone(),
-                &socket_path,
-                path,
-                body,
-            )
-            .await;
-            assert_eq!(status, 200, "{response}");
-            let entries =
-                JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
-                    .unwrap()
-                    .entries()
-                    .unwrap();
-            assert!(
-                entries
-                    .iter()
-                    .all(|entry| { entry.durability_class == DurabilityClass::BeforeEffect })
-            );
-        }
+        let (status, _) = post_mutation(
+            listener,
+            handler.clone(),
+            &socket_path,
+            "/children/approve",
+            serde_json::json!({
+                "expected_config_path": config_path,
+                "expected_children_dir": dir.path().join("children"),
+                "child_name": "resident-echo",
+                "strict_integrity": true
+            }),
+        )
+        .await;
+        assert_eq!(status, 400);
+        assert!(!config_path.exists());
         drop(handler);
         ledger.close().await;
-
-        let config = MctDaemonConfigStore::new(&config_path).load().unwrap();
-        assert_eq!(
-            config.child_approvals["resident-echo"].approval_state,
-            ChildApprovalState::Revoked
-        );
-        assert_eq!(
-            config.child_assignments["resident-echo"].assignment_state,
-            ChildAssignmentState::Revoked
-        );
-        let kinds =
+        assert!(
             JsonlObservationLedger::open_read_only(ledger_path, "ledger-local", "local-mct")
                 .unwrap()
                 .entries()
                 .unwrap()
-                .into_iter()
-                .map(|entry| entry.observation.kind)
-                .collect::<Vec<_>>();
-        assert_eq!(
-            kinds,
-            vec![
-                ObservationKind::ChildApproved,
-                ObservationKind::ChildAssigned,
-                ObservationKind::ChildRevoked,
-                ObservationKind::ChildAssignmentRevoked,
-            ]
+                .is_empty()
         );
     }
 
@@ -2998,7 +2941,7 @@ listens = []
     }
 
     #[tokio::test]
-    async fn child_append_failure_prevents_config_effect() {
+    async fn child_name_only_approval_cannot_reach_append_or_config_effect() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.json");
         let children_dir = dir.path().join("children");
@@ -3025,7 +2968,7 @@ listens = []
             }),
         )
         .await;
-        assert_eq!(status, 500);
+        assert_eq!(status, 400);
         assert!(!config_path.exists());
     }
 
@@ -3464,28 +3407,31 @@ listens = []
         let ledger_path = dir.path().join("observations.jsonl");
         write_resident_process_child(&children_dir);
 
-        execute_offline_child_mutation(
-            &config_path,
-            &children_dir,
-            &state_path,
-            &ledger_path,
-            "/children/approve",
-            &serde_json::to_vec(&serde_json::json!({
-                "expected_config_path": config_path,
-                "expected_children_dir": children_dir,
-                "child_name": "resident-echo",
-                "strict_integrity": true
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+        assert!(
+            execute_offline_child_mutation(
+                &config_path,
+                &children_dir,
+                &state_path,
+                &ledger_path,
+                "/children/approve",
+                &serde_json::to_vec(&serde_json::json!({
+                    "expected_config_path": config_path,
+                    "expected_children_dir": children_dir,
+                    "child_name": "resident-echo",
+                    "strict_integrity": true
+                }))
+                .unwrap(),
+            )
+            .is_err()
+        );
+        assert!(!config_path.exists());
         execute_offline_identity_mutation(&config_path, &identity_path, &ledger_path).unwrap();
         assert!(identity_path.exists());
         assert!(config_path.exists());
 
         let secret = std::fs::read_to_string(&identity_path).unwrap();
         let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
-        assert!(ledger_text.contains("child_approved"));
+        assert!(!ledger_text.contains("child_approved"));
         assert!(ledger_text.contains("operator_action_recorded"));
         assert!(!ledger_text.contains(secret.trim()));
 
