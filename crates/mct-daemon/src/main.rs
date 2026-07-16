@@ -23,7 +23,7 @@ use mct_daemon::{
     load_children_from_dir, local_blob_store_for_state_path, mct_secrets_toy_contract,
     new_artifact_attempt_context, outbound_peer_binding_for_local, record_composition_plan,
     reload_configured_child, serve_http_control_once_with_snapshot_result,
-    stage_artifact_with_context, sync_child_registry_source, warmup_configured_child,
+    stage_artifact_with_context_and_observer, sync_child_registry_source, warmup_configured_child,
 };
 use mct_iroh::{
     MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES, MctIrohCallHandlerResult, MctIrohCallPayloadReply,

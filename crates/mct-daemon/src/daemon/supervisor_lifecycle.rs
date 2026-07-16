@@ -3034,6 +3034,96 @@ mod tests {
     }
 
     #[test]
+    fn exact_approval_refuses_wrong_historical_failed_and_tampered_artifact_evidence() {
+        let root = tempfile::tempdir().unwrap();
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/slate-manager-0.2.0");
+        let source = root.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::copy(
+            fixture.join("slate-manager.toml"),
+            source.join("slate-manager.toml"),
+        )
+        .unwrap();
+        fs::copy(
+            fixture.join("slate-manager.wasm"),
+            source.join("slate-manager.wasm"),
+        )
+        .unwrap();
+        let children = root.path().join("children");
+        let state_path = root.path().join("state.sqlite");
+        let request = MctArtifactStageRequest {
+            source_root: source,
+            manifest_path: PathBuf::from("slate-manager.toml"),
+            component_path: PathBuf::from("slate-manager.wasm"),
+            claimed_child_name: "slate-manager".into(),
+            claimed_artifact_version: "0.2.0".into(),
+            expected_digest: None,
+            standing_source_authority_id: None,
+            claimed_publisher: None,
+            require_source_sidecars: false,
+            children_dir: children.clone(),
+            state_path: state_path.clone(),
+        };
+        let report = mct_daemon::stage_operator_pointed_artifact(&request).unwrap();
+        let artifact_id = ComponentArtifactId::new(report.artifact_id.unwrap()).unwrap();
+        let state = MctRuntimeStateStore::open(&state_path).unwrap();
+        assert!(
+            super::cli_runtime::load_exact_catalog_approval_evidence(
+                &state,
+                &children,
+                &ComponentArtifactId::new(format!("sha256:{}", "0".repeat(64))).unwrap(),
+                "slate-manager",
+            )
+            .is_err()
+        );
+        fs::write(
+            report
+                .package_path
+                .unwrap()
+                .join("artifact/slate-manager.wasm"),
+            b"tampered",
+        )
+        .unwrap();
+        assert!(
+            super::cli_runtime::load_exact_catalog_approval_evidence(
+                &state,
+                &children,
+                &artifact_id,
+                "slate-manager",
+            )
+            .is_err()
+        );
+
+        let historical_state =
+            MctRuntimeStateStore::open(root.path().join("historical.sqlite")).unwrap();
+        let historical = proof_artifact();
+        historical_state.upsert_artifact(&historical).unwrap();
+        assert!(
+            super::cli_runtime::load_exact_catalog_approval_evidence(
+                &historical_state,
+                &children,
+                &historical.artifact_id,
+                &historical.child_name,
+            )
+            .is_err()
+        );
+
+        let failed_root = tempfile::tempdir().unwrap();
+        let mut failed_request = request;
+        failed_request.source_root = failed_root.path().join("missing-source");
+        failed_request.state_path = failed_root.path().join("state.sqlite");
+        failed_request.children_dir = failed_root.path().join("children");
+        assert!(mct_daemon::stage_operator_pointed_artifact(&failed_request).is_err());
+        let failed_state = MctRuntimeStateStore::open(&failed_request.state_path).unwrap();
+        assert!(
+            failed_state.artifact_acquisitions().unwrap()[0]
+                .component_artifact_id
+                .is_none()
+        );
+    }
+
+    #[test]
     fn standing_artifact_source_authority_is_scoped_observed_and_revocable() {
         let root = tempfile::tempdir().unwrap();
         let source_root = root.path().join("source");

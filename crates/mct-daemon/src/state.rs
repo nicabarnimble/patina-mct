@@ -1275,6 +1275,58 @@ impl MctRuntimeStateStore {
         Ok(())
     }
 
+    pub fn rollback_artifact_publication(
+        &self,
+        acquisition_id: &ArtifactAcquisitionId,
+    ) -> Result<Option<PathBuf>> {
+        let artifact_id = self
+            .conn
+            .query_row(
+                "SELECT component_artifact_id FROM artifact_acquisitions WHERE acquisition_id = ?1",
+                params![acquisition_id.as_str()],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM component_artifact_acquisitions WHERE acquisition_id = ?1",
+            params![acquisition_id.as_str()],
+        )?;
+        tx.execute(
+            "DELETE FROM artifact_acquisitions WHERE acquisition_id = ?1",
+            params![acquisition_id.as_str()],
+        )?;
+        let mut remove_package = None;
+        if let Some(artifact_id) = artifact_id {
+            let remaining: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM component_artifact_acquisitions WHERE artifact_id = ?1",
+                params![artifact_id],
+                |row| row.get(0),
+            )?;
+            if remaining == 0 {
+                remove_package = tx
+                    .query_row(
+                        "SELECT package_path FROM component_artifact_packages WHERE artifact_id = ?1",
+                        params![artifact_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                    .map(PathBuf::from);
+                tx.execute(
+                    "DELETE FROM component_artifact_packages WHERE artifact_id = ?1",
+                    params![artifact_id],
+                )?;
+                tx.execute(
+                    "DELETE FROM component_artifacts WHERE artifact_id = ?1",
+                    params![artifact_id],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(remove_package)
+    }
+
     pub fn artifact_package(
         &self,
         artifact_id: &ComponentArtifactId,
@@ -3073,6 +3125,69 @@ mod tests {
             ArtifactProvenanceStatus::HistoricalUnknown
         );
         assert!(persisted.acquisition_ids.is_empty());
+    }
+
+    #[test]
+    fn pre_v7_artifact_migration_marks_historical_unknown_without_fabricating_acquisition() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.sqlite");
+        let legacy = artifact();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE component_artifacts (
+                    artifact_id TEXT PRIMARY KEY,
+                    child_name TEXT NOT NULL,
+                    artifact_version TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    manifest_hash TEXT NOT NULL,
+                    primary_export_json TEXT NOT NULL,
+                    runtime_shape TEXT NOT NULL,
+                    ingress_mode TEXT NOT NULL,
+                    lifecycle_exports TEXT NOT NULL,
+                    verification_status TEXT NOT NULL,
+                    created_by_observation_id TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                "#,
+            )
+            .unwrap();
+        connection
+            .execute(
+                r#"
+                INSERT INTO component_artifacts(
+                    artifact_id, child_name, artifact_version, content_hash, manifest_hash,
+                    primary_export_json, runtime_shape, ingress_mode, lifecycle_exports,
+                    verification_status, created_by_observation_id, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                "#,
+                params![
+                    legacy.artifact_id.as_str(),
+                    legacy.child_name,
+                    legacy.artifact_version,
+                    legacy.content_hash,
+                    legacy.manifest_hash,
+                    json_string(&legacy.primary_export).unwrap(),
+                    json_atom(&legacy.runtime_shape).unwrap(),
+                    json_atom(&legacy.ingress_mode).unwrap(),
+                    json_atom(&legacy.lifecycle_exports).unwrap(),
+                    json_atom(&legacy.verification_status).unwrap(),
+                    legacy.created_by_observation_id.as_str(),
+                    "2026-07-15T00:00:00Z",
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        let store = MctRuntimeStateStore::open(&path).unwrap();
+        let migrated = store.get_artifact(&legacy.artifact_id).unwrap().unwrap();
+        assert_eq!(
+            migrated.provenance_status,
+            ArtifactProvenanceStatus::HistoricalUnknown
+        );
+        assert!(migrated.acquisition_ids.is_empty());
+        assert!(store.artifact_acquisitions().unwrap().is_empty());
     }
 
     #[test]

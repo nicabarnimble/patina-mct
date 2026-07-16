@@ -132,26 +132,34 @@ pub fn stage_operator_pointed_artifact(
     stage_artifact_with_context(request, &context)
 }
 
-/// Executes an attempt whose correlated authority and adapter-start facts are already durable.
+/// Executes an attempt without an external terminal observer.
 pub fn stage_artifact_with_context(
     request: &MctArtifactStageRequest,
     context: &MctArtifactAttemptContext,
 ) -> Result<MctArtifactAcquisitionReport> {
+    stage_artifact_with_context_and_observer(request, context, |_| Ok(()))
+}
+
+/// Executes an attempt and requires its successful terminal facts before catalog publication.
+pub fn stage_artifact_with_context_and_observer<F>(
+    request: &MctArtifactStageRequest,
+    context: &MctArtifactAttemptContext,
+    observe_verified: F,
+) -> Result<MctArtifactAcquisitionReport>
+where
+    F: FnOnce(&MctArtifactAcquisitionReport) -> Result<()>,
+{
     validate_claim(&request.claimed_child_name, "child name")?;
     validate_claim(&request.claimed_artifact_version, "artifact version")?;
     validate_expected_digest(request.expected_digest.as_deref())?;
 
-    let source_root = request
-        .source_root
-        .canonicalize()
-        .with_context(|| format!("resolve source root {}", request.source_root.display()))?;
-    if !source_root.is_dir() {
-        bail!("artifact source root is not a directory");
-    }
     validate_relative_path(&request.manifest_path)?;
-    validate_relative_path(&request.component_path)?;
-    let manifest_path = canonical_source_file(&source_root, &request.manifest_path)?;
-    let component_path = canonical_source_file(&source_root, &request.component_path)?;
+    if !request.component_path.as_os_str().is_empty() {
+        validate_relative_path(&request.component_path)?;
+    }
+    let claimed_source_root =
+        std::path::absolute(&request.source_root).context("make artifact source root absolute")?;
+    let resolved_source_root = request.source_root.canonicalize();
     let state = MctRuntimeStateStore::open(&request.state_path)?;
     let standing = request
         .standing_source_authority_id
@@ -171,18 +179,16 @@ pub fn stage_artifact_with_context(
             Ok(source)
         })
         .transpose()?;
-    if let Some(source) = standing.as_ref() {
-        let root = source
-            .source_ref
-            .strip_prefix("file://")
-            .context("standing source is not a filesystem source")?;
-        let authority_root = PathBuf::from(root).canonicalize()?;
-        if !source_root.starts_with(&authority_root) {
-            bail!("acquisition package is outside standing source root");
-        }
-    }
     let source_ref = standing.as_ref().map_or_else(
-        || format!("file://{}", source_root.display()),
+        || {
+            format!(
+                "file://{}",
+                resolved_source_root
+                    .as_ref()
+                    .unwrap_or(&claimed_source_root)
+                    .display()
+            )
+        },
         |source| source.source_ref.clone(),
     );
 
@@ -240,15 +246,6 @@ pub fn stage_artifact_with_context(
             acquisition_id.as_str()
         ))?,
     };
-    let authority = evaluate_artifact_acquisition_authority(
-        &authority_request,
-        standing.as_ref(),
-        operator.as_ref(),
-        Some(&effect),
-    );
-    let authorized = authority
-        .authorized
-        .context("source trust and filesystem effect authority denied")?;
     let authority_path = if standing.is_some() {
         ArtifactAcquisitionAuthorityPath::StandingSource
     } else {
@@ -258,6 +255,40 @@ pub fn stage_artifact_with_context(
         .as_ref()
         .map(|source| source.source_authority_id.clone());
     let operator_pointed_decision_id = operator.as_ref().map(|value| value.decision_id.clone());
+    let failed_acquisition = || ArtifactAcquisition {
+        acquisition_id: acquisition_id.clone(),
+        authority_path,
+        standing_source_authority_id: standing_source_authority_id.clone(),
+        operator_pointed_decision_id: operator_pointed_decision_id.clone(),
+        adapter_effect_authority_ref: context.adapter_start_observation_id.to_string(),
+        source_ref: source_ref.clone(),
+        claimed_child_name: request.claimed_child_name.clone(),
+        claimed_artifact_version: request.claimed_artifact_version.clone(),
+        observed_size_bytes: None,
+        observed_digest: None,
+        acquisition_outcome: ArtifactAcquisitionOutcome::Failed,
+        verification_outcome: ArtifactVerificationOutcome::NotReached,
+        verification_observation_id: None,
+        acquisition_observation_id: acquisition_observation_id.clone(),
+        component_artifact_id: None,
+    };
+    let record_terminal = |acquisition: &ArtifactAcquisition| -> Result<()> {
+        state.record_artifact_acquisition(acquisition)?;
+        if let Some(decision_id) = acquisition.operator_pointed_decision_id.as_ref() {
+            state.consume_operator_acquisition_decision(decision_id)?;
+        }
+        Ok(())
+    };
+    let authority = evaluate_artifact_acquisition_authority(
+        &authority_request,
+        standing.as_ref(),
+        operator.as_ref(),
+        Some(&effect),
+    );
+    let Some(authorized) = authority.authorized else {
+        record_terminal(&failed_acquisition())?;
+        bail!("source trust and filesystem effect authority denied");
+    };
     let rejected_acquisition = |size: u64, digest: String| ArtifactAcquisition {
         acquisition_id: acquisition_id.clone(),
         authority_path,
@@ -275,24 +306,123 @@ pub fn stage_artifact_with_context(
         acquisition_observation_id: acquisition_observation_id.clone(),
         component_artifact_id: None,
     };
-    let record_rejected = |acquisition: &ArtifactAcquisition| -> Result<()> {
-        state.record_artifact_acquisition(acquisition)?;
-        if let Some(decision_id) = acquisition.operator_pointed_decision_id.as_ref() {
-            state.consume_operator_acquisition_decision(decision_id)?;
+    let record_rejected = |acquisition: &ArtifactAcquisition| record_terminal(acquisition);
+
+    let source_root = match resolved_source_root {
+        Ok(root) if root.is_dir() => root,
+        Ok(_) => {
+            record_terminal(&failed_acquisition())?;
+            bail!("artifact source root is not a directory");
         }
-        Ok(())
+        Err(error) => {
+            record_terminal(&failed_acquisition())?;
+            return Err(error)
+                .with_context(|| format!("resolve source root {}", request.source_root.display()));
+        }
+    };
+    if let Some(source) = standing.as_ref() {
+        let root = source
+            .source_ref
+            .strip_prefix("file://")
+            .context("standing source is not a filesystem source")?;
+        let authority_root = match PathBuf::from(root).canonicalize() {
+            Ok(root) => root,
+            Err(error) => {
+                record_terminal(&failed_acquisition())?;
+                return Err(error).context("resolve standing artifact source root");
+            }
+        };
+        if !source_root.starts_with(&authority_root) {
+            record_terminal(&failed_acquisition())?;
+            bail!("acquisition package is outside standing source root");
+        }
+    }
+    let manifest_path = match canonical_source_file(&source_root, &request.manifest_path) {
+        Ok(path) => path,
+        Err(error) => {
+            record_terminal(&failed_acquisition())?;
+            return Err(error);
+        }
+    };
+    let mut preloaded_manifest = None;
+    let selected_component_path = if request.component_path.as_os_str().is_empty() {
+        let bytes = match read_bounded_file(&manifest_path, MCT_CHILD_MANIFEST_MAX_BYTES) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                record_terminal(&failed_acquisition())?;
+                return Err(error).context("acquire bounded package manifest");
+            }
+        };
+        let text = match std::str::from_utf8(&bytes) {
+            Ok(text) => text,
+            Err(error) => {
+                record_terminal(&failed_acquisition())?;
+                return Err(error).context("package manifest is not UTF-8");
+            }
+        };
+        let manifest = match SdkChildManifest::from_toml_str(text) {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                record_terminal(&failed_acquisition())?;
+                return Err(error).context("parse package manifest before component acquisition");
+            }
+        };
+        let declared = match manifest.artifact.wasm {
+            Some(path) => path,
+            None => {
+                record_terminal(&failed_acquisition())?;
+                bail!("package-shaped acquisition requires a declared component path");
+            }
+        };
+        if let Err(error) = validate_relative_path(&declared) {
+            record_terminal(&failed_acquisition())?;
+            return Err(error);
+        }
+        preloaded_manifest = Some(bytes);
+        declared
+    } else {
+        request.component_path.clone()
+    };
+    let component_path = match canonical_source_file(&source_root, &selected_component_path) {
+        Ok(path) => path,
+        Err(error) => {
+            record_terminal(&failed_acquisition())?;
+            return Err(error);
+        }
     };
 
-    let manifest_bytes = read_bounded_file(&manifest_path, MCT_CHILD_MANIFEST_MAX_BYTES)?;
-    let component_bytes = read_bounded_file(&component_path, MCT_COMPONENT_ARTIFACT_MAX_BYTES)?;
-    if request.require_source_sidecars {
-        verify_source_sidecar(&manifest_path, &manifest_bytes)?;
-        verify_source_sidecar(&component_path, &component_bytes)?;
+    let manifest_bytes = match preloaded_manifest {
+        Some(bytes) => bytes,
+        None => match read_bounded_file(&manifest_path, MCT_CHILD_MANIFEST_MAX_BYTES) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                record_terminal(&failed_acquisition())?;
+                return Err(error).context("acquire bounded artifact manifest");
+            }
+        },
+    };
+    let component_bytes = match read_bounded_file(&component_path, MCT_COMPONENT_ARTIFACT_MAX_BYTES)
+    {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            record_terminal(&failed_acquisition())?;
+            return Err(error).context("acquire bounded component bytes");
+        }
+    };
+    let observed_digest = format!("blake3:{}", blake3::hash(&component_bytes).to_hex());
+    if request.require_source_sidecars
+        && let Err(error) = verify_source_sidecar(&manifest_path, &manifest_bytes)
+            .and_then(|()| verify_source_sidecar(&component_path, &component_bytes))
+    {
+        let acquisition =
+            rejected_acquisition(component_bytes.len() as u64, observed_digest.clone());
+        record_rejected(&acquisition)?;
+        return Err(error).context("verify mandatory source SHA-256 sidecars");
     }
     if authorized.source_ref() != source_ref {
+        record_terminal(&failed_acquisition())?;
         bail!("filesystem acquisition capability source mismatch");
     }
-    let observed_digest = format!("blake3:{}", blake3::hash(&component_bytes).to_hex());
     if let Some(expected) = request.expected_digest.as_deref()
         && expected != observed_digest
     {
@@ -302,10 +432,24 @@ pub fn stage_artifact_with_context(
         bail!("expected BLAKE3 digest does not match acquired component bytes");
     }
 
-    let manifest_text =
-        std::str::from_utf8(&manifest_bytes).context("child manifest is not UTF-8")?;
-    let parsed =
-        SdkChildManifest::from_toml_str(manifest_text).context("parse staged child manifest")?;
+    let manifest_text = match std::str::from_utf8(&manifest_bytes) {
+        Ok(text) => text,
+        Err(error) => {
+            let acquisition =
+                rejected_acquisition(component_bytes.len() as u64, observed_digest.clone());
+            record_rejected(&acquisition)?;
+            return Err(error).context("child manifest is not UTF-8");
+        }
+    };
+    let parsed = match SdkChildManifest::from_toml_str(manifest_text) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            let acquisition =
+                rejected_acquisition(component_bytes.len() as u64, observed_digest.clone());
+            record_rejected(&acquisition)?;
+            return Err(error).context("parse staged child manifest");
+        }
+    };
     if parsed.name != request.claimed_child_name
         || parsed.version != request.claimed_artifact_version
     {
@@ -314,7 +458,15 @@ pub fn stage_artifact_with_context(
         record_rejected(&acquisition)?;
         bail!("staged manifest identity does not match operator claim");
     }
-    authority_request.namespaces = manifest_namespaces(&parsed)?;
+    authority_request.namespaces = match manifest_namespaces(&parsed) {
+        Ok(namespaces) => namespaces,
+        Err(error) => {
+            let acquisition =
+                rejected_acquisition(component_bytes.len() as u64, observed_digest.clone());
+            record_rejected(&acquisition)?;
+            return Err(error);
+        }
+    };
     if standing.is_some()
         && evaluate_artifact_acquisition_authority(
             &authority_request,
@@ -332,25 +484,46 @@ pub fn stage_artifact_with_context(
     }
 
     let (emitted_manifest, artifact_relative) =
-        canonical_package_manifest(manifest_text, &parsed, &request.component_path)?;
+        match canonical_package_manifest(manifest_text, &parsed, &selected_component_path) {
+            Ok(package) => package,
+            Err(error) => {
+                let acquisition =
+                    rejected_acquisition(component_bytes.len() as u64, observed_digest.clone());
+                record_rejected(&acquisition)?;
+                return Err(error);
+            }
+        };
     let staging_dir = request
         .children_dir
         .join(".acquiring")
         .join(acquisition_id.as_str().replace(':', "-"));
     if staging_dir.exists() {
+        let acquisition =
+            rejected_acquisition(component_bytes.len() as u64, observed_digest.clone());
+        record_rejected(&acquisition)?;
         bail!("artifact acquisition staging path already exists");
     }
     let staged_component = staging_dir.join(&artifact_relative);
-    fs::create_dir_all(
-        staged_component
-            .parent()
-            .context("staged component path has no parent")?,
-    )?;
     let staged_manifest = staging_dir.join("child.toml");
-    write_new_file(&staged_manifest, emitted_manifest.as_bytes())?;
-    write_new_file(&staged_component, &component_bytes)?;
-    write_sha256_sidecar(&staged_manifest)?;
-    write_sha256_sidecar(&staged_component)?;
+    let stage_result = (|| -> Result<()> {
+        fs::create_dir_all(
+            staged_component
+                .parent()
+                .context("staged component path has no parent")?,
+        )?;
+        write_new_file(&staged_manifest, emitted_manifest.as_bytes())?;
+        write_new_file(&staged_component, &component_bytes)?;
+        write_sha256_sidecar(&staged_manifest)?;
+        write_sha256_sidecar(&staged_component)?;
+        Ok(())
+    })();
+    if let Err(error) = stage_result {
+        let acquisition =
+            rejected_acquisition(component_bytes.len() as u64, observed_digest.clone());
+        record_rejected(&acquisition)?;
+        let _ = fs::remove_dir_all(&staging_dir);
+        return Err(error).context("render canonical staged artifact package");
+    }
 
     let load = load_children_from_dir(MctChildLoadOptions::new(&staging_dir).strict_integrity());
     if load.loaded != 1 || load.failed != 0 {
@@ -366,30 +539,46 @@ pub fn stage_artifact_with_context(
         .next()
         .expect("loaded count checked");
     let artifact_id = loaded.artifact_id.clone();
-    let digest_hex = artifact_id
-        .strip_prefix("sha256:")
-        .context("loaded artifact id is not SHA-256 tagged")?;
+    let verified_without_artifact = || ArtifactAcquisition {
+        acquisition_id: acquisition_id.clone(),
+        authority_path,
+        standing_source_authority_id: standing_source_authority_id.clone(),
+        operator_pointed_decision_id: operator_pointed_decision_id.clone(),
+        adapter_effect_authority_ref: context.adapter_start_observation_id.to_string(),
+        source_ref: source_ref.clone(),
+        claimed_child_name: request.claimed_child_name.clone(),
+        claimed_artifact_version: request.claimed_artifact_version.clone(),
+        observed_size_bytes: Some(component_bytes.len() as u64),
+        observed_digest: Some(observed_digest.clone()),
+        acquisition_outcome: ArtifactAcquisitionOutcome::Acquired,
+        verification_outcome: ArtifactVerificationOutcome::Verified,
+        verification_observation_id: Some(verification_observation_id.clone()),
+        acquisition_observation_id: acquisition_observation_id.clone(),
+        component_artifact_id: None,
+    };
+    let digest_hex = match artifact_id.strip_prefix("sha256:") {
+        Some(digest) => digest,
+        None => {
+            record_terminal(&verified_without_artifact())?;
+            let _ = fs::remove_dir_all(&staging_dir);
+            bail!("loaded artifact id is not SHA-256 tagged");
+        }
+    };
     let package_path = request
         .children_dir
         .join("artifacts")
         .join("sha256")
         .join(digest_hex);
-    if package_path.exists() {
+    let package_preexisting = package_path.exists();
+    if package_preexisting {
         let existing =
             load_children_from_dir(MctChildLoadOptions::new(&package_path).strict_integrity());
         if existing.loaded != 1 || existing.children[0].artifact_id != artifact_id {
+            record_terminal(&verified_without_artifact())?;
+            let _ = fs::remove_dir_all(&staging_dir);
             bail!("immutable artifact catalog path conflicts with different bytes");
         }
-        fs::remove_dir_all(&staging_dir)?;
-    } else {
-        fs::create_dir_all(
-            package_path
-                .parent()
-                .context("catalog path has no parent")?,
-        )?;
-        fs::rename(&staging_dir, &package_path).context("publish immutable artifact package")?;
     }
-
     let mut artifact = component_artifact_from_loaded_child(&loaded);
     artifact.provenance_status = ArtifactProvenanceStatus::AcquisitionBacked;
     artifact.acquisition_ids = vec![acquisition_id.clone()];
@@ -397,10 +586,10 @@ pub fn stage_artifact_with_context(
     let acquisition = ArtifactAcquisition {
         acquisition_id: acquisition_id.clone(),
         authority_path,
-        standing_source_authority_id,
+        standing_source_authority_id: standing_source_authority_id.clone(),
         operator_pointed_decision_id: operator_pointed_decision_id.clone(),
         adapter_effect_authority_ref: context.adapter_start_observation_id.to_string(),
-        source_ref,
+        source_ref: source_ref.clone(),
         claimed_child_name: request.claimed_child_name.clone(),
         claimed_artifact_version: request.claimed_artifact_version.clone(),
         observed_size_bytes: Some(component_bytes.len() as u64),
@@ -411,29 +600,71 @@ pub fn stage_artifact_with_context(
         acquisition_observation_id: acquisition_observation_id.clone(),
         component_artifact_id: Some(artifact.artifact_id.clone()),
     };
-    MctRuntimeStateStore::open(&request.state_path)?.record_verified_acquisition_and_artifact(
-        &acquisition,
-        &artifact,
-        &package_path,
-    )?;
+    let report = MctArtifactAcquisitionReport {
+        acquisition_id: acquisition_id.clone(),
+        child_name: request.claimed_child_name.clone(),
+        artifact_version: request.claimed_artifact_version.clone(),
+        artifact_id: Some(artifact_id.clone()),
+        observed_size_bytes: Some(component_bytes.len() as u64),
+        observed_digest: Some(observed_digest.clone()),
+        acquisition_outcome: "acquired".into(),
+        verification_outcome: "verified".into(),
+        package_path: Some(package_path.clone()),
+        acquisition_observation_id: acquisition_observation_id.clone(),
+        verification_observation_id: Some(verification_observation_id.clone()),
+    };
+    if let Err(error) = observe_verified(&report) {
+        let _ = fs::remove_dir_all(&staging_dir);
+        if let Some(decision_id) = operator_pointed_decision_id.as_ref() {
+            let _ = state.consume_operator_acquisition_decision(decision_id);
+        }
+        return Err(error).context("artifact terminal facts were not durable before publication");
+    }
+    if package_preexisting {
+        let existing =
+            load_children_from_dir(MctChildLoadOptions::new(&package_path).strict_integrity());
+        if existing.loaded != 1 || existing.children[0].artifact_id != artifact_id {
+            record_terminal(&verified_without_artifact())?;
+            let _ = fs::remove_dir_all(&staging_dir);
+            bail!("immutable artifact catalog path conflicts with different bytes");
+        }
+        if let Err(error) = fs::remove_dir_all(&staging_dir) {
+            record_terminal(&verified_without_artifact())?;
+            return Err(error).context("remove redundant reacquisition staging package");
+        }
+    } else {
+        let publish = (|| -> Result<()> {
+            fs::create_dir_all(
+                package_path
+                    .parent()
+                    .context("catalog path has no parent")?,
+            )?;
+            fs::rename(&staging_dir, &package_path)
+                .context("publish immutable artifact package")?;
+            Ok(())
+        })();
+        if let Err(error) = publish {
+            record_terminal(&verified_without_artifact())?;
+            let _ = fs::remove_dir_all(&staging_dir);
+            return Err(error);
+        }
+    }
+
+    if let Err(error) = MctRuntimeStateStore::open(&request.state_path)?
+        .record_verified_acquisition_and_artifact(&acquisition, &artifact, &package_path)
+    {
+        if !package_preexisting {
+            let _ = fs::remove_dir_all(&package_path);
+        }
+        record_terminal(&verified_without_artifact())?;
+        return Err(error).context("publish verified artifact catalog projection");
+    }
     if let Some(decision_id) = operator_pointed_decision_id.as_ref() {
         MctRuntimeStateStore::open(&request.state_path)?
             .consume_operator_acquisition_decision(decision_id)?;
     }
 
-    Ok(MctArtifactAcquisitionReport {
-        acquisition_id,
-        child_name: request.claimed_child_name.clone(),
-        artifact_version: request.claimed_artifact_version.clone(),
-        artifact_id: Some(artifact_id),
-        observed_size_bytes: Some(component_bytes.len() as u64),
-        observed_digest: Some(observed_digest),
-        acquisition_outcome: "acquired".into(),
-        verification_outcome: "verified".into(),
-        package_path: Some(package_path),
-        acquisition_observation_id,
-        verification_observation_id: Some(verification_observation_id),
-    })
+    Ok(report)
 }
 
 fn manifest_namespaces(manifest: &SdkChildManifest) -> Result<Vec<String>> {
@@ -658,6 +889,80 @@ allow = ["patina:fixture/control@0.1.0.run"]
     }
 
     #[test]
+    fn malformed_tampered_oversize_and_escaping_sources_leave_attempt_evidence_only() {
+        let run_case = |mutate: fn(&Path, &mut MctArtifactStageRequest)| {
+            let root = tempfile::tempdir().unwrap();
+            let mut request = raw_request(root.path(), None);
+            mutate(root.path(), &mut request);
+            assert!(stage_operator_pointed_artifact(&request).is_err());
+            let state = MctRuntimeStateStore::open(&request.state_path).unwrap();
+            let attempts = state.artifact_acquisitions().unwrap();
+            assert_eq!(attempts.len(), 1);
+            assert!(attempts[0].component_artifact_id.is_none());
+            assert_eq!(state.summary().unwrap().artifacts, 0);
+            assert_eq!(
+                state.operator_acquisition_decisions().unwrap()[0].decision_state,
+                OperatorPointedAcquisitionState::Consumed
+            );
+        };
+
+        run_case(|_, request| request.require_source_sidecars = true);
+        run_case(|_, request| {
+            request.require_source_sidecars = true;
+            fs::write(
+                hash_sidecar_path(&request.source_root.join("child.toml")),
+                "0".repeat(64),
+            )
+            .unwrap();
+            fs::write(
+                hash_sidecar_path(&request.source_root.join("fixture.wasm")),
+                "0".repeat(64),
+            )
+            .unwrap();
+        });
+        run_case(|_, request| request.claimed_artifact_version = "2.0.0".into());
+        run_case(|_, request| {
+            fs::write(
+                request.source_root.join("child.toml"),
+                r#"[child]
+name = "fixture"
+version = "1.0.0"
+kind = "child"
+[child.ingress]
+mode = "wit-only"
+[child.contract]
+allow = ["malformed-operation"]
+"#,
+            )
+            .unwrap();
+        });
+        run_case(|_, request| {
+            fs::OpenOptions::new()
+                .write(true)
+                .open(request.source_root.join("child.toml"))
+                .unwrap()
+                .set_len(MCT_CHILD_MANIFEST_MAX_BYTES as u64 + 1)
+                .unwrap();
+        });
+        run_case(|_, request| {
+            fs::OpenOptions::new()
+                .write(true)
+                .open(request.source_root.join("fixture.wasm"))
+                .unwrap()
+                .set_len(MCT_COMPONENT_ARTIFACT_MAX_BYTES as u64 + 1)
+                .unwrap();
+        });
+        #[cfg(unix)]
+        run_case(|root, request| {
+            use std::os::unix::fs::symlink;
+            let outside = root.join("outside.wasm");
+            fs::write(&outside, b"outside").unwrap();
+            fs::remove_file(request.source_root.join("fixture.wasm")).unwrap();
+            symlink(outside, request.source_root.join("fixture.wasm")).unwrap();
+        });
+    }
+
+    #[test]
     fn identical_reacquisition_adds_evidence_without_replacing_immutable_artifact() {
         let root = tempfile::tempdir().unwrap();
         let request = raw_request(root.path(), None);
@@ -683,6 +988,69 @@ allow = ["patina:fixture/control@0.1.0.run"]
                 .all(
                     |decision| decision.decision_state == OperatorPointedAcquisitionState::Consumed
                 )
+        );
+    }
+
+    #[test]
+    fn package_shaped_acquisition_discovers_declared_component_only_after_authority_start() {
+        let first_root = tempfile::tempdir().unwrap();
+        let first_request = raw_request(first_root.path(), None);
+        let package = stage_operator_pointed_artifact(&first_request)
+            .unwrap()
+            .package_path
+            .unwrap();
+        let second_root = tempfile::tempdir().unwrap();
+        let request = MctArtifactStageRequest {
+            source_root: package,
+            manifest_path: PathBuf::from("child.toml"),
+            component_path: PathBuf::new(),
+            claimed_child_name: "fixture".into(),
+            claimed_artifact_version: "1.0.0".into(),
+            expected_digest: None,
+            standing_source_authority_id: None,
+            claimed_publisher: None,
+            require_source_sidecars: true,
+            children_dir: second_root.path().join("children"),
+            state_path: second_root.path().join("state.sqlite"),
+        };
+        let report = stage_operator_pointed_artifact(&request).unwrap();
+        assert_eq!(report.verification_outcome, "verified");
+        assert_eq!(
+            MctRuntimeStateStore::open(&request.state_path)
+                .unwrap()
+                .summary()
+                .unwrap()
+                .artifacts,
+            1
+        );
+    }
+
+    #[test]
+    fn same_digest_different_manifest_fact_cannot_replace_catalog_artifact() {
+        let root = tempfile::tempdir().unwrap();
+        let request = raw_request(root.path(), None);
+        let first = stage_operator_pointed_artifact(&request).unwrap();
+        let package = first.package_path.unwrap();
+        let persisted_manifest = fs::read(package.join("child.toml")).unwrap();
+        let source_manifest = request.source_root.join("child.toml");
+        let changed = fs::read_to_string(&source_manifest).unwrap().replace(
+            "kind = \"child\"",
+            "kind = \"child\"\ndescription = \"changed\"",
+        );
+        fs::write(source_manifest, changed).unwrap();
+        assert!(stage_operator_pointed_artifact(&request).is_err());
+        assert_eq!(
+            fs::read(package.join("child.toml")).unwrap(),
+            persisted_manifest
+        );
+        let state = MctRuntimeStateStore::open(&request.state_path).unwrap();
+        assert_eq!(state.summary().unwrap().artifacts, 1);
+        let attempts = state.artifact_acquisitions().unwrap();
+        assert_eq!(attempts.len(), 2);
+        assert!(attempts[1].component_artifact_id.is_none());
+        assert_eq!(
+            attempts[1].verification_outcome,
+            ArtifactVerificationOutcome::Verified
         );
     }
 
