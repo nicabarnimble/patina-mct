@@ -1209,12 +1209,42 @@ impl MctRuntimeStateStore {
             .context("read component artifact package")
     }
 
-    pub fn upsert_source_authority(
+    pub fn validate_source_authority_projection(
         &self,
         source: &ArtifactSourceAuthority,
         record_digest: &str,
     ) -> Result<()> {
         validate_source_authority(source)?;
+        let expected_digest = blake3::hash(&serde_json::to_vec(source)?)
+            .to_hex()
+            .to_string();
+        if record_digest != expected_digest {
+            bail!("artifact source authority record digest does not match its projection");
+        }
+        if let Some((persisted, _)) = self
+            .source_authorities()?
+            .into_iter()
+            .find(|(persisted, _)| persisted.source_authority_id == source.source_authority_id)
+            && (persisted.source_ref != source.source_ref
+                || persisted.scope != source.scope
+                || persisted.integrity_policy_ref != source.integrity_policy_ref
+                || persisted.provenance_policy_ref != source.provenance_policy_ref
+                || persisted.issuer_principal_ref != source.issuer_principal_ref
+                || persisted.policy_revision != source.policy_revision
+                || persisted.issued_at != source.issued_at
+                || persisted.expires_at != source.expires_at)
+        {
+            bail!("artifact source authority immutable facts conflict with persisted record");
+        }
+        Ok(())
+    }
+
+    pub fn upsert_source_authority(
+        &self,
+        source: &ArtifactSourceAuthority,
+        record_digest: &str,
+    ) -> Result<()> {
+        self.validate_source_authority_projection(source, record_digest)?;
         self.conn.execute(
             r#"
             INSERT INTO artifact_source_authorities(
@@ -2241,15 +2271,48 @@ fn remote_callable_surface_from_row(
 }
 
 fn validate_source_authority(source: &ArtifactSourceAuthority) -> Result<()> {
-    if !source.source_ref.starts_with("file://")
-        || source.scope.artifact_scope.is_empty()
-        || source.scope.publisher_scope.is_empty()
-        || source.scope.namespace_scope.is_empty()
-        || source.scope.allowed_actions.is_empty()
+    let source_path = source
+        .source_ref
+        .strip_prefix("file://")
+        .map(Path::new)
+        .filter(|path| path.is_absolute());
+    let scopes = [
+        &source.scope.artifact_scope,
+        &source.scope.publisher_scope,
+        &source.scope.namespace_scope,
+        &source.scope.allowed_actions,
+    ];
+    let scope_values_valid = scopes
+        .iter()
+        .all(|values| !values.is_empty() && values.iter().all(|value| !value.trim().is_empty()));
+    let broadness_valid = source.scope.scope_mode == ArtifactSourceScopeMode::ExplicitBroad
+        || source
+            .scope
+            .artifact_scope
+            .iter()
+            .chain(&source.scope.publisher_scope)
+            .chain(&source.scope.namespace_scope)
+            .all(|value| value != "*");
+    let issuer_valid = source
+        .issuer_principal_ref
+        .strip_prefix("os-uid:")
+        .is_some_and(|uid| uid.parse::<u32>().is_ok());
+    if source_path.is_none()
+        || source.source_ref.contains('?')
+        || source.source_ref.contains('#')
+        || !scope_values_valid
+        || !broadness_valid
+        || source
+            .scope
+            .allowed_actions
+            .iter()
+            .any(|action| action != "acquire")
         || source.expires_at <= source.issued_at
         || source.integrity_policy_ref != "sha256-sidecars-v1"
+        || source.policy_revision == 0
+        || !issuer_valid
     {
-        bail!("artifact source authority is not explicit, bounded, and supported");
+        bail!("artifact source authority is not explicit, bounded, credential-free, and supported");
     }
     Ok(())
 }
@@ -2906,6 +2969,69 @@ mod tests {
             ArtifactProvenanceStatus::HistoricalUnknown
         );
         assert!(persisted.acquisition_ids.is_empty());
+    }
+
+    #[test]
+    fn standing_source_creation_rejects_unbounded_credentialed_and_unsupported_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MctRuntimeStateStore::open(dir.path().join("state.sqlite")).unwrap();
+        let valid = ArtifactSourceAuthority {
+            source_authority_id: ArtifactSourceAuthorityId::new("source-valid").unwrap(),
+            source_ref: "file:///tmp/artifacts".into(),
+            scope: ArtifactSourceScope {
+                scope_mode: ArtifactSourceScopeMode::Constrained,
+                artifact_scope: vec!["slate-manager@0.2.0".into()],
+                publisher_scope: vec!["patina".into()],
+                namespace_scope: vec!["patina:slate".into()],
+                allowed_actions: vec!["acquire".into()],
+            },
+            integrity_policy_ref: "sha256-sidecars-v1".into(),
+            provenance_policy_ref: None,
+            issuer_principal_ref: "os-uid:501".into(),
+            policy_revision: 1,
+            authority_state: ArtifactSourceAuthorityState::Active,
+            issued_at: Timestamp::new("2026-07-16T00:00:00Z").unwrap(),
+            expires_at: Timestamp::new("2099-01-01T00:00:00Z").unwrap(),
+            authority_observation_id: ObservationId::new("obs-source-valid").unwrap(),
+        };
+        let persist = |source: &ArtifactSourceAuthority| {
+            let digest = blake3::hash(&serde_json::to_vec(source).unwrap())
+                .to_hex()
+                .to_string();
+            store.upsert_source_authority(source, &digest)
+        };
+        persist(&valid).unwrap();
+        assert!(
+            store
+                .upsert_source_authority(&valid, &"0".repeat(64))
+                .is_err()
+        );
+
+        for case in 0..12 {
+            let mut invalid = valid.clone();
+            invalid.source_authority_id =
+                ArtifactSourceAuthorityId::new(format!("source-invalid-{case}")).unwrap();
+            invalid.authority_observation_id =
+                ObservationId::new(format!("obs-source-invalid-{case}")).unwrap();
+            match case {
+                0 => invalid.scope.artifact_scope.clear(),
+                1 => invalid.scope.publisher_scope.clear(),
+                2 => invalid.scope.namespace_scope.clear(),
+                3 => invalid.scope.allowed_actions.clear(),
+                4 => invalid.scope.artifact_scope = vec!["*".into()],
+                5 => invalid.expires_at = invalid.issued_at.clone(),
+                6 => invalid.source_ref = "file://relative/path".into(),
+                7 => invalid.source_ref = "https://user:secret@example.test/artifact".into(),
+                8 => invalid.scope.allowed_actions = vec!["sync".into()],
+                9 => invalid.integrity_policy_ref = "trust-source".into(),
+                10 => invalid.policy_revision = 0,
+                _ => invalid.issuer_principal_ref = "token:secret".into(),
+            }
+            assert!(
+                persist(&invalid).is_err(),
+                "invalid source case {case} passed"
+            );
+        }
     }
 
     #[test]

@@ -3059,13 +3059,19 @@ mod tests {
             authority_observation_id: ObservationId::new("obs-source-test").unwrap(),
         };
         let store = MctRuntimeStateStore::open(&state_path).unwrap();
+        let active_digest = blake3::hash(&serde_json::to_vec(&source).unwrap())
+            .to_hex()
+            .to_string();
         store
-            .upsert_source_authority(&source, "digest-active")
+            .upsert_source_authority(&source, &active_digest)
             .unwrap();
         source.authority_state = ArtifactSourceAuthorityState::Revoked;
         source.authority_observation_id = ObservationId::new("obs-source-revoked").unwrap();
+        let revoked_digest = blake3::hash(&serde_json::to_vec(&source).unwrap())
+            .to_hex()
+            .to_string();
         store
-            .upsert_source_authority(&source, "digest-revoked")
+            .upsert_source_authority(&source, &revoked_digest)
             .unwrap();
         drop(store);
         let sources = MctRuntimeStateStore::open(&state_path)
@@ -3077,7 +3083,7 @@ mod tests {
             sources[0].0.authority_state,
             ArtifactSourceAuthorityState::Revoked
         );
-        assert_eq!(sources[0].1, "digest-revoked");
+        assert_eq!(sources[0].1, revoked_digest);
         assert!(
             sources[0]
                 .0

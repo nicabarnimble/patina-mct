@@ -1039,6 +1039,17 @@ async fn execute_resident_artifact_source_mutation(
             serde_json::json!({"error": "artifact source state does not match mutation"}),
         );
     }
+    if MctRuntimeStateStore::open(configured_state_path)
+        .and_then(|state| {
+            state.validate_source_authority_projection(&request.source, &request.record_digest)
+        })
+        .is_err()
+    {
+        return peer_mutation_response(
+            400,
+            serde_json::json!({"error": "artifact source authority is invalid or conflicts"}),
+        );
+    }
     let observation = MctObservation {
         observation_id: request.source.authority_observation_id.clone(),
         observed_at: current_timestamp(),

@@ -330,6 +330,8 @@ fn run_artifact_source_create(mut args: Vec<String>) -> Result<()> {
         source: source.clone(),
         record_digest: record_digest.clone(),
     };
+    MctRuntimeStateStore::open(&state_path)?
+        .validate_source_authority_projection(&source, &record_digest)?;
     if try_resident_control_mutation(
         &socket_path,
         "/artifacts/sources/create",
@@ -394,6 +396,7 @@ fn run_artifact_source_revoke(mut args: Vec<String>) -> Result<()> {
         source: source.clone(),
         record_digest: digest.clone(),
     };
+    state.validate_source_authority_projection(&source, &digest)?;
     if try_resident_control_mutation(
         &socket_path,
         "/artifacts/sources/revoke",

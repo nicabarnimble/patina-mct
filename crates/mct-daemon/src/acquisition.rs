@@ -14,6 +14,7 @@ use patina_sdk::manifest::ChildManifest as SdkChildManifest;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeSet,
     ffi::OsString,
     fs,
     io::{Read, Write},
@@ -116,12 +117,18 @@ pub fn stage_operator_pointed_artifact(
         .standing_source_authority_id
         .as_deref()
         .map(|source_id| {
-            state
+            let (source, record_digest) = state
                 .source_authorities()?
                 .into_iter()
                 .find(|(source, _)| source.source_authority_id.as_str() == source_id)
-                .map(|(source, _)| source)
-                .context("standing artifact source authority not found")
+                .context("standing artifact source authority not found")?;
+            let expected_digest = blake3::hash(&serde_json::to_vec(&source)?)
+                .to_hex()
+                .to_string();
+            if record_digest != expected_digest {
+                bail!("standing artifact source authority record digest mismatch");
+            }
+            Ok(source)
         })
         .transpose()?;
     if let Some(source) = standing.as_ref() {
@@ -179,21 +186,24 @@ pub fn stage_operator_pointed_artifact(
         || vec!["operator-pointed".into()],
         |source| source.scope.namespace_scope.clone(),
     );
+    let mut authority_request = ArtifactAcquisitionAuthorityRequest {
+        source_ref: source_ref.clone(),
+        artifact: format!(
+            "{}@{}",
+            request.claimed_child_name, request.claimed_artifact_version
+        ),
+        publisher: request.claimed_publisher.clone(),
+        expected_digest: request.expected_digest.clone(),
+        authenticated_uid: current_uid()?,
+        namespaces,
+        action: "acquire".into(),
+        policy_revision: 1,
+        now: current_timestamp(),
+        attempt_id: acquisition_id.clone(),
+        authorized_id: AuthorizedArtifactAcquisitionId::new(format!("authorized:{id_suffix}"))?,
+    };
     let authority = evaluate_artifact_acquisition_authority(
-        &ArtifactAcquisitionAuthorityRequest {
-            source_ref: source_ref.clone(),
-            artifact: format!(
-                "{}@{}",
-                request.claimed_child_name, request.claimed_artifact_version
-            ),
-            publisher: request.claimed_publisher.clone(),
-            namespaces,
-            action: "acquire".into(),
-            policy_revision: 1,
-            now: current_timestamp(),
-            attempt_id: acquisition_id.clone(),
-            authorized_id: AuthorizedArtifactAcquisitionId::new(format!("authorized:{id_suffix}"))?,
-        },
+        &authority_request,
         standing.as_ref(),
         operator.as_ref(),
         Some(&effect),
@@ -260,6 +270,23 @@ pub fn stage_operator_pointed_artifact(
         MctRuntimeStateStore::open(&request.state_path)?
             .record_artifact_acquisition(&acquisition)?;
         bail!("staged manifest identity does not match operator claim");
+    }
+    authority_request.namespaces = manifest_namespaces(&parsed)?;
+    if standing.is_some()
+        && evaluate_artifact_acquisition_authority(
+            &authority_request,
+            standing.as_ref(),
+            None,
+            Some(&effect),
+        )
+        .authorized
+        .is_none()
+    {
+        let acquisition =
+            rejected_acquisition(component_bytes.len() as u64, observed_digest.clone());
+        MctRuntimeStateStore::open(&request.state_path)?
+            .record_artifact_acquisition(&acquisition)?;
+        bail!("staged manifest namespace is outside standing source scope");
     }
 
     let (emitted_manifest, artifact_relative) =
@@ -362,6 +389,22 @@ pub fn stage_operator_pointed_artifact(
         acquisition_observation_id,
         verification_observation_id: Some(verification_observation_id),
     })
+}
+
+fn manifest_namespaces(manifest: &SdkChildManifest) -> Result<Vec<String>> {
+    let mut namespaces = BTreeSet::new();
+    for operation in &manifest.contract.allow_operations {
+        let namespace = operation
+            .split_once('/')
+            .map(|(namespace, _)| namespace)
+            .filter(|namespace| namespace.contains(':') && !namespace.trim().is_empty())
+            .context("manifest contains malformed WIT operation namespace")?;
+        namespaces.insert(namespace.to_string());
+    }
+    if namespaces.is_empty() {
+        bail!("manifest contains no WIT operation namespace");
+    }
+    Ok(namespaces.into_iter().collect())
 }
 
 fn canonical_package_manifest(
