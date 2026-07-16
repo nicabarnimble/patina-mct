@@ -31,7 +31,8 @@ mod wit_values;
 
 pub use acquisition::{
     MCT_CHILD_MANIFEST_MAX_BYTES, MCT_COMPONENT_ARTIFACT_MAX_BYTES,
-    MCT_FILESYSTEM_ACQUISITION_ADAPTER, MctArtifactAcquisitionReport, MctArtifactStageRequest,
+    MCT_FILESYSTEM_ACQUISITION_ADAPTER, MctArtifactAcquisitionReport, MctArtifactAttemptContext,
+    MctArtifactStageRequest, new_artifact_attempt_context, stage_artifact_with_context,
     stage_operator_pointed_artifact,
 };
 pub use blob_store::{

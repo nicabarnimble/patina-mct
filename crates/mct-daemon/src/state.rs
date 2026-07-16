@@ -1109,6 +1109,91 @@ impl MctRuntimeStateStore {
         Ok(())
     }
 
+    pub fn record_operator_acquisition_decision(
+        &self,
+        decision: &OperatorPointedArtifactAcquisitionDecision,
+    ) -> Result<()> {
+        if decision.source_ref.trim().is_empty()
+            || decision.claimed_child_name.trim().is_empty()
+            || decision.claimed_artifact_version.trim().is_empty()
+            || decision.policy_revision == 0
+        {
+            bail!("operator-pointed acquisition decision is incomplete");
+        }
+        self.conn.execute(
+            r#"
+            INSERT INTO operator_pointed_artifact_acquisition_decisions(
+                decision_id, source_ref, claimed_child_name, claimed_artifact_version,
+                expected_digest, issuer_principal_ref, policy_revision, decision_state,
+                authority_observation_id, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "#,
+            params![
+                decision.decision_id.as_str(),
+                decision.source_ref,
+                decision.claimed_child_name,
+                decision.claimed_artifact_version,
+                decision.expected_digest,
+                decision.issuer_principal_ref,
+                decision.policy_revision,
+                json_atom(&decision.decision_state)?,
+                decision.authority_observation_id.as_str(),
+                current_timestamp_string(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn consume_operator_acquisition_decision(
+        &self,
+        decision_id: &ArtifactAcquisitionDecisionId,
+    ) -> Result<()> {
+        let changed = self.conn.execute(
+            r#"
+            UPDATE operator_pointed_artifact_acquisition_decisions
+            SET decision_state = 'consumed', updated_at = ?1
+            WHERE decision_id = ?2 AND decision_state = 'active'
+            "#,
+            params![current_timestamp_string(), decision_id.as_str()],
+        )?;
+        if changed != 1 {
+            bail!("operator-pointed acquisition decision is absent or already consumed");
+        }
+        Ok(())
+    }
+
+    pub fn operator_acquisition_decisions(
+        &self,
+    ) -> Result<Vec<OperatorPointedArtifactAcquisitionDecision>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT decision_id, source_ref, claimed_child_name, claimed_artifact_version,
+                   expected_digest, issuer_principal_ref, policy_revision, decision_state,
+                   authority_observation_id
+            FROM operator_pointed_artifact_acquisition_decisions
+            ORDER BY updated_at, decision_id
+            "#,
+        )?;
+        stmt.query_map([], |row| {
+            let state: String = row.get(7)?;
+            Ok(OperatorPointedArtifactAcquisitionDecision {
+                decision_id: ArtifactAcquisitionDecisionId::new(row.get::<_, String>(0)?)
+                    .expect("stored operator decision id is non-empty"),
+                source_ref: row.get(1)?,
+                claimed_child_name: row.get(2)?,
+                claimed_artifact_version: row.get(3)?,
+                expected_digest: row.get(4)?,
+                issuer_principal_ref: row.get(5)?,
+                policy_revision: row.get::<_, i64>(6)?.max(0) as u64,
+                decision_state: from_json_atom(&state).map_err(to_sql_error)?,
+                authority_observation_id: ObservationId::new(row.get::<_, String>(8)?)
+                    .expect("stored operator authority observation id is non-empty"),
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("read operator-pointed artifact acquisition decisions")
+    }
+
     pub fn artifact_acquisitions(&self) -> Result<Vec<ArtifactAcquisition>> {
         let mut stmt = self.conn.prepare(
             r#"
@@ -1144,6 +1229,11 @@ impl MctRuntimeStateStore {
         }
         validate_artifact_provenance_shape(artifact)?;
         validate_acquisition_shape(acquisition)?;
+        if let Some(existing) = self.get_artifact(&artifact.artifact_id)?
+            && !same_immutable_artifact_facts(&existing, artifact)
+        {
+            bail!("immutable component artifact conflicts with persisted artifact");
+        }
         let tx = self.conn.unchecked_transaction()?;
         insert_acquisition_on(&tx, acquisition)?;
         insert_artifact_on(&tx, artifact)?;
@@ -1173,7 +1263,7 @@ impl MctRuntimeStateStore {
         let persisted = self
             .get_artifact(&artifact.artifact_id)?
             .context("verified artifact transaction did not persist artifact")?;
-        if persisted != *artifact {
+        if !same_immutable_artifact_facts(&persisted, artifact) {
             bail!("immutable component artifact conflicts with persisted artifact");
         }
         let package = self
@@ -2482,6 +2572,20 @@ fn source_authority_from_row(
         },
         row.get(11)?,
     ))
+}
+
+fn same_immutable_artifact_facts(left: &ComponentArtifact, right: &ComponentArtifact) -> bool {
+    left.artifact_id == right.artifact_id
+        && left.child_name == right.child_name
+        && left.artifact_version == right.artifact_version
+        && left.content_hash == right.content_hash
+        && left.manifest_hash == right.manifest_hash
+        && left.primary_export == right.primary_export
+        && left.runtime_shape == right.runtime_shape
+        && left.ingress_mode == right.ingress_mode
+        && left.lifecycle_exports == right.lifecycle_exports
+        && left.verification_status == right.verification_status
+        && left.provenance_status == right.provenance_status
 }
 
 fn validate_artifact_provenance_shape(artifact: &ComponentArtifact) -> Result<()> {

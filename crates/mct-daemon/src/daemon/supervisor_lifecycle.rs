@@ -3283,7 +3283,41 @@ status = "active"
             ArtifactProvenanceStatus::AcquisitionBacked
         );
         assert_eq!(artifact.acquisition_ids.len(), 1);
-        assert_eq!(state.artifact_acquisitions().unwrap().len(), 1);
+        let acquisitions = state.artifact_acquisitions().unwrap();
+        assert_eq!(acquisitions.len(), 1);
+        let acquisition = &acquisitions[0];
+        assert_eq!(
+            acquisition.acquisition_id.as_str(),
+            stage_report["acquisition_id"].as_str().unwrap()
+        );
+        assert_eq!(
+            acquisition.acquisition_observation_id.as_str(),
+            stage_report["acquisition_observation_id"].as_str().unwrap()
+        );
+        assert_eq!(
+            acquisition
+                .verification_observation_id
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            stage_report["verification_observation_id"]
+                .as_str()
+                .unwrap()
+        );
+        let decisions = state.operator_acquisition_decisions().unwrap();
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(
+            decisions[0].decision_state,
+            OperatorPointedAcquisitionState::Consumed
+        );
+        let stage_ledger = entries(&paths.ledger);
+        assert!(stage_ledger.iter().any(|entry| {
+            entry.observation.observation_id == acquisition.acquisition_observation_id
+        }));
+        assert!(stage_ledger.iter().any(|entry| {
+            Some(&entry.observation.observation_id)
+                == acquisition.verification_observation_id.as_ref()
+        }));
         assert!(
             MctDaemonConfigStore::new(&paths.config)
                 .load()
