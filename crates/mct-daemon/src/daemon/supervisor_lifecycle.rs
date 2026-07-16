@@ -3419,6 +3419,33 @@ status = "active"
         assert_eq!(acquisitions.len(), 1);
         let acquisition = &acquisitions[0];
         assert_eq!(
+            acquisition.authority_path,
+            ArtifactAcquisitionAuthorityPath::OperatorPointed
+        );
+        assert!(acquisition.operator_pointed_decision_id.is_some());
+        assert!(acquisition.standing_source_authority_id.is_none());
+        assert!(
+            acquisition
+                .adapter_effect_authority_ref
+                .starts_with("obs:acquisition-adapter-start:")
+        );
+        assert_eq!(
+            acquisition.observed_size_bytes,
+            Some(component_bytes.len() as u64)
+        );
+        assert_eq!(
+            acquisition.observed_digest.as_deref(),
+            Some("blake3:e06cab5f7605f3c070ef792f67f7b71a179d8a9c7da0c45e525b39e8a3a88e7d")
+        );
+        assert_eq!(
+            acquisition.acquisition_outcome,
+            ArtifactAcquisitionOutcome::Acquired
+        );
+        assert_eq!(
+            acquisition.verification_outcome,
+            ArtifactVerificationOutcome::Verified
+        );
+        assert_eq!(
             acquisition.acquisition_id.as_str(),
             stage_report["acquisition_id"].as_str().unwrap()
         );
@@ -3443,13 +3470,35 @@ status = "active"
             OperatorPointedAcquisitionState::Consumed
         );
         let stage_ledger = entries(&paths.ledger);
-        assert!(stage_ledger.iter().any(|entry| {
-            entry.observation.observation_id == acquisition.acquisition_observation_id
-        }));
-        assert!(stage_ledger.iter().any(|entry| {
-            Some(&entry.observation.observation_id)
-                == acquisition.verification_observation_id.as_ref()
-        }));
+        let adapter_start = stage_ledger
+            .iter()
+            .position(|entry| {
+                entry.observation.observation_id.as_str()
+                    == acquisition.adapter_effect_authority_ref
+            })
+            .unwrap();
+        let acquisition_terminal = stage_ledger
+            .iter()
+            .position(|entry| {
+                entry.observation.observation_id == acquisition.acquisition_observation_id
+            })
+            .unwrap();
+        let verification_terminal = stage_ledger
+            .iter()
+            .position(|entry| {
+                Some(&entry.observation.observation_id)
+                    == acquisition.verification_observation_id.as_ref()
+            })
+            .unwrap();
+        assert!(adapter_start < acquisition_terminal);
+        assert!(acquisition_terminal < verification_terminal);
+        assert_eq!(artifact.child_name, "slate-manager");
+        assert_eq!(artifact.artifact_version, "0.2.0");
+        assert_eq!(artifact.content_hash, artifact_id);
+        assert_eq!(artifact.primary_export.namespace, "patina:slate");
+        assert!(state.toy_grant_snapshots().unwrap().is_empty());
+        assert_eq!(state.summary().unwrap().approved_children, 0);
+        assert_eq!(state.summary().unwrap().active_assignments, 0);
         assert!(
             MctDaemonConfigStore::new(&paths.config)
                 .load()
@@ -3493,6 +3542,26 @@ status = "active"
             approve_report["approval_acquisition_ids"][0],
             stage_report["acquisition_id"]
         );
+        let approval_ledger = entries(&paths.ledger);
+        let approved = approval_ledger
+            .iter()
+            .position(|entry| {
+                entry.observation.kind == ObservationKind::ChildApproved
+                    && entry.observation.resource_id.as_deref() == Some(artifact_id.as_str())
+            })
+            .unwrap();
+        let assigned = approval_ledger
+            .iter()
+            .position(|entry| {
+                entry.observation.kind == ObservationKind::ChildAssigned
+                    && entry.observation.subject_id.as_deref() == Some("slate-manager")
+            })
+            .unwrap();
+        assert!(approved < assigned);
+        let runtime_starts_before_grant_denial = approval_ledger
+            .iter()
+            .filter(|entry| entry.observation.kind == ObservationKind::RuntimeExecutionStarted)
+            .count();
 
         let (grant_denied_status, grant_denied) = uds_json(
             &paths.uds,
@@ -3503,6 +3572,15 @@ status = "active"
         .await;
         assert_eq!(grant_denied_status, 200, "{grant_denied:#}");
         assert_eq!(grant_denied["outcome"], "denied");
+        assert_eq!(
+            entries(&paths.ledger)
+                .iter()
+                .filter(|entry| {
+                    entry.observation.kind == ObservationKind::RuntimeExecutionStarted
+                })
+                .count(),
+            runtime_starts_before_grant_denial
+        );
 
         let toy_request = serde_json::json!({
             "expected_config_path": paths.config,
@@ -3542,6 +3620,26 @@ status = "active"
             result_json.to_string().contains("fixture-work"),
             "{result_json:#}"
         );
+        let (runs_status, runs_projection) =
+            uds_json(&paths.uds, "GET", "/runs", &serde_json::json!({})).await;
+        assert_eq!(runs_status, 200, "{runs_projection:#}");
+        assert!(
+            !runs_projection
+                .to_string()
+                .contains("inline_result_payload_base64")
+        );
+        let (snapshot_status, snapshot_projection) =
+            uds_json(&paths.uds, "GET", "/snapshot", &serde_json::json!({})).await;
+        assert_eq!(snapshot_status, 200, "{snapshot_projection:#}");
+        assert!(
+            !snapshot_projection
+                .to_string()
+                .contains("inline_result_payload_base64")
+        );
+        let runtime_starts_before_revocation = entries(&paths.ledger)
+            .iter()
+            .filter(|entry| entry.observation.kind == ObservationKind::RuntimeExecutionStarted)
+            .count();
 
         let revoke = serde_json::json!({
             "expected_config_path": paths.config,
@@ -3554,6 +3652,15 @@ status = "active"
             uds_json(&paths.uds, "POST", "/calls", &call_submission("revoked")).await;
         assert_eq!(revoked_status, 200, "{revoked:#}");
         assert_eq!(revoked["outcome"], "denied");
+        assert_eq!(
+            entries(&paths.ledger)
+                .iter()
+                .filter(|entry| {
+                    entry.observation.kind == ObservationKind::RuntimeExecutionStarted
+                })
+                .count(),
+            runtime_starts_before_revocation
+        );
 
         let stop_paths = paths.clone();
         let stop_adapter = Arc::clone(&adapter);
