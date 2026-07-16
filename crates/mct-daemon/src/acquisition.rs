@@ -32,6 +32,37 @@ pub const MCT_FILESYSTEM_ACQUISITION_ADAPTER: &str = "mct:artifact-acquisition/f
 
 static NEXT_ACQUISITION_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Correlated identities minted before an acquisition decision becomes durable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MctArtifactAttemptContext {
+    pub acquisition_id: ArtifactAcquisitionId,
+    pub decision_id: ArtifactAcquisitionDecisionId,
+    pub authority_observation_id: ObservationId,
+    pub adapter_start_observation_id: ObservationId,
+    pub acquisition_observation_id: ObservationId,
+    pub verification_observation_id: ObservationId,
+}
+
+/// Mints correlated attempt identities without touching the selected source.
+pub fn new_artifact_attempt_context() -> Result<MctArtifactAttemptContext> {
+    let sequence = NEXT_ACQUISITION_ID.fetch_add(1, Ordering::SeqCst);
+    let suffix = format!("{}-{sequence}", current_timestamp_string());
+    Ok(MctArtifactAttemptContext {
+        acquisition_id: ArtifactAcquisitionId::new(format!("acquisition:{suffix}"))?,
+        decision_id: ArtifactAcquisitionDecisionId::new(format!("decision:{suffix}"))?,
+        authority_observation_id: ObservationId::new(format!(
+            "obs:acquisition-authority:{suffix}"
+        ))?,
+        adapter_start_observation_id: ObservationId::new(format!(
+            "obs:acquisition-adapter-start:{suffix}"
+        ))?,
+        acquisition_observation_id: ObservationId::new(format!("obs:acquisition:{suffix}"))?,
+        verification_observation_id: ObservationId::new(format!(
+            "obs:artifact-verification:{suffix}"
+        ))?,
+    })
+}
+
 /// Inputs for staging raw local build output through one operator-pointed acquisition.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MctArtifactStageRequest {
@@ -97,6 +128,15 @@ pub struct MctArtifactAcquisitionReport {
 pub fn stage_operator_pointed_artifact(
     request: &MctArtifactStageRequest,
 ) -> Result<MctArtifactAcquisitionReport> {
+    let context = new_artifact_attempt_context()?;
+    stage_artifact_with_context(request, &context)
+}
+
+/// Executes an attempt whose correlated authority and adapter-start facts are already durable.
+pub fn stage_artifact_with_context(
+    request: &MctArtifactStageRequest,
+    context: &MctArtifactAttemptContext,
+) -> Result<MctArtifactAcquisitionReport> {
     validate_claim(&request.claimed_child_name, "child name")?;
     validate_claim(&request.claimed_artifact_version, "artifact version")?;
     validate_expected_digest(request.expected_digest.as_deref())?;
@@ -146,19 +186,11 @@ pub fn stage_operator_pointed_artifact(
         |source| source.source_ref.clone(),
     );
 
-    let sequence = NEXT_ACQUISITION_ID.fetch_add(1, Ordering::SeqCst);
-    let id_suffix = format!("{}-{sequence}", current_timestamp_string());
-    let acquisition_id = ArtifactAcquisitionId::new(format!("acquisition:{id_suffix}"))?;
-    let decision_id = ArtifactAcquisitionDecisionId::new(format!("decision:{id_suffix}"))?;
-    let generated_authority_observation_id =
-        ObservationId::new(format!("obs:acquisition-authority:{id_suffix}"))?;
-    let authority_observation_id = standing.as_ref().map_or_else(
-        || generated_authority_observation_id.clone(),
-        |source| source.authority_observation_id.clone(),
-    );
-    let acquisition_observation_id = ObservationId::new(format!("obs:acquisition:{id_suffix}"))?;
-    let verification_observation_id =
-        ObservationId::new(format!("obs:artifact-verification:{id_suffix}"))?;
+    let acquisition_id = context.acquisition_id.clone();
+    let decision_id = context.decision_id.clone();
+    let generated_authority_observation_id = context.authority_observation_id.clone();
+    let acquisition_observation_id = context.acquisition_observation_id.clone();
+    let verification_observation_id = context.verification_observation_id.clone();
     let operator = standing
         .is_none()
         .then(|| OperatorPointedArtifactAcquisitionDecision {
@@ -172,8 +204,11 @@ pub fn stage_operator_pointed_artifact(
             decision_state: OperatorPointedAcquisitionState::Active,
             authority_observation_id: generated_authority_observation_id,
         });
+    if let Some(decision) = operator.as_ref() {
+        state.record_operator_acquisition_decision(decision)?;
+    }
     let effect = FilesystemAcquisitionEffectAuthority {
-        authority_ref: authority_observation_id.clone(),
+        authority_ref: context.adapter_start_observation_id.clone(),
         adapter_ref: MCT_FILESYSTEM_ACQUISITION_ADAPTER.into(),
         authenticated_uid: current_uid()?,
         source_ref: source_ref.clone(),
@@ -200,7 +235,10 @@ pub fn stage_operator_pointed_artifact(
         policy_revision: 1,
         now: current_timestamp(),
         attempt_id: acquisition_id.clone(),
-        authorized_id: AuthorizedArtifactAcquisitionId::new(format!("authorized:{id_suffix}"))?,
+        authorized_id: AuthorizedArtifactAcquisitionId::new(format!(
+            "authorized:{}",
+            acquisition_id.as_str()
+        ))?,
     };
     let authority = evaluate_artifact_acquisition_authority(
         &authority_request,
@@ -225,7 +263,7 @@ pub fn stage_operator_pointed_artifact(
         authority_path,
         standing_source_authority_id: standing_source_authority_id.clone(),
         operator_pointed_decision_id: operator_pointed_decision_id.clone(),
-        adapter_effect_authority_ref: authority_observation_id.to_string(),
+        adapter_effect_authority_ref: context.adapter_start_observation_id.to_string(),
         source_ref: source_ref.clone(),
         claimed_child_name: request.claimed_child_name.clone(),
         claimed_artifact_version: request.claimed_artifact_version.clone(),
@@ -236,6 +274,13 @@ pub fn stage_operator_pointed_artifact(
         verification_observation_id: Some(verification_observation_id.clone()),
         acquisition_observation_id: acquisition_observation_id.clone(),
         component_artifact_id: None,
+    };
+    let record_rejected = |acquisition: &ArtifactAcquisition| -> Result<()> {
+        state.record_artifact_acquisition(acquisition)?;
+        if let Some(decision_id) = acquisition.operator_pointed_decision_id.as_ref() {
+            state.consume_operator_acquisition_decision(decision_id)?;
+        }
+        Ok(())
     };
 
     let manifest_bytes = read_bounded_file(&manifest_path, MCT_CHILD_MANIFEST_MAX_BYTES)?;
@@ -253,8 +298,7 @@ pub fn stage_operator_pointed_artifact(
     {
         let acquisition =
             rejected_acquisition(component_bytes.len() as u64, observed_digest.clone());
-        MctRuntimeStateStore::open(&request.state_path)?
-            .record_artifact_acquisition(&acquisition)?;
+        record_rejected(&acquisition)?;
         bail!("expected BLAKE3 digest does not match acquired component bytes");
     }
 
@@ -267,8 +311,7 @@ pub fn stage_operator_pointed_artifact(
     {
         let acquisition =
             rejected_acquisition(component_bytes.len() as u64, observed_digest.clone());
-        MctRuntimeStateStore::open(&request.state_path)?
-            .record_artifact_acquisition(&acquisition)?;
+        record_rejected(&acquisition)?;
         bail!("staged manifest identity does not match operator claim");
     }
     authority_request.namespaces = manifest_namespaces(&parsed)?;
@@ -284,8 +327,7 @@ pub fn stage_operator_pointed_artifact(
     {
         let acquisition =
             rejected_acquisition(component_bytes.len() as u64, observed_digest.clone());
-        MctRuntimeStateStore::open(&request.state_path)?
-            .record_artifact_acquisition(&acquisition)?;
+        record_rejected(&acquisition)?;
         bail!("staged manifest namespace is outside standing source scope");
     }
 
@@ -314,8 +356,7 @@ pub fn stage_operator_pointed_artifact(
     if load.loaded != 1 || load.failed != 0 {
         let acquisition =
             rejected_acquisition(component_bytes.len() as u64, observed_digest.clone());
-        MctRuntimeStateStore::open(&request.state_path)?
-            .record_artifact_acquisition(&acquisition)?;
+        record_rejected(&acquisition)?;
         let _ = fs::remove_dir_all(&staging_dir);
         bail!("canonical staged package did not pass strict verification");
     }
@@ -357,8 +398,8 @@ pub fn stage_operator_pointed_artifact(
         acquisition_id: acquisition_id.clone(),
         authority_path,
         standing_source_authority_id,
-        operator_pointed_decision_id,
-        adapter_effect_authority_ref: authority_observation_id.to_string(),
+        operator_pointed_decision_id: operator_pointed_decision_id.clone(),
+        adapter_effect_authority_ref: context.adapter_start_observation_id.to_string(),
         source_ref,
         claimed_child_name: request.claimed_child_name.clone(),
         claimed_artifact_version: request.claimed_artifact_version.clone(),
@@ -375,6 +416,10 @@ pub fn stage_operator_pointed_artifact(
         &artifact,
         &package_path,
     )?;
+    if let Some(decision_id) = operator_pointed_decision_id.as_ref() {
+        MctRuntimeStateStore::open(&request.state_path)?
+            .consume_operator_acquisition_decision(decision_id)?;
+    }
 
     Ok(MctArtifactAcquisitionReport {
         acquisition_id,
@@ -604,6 +649,41 @@ allow = ["patina:fixture/control@0.1.0.run"]
         );
         assert!(attempts[0].component_artifact_id.is_none());
         assert_eq!(state.summary().unwrap().artifacts, 0);
+        let decisions = state.operator_acquisition_decisions().unwrap();
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(
+            decisions[0].decision_state,
+            OperatorPointedAcquisitionState::Consumed
+        );
+    }
+
+    #[test]
+    fn identical_reacquisition_adds_evidence_without_replacing_immutable_artifact() {
+        let root = tempfile::tempdir().unwrap();
+        let request = raw_request(root.path(), None);
+        let first = stage_operator_pointed_artifact(&request).unwrap();
+        let package = first.package_path.clone().unwrap();
+        let package_manifest = fs::read(package.join("child.toml")).unwrap();
+        let second = stage_operator_pointed_artifact(&request).unwrap();
+        assert_eq!(first.artifact_id, second.artifact_id);
+        assert_ne!(first.acquisition_id, second.acquisition_id);
+        assert_eq!(
+            fs::read(package.join("child.toml")).unwrap(),
+            package_manifest
+        );
+        let state = MctRuntimeStateStore::open(&request.state_path).unwrap();
+        assert_eq!(state.summary().unwrap().artifacts, 1);
+        assert_eq!(state.artifact_acquisitions().unwrap().len(), 2);
+        assert_eq!(state.operator_acquisition_decisions().unwrap().len(), 2);
+        assert!(
+            state
+                .operator_acquisition_decisions()
+                .unwrap()
+                .iter()
+                .all(
+                    |decision| decision.decision_state == OperatorPointedAcquisitionState::Consumed
+                )
+        );
     }
 
     #[test]

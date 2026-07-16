@@ -872,12 +872,13 @@ async fn execute_resident_blob_mutation(
 
 fn artifact_stage_observation(
     request: &MctArtifactStageRequest,
+    observation_id: &ObservationId,
     kind: ObservationKind,
     plane: SourcePlane,
     outcome: ObservationOutcome,
     message: impl Into<String>,
 ) -> MctObservation {
-    mutation_observation(MutationObservationFact {
+    let mut observation = mutation_observation(MutationObservationFact {
         namespace: "artifact-stage",
         kind,
         subject_id: request.claimed_child_name.clone(),
@@ -891,13 +892,19 @@ fn artifact_stage_observation(
         outcome,
         source_plane: plane,
         safe_message: message.into(),
-    })
+    });
+    observation.observation_id = observation_id.clone();
+    observation
 }
 
-fn artifact_stage_decision_observations(request: &MctArtifactStageRequest) -> Vec<MctObservation> {
+fn artifact_stage_decision_observations(
+    request: &MctArtifactStageRequest,
+    context: &MctArtifactAttemptContext,
+) -> Vec<MctObservation> {
     vec![
         artifact_stage_observation(
             request,
+            &context.authority_observation_id,
             ObservationKind::OperatorActionRecorded,
             SourcePlane::Operator,
             ObservationOutcome::Allowed,
@@ -905,6 +912,7 @@ fn artifact_stage_decision_observations(request: &MctArtifactStageRequest) -> Ve
         ),
         artifact_stage_observation(
             request,
+            &context.adapter_start_observation_id,
             ObservationKind::AdapterEffectStarted,
             SourcePlane::Adapter,
             ObservationOutcome::Started,
@@ -915,12 +923,14 @@ fn artifact_stage_decision_observations(request: &MctArtifactStageRequest) -> Ve
 
 fn artifact_stage_terminal_observations(
     request: &MctArtifactStageRequest,
+    context: &MctArtifactAttemptContext,
     report: Option<&MctArtifactAcquisitionReport>,
 ) -> Vec<MctObservation> {
     match report {
         Some(report) => vec![
             artifact_stage_observation(
                 request,
+                &context.acquisition_observation_id,
                 ObservationKind::AdapterEffectCompleted,
                 SourcePlane::Adapter,
                 ObservationOutcome::Completed,
@@ -933,6 +943,7 @@ fn artifact_stage_terminal_observations(
             ),
             artifact_stage_observation(
                 request,
+                &context.verification_observation_id,
                 ObservationKind::ArtifactVerified,
                 SourcePlane::Kernel,
                 ObservationOutcome::Allowed,
@@ -945,6 +956,7 @@ fn artifact_stage_terminal_observations(
         None => vec![
             artifact_stage_observation(
                 request,
+                &context.acquisition_observation_id,
                 ObservationKind::AdapterEffectFailed,
                 SourcePlane::Adapter,
                 ObservationOutcome::Failed,
@@ -952,6 +964,7 @@ fn artifact_stage_terminal_observations(
             ),
             artifact_stage_observation(
                 request,
+                &context.verification_observation_id,
                 ObservationKind::ArtifactRejected,
                 SourcePlane::Kernel,
                 ObservationOutcome::Denied,
@@ -972,21 +985,22 @@ pub(super) fn execute_offline_artifact_stage(
                 ledger_path.display()
             )
         })?;
+    let context = new_artifact_attempt_context()?;
     ledger.append_batch_before_effect(
-        artifact_stage_decision_observations(request),
+        artifact_stage_decision_observations(request, &context),
         mct_daemon::current_timestamp_string(),
     )?;
-    match stage_operator_pointed_artifact(request) {
+    match stage_artifact_with_context(request, &context) {
         Ok(report) => {
             ledger.append_batch_before_effect(
-                artifact_stage_terminal_observations(request, Some(&report)),
+                artifact_stage_terminal_observations(request, &context, Some(&report)),
                 mct_daemon::current_timestamp_string(),
             )?;
             Ok(report)
         }
         Err(error) => {
             ledger.append_batch_before_effect(
-                artifact_stage_terminal_observations(request, None),
+                artifact_stage_terminal_observations(request, &context, None),
                 mct_daemon::current_timestamp_string(),
             )?;
             Err(error)
@@ -1131,8 +1145,17 @@ async fn execute_resident_artifact_stage(
             serde_json::json!({"error": "artifact stage path mismatch"}),
         );
     }
+    let context = match new_artifact_attempt_context() {
+        Ok(context) => context,
+        Err(_) => {
+            return peer_mutation_response(
+                500,
+                serde_json::json!({"error": "artifact attempt identity creation failed"}),
+            );
+        }
+    };
     if ledger
-        .append(artifact_stage_decision_observations(&request))
+        .append(artifact_stage_decision_observations(&request, &context))
         .await
         .is_err()
     {
@@ -1141,11 +1164,12 @@ async fn execute_resident_artifact_stage(
             serde_json::json!({"error": "artifact acquisition authority was not durable"}),
         );
     }
-    match stage_operator_pointed_artifact(&request) {
+    match stage_artifact_with_context(&request, &context) {
         Ok(report) => {
             if ledger
                 .append(artifact_stage_terminal_observations(
                     &request,
+                    &context,
                     Some(&report),
                 ))
                 .await
@@ -1163,7 +1187,9 @@ async fn execute_resident_artifact_stage(
         }
         Err(_) => {
             let durable = ledger
-                .append(artifact_stage_terminal_observations(&request, None))
+                .append(artifact_stage_terminal_observations(
+                    &request, &context, None,
+                ))
                 .await
                 .is_ok();
             peer_mutation_response(
