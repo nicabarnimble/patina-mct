@@ -3188,6 +3188,7 @@ mod tests {
     async fn supervised_slate_artifact_acquisition_executes_and_revokes_end_to_end() {
         use base64::Engine as _;
         use sha2::{Digest, Sha256};
+        use std::os::unix::fs::PermissionsExt;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         async fn uds_json(
@@ -3286,6 +3287,14 @@ mod tests {
         fs::copy(&component, source_root.join("slate-manager.wasm")).unwrap();
         let source_manifest_before = fs::read(source_root.join("slate-manager.toml")).unwrap();
         let source_component_before = fs::read(source_root.join("slate-manager.wasm")).unwrap();
+        let source_manifest_mode_before = fs::metadata(source_root.join("slate-manager.toml"))
+            .unwrap()
+            .permissions()
+            .mode();
+        let source_component_mode_before = fs::metadata(source_root.join("slate-manager.wasm"))
+            .unwrap()
+            .permissions()
+            .mode();
 
         let project = root.path().join("slate-project");
         let work_dir = project.join("layer/slate/work/fixture-work");
@@ -3355,6 +3364,39 @@ status = "active"
             fs::read(source_root.join("slate-manager.wasm")).unwrap(),
             source_component_before
         );
+        assert_eq!(
+            fs::metadata(source_root.join("slate-manager.toml"))
+                .unwrap()
+                .permissions()
+                .mode(),
+            source_manifest_mode_before
+        );
+        assert_eq!(
+            fs::metadata(source_root.join("slate-manager.wasm"))
+                .unwrap()
+                .permissions()
+                .mode(),
+            source_component_mode_before
+        );
+        let canonical_test_root = root.path().canonicalize().unwrap();
+        for isolated in [
+            &paths.root,
+            &paths.config,
+            &paths.identity,
+            &paths.children,
+            &paths.state,
+            &paths.ledger,
+            &paths.uds,
+            &project,
+            &source_root,
+        ] {
+            assert!(
+                isolated
+                    .canonicalize()
+                    .unwrap()
+                    .starts_with(&canonical_test_root)
+            );
+        }
         let package_path = PathBuf::from(stage_report["package_path"].as_str().unwrap());
         assert!(package_path.join("child.toml.sha256").is_file());
         assert!(
@@ -3439,6 +3481,18 @@ status = "active"
         assert_eq!(approve_status, 200, "{approve_report:#}");
         assert_eq!(approve_report["approval_state"], "approved");
         assert_eq!(approve_report["assignment_state"], "active");
+        assert_eq!(approve_report["approval_artifact_id"], artifact_id);
+        assert_eq!(
+            approve_report["approval_acquisition_ids"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            approve_report["approval_acquisition_ids"][0],
+            stage_report["acquisition_id"]
+        );
 
         let (grant_denied_status, grant_denied) = uds_json(
             &paths.uds,
@@ -3461,6 +3515,20 @@ status = "active"
             uds_json(&paths.uds, "POST", "/toys/authorize-slate", &toy_request).await;
         assert_eq!(toy_status, 200, "{toy_report:#}");
         assert_eq!(toy_report["grants"], 4);
+        let grants = MctRuntimeStateStore::open(&paths.state)
+            .unwrap()
+            .toy_grant_snapshots()
+            .unwrap();
+        assert_eq!(grants.len(), 4);
+        assert!(grants.iter().all(|grant| {
+            grant.subject.child_name == "slate-manager"
+                && grant.subject.artifact_id == artifact_id
+                && grant.subject.assignment_id.is_some()
+                && grant.subject.caller_node_id.is_some()
+                && grant.scope.node_id.is_some()
+                && grant.scope.resource_id.is_some()
+                && grant.grant_state == ToyGrantState::Active
+        }));
 
         let (call_status, call_reply) =
             uds_json(&paths.uds, "POST", "/calls", &call_submission("allowed")).await;
@@ -3523,6 +3591,111 @@ status = "active"
             );
         }
         assert!(package_path.is_dir());
+
+        start_with_adapter(&paths, current_uid().unwrap(), adapter.as_ref(), false).unwrap();
+        let (restart_shutdown_tx, restart_shutdown_rx) = tokio::sync::oneshot::channel();
+        adapter.arm_shutdown(restart_shutdown_tx);
+        let (restart_ready_tx, restart_ready_rx) = tokio::sync::oneshot::channel();
+        let restart_record_path = paths.record.clone();
+        let restarted_resident = tokio::spawn(async move {
+            run_test_supervised_resident_mother(
+                &restart_record_path,
+                async move {
+                    let _ = restart_shutdown_rx.await;
+                },
+                Some(restart_ready_tx),
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(15), restart_ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        let (restart_status, restart_denied) = uds_json(
+            &paths.uds,
+            "POST",
+            "/calls",
+            &call_submission("restart-revoked"),
+        )
+        .await;
+        assert_eq!(restart_status, 200, "{restart_denied:#}");
+        assert_eq!(restart_denied["outcome"], "denied");
+        let restart_stop_paths = paths.clone();
+        let restart_stop_adapter = Arc::clone(&adapter);
+        tokio::task::spawn_blocking(move || {
+            stop_with_adapter(
+                &restart_stop_paths,
+                current_uid().unwrap(),
+                restart_stop_adapter.as_ref(),
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        restarted_resident.await.unwrap().unwrap();
+
+        let package_manifest_before_uninstall = fs::read(package_path.join("child.toml")).unwrap();
+        let package_component_before_uninstall =
+            fs::read(package_path.join("artifact/slate-manager.wasm")).unwrap();
+        let config_before_uninstall = fs::read(&paths.config).unwrap();
+        let identity_before_uninstall = fs::read(&paths.identity).unwrap();
+        let project_before_uninstall = fs::read(work_dir.join("work.toml")).unwrap();
+        let ledger_len_before_uninstall = fs::metadata(&paths.ledger).unwrap().len();
+        let preserved = MctRuntimeStateStore::open(&paths.state).unwrap();
+        let preserved_acquisitions = preserved.artifact_acquisitions().unwrap();
+        let preserved_decisions = preserved.operator_acquisition_decisions().unwrap();
+        let preserved_runs = preserved.list_runs(100).unwrap();
+        drop(preserved);
+
+        uninstall_with_adapter(&paths, current_uid().unwrap(), adapter.as_ref()).unwrap();
+        assert!(!paths.record.exists());
+        assert!(!paths.plist.exists());
+        assert_eq!(
+            adapter.inspect(&record).unwrap(),
+            SupervisorLoadedState::Unloaded
+        );
+        assert_eq!(fs::read(&paths.config).unwrap(), config_before_uninstall);
+        assert_eq!(
+            fs::read(&paths.identity).unwrap(),
+            identity_before_uninstall
+        );
+        assert_eq!(
+            fs::read(work_dir.join("work.toml")).unwrap(),
+            project_before_uninstall
+        );
+        assert_eq!(
+            fs::read(package_path.join("child.toml")).unwrap(),
+            package_manifest_before_uninstall
+        );
+        assert_eq!(
+            fs::read(package_path.join("artifact/slate-manager.wasm")).unwrap(),
+            package_component_before_uninstall
+        );
+        assert!(fs::metadata(&paths.ledger).unwrap().len() >= ledger_len_before_uninstall);
+        let final_state = MctRuntimeStateStore::open(&paths.state).unwrap();
+        assert_eq!(
+            final_state.artifact_acquisitions().unwrap(),
+            preserved_acquisitions
+        );
+        assert_eq!(
+            final_state.operator_acquisition_decisions().unwrap(),
+            preserved_decisions
+        );
+        assert_eq!(final_state.list_runs(100).unwrap(), preserved_runs);
+        assert!(
+            final_state
+                .get_artifact(&ComponentArtifactId::new(&artifact_id).unwrap())
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            MctDaemonConfigStore::new(&paths.config)
+                .load()
+                .unwrap()
+                .child_approvals["slate-manager"]
+                .approval_state,
+            ChildApprovalState::Revoked
+        );
         assert!(record.record_digest == record.canonical_digest().unwrap());
     }
 

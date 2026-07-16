@@ -460,6 +460,8 @@ struct PreparedChildMutation {
     child_name: String,
     config: mct_daemon::MctDaemonConfig,
     approving: bool,
+    approval_artifact_id: Option<ComponentArtifactId>,
+    approval_acquisition_ids: Vec<ArtifactAcquisitionId>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -469,6 +471,8 @@ pub(super) struct ChildMutationSuccess {
     pub(super) assignment_state: ChildAssignmentState,
     pub(super) approval_count: usize,
     pub(super) assignment_count: usize,
+    pub(super) approval_artifact_id: Option<ComponentArtifactId>,
+    pub(super) approval_acquisition_ids: Vec<ArtifactAcquisitionId>,
 }
 
 struct MutationObservationFact {
@@ -551,12 +555,17 @@ fn prepare_child_mutation(
                 .context("exact artifact approval requires runtime state")?;
             let state = MctRuntimeStateStore::open(state_path)?;
             let artifact_id = ComponentArtifactId::new(expected_artifact_id)?;
-            let (_, _, child) = super::cli_runtime::load_exact_catalog_approval_evidence(
-                &state,
-                configured_children_dir,
-                &artifact_id,
-                &request.child_name,
-            )?;
+            let (_, acquisitions, child) =
+                super::cli_runtime::load_exact_catalog_approval_evidence(
+                    &state,
+                    configured_children_dir,
+                    &artifact_id,
+                    &request.child_name,
+                )?;
+            let approval_acquisition_ids = acquisitions
+                .into_iter()
+                .map(|acquisition| acquisition.acquisition_id)
+                .collect();
             let config = store
                 .prepare_approved_and_assigned_child(&child, MctOperatorChildScope::default())?;
             Ok(PreparedChildMutation {
@@ -564,6 +573,8 @@ fn prepare_child_mutation(
                 child_name: request.child_name,
                 config,
                 approving: true,
+                approval_artifact_id: Some(artifact_id),
+                approval_acquisition_ids,
             })
         }
         "/children/revoke" => {
@@ -576,6 +587,8 @@ fn prepare_child_mutation(
                 child_name: request.child_name,
                 config,
                 approving: false,
+                approval_artifact_id: None,
+                approval_acquisition_ids: Vec::new(),
             })
         }
         _ => bail!("unknown child authority mutation route"),
@@ -659,6 +672,8 @@ impl PreparedChildMutation {
             assignment_state: self.config.child_assignments[&self.child_name].assignment_state,
             approval_count: self.config.child_approvals.len(),
             assignment_count: self.config.child_assignments.len(),
+            approval_artifact_id: self.approval_artifact_id.clone(),
+            approval_acquisition_ids: self.approval_acquisition_ids.clone(),
         })
     }
 }
