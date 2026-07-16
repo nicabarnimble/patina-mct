@@ -16,15 +16,31 @@ This is the v0 runtime replacement boundary:
 # 1. Create/load local identity and write .mct/config.json local identity facts.
 cargo run -p mct-daemon -- iroh identity .mct/identity/iroh-secret.hex --config .mct/config.json
 
-# 2. Load and approve verified child packages from the project-local child dir.
-cargo run -p mct-daemon -- children load .mct/children --strict-integrity
-cargo run -p mct-daemon -- children approve <child-name> .mct/children --strict-integrity --config .mct/config.json
+# 2. Acquire selected local build output into the immutable catalog.
+cargo run -p mct-daemon -- artifacts stage /path/to/build-output \
+  --manifest child.toml \
+  --component artifact/<child>.wasm \
+  --child <child-name> \
+  --version <version> \
+  --children-dir .mct/children \
+  --state .mct/state.sqlite \
+  --ledger .mct/observations.jsonl \
+  --json
 
-# 3. Authorize concrete toy grants. Paths/name inputs select resources; they do not create authority by themselves.
+# 3. Inspect and approve the exact digest printed by staging.
+cargo run -p mct-daemon -- artifacts show sha256:<digest> --state .mct/state.sqlite --json
+cargo run -p mct-daemon -- children approve <child-name> .mct/children \
+  --artifact sha256:<digest> \
+  --strict-integrity \
+  --config .mct/config.json \
+  --state .mct/state.sqlite \
+  --ledger .mct/observations.jsonl
+
+# 4. Authorize concrete toy grants. Paths/name inputs select resources; they do not create authority by themselves.
 cargo run -p mct-daemon -- toys authorize-slate <child-name> /path/to/project --children-dir .mct/children --config .mct/config.json --state .mct/state.sqlite
 cargo run -p mct-daemon -- toys authorize-secret <child-name> <secret-name> --children-dir .mct/children --config .mct/config.json --state .mct/state.sqlite
 
-# 4. Invoke a typed WIT child through the authority-first path.
+# 5. Invoke a typed WIT child through the authority-first path.
 cargo run -p mct-daemon -- wasm call-wit <child-name> patina:slate/control@0.1.0.list-work '[{"project":"/project","status":null,"kind":null}]' --project-root /path/to/project --children-dir .mct/children --config .mct/config.json --state .mct/state.sqlite --ledger .mct/observations.jsonl
 ```
 
@@ -57,6 +73,8 @@ Normal lifecycle commands are:
 ```
 
 `restart` is a clean stop followed by start; it does not force-kill with `kickstart -k`. `uninstall` removes only loaded launchd state, the managed plist, and the current supervisor record. It preserves the observation ledger, state database, identity/key, children, artifacts/blobs, authority state, and logs.
+
+Artifact acquisition and daemon supervision are separate authority surfaces. `registry install` and `registry sync` are closed; use `artifacts acquire --operator-pointed` or a bounded `artifacts sources create` record plus `artifacts acquire --source-authority`. Acquisition and verification never approve, assign, or grant Toys. Pre-law `historical_unknown` artifacts cannot receive new approval.
 
 The launchd slice supports only a logged-in GUI domain (`gui/<uid>`). Headless and SSH-only sessions do not fall back to another launchd domain or a detached process. Use foreground development only when no managed supervisor record is installed:
 
@@ -150,7 +168,7 @@ cargo run -p mct-daemon -- runs list --state .mct/state.sqlite --json
 cargo run -p mct-daemon -- metrics snapshot --state .mct/state.sqlite --json
 ```
 
-The observation ledger is `.mct/observations.jsonl`; payload bytes and secret values must not be written there.
+The observation ledger is `.mct/observations.jsonl`; payload bytes and secret values must not be written there. Artifact evidence is inspected with `artifacts show`, `artifacts acquisitions`, and `artifacts sources list`; these reads append no authority fact.
 
 ## Not in v0 replacement boundary
 
