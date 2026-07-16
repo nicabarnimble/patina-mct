@@ -1,7 +1,7 @@
 ---
 type: feat
 id: artifact-acquisition
-status: active
+status: complete
 created: 2026-07-16
 target: daily-driver-slice-3
 operator_gate: D1-ratified
@@ -733,6 +733,6 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ## Build Readiness
 
-**RATIFIED — implementation authorized.**
+**COMPLETE — Daily-Driver Slice 3 closed 2026-07-16.**
 
-The operator ratified D1.1–D1.14 and D1.15–D1.17 before the first failing test. Implementation proceeds in the specified failing-test-first order; genuine design forks or conflicts with ratified Allium law stop at the operator.
+The operator ratified D1.1–D1.14 and D1.15–D1.17 before the first failing test. The implementation, failure matrix, Track 3 attribution, final validation, and 16-row disk reconstruction are recorded in [`CLOSEOUT.md`](CLOSEOUT.md). Ratified Allium law was unchanged.
