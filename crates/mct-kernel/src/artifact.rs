@@ -206,6 +206,10 @@ pub struct ArtifactAcquisitionAuthorityRequest {
     pub artifact: String,
     /// Claimed publisher identity, when standing scope requires it.
     pub publisher: Option<String>,
+    /// Expected digest supplied for this exact request.
+    pub expected_digest: Option<String>,
+    /// Authenticated local operator UID requesting the effect.
+    pub authenticated_uid: u32,
     /// WIT namespaces claimed by the package.
     pub namespaces: Vec<String>,
     /// Requested source action.
@@ -310,6 +314,7 @@ pub fn evaluate_artifact_acquisition_authority(
                 "{}@{}",
                 decision.claimed_child_name, decision.claimed_artifact_version
             ) == request.artifact
+            && decision.expected_digest == request.expected_digest
             && decision.policy_revision == request.policy_revision
     } else {
         false
@@ -328,6 +333,7 @@ pub fn evaluate_artifact_acquisition_authority(
         );
     };
     let effect_allowed = effect.adapter_ref == "mct:artifact-acquisition/filesystem@1"
+        && effect.authenticated_uid == request.authenticated_uid
         && effect.source_ref == request.source_ref
         && effect.allowed_action == "read_and_stage"
         && effect.policy_revision == request.policy_revision
@@ -416,6 +422,8 @@ mod tests {
             source_ref: "file:///tmp/source".into(),
             artifact: "slate-manager@0.2.0".into(),
             publisher: Some("patina".into()),
+            expected_digest: None,
+            authenticated_uid: 501,
             namespaces: vec!["patina:slate".into()],
             action: "acquire".into(),
             policy_revision: 1,
@@ -473,6 +481,104 @@ mod tests {
     }
 
     #[test]
+    fn source_trust_and_adapter_authority_are_independent_and_exact() {
+        let mut request = request();
+        let mut operator = operator();
+        let mut effect = effect();
+        assert_eq!(
+            evaluate_artifact_acquisition_authority(&request, None, Some(&operator), Some(&effect))
+                .reason,
+            ArtifactAcquisitionAuthorityReason::Allowed
+        );
+        assert_eq!(
+            evaluate_artifact_acquisition_authority(
+                &request,
+                Some(&ArtifactSourceAuthority {
+                    source_authority_id: ArtifactSourceAuthorityId::new("ambiguous").unwrap(),
+                    source_ref: request.source_ref.clone(),
+                    scope: ArtifactSourceScope {
+                        scope_mode: ArtifactSourceScopeMode::ExplicitBroad,
+                        artifact_scope: vec!["*".into()],
+                        publisher_scope: vec!["*".into()],
+                        namespace_scope: vec!["*".into()],
+                        allowed_actions: vec!["acquire".into()],
+                    },
+                    integrity_policy_ref: "sha256-sidecars-v1".into(),
+                    provenance_policy_ref: None,
+                    issuer_principal_ref: "os-uid:501".into(),
+                    policy_revision: 1,
+                    authority_state: ArtifactSourceAuthorityState::Active,
+                    issued_at: timestamp("2026-07-16T11:00:00Z"),
+                    expires_at: timestamp("2026-07-16T13:00:00Z"),
+                    authority_observation_id: ObservationId::new("obs-ambiguous").unwrap(),
+                }),
+                Some(&operator),
+                Some(&effect)
+            )
+            .reason,
+            ArtifactAcquisitionAuthorityReason::AmbiguousSourceAuthority
+        );
+
+        operator.decision_state = OperatorPointedAcquisitionState::Consumed;
+        assert_eq!(
+            evaluate_artifact_acquisition_authority(&request, None, Some(&operator), Some(&effect))
+                .reason,
+            ArtifactAcquisitionAuthorityReason::OperatorDecisionNotCurrentOrMatching
+        );
+        operator = self::operator();
+        request.expected_digest = Some(format!("blake3:{}", "0".repeat(64)));
+        assert_eq!(
+            evaluate_artifact_acquisition_authority(&request, None, Some(&operator), Some(&effect))
+                .reason,
+            ArtifactAcquisitionAuthorityReason::OperatorDecisionNotCurrentOrMatching
+        );
+        request = self::request();
+        effect.authenticated_uid = 502;
+        assert_eq!(
+            evaluate_artifact_acquisition_authority(&request, None, Some(&operator), Some(&effect))
+                .reason,
+            ArtifactAcquisitionAuthorityReason::AdapterEffectAuthorityNotCurrentOrMatching
+        );
+        for invalid in [
+            ("wrong-adapter", "file:///tmp/source", "read_and_stage", 1),
+            (
+                "mct:artifact-acquisition/filesystem@1",
+                "file:///tmp/other",
+                "read_and_stage",
+                1,
+            ),
+            (
+                "mct:artifact-acquisition/filesystem@1",
+                "file:///tmp/source",
+                "write",
+                1,
+            ),
+            (
+                "mct:artifact-acquisition/filesystem@1",
+                "file:///tmp/source",
+                "read_and_stage",
+                2,
+            ),
+        ] {
+            let mut invalid_effect = self::effect();
+            invalid_effect.adapter_ref = invalid.0.into();
+            invalid_effect.source_ref = invalid.1.into();
+            invalid_effect.allowed_action = invalid.2.into();
+            invalid_effect.policy_revision = invalid.3;
+            assert_eq!(
+                evaluate_artifact_acquisition_authority(
+                    &request,
+                    None,
+                    Some(&operator),
+                    Some(&invalid_effect)
+                )
+                .reason,
+                ArtifactAcquisitionAuthorityReason::AdapterEffectAuthorityNotCurrentOrMatching
+            );
+        }
+    }
+
+    #[test]
     fn standing_scope_is_explicit_and_missing_scope_grants_nothing() {
         let request = request();
         let mut source = ArtifactSourceAuthority {
@@ -504,6 +610,80 @@ mod tests {
             evaluate_artifact_acquisition_authority(&request, Some(&source), None, Some(&effect()))
                 .authorized
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn standing_source_rejects_stale_revoked_expired_wrong_scope_and_policy() {
+        let request = request();
+        let source = ArtifactSourceAuthority {
+            source_authority_id: ArtifactSourceAuthorityId::new("source-matrix").unwrap(),
+            source_ref: request.source_ref.clone(),
+            scope: ArtifactSourceScope {
+                scope_mode: ArtifactSourceScopeMode::Constrained,
+                artifact_scope: vec![request.artifact.clone()],
+                publisher_scope: vec!["patina".into()],
+                namespace_scope: vec!["patina:slate".into()],
+                allowed_actions: vec!["acquire".into()],
+            },
+            integrity_policy_ref: "sha256-sidecars-v1".into(),
+            provenance_policy_ref: None,
+            issuer_principal_ref: "os-uid:501".into(),
+            policy_revision: 1,
+            authority_state: ArtifactSourceAuthorityState::Active,
+            issued_at: timestamp("2026-07-16T11:00:00Z"),
+            expires_at: timestamp("2026-07-16T13:00:00Z"),
+            authority_observation_id: ObservationId::new("obs-source-matrix").unwrap(),
+        };
+        let denied = |source: &ArtifactSourceAuthority,
+                      request: &ArtifactAcquisitionAuthorityRequest| {
+            evaluate_artifact_acquisition_authority(request, Some(source), None, Some(&effect()))
+                .reason
+                == ArtifactAcquisitionAuthorityReason::StandingSourceNotCurrentOrInScope
+        };
+        for authority_state in [
+            ArtifactSourceAuthorityState::Pending,
+            ArtifactSourceAuthorityState::Revoked,
+            ArtifactSourceAuthorityState::Expired,
+            ArtifactSourceAuthorityState::Superseded,
+        ] {
+            let mut invalid = source.clone();
+            invalid.authority_state = authority_state;
+            assert!(denied(&invalid, &request));
+        }
+        let mut invalid = source.clone();
+        invalid.expires_at = request.now.clone();
+        assert!(denied(&invalid, &request));
+        invalid = source.clone();
+        invalid.policy_revision = 2;
+        assert!(denied(&invalid, &request));
+        invalid = source.clone();
+        invalid.source_ref = "file:///tmp/other".into();
+        assert!(denied(&invalid, &request));
+        invalid = source.clone();
+        invalid.integrity_policy_ref = "weaker".into();
+        assert!(denied(&invalid, &request));
+
+        for mutate in 0..4 {
+            let mut wrong_request = request.clone();
+            match mutate {
+                0 => wrong_request.artifact = "other@1.0.0".into(),
+                1 => wrong_request.publisher = Some("other".into()),
+                2 => wrong_request.namespaces = vec!["other:namespace".into()],
+                _ => wrong_request.action = "sync".into(),
+            }
+            assert!(denied(&source, &wrong_request));
+        }
+
+        let mut broad = source;
+        broad.scope.scope_mode = ArtifactSourceScopeMode::ExplicitBroad;
+        broad.scope.artifact_scope = vec!["*".into()];
+        broad.scope.publisher_scope = vec!["*".into()];
+        broad.scope.namespace_scope = vec!["*".into()];
+        assert_eq!(
+            evaluate_artifact_acquisition_authority(&request, Some(&broad), None, Some(&effect()))
+                .reason,
+            ArtifactAcquisitionAuthorityReason::Allowed
         );
     }
 }
