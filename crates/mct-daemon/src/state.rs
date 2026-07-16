@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 pub const MCT_IDEMPOTENCY_TTL_SECONDS: i64 = 12 * 60;
 pub const MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER: usize = 256;
@@ -250,6 +250,13 @@ pub struct MctRegistrySourceRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctArtifactPackageRecord {
+    pub artifact_id: ComponentArtifactId,
+    pub package_path: PathBuf,
+    pub published_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MctCompositionRunRecord {
     pub composition_id: String,
     pub state: String,
@@ -299,6 +306,9 @@ impl MctRuntimeStateStore {
                 ingress_mode TEXT NOT NULL,
                 lifecycle_exports TEXT NOT NULL,
                 verification_status TEXT NOT NULL,
+                provenance_status TEXT NOT NULL DEFAULT 'historical_unknown',
+                acquisition_ids_json TEXT NOT NULL DEFAULT '[]',
+                primary_acquisition_id TEXT,
                 created_by_observation_id TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -503,6 +513,75 @@ impl MctRuntimeStateStore {
                 state TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS artifact_source_authorities (
+                source_authority_id TEXT PRIMARY KEY,
+                source_ref TEXT NOT NULL,
+                scope_json TEXT NOT NULL,
+                integrity_policy_ref TEXT NOT NULL,
+                provenance_policy_ref TEXT,
+                issuer_principal_ref TEXT NOT NULL,
+                policy_revision INTEGER NOT NULL,
+                authority_state TEXT NOT NULL,
+                issued_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                authority_observation_id TEXT NOT NULL,
+                record_digest TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS operator_pointed_artifact_acquisition_decisions (
+                decision_id TEXT PRIMARY KEY,
+                source_ref TEXT NOT NULL,
+                claimed_child_name TEXT NOT NULL,
+                claimed_artifact_version TEXT NOT NULL,
+                expected_digest TEXT,
+                issuer_principal_ref TEXT NOT NULL,
+                policy_revision INTEGER NOT NULL,
+                decision_state TEXT NOT NULL,
+                authority_observation_id TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS artifact_acquisitions (
+                acquisition_id TEXT PRIMARY KEY,
+                authority_path TEXT NOT NULL,
+                standing_source_authority_id TEXT,
+                operator_pointed_decision_id TEXT,
+                adapter_effect_authority_ref TEXT NOT NULL,
+                source_ref TEXT NOT NULL,
+                claimed_child_name TEXT NOT NULL,
+                claimed_artifact_version TEXT NOT NULL,
+                observed_size_bytes INTEGER,
+                observed_digest TEXT,
+                acquisition_outcome TEXT NOT NULL,
+                verification_outcome TEXT NOT NULL,
+                verification_observation_id TEXT,
+                acquisition_observation_id TEXT NOT NULL,
+                component_artifact_id TEXT,
+                created_at TEXT NOT NULL,
+                CHECK (
+                    (authority_path = 'standing_source' AND standing_source_authority_id IS NOT NULL AND operator_pointed_decision_id IS NULL)
+                    OR
+                    (authority_path = 'operator_pointed' AND standing_source_authority_id IS NULL AND operator_pointed_decision_id IS NOT NULL)
+                ),
+                CHECK (
+                    component_artifact_id IS NULL
+                    OR (acquisition_outcome = 'acquired' AND verification_outcome = 'verified')
+                )
+            );
+
+            CREATE TABLE IF NOT EXISTS component_artifact_acquisitions (
+                artifact_id TEXT NOT NULL REFERENCES component_artifacts(artifact_id),
+                acquisition_id TEXT NOT NULL UNIQUE REFERENCES artifact_acquisitions(acquisition_id),
+                PRIMARY KEY (artifact_id, acquisition_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS component_artifact_packages (
+                artifact_id TEXT PRIMARY KEY REFERENCES component_artifacts(artifact_id),
+                package_path TEXT NOT NULL UNIQUE,
+                published_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS composition_runs (
                 composition_id TEXT PRIMARY KEY,
                 state TEXT NOT NULL,
@@ -644,6 +723,7 @@ impl MctRuntimeStateStore {
             "#,
         )?;
         self.migrate_runtime_run_child_invocation_provenance()?;
+        self.migrate_artifact_acquisition_provenance()?;
         self.conn.execute(
             "INSERT OR REPLACE INTO mct_state_meta(key, value) VALUES('schema_version', ?1)",
             params![SCHEMA_VERSION.to_string()],
@@ -692,6 +772,28 @@ impl MctRuntimeStateStore {
                 WHERE run_id = ?2
                 "#,
                 params![json_string(&provenance)?, run_id],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn migrate_artifact_acquisition_provenance(&self) -> Result<()> {
+        if !self.column_exists("component_artifacts", "provenance_status")? {
+            self.conn.execute(
+                "ALTER TABLE component_artifacts ADD COLUMN provenance_status TEXT NOT NULL DEFAULT 'historical_unknown'",
+                [],
+            )?;
+        }
+        if !self.column_exists("component_artifacts", "acquisition_ids_json")? {
+            self.conn.execute(
+                "ALTER TABLE component_artifacts ADD COLUMN acquisition_ids_json TEXT NOT NULL DEFAULT '[]'",
+                [],
+            )?;
+        }
+        if !self.column_exists("component_artifacts", "primary_acquisition_id")? {
+            self.conn.execute(
+                "ALTER TABLE component_artifacts ADD COLUMN primary_acquisition_id TEXT",
+                [],
             )?;
         }
         Ok(())
@@ -899,25 +1001,16 @@ impl MctRuntimeStateStore {
     }
 
     pub fn upsert_artifact(&self, artifact: &ComponentArtifact) -> Result<()> {
+        validate_artifact_provenance_shape(artifact)?;
         self.conn.execute(
             r#"
             INSERT INTO component_artifacts(
                 artifact_id, child_name, artifact_version, content_hash, manifest_hash,
                 primary_export_json, runtime_shape, ingress_mode, lifecycle_exports,
-                verification_status, created_by_observation_id, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-            ON CONFLICT(artifact_id) DO UPDATE SET
-                child_name = excluded.child_name,
-                artifact_version = excluded.artifact_version,
-                content_hash = excluded.content_hash,
-                manifest_hash = excluded.manifest_hash,
-                primary_export_json = excluded.primary_export_json,
-                runtime_shape = excluded.runtime_shape,
-                ingress_mode = excluded.ingress_mode,
-                lifecycle_exports = excluded.lifecycle_exports,
-                verification_status = excluded.verification_status,
-                created_by_observation_id = excluded.created_by_observation_id,
-                updated_at = excluded.updated_at
+                verification_status, provenance_status, acquisition_ids_json,
+                primary_acquisition_id, created_by_observation_id, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            ON CONFLICT(artifact_id) DO NOTHING
             "#,
             params![
                 artifact.artifact_id.as_str(),
@@ -930,10 +1023,22 @@ impl MctRuntimeStateStore {
                 json_atom(&artifact.ingress_mode)?,
                 json_atom(&artifact.lifecycle_exports)?,
                 json_atom(&artifact.verification_status)?,
+                json_atom(&artifact.provenance_status)?,
+                json_string(&artifact.acquisition_ids)?,
+                artifact
+                    .acquisition_ids
+                    .first()
+                    .map(ArtifactAcquisitionId::as_str),
                 artifact.created_by_observation_id.as_str(),
                 current_timestamp_string(),
             ],
         )?;
+        let persisted = self
+            .get_artifact(&artifact.artifact_id)?
+            .context("artifact insert did not produce a persisted row")?;
+        if &persisted != artifact {
+            bail!("immutable component artifact conflicts with persisted artifact");
+        }
         Ok(())
     }
 
@@ -946,7 +1051,8 @@ impl MctRuntimeStateStore {
                 r#"
                 SELECT artifact_id, child_name, artifact_version, content_hash, manifest_hash,
                        primary_export_json, runtime_shape, ingress_mode, lifecycle_exports,
-                       verification_status, created_by_observation_id
+                       verification_status, provenance_status, acquisition_ids_json,
+                       created_by_observation_id
                 FROM component_artifacts WHERE artifact_id = ?1
                 "#,
                 params![artifact_id.as_str()],
@@ -954,6 +1060,207 @@ impl MctRuntimeStateStore {
             )
             .optional()
             .context("read component artifact")
+    }
+
+    pub fn record_artifact_acquisition(&self, acquisition: &ArtifactAcquisition) -> Result<()> {
+        validate_acquisition_shape(acquisition)?;
+        self.conn.execute(
+            r#"
+            INSERT INTO artifact_acquisitions(
+                acquisition_id, authority_path, standing_source_authority_id,
+                operator_pointed_decision_id, adapter_effect_authority_ref, source_ref,
+                claimed_child_name, claimed_artifact_version, observed_size_bytes,
+                observed_digest, acquisition_outcome, verification_outcome,
+                verification_observation_id, acquisition_observation_id,
+                component_artifact_id, created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+            "#,
+            params![
+                acquisition.acquisition_id.as_str(),
+                json_atom(&acquisition.authority_path)?,
+                acquisition
+                    .standing_source_authority_id
+                    .as_ref()
+                    .map(ArtifactSourceAuthorityId::as_str),
+                acquisition
+                    .operator_pointed_decision_id
+                    .as_ref()
+                    .map(ArtifactAcquisitionDecisionId::as_str),
+                acquisition.adapter_effect_authority_ref,
+                acquisition.source_ref,
+                acquisition.claimed_child_name,
+                acquisition.claimed_artifact_version,
+                acquisition.observed_size_bytes,
+                acquisition.observed_digest,
+                json_atom(&acquisition.acquisition_outcome)?,
+                json_atom(&acquisition.verification_outcome)?,
+                acquisition
+                    .verification_observation_id
+                    .as_ref()
+                    .map(ObservationId::as_str),
+                acquisition.acquisition_observation_id.as_str(),
+                acquisition
+                    .component_artifact_id
+                    .as_ref()
+                    .map(ComponentArtifactId::as_str),
+                current_timestamp_string(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn artifact_acquisitions(&self) -> Result<Vec<ArtifactAcquisition>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT acquisition_id, authority_path, standing_source_authority_id,
+                   operator_pointed_decision_id, adapter_effect_authority_ref, source_ref,
+                   claimed_child_name, claimed_artifact_version, observed_size_bytes,
+                   observed_digest, acquisition_outcome, verification_outcome,
+                   verification_observation_id, acquisition_observation_id,
+                   component_artifact_id
+            FROM artifact_acquisitions ORDER BY created_at, acquisition_id
+            "#,
+        )?;
+        stmt.query_map([], acquisition_from_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("read artifact acquisitions")
+    }
+
+    pub fn record_verified_acquisition_and_artifact(
+        &self,
+        acquisition: &ArtifactAcquisition,
+        artifact: &ComponentArtifact,
+        package_path: &Path,
+    ) -> Result<()> {
+        if acquisition.acquisition_outcome != ArtifactAcquisitionOutcome::Acquired
+            || acquisition.verification_outcome != ArtifactVerificationOutcome::Verified
+            || acquisition.component_artifact_id.as_ref() != Some(&artifact.artifact_id)
+            || artifact.provenance_status != ArtifactProvenanceStatus::AcquisitionBacked
+            || !artifact
+                .acquisition_ids
+                .contains(&acquisition.acquisition_id)
+        {
+            bail!("verified artifact transaction requires matching successful acquisition");
+        }
+        validate_artifact_provenance_shape(artifact)?;
+        validate_acquisition_shape(acquisition)?;
+        let tx = self.conn.unchecked_transaction()?;
+        insert_acquisition_on(&tx, acquisition)?;
+        insert_artifact_on(&tx, artifact)?;
+        tx.execute(
+            r#"
+            INSERT INTO component_artifact_acquisitions(artifact_id, acquisition_id)
+            VALUES (?1, ?2)
+            "#,
+            params![
+                artifact.artifact_id.as_str(),
+                acquisition.acquisition_id.as_str()
+            ],
+        )?;
+        tx.execute(
+            r#"
+            INSERT INTO component_artifact_packages(artifact_id, package_path, published_at)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(artifact_id) DO NOTHING
+            "#,
+            params![
+                artifact.artifact_id.as_str(),
+                package_path.display().to_string(),
+                current_timestamp_string(),
+            ],
+        )?;
+        tx.commit()?;
+        let persisted = self
+            .get_artifact(&artifact.artifact_id)?
+            .context("verified artifact transaction did not persist artifact")?;
+        if persisted != *artifact {
+            bail!("immutable component artifact conflicts with persisted artifact");
+        }
+        let package = self
+            .artifact_package(&artifact.artifact_id)?
+            .context("verified artifact transaction did not persist package")?;
+        if package.package_path != package_path {
+            bail!("immutable artifact package path conflicts with persisted package");
+        }
+        Ok(())
+    }
+
+    pub fn artifact_package(
+        &self,
+        artifact_id: &ComponentArtifactId,
+    ) -> Result<Option<MctArtifactPackageRecord>> {
+        self.conn
+            .query_row(
+                r#"
+                SELECT artifact_id, package_path, published_at
+                FROM component_artifact_packages WHERE artifact_id = ?1
+                "#,
+                params![artifact_id.as_str()],
+                |row| {
+                    Ok(MctArtifactPackageRecord {
+                        artifact_id: ComponentArtifactId::new(row.get::<_, String>(0)?)
+                            .expect("stored artifact id is non-empty"),
+                        package_path: PathBuf::from(row.get::<_, String>(1)?),
+                        published_at: row.get(2)?,
+                    })
+                },
+            )
+            .optional()
+            .context("read component artifact package")
+    }
+
+    pub fn upsert_source_authority(
+        &self,
+        source: &ArtifactSourceAuthority,
+        record_digest: &str,
+    ) -> Result<()> {
+        validate_source_authority(source)?;
+        self.conn.execute(
+            r#"
+            INSERT INTO artifact_source_authorities(
+                source_authority_id, source_ref, scope_json, integrity_policy_ref,
+                provenance_policy_ref, issuer_principal_ref, policy_revision,
+                authority_state, issued_at, expires_at, authority_observation_id,
+                record_digest, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            ON CONFLICT(source_authority_id) DO UPDATE SET
+                authority_state = excluded.authority_state,
+                authority_observation_id = excluded.authority_observation_id,
+                record_digest = excluded.record_digest,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                source.source_authority_id.as_str(),
+                source.source_ref,
+                json_string(&source.scope)?,
+                source.integrity_policy_ref,
+                source.provenance_policy_ref,
+                source.issuer_principal_ref,
+                source.policy_revision,
+                json_atom(&source.authority_state)?,
+                source.issued_at.as_str(),
+                source.expires_at.as_str(),
+                source.authority_observation_id.as_str(),
+                record_digest,
+                current_timestamp_string(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn source_authorities(&self) -> Result<Vec<(ArtifactSourceAuthority, String)>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT source_authority_id, source_ref, scope_json, integrity_policy_ref,
+                   provenance_policy_ref, issuer_principal_ref, policy_revision,
+                   authority_state, issued_at, expires_at, authority_observation_id,
+                   record_digest
+            FROM artifact_source_authorities ORDER BY source_authority_id
+            "#,
+        )?;
+        stmt.query_map([], source_authority_from_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("read artifact source authorities")
     }
 
     pub fn upsert_child_approval(&self, approval: &ChildApproval) -> Result<()> {
@@ -1264,6 +1571,8 @@ impl MctRuntimeStateStore {
             } else {
                 VerificationStatus::Rejected
             },
+            provenance_status: ArtifactProvenanceStatus::HistoricalUnknown,
+            acquisition_ids: Vec::new(),
             created_by_observation_id: ObservationId::new(format!("obs:artifact:{}", child.name))
                 .expect("string ID literal/generated value must be non-empty"),
         };
@@ -1931,12 +2240,207 @@ fn remote_callable_surface_from_row(
     })
 }
 
+fn validate_source_authority(source: &ArtifactSourceAuthority) -> Result<()> {
+    if !source.source_ref.starts_with("file://")
+        || source.scope.artifact_scope.is_empty()
+        || source.scope.publisher_scope.is_empty()
+        || source.scope.namespace_scope.is_empty()
+        || source.scope.allowed_actions.is_empty()
+        || source.expires_at <= source.issued_at
+        || source.integrity_policy_ref != "sha256-sidecars-v1"
+    {
+        bail!("artifact source authority is not explicit, bounded, and supported");
+    }
+    Ok(())
+}
+
+fn validate_acquisition_shape(acquisition: &ArtifactAcquisition) -> Result<()> {
+    let authority_shape = match acquisition.authority_path {
+        ArtifactAcquisitionAuthorityPath::StandingSource => {
+            acquisition.standing_source_authority_id.is_some()
+                && acquisition.operator_pointed_decision_id.is_none()
+        }
+        ArtifactAcquisitionAuthorityPath::OperatorPointed => {
+            acquisition.standing_source_authority_id.is_none()
+                && acquisition.operator_pointed_decision_id.is_some()
+        }
+    };
+    if !authority_shape {
+        bail!("artifact acquisition requires exactly one matching authority path");
+    }
+    if acquisition.component_artifact_id.is_some()
+        && (acquisition.acquisition_outcome != ArtifactAcquisitionOutcome::Acquired
+            || acquisition.verification_outcome != ArtifactVerificationOutcome::Verified)
+    {
+        bail!("failed or rejected acquisition cannot reference a component artifact");
+    }
+    Ok(())
+}
+
+fn insert_acquisition_on(
+    tx: &rusqlite::Transaction<'_>,
+    acquisition: &ArtifactAcquisition,
+) -> Result<()> {
+    tx.execute(
+        r#"
+        INSERT INTO artifact_acquisitions(
+            acquisition_id, authority_path, standing_source_authority_id,
+            operator_pointed_decision_id, adapter_effect_authority_ref, source_ref,
+            claimed_child_name, claimed_artifact_version, observed_size_bytes,
+            observed_digest, acquisition_outcome, verification_outcome,
+            verification_observation_id, acquisition_observation_id,
+            component_artifact_id, created_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+        "#,
+        params![
+            acquisition.acquisition_id.as_str(),
+            json_atom(&acquisition.authority_path)?,
+            acquisition
+                .standing_source_authority_id
+                .as_ref()
+                .map(ArtifactSourceAuthorityId::as_str),
+            acquisition
+                .operator_pointed_decision_id
+                .as_ref()
+                .map(ArtifactAcquisitionDecisionId::as_str),
+            acquisition.adapter_effect_authority_ref,
+            acquisition.source_ref,
+            acquisition.claimed_child_name,
+            acquisition.claimed_artifact_version,
+            acquisition.observed_size_bytes,
+            acquisition.observed_digest,
+            json_atom(&acquisition.acquisition_outcome)?,
+            json_atom(&acquisition.verification_outcome)?,
+            acquisition
+                .verification_observation_id
+                .as_ref()
+                .map(ObservationId::as_str),
+            acquisition.acquisition_observation_id.as_str(),
+            acquisition
+                .component_artifact_id
+                .as_ref()
+                .map(ComponentArtifactId::as_str),
+            current_timestamp_string(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_artifact_on(tx: &rusqlite::Transaction<'_>, artifact: &ComponentArtifact) -> Result<()> {
+    tx.execute(
+        r#"
+        INSERT INTO component_artifacts(
+            artifact_id, child_name, artifact_version, content_hash, manifest_hash,
+            primary_export_json, runtime_shape, ingress_mode, lifecycle_exports,
+            verification_status, provenance_status, acquisition_ids_json,
+            primary_acquisition_id, created_by_observation_id, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+        ON CONFLICT(artifact_id) DO NOTHING
+        "#,
+        params![
+            artifact.artifact_id.as_str(),
+            artifact.child_name,
+            artifact.artifact_version,
+            artifact.content_hash,
+            artifact.manifest_hash,
+            json_string(&artifact.primary_export)?,
+            json_atom(&artifact.runtime_shape)?,
+            json_atom(&artifact.ingress_mode)?,
+            json_atom(&artifact.lifecycle_exports)?,
+            json_atom(&artifact.verification_status)?,
+            json_atom(&artifact.provenance_status)?,
+            json_string(&artifact.acquisition_ids)?,
+            artifact
+                .acquisition_ids
+                .first()
+                .map(ArtifactAcquisitionId::as_str),
+            artifact.created_by_observation_id.as_str(),
+            current_timestamp_string(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn acquisition_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArtifactAcquisition> {
+    let authority_path: String = row.get(1)?;
+    let acquisition_outcome: String = row.get(10)?;
+    let verification_outcome: String = row.get(11)?;
+    Ok(ArtifactAcquisition {
+        acquisition_id: ArtifactAcquisitionId::new(row.get::<_, String>(0)?)
+            .expect("stored acquisition id is non-empty"),
+        authority_path: from_json_atom(&authority_path).map_err(to_sql_error)?,
+        standing_source_authority_id: row.get::<_, Option<String>>(2)?.map(|value| {
+            ArtifactSourceAuthorityId::new(value).expect("stored source authority id is non-empty")
+        }),
+        operator_pointed_decision_id: row.get::<_, Option<String>>(3)?.map(|value| {
+            ArtifactAcquisitionDecisionId::new(value).expect("stored decision id is non-empty")
+        }),
+        adapter_effect_authority_ref: row.get(4)?,
+        source_ref: row.get(5)?,
+        claimed_child_name: row.get(6)?,
+        claimed_artifact_version: row.get(7)?,
+        observed_size_bytes: row.get(8)?,
+        observed_digest: row.get(9)?,
+        acquisition_outcome: from_json_atom(&acquisition_outcome).map_err(to_sql_error)?,
+        verification_outcome: from_json_atom(&verification_outcome).map_err(to_sql_error)?,
+        verification_observation_id: row.get::<_, Option<String>>(12)?.map(|value| {
+            ObservationId::new(value).expect("stored verification observation id is non-empty")
+        }),
+        acquisition_observation_id: ObservationId::new(row.get::<_, String>(13)?)
+            .expect("stored acquisition observation id is non-empty"),
+        component_artifact_id: row.get::<_, Option<String>>(14)?.map(|value| {
+            ComponentArtifactId::new(value).expect("stored component artifact id is non-empty")
+        }),
+    })
+}
+
+fn source_authority_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<(ArtifactSourceAuthority, String)> {
+    let scope_json: String = row.get(2)?;
+    let authority_state: String = row.get(7)?;
+    Ok((
+        ArtifactSourceAuthority {
+            source_authority_id: ArtifactSourceAuthorityId::new(row.get::<_, String>(0)?)
+                .expect("stored source authority id is non-empty"),
+            source_ref: row.get(1)?,
+            scope: from_json_cell(&scope_json).map_err(to_sql_error)?,
+            integrity_policy_ref: row.get(3)?,
+            provenance_policy_ref: row.get(4)?,
+            issuer_principal_ref: row.get(5)?,
+            policy_revision: row.get(6)?,
+            authority_state: from_json_atom(&authority_state).map_err(to_sql_error)?,
+            issued_at: Timestamp::new(row.get::<_, String>(8)?)
+                .expect("stored issuance timestamp is RFC3339"),
+            expires_at: Timestamp::new(row.get::<_, String>(9)?)
+                .expect("stored expiry timestamp is RFC3339"),
+            authority_observation_id: ObservationId::new(row.get::<_, String>(10)?)
+                .expect("stored source observation id is non-empty"),
+        },
+        row.get(11)?,
+    ))
+}
+
+fn validate_artifact_provenance_shape(artifact: &ComponentArtifact) -> Result<()> {
+    match artifact.provenance_status {
+        ArtifactProvenanceStatus::AcquisitionBacked if artifact.acquisition_ids.is_empty() => {
+            bail!("acquisition-backed artifact requires acquisition evidence")
+        }
+        ArtifactProvenanceStatus::HistoricalUnknown if !artifact.acquisition_ids.is_empty() => {
+            bail!("historical-unknown artifact cannot claim acquisition evidence")
+        }
+        _ => Ok(()),
+    }
+}
+
 fn artifact_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ComponentArtifact> {
     let primary_export_json: String = row.get(5)?;
     let runtime_shape: String = row.get(6)?;
     let ingress_mode: String = row.get(7)?;
     let lifecycle_exports: String = row.get(8)?;
     let verification_status: String = row.get(9)?;
+    let provenance_status: String = row.get(10)?;
+    let acquisition_ids_json: String = row.get(11)?;
     Ok(ComponentArtifact {
         artifact_id: ComponentArtifactId::new(row.get::<_, String>(0)?)
             .expect("string ID literal/generated value must be non-empty"),
@@ -1949,7 +2453,9 @@ fn artifact_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ComponentArtif
         ingress_mode: from_json_atom(&ingress_mode).map_err(to_sql_error)?,
         lifecycle_exports: from_json_atom(&lifecycle_exports).map_err(to_sql_error)?,
         verification_status: from_json_atom(&verification_status).map_err(to_sql_error)?,
-        created_by_observation_id: ObservationId::new(row.get::<_, String>(10)?)
+        provenance_status: from_json_atom(&provenance_status).map_err(to_sql_error)?,
+        acquisition_ids: from_json_cell(&acquisition_ids_json).map_err(to_sql_error)?,
+        created_by_observation_id: ObservationId::new(row.get::<_, String>(12)?)
             .expect("string ID literal/generated value must be non-empty"),
     })
 }
@@ -2184,6 +2690,8 @@ mod tests {
             ingress_mode: ChildIngressMode::WitOnly,
             lifecycle_exports: LifecycleExports::AbsentAllowed,
             verification_status: VerificationStatus::Verified,
+            provenance_status: ArtifactProvenanceStatus::HistoricalUnknown,
+            acquisition_ids: Vec::new(),
             created_by_observation_id: ObservationId::new("obs-artifact")
                 .expect("string ID literal/generated value must be non-empty"),
         }

@@ -774,6 +774,8 @@ mod tests {
             ingress_mode: ChildIngressMode::WitOnly,
             lifecycle_exports: LifecycleExports::AbsentAllowed,
             verification_status: VerificationStatus::Verified,
+            provenance_status: ArtifactProvenanceStatus::HistoricalUnknown,
+            acquisition_ids: Vec::new(),
             created_by_observation_id: ObservationId::new("obs-artifact-route-1")
                 .expect("string ID literal/generated value must be non-empty"),
         };

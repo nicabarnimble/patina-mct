@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+mod acquisition;
 #[cfg(test)]
 mod authority_test_fixture;
 mod blob_store;
@@ -28,6 +29,11 @@ mod toy;
 mod wasm;
 mod wit_values;
 
+pub use acquisition::{
+    MCT_CHILD_MANIFEST_MAX_BYTES, MCT_COMPONENT_ARTIFACT_MAX_BYTES,
+    MCT_FILESYSTEM_ACQUISITION_ADAPTER, MctArtifactAcquisitionReport, MctArtifactStageRequest,
+    stage_operator_pointed_artifact,
+};
 pub use blob_store::{
     MCT_BLOB_MAX_BYTES, MctLocalBlobStore, MctLocalBlobStoreError, content_addressed_blob_handle,
     ingest_blob_from_path, local_blob_store_for_state_path,
@@ -96,10 +102,11 @@ pub use registry::{
 };
 pub use state::{
     ChildInvocationProvenance, MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER, MCT_IDEMPOTENCY_TTL_SECONDS,
-    MctCompositionRunRecord, MctIdempotencyReservation, MctMetricPoint, MctQueuedTaskRecord,
-    MctRecordedCallReply, MctRegistrySourceRecord, MctRemoteCallableSurfaceRecord,
-    MctRemoteSurfaceRefresh, MctRuntimeRunRecord, MctRuntimeRunState, MctRuntimeStateStore,
-    MctRuntimeStateSummary, MctTaskIntentRecord, MctTaskStatus, default_state_path,
+    MctArtifactPackageRecord, MctCompositionRunRecord, MctIdempotencyReservation, MctMetricPoint,
+    MctQueuedTaskRecord, MctRecordedCallReply, MctRegistrySourceRecord,
+    MctRemoteCallableSurfaceRecord, MctRemoteSurfaceRefresh, MctRuntimeRunRecord,
+    MctRuntimeRunState, MctRuntimeStateStore, MctRuntimeStateSummary, MctTaskIntentRecord,
+    MctTaskStatus, default_state_path,
 };
 pub use status::{
     MctDaemonHealth, MctDaemonReadiness, MctDaemonStatus, MctResidentStatus, daemon_status,
