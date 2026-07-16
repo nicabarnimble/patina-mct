@@ -439,6 +439,29 @@ pub fn load_children_from_dir(options: MctChildLoadOptions) -> MctChildLoadRepor
     };
 
     let mut loaded_by_name = BTreeMap::<String, MctLoadedChild>::new();
+    let catalog_root = children_dir.join("artifacts").join("sha256");
+    if let Ok(catalog_entries) = fs::read_dir(&catalog_root) {
+        for entry in catalog_entries
+            .flatten()
+            .filter(|entry| entry.path().is_dir())
+        {
+            let path = entry.path();
+            if !path.join(CHILD_MANIFEST_FILE).is_file() {
+                continue;
+            }
+            report.discovered += 1;
+            match load_child_package(&path, options.integrity_mode) {
+                Ok(child) => insert_loaded_child_or_record_duplicate(
+                    &mut loaded_by_name,
+                    &mut report.failures,
+                    child,
+                    None,
+                    Some(path.join(CHILD_MANIFEST_FILE)),
+                ),
+                Err(failure) => report.failures.push(failure),
+            }
+        }
+    }
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() && path.join(CHILD_MANIFEST_FILE).exists() {

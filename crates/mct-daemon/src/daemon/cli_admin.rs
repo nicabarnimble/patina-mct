@@ -2,130 +2,17 @@ use super::*;
 
 pub(super) fn run_registry(mut args: Vec<String>) -> Result<()> {
     if args.is_empty() {
-        bail!("expected registry subcommand: install | sync");
+        bail!("legacy registry mutations are closed; use artifacts stage or artifacts acquire");
     }
     match args.remove(0).as_str() {
-        "install" => run_registry_install(args),
-        "sync" => run_registry_sync(args),
+        "install" => bail!(
+            "registry install cannot create post-law artifacts; use artifacts acquire --operator-pointed"
+        ),
+        "sync" => bail!(
+            "registry sync cannot imply source trust; use artifacts acquire --source-authority"
+        ),
         other => bail!("unknown registry subcommand '{other}'"),
     }
-}
-
-fn execute_cli_registry_mutation<T: serde::de::DeserializeOwned>(
-    children_dir: &Path,
-    state_path: &Path,
-    ledger_path: &Path,
-    socket_path: &Path,
-    path: &str,
-    request: &impl serde::Serialize,
-) -> Result<T> {
-    let body = serde_json::to_vec(request).context("encode registry mutation request")?;
-    let value = if let Some(response) = try_resident_control_mutation(socket_path, path, &body)? {
-        serde_json::from_slice(&response).context("decode resident registry mutation result")?
-    } else {
-        execute_offline_registry_mutation(children_dir, state_path, ledger_path, path, &body)
-            .with_context(|| {
-                format!(
-                    "resident UDS {} unavailable and offline registry mutation failed",
-                    socket_path.display()
-                )
-            })?
-    };
-    serde_json::from_value(value).context("decode registry mutation result")
-}
-
-pub(super) fn run_registry_install(mut args: Vec<String>) -> Result<()> {
-    let children_dir = take_option(&mut args, "--children-dir")
-        .map(PathBuf::from)
-        .unwrap_or_else(default_children_dir);
-    let state_path = take_option(&mut args, "--state")
-        .map(PathBuf::from)
-        .unwrap_or_else(default_state_path);
-    let ledger_path = take_option(&mut args, "--ledger")
-        .map(PathBuf::from)
-        .unwrap_or_else(default_observation_ledger_path);
-    let socket_path = take_option(&mut args, "--uds")
-        .map(PathBuf::from)
-        .unwrap_or_else(default_control_uds_path);
-    let replace = take_flag(&mut args, "--replace");
-    let as_json = take_flag(&mut args, "--json");
-    if args.len() != 1 {
-        bail!(
-            "expected: mct-daemon registry install <verified-package-dir> [--children-dir path] [--state path] [--ledger path] [--uds socket-path] [--replace] [--json]"
-        );
-    }
-    let report: MctChildPackageInstallReport = execute_cli_registry_mutation(
-        &children_dir,
-        &state_path,
-        &ledger_path,
-        &socket_path,
-        "/registry/install",
-        &RegistryInstallRequest {
-            expected_children_dir: children_dir.clone(),
-            source_dir: PathBuf::from(&args[0]),
-            replace,
-        },
-    )?;
-    if as_json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        println!(
-            "installed child={} version={} artifact={} path={} replaced={}",
-            report.child_name,
-            report.artifact_version,
-            report.artifact_id,
-            report.installed_dir.display(),
-            report.replaced_existing
-        );
-    }
-    Ok(())
-}
-
-pub(super) fn run_registry_sync(mut args: Vec<String>) -> Result<()> {
-    let state_path = take_option(&mut args, "--state")
-        .map(PathBuf::from)
-        .unwrap_or_else(default_state_path);
-    let ledger_path = take_option(&mut args, "--ledger")
-        .map(PathBuf::from)
-        .unwrap_or_else(default_observation_ledger_path);
-    let socket_path = take_option(&mut args, "--uds")
-        .map(PathBuf::from)
-        .unwrap_or_else(default_control_uds_path);
-    let strict = take_flag(&mut args, "--strict-integrity");
-    let as_json = take_flag(&mut args, "--json");
-    if args.is_empty() {
-        bail!("expected registry source id");
-    }
-    let source_id = args.remove(0);
-    let children_dir = args
-        .first()
-        .map(PathBuf::from)
-        .unwrap_or_else(default_children_dir);
-    let report: MctRegistrySyncReport = execute_cli_registry_mutation(
-        &children_dir,
-        &state_path,
-        &ledger_path,
-        &socket_path,
-        "/registry/sync",
-        &RegistrySyncRequest {
-            expected_children_dir: children_dir.clone(),
-            expected_state_path: state_path.clone(),
-            source_id,
-            strict_integrity: strict,
-        },
-    )?;
-    if as_json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        println!(
-            "registry source={} path={} loaded={} failed={}",
-            report.source_id,
-            report.source_path.display(),
-            report.loaded,
-            report.failed
-        );
-    }
-    Ok(())
 }
 
 pub(super) fn run_federation(mut args: Vec<String>) -> Result<()> {

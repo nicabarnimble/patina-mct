@@ -1120,16 +1120,8 @@ listens = []
             "resident-second",
             b"#!/bin/sh\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
         );
-        post_resident_peer_mutation(
-            &socket_path,
-            "/registry/install",
-            serde_json::json!({
-                "expected_children_dir": children_dir,
-                "source_dir": package_root.join("resident-second"),
-                "replace": false
-            }),
-        )
-        .await;
+        install_verified_child_package(package_root.join("resident-second"), &children_dir, false)
+            .unwrap();
         let after_install = poll_resident_status(&socket_path, |status| {
             status
                 .resident
