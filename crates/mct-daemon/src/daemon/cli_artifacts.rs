@@ -3,7 +3,6 @@ use mct_kernel::{
     ArtifactSourceAuthority, ArtifactSourceAuthorityId, ArtifactSourceAuthorityState,
     ArtifactSourceScope, ArtifactSourceScopeMode,
 };
-use patina_sdk::manifest::ChildPackage;
 
 pub(super) fn run_artifacts(mut args: Vec<String>) -> Result<()> {
     if args.is_empty() {
@@ -87,16 +86,10 @@ fn run_artifacts_acquire(mut args: Vec<String>) -> Result<()> {
         bail!("artifacts acquire requires exactly one package directory");
     }
     let package_dir = PathBuf::from(args.remove(0));
-    let package = ChildPackage::from_package_dir(&package_dir)?;
-    let component_path = package
-        .artifact_path
-        .strip_prefix(&package_dir)
-        .context("package component escapes package root")?
-        .to_path_buf();
     let request = MctArtifactStageRequest {
         source_root: package_dir,
         manifest_path: PathBuf::from(patina_sdk::manifest::CHILD_MANIFEST_FILE),
-        component_path,
+        component_path: PathBuf::new(),
         claimed_child_name: child.context("artifacts acquire requires --child")?,
         claimed_artifact_version: version.context("artifacts acquire requires --version")?,
         expected_digest,

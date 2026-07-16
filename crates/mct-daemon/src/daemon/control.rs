@@ -990,19 +990,27 @@ pub(super) fn execute_offline_artifact_stage(
         artifact_stage_decision_observations(request, &context),
         mct_daemon::current_timestamp_string(),
     )?;
-    match stage_artifact_with_context(request, &context) {
-        Ok(report) => {
-            ledger.append_batch_before_effect(
-                artifact_stage_terminal_observations(request, &context, Some(&report)),
+    match stage_artifact_with_context_and_observer(request, &context, |report| {
+        ledger
+            .append_batch_before_effect(
+                artifact_stage_terminal_observations(request, &context, Some(report)),
                 mct_daemon::current_timestamp_string(),
-            )?;
-            Ok(report)
-        }
+            )
+            .map(|_| ())
+            .context("artifact terminal observation was not durable")
+    }) {
+        Ok(report) => Ok(report),
         Err(error) => {
-            ledger.append_batch_before_effect(
+            if let Err(observation_error) = ledger.append_batch_before_effect(
                 artifact_stage_terminal_observations(request, &context, None),
                 mct_daemon::current_timestamp_string(),
-            )?;
+            ) {
+                if let Ok(state) = MctRuntimeStateStore::open(&request.state_path) {
+                    let _ = state.rollback_artifact_publication(&context.acquisition_id);
+                }
+                return Err(observation_error)
+                    .context("artifact failure observation was not durable");
+            }
             Err(error)
         }
     }
@@ -1164,34 +1172,44 @@ async fn execute_resident_artifact_stage(
             serde_json::json!({"error": "artifact acquisition authority was not durable"}),
         );
     }
-    match stage_artifact_with_context(&request, &context) {
-        Ok(report) => {
-            if ledger
-                .append(artifact_stage_terminal_observations(
-                    &request,
-                    &context,
-                    Some(&report),
-                ))
-                .await
-                .is_err()
-            {
-                return peer_mutation_response(
-                    500,
-                    serde_json::json!({"error": "artifact acquisition outcome was not durable"}),
-                );
-            }
+    let stage_request = request.clone();
+    let stage_context = context.clone();
+    let stage_ledger = ledger.clone();
+    let runtime = tokio::runtime::Handle::current();
+    let stage_result = tokio::task::spawn_blocking(move || {
+        stage_artifact_with_context_and_observer(&stage_request, &stage_context, |report| {
+            runtime.block_on(stage_ledger.append(artifact_stage_terminal_observations(
+                &stage_request,
+                &stage_context,
+                Some(report),
+            )))
+        })
+    })
+    .await;
+    match stage_result {
+        Ok(Ok(report)) => peer_mutation_response(
+            200,
+            serde_json::to_value(report).expect("artifact report serializes"),
+        ),
+        Ok(Err(error))
+            if format!("{error:#}")
+                .contains("terminal facts were not durable before publication") =>
+        {
             peer_mutation_response(
-                200,
-                serde_json::to_value(report).expect("artifact report serializes"),
+                500,
+                serde_json::json!({"error": "artifact acquisition outcome was not durable"}),
             )
         }
-        Err(_) => {
+        Ok(Err(_)) => {
             let durable = ledger
                 .append(artifact_stage_terminal_observations(
                     &request, &context, None,
                 ))
                 .await
                 .is_ok();
+            if !durable && let Ok(state) = MctRuntimeStateStore::open(&request.state_path) {
+                let _ = state.rollback_artifact_publication(&context.acquisition_id);
+            }
             peer_mutation_response(
                 400,
                 serde_json::json!({"error": if durable {
@@ -1201,6 +1219,10 @@ async fn execute_resident_artifact_stage(
                 }}),
             )
         }
+        Err(_) => peer_mutation_response(
+            500,
+            serde_json::json!({"error": "artifact acquisition worker failed"}),
+        ),
     }
 }
 
@@ -2975,6 +2997,70 @@ listens = []
         assert_eq!(status, 500);
         assert!(!children_dir.exists());
         assert!(!state_path.exists());
+    }
+
+    #[tokio::test]
+    async fn artifact_writer_loss_after_read_leaves_no_artifact_authority_or_catalog_package() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/slate-manager-0.2.0");
+        std::fs::copy(
+            fixture.join("slate-manager.toml"),
+            source.join("slate-manager.toml"),
+        )
+        .unwrap();
+        std::fs::copy(
+            fixture.join("slate-manager.wasm"),
+            source.join("slate-manager.wasm"),
+        )
+        .unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let socket_path = dir.path().join("control.sock");
+        let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
+        let writer = ResidentLedgerWriter::fail_after_batches_for_test(ledger_path, 1);
+        let handler = resident_observed_mutation_handler(
+            config_path,
+            children_dir.clone(),
+            state_path.clone(),
+            writer,
+        );
+        let request = MctArtifactStageRequest {
+            source_root: source,
+            manifest_path: PathBuf::from("slate-manager.toml"),
+            component_path: PathBuf::from("slate-manager.wasm"),
+            claimed_child_name: "slate-manager".into(),
+            claimed_artifact_version: "0.2.0".into(),
+            expected_digest: None,
+            standing_source_authority_id: None,
+            claimed_publisher: None,
+            require_source_sidecars: false,
+            children_dir: children_dir.clone(),
+            state_path: state_path.clone(),
+        };
+        let (status, _) = post_mutation(
+            listener,
+            handler,
+            &socket_path,
+            "/artifacts/stage",
+            serde_json::to_value(request).unwrap(),
+        )
+        .await;
+        assert_eq!(status, 500);
+        let state = MctRuntimeStateStore::open(state_path).unwrap();
+        assert_eq!(state.summary().unwrap().artifacts, 0);
+        assert!(state.artifact_acquisitions().unwrap().is_empty());
+        assert!(
+            !children_dir.join("artifacts/sha256").exists()
+                || std::fs::read_dir(children_dir.join("artifacts/sha256"))
+                    .unwrap()
+                    .next()
+                    .is_none()
+        );
     }
 
     #[tokio::test]
