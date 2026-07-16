@@ -46,6 +46,15 @@ pub struct MctArtifactStageRequest {
     pub claimed_artifact_version: String,
     /// Optional expected algorithm-tagged BLAKE3 component digest.
     pub expected_digest: Option<String>,
+    /// Standing source authority id; absent means operator-pointed staging.
+    #[serde(default)]
+    pub standing_source_authority_id: Option<String>,
+    /// Publisher claim required by standing-source scope.
+    #[serde(default)]
+    pub claimed_publisher: Option<String>,
+    /// Whether source SHA-256 sidecars must already exist and match.
+    #[serde(default)]
+    pub require_source_sidecars: bool,
     /// Immutable package catalog root.
     pub children_dir: PathBuf,
     /// Runtime state projection path.
@@ -102,29 +111,60 @@ pub fn stage_operator_pointed_artifact(
     validate_relative_path(&request.component_path)?;
     let manifest_path = canonical_source_file(&source_root, &request.manifest_path)?;
     let component_path = canonical_source_file(&source_root, &request.component_path)?;
-    let source_ref = format!("file://{}", source_root.display());
+    let state = MctRuntimeStateStore::open(&request.state_path)?;
+    let standing = request
+        .standing_source_authority_id
+        .as_deref()
+        .map(|source_id| {
+            state
+                .source_authorities()?
+                .into_iter()
+                .find(|(source, _)| source.source_authority_id.as_str() == source_id)
+                .map(|(source, _)| source)
+                .context("standing artifact source authority not found")
+        })
+        .transpose()?;
+    if let Some(source) = standing.as_ref() {
+        let root = source
+            .source_ref
+            .strip_prefix("file://")
+            .context("standing source is not a filesystem source")?;
+        let authority_root = PathBuf::from(root).canonicalize()?;
+        if !source_root.starts_with(&authority_root) {
+            bail!("acquisition package is outside standing source root");
+        }
+    }
+    let source_ref = standing.as_ref().map_or_else(
+        || format!("file://{}", source_root.display()),
+        |source| source.source_ref.clone(),
+    );
 
     let sequence = NEXT_ACQUISITION_ID.fetch_add(1, Ordering::SeqCst);
     let id_suffix = format!("{}-{sequence}", current_timestamp_string());
     let acquisition_id = ArtifactAcquisitionId::new(format!("acquisition:{id_suffix}"))?;
     let decision_id = ArtifactAcquisitionDecisionId::new(format!("decision:{id_suffix}"))?;
-    let authority_observation_id =
+    let generated_authority_observation_id =
         ObservationId::new(format!("obs:acquisition-authority:{id_suffix}"))?;
+    let authority_observation_id = standing.as_ref().map_or_else(
+        || generated_authority_observation_id.clone(),
+        |source| source.authority_observation_id.clone(),
+    );
     let acquisition_observation_id = ObservationId::new(format!("obs:acquisition:{id_suffix}"))?;
     let verification_observation_id =
         ObservationId::new(format!("obs:artifact-verification:{id_suffix}"))?;
-    let issuer_principal_ref = format!("os-uid:{}", current_uid()?);
-    let operator = OperatorPointedArtifactAcquisitionDecision {
-        decision_id: decision_id.clone(),
-        source_ref: source_ref.clone(),
-        claimed_child_name: request.claimed_child_name.clone(),
-        claimed_artifact_version: request.claimed_artifact_version.clone(),
-        expected_digest: request.expected_digest.clone(),
-        issuer_principal_ref,
-        policy_revision: 1,
-        decision_state: OperatorPointedAcquisitionState::Active,
-        authority_observation_id: authority_observation_id.clone(),
-    };
+    let operator = standing
+        .is_none()
+        .then(|| OperatorPointedArtifactAcquisitionDecision {
+            decision_id: decision_id.clone(),
+            source_ref: source_ref.clone(),
+            claimed_child_name: request.claimed_child_name.clone(),
+            claimed_artifact_version: request.claimed_artifact_version.clone(),
+            expected_digest: request.expected_digest.clone(),
+            issuer_principal_ref: format!("os-uid:{}", current_uid().unwrap_or_default()),
+            policy_revision: 1,
+            decision_state: OperatorPointedAcquisitionState::Active,
+            authority_observation_id: generated_authority_observation_id,
+        });
     let effect = FilesystemAcquisitionEffectAuthority {
         authority_ref: authority_observation_id.clone(),
         adapter_ref: MCT_FILESYSTEM_ACQUISITION_ADAPTER.into(),
@@ -135,6 +175,10 @@ pub fn stage_operator_pointed_artifact(
         attempt_id: acquisition_id.clone(),
         expires_at: timestamp_after_one_minute()?,
     };
+    let namespaces = standing.as_ref().map_or_else(
+        || vec!["operator-pointed".into()],
+        |source| source.scope.namespace_scope.clone(),
+    );
     let authority = evaluate_artifact_acquisition_authority(
         &ArtifactAcquisitionAuthorityRequest {
             source_ref: source_ref.clone(),
@@ -142,26 +186,35 @@ pub fn stage_operator_pointed_artifact(
                 "{}@{}",
                 request.claimed_child_name, request.claimed_artifact_version
             ),
-            publisher: None,
-            namespaces: vec!["operator-pointed".into()],
+            publisher: request.claimed_publisher.clone(),
+            namespaces,
             action: "acquire".into(),
             policy_revision: 1,
             now: current_timestamp(),
             attempt_id: acquisition_id.clone(),
             authorized_id: AuthorizedArtifactAcquisitionId::new(format!("authorized:{id_suffix}"))?,
         },
-        None,
-        Some(&operator),
+        standing.as_ref(),
+        operator.as_ref(),
         Some(&effect),
     );
     let authorized = authority
         .authorized
-        .context("operator-pointed source and filesystem effect authority denied")?;
+        .context("source trust and filesystem effect authority denied")?;
+    let authority_path = if standing.is_some() {
+        ArtifactAcquisitionAuthorityPath::StandingSource
+    } else {
+        ArtifactAcquisitionAuthorityPath::OperatorPointed
+    };
+    let standing_source_authority_id = standing
+        .as_ref()
+        .map(|source| source.source_authority_id.clone());
+    let operator_pointed_decision_id = operator.as_ref().map(|value| value.decision_id.clone());
     let rejected_acquisition = |size: u64, digest: String| ArtifactAcquisition {
         acquisition_id: acquisition_id.clone(),
-        authority_path: ArtifactAcquisitionAuthorityPath::OperatorPointed,
-        standing_source_authority_id: None,
-        operator_pointed_decision_id: Some(decision_id.clone()),
+        authority_path,
+        standing_source_authority_id: standing_source_authority_id.clone(),
+        operator_pointed_decision_id: operator_pointed_decision_id.clone(),
         adapter_effect_authority_ref: authority_observation_id.to_string(),
         source_ref: source_ref.clone(),
         claimed_child_name: request.claimed_child_name.clone(),
@@ -177,6 +230,10 @@ pub fn stage_operator_pointed_artifact(
 
     let manifest_bytes = read_bounded_file(&manifest_path, MCT_CHILD_MANIFEST_MAX_BYTES)?;
     let component_bytes = read_bounded_file(&component_path, MCT_COMPONENT_ARTIFACT_MAX_BYTES)?;
+    if request.require_source_sidecars {
+        verify_source_sidecar(&manifest_path, &manifest_bytes)?;
+        verify_source_sidecar(&component_path, &component_bytes)?;
+    }
     if authorized.source_ref() != source_ref {
         bail!("filesystem acquisition capability source mismatch");
     }
@@ -271,9 +328,9 @@ pub fn stage_operator_pointed_artifact(
     artifact.created_by_observation_id = verification_observation_id.clone();
     let acquisition = ArtifactAcquisition {
         acquisition_id: acquisition_id.clone(),
-        authority_path: ArtifactAcquisitionAuthorityPath::OperatorPointed,
-        standing_source_authority_id: None,
-        operator_pointed_decision_id: Some(decision_id),
+        authority_path,
+        standing_source_authority_id,
+        operator_pointed_decision_id,
         adapter_effect_authority_ref: authority_observation_id.to_string(),
         source_ref,
         claimed_child_name: request.claimed_child_name.clone(),
@@ -400,6 +457,16 @@ fn write_sha256_sidecar(path: &Path) -> Result<()> {
     )
 }
 
+fn verify_source_sidecar(path: &Path, bytes: &[u8]) -> Result<()> {
+    let sidecar = hash_sidecar_path(path);
+    let expected = fs::read_to_string(&sidecar)
+        .with_context(|| format!("read required source sidecar {}", sidecar.display()))?;
+    if expected.trim() != format!("{:x}", Sha256::digest(bytes)) {
+        bail!("source SHA-256 sidecar does not match acquired bytes");
+    }
+    Ok(())
+}
+
 fn hash_sidecar_path(path: &Path) -> PathBuf {
     let mut sidecar: OsString = path.as_os_str().to_os_string();
     sidecar.push(".sha256");
@@ -441,4 +508,79 @@ fn timestamp_after_one_minute() -> Result<Timestamp> {
     Ok(Timestamp::new(
         (now + jiff::SignedDuration::from_mins(1)).to_string(),
     )?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn raw_request(root: &Path, expected_digest: Option<String>) -> MctArtifactStageRequest {
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(
+            source.join("child.toml"),
+            r#"[child]
+name = "fixture"
+version = "1.0.0"
+kind = "child"
+[child.ingress]
+mode = "wit-only"
+[child.contract]
+allow = ["patina:fixture/control@0.1.0.run"]
+"#,
+        )
+        .unwrap();
+        fs::write(source.join("fixture.wasm"), b"real-attempt-bytes").unwrap();
+        MctArtifactStageRequest {
+            source_root: source,
+            manifest_path: PathBuf::from("child.toml"),
+            component_path: PathBuf::from("fixture.wasm"),
+            claimed_child_name: "fixture".into(),
+            claimed_artifact_version: "1.0.0".into(),
+            expected_digest,
+            standing_source_authority_id: None,
+            claimed_publisher: None,
+            require_source_sidecars: false,
+            children_dir: root.join("children"),
+            state_path: root.join("state.sqlite"),
+        }
+    }
+
+    #[test]
+    fn artifact_acquisition_failures_are_observed_without_artifact_publication() {
+        let root = tempfile::tempdir().unwrap();
+        let request = raw_request(root.path(), Some(format!("blake3:{}", "0".repeat(64))));
+        let result = stage_operator_pointed_artifact(&request);
+        assert!(result.is_err());
+        let state = MctRuntimeStateStore::open(&request.state_path).unwrap();
+        let attempts = state.artifact_acquisitions().unwrap();
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(
+            attempts[0].verification_outcome,
+            ArtifactVerificationOutcome::Rejected
+        );
+        assert!(attempts[0].component_artifact_id.is_none());
+        assert_eq!(state.summary().unwrap().artifacts, 0);
+    }
+
+    #[test]
+    fn staged_package_reconciles_sha256_floor_with_blake3_acquisition_evidence() {
+        let root = tempfile::tempdir().unwrap();
+        let bytes = b"real-attempt-bytes";
+        let expected = format!("blake3:{}", blake3::hash(bytes).to_hex());
+        let request = raw_request(root.path(), Some(expected.clone()));
+        let report = stage_operator_pointed_artifact(&request).unwrap();
+        assert_eq!(report.observed_digest.as_deref(), Some(expected.as_str()));
+        let package = report.package_path.unwrap();
+        let manifest = package.join("child.toml");
+        let component = package.join("artifact/fixture.wasm");
+        assert_eq!(
+            fs::read_to_string(hash_sidecar_path(&manifest)).unwrap(),
+            format!("{:x}", Sha256::digest(fs::read(&manifest).unwrap()))
+        );
+        assert_eq!(
+            fs::read_to_string(hash_sidecar_path(&component)).unwrap(),
+            format!("{:x}", Sha256::digest(bytes))
+        );
+    }
 }

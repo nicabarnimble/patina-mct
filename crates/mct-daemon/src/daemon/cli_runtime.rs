@@ -61,6 +61,7 @@ pub(super) fn run_children_load(mut args: Vec<String>) -> Result<()> {
 fn execute_cli_child_mutation(
     config_path: &Path,
     children_dir: &Path,
+    state_path: &Path,
     ledger_path: &Path,
     socket_path: &Path,
     path: &str,
@@ -71,13 +72,20 @@ fn execute_cli_child_mutation(
         return serde_json::from_slice(&response)
             .context("decode resident child authority mutation result");
     }
-    execute_offline_child_mutation(config_path, children_dir, ledger_path, path, &body)
-        .with_context(|| {
-            format!(
-                "resident UDS {} unavailable and offline child authority mutation failed",
-                socket_path.display()
-            )
-        })
+    execute_offline_child_mutation(
+        config_path,
+        children_dir,
+        state_path,
+        ledger_path,
+        path,
+        &body,
+    )
+    .with_context(|| {
+        format!(
+            "resident UDS {} unavailable and offline child authority mutation failed",
+            socket_path.display()
+        )
+    })
 }
 
 pub(super) fn run_children_approve(mut args: Vec<String>) -> Result<()> {
@@ -90,10 +98,15 @@ pub(super) fn run_children_approve(mut args: Vec<String>) -> Result<()> {
     let socket_path = take_option(&mut args, "--uds")
         .map(PathBuf::from)
         .unwrap_or_else(default_control_uds_path);
+    let state_path = take_option(&mut args, "--state")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_state_path);
+    let exact_artifact = take_option(&mut args, "--artifact")
+        .context("children approve requires --artifact <sha256:digest>")?;
     let strict = take_flag(&mut args, "--strict-integrity");
     if args.is_empty() {
         bail!(
-            "expected: mct-daemon children approve <child-name> [children-dir] [--config path] [--ledger path] [--uds socket-path] [--strict-integrity]"
+            "expected: mct-daemon children approve <child-name> [children-dir] --artifact <sha256:digest> [--config path] [--state path] [--ledger path] [--uds socket-path] [--strict-integrity]"
         );
     }
     let child_name = args.remove(0);
@@ -111,9 +124,51 @@ pub(super) fn run_children_approve(mut args: Vec<String>) -> Result<()> {
         .iter()
         .find(|child| child.name == child_name)
         .ok_or_else(|| anyhow::anyhow!("loaded child '{child_name}' not found"))?;
+    if child.artifact_id != exact_artifact {
+        bail!("loaded child does not match exact artifact requested for approval");
+    }
+    let state = MctRuntimeStateStore::open(&state_path)?;
+    let artifact_id = ComponentArtifactId::new(exact_artifact.clone())?;
+    let artifact = state
+        .get_artifact(&artifact_id)?
+        .context("exact artifact is absent from the verified catalog")?;
+    if artifact.provenance_status != mct_kernel::ArtifactProvenanceStatus::AcquisitionBacked {
+        bail!("historical-unknown artifact cannot receive a new approval");
+    }
+    let acquisitions = state
+        .artifact_acquisitions()?
+        .into_iter()
+        .filter(|acquisition| acquisition.component_artifact_id.as_ref() == Some(&artifact_id))
+        .collect::<Vec<_>>();
+    if acquisitions.is_empty() {
+        bail!("exact artifact has no acquisition evidence");
+    }
+    println!(
+        "approval evidence artifact={} child={} version={} content={} manifest={} provenance={:?}",
+        artifact.artifact_id,
+        artifact.child_name,
+        artifact.artifact_version,
+        artifact.content_hash,
+        artifact.manifest_hash,
+        artifact.provenance_status
+    );
+    for acquisition in &acquisitions {
+        println!(
+            "approval evidence acquisition={} authority={:?} source={} adapter={} size={} digest={} outcome={:?}/{:?}",
+            acquisition.acquisition_id,
+            acquisition.authority_path,
+            acquisition.source_ref,
+            acquisition.adapter_effect_authority_ref,
+            acquisition.observed_size_bytes.unwrap_or_default(),
+            acquisition.observed_digest.as_deref().unwrap_or("unknown"),
+            acquisition.acquisition_outcome,
+            acquisition.verification_outcome
+        );
+    }
     let response = execute_cli_child_mutation(
         &config_path,
         &children_dir,
+        &state_path,
         &ledger_path,
         &socket_path,
         "/children/approve",
@@ -122,6 +177,8 @@ pub(super) fn run_children_approve(mut args: Vec<String>) -> Result<()> {
             expected_children_dir: children_dir.clone(),
             child_name: child.name.clone(),
             strict_integrity: strict,
+            expected_state_path: Some(state_path.clone()),
+            expected_artifact_id: Some(exact_artifact),
         },
     )?;
     println!(
@@ -150,9 +207,11 @@ pub(super) fn run_children_revoke(mut args: Vec<String>) -> Result<()> {
         );
     }
     let child_name = args.remove(0);
+    let state_path = default_state_path();
     let response = execute_cli_child_mutation(
         &config_path,
         Path::new("."),
+        &state_path,
         &ledger_path,
         &socket_path,
         "/children/revoke",

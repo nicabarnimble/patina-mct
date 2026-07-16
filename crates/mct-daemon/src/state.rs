@@ -2887,6 +2887,28 @@ mod tests {
     }
 
     #[test]
+    fn component_artifacts_require_real_acquisition_or_explicit_legacy_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MctRuntimeStateStore::open(dir.path().join("state.sqlite")).unwrap();
+        let mut invalid = artifact();
+        invalid.provenance_status = ArtifactProvenanceStatus::AcquisitionBacked;
+        assert!(store.upsert_artifact(&invalid).is_err());
+
+        let historical = artifact();
+        store.upsert_artifact(&historical).unwrap();
+        let reopened = MctRuntimeStateStore::open(dir.path().join("state.sqlite")).unwrap();
+        let persisted = reopened
+            .get_artifact(&historical.artifact_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            persisted.provenance_status,
+            ArtifactProvenanceStatus::HistoricalUnknown
+        );
+        assert!(persisted.acquisition_ids.is_empty());
+    }
+
+    #[test]
     fn state_store_enforces_active_assignment_requires_approved_artifact() {
         let dir = tempfile::tempdir().unwrap();
         let store = MctRuntimeStateStore::open(dir.path().join("state.sqlite")).unwrap();
