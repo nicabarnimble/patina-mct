@@ -130,8 +130,9 @@ pub use wasm::{
     MctWasmHostConfig, MctWasmToyHostImport, MctWitComponentInvocationReport,
     MctWitHostImportAdapters, MctWitKeyvalueHostAdapter, MctWitMessagingHostAdapter,
     MctWitProducedMessage, MctWitResolvedOperation, MctWitToyHostAdapter,
-    resolve_wit_operation_target, wasm_component_runtime_error_observation,
-    wit_operation_id_from_target,
+    MctWitWatchCallOutWireEvent, MctWitWatchMessageAdmission, MctWitWatchMessageRefusal,
+    resolve_wit_operation_target, validate_wit_watch_message_admission,
+    wasm_component_runtime_error_observation, wit_operation_id_from_target,
 };
 
 /// Returns the crate version for health and smoke tests.

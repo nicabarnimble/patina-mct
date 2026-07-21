@@ -57,6 +57,103 @@ pub struct MctWitProducedMessage {
     pub offset: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MctWitWatchCallOutWireEvent {
+    pub watcher: String,
+    #[serde(alias = "stream-name")]
+    pub stream: String,
+    pub change_kind: String,
+    pub absolute_path: String,
+    pub relative_path: String,
+    pub size_bytes: Option<u64>,
+    pub modified_unix_ms: Option<u64>,
+    pub sha256: Option<String>,
+    pub detected_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MctWitWatchMessageAdmission {
+    pub event_classes: BTreeSet<WatchEventClass>,
+    pub max_events_per_batch: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+pub enum MctWitWatchMessageRefusal {
+    #[error("watch_target_refused")]
+    Target,
+    #[error("watch_topic_refused")]
+    Topic,
+    #[error("watch_content_type_refused")]
+    ContentType,
+    #[error("watch_message_bound_refused")]
+    MessageBound,
+    #[error("watch_batch_capacity_refused")]
+    BatchCapacity,
+    #[error("watch_event_shape_refused")]
+    EventShape,
+    #[error("watch_event_class_refused")]
+    EventClass,
+    #[error("watch_safe_path_refused")]
+    SafePath,
+    #[error("watch_legacy_path_equality_refused")]
+    LegacyPathEquality,
+}
+
+pub fn validate_wit_watch_message_admission(
+    admission: &MctWitWatchMessageAdmission,
+    target_operation: &str,
+    topic: &str,
+    content_type: Option<&str>,
+    data: &[u8],
+    metadata_pair_count: usize,
+    admitted_event_count: usize,
+) -> Result<MctWitWatchCallOutWireEvent, MctWitWatchMessageRefusal> {
+    let operation_interface = target_operation
+        .rsplit_once('.')
+        .map(|(interface, _)| interface)
+        .ok_or(MctWitWatchMessageRefusal::Target)?;
+    if content_type != Some("application/json") {
+        return Err(MctWitWatchMessageRefusal::ContentType);
+    }
+    if data.len() > MCT_WATCH_MESSAGE_MAX_BYTES
+        || metadata_pair_count > MCT_WATCH_METADATA_PAIRS_MAX
+    {
+        return Err(MctWitWatchMessageRefusal::MessageBound);
+    }
+    if admitted_event_count >= admission.max_events_per_batch as usize
+        || admitted_event_count >= MCT_WATCH_MAX_EVENTS_PER_BATCH as usize
+    {
+        return Err(MctWitWatchMessageRefusal::BatchCapacity);
+    }
+    let wire: MctWitWatchCallOutWireEvent =
+        serde_json::from_slice(data).map_err(|_| MctWitWatchMessageRefusal::EventShape)?;
+    let event_class = match (topic, wire.change_kind.as_str()) {
+        ("file-created", "created") => WatchEventClass::Created,
+        ("file-modified", "modified") => WatchEventClass::Modified,
+        ("file-deleted", "deleted") => WatchEventClass::Deleted,
+        ("file-created" | "file-modified" | "file-deleted", _) => {
+            return Err(MctWitWatchMessageRefusal::EventClass);
+        }
+        _ => return Err(MctWitWatchMessageRefusal::Topic),
+    };
+    if !admission.event_classes.contains(&event_class) {
+        return Err(MctWitWatchMessageRefusal::EventClass);
+    }
+    validate_safe_watch_relative_path(&wire.relative_path)
+        .map_err(|_| MctWitWatchMessageRefusal::SafePath)?;
+    let compatibility = validate_legacy_watch_paths(
+        operation_interface,
+        &wire.absolute_path,
+        &wire.relative_path,
+    )
+    .map_err(|_| MctWitWatchMessageRefusal::Target)?;
+    if compatibility != LegacyWatchCompatibilityValidation::Matched {
+        return Err(MctWitWatchMessageRefusal::LegacyPathEquality);
+    }
+    Ok(wire)
+}
+
 #[derive(Debug)]
 pub struct MctWasmToyHostImport {
     pub import_name: String,
@@ -109,6 +206,7 @@ pub struct MctWitKeyvalueHostAdapter {
 #[derive(Debug)]
 pub struct MctWitMessagingHostAdapter {
     pub toy: MctWitToyHostAdapter,
+    pub watch_admission: MctWitWatchMessageAdmission,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1819,12 +1917,6 @@ fn link_messaging_host_import(
                 Some(component::Val::String(topic)) => topic.clone(),
                 _ => return Err(wasmtime::Error::msg("missing message topic")),
             };
-            if !matches!(
-                topic.as_str(),
-                "file-created" | "file-modified" | "file-deleted"
-            ) {
-                return Err(wasmtime::Error::msg("unsupported Watch message topic"));
-            }
             let content_type = match field("content-type") {
                 Some(component::Val::Option(Some(value))) => match value.as_ref() {
                     component::Val::String(value) => Some(value.clone()),
@@ -1833,11 +1925,6 @@ fn link_messaging_host_import(
                 Some(component::Val::Option(None)) => None,
                 _ => return Err(wasmtime::Error::msg("missing message content type")),
             };
-            if content_type.as_deref() != Some("application/json") {
-                return Err(wasmtime::Error::msg(
-                    "Watch message content type must be application/json",
-                ));
-            }
             let data = match field("data") {
                 Some(component::Val::List(values)) => values
                     .iter()
@@ -1863,16 +1950,29 @@ fn link_messaging_host_import(
                     .collect::<wasmtime::Result<Vec<_>>>()?,
                 _ => return Err(wasmtime::Error::msg("missing message metadata")),
             };
-            if data.len() > MCT_WATCH_MESSAGE_MAX_BYTES
-                || metadata.len() > MCT_WATCH_METADATA_PAIRS_MAX
-            {
-                return Err(wasmtime::Error::msg("Watch message exceeds a named bound"));
-            }
             let adapter = store
                 .data_mut()
                 .messaging
                 .take()
                 .ok_or_else(|| wasmtime::Error::msg("messaging adapter not configured"))?;
+            if let Err(refusal) = validate_wit_watch_message_admission(
+                &adapter.watch_admission,
+                &target_operation,
+                &topic,
+                content_type.as_deref(),
+                &data,
+                metadata.len(),
+                store.data().produced_messages.len(),
+            ) {
+                store.data_mut().messaging = Some(adapter);
+                let [result] = results else {
+                    return Err(wasmtime::Error::msg("invalid messaging result shape"));
+                };
+                *result = component::Val::Result(Err(Some(Box::new(component::Val::String(
+                    refusal.to_string(),
+                )))));
+                return Ok(());
+            }
             let report = store.data_mut().call_toy(
                 &adapter.toy,
                 &serde_json::json!({"function": "send", "target": target_operation, "topic": topic, "size_bytes": data.len()}),
@@ -2876,6 +2976,108 @@ mod tests {
     }
 
     #[test]
+    fn watch_send_admission_refuses_paths_shape_and_capacity_synchronously() {
+        let admission = MctWitWatchMessageAdmission {
+            event_classes: BTreeSet::from([WatchEventClass::Created]),
+            max_events_per_batch: 1,
+        };
+        let event = serde_json::json!({
+            "watcher": "folder-watch-actor",
+            "stream": "source",
+            "change_kind": "created",
+            "absolute_path": "safe.txt",
+            "relative_path": "safe.txt",
+            "size_bytes": 3,
+            "modified_unix_ms": 1,
+            "sha256": "abc",
+            "detected_at": "2026-07-21T00:00:00Z"
+        });
+        let bytes = serde_json::to_vec(&event).unwrap();
+        assert!(
+            validate_wit_watch_message_admission(
+                &admission,
+                "patina:watch/events@0.1.0.emit",
+                "file-created",
+                Some("application/json"),
+                &bytes,
+                0,
+                0,
+            )
+            .is_ok()
+        );
+
+        let mut unsafe_path = event.clone();
+        unsafe_path["absolute_path"] = serde_json::json!("../escape");
+        unsafe_path["relative_path"] = serde_json::json!("../escape");
+        assert_eq!(
+            validate_wit_watch_message_admission(
+                &admission,
+                "patina:watch/events@0.1.0.emit",
+                "file-created",
+                Some("application/json"),
+                &serde_json::to_vec(&unsafe_path).unwrap(),
+                0,
+                0,
+            ),
+            Err(MctWitWatchMessageRefusal::SafePath)
+        );
+
+        let mut mismatched = event.clone();
+        mismatched["absolute_path"] = serde_json::json!("other.txt");
+        assert_eq!(
+            validate_wit_watch_message_admission(
+                &admission,
+                "patina:watch/events@0.1.0.emit",
+                "file-created",
+                Some("application/json"),
+                &serde_json::to_vec(&mismatched).unwrap(),
+                0,
+                0,
+            ),
+            Err(MctWitWatchMessageRefusal::LegacyPathEquality)
+        );
+
+        let mut unknown_field = event.clone();
+        unknown_field["ambient_path"] = serde_json::json!("/private/source/safe.txt");
+        assert_eq!(
+            validate_wit_watch_message_admission(
+                &admission,
+                "patina:watch/events@0.1.0.emit",
+                "file-created",
+                Some("application/json"),
+                &serde_json::to_vec(&unknown_field).unwrap(),
+                0,
+                0,
+            ),
+            Err(MctWitWatchMessageRefusal::EventShape)
+        );
+        assert_eq!(
+            validate_wit_watch_message_admission(
+                &admission,
+                "patina:watch/events@0.1.0.emit",
+                "file-created",
+                Some("application/json"),
+                &bytes,
+                0,
+                1,
+            ),
+            Err(MctWitWatchMessageRefusal::BatchCapacity)
+        );
+        assert_eq!(
+            validate_wit_watch_message_admission(
+                &admission,
+                "patina:watch/events@0.1.0.emit",
+                "file-modified",
+                Some("application/json"),
+                &bytes,
+                0,
+                0,
+            ),
+            Err(MctWitWatchMessageRefusal::EventClass)
+        );
+    }
+
+    #[test]
     fn source_derived_watcher_executes_with_explicit_bounded_host_adapters() {
         let root = tempfile::tempdir().unwrap();
         let service = tempfile::tempdir().unwrap();
@@ -2949,6 +3151,14 @@ mod tests {
                 }),
                 messaging: Some(MctWitMessagingHostAdapter {
                     toy: adapter("watch-messaging"),
+                    watch_admission: MctWitWatchMessageAdmission {
+                        event_classes: BTreeSet::from([
+                            WatchEventClass::Created,
+                            WatchEventClass::Modified,
+                            WatchEventClass::Deleted,
+                        ]),
+                        max_events_per_batch: MCT_WATCH_MAX_EVENTS_PER_BATCH,
+                    },
                 }),
                 wasi: Some(MctWasiHostConfig {
                     preopens: vec![MctWasiPreopen {

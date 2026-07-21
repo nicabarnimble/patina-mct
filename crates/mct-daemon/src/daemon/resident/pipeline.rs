@@ -5,20 +5,6 @@
 
 use super::*;
 
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-struct WatchCallOutWireEvent {
-    watcher: String,
-    #[serde(alias = "stream-name")]
-    stream: String,
-    change_kind: String,
-    absolute_path: String,
-    relative_path: String,
-    size_bytes: Option<u64>,
-    modified_unix_ms: Option<u64>,
-    sha256: Option<String>,
-    detected_at: String,
-}
-
 fn watch_callout_observation(
     id: impl Into<String>,
     kind: ObservationKind,
@@ -123,7 +109,7 @@ async fn execute_watch_callouts(
             {
                 bail!("Watch call-out message violates a named bound");
             }
-            let wire: WatchCallOutWireEvent =
+            let wire: MctWitWatchCallOutWireEvent =
                 serde_json::from_slice(&message.data).context("decode exact watcher event JSON")?;
             let class = match (message.topic.as_str(), wire.change_kind.as_str()) {
                 ("file-created", "created") => WatchEventClass::Created,
