@@ -1946,13 +1946,26 @@ listens = []
         panic!("resident observation writer did not release after shutdown");
     }
 
+    async fn spawn_test_ledger_after_writer_release(path: &Path) -> ResidentLedgerWriter {
+        for _ in 0..100 {
+            match ResidentLedgerWriter::spawn(path.to_path_buf()) {
+                Ok(ledger) => return ledger,
+                Err(error) if format!("{error:#}").contains("already locked by another writer") => {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(error) => panic!("open test ledger writer failed: {error:#}"),
+            }
+        }
+        panic!("resident observation writer did not release after shutdown")
+    }
+
     async fn admit_crash_firing_and_overlap_pending(
         paths: &ResidentRuntimePaths,
         ledger_path: &Path,
         clock: Arc<ManualClock>,
         authority: &CallTriggerAuthority,
     ) -> (MctTriggerFiringRecord, MctTriggerPendingOccurrenceRecord) {
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.to_path_buf()).unwrap();
+        let ledger = spawn_test_ledger_after_writer_release(ledger_path).await;
         let scheduler = TriggerScheduler::new(
             paths.clone(),
             ledger.clone(),
@@ -2556,7 +2569,7 @@ listens = []
         assert_eq!(created.missed_fire_policy, MissedFirePolicy::Skip);
         assert_eq!(created.overlap_policy, OverlapPolicy::Refuse);
 
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = spawn_test_ledger_after_writer_release(&ledger_path).await;
         let paths = ResidentRuntimePaths::new(
             config_path.clone(),
             children_dir.clone(),
@@ -2631,7 +2644,7 @@ listens = []
         assert_eq!(reconciled.summary().unwrap().active_trigger_firings, 0);
         drop(reconciled);
 
-        let recovered_ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let recovered_ledger = spawn_test_ledger_after_writer_release(&ledger_path).await;
         let mut recovered = TriggerScheduler::new(
             paths,
             recovered_ledger.clone(),
