@@ -3960,6 +3960,29 @@ status = "active"
         assert_eq!(watch_summary.watch_event_batches, 1);
         assert_eq!(watch_summary.watch_events, 1);
         assert_eq!(watch_summary.watch_event_deliveries, 1);
+        let first_watch_ledger = entries(&paths.ledger);
+        let batch_position = first_watch_ledger
+            .iter()
+            .position(|entry| entry.observation.safe_message == "Watch batch opened")
+            .unwrap();
+        let event_position = first_watch_ledger
+            .iter()
+            .position(|entry| entry.observation.safe_message == "Watch event eligible")
+            .unwrap();
+        let disposition_position = first_watch_ledger
+            .iter()
+            .position(|entry| entry.observation.safe_message == "Child call-out constructed")
+            .unwrap();
+        let nested_effect_position = first_watch_ledger
+            .iter()
+            .enumerate()
+            .skip(disposition_position + 1)
+            .find(|(_, entry)| entry.observation.kind == ObservationKind::RuntimeExecutionStarted)
+            .map(|(position, _)| position)
+            .expect("nested sink execution follows durable Watch admission");
+        assert!(batch_position < event_position);
+        assert!(event_position < disposition_position);
+        assert!(disposition_position < nested_effect_position);
 
         fs::write(
             watch_root.join("trigger-created.txt"),
