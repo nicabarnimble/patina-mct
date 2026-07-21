@@ -1,9 +1,10 @@
 ---
 type: feat
 id: watch-event-fixtures
-status: ratified
+status: complete
 draft_date: 2026-07-21
 ratified_date: 2026-07-21
+completed_date: 2026-07-21
 target: replacement-slice-4b
 operator_gate: D1-ratified
 depends_on:
@@ -13,6 +14,7 @@ sessions:
   work:
     - 20260721-092955-065681000
 related:
+  - layer/surface/build/feat/watch-event-fixtures/CLOSEOUT.md
   - layer/surface/build/feat/trigger-event-runtime/SPEC.md
   - layer/surface/build/feat/artifact-acquisition/SPEC.md
   - layer/allium/mct-product-map.allium
@@ -42,6 +44,14 @@ exit_criteria:
     text: Every scan batch has exact scope revision, monotonic per-scope sequence, deterministic coalescing/order, and countable raw, eligible, coalesced, excluded, and capacity-refused counts.
     checked: false
     verify: cargo test -p mct-daemon --bin mct-daemon watch_batches_are_bounded_sequenced_deterministic_and_countable -- --nocapture
+  - id: synchronous-send-admission
+    text: producer.send synchronously validates exact Watch authorization, topic/content/bounds, event shape/class, safe path, batch capacity, and legacy equality; every failure returns a typed refusal without joining the admitted set.
+    checked: false
+    verify: cargo test -p mct-daemon watch_send_admission_refuses_paths_shape_and_capacity_synchronously -- --nocapture
+  - id: batch-admission-barrier
+    text: The normalized admitted set and pre-call dispositions append durably as one batch before the first nested delivery; append failure suppresses every nested call and delivered claim.
+    checked: false
+    verify: cargo test -p mct-daemon --bin mct-daemon watch_admission_append_failure_suppresses_every_nested_delivery -- --nocapture
   - id: wasm-child-callout
     text: The watcher messaging import may propose one fresh child call with WasmHost origin, but the target still passes ordinary payload, idempotency, child, route, revalidation, effect, result, and observation law.
     checked: false
