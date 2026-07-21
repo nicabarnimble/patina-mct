@@ -2034,6 +2034,141 @@ fn install_supervisor_for_test(root: &Path) -> Result<(SupervisorPaths, Supervis
 mod tests {
     use super::*;
 
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::{Digest as _, Sha256};
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
+    #[test]
+    fn watcher_fixture_provenance_is_exact_source_derived_and_sidecar_free() {
+        let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let folder = fixtures.join("folder-watch-actor-0.1.0");
+        let sink = fixtures.join("watch-null-sink-0.1.0");
+        let folder_manifest = folder.join("child.toml");
+        let folder_component = folder.join("folder-watch-actor.wasm");
+        let folder_patch = folder.join("MCT-REBUILD.patch");
+        let folder_provenance = folder.join("PROVENANCE.md");
+        let sink_manifest = sink.join("child.toml");
+        let sink_component = sink.join("watch-null-sink.wasm");
+        let sink_provenance = sink.join("PROVENANCE.md");
+
+        for (path, size, sha256, blake3) in [
+            (
+                &folder_manifest,
+                719,
+                "f1f53ce495b3c5c408bb582a3d8a3d100f33102a4a355bdea2ac7848831c790a",
+                "6ca8f8225fe11ae00c94d08fb8e530f53741c3b0dcfde2273a8e355fe52be718",
+            ),
+            (
+                &folder_component,
+                352_529,
+                "00910422135e822524cd52e446c157056e755187392a36d441cd1ba406ba9096",
+                "466033617dcd41c532f22f881f7fba347a793c9c52c1ac89e93f4df902ce251e",
+            ),
+            (
+                &folder_patch,
+                2_362,
+                "a71f9924149cd96647de542e3eaf6940930fe77e5dcc626b07c38b4bd67d9a2c",
+                "202bb03b3caf9cd258a59ab01f7ac76a7be2359d90e861502c8a72e230c10529",
+            ),
+            (
+                &sink_manifest,
+                358,
+                "6447a156d08b4b438acc1b55f28cf05d1130889479f4428aca98b2e6d327238a",
+                "780dc11735559d58248f69be4ca64659e82a0e4ba36d886d4a7be7608275fedf",
+            ),
+            (
+                &sink_component,
+                70_027,
+                "37f42ebe17db2c6e44e02bf79cf590ba899d3cb96579bbd4ed735597f53dbfe3",
+                "e40605e80b5a61fa7340abc1207676848b1a1383048bb1c5dc13c20e11d7a0cf",
+            ),
+        ] {
+            let bytes = std::fs::read(path).unwrap();
+            assert_eq!(bytes.len(), size, "{}", path.display());
+            assert_eq!(sha256_hex(&bytes), sha256, "{}", path.display());
+            assert_eq!(blake3::hash(&bytes).to_hex().as_str(), blake3);
+        }
+        for path in [
+            &folder_manifest,
+            &folder_component,
+            &sink_manifest,
+            &sink_component,
+        ] {
+            let mut sidecar = path.as_os_str().to_os_string();
+            sidecar.push(".sha256");
+            assert!(!PathBuf::from(sidecar).exists());
+        }
+
+        let folder_manifest_text = std::fs::read_to_string(&folder_manifest).unwrap();
+        let sink_manifest_text = std::fs::read_to_string(&sink_manifest).unwrap();
+        assert!(folder_manifest_text.contains("name = \"folder-watch-actor\""));
+        assert!(folder_manifest_text.contains("version = \"0.1.0\""));
+        assert!(sink_manifest_text.contains("name = \"watch-null-sink\""));
+        assert!(sink_manifest_text.contains("version = \"0.1.0\""));
+
+        let patch = std::fs::read_to_string(&folder_patch).unwrap();
+        assert!(patch.contains("absolute_path: relative_path.clone()"));
+        assert!(patch.contains("children/folder-watch-actor/wit/world.wit"));
+        assert!(!patch.contains("children/watch-null-sink"));
+        let folder_provenance = std::fs::read_to_string(folder_provenance).unwrap();
+        let sink_provenance = std::fs::read_to_string(sink_provenance).unwrap();
+        for provenance in [&folder_provenance, &sink_provenance] {
+            assert!(provenance.contains("526dbf123b040198cb4395c1a63cf498a28ff915"));
+            assert!(provenance.contains("cargo-component 0.21.1"));
+            assert!(provenance.contains("rustc 1.94.0"));
+        }
+        assert!(folder_provenance.contains("source-derived MCT security rebuild"));
+        assert!(
+            folder_provenance
+                .contains("a71f9924149cd96647de542e3eaf6940930fe77e5dcc626b07c38b4bd67d9a2c")
+        );
+        assert!(sink_provenance.contains("unmodified exact-tag source"));
+
+        let mut config = wasmtime::Config::new();
+        config.wasm_component_model(true);
+        let engine = wasmtime::Engine::new(&config).unwrap();
+        let folder_component =
+            wasmtime::component::Component::from_file(&engine, folder_component).unwrap();
+        let folder_imports = folder_component
+            .component_type()
+            .imports(&engine)
+            .map(|(name, _)| name.to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        for required in [
+            "wasi:keyvalue/store@0.2.0",
+            "wasi:messaging/producer@0.2.0",
+            "wasi:filesystem/preopens@0.2.3",
+            "wasi:logging/logging@0.1.0",
+            "patina:measure/measure@0.1.0",
+        ] {
+            assert!(folder_imports.contains(required), "missing {required}");
+        }
+        for forbidden in [
+            "wasi:http/outgoing-handler@0.2.8",
+            "wasi:sql/readwrite@0.1.0",
+            "patina:connect/connect@0.2.0",
+            "patina:git/git@0.1.0",
+        ] {
+            assert!(!folder_imports.contains(forbidden), "retained {forbidden}");
+        }
+        let folder_exports = folder_component
+            .component_type()
+            .exports(&engine)
+            .map(|(name, _)| name.to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(folder_exports.contains("patina:watch/control@0.1.0"));
+
+        let sink_component =
+            wasmtime::component::Component::from_file(&engine, sink_component).unwrap();
+        let sink_exports = sink_component
+            .component_type()
+            .exports(&engine)
+            .map(|(name, _)| name.to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(sink_exports.contains("patina:watch/events@0.1.0"));
+    }
+
     fn entries(path: &Path) -> Vec<mct_observation::MctObservationLedgerEntry> {
         JsonlObservationLedger::open_read_only(path, "ledger-local", "local-mct")
             .unwrap()
