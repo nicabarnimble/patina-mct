@@ -124,6 +124,18 @@ Completed 2026-07-16 under `layer/surface/build/feat/artifact-acquisition/SPEC.m
 - [ ] Import and prove real `folder-watch-actor@0.1.0` and `watch-null-sink@0.1.0` fixtures before claiming the full three-fixture `patinaMother` replacement test.
 - [ ] Add network acquisition only through a separately gated deny-by-default egress Toy plus independent connection/secret authority.
 
+## Completed: temporal trigger authority and scheduler — Replacement Slice 4A
+
+Completed 2026-07-21 under `layer/surface/build/feat/trigger-event-runtime/SPEC.md`:
+
+- [x] Add truthful local-only `CallOrigin::TriggerFiring` and deterministic record/revision/occurrence-scoped identities.
+- [x] Persist owner-authenticated, revisioned trigger authority and schema-v8 occurrence, pending, firing, result, and reconciliation projections.
+- [x] Implement explicit missed-fire and overlap matrices in fixed admission order under three named capacity limits.
+- [x] Make authority, pending admission, and firing durable before activation/effect; reconstruct projections from the validated ledger on restart.
+- [x] Prove acquired/approved WIT execution, idempotent same-occurrence evaluation, overlap crash recovery, revocation suppression, terminal non-resurrection, and ordinary-call fairness.
+- [x] Keep `MotherEventSourceAdapterRuntime`, `RegistrySyncTriggerComposition`, and `NetworkArtifactAcquisitionAdapter` closed and add no `ObservationKind`.
+- [ ] Complete Replacement Slice 4B Watch authority, child call-out, legacy ABI narrowing, and source-provenance fixture proof before claiming fixtures two/three or the full replacement slice.
+
 ## JVM SDK
 
 Chosen production ingress:

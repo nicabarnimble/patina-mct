@@ -261,6 +261,7 @@ async fn execute_resident_call_after_payload(
                 }
             };
             let result_state_path = paths.state_path().to_path_buf();
+            let result_observation_call = request.call.clone();
             let execution = match tokio::task::spawn_blocking(move || {
                 execute_authorized_resident_child(
                     paths,
@@ -283,7 +284,50 @@ async fn execute_resident_call_after_payload(
                 }
             };
 
-            let (result, observations, inline_result_payload, run_id) = execution.into_parts();
+            let (result, mut observations, inline_result_payload, run_id) = execution.into_parts();
+            if result_observation_call.origin == CallOrigin::TriggerFiring {
+                observations.push(MctObservation {
+                    observation_id: ObservationId::new(format!(
+                        "obs:result-resident:{}",
+                        result.call_id
+                    ))
+                    .expect("generated resident result observation id must be non-empty"),
+                    observed_at: current_timestamp(),
+                    kind: ObservationKind::ResultRecorded,
+                    source_plane: SourcePlane::Kernel,
+                    trace: ObservationTraceRef {
+                        trace_id: result_observation_call.trace_context.trace_id.clone(),
+                        span_id: Some(result_observation_call.trace_context.span_id.clone()),
+                        parent_span_id: None,
+                        external_trace_id: None,
+                    },
+                    call_id: Some(result.call_id.clone()),
+                    decision_id: Some(result.authority_decision_ref.clone()),
+                    subject_id: result_observation_call
+                        .caller
+                        .user_id
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .or_else(|| Some(result_observation_call.caller.node_id.to_string())),
+                    resource_id: Some(format!("result-resident:{}", result.call_id)),
+                    policy_revision: Some(
+                        result_observation_call.authority_context.policy_revision,
+                    ),
+                    grants_revision: Some(
+                        result_observation_call.authority_context.grants_revision,
+                    ),
+                    outcome: match result.outcome {
+                        ResultOutcome::Success => ObservationOutcome::Completed,
+                        ResultOutcome::Denied => ObservationOutcome::Denied,
+                        ResultOutcome::Failed => ObservationOutcome::Failed,
+                        ResultOutcome::TimedOut => ObservationOutcome::TimedOut,
+                        ResultOutcome::Cancelled => ObservationOutcome::Cancelled,
+                    },
+                    visibility: ObservationVisibility::InternalOnly,
+                    safe_message: "resident target result recorded".into(),
+                    detail_ref: Some(format!("result_outcome:{:?}", result.outcome)),
+                });
+            }
             let state_observations = observations.clone();
             if let Err(error) = ledger.append(observations).await {
                 eprintln!("resident execution ledger write failed: {error}");
