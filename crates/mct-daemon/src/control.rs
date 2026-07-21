@@ -704,6 +704,10 @@ mod tests {
                 child_subscriptions: 0,
                 toy_catalog_contracts: 0,
                 toy_grant_snapshots: 0,
+                trigger_records: 0,
+                current_trigger_records: 0,
+                pending_trigger_occurrences: 0,
+                active_trigger_firings: 0,
             }),
             Vec::new(),
         )

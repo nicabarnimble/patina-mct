@@ -1932,6 +1932,24 @@ fn resident_mutation_handler(
                         serde_json::json!({"error": "artifact staging unavailable"}),
                     ),
                 }
+            } else if path.starts_with("/triggers/") {
+                match state_path {
+                    Some(state_path) => {
+                        execute_resident_trigger_mutation(
+                            &configured_path,
+                            &state_path,
+                            &ledger,
+                            peer,
+                            &path,
+                            &body,
+                        )
+                        .await
+                    }
+                    None => peer_mutation_response(
+                        404,
+                        serde_json::json!({"error": "trigger authority mutation unavailable"}),
+                    ),
+                }
             } else if path.starts_with("/toys/") || path == "/pando/record" {
                 match state_path {
                     Some(state_path) => {

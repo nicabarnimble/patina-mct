@@ -24,6 +24,8 @@ pub mod peer;
 pub mod route;
 /// Canonical toy contracts, grants, and toy-call authorization tokens.
 pub mod toy;
+/// Standing trigger authority, occurrence identity, and admission policy.
+pub mod trigger;
 
 pub use artifact::{
     ArtifactAcquisition, ArtifactAcquisitionAuthorityPath, ArtifactAcquisitionAuthorityReason,
@@ -63,10 +65,12 @@ pub use error::{InvalidFieldReason, MctKernelError, MctKernelResult};
 pub use id::{
     ArtifactAcquisitionDecisionId, ArtifactAcquisitionId, ArtifactSourceAuthorityId, AuditRef,
     AuthorizedArtifactAcquisitionId, AuthorizedChildInvocationId, AuthorizedRouteExecutionId,
-    AuthorizedToyCallId, CallId, ChildApprovalId, ChildAssignmentId, ChildCallEvaluationId,
-    ChildId, ChildInstanceId, ComponentArtifactId, DecisionId, EndpointIdText, MctNodeId,
-    ObservationId, PeerBindingId, ProjectId, ProtocolRequestId, ReplyId, ResultRef, SpanId,
-    Timestamp, ToyGrantEvaluationId, ToyGrantId, ToyId, TraceId, UserId, VisionId,
+    AuthorizedToyCallId, CallId, CallTriggerAuthorityId, CallTriggerFiringId,
+    CallTriggerOccurrenceId, CallTriggerPendingOccurrenceId, ChildApprovalId, ChildAssignmentId,
+    ChildCallEvaluationId, ChildId, ChildInstanceId, ComponentArtifactId, DecisionId,
+    EndpointIdText, MctNodeId, ObservationId, PeerBindingId, ProjectId, ProtocolRequestId, ReplyId,
+    ResultRef, SpanId, Timestamp, ToyGrantEvaluationId, ToyGrantId, ToyId, TraceId, UserId,
+    VisionId,
 };
 pub use observation::{
     AdapterDiagnosticKind, AdapterDiagnosticObservationInput, MctObservation, ObservationKind,
@@ -97,6 +101,18 @@ pub use toy::{
     ToyGrantEvaluation, ToyGrantEvaluationIds, ToyGrantEvaluationRequest, ToyGrantEvaluationResult,
     ToyGrantReasonCode, ToyGrantScope, ToyGrantState, ToyGrantSubject, ToyGrantVerdict,
     evaluate_toy_grant_for_call,
+};
+pub use trigger::{
+    CallTriggerAuthority, CallTriggerAuthorityState, CallTriggerClass,
+    CallTriggerMissedFireDecision, CallTriggerOccurrenceCandidate, CallTriggerOverlapDecision,
+    CallTriggerPendingReason, CallTriggerRepresentedSet, CallTriggerSource,
+    CallTriggerTerminalDisposition, CallTriggerTerminalDispositionKind, KnownCallTriggerOccurrence,
+    MCT_TRIGGER_MIN_INTERVAL_MS, MissedFirePolicy, OverlapPolicy,
+    derive_coalesced_occurrence_identity, derive_represented_set_ref,
+    derive_temporal_occurrence_identity, derive_trigger_call_identity,
+    derive_trigger_firing_identity, derive_trigger_idempotency_key,
+    derive_trigger_pending_identity, evaluate_missed_fire_policy, evaluate_overlap_policy,
+    trigger_represented_set_from_bounds,
 };
 
 /// Returns the crate version for health and smoke tests.

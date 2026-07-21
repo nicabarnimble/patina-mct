@@ -330,6 +330,8 @@ where
     }
     let ticket = endpoint.ticket();
     let load_report = load_children_from_dir(MctChildLoadOptions::new(config.children_dir.clone()));
+    reconcile_trigger_projection(&config.state_path, &config.ledger_path)
+        .context("reconcile trigger ledger projection before resident readiness")?;
     let state = MctRuntimeStateStore::open(&config.state_path)
         .with_context(|| format!("open runtime state {}", config.state_path.display()))?;
     let runtime_summary = state.summary()?;
@@ -371,6 +373,15 @@ where
     });
 
     let (shutdown_tx, _) = broadcast::channel(4);
+    let trigger_task = tokio::spawn(run_trigger_scheduler(
+        ResidentRuntimePaths::new(
+            config.config_path.clone(),
+            config.children_dir.clone(),
+            config.state_path.clone(),
+        ),
+        ledger.clone(),
+        shutdown_tx.subscribe(),
+    ));
     let control_task = spawn_resident_control_task(
         config.control.clone(),
         ResidentRuntimePaths::new(
@@ -471,6 +482,7 @@ where
         eprintln!("ledger shutdown observation failed: {error}");
     }
     let _ = tokio::time::timeout(Duration::from_secs(2), event_task).await;
+    let _ = tokio::time::timeout(Duration::from_secs(2), trigger_task).await;
     control_task.abort();
     if clean_shutdown_observed && let Some(instance) = &supervised_instance {
         let _ = record_supervised_clean_shutdown_completed(instance, &ledger).await;

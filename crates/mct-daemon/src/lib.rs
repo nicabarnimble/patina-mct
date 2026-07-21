@@ -107,7 +107,8 @@ pub use state::{
     MctQueuedTaskRecord, MctRecordedCallReply, MctRegistrySourceRecord,
     MctRemoteCallableSurfaceRecord, MctRemoteSurfaceRefresh, MctRuntimeRunRecord,
     MctRuntimeRunState, MctRuntimeStateStore, MctRuntimeStateSummary, MctTaskIntentRecord,
-    MctTaskStatus, default_state_path,
+    MctTaskStatus, MctTriggerFiringRecord, MctTriggerOccurrenceDisposition,
+    MctTriggerOccurrenceRecord, MctTriggerPendingOccurrenceRecord, default_state_path,
 };
 pub use status::{
     MctDaemonHealth, MctDaemonReadiness, MctDaemonStatus, MctResidentStatus, daemon_status,
