@@ -199,11 +199,18 @@ pub(super) fn parse_runtime_kind(value: &str) -> Result<RuntimeKind> {
 
 pub(super) fn run_toys(mut args: Vec<String>) -> Result<()> {
     if args.is_empty() {
-        bail!("expected toys subcommand: authorize-slate | authorize-secret");
+        bail!(
+            "expected toys subcommand: authorize-slate | authorize-secret | grant-watch | revoke-watch | grant-directory-read | grant-keyvalue | grant-observability"
+        );
     }
     match args.remove(0).as_str() {
         "authorize-slate" => run_toys_authorize_slate(args),
         "authorize-secret" => run_toys_authorize_secret(args),
+        command @ ("grant-watch"
+        | "revoke-watch"
+        | "grant-directory-read"
+        | "grant-keyvalue"
+        | "grant-observability") => run_watch_toy_command(command, args),
         other => bail!("unknown toys subcommand '{other}'"),
     }
 }

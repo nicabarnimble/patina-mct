@@ -5,6 +5,419 @@
 
 use super::*;
 
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+struct WatchCallOutWireEvent {
+    watcher: String,
+    #[serde(alias = "stream-name")]
+    stream: String,
+    change_kind: String,
+    absolute_path: String,
+    relative_path: String,
+    size_bytes: Option<u64>,
+    modified_unix_ms: Option<u64>,
+    sha256: Option<String>,
+    detected_at: String,
+}
+
+fn watch_callout_observation(
+    id: impl Into<String>,
+    kind: ObservationKind,
+    outcome: ObservationOutcome,
+    parent: &MctCall,
+    refs: (Option<CallId>, String, String),
+    safe_message: &str,
+) -> MctObservation {
+    let (call_id, subject_id, resource_id) = refs;
+    MctObservation {
+        observation_id: ObservationId::new(id.into()).expect("generated Watch observation id"),
+        observed_at: current_timestamp(),
+        kind,
+        source_plane: SourcePlane::Adapter,
+        trace: ObservationTraceRef {
+            trace_id: parent.trace_context.trace_id.clone(),
+            span_id: Some(parent.trace_context.span_id.clone()),
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id,
+        decision_id: None,
+        subject_id: Some(subject_id),
+        resource_id: Some(resource_id),
+        policy_revision: Some(parent.authority_context.policy_revision),
+        grants_revision: Some(parent.authority_context.grants_revision),
+        outcome,
+        visibility: ObservationVisibility::InternalOnly,
+        safe_message: safe_message.into(),
+        detail_ref: None,
+    }
+}
+
+pub(super) fn existing_watch_subject_is_eligible(
+    canonical_root: &Path,
+    relative_path: &str,
+) -> Result<bool> {
+    validate_safe_watch_relative_path(relative_path)?;
+    let canonical_root = canonical_root.canonicalize()?;
+    let mut current = canonical_root.clone();
+    for segment in relative_path.split('/') {
+        current.push(segment);
+        let metadata = match std::fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        if metadata.file_type().is_symlink() {
+            return Ok(false);
+        }
+    }
+    let metadata = std::fs::metadata(&current)?;
+    if !metadata.is_file() {
+        return Ok(false);
+    }
+    Ok(current.canonicalize()?.starts_with(canonical_root))
+}
+
+async fn execute_watch_callouts(
+    paths: &ResidentRuntimePaths,
+    ledger: &ResidentLedgerWriter,
+    parent: &MctCall,
+    parent_route: Option<&RouteTaken>,
+    context: &ResidentCallIngressContext,
+    messages: Vec<MctWitProducedMessage>,
+) -> Result<()> {
+    if messages.is_empty() {
+        return Ok(());
+    }
+    let depth = match context {
+        ResidentCallIngressContext::ChildCallOut { depth, .. } => *depth,
+        _ => 0,
+    };
+    if depth >= MCT_CHILD_CALLOUT_MAX_DEPTH {
+        bail!("nested Child call-out depth exhausted");
+    }
+    if messages.len() > MCT_WATCH_MAX_EVENTS_PER_BATCH as usize {
+        bail!("Watch event batch capacity exceeded");
+    }
+    let child_name = parent_route
+        .and_then(|route| route.child_id.as_ref())
+        .map(ChildId::as_str)
+        .map(|id| id.strip_prefix("child:").unwrap_or(id))
+        .unwrap_or("folder-watch-actor");
+    let state = MctRuntimeStateStore::open(paths.state_path())?;
+    let scope = state
+        .watch_observation_scopes()?
+        .into_iter()
+        .filter(|scope| {
+            scope.authority_state == WatchObservationScopeState::Active
+                && scope.observer_ref.child_name == child_name
+                && scope.is_current_at(&current_timestamp())
+        })
+        .max_by_key(|scope| scope.scope_revision)
+        .context("current Watch scope missing for Child call-out")?;
+    let mut parsed = messages
+        .into_iter()
+        .map(|message| {
+            if message.data.len() > MCT_WATCH_MESSAGE_MAX_BYTES
+                || message.metadata.len() > MCT_WATCH_METADATA_PAIRS_MAX
+                || message.content_type.as_deref() != Some("application/json")
+            {
+                bail!("Watch call-out message violates a named bound");
+            }
+            let wire: WatchCallOutWireEvent =
+                serde_json::from_slice(&message.data).context("decode exact watcher event JSON")?;
+            let class = match (message.topic.as_str(), wire.change_kind.as_str()) {
+                ("file-created", "created") => WatchEventClass::Created,
+                ("file-modified", "modified") => WatchEventClass::Modified,
+                ("file-deleted", "deleted") => WatchEventClass::Deleted,
+                _ => bail!("Watch topic and event class mismatch"),
+            };
+            if !scope.event_classes.contains(&class) {
+                bail!("Watch event class is outside current scope");
+            }
+            let compatibility = validate_legacy_watch_paths(
+                message
+                    .target_operation
+                    .rsplit_once('.')
+                    .map(|(interface, _)| interface)
+                    .unwrap_or_default(),
+                &wire.absolute_path,
+                &wire.relative_path,
+            )?;
+            if compatibility != LegacyWatchCompatibilityValidation::Matched {
+                bail!("legacy Watch path equality refused");
+            }
+            let canonical_root = Path::new(
+                scope
+                    .canonical_root_ref
+                    .strip_prefix("file://")
+                    .context("Watch scope root is not a local file URI")?,
+            );
+            match class {
+                WatchEventClass::Created | WatchEventClass::Modified => {
+                    if !existing_watch_subject_is_eligible(canonical_root, &wire.relative_path)? {
+                        bail!("Watch subject is absent, escaped, symlinked, or special");
+                    }
+                }
+                WatchEventClass::Deleted => {
+                    if !state.watch_subject_was_present(
+                        &scope.watch_scope_id,
+                        scope.scope_revision,
+                        &wire.relative_path,
+                    )? {
+                        bail!("deleted Watch subject has no prior in-scope identity");
+                    }
+                }
+            }
+            let canonical = serde_json::to_string(&wire)?;
+            Ok((wire.relative_path.clone(), class, canonical, wire, message))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    parsed.sort_by(|left, right| {
+        (&left.0, format!("{:?}", left.1), &left.2).cmp(&(
+            &right.0,
+            format!("{:?}", right.1),
+            &right.2,
+        ))
+    });
+    if parsed.len() > scope.max_events_per_batch as usize {
+        bail!("Watch scope batch capacity exceeded");
+    }
+    let sequence =
+        state.reserve_watch_batch_sequence(&scope.watch_scope_id, scope.scope_revision)?;
+    let batch_id = derive_watch_batch_id(
+        &scope.watch_scope_id,
+        scope.scope_revision,
+        sequence,
+        &parent.call_id,
+    );
+    let batch = WatchEventBatchEvidence {
+        batch_id: batch_id.clone(),
+        watch_scope_id: scope.watch_scope_id.clone(),
+        scope_revision: scope.scope_revision,
+        sequence,
+        parent_call_id: parent.call_id.clone(),
+        raw_event_count: parsed.len() as u32,
+        eligible_event_count: parsed.len() as u32,
+        coalesced_event_count: 0,
+        excluded_event_count: 0,
+        capacity_refused_event_count: 0,
+    };
+    let parent_firing_id = match context {
+        ResidentCallIngressContext::Trigger { firing_id, .. } => Some(firing_id.clone()),
+        ResidentCallIngressContext::ChildCallOut {
+            parent_firing_id, ..
+        } => parent_firing_id.clone(),
+        _ => None,
+    };
+    let mut events = Vec::new();
+    let mut dispositions = Vec::new();
+    let mut plan_observations = vec![watch_callout_observation(
+        format!("obs:watch-batch:{batch_id}"),
+        ObservationKind::AdapterEffectStarted,
+        ObservationOutcome::Started,
+        parent,
+        (
+            Some(parent.call_id.clone()),
+            scope.watch_scope_id.to_string(),
+            batch_id.to_string(),
+        ),
+        "Watch batch opened",
+    )];
+    for (position, (_, class, canonical, wire, message)) in parsed.iter().enumerate() {
+        let event_id =
+            derive_watch_callout_event_id(&parent.call_id, &batch_id, position as u32, canonical);
+        let call_id = derive_watch_callout_call_id(&event_id);
+        let disposition_id =
+            WatchEventDeliveryDispositionId::new(format!("watch-disposition:{}", event_id))?;
+        let disposition_observation_id =
+            ObservationId::new(format!("obs:watch-disposition:{}", event_id))?;
+        events.push(WatchEventEvidence {
+            event_id: event_id.clone(),
+            batch_id: batch_id.clone(),
+            batch_position: position as u32,
+            event_class: *class,
+            relative_path: wire.relative_path.clone(),
+            causative_call_id: parent.call_id.clone(),
+            causative_trigger_firing_id: parent_firing_id.clone(),
+            causative_adapter_observation_id: None,
+        });
+        dispositions.push(WatchEventDeliveryDisposition {
+            disposition_id: disposition_id.clone(),
+            event_id: event_id.clone(),
+            disposition: WatchEventDisposition::Fired,
+            planned_call_id: Some(call_id.clone()),
+            compatibility_validation: LegacyWatchCompatibilityValidation::Matched,
+            disposition_observation_id: disposition_observation_id.clone(),
+        });
+        plan_observations.push(watch_callout_observation(
+            format!("obs:watch-event:{event_id}"),
+            ObservationKind::DataMovementAllowed,
+            ObservationOutcome::Allowed,
+            parent,
+            (
+                Some(parent.call_id.clone()),
+                event_id.to_string(),
+                wire.relative_path.clone(),
+            ),
+            "Watch event eligible",
+        ));
+        plan_observations.push(watch_callout_observation(
+            disposition_observation_id.to_string(),
+            ObservationKind::CallConstructed,
+            ObservationOutcome::Allowed,
+            parent,
+            (
+                Some(call_id),
+                event_id.to_string(),
+                message.target_operation.clone(),
+            ),
+            "Child call-out constructed",
+        ));
+    }
+    ledger.append(plan_observations).await?;
+    state.insert_watch_event_plan(&batch, &events, &dispositions)?;
+    for event in &events {
+        state.record_watch_subject_presence(
+            &scope.watch_scope_id,
+            scope.scope_revision,
+            &event.event_id,
+            &event.relative_path,
+            event.event_class != WatchEventClass::Deleted,
+        )?;
+    }
+
+    for (((_, _, _, wire, message), event), disposition) in
+        parsed.into_iter().zip(events).zip(dispositions)
+    {
+        let target = operation_target_from_wit_operation_id(&message.target_operation)?;
+        let call_id = disposition
+            .planned_call_id
+            .clone()
+            .context("fired disposition missing call id")?;
+        let target_payload = serde_json::to_vec(&serde_json::json!([{
+            "watcher": wire.watcher,
+            "stream-name": wire.stream,
+            "change-kind": wire.change_kind,
+            "absolute-path": wire.absolute_path,
+            "relative-path": wire.relative_path,
+            "size-bytes": wire.size_bytes,
+            "modified-unix-ms": wire.modified_unix_ms,
+            "sha256": wire.sha256,
+            "detected-at": wire.detected_at,
+        }]))?;
+        let endpoint_id = parent.caller.node_id.to_string();
+        let endpoint_id = EndpointIdText::new(endpoint_id)?;
+        let request = MctCallProtocolRequest {
+            authority: MctCallProtocolAuthority {
+                hello_decision_id: DecisionId::new(format!(
+                    "decision:wasm-host:{event_id}",
+                    event_id = event.event_id
+                ))?,
+                peer_binding_id: PeerBindingId::new(format!(
+                    "binding:wasm-host:{}",
+                    parent.call_id
+                ))?,
+                vision_id: parent.caller.vision_id.clone(),
+                accepted_alpn: "mct/wasm-host-call/0".into(),
+                endpoint_id: endpoint_id.clone(),
+                policy_revision: parent.authority_context.policy_revision,
+                grants_revision: parent.authority_context.grants_revision,
+            },
+            received_over: IrohConnectionPresentation {
+                endpoint_id,
+                alpn: "mct/wasm-host-call/0".into(),
+                connection_side: ConnectionSide::Incoming,
+                path_class: PathClass::Direct,
+                relay_url: None,
+                presented_capability_ref: None,
+            },
+            call: MctCall {
+                call_id: call_id.clone(),
+                caller: parent.caller.clone(),
+                target,
+                payload_metadata: PayloadMetadata {
+                    data_classification: parent.payload_metadata.data_classification.clone(),
+                    size_bytes: target_payload.len() as u64,
+                    contains_secret_scoped_material: false,
+                },
+                authority_context: parent.authority_context.clone(),
+                deadline: parent.deadline.clone(),
+                trace_context: TraceContext {
+                    trace_id: parent.trace_context.trace_id.clone(),
+                    span_id: SpanId::new(format!("span:wasm-host:{}", event.event_id))?,
+                },
+                origin: CallOrigin::WasmHost,
+            },
+            payload: MctCallPayloadHandle::InlinePayload {
+                content_type: "application/json".into(),
+                size_bytes: target_payload.len() as u64,
+                blake3_digest_hex: blake3_hex(&target_payload),
+                inline_payload_ref: format!("inline:wasm-host:{}", event.event_id),
+            },
+            idempotency_key: Some(derive_watch_callout_idempotency_key(
+                &parent.call_id,
+                &event.event_id,
+                &message.target_operation,
+            )),
+            received_observation_id: ObservationId::new(format!(
+                "obs:wasm-host-received:{}",
+                event.event_id
+            ))?,
+            protocol_request_id: ProtocolRequestId::new(format!(
+                "protocol:wasm-host:{}",
+                event.event_id
+            ))?,
+        };
+        let nested = Box::pin(execute_resident_call_at_with_context(
+            paths.clone(),
+            ledger.clone(),
+            request,
+            ResidentPayloadIngress::local(Some(target_payload)),
+            current_timestamp(),
+            ResidentCallIngressContext::ChildCallOut {
+                parent_call_id: parent.call_id.clone(),
+                parent_firing_id: parent_firing_id.clone(),
+                depth: depth + 1,
+            },
+        ))
+        .await;
+        let result_ref = nested.result_ref.clone().unwrap_or_else(|| {
+            ResultRef::new(format!("result-resident:{call_id}")).expect("generated result ref")
+        });
+        let delivered = nested.outcome == CallProtocolOutcome::Completed;
+        let delivery = WatchEventDeliveryEvidence {
+            delivery_id: WatchEventDeliveryId::new(format!("watch-delivery:{}", event.event_id))?,
+            disposition_id: disposition.disposition_id,
+            target_call_id: call_id.clone(),
+            target_result_ref: result_ref,
+            target_result_observation_id: ObservationId::new(format!(
+                "obs:result-resident:{call_id}"
+            ))?,
+            delivered,
+        };
+        ledger
+            .append(vec![watch_callout_observation(
+                format!("obs:watch-delivery:{}", event.event_id),
+                ObservationKind::AdapterEffectCompleted,
+                if delivered {
+                    ObservationOutcome::Completed
+                } else {
+                    ObservationOutcome::Failed
+                },
+                parent,
+                (
+                    Some(call_id),
+                    event.event_id.to_string(),
+                    delivery.delivery_id.to_string(),
+                ),
+                "Watch delivery completed",
+            )])
+            .await?;
+        state.insert_watch_delivery_evidence(&delivery)?;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ResidentCallIngressContext {
     Peer {
@@ -164,8 +577,10 @@ async fn execute_resident_call_at_with_context(
         idempotency_ledger,
         idempotency_request,
         now,
-        context,
-        move || execute_resident_call_after_payload(paths, ledger, request, inline_payload),
+        context.clone(),
+        move || {
+            execute_resident_call_after_payload(paths, ledger, request, inline_payload, context)
+        },
     )
     .await
 }
@@ -175,6 +590,7 @@ async fn execute_resident_call_after_payload(
     ledger: ResidentLedgerWriter,
     request: MctCallProtocolRequest,
     inline_payload: Option<Vec<u8>>,
+    context: ResidentCallIngressContext,
 ) -> MctIrohCallHandlerResult {
     let authorization = match authorize_resident_child(paths.clone(), request.call.clone()).await {
         Ok(authorization) => authorization,
@@ -262,6 +678,8 @@ async fn execute_resident_call_after_payload(
             };
             let result_state_path = paths.state_path().to_path_buf();
             let result_observation_call = request.call.clone();
+            let before_effect_ledger = ledger.clone();
+            let callout_paths = paths.clone();
             let execution = match tokio::task::spawn_blocking(move || {
                 execute_authorized_resident_child(
                     paths,
@@ -269,6 +687,7 @@ async fn execute_resident_call_after_payload(
                     request,
                     inline_payload,
                     current_revisions,
+                    Some(before_effect_ledger),
                 )
             })
             .await
@@ -284,8 +703,25 @@ async fn execute_resident_call_after_payload(
                 }
             };
 
-            let (result, mut observations, inline_result_payload, run_id) = execution.into_parts();
-            if result_observation_call.origin == CallOrigin::TriggerFiring {
+            let (result, mut observations, inline_result_payload, run_id, produced_messages) =
+                execution.into_parts();
+            if let Err(error) = execute_watch_callouts(
+                &callout_paths,
+                &ledger,
+                &result_observation_call,
+                result.route_taken.as_ref(),
+                &context,
+                produced_messages,
+            )
+            .await
+            {
+                eprintln!("resident Child call-out failed: {error}");
+                return MctIrohCallHandlerResult::failed("Child call-out failed");
+            }
+            if matches!(
+                result_observation_call.origin,
+                CallOrigin::TriggerFiring | CallOrigin::WasmHost
+            ) {
                 observations.push(MctObservation {
                     observation_id: ObservationId::new(format!(
                         "obs:result-resident:{}",
@@ -430,6 +866,26 @@ listens = []
         )
         .unwrap();
     }
+    #[test]
+    fn watch_adapter_excludes_escaped_symlinks_and_absolute_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("safe.txt"), b"safe").unwrap();
+        std::fs::write(outside.path().join("secret.txt"), b"secret").unwrap();
+        assert!(existing_watch_subject_is_eligible(root.path(), "safe.txt").unwrap());
+        assert!(existing_watch_subject_is_eligible(root.path(), "/absolute.txt").is_err());
+        assert!(existing_watch_subject_is_eligible(root.path(), "../secret.txt").is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                outside.path().join("secret.txt"),
+                root.path().join("escaped.txt"),
+            )
+            .unwrap();
+            assert!(!existing_watch_subject_is_eligible(root.path(), "escaped.txt").unwrap());
+        }
+    }
+
     #[tokio::test]
     async fn jvm_bridge_json_call_enters_resident_route_path() {
         let dir = tempfile::tempdir().unwrap();

@@ -275,6 +275,7 @@ mod tests {
                 watch_scope_records: 0,
                 current_watch_scopes: 0,
                 watch_event_batches: 0,
+                watch_events: 0,
                 watch_event_deliveries: 0,
             },
             MctNodeId::new("node-a").expect("string ID literal/generated value must be non-empty"),
@@ -396,6 +397,7 @@ mod tests {
             watch_scope_records: 0,
             current_watch_scopes: 0,
             watch_event_batches: 0,
+            watch_events: 0,
             watch_event_deliveries: 0,
         }
     }

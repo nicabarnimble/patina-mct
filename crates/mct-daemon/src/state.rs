@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 
 pub const MCT_IDEMPOTENCY_TTL_SECONDS: i64 = 12 * 60;
 pub const MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER: usize = 256;
@@ -141,6 +141,8 @@ pub struct MctRuntimeStateSummary {
     pub current_watch_scopes: u64,
     #[serde(default)]
     pub watch_event_batches: u64,
+    #[serde(default)]
+    pub watch_events: u64,
     #[serde(default)]
     pub watch_event_deliveries: u64,
 }
@@ -889,6 +891,14 @@ impl MctRuntimeStateStore {
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS child_keyvalue_entries (
+                bucket_resource_id TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value BLOB NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (bucket_resource_id, key)
+            );
+
             CREATE TRIGGER IF NOT EXISTS active_toy_grant_requires_authority_bearing_toy_insert
             BEFORE INSERT ON toy_grant_snapshots
             WHEN NEW.grant_state = 'active'
@@ -1116,6 +1126,7 @@ impl MctRuntimeStateStore {
             watch_scope_records: self.count("watch_observation_scopes", None)?,
             current_watch_scopes: self.count("watch_observation_scopes", Some("is_current = 1"))?,
             watch_event_batches: self.count("watch_event_batches", None)?,
+            watch_events: self.count("watch_events", None)?,
             watch_event_deliveries: self.count("watch_event_deliveries", None)?,
         })
     }
@@ -1428,6 +1439,67 @@ impl MctRuntimeStateStore {
             .collect()
     }
 
+    pub fn child_keyvalue_get(
+        &self,
+        bucket_resource_id: &str,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        if key.is_empty() || key.len() > MCT_KEYVALUE_KEY_MAX_BYTES {
+            bail!("keyvalue key is outside the bounded contract");
+        }
+        self.conn
+            .query_row(
+                "SELECT value FROM child_keyvalue_entries WHERE bucket_resource_id = ?1 AND key = ?2",
+                params![bucket_resource_id, key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn child_keyvalue_set(
+        &self,
+        bucket_resource_id: &str,
+        key: &str,
+        value: &[u8],
+    ) -> Result<()> {
+        if key.is_empty() || key.len() > MCT_KEYVALUE_KEY_MAX_BYTES {
+            bail!("keyvalue key is outside the bounded contract");
+        }
+        if value.len() > MCT_KEYVALUE_VALUE_MAX_BYTES {
+            bail!("keyvalue value is outside the bounded contract");
+        }
+        let transaction =
+            rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let exists: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM child_keyvalue_entries WHERE bucket_resource_id = ?1 AND key = ?2)",
+            params![bucket_resource_id, key],
+            |row| Ok(row.get::<_, i64>(0)? != 0),
+        )?;
+        if !exists {
+            let count: i64 = transaction.query_row(
+                "SELECT COUNT(*) FROM child_keyvalue_entries WHERE bucket_resource_id = ?1",
+                params![bucket_resource_id],
+                |row| row.get(0),
+            )?;
+            if count >= MCT_KEYVALUE_MAX_KEYS_PER_BUCKET as i64 {
+                bail!("keyvalue bucket capacity exhausted");
+            }
+        }
+        transaction.execute(
+            r#"
+            INSERT INTO child_keyvalue_entries(bucket_resource_id, key, value, updated_at)
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(bucket_resource_id, key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            "#,
+            params![bucket_resource_id, key, value, current_timestamp_string()],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn reserve_watch_batch_sequence(
         &self,
         watch_scope_id: &WatchObservationScopeId,
@@ -1458,6 +1530,163 @@ impl MctRuntimeStateStore {
         )?;
         transaction.commit()?;
         Ok(sequence as u64)
+    }
+
+    pub fn watch_subject_was_present(
+        &self,
+        watch_scope_id: &WatchObservationScopeId,
+        scope_revision: u64,
+        relative_path: &str,
+    ) -> Result<bool> {
+        Ok(self.conn.query_row(
+            r#"
+            SELECT EXISTS(
+                SELECT 1 FROM watch_scope_observed_subjects
+                WHERE watch_scope_id = ?1 AND scope_revision = ?2
+                  AND relative_path = ?3 AND present = 1
+            )
+            "#,
+            params![
+                watch_scope_id.as_str(),
+                scope_revision as i64,
+                relative_path
+            ],
+            |row| row.get::<_, i64>(0),
+        )? != 0)
+    }
+
+    pub fn record_watch_subject_presence(
+        &self,
+        watch_scope_id: &WatchObservationScopeId,
+        scope_revision: u64,
+        event_id: &WatchEventId,
+        relative_path: &str,
+        present: bool,
+    ) -> Result<()> {
+        validate_safe_watch_relative_path(relative_path).map_err(anyhow::Error::from)?;
+        self.conn.execute(
+            r#"
+            INSERT INTO watch_scope_observed_subjects(
+                watch_scope_id, scope_revision, relative_path,
+                last_event_id, last_observed_at, present
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            ON CONFLICT(watch_scope_id, scope_revision, relative_path) DO UPDATE SET
+                last_event_id = excluded.last_event_id,
+                last_observed_at = excluded.last_observed_at,
+                present = excluded.present
+            "#,
+            params![
+                watch_scope_id.as_str(),
+                scope_revision as i64,
+                relative_path,
+                event_id.as_str(),
+                current_timestamp_string(),
+                i64::from(present),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_watch_event_plan(
+        &self,
+        batch: &WatchEventBatchEvidence,
+        events: &[WatchEventEvidence],
+        dispositions: &[WatchEventDeliveryDisposition],
+    ) -> Result<()> {
+        if events.len() != dispositions.len()
+            || batch.eligible_event_count as usize != events.len()
+            || events.len() > MCT_WATCH_MAX_EVENTS_PER_BATCH as usize
+        {
+            bail!("Watch event plan is inconsistent or exceeds capacity");
+        }
+        let transaction =
+            rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        transaction.execute(
+            r#"
+            INSERT INTO watch_event_batches(
+                batch_id, watch_scope_id, scope_revision, sequence, parent_call_id,
+                batch_json, sealed_observation_id, created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7)
+            "#,
+            params![
+                batch.batch_id.as_str(),
+                batch.watch_scope_id.as_str(),
+                batch.scope_revision as i64,
+                batch.sequence as i64,
+                batch.parent_call_id.as_str(),
+                json_string(batch)?,
+                current_timestamp_string(),
+            ],
+        )?;
+        for (event, disposition) in events.iter().zip(dispositions) {
+            if event.batch_id != batch.batch_id || disposition.event_id != event.event_id {
+                bail!("Watch event/disposition does not belong to batch");
+            }
+            disposition.validate().map_err(anyhow::Error::from)?;
+            transaction.execute(
+                r#"
+                INSERT INTO watch_events(
+                    event_id, batch_id, batch_position, relative_path, event_json,
+                    event_observation_id, created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                "#,
+                params![
+                    event.event_id.as_str(),
+                    event.batch_id.as_str(),
+                    event.batch_position as i64,
+                    event.relative_path.as_str(),
+                    json_string(event)?,
+                    format!("obs:watch-event:{}", event.event_id),
+                    current_timestamp_string(),
+                ],
+            )?;
+            transaction.execute(
+                r#"
+                INSERT INTO watch_event_delivery_dispositions(
+                    disposition_id, event_id, disposition, planned_call_id,
+                    compatibility_validation, disposition_json,
+                    disposition_observation_id, created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                "#,
+                params![
+                    disposition.disposition_id.as_str(),
+                    disposition.event_id.as_str(),
+                    json_atom(&disposition.disposition)?,
+                    disposition.planned_call_id.as_ref().map(CallId::as_str),
+                    json_atom(&disposition.compatibility_validation)?,
+                    json_string(disposition)?,
+                    disposition.disposition_observation_id.as_str(),
+                    current_timestamp_string(),
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn insert_watch_delivery_evidence(
+        &self,
+        evidence: &WatchEventDeliveryEvidence,
+    ) -> Result<()> {
+        self.conn.execute(
+            r#"
+            INSERT INTO watch_event_deliveries(
+                delivery_id, disposition_id, target_call_id, target_result_ref,
+                target_result_observation_id, delivered, delivery_json, completed_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+            params![
+                evidence.delivery_id.as_str(),
+                evidence.disposition_id.as_str(),
+                evidence.target_call_id.as_str(),
+                evidence.target_result_ref.as_str(),
+                evidence.target_result_observation_id.as_str(),
+                i64::from(evidence.delivered),
+                json_string(evidence)?,
+                current_timestamp_string(),
+            ],
+        )?;
+        Ok(())
     }
 
     pub fn latest_call_trigger_nominal_at(
@@ -3588,6 +3817,7 @@ fn is_known_count_table(table: &str) -> bool {
             | "watch_event_delivery_dispositions"
             | "watch_event_deliveries"
             | "watch_projection_meta"
+            | "child_keyvalue_entries"
     )
 }
 
@@ -4672,10 +4902,10 @@ mod tests {
     }
 
     #[test]
-    fn schema_v9_adds_closed_watch_authority_event_and_delivery_projections() {
+    fn schema_v10_adds_watch_authority_delivery_and_bounded_keyvalue_projections() {
         let dir = tempfile::tempdir().unwrap();
         let store = MctRuntimeStateStore::open(dir.path().join("state.sqlite")).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 9);
+        assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
         for table in [
             "watch_observation_scopes",
             "watch_scope_sequence_counters",
@@ -4685,9 +4915,47 @@ mod tests {
             "watch_event_delivery_dispositions",
             "watch_event_deliveries",
             "watch_projection_meta",
+            "child_keyvalue_entries",
         ] {
             assert_eq!(store.count(table, None).unwrap(), 0, "{table}");
         }
+    }
+
+    #[test]
+    fn child_keyvalue_is_bucket_scoped_bounded_and_refuses_without_eviction() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MctRuntimeStateStore::open(dir.path().join("state.sqlite")).unwrap();
+        let bucket = "child:artifact:assignment:bucket:default";
+        store.child_keyvalue_set(bucket, "config", b"one").unwrap();
+        store.child_keyvalue_set(bucket, "config", b"two").unwrap();
+        assert_eq!(
+            store.child_keyvalue_get(bucket, "config").unwrap(),
+            Some(b"two".to_vec())
+        );
+        assert_eq!(store.child_keyvalue_get("other", "config").unwrap(), None);
+        assert!(
+            store
+                .child_keyvalue_set(
+                    bucket,
+                    "oversize",
+                    &vec![0; MCT_KEYVALUE_VALUE_MAX_BYTES + 1]
+                )
+                .is_err()
+        );
+        for index in 1..MCT_KEYVALUE_MAX_KEYS_PER_BUCKET {
+            store
+                .child_keyvalue_set(bucket, &format!("key-{index:03}"), b"value")
+                .unwrap();
+        }
+        assert!(
+            store
+                .child_keyvalue_set(bucket, "overflow", b"value")
+                .is_err()
+        );
+        assert_eq!(
+            store.child_keyvalue_get(bucket, "config").unwrap(),
+            Some(b"two".to_vec())
+        );
     }
 
     #[test]
