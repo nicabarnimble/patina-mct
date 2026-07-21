@@ -10,7 +10,8 @@ Goal: build the next operational layer after the v0 `patinaMother` replacement b
 4. [ ] JVM SDK targeting the chosen resident ingress: synchronous JSON `POST /calls` over the owner-authenticated UDS control socket. The SDK must use UUID idempotency keys by default because `(node, UID, Vision)` scope is shared by same-user applications.
 5. [x] macOS user-launchd supervisor install/start/stop/restart/uninstall completed 2026-07-15 under `layer/surface/build/feat/supervisor-lifecycle/SPEC.md`. The daily-operation pain clock that started 2026-07-14 is closed. Linux systemd and non-GUI/headless launchd domains remain separately gated future adapters.
 6. [x] Acquisition-backed immutable artifact staging completed 2026-07-16 under `layer/surface/build/feat/artifact-acquisition/SPEC.md`, including the real supervised `slate-manager@0.2.0` daily-driver proof.
-7. [ ] Resume the paused `mct-release-hardening` and `mct-interface-launcher-control` epics as the final gate. Replacement of `patinaMother` cannot be claimed while they are paused; they are deferred, not dropped.
+7. [x] Durable temporal triggering and scoped Watch delivery completed 2026-07-21 under the Replacement Slice 4A/4B SPECs, including the source-derived watcher, exact sink, and supervised three-fixture proof.
+8. [ ] Resume the paused `mct-release-hardening` and `mct-interface-launcher-control` epics as the final gate. Replacement of `patinaMother` cannot be claimed while they are paused; they are deferred, not dropped.
 
 ## Completed: Multi-Mother — single-hop forwarding
 
@@ -121,8 +122,34 @@ Completed 2026-07-16 under `layer/surface/build/feat/artifact-acquisition/SPEC.m
 - [x] Persist operator decisions, standing source records, attempts, packages, and acquisition-backed artifact provenance; migrate pre-law rows as `historical_unknown`.
 - [x] Close `registry install/sync` as ambient mutation bypasses and require exact `children approve --artifact sha256:<digest>` evidence.
 - [x] Prove real `slate-manager@0.2.0` acquisition, denial before approval/grants, ToyGrant-backed execution, revocation, restart denial, and uninstall preservation.
-- [ ] Import and prove real `folder-watch-actor@0.1.0` and `watch-null-sink@0.1.0` fixtures before claiming the full three-fixture `patinaMother` replacement test.
+- [x] Import and prove source-derived `folder-watch-actor@0.1.0` and exact unmodified `watch-null-sink@0.1.0` fixtures in the full supervised three-fixture `patinaMother` replacement test.
 - [ ] Add network acquisition only through a separately gated deny-by-default egress Toy plus independent connection/secret authority.
+
+## Completed: temporal trigger authority and scheduler — Replacement Slice 4A
+
+Completed 2026-07-21 under `layer/surface/build/feat/trigger-event-runtime/SPEC.md`:
+
+- [x] Add truthful local-only `CallOrigin::TriggerFiring` and deterministic record/revision/occurrence-scoped identities.
+- [x] Persist owner-authenticated, revisioned trigger authority and schema-v8 occurrence, pending, firing, result, and reconciliation projections.
+- [x] Implement explicit missed-fire and overlap matrices in fixed admission order under three named capacity limits.
+- [x] Make authority, pending admission, and firing durable before activation/effect; reconstruct projections from the validated ledger on restart.
+- [x] Prove acquired/approved WIT execution, idempotent same-occurrence evaluation, overlap crash recovery, revocation suppression, terminal non-resurrection, and ordinary-call fairness.
+- [x] Keep `MotherEventSourceAdapterRuntime`, `RegistrySyncTriggerComposition`, and `NetworkArtifactAcquisitionAdapter` closed and add no `ObservationKind`.
+- [x] Complete Replacement Slice 4B Watch authority, child call-out, legacy ABI narrowing, and source-provenance fixture proof.
+
+## Completed: scoped Watch delivery and fixtures — Replacement Slice 4B
+
+Completed 2026-07-21 under `layer/surface/build/feat/watch-event-fixtures/SPEC.md`:
+
+- [x] Require current exact Watch scope and Toy authority, with independent directory-read, keyvalue, logging, and measure grants.
+- [x] Validate event shape, class, safe path, batch capacity, and exact legacy 0.1.x path equality synchronously at `producer.send`.
+- [x] Normalize the admitted set and append batch/event/disposition evidence before any ordinary `WasmHost` nested call.
+- [x] Persist deterministic batch/event/disposition/delivery projections and reconstruct them without duplicate delivery after restart.
+- [x] Build the watcher from the exact quarry source plus reviewed security patch; build the sink unmodified from its exact tag.
+- [x] Prove supervised Slate acquisition plus temporal watcher invocation plus exact sink delivery, revocation, restart, and reopened evidence.
+- [x] Keep `MotherEventSourceAdapterRuntime`, `RegistrySyncTriggerComposition`, and `NetworkArtifactAcquisitionAdapter` closed and add no `ObservationKind`.
+
+The three-fixture runtime slice is complete. Full `patinaMother` replacement remains unclaimed until the paused release-hardening and interface-launcher-control gates close.
 
 ## JVM SDK
 

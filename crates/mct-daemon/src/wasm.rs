@@ -1,5 +1,6 @@
 use crate::{
     children::{MctLoadedChild, operation_id_from_target},
+    state::MctRuntimeStateStore,
     toy::{MctToyAdapterOutcome, MctToyAdapterRegistry, MctToyCallIds},
     wit_values::{lift_component_results_to_json, lower_typed_args_for_component},
 };
@@ -7,7 +8,7 @@ use mct_kernel::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -43,6 +44,114 @@ pub struct MctWitComponentInvocationReport {
     pub result: MctResult,
     pub output_json: Value,
     pub observations: Vec<MctObservation>,
+    pub produced_messages: Vec<MctWitProducedMessage>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctWitProducedMessage {
+    pub target_operation: String,
+    pub topic: String,
+    pub content_type: Option<String>,
+    pub data: Vec<u8>,
+    pub metadata: Vec<(String, String)>,
+    pub offset: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MctWitWatchCallOutWireEvent {
+    pub watcher: String,
+    #[serde(alias = "stream-name")]
+    pub stream: String,
+    pub change_kind: String,
+    pub absolute_path: String,
+    pub relative_path: String,
+    pub size_bytes: Option<u64>,
+    pub modified_unix_ms: Option<u64>,
+    pub sha256: Option<String>,
+    pub detected_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MctWitWatchMessageAdmission {
+    pub event_classes: BTreeSet<WatchEventClass>,
+    pub max_events_per_batch: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+pub enum MctWitWatchMessageRefusal {
+    #[error("watch_target_refused")]
+    Target,
+    #[error("watch_topic_refused")]
+    Topic,
+    #[error("watch_content_type_refused")]
+    ContentType,
+    #[error("watch_message_bound_refused")]
+    MessageBound,
+    #[error("watch_batch_capacity_refused")]
+    BatchCapacity,
+    #[error("watch_event_shape_refused")]
+    EventShape,
+    #[error("watch_event_class_refused")]
+    EventClass,
+    #[error("watch_safe_path_refused")]
+    SafePath,
+    #[error("watch_legacy_path_equality_refused")]
+    LegacyPathEquality,
+}
+
+pub fn validate_wit_watch_message_admission(
+    admission: &MctWitWatchMessageAdmission,
+    target_operation: &str,
+    topic: &str,
+    content_type: Option<&str>,
+    data: &[u8],
+    metadata_pair_count: usize,
+    admitted_event_count: usize,
+) -> Result<MctWitWatchCallOutWireEvent, MctWitWatchMessageRefusal> {
+    let operation_interface = target_operation
+        .rsplit_once('.')
+        .map(|(interface, _)| interface)
+        .ok_or(MctWitWatchMessageRefusal::Target)?;
+    if content_type != Some("application/json") {
+        return Err(MctWitWatchMessageRefusal::ContentType);
+    }
+    if data.len() > MCT_WATCH_MESSAGE_MAX_BYTES
+        || metadata_pair_count > MCT_WATCH_METADATA_PAIRS_MAX
+    {
+        return Err(MctWitWatchMessageRefusal::MessageBound);
+    }
+    if admitted_event_count >= admission.max_events_per_batch as usize
+        || admitted_event_count >= MCT_WATCH_MAX_EVENTS_PER_BATCH as usize
+    {
+        return Err(MctWitWatchMessageRefusal::BatchCapacity);
+    }
+    let wire: MctWitWatchCallOutWireEvent =
+        serde_json::from_slice(data).map_err(|_| MctWitWatchMessageRefusal::EventShape)?;
+    let event_class = match (topic, wire.change_kind.as_str()) {
+        ("file-created", "created") => WatchEventClass::Created,
+        ("file-modified", "modified") => WatchEventClass::Modified,
+        ("file-deleted", "deleted") => WatchEventClass::Deleted,
+        ("file-created" | "file-modified" | "file-deleted", _) => {
+            return Err(MctWitWatchMessageRefusal::EventClass);
+        }
+        _ => return Err(MctWitWatchMessageRefusal::Topic),
+    };
+    if !admission.event_classes.contains(&event_class) {
+        return Err(MctWitWatchMessageRefusal::EventClass);
+    }
+    validate_safe_watch_relative_path(&wire.relative_path)
+        .map_err(|_| MctWitWatchMessageRefusal::SafePath)?;
+    let compatibility = validate_legacy_watch_paths(
+        operation_interface,
+        &wire.absolute_path,
+        &wire.relative_path,
+    )
+    .map_err(|_| MctWitWatchMessageRefusal::Target)?;
+    if compatibility != LegacyWatchCompatibilityValidation::Matched {
+        return Err(MctWitWatchMessageRefusal::LegacyPathEquality);
+    }
+    Ok(wire)
 }
 
 #[derive(Debug)]
@@ -80,7 +189,24 @@ pub struct MctWitHostImportAdapters {
     pub logging: Option<MctWitToyHostAdapter>,
     pub measure: Option<MctWitToyHostAdapter>,
     pub git: Option<MctWitToyHostAdapter>,
+    pub keyvalue: Option<MctWitKeyvalueHostAdapter>,
+    pub messaging: Option<MctWitMessagingHostAdapter>,
     pub wasi: Option<MctWasiHostConfig>,
+}
+
+#[derive(Debug)]
+pub struct MctWitKeyvalueHostAdapter {
+    pub get: MctWitToyHostAdapter,
+    pub set: MctWitToyHostAdapter,
+    pub state_path: PathBuf,
+    pub bucket_identifier: String,
+    pub bucket_resource_id: String,
+}
+
+#[derive(Debug)]
+pub struct MctWitMessagingHostAdapter {
+    pub toy: MctWitToyHostAdapter,
+    pub watch_admission: MctWitWatchMessageAdmission,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -123,6 +249,8 @@ impl MctWitHostImportAdapters {
             logging: None,
             measure: None,
             git: None,
+            keyvalue: None,
+            messaging: None,
             wasi: None,
         }
     }
@@ -146,6 +274,11 @@ struct MctWitHostState {
     logging: Option<MctWitToyHostAdapter>,
     measure: Option<MctWitToyHostAdapter>,
     git: Option<MctWitToyHostAdapter>,
+    keyvalue: Option<MctWitKeyvalueHostAdapter>,
+    messaging: Option<MctWitMessagingHostAdapter>,
+    messaging_clients: BTreeMap<u32, String>,
+    next_resource_rep: u32,
+    produced_messages: Vec<MctWitProducedMessage>,
     wasi_ctx: WasiCtx,
     wasi_table: ResourceTable,
     next_toy_call_index: u64,
@@ -690,6 +823,7 @@ fn wit_stale_authority_report(
         result,
         output_json: Value::Null,
         observations: vec![observation],
+        produced_messages: Vec::new(),
     }
 }
 
@@ -734,6 +868,7 @@ fn wit_timeout_report(
         result,
         output_json: Value::Null,
         observations: vec![started, completed],
+        produced_messages: Vec::new(),
     }
 }
 
@@ -981,6 +1116,11 @@ impl MctWasmComponentRuntime {
                 logging: host_adapters.logging,
                 measure: host_adapters.measure,
                 git: host_adapters.git,
+                keyvalue: host_adapters.keyvalue,
+                messaging: host_adapters.messaging,
+                messaging_clients: BTreeMap::new(),
+                next_resource_rep: 1,
+                produced_messages: Vec::new(),
                 wasi_ctx,
                 wasi_table: ResourceTable::new(),
                 next_toy_call_index: 0,
@@ -1078,6 +1218,7 @@ impl MctWasmComponentRuntime {
             result,
             output_json,
             observations,
+            produced_messages: store.data().produced_messages.clone(),
         })
     }
 
@@ -1342,10 +1483,12 @@ fn validate_wit_host_imports_for_adapters(
             "wasi:logging/logging@0.1.0" => host_adapters.logging.is_some(),
             "patina:measure/measure@0.1.0" => host_adapters.measure.is_some(),
             "patina:git/git@0.1.0" => host_adapters.git.is_some(),
-            name if is_supported_wasi_p2_import(name) => host_adapters
-                .wasi
-                .as_ref()
-                .is_some_and(|wasi| !is_wasi_filesystem_import(name) || !wasi.preopens.is_empty()),
+            "wasi:keyvalue/store@0.2.0" => host_adapters.keyvalue.is_some(),
+            "wasi:messaging/producer@0.2.0" | "wasi:messaging/types@0.2.0" => {
+                host_adapters.messaging.is_some()
+            }
+            "patina:child/runtime-types@0.1.0" | "patina:watch/types@0.1.0" => true,
+            name if is_supported_wasi_p2_import(name) => host_adapters.wasi.is_some(),
             _ => false,
         };
         if !configured {
@@ -1384,13 +1527,6 @@ fn is_supported_wasi_p2_import(name: &str) -> bool {
     )
 }
 
-fn is_wasi_filesystem_import(name: &str) -> bool {
-    matches!(
-        name,
-        "wasi:filesystem/types@0.2.3" | "wasi:filesystem/preopens@0.2.3"
-    )
-}
-
 fn link_wit_host_import_adapters(
     linker: &mut component::Linker<MctWitHostState>,
     host_adapters: &MctWitHostImportAdapters,
@@ -1399,6 +1535,19 @@ fn link_wit_host_import_adapters(
         wasmtime_wasi::p2::add_to_linker_sync(linker).map_err(|error| {
             MctWasmComponentRuntimeError::Instantiate {
                 path: PathBuf::from("wasi:p2"),
+                message: error.to_string(),
+            }
+        })?;
+    }
+
+    for type_only_import in [
+        "patina:child/runtime-types@0.1.0",
+        "patina:watch/types@0.1.0",
+        "wasi:messaging/types@0.2.0",
+    ] {
+        linker.instance(type_only_import).map_err(|error| {
+            MctWasmComponentRuntimeError::Instantiate {
+                path: PathBuf::from(type_only_import),
                 message: error.to_string(),
             }
         })?;
@@ -1493,7 +1642,369 @@ fn link_wit_host_import_adapters(
     if host_adapters.git.is_some() {
         link_git_host_import(linker)?;
     }
+    if host_adapters.keyvalue.is_some() {
+        link_keyvalue_host_import(linker)?;
+    }
+    if host_adapters.messaging.is_some() {
+        link_messaging_host_import(linker)?;
+    }
 
+    Ok(())
+}
+
+#[derive(Debug)]
+struct MctKeyvalueBucketResource;
+
+#[derive(Debug)]
+struct MctMessagingClientResource;
+
+fn set_wit_result_ok(
+    results: &mut [component::Val],
+    value: Option<component::Val>,
+) -> wasmtime::Result<()> {
+    let [result] = results else {
+        return Err(wasmtime::Error::msg("invalid WIT result shape"));
+    };
+    *result = component::Val::Result(Ok(value.map(Box::new)));
+    Ok(())
+}
+
+fn set_keyvalue_error(results: &mut [component::Val], name: &str) -> wasmtime::Result<()> {
+    let [result] = results else {
+        return Err(wasmtime::Error::msg("invalid keyvalue result shape"));
+    };
+    *result = component::Val::Result(Err(Some(Box::new(component::Val::Variant(
+        name.into(),
+        None,
+    )))));
+    Ok(())
+}
+
+fn link_keyvalue_host_import(
+    linker: &mut component::Linker<MctWitHostState>,
+) -> Result<(), MctWasmComponentRuntimeError> {
+    let mut store = linker
+        .instance("wasi:keyvalue/store@0.2.0")
+        .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+            path: PathBuf::from("wasi:keyvalue/store@0.2.0"),
+            message: error.to_string(),
+        })?;
+    store
+        .resource(
+            "bucket",
+            component::ResourceType::host::<MctKeyvalueBucketResource>(),
+            |_store, _rep| Ok(()),
+        )
+        .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+            path: PathBuf::from("wasi:keyvalue/store@0.2.0.bucket"),
+            message: error.to_string(),
+        })?;
+    store
+        .func_new("open", |mut store, _ty, params, results| {
+            let [component::Val::String(identifier)] = params else {
+                return Err(wasmtime::Error::msg("invalid keyvalue open call shape"));
+            };
+            let adapter = store
+                .data_mut()
+                .keyvalue
+                .take()
+                .ok_or_else(|| wasmtime::Error::msg("keyvalue adapter not configured"))?;
+            let expected = adapter.bucket_identifier == *identifier;
+            let report = store.data_mut().call_toy(
+                &adapter.get,
+                &serde_json::json!({"function": "open", "identifier": identifier}),
+            );
+            store.data_mut().keyvalue = Some(adapter);
+            if !expected || report.outcome != MctToyAdapterOutcome::Success {
+                return set_keyvalue_error(results, "access-denied");
+            }
+            let resource = component::Resource::<MctKeyvalueBucketResource>::new_own(1);
+            let resource =
+                component::ResourceAny::try_from_resource(resource, store.as_context_mut())?;
+            set_wit_result_ok(results, Some(component::Val::Resource(resource)))
+        })
+        .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+            path: PathBuf::from("wasi:keyvalue/store@0.2.0.open"),
+            message: error.to_string(),
+        })?;
+    store
+        .func_new("[method]bucket.get", |mut store, _ty, params, results| {
+            let [
+                component::Val::Resource(bucket),
+                component::Val::String(key),
+            ] = params
+            else {
+                return Err(wasmtime::Error::msg("invalid keyvalue get call shape"));
+            };
+            let bucket =
+                bucket.try_into_resource::<MctKeyvalueBucketResource>(store.as_context_mut())?;
+            if bucket.rep() != 1 {
+                return set_keyvalue_error(results, "access-denied");
+            }
+            let adapter = store
+                .data_mut()
+                .keyvalue
+                .take()
+                .ok_or_else(|| wasmtime::Error::msg("keyvalue adapter not configured"))?;
+            let report = store.data_mut().call_toy(
+                &adapter.get,
+                &serde_json::json!({"function": "get", "key": key}),
+            );
+            let value = if report.outcome == MctToyAdapterOutcome::Success {
+                MctRuntimeStateStore::open(&adapter.state_path)
+                    .and_then(|state| state.child_keyvalue_get(&adapter.bucket_resource_id, key))
+                    .ok()
+                    .flatten()
+            } else {
+                None
+            };
+            let allowed = report.outcome == MctToyAdapterOutcome::Success;
+            store.data_mut().keyvalue = Some(adapter);
+            if !allowed {
+                return set_keyvalue_error(results, "access-denied");
+            }
+            let value = value.map(|bytes| {
+                component::Val::List(bytes.into_iter().map(component::Val::U8).collect())
+            });
+            set_wit_result_ok(results, Some(component::Val::Option(value.map(Box::new))))
+        })
+        .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+            path: PathBuf::from("wasi:keyvalue/store@0.2.0.[method]bucket.get"),
+            message: error.to_string(),
+        })?;
+    store
+        .func_new("[method]bucket.set", |mut store, _ty, params, results| {
+            let [
+                component::Val::Resource(bucket),
+                component::Val::String(key),
+                component::Val::List(value),
+            ] = params
+            else {
+                return Err(wasmtime::Error::msg("invalid keyvalue set call shape"));
+            };
+            let bucket =
+                bucket.try_into_resource::<MctKeyvalueBucketResource>(store.as_context_mut())?;
+            if bucket.rep() != 1 {
+                return set_keyvalue_error(results, "access-denied");
+            }
+            let bytes = value
+                .iter()
+                .map(|value| match value {
+                    component::Val::U8(value) => Ok(*value),
+                    _ => Err(wasmtime::Error::msg("invalid keyvalue byte shape")),
+                })
+                .collect::<wasmtime::Result<Vec<_>>>()?;
+            let adapter = store
+                .data_mut()
+                .keyvalue
+                .take()
+                .ok_or_else(|| wasmtime::Error::msg("keyvalue adapter not configured"))?;
+            let report = store.data_mut().call_toy(
+                &adapter.set,
+                &serde_json::json!({"function": "set", "key": key, "size_bytes": bytes.len()}),
+            );
+            let persisted = report.outcome == MctToyAdapterOutcome::Success
+                && MctRuntimeStateStore::open(&adapter.state_path)
+                    .and_then(|state| {
+                        state.child_keyvalue_set(&adapter.bucket_resource_id, key, &bytes)
+                    })
+                    .is_ok();
+            store.data_mut().keyvalue = Some(adapter);
+            if persisted {
+                set_wit_result_ok(results, None)
+            } else {
+                set_keyvalue_error(results, "access-denied")
+            }
+        })
+        .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+            path: PathBuf::from("wasi:keyvalue/store@0.2.0.[method]bucket.set"),
+            message: error.to_string(),
+        })?;
+    Ok(())
+}
+
+fn link_messaging_host_import(
+    linker: &mut component::Linker<MctWitHostState>,
+) -> Result<(), MctWasmComponentRuntimeError> {
+    let mut producer = linker
+        .instance("wasi:messaging/producer@0.2.0")
+        .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+            path: PathBuf::from("wasi:messaging/producer@0.2.0"),
+            message: error.to_string(),
+        })?;
+    producer
+        .resource(
+            "client",
+            component::ResourceType::host::<MctMessagingClientResource>(),
+            |mut store, rep| {
+                store.data_mut().messaging_clients.remove(&rep);
+                Ok(())
+            },
+        )
+        .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+            path: PathBuf::from("wasi:messaging/producer@0.2.0.client"),
+            message: error.to_string(),
+        })?;
+    producer
+        .func_new("connect", |mut store, _ty, params, results| {
+            let [component::Val::String(name)] = params else {
+                return Err(wasmtime::Error::msg("invalid messaging connect call shape"));
+            };
+            if resolve_wit_operation_id(name).is_err() {
+                let [result] = results else {
+                    return Err(wasmtime::Error::msg("invalid messaging result shape"));
+                };
+                *result = component::Val::Result(Err(Some(Box::new(component::Val::String(
+                    "invalid operation target".into(),
+                )))));
+                return Ok(());
+            }
+            let adapter = store
+                .data_mut()
+                .messaging
+                .take()
+                .ok_or_else(|| wasmtime::Error::msg("messaging adapter not configured"))?;
+            let report = store.data_mut().call_toy(
+                &adapter.toy,
+                &serde_json::json!({"function": "connect", "name": name}),
+            );
+            store.data_mut().messaging = Some(adapter);
+            if report.outcome != MctToyAdapterOutcome::Success {
+                let [result] = results else {
+                    return Err(wasmtime::Error::msg("invalid messaging result shape"));
+                };
+                *result = component::Val::Result(Err(Some(Box::new(component::Val::String(
+                    "not authorized".into(),
+                )))));
+                return Ok(());
+            }
+            let rep = store.data().next_resource_rep;
+            store.data_mut().next_resource_rep += 1;
+            store.data_mut().messaging_clients.insert(rep, name.clone());
+            let resource = component::Resource::<MctMessagingClientResource>::new_own(rep);
+            let resource =
+                component::ResourceAny::try_from_resource(resource, store.as_context_mut())?;
+            set_wit_result_ok(results, Some(component::Val::Resource(resource)))
+        })
+        .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+            path: PathBuf::from("wasi:messaging/producer@0.2.0.connect"),
+            message: error.to_string(),
+        })?;
+    producer
+        .func_new("send", |mut store, _ty, params, results| {
+            let [
+                component::Val::Resource(client),
+                component::Val::Record(fields),
+            ] = params
+            else {
+                return Err(wasmtime::Error::msg("invalid messaging send call shape"));
+            };
+            let client =
+                client.try_into_resource::<MctMessagingClientResource>(store.as_context_mut())?;
+            let target_operation = store
+                .data()
+                .messaging_clients
+                .get(&client.rep())
+                .cloned()
+                .ok_or_else(|| wasmtime::Error::msg("unknown messaging client"))?;
+            let field = |name: &str| {
+                fields
+                    .iter()
+                    .find(|(field, _)| field == name)
+                    .map(|(_, value)| value)
+            };
+            let topic = match field("topic") {
+                Some(component::Val::String(topic)) => topic.clone(),
+                _ => return Err(wasmtime::Error::msg("missing message topic")),
+            };
+            let content_type = match field("content-type") {
+                Some(component::Val::Option(Some(value))) => match value.as_ref() {
+                    component::Val::String(value) => Some(value.clone()),
+                    _ => return Err(wasmtime::Error::msg("invalid message content type")),
+                },
+                Some(component::Val::Option(None)) => None,
+                _ => return Err(wasmtime::Error::msg("missing message content type")),
+            };
+            let data = match field("data") {
+                Some(component::Val::List(values)) => values
+                    .iter()
+                    .map(|value| match value {
+                        component::Val::U8(value) => Ok(*value),
+                        _ => Err(wasmtime::Error::msg("invalid message byte shape")),
+                    })
+                    .collect::<wasmtime::Result<Vec<_>>>()?,
+                _ => return Err(wasmtime::Error::msg("missing message data")),
+            };
+            let metadata = match field("metadata") {
+                Some(component::Val::List(values)) => values
+                    .iter()
+                    .map(|value| match value {
+                        component::Val::Tuple(values) => match values.as_slice() {
+                            [component::Val::String(key), component::Val::String(value)] => {
+                                Ok((key.clone(), value.clone()))
+                            }
+                            _ => Err(wasmtime::Error::msg("invalid message metadata tuple")),
+                        },
+                        _ => Err(wasmtime::Error::msg("invalid message metadata shape")),
+                    })
+                    .collect::<wasmtime::Result<Vec<_>>>()?,
+                _ => return Err(wasmtime::Error::msg("missing message metadata")),
+            };
+            let adapter = store
+                .data_mut()
+                .messaging
+                .take()
+                .ok_or_else(|| wasmtime::Error::msg("messaging adapter not configured"))?;
+            if let Err(refusal) = validate_wit_watch_message_admission(
+                &adapter.watch_admission,
+                &target_operation,
+                &topic,
+                content_type.as_deref(),
+                &data,
+                metadata.len(),
+                store.data().produced_messages.len(),
+            ) {
+                store.data_mut().messaging = Some(adapter);
+                let [result] = results else {
+                    return Err(wasmtime::Error::msg("invalid messaging result shape"));
+                };
+                *result = component::Val::Result(Err(Some(Box::new(component::Val::String(
+                    refusal.to_string(),
+                )))));
+                return Ok(());
+            }
+            let report = store.data_mut().call_toy(
+                &adapter.toy,
+                &serde_json::json!({"function": "send", "target": target_operation, "topic": topic, "size_bytes": data.len()}),
+            );
+            store.data_mut().messaging = Some(adapter);
+            if report.outcome != MctToyAdapterOutcome::Success {
+                let [result] = results else {
+                    return Err(wasmtime::Error::msg("invalid messaging result shape"));
+                };
+                *result = component::Val::Result(Err(Some(Box::new(component::Val::String(
+                    "not authorized".into(),
+                )))));
+                return Ok(());
+            }
+            let offset = store.data().produced_messages.len() as u64 + 1;
+            store
+                .data_mut()
+                .produced_messages
+                .push(MctWitProducedMessage {
+                    target_operation,
+                    topic,
+                    content_type,
+                    data,
+                    metadata,
+                    offset,
+                });
+            set_wit_result_ok(results, Some(component::Val::U64(offset)))
+        })
+        .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
+            path: PathBuf::from("wasi:messaging/producer@0.2.0.send"),
+            message: error.to_string(),
+        })?;
     Ok(())
 }
 
@@ -2263,6 +2774,8 @@ mod tests {
                 observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             }),
             git: None,
+            keyvalue: None,
+            messaging: None,
             wasi: None,
         }
     }
@@ -2392,6 +2905,8 @@ mod tests {
                 observation_id_prefix: "obs-wit-git-toy".into(),
                 observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
             }),
+            keyvalue: None,
+            messaging: None,
             wasi: None,
         }
     }
@@ -2458,6 +2973,344 @@ mod tests {
             wasm_size_bytes: 0,
             instance_state: crate::children::MctChildInstanceState::Ready,
         }
+    }
+
+    #[test]
+    fn watch_send_admission_refuses_paths_shape_and_capacity_synchronously() {
+        let admission = MctWitWatchMessageAdmission {
+            event_classes: BTreeSet::from([WatchEventClass::Created]),
+            max_events_per_batch: 1,
+        };
+        let event = serde_json::json!({
+            "watcher": "folder-watch-actor",
+            "stream": "source",
+            "change_kind": "created",
+            "absolute_path": "safe.txt",
+            "relative_path": "safe.txt",
+            "size_bytes": 3,
+            "modified_unix_ms": 1,
+            "sha256": "abc",
+            "detected_at": "2026-07-21T00:00:00Z"
+        });
+        let bytes = serde_json::to_vec(&event).unwrap();
+        assert!(
+            validate_wit_watch_message_admission(
+                &admission,
+                "patina:watch/events@0.1.0.emit",
+                "file-created",
+                Some("application/json"),
+                &bytes,
+                0,
+                0,
+            )
+            .is_ok()
+        );
+
+        let mut unsafe_path = event.clone();
+        unsafe_path["absolute_path"] = serde_json::json!("../escape");
+        unsafe_path["relative_path"] = serde_json::json!("../escape");
+        assert_eq!(
+            validate_wit_watch_message_admission(
+                &admission,
+                "patina:watch/events@0.1.0.emit",
+                "file-created",
+                Some("application/json"),
+                &serde_json::to_vec(&unsafe_path).unwrap(),
+                0,
+                0,
+            ),
+            Err(MctWitWatchMessageRefusal::SafePath)
+        );
+
+        let mut mismatched = event.clone();
+        mismatched["absolute_path"] = serde_json::json!("other.txt");
+        assert_eq!(
+            validate_wit_watch_message_admission(
+                &admission,
+                "patina:watch/events@0.1.0.emit",
+                "file-created",
+                Some("application/json"),
+                &serde_json::to_vec(&mismatched).unwrap(),
+                0,
+                0,
+            ),
+            Err(MctWitWatchMessageRefusal::LegacyPathEquality)
+        );
+
+        let mut unknown_field = event.clone();
+        unknown_field["ambient_path"] = serde_json::json!("/private/source/safe.txt");
+        assert_eq!(
+            validate_wit_watch_message_admission(
+                &admission,
+                "patina:watch/events@0.1.0.emit",
+                "file-created",
+                Some("application/json"),
+                &serde_json::to_vec(&unknown_field).unwrap(),
+                0,
+                0,
+            ),
+            Err(MctWitWatchMessageRefusal::EventShape)
+        );
+        assert_eq!(
+            validate_wit_watch_message_admission(
+                &admission,
+                "patina:watch/events@0.1.0.emit",
+                "file-created",
+                Some("application/json"),
+                &bytes,
+                0,
+                1,
+            ),
+            Err(MctWitWatchMessageRefusal::BatchCapacity)
+        );
+        assert_eq!(
+            validate_wit_watch_message_admission(
+                &admission,
+                "patina:watch/events@0.1.0.emit",
+                "file-modified",
+                Some("application/json"),
+                &bytes,
+                0,
+                0,
+            ),
+            Err(MctWitWatchMessageRefusal::EventClass)
+        );
+    }
+
+    #[test]
+    fn source_derived_watcher_executes_with_explicit_bounded_host_adapters() {
+        let root = tempfile::tempdir().unwrap();
+        let service = tempfile::tempdir().unwrap();
+        let state_path = service.path().join("watch-state.sqlite3");
+        MctRuntimeStateStore::open(&state_path).unwrap();
+        let component_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/folder-watch-actor-0.1.0/folder-watch-actor.wasm");
+        let mut watcher_call = typed_call("status");
+        watcher_call.target =
+            OperationTarget::new("patina:watch", "control@0.1.0", "status").unwrap();
+        let child = MctLoadedChild {
+            child_id: ChildId::new("child:folder-watch-actor").unwrap(),
+            name: "folder-watch-actor".into(),
+            version: "0.1.0".into(),
+            description: None,
+            kind: "child".into(),
+            role: Some("app".into()),
+            wasm_path: component_path.clone(),
+            manifest_path: component_path.with_file_name("child.toml"),
+            wasm_digest: crate::children::MctChildFileDigest {
+                sha256: "fixture".into(),
+                sidecar_present: false,
+                verified: true,
+            },
+            manifest_digest: crate::children::MctChildFileDigest {
+                sha256: "fixture".into(),
+                sidecar_present: false,
+                verified: true,
+            },
+            artifact_id: "artifact-watch-fixture".into(),
+            ingress_mode: crate::children::MctChildIngressMode::WitOnly,
+            allowed_operations: vec![
+                "patina:watch/control@0.1.0.status".into(),
+                "patina:watch/control@0.1.0.configure".into(),
+                "patina:watch/control@0.1.0.scan-now".into(),
+            ],
+            requested_toys: Vec::new(),
+            subscribed_streams: Vec::new(),
+            relationship_listens: Vec::new(),
+            wasm_size_bytes: std::fs::metadata(&component_path).unwrap().len(),
+            instance_state: crate::children::MctChildInstanceState::Ready,
+        };
+        let make_adapters = |call: &MctCall| {
+            let mut toy_registry = MctToyAdapterRegistry::new();
+            toy_registry.register(
+                ToyId::new("toy-echo").unwrap(),
+                crate::MctToyBackend::EchoJson,
+            );
+            let adapter = |stem: &str| MctWitToyHostAdapter {
+                authorized_toy_call: crate::authority_test_fixture::authorized_toy_for_call(
+                    call,
+                    "toy-echo",
+                    ChildInstanceId::new("instance-watch-fixture").unwrap(),
+                    "use",
+                    stem,
+                ),
+                observation_id_prefix: format!("obs-{stem}"),
+                observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+            };
+            MctWitHostImportAdapters {
+                toy_registry,
+                logging: Some(adapter("watch-logging")),
+                measure: Some(adapter("watch-measure")),
+                git: None,
+                keyvalue: Some(MctWitKeyvalueHostAdapter {
+                    get: adapter("watch-keyvalue-get"),
+                    set: adapter("watch-keyvalue-set"),
+                    state_path: state_path.clone(),
+                    bucket_identifier: "default".into(),
+                    bucket_resource_id: "fixture:bucket:default".into(),
+                }),
+                messaging: Some(MctWitMessagingHostAdapter {
+                    toy: adapter("watch-messaging"),
+                    watch_admission: MctWitWatchMessageAdmission {
+                        event_classes: BTreeSet::from([
+                            WatchEventClass::Created,
+                            WatchEventClass::Modified,
+                            WatchEventClass::Deleted,
+                        ]),
+                        max_events_per_batch: MCT_WATCH_MAX_EVENTS_PER_BATCH,
+                    },
+                }),
+                wasi: Some(MctWasiHostConfig {
+                    preopens: vec![MctWasiPreopen {
+                        host_path: root.path().to_path_buf(),
+                        guest_path: "/input".into(),
+                        access: MctWasiPreopenAccess::ReadOnly,
+                    }],
+                }),
+            }
+        };
+        let invoke = |call: &MctCall, args: serde_json::Value, stem: &str| {
+            runtime()
+                .invoke_authorized_child_wit_export_with_host_adapters(
+                    crate::authority_test_fixture::authorized_child_for_call(
+                        call,
+                        "folder-watch-actor",
+                        call.caller.node_id.clone(),
+                        stem,
+                    ),
+                    &child,
+                    call,
+                    &args,
+                    make_adapters(call),
+                    ids(),
+                )
+                .unwrap()
+        };
+
+        let status = invoke(&watcher_call, serde_json::json!([]), "watch-status");
+        assert_eq!(status.result.outcome, ResultOutcome::Success);
+        assert_eq!(status.output_json["results"][0]["ticks"], 0);
+
+        let mut configure_call = watcher_call.clone();
+        configure_call.call_id = CallId::new("call-watch-configure").unwrap();
+        configure_call.target.function_name = "configure".into();
+        let configured = invoke(
+            &configure_call,
+            serde_json::json!([{
+                "watch-path": "/input",
+                "stream-name": "patina:watch/events@0.1.0.emit",
+                "recursive": true,
+                "include-hidden": false,
+                "emit-existing-on-start": true,
+                "extensions": []
+            }, true]),
+            "watch-configure",
+        );
+        assert_eq!(configured.result.outcome, ResultOutcome::Success);
+        std::fs::write(root.path().join("created.txt"), b"fixture content").unwrap();
+
+        let mut scan_call = watcher_call.clone();
+        scan_call.call_id = CallId::new("call-watch-scan").unwrap();
+        scan_call.target.function_name = "scan-now".into();
+        let scanned = invoke(&scan_call, serde_json::json!([]), "watch-scan");
+        assert_eq!(scanned.result.outcome, ResultOutcome::Success);
+        assert_eq!(scanned.produced_messages.len(), 1);
+        let event: serde_json::Value =
+            serde_json::from_slice(&scanned.produced_messages[0].data).unwrap();
+        assert_eq!(event["relative_path"], "created.txt");
+        assert_eq!(event["absolute_path"], "created.txt");
+    }
+
+    #[test]
+    fn exact_watch_null_sink_executes_without_watch_or_filesystem_authority() {
+        let component_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/watch-null-sink-0.1.0/watch-null-sink.wasm");
+        let mut sink_call = typed_call("emit");
+        sink_call.call_id = CallId::new("call-watch-sink").unwrap();
+        sink_call.target = OperationTarget::new("patina:watch", "events@0.1.0", "emit").unwrap();
+        let child = MctLoadedChild {
+            child_id: ChildId::new("child:watch-null-sink").unwrap(),
+            name: "watch-null-sink".into(),
+            version: "0.1.0".into(),
+            description: None,
+            kind: "child".into(),
+            role: Some("app".into()),
+            wasm_path: component_path.clone(),
+            manifest_path: component_path.with_file_name("child.toml"),
+            wasm_digest: crate::children::MctChildFileDigest {
+                sha256: "fixture".into(),
+                sidecar_present: false,
+                verified: true,
+            },
+            manifest_digest: crate::children::MctChildFileDigest {
+                sha256: "fixture".into(),
+                sidecar_present: false,
+                verified: true,
+            },
+            artifact_id: "artifact-watch-sink-fixture".into(),
+            ingress_mode: crate::children::MctChildIngressMode::WitOnly,
+            allowed_operations: vec!["patina:watch/events@0.1.0.emit".into()],
+            requested_toys: Vec::new(),
+            subscribed_streams: Vec::new(),
+            relationship_listens: Vec::new(),
+            wasm_size_bytes: std::fs::metadata(&component_path).unwrap().len(),
+            instance_state: crate::children::MctChildInstanceState::Ready,
+        };
+        let adapter = |stem: &str| MctWitToyHostAdapter {
+            authorized_toy_call: crate::authority_test_fixture::authorized_toy_for_call(
+                &sink_call,
+                "toy-echo",
+                ChildInstanceId::new("instance-watch-sink").unwrap(),
+                "use",
+                stem,
+            ),
+            observation_id_prefix: format!("obs-{stem}"),
+            observed_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+        };
+        let mut toy_registry = MctToyAdapterRegistry::new();
+        toy_registry.register(
+            ToyId::new("toy-echo").unwrap(),
+            crate::MctToyBackend::EchoJson,
+        );
+        let report = runtime()
+            .invoke_authorized_child_wit_export_with_host_adapters(
+                crate::authority_test_fixture::authorized_child_for_call(
+                    &sink_call,
+                    "watch-null-sink",
+                    sink_call.caller.node_id.clone(),
+                    "watch-sink",
+                ),
+                &child,
+                &sink_call,
+                &serde_json::json!([{
+                    "watcher": "folder-watch-actor",
+                    "stream-name": "patina:watch/events@0.1.0.emit",
+                    "change-kind": "created",
+                    "absolute-path": "created.txt",
+                    "relative-path": "created.txt",
+                    "size-bytes": 15,
+                    "modified-unix-ms": 1,
+                    "sha256": format!("sha256:{}", "a".repeat(64)),
+                    "detected-at": "2026-05-31T00:00:00Z"
+                }]),
+                MctWitHostImportAdapters {
+                    toy_registry,
+                    logging: Some(adapter("sink-logging")),
+                    measure: Some(adapter("sink-measure")),
+                    git: None,
+                    keyvalue: None,
+                    messaging: None,
+                    wasi: Some(MctWasiHostConfig {
+                        preopens: Vec::new(),
+                    }),
+                },
+                ids(),
+            )
+            .unwrap();
+
+        assert_eq!(report.result.outcome, ResultOutcome::Success);
+        assert!(report.output_json["results"][0].get("ok").is_some());
+        assert!(report.produced_messages.is_empty());
     }
 
     #[test]
@@ -2590,7 +3443,7 @@ mod tests {
     }
 
     #[test]
-    fn mct_wit_runtime_rejects_filesystem_import_without_preopen() {
+    fn mct_wit_runtime_exposes_no_ambient_directory_without_preopen() {
         let runtime = runtime();
         let dir = tempfile::tempdir().unwrap();
         let component_path = typed_wasi_filesystem_import_component_path(&dir);
@@ -2599,7 +3452,7 @@ mod tests {
             vec!["patina:demo/control@0.1.0.double".into()],
         );
 
-        let error = runtime
+        let report = runtime
             .invoke_authorized_child_wit_export_with_host_adapters(
                 authorized(),
                 &child,
@@ -2608,12 +3461,9 @@ mod tests {
                 wasi_host_adapters(),
                 ids(),
             )
-            .unwrap_err();
+            .unwrap();
 
-        assert!(matches!(
-            error,
-            MctWasmComponentRuntimeError::UnsupportedWitHostImport { .. }
-        ));
+        assert_eq!(report.output_json, serde_json::json!({"results": [14]}));
     }
 
     #[test]

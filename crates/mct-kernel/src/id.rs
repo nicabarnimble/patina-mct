@@ -104,6 +104,15 @@ string_id!(ArtifactSourceAuthorityId);
 string_id!(ArtifactAcquisitionDecisionId);
 string_id!(ArtifactAcquisitionId);
 string_id!(AuthorizedArtifactAcquisitionId);
+string_id!(CallTriggerAuthorityId);
+string_id!(CallTriggerOccurrenceId);
+string_id!(CallTriggerFiringId);
+string_id!(CallTriggerPendingOccurrenceId);
+string_id!(WatchObservationScopeId);
+string_id!(WatchEventBatchId);
+string_id!(WatchEventId);
+string_id!(WatchEventDeliveryDispositionId);
+string_id!(WatchEventDeliveryId);
 
 /// RFC3339 timestamp at the domain boundary, ordered by chronological instant.
 #[derive(Clone, Debug)]

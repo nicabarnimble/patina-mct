@@ -118,6 +118,69 @@ curl --unix-socket ~/.mct/control.sock \
 
 The response is synchronous and typed. Retry a lost response with the same fingerprint and idempotency key; matching completed retries replay the durable result without another child effect.
 
+### Temporal trigger workflow
+
+A temporal trigger is a separate owner-authenticated, ledger-backed standing authority. Its static payload is ingested into the local CAS, and each nominal occurrence constructs a fresh ordinary governed call. Create it against the running resident with `--uds` (or offline only while no resident owns the writer):
+
+```bash
+./target/release/mct-daemon triggers create <trigger-id> \
+  --target patina:example/control@0.1.0.run \
+  --payload-json '[]' \
+  --anchor-at 2026-07-22T09:00:00Z \
+  --interval-ms 60000 \
+  --starts-at 2026-07-22T09:00:00Z \
+  --expires-at 2026-07-22T17:00:00Z \
+  --uds ~/.mct/control.sock \
+  --json
+
+./target/release/mct-daemon triggers show <trigger-id> --state ~/.mct/state.sqlite --json
+./target/release/mct-daemon triggers list --state ~/.mct/state.sqlite --json
+./target/release/mct-daemon triggers revoke <trigger-id> \
+  --expected-revision 1 \
+  --uds ~/.mct/control.sock \
+  --json
+```
+
+Omitted missed-fire and overlap policies default to `skip` and `refuse`. Other closed choices are `coalesce-one|fire-late-bounded` and `coalesce-one|queue-bounded`. Trigger authority never supplies child, route, Toy, network, secret, or acquisition authority; those gates are re-evaluated when the call runs. Event-source triggers, registry-sync composition, and network acquisition remain unavailable.
+
+### Scoped Watch workflow
+
+Watch mutations require the running owner-authenticated resident UDS. After acquiring and exactly approving/assigning the watcher artifact, grant each authority independently:
+
+```bash
+./target/release/mct-daemon toys grant-watch folder-watch-actor /absolute/watch/root \
+  --scope-id scope:folder-watch \
+  --traversal recursive \
+  --events created,modified,deleted \
+  --max-events-per-batch 128 \
+  --coalescing none \
+  --starts-at 2026-07-22T09:00:00Z \
+  --expires-at 2026-07-22T17:00:00Z \
+  --uds ~/.mct/control.sock --json
+
+./target/release/mct-daemon toys grant-directory-read folder-watch-actor /absolute/watch/root \
+  --expires-at 2026-07-22T17:00:00Z --uds ~/.mct/control.sock --json
+./target/release/mct-daemon toys grant-keyvalue folder-watch-actor default \
+  --expires-at 2026-07-22T17:00:00Z --uds ~/.mct/control.sock --json
+./target/release/mct-daemon toys grant-observability folder-watch-actor --logging --measure \
+  --expires-at 2026-07-22T17:00:00Z --uds ~/.mct/control.sock --json
+./target/release/mct-daemon toys grant-observability watch-null-sink --logging --measure \
+  --expires-at 2026-07-22T17:00:00Z --uds ~/.mct/control.sock --json
+
+./target/release/mct-daemon watch scopes show scope:folder-watch \
+  --state ~/.mct/state.sqlite --json
+./target/release/mct-daemon watch scopes list --state ~/.mct/state.sqlite --json
+```
+
+Configure the watcher stream to the exact `patina:watch/events@0.1.0.emit` operation before triggering `scan-now`. `producer.send` acknowledges only invocation-local admission: shape, class, safe path, capacity, scope, and legacy equality are checked synchronously. Mother then normalizes the admitted set and durably appends batch/event/disposition evidence before any ordinary `WasmHost` sink call. The Watch grant supplies neither content read, keyvalue, sink effects, nor call authority.
+
+Revoke through the resident before changing roots or artifacts:
+
+```bash
+./target/release/mct-daemon toys revoke-watch scope:folder-watch \
+  --expected-revision 1 --uds ~/.mct/control.sock --json
+```
+
 ## Peer setup
 
 On the receiving `mctMother`, add an admitted peer after local identity exists:

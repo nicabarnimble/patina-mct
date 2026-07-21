@@ -107,7 +107,8 @@ pub use state::{
     MctQueuedTaskRecord, MctRecordedCallReply, MctRegistrySourceRecord,
     MctRemoteCallableSurfaceRecord, MctRemoteSurfaceRefresh, MctRuntimeRunRecord,
     MctRuntimeRunState, MctRuntimeStateStore, MctRuntimeStateSummary, MctTaskIntentRecord,
-    MctTaskStatus, default_state_path,
+    MctTaskStatus, MctTriggerFiringRecord, MctTriggerOccurrenceDisposition,
+    MctTriggerOccurrenceRecord, MctTriggerPendingOccurrenceRecord, default_state_path,
 };
 pub use status::{
     MctDaemonHealth, MctDaemonReadiness, MctDaemonStatus, MctResidentStatus, daemon_status,
@@ -127,9 +128,11 @@ pub use wasm::{
     MctWasmComponentDiagnosticIds, MctWasmComponentInvocationIds, MctWasmComponentInvocationReport,
     MctWasmComponentRuntime, MctWasmComponentRuntimeError, MctWasmComponentToyInvocation,
     MctWasmHostConfig, MctWasmToyHostImport, MctWitComponentInvocationReport,
-    MctWitHostImportAdapters, MctWitResolvedOperation, MctWitToyHostAdapter,
-    resolve_wit_operation_target, wasm_component_runtime_error_observation,
-    wit_operation_id_from_target,
+    MctWitHostImportAdapters, MctWitKeyvalueHostAdapter, MctWitMessagingHostAdapter,
+    MctWitProducedMessage, MctWitResolvedOperation, MctWitToyHostAdapter,
+    MctWitWatchCallOutWireEvent, MctWitWatchMessageAdmission, MctWitWatchMessageRefusal,
+    resolve_wit_operation_target, validate_wit_watch_message_admission,
+    wasm_component_runtime_error_observation, wit_operation_id_from_target,
 };
 
 /// Returns the crate version for health and smoke tests.

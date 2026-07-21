@@ -1,0 +1,66 @@
+diff --git a/children/folder-watch-actor/src/lib.rs b/children/folder-watch-actor/src/lib.rs
+index c27ed8d..fa40a96 100644
+--- a/children/folder-watch-actor/src/lib.rs
++++ b/children/folder-watch-actor/src/lib.rs
+@@ -258,7 +258,6 @@ fn visit_files(
+         }
+ 
+         let fingerprint = fingerprint_for(&path)?;
+-        let absolute_path = path.to_string_lossy().to_string();
+         let relative_path = path
+             .strip_prefix(root)
+             .unwrap_or(&path)
+@@ -266,9 +265,9 @@ fn visit_files(
+             .replace('\\', "/");
+ 
+         out.insert(
+-            absolute_path.clone(),
++            relative_path.clone(),
+             ObservedFile {
+-                absolute_path,
++                absolute_path: relative_path.clone(),
+                 relative_path,
+                 fingerprint,
+             },
+@@ -352,17 +351,13 @@ fn derive_changes(
+             continue;
+         }
+ 
+-        let relative_path = Path::new(&key)
+-            .file_name()
+-            .and_then(|name| name.to_str())
+-            .unwrap_or(&key)
+-            .to_string();
++        let relative_path = key;
+ 
+         events.push(watch_types::FileChange {
+             watcher: "folder-watch-actor".to_string(),
+             stream_name: stream.to_string(),
+             change_kind: watch_types::ChangeKind::Deleted,
+-            absolute_path: key,
++            absolute_path: relative_path.clone(),
+             relative_path,
+             size_bytes: None,
+             modified_unix_ms: None,
+diff --git a/children/folder-watch-actor/wit/world.wit b/children/folder-watch-actor/wit/world.wit
+index 4622326..19dc4ae 100644
+--- a/children/folder-watch-actor/wit/world.wit
++++ b/children/folder-watch-actor/wit/world.wit
+@@ -1,17 +1,10 @@
+ package patina:folder-watch-actor@0.1.0;
+ 
+ world folder-watch-actor {
+-    import wasi:http/outgoing-handler@0.2.8;
+     import wasi:logging/logging@0.1.0;
+     import wasi:keyvalue/store@0.2.0;
+-    import patina:connect/connect@0.2.0;
+-    import wasi:sql/readwrite@0.1.0;
+     import wasi:messaging/producer@0.2.0;
+-    import patina:events-stream/events-stream@0.1.0;
+     import patina:measure/measure@0.1.0;
+-    import patina:task/task@0.1.0;
+-    import patina:peer/peer@0.1.0;
+-    import patina:git/git@0.1.0;
+     import patina:child/runtime-types@0.1.0;
+     import patina:watch/events@0.1.0;
+ 

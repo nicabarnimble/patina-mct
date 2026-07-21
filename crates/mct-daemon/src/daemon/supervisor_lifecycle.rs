@@ -2034,6 +2034,141 @@ fn install_supervisor_for_test(root: &Path) -> Result<(SupervisorPaths, Supervis
 mod tests {
     use super::*;
 
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::{Digest as _, Sha256};
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
+    #[test]
+    fn watcher_fixture_provenance_is_exact_source_derived_and_sidecar_free() {
+        let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let folder = fixtures.join("folder-watch-actor-0.1.0");
+        let sink = fixtures.join("watch-null-sink-0.1.0");
+        let folder_manifest = folder.join("child.toml");
+        let folder_component = folder.join("folder-watch-actor.wasm");
+        let folder_patch = folder.join("MCT-REBUILD.patch");
+        let folder_provenance = folder.join("PROVENANCE.md");
+        let sink_manifest = sink.join("child.toml");
+        let sink_component = sink.join("watch-null-sink.wasm");
+        let sink_provenance = sink.join("PROVENANCE.md");
+
+        for (path, size, sha256, blake3) in [
+            (
+                &folder_manifest,
+                719,
+                "f1f53ce495b3c5c408bb582a3d8a3d100f33102a4a355bdea2ac7848831c790a",
+                "6ca8f8225fe11ae00c94d08fb8e530f53741c3b0dcfde2273a8e355fe52be718",
+            ),
+            (
+                &folder_component,
+                352_529,
+                "00910422135e822524cd52e446c157056e755187392a36d441cd1ba406ba9096",
+                "466033617dcd41c532f22f881f7fba347a793c9c52c1ac89e93f4df902ce251e",
+            ),
+            (
+                &folder_patch,
+                2_362,
+                "a71f9924149cd96647de542e3eaf6940930fe77e5dcc626b07c38b4bd67d9a2c",
+                "202bb03b3caf9cd258a59ab01f7ac76a7be2359d90e861502c8a72e230c10529",
+            ),
+            (
+                &sink_manifest,
+                358,
+                "6447a156d08b4b438acc1b55f28cf05d1130889479f4428aca98b2e6d327238a",
+                "780dc11735559d58248f69be4ca64659e82a0e4ba36d886d4a7be7608275fedf",
+            ),
+            (
+                &sink_component,
+                70_027,
+                "37f42ebe17db2c6e44e02bf79cf590ba899d3cb96579bbd4ed735597f53dbfe3",
+                "e40605e80b5a61fa7340abc1207676848b1a1383048bb1c5dc13c20e11d7a0cf",
+            ),
+        ] {
+            let bytes = std::fs::read(path).unwrap();
+            assert_eq!(bytes.len(), size, "{}", path.display());
+            assert_eq!(sha256_hex(&bytes), sha256, "{}", path.display());
+            assert_eq!(blake3::hash(&bytes).to_hex().as_str(), blake3);
+        }
+        for path in [
+            &folder_manifest,
+            &folder_component,
+            &sink_manifest,
+            &sink_component,
+        ] {
+            let mut sidecar = path.as_os_str().to_os_string();
+            sidecar.push(".sha256");
+            assert!(!PathBuf::from(sidecar).exists());
+        }
+
+        let folder_manifest_text = std::fs::read_to_string(&folder_manifest).unwrap();
+        let sink_manifest_text = std::fs::read_to_string(&sink_manifest).unwrap();
+        assert!(folder_manifest_text.contains("name = \"folder-watch-actor\""));
+        assert!(folder_manifest_text.contains("version = \"0.1.0\""));
+        assert!(sink_manifest_text.contains("name = \"watch-null-sink\""));
+        assert!(sink_manifest_text.contains("version = \"0.1.0\""));
+
+        let patch = std::fs::read_to_string(&folder_patch).unwrap();
+        assert!(patch.contains("absolute_path: relative_path.clone()"));
+        assert!(patch.contains("children/folder-watch-actor/wit/world.wit"));
+        assert!(!patch.contains("children/watch-null-sink"));
+        let folder_provenance = std::fs::read_to_string(folder_provenance).unwrap();
+        let sink_provenance = std::fs::read_to_string(sink_provenance).unwrap();
+        for provenance in [&folder_provenance, &sink_provenance] {
+            assert!(provenance.contains("526dbf123b040198cb4395c1a63cf498a28ff915"));
+            assert!(provenance.contains("cargo-component 0.21.1"));
+            assert!(provenance.contains("rustc 1.94.0"));
+        }
+        assert!(folder_provenance.contains("source-derived MCT security rebuild"));
+        assert!(
+            folder_provenance
+                .contains("a71f9924149cd96647de542e3eaf6940930fe77e5dcc626b07c38b4bd67d9a2c")
+        );
+        assert!(sink_provenance.contains("unmodified exact-tag source"));
+
+        let mut config = wasmtime::Config::new();
+        config.wasm_component_model(true);
+        let engine = wasmtime::Engine::new(&config).unwrap();
+        let folder_component =
+            wasmtime::component::Component::from_file(&engine, folder_component).unwrap();
+        let folder_imports = folder_component
+            .component_type()
+            .imports(&engine)
+            .map(|(name, _)| name.to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        for required in [
+            "wasi:keyvalue/store@0.2.0",
+            "wasi:messaging/producer@0.2.0",
+            "wasi:filesystem/preopens@0.2.3",
+            "wasi:logging/logging@0.1.0",
+            "patina:measure/measure@0.1.0",
+        ] {
+            assert!(folder_imports.contains(required), "missing {required}");
+        }
+        for forbidden in [
+            "wasi:http/outgoing-handler@0.2.8",
+            "wasi:sql/readwrite@0.1.0",
+            "patina:connect/connect@0.2.0",
+            "patina:git/git@0.1.0",
+        ] {
+            assert!(!folder_imports.contains(forbidden), "retained {forbidden}");
+        }
+        let folder_exports = folder_component
+            .component_type()
+            .exports(&engine)
+            .map(|(name, _)| name.to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(folder_exports.contains("patina:watch/control@0.1.0"));
+
+        let sink_component =
+            wasmtime::component::Component::from_file(&engine, sink_component).unwrap();
+        let sink_exports = sink_component
+            .component_type()
+            .exports(&engine)
+            .map(|(name, _)| name.to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(sink_exports.contains("patina:watch/events@0.1.0"));
+    }
+
     fn entries(path: &Path) -> Vec<mct_observation::MctObservationLedgerEntry> {
         JsonlObservationLedger::open_read_only(path, "ledger-local", "local-mct")
             .unwrap()
@@ -3185,9 +3320,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn supervised_slate_artifact_acquisition_executes_and_revokes_end_to_end() {
+    async fn supervised_trigger_watch_delivery_fixtures_execute_end_to_end() {
         use base64::Engine as _;
         use sha2::{Digest, Sha256};
+        use std::collections::BTreeMap;
         use std::os::unix::fs::PermissionsExt;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -3216,6 +3352,49 @@ mod tests {
                 .unwrap();
             let body = response.split_once("\r\n\r\n").unwrap().1;
             (status, serde_json::from_str(body).unwrap())
+        }
+
+        fn wit_call_submission(
+            call_suffix: &str,
+            namespace: &str,
+            interface_name: &str,
+            function_name: &str,
+            payload: serde_json::Value,
+        ) -> serde_json::Value {
+            let payload = serde_json::to_vec(&payload).unwrap();
+            serde_json::json!({
+                "protocol_request_id": format!("proto-wit-{call_suffix}"),
+                "call_id": format!("call-wit-{call_suffix}"),
+                "target": {
+                    "namespace": namespace,
+                    "interface_name": interface_name,
+                    "function_name": function_name
+                },
+                "payload_metadata": {
+                    "data_classification": "public",
+                    "size_bytes": payload.len(),
+                    "contains_secret_scoped_material": false
+                },
+                "authority_context": {
+                    "policy_revision": 1,
+                    "grants_revision": 1,
+                    "vision_policy_revision": 1
+                },
+                "deadline": "2099-01-01T00:00:00Z",
+                "trace_context": {
+                    "trace_id": format!("trace-wit-{call_suffix}"),
+                    "span_id": format!("span-wit-{call_suffix}")
+                },
+                "payload": {
+                    "payload_kind": "inline_payload",
+                    "inline_payload_ref": format!("payload-wit-{call_suffix}"),
+                    "content_type": "application/json",
+                    "size_bytes": payload.len(),
+                    "blake3_digest_hex": blake3::hash(&payload).to_hex().to_string()
+                },
+                "inline_payload_base64": BASE64_STANDARD.encode(payload),
+                "idempotency_key": format!("wit-fixture-{call_suffix}")
+            })
         }
 
         fn call_submission(call_suffix: &str) -> serde_json::Value {
@@ -3620,6 +3799,319 @@ status = "active"
             result_json.to_string().contains("fixture-work"),
             "{result_json:#}"
         );
+
+        let watch_root = root.path().join("watch-input");
+        fs::create_dir(&watch_root).unwrap();
+        let watch_source = root.path().join("watch-sources");
+        fs::create_dir(&watch_source).unwrap();
+        let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let mut watch_artifacts = BTreeMap::new();
+        for (child_name, component_name) in [
+            ("folder-watch-actor", "folder-watch-actor.wasm"),
+            ("watch-null-sink", "watch-null-sink.wasm"),
+        ] {
+            let source = watch_source.join(child_name);
+            fs::create_dir(&source).unwrap();
+            fs::copy(
+                fixture_root.join(format!("{child_name}-0.1.0/child.toml")),
+                source.join("child.toml"),
+            )
+            .unwrap();
+            fs::copy(
+                fixture_root.join(format!("{child_name}-0.1.0/{component_name}")),
+                source.join(component_name),
+            )
+            .unwrap();
+            let stage = serde_json::to_value(MctArtifactStageRequest {
+                source_root: source,
+                manifest_path: PathBuf::from("child.toml"),
+                component_path: PathBuf::from(component_name),
+                claimed_child_name: child_name.into(),
+                claimed_artifact_version: "0.1.0".into(),
+                expected_digest: None,
+                standing_source_authority_id: None,
+                claimed_publisher: None,
+                require_source_sidecars: false,
+                children_dir: paths.children.clone(),
+                state_path: paths.state.clone(),
+            })
+            .unwrap();
+            let (status, staged) = uds_json(&paths.uds, "POST", "/artifacts/stage", &stage).await;
+            assert_eq!(status, 200, "{staged:#}");
+            let artifact_id = staged["artifact_id"].as_str().unwrap().to_owned();
+            let approve = serde_json::json!({
+                "expected_config_path": paths.config,
+                "expected_children_dir": paths.children,
+                "expected_state_path": paths.state,
+                "expected_artifact_id": artifact_id,
+                "child_name": child_name,
+                "strict_integrity": true
+            });
+            let (status, approved) =
+                uds_json(&paths.uds, "POST", "/children/approve", &approve).await;
+            assert_eq!(status, 200, "{approved:#}");
+            watch_artifacts.insert(child_name.to_owned(), artifact_id);
+        }
+
+        let watch_window = serde_json::json!({
+            "expected_config_path": paths.config,
+            "expected_children_dir": paths.children,
+            "expected_state_path": paths.state,
+            "child_name": "folder-watch-actor",
+            "watch_scope_id": "scope:fixture-watch",
+            "canonical_root": watch_root,
+            "scope_mode": "constrained",
+            "traversal_scope": "recursive",
+            "event_classes": ["created", "modified", "deleted"],
+            "max_events_per_batch": 16,
+            "coalescing_policy": "none",
+            "starts_at": "2020-01-01T00:00:00Z",
+            "expires_at": "2099-01-01T00:00:00Z"
+        });
+        let (status, watch_grant) =
+            uds_json(&paths.uds, "POST", "/watch/grant", &watch_window).await;
+        assert_eq!(status, 200, "{watch_grant:#}");
+        assert_eq!(watch_grant["scope"]["authority_state"], "active");
+
+        for grant in [
+            serde_json::json!({
+                "kind": "directory_read",
+                "canonical_root": watch_root
+            }),
+            serde_json::json!({
+                "kind": "keyvalue",
+                "bucket_name": "default"
+            }),
+            serde_json::json!({
+                "kind": "observability",
+                "logging": true,
+                "measure": true
+            }),
+        ] {
+            let request = serde_json::json!({
+                "expected_config_path": paths.config,
+                "expected_children_dir": paths.children,
+                "expected_state_path": paths.state,
+                "child_name": "folder-watch-actor",
+                "expires_at": "2099-01-01T00:00:00Z",
+                "grant": grant
+            });
+            let (status, granted) =
+                uds_json(&paths.uds, "POST", "/watch/supporting-grant", &request).await;
+            assert_eq!(status, 200, "{granted:#}");
+        }
+        let sink_observability = serde_json::json!({
+            "expected_config_path": paths.config,
+            "expected_children_dir": paths.children,
+            "expected_state_path": paths.state,
+            "child_name": "watch-null-sink",
+            "expires_at": "2099-01-01T00:00:00Z",
+            "grant": {
+                "kind": "observability",
+                "logging": true,
+                "measure": true
+            }
+        });
+        let (status, sink_grants) = uds_json(
+            &paths.uds,
+            "POST",
+            "/watch/supporting-grant",
+            &sink_observability,
+        )
+        .await;
+        assert_eq!(status, 200, "{sink_grants:#}");
+
+        let configure = wit_call_submission(
+            "watch-configure",
+            "patina:watch",
+            "control@0.1.0",
+            "configure",
+            serde_json::json!([{
+                "watch-path": "/input",
+                "stream-name": "patina:watch/events@0.1.0.emit",
+                "recursive": true,
+                "include-hidden": false,
+                "emit-existing-on-start": true,
+                "extensions": []
+            }, true]),
+        );
+        let (status, configured) = uds_json(&paths.uds, "POST", "/calls", &configure).await;
+        assert_eq!(status, 200, "{configured:#}");
+        assert_eq!(configured["outcome"], "completed", "{configured:#}");
+        fs::write(
+            watch_root.join("fixture-created.txt"),
+            b"watch fixture content",
+        )
+        .unwrap();
+        let scan = wit_call_submission(
+            "watch-scan",
+            "patina:watch",
+            "control@0.1.0",
+            "scan-now",
+            serde_json::json!([]),
+        );
+        let (status, scanned) = uds_json(&paths.uds, "POST", "/calls", &scan).await;
+        assert_eq!(status, 200, "{scanned:#}");
+        assert_eq!(scanned["outcome"], "completed", "{scanned:#}");
+        let watch_summary = MctRuntimeStateStore::open(&paths.state)
+            .unwrap()
+            .summary()
+            .unwrap();
+        assert_eq!(watch_summary.watch_event_batches, 1);
+        assert_eq!(watch_summary.watch_events, 1);
+        assert_eq!(watch_summary.watch_event_deliveries, 1);
+        let first_watch_ledger = entries(&paths.ledger);
+        let batch_position = first_watch_ledger
+            .iter()
+            .position(|entry| entry.observation.safe_message == "Watch batch opened")
+            .unwrap();
+        let event_position = first_watch_ledger
+            .iter()
+            .position(|entry| entry.observation.safe_message == "Watch event eligible")
+            .unwrap();
+        let disposition_position = first_watch_ledger
+            .iter()
+            .position(|entry| entry.observation.safe_message == "Child call-out constructed")
+            .unwrap();
+        let nested_effect_position = first_watch_ledger
+            .iter()
+            .enumerate()
+            .skip(disposition_position + 1)
+            .find(|(_, entry)| entry.observation.kind == ObservationKind::RuntimeExecutionStarted)
+            .map(|(position, _)| position)
+            .expect("nested sink execution follows durable Watch admission");
+        assert!(batch_position < event_position);
+        assert!(event_position < disposition_position);
+        assert!(disposition_position < nested_effect_position);
+
+        fs::write(
+            watch_root.join("trigger-created.txt"),
+            b"temporal watch fixture content",
+        )
+        .unwrap();
+        let trigger_payload = b"[]";
+        let trigger_digest = blake3::hash(trigger_payload).to_hex().to_string();
+        let blob_request = serde_json::json!({
+            "digest": trigger_digest,
+            "size_bytes": trigger_payload.len(),
+            "content_type": "application/json",
+            "classification": "trigger-static",
+            "bytes_base64": BASE64_STANDARD.encode(trigger_payload)
+        });
+        let (status, blob) = uds_json(&paths.uds, "POST", "/blobs", &blob_request).await;
+        assert_eq!(status, 201, "{blob:#}");
+        let payload_constraint: MctCallPayloadHandle =
+            serde_json::from_value(blob["payload"].clone()).unwrap();
+        let now = jiff::Timestamp::now();
+        let anchor = now
+            .checked_add(jiff::SignedDuration::from_millis(500))
+            .unwrap();
+        let trigger = TriggerCreateRequest {
+            expected_config_path: paths.config.clone(),
+            expected_state_path: paths.state.clone(),
+            scope: TriggerAuthorityScopeRequest {
+                trigger_authority_id: CallTriggerAuthorityId::new("trigger:fixture-watch").unwrap(),
+                target: OperationTarget::new("patina:watch", "control@0.1.0", "scan-now").unwrap(),
+                payload_constraint,
+                trigger_source: CallTriggerSource::Temporal {
+                    anchor_at: Timestamp::new(anchor.to_string()).unwrap(),
+                    interval_ms: 60_000,
+                },
+                missed_fire_policy: MissedFirePolicy::Skip,
+                overlap_policy: OverlapPolicy::Refuse,
+                starts_at: Timestamp::new(now.to_string()).unwrap(),
+                expires_at: Timestamp::new("2099-01-01T00:00:00Z").unwrap(),
+            },
+        };
+        let (status, created_trigger) = uds_json(
+            &paths.uds,
+            "POST",
+            "/triggers/create",
+            &serde_json::to_value(&trigger).unwrap(),
+        )
+        .await;
+        assert_eq!(status, 200, "{created_trigger:#}");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let summary = MctRuntimeStateStore::open(&paths.state)
+                    .unwrap()
+                    .summary()
+                    .unwrap();
+                if summary.watch_event_deliveries == 2 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let revoke_trigger = TriggerRevokeRequest {
+            expected_config_path: paths.config.clone(),
+            expected_state_path: paths.state.clone(),
+            trigger_authority_id: CallTriggerAuthorityId::new("trigger:fixture-watch").unwrap(),
+            expected_revision: 1,
+        };
+        let (status, revoked_trigger) = uds_json(
+            &paths.uds,
+            "POST",
+            "/triggers/revoke",
+            &serde_json::to_value(&revoke_trigger).unwrap(),
+        )
+        .await;
+        assert_eq!(status, 200, "{revoked_trigger:#}");
+        assert_eq!(revoked_trigger["authority_state"], "revoked");
+        let revoke_watch = WatchRevokeRequest {
+            expected_config_path: paths.config.clone(),
+            expected_state_path: paths.state.clone(),
+            watch_scope_id: WatchObservationScopeId::new("scope:fixture-watch").unwrap(),
+            expected_revision: 1,
+        };
+        let (status, revoked_watch) = uds_json(
+            &paths.uds,
+            "POST",
+            "/watch/revoke",
+            &serde_json::to_value(&revoke_watch).unwrap(),
+        )
+        .await;
+        assert_eq!(status, 200, "{revoked_watch:#}");
+        assert_eq!(revoked_watch["scope"]["authority_state"], "revoked");
+        fs::write(
+            watch_root.join("after-watch-revoke.txt"),
+            b"must not observe",
+        )
+        .unwrap();
+        let denied_scan = wit_call_submission(
+            "watch-scan-after-revoke",
+            "patina:watch",
+            "control@0.1.0",
+            "scan-now",
+            serde_json::json!([]),
+        );
+        let (status, denied_scan) = uds_json(&paths.uds, "POST", "/calls", &denied_scan).await;
+        assert_eq!(status, 200, "{denied_scan:#}");
+        assert_eq!(denied_scan["outcome"], "denied", "{denied_scan:#}");
+        assert_eq!(
+            MctRuntimeStateStore::open(&paths.state)
+                .unwrap()
+                .summary()
+                .unwrap()
+                .watch_event_deliveries,
+            2
+        );
+        assert!(
+            MctRuntimeStateStore::open(&paths.state)
+                .unwrap()
+                .child_keyvalue_get(
+                    &format!(
+                        "child:{}:assignment:assignment:folder-watch-actor:bucket:default",
+                        watch_artifacts["folder-watch-actor"]
+                    ),
+                    "folder-watch.config.v1"
+                )
+                .unwrap()
+                .is_some()
+        );
+
         let (runs_status, runs_projection) =
             uds_json(&paths.uds, "GET", "/runs", &serde_json::json!({})).await;
         assert_eq!(runs_status, 200, "{runs_projection:#}");
@@ -3673,8 +4165,9 @@ status = "active"
         resident.await.unwrap().unwrap();
 
         let reopened = MctRuntimeStateStore::open(&paths.state).unwrap();
-        assert_eq!(reopened.artifact_acquisitions().unwrap().len(), 1);
-        assert_eq!(reopened.toy_grant_snapshots().unwrap().len(), 4);
+        assert_eq!(reopened.artifact_acquisitions().unwrap().len(), 3);
+        assert_eq!(reopened.toy_grant_snapshots().unwrap().len(), 11);
+        assert_eq!(reopened.summary().unwrap().watch_event_deliveries, 2);
         assert!(
             reopened
                 .get_artifact(&ComponentArtifactId::new(&artifact_id).unwrap())
@@ -3727,6 +4220,15 @@ status = "active"
         .await;
         assert_eq!(restart_status, 200, "{restart_denied:#}");
         assert_eq!(restart_denied["outcome"], "denied");
+        tokio::time::sleep(Duration::from_millis(750)).await;
+        assert_eq!(
+            MctRuntimeStateStore::open(&paths.state)
+                .unwrap()
+                .summary()
+                .unwrap()
+                .watch_event_deliveries,
+            2
+        );
         let restart_stop_paths = paths.clone();
         let restart_stop_adapter = Arc::clone(&adapter);
         tokio::task::spawn_blocking(move || {
