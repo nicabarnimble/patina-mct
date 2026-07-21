@@ -1,9 +1,10 @@
 ---
 type: feat
 id: trigger-event-runtime
-status: ratified
+status: complete
 draft_date: 2026-07-21
 ratified_date: 2026-07-21
+completed_date: 2026-07-21
 target: replacement-slice-4a
 operator_gate: D1-ratified
 sessions:
@@ -11,6 +12,7 @@ sessions:
   work:
     - 20260721-092955-065681000
 related:
+  - layer/surface/build/feat/trigger-event-runtime/CLOSEOUT.md
   - layer/surface/build/feat/watch-event-fixtures/SPEC.md
   - layer/allium/mct-product-map.allium
   - layer/allium/mct-patina-migration.allium

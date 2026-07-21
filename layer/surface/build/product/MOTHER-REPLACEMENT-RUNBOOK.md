@@ -118,6 +118,31 @@ curl --unix-socket ~/.mct/control.sock \
 
 The response is synchronous and typed. Retry a lost response with the same fingerprint and idempotency key; matching completed retries replay the durable result without another child effect.
 
+### Temporal trigger workflow
+
+A temporal trigger is a separate owner-authenticated, ledger-backed standing authority. Its static payload is ingested into the local CAS, and each nominal occurrence constructs a fresh ordinary governed call. Create it against the running resident with `--uds` (or offline only while no resident owns the writer):
+
+```bash
+./target/release/mct-daemon triggers create <trigger-id> \
+  --target patina:example/control@0.1.0.run \
+  --payload-json '[]' \
+  --anchor-at 2026-07-22T09:00:00Z \
+  --interval-ms 60000 \
+  --starts-at 2026-07-22T09:00:00Z \
+  --expires-at 2026-07-22T17:00:00Z \
+  --uds ~/.mct/control.sock \
+  --json
+
+./target/release/mct-daemon triggers show <trigger-id> --state ~/.mct/state.sqlite --json
+./target/release/mct-daemon triggers list --state ~/.mct/state.sqlite --json
+./target/release/mct-daemon triggers revoke <trigger-id> \
+  --expected-revision 1 \
+  --uds ~/.mct/control.sock \
+  --json
+```
+
+Omitted missed-fire and overlap policies default to `skip` and `refuse`. Other closed choices are `coalesce-one|fire-late-bounded` and `coalesce-one|queue-bounded`. Trigger authority never supplies child, route, Toy, network, secret, or acquisition authority; those gates are re-evaluated when the call runs. Event-source triggers, registry-sync composition, and network acquisition remain unavailable. Watch/event fixture delivery is a separate Replacement Slice 4B boundary.
+
 ## Peer setup
 
 On the receiving `mctMother`, add an admitted peer after local identity exists:

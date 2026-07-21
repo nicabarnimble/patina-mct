@@ -52,9 +52,14 @@ pub(super) use pipeline::{
 };
 
 mod trigger_scheduler;
-use trigger_scheduler::{reconcile_trigger_projection, run_trigger_scheduler};
+use trigger_scheduler::{
+    SystemTriggerClock, TriggerClock, TriggerLimits, reconcile_trigger_projection,
+    run_trigger_scheduler_with_runtime,
+};
 
 mod serving;
+#[cfg(test)]
+use serving::run_test_resident_mother_with_trigger_runtime;
 pub(super) use serving::{ResidentStatusSource, run_serve};
 #[cfg(test)]
 pub(crate) use serving::{run_test_resident_mother, run_test_supervised_resident_mother};

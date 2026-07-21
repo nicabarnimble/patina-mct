@@ -1,6 +1,6 @@
 # Contract obligation ledger
 
-Status date: 2026-07-12; W2 extension 2026-07-14; Daily-Driver Slice 2 extension 2026-07-15; artifact-acquisition extension 2026-07-16
+Status date: 2026-07-12; W2 extension 2026-07-14; Daily-Driver Slice 2 extension 2026-07-15; artifact-acquisition extension 2026-07-16; trigger-runtime Part A extension 2026-07-21
 
 Scope: complete named-invariant coverage for `mct-product-map.allium` and `mct-peer-ontology.allium`, plus bulk attribution of tool-derived structural obligations. The 2026-07-12 priority and full-inventory evidence is retained in place; the 2026-07-14 local-application-ingress invariants and W2-A remediation obligations extend it below.
 
@@ -552,6 +552,74 @@ The historical pass read 236 load-bearing `-- Decision:` statements and grouped 
 | `OperatorPointedArtifactAcquisitionDecision`, reader/projection fields | COVERED | `identical_reacquisition_adds_evidence_without_replacing_immutable_artifact` persists and reopens distinct consumed decisions. |
 | `ArtifactAcquisition`, reader/projection fields | COVERED | Failure matrix, reacquisition tests, and supervised exact observation-id correlation/reopen. |
 | New `ComponentArtifact.provenance_status`, `acquisition_ids`, catalog exposure | COVERED | v7 migration tests, immutable-fact collision test, exact approval evidence projection, and supervised reopen. |
+
+## Replacement Slice 4A — trigger authority and resident scheduler
+
+### Trigger structural projections
+
+The current `allium plan layer/allium/mct-product-map.allium` emits 232 obligations. Part A dispositions the eleven trigger-specific obligations below; Part B owns the later Watch/event structures.
+
+| Plan obligation group | Status | Evidence |
+|---|---|---|
+| `value-equality.CallTriggerScope`, `entity-fields.CallTriggerScope` | COVERED | `mct_kernel::trigger::tests::trigger_authority_validation_is_closed_and_bounded`; deterministic identity and closed policy tests. |
+| `entity-fields.CallTriggerAuthority`, `surface-actor.CallTriggerAuthorityProjection`, `surface-exposure.CallTriggerAuthorityProjection` | COVERED | `mct_daemon::state::tests::trigger_authority_projection_is_revisioned_current_and_non_resurrecting`; `mct_daemon_bin::triggers::tests::trigger_authority_is_scoped_observed_revisioned_and_revocable`. |
+| `entity-fields.CallTriggerFiringEvidence`, `surface-actor.CallTriggerFiringProjection`, `surface-exposure.CallTriggerFiringProjection` | COVERED | `mct_daemon_bin::resident::trigger_scheduler::tests::resident_temporal_trigger_fires_once_and_recovers_without_duplication`; `trigger_evaluate_crash_re_evaluate_cannot_double_fire`. |
+| `entity-fields.CallTriggerPendingOccurrence`, `surface-actor.CallTriggerPendingProjection`, `surface-exposure.CallTriggerPendingProjection` | COVERED | `mct_daemon_bin::resident::trigger_scheduler::tests::trigger_overlap_policies_preserve_one_active_call_and_order`; `trigger_append_failure_suppresses_pending_and_call_effects`; schema-v8 projection tests. |
+
+### `MctCallTriggerAuthority`
+
+| Invariant | Status | Evidence / reason |
+|---|---|---|
+| `ManagementRequiresCurrentLocalAuthority` | COVERED | Trigger UDS mutations consume authenticated peer credentials; offline mutation derives the owner from the current owner-private config and acquires the canonical ledger writer. `mct_daemon_bin::triggers::tests::trigger_authority_is_scoped_observed_revisioned_and_revocable`; existing authenticated UDS dispatch tests. |
+| `TriggerScopeIsExplicitAndBounded` | COVERED | `mct_kernel::trigger::tests::trigger_authority_validation_is_closed_and_bounded`; `mct_daemon_bin::triggers::tests::trigger_management_rejects_event_and_authority_expansion`. |
+| `ActivationFollowsDurableAuthorityFact` | COVERED | `mct_daemon_bin::triggers::tests::trigger_append_failure_suppresses_activation_revision_and_revocation`; startup reconciles canonical `call-trigger-authority-v1` facts before readiness. |
+| `TriggerAuthorityCannotExpandCallAuthority` | COVERED | `trigger_management_rejects_event_and_authority_expansion`; the primary integration re-enters the ordinary resident child/route/revalidation executor. |
+| `EachFiringCreatesFreshCall` | COVERED | Kernel identity tests and the primary integration assert deterministic occurrence-specific `call-trigger:` ids and one effect. |
+| `StaleTriggerCannotPreserveAuthority` | COVERED | The primary integration revokes revision one, records one revision-two suppression, and proves no later child effect; recovered execution performs a fresh current-record check. |
+| `ChildRequestIsNeverTriggerGrant` | COVERED | `mct_daemon_bin::resident::local_ingress::tests::locally_submitted_body_cannot_claim_trigger_firing_context`; trigger management is absent from Child/WASM imports. |
+| `FiringEvidenceCarriesTriggerProvenance` | COVERED | The primary integration reopens authority, occurrence, firing, call, result, and revocation references; `call-trigger-firing-v1` contains exact record/policy/occurrence evidence without payload bytes. |
+| `TriggerFiringOriginIsTruthfulAndAdditive` | COVERED | `mct_kernel::call::tests::trigger_firing_origin_is_additive_local_and_single_hop`; primary integration persists `CallOrigin::TriggerFiring`. |
+| `TriggerFiringIdempotencyIsRecordAndOccurrenceScoped` | COVERED | `mct_kernel::trigger::tests::trigger_firing_identities_are_record_revision_and_occurrence_scoped`; `mct_daemon_bin::resident::idempotency::tests::trigger_firing_idempotency_is_record_and_occurrence_scoped`. |
+| `TriggerFiringIsLocalAndSingleHop` | COVERED | `trigger_firing_origin_is_additive_local_and_single_hop`; existing forwarding rewrites every receiver-side arrival to `Iroh`. |
+| `MechanismDoesNotOwnCadenceMeaning` | COVERED | Trigger records contain fixed source/policy/call facts only; the primary proof invokes an ordinary Child operation and adds no application debounce/filter meaning to Mother. |
+| `MissedFirePolicyIsExplicitAndDefaultsToSkip` | COVERED | Kernel default test; management test proves omitted policy persists as `skip`. |
+| `CatchUpUsesOnlyKnownOccurrences` | COVERED | `mct_daemon_bin::resident::trigger_scheduler::tests::temporal_occurrence_range_is_deterministic_and_exclusive_at_expiry`; only mathematically derived temporal occurrences enter Part A. |
+| `CurrentAuthorityDefeatsCatchUp` | COVERED | Primary integration's revoked-next-occurrence suppression; fresh current checks precede firing and pending dequeue. |
+| `CatchUpIsBoundedByNamedConstants` | COVERED | `trigger_production_limits_are_exactly_named`; `trigger_missed_fire_policies_are_bounded_deterministic_and_countable`. |
+| `MissedFireDispositionsRemainEvidence` | COVERED | `trigger_missed_fire_policies_are_bounded_deterministic_and_countable`; `trigger_terminal_dispositions_survive_restart_without_resurrection`. |
+| `PolicyRevisionDoesNotReinterpretMisses` | COVERED | Immutable revision projection test plus pending records retaining exact record/policy revisions; dequeue suppresses stale revisions rather than rewriting them. |
+| `CatchUpIdentityIsDeterministic` | COVERED | `mct_kernel::trigger::tests::trigger_firing_identities_are_record_revision_and_occurrence_scoped`; coalesced represented-set equality tests. |
+| `OverlapPolicyIsExplicitAndDefaultsToRefuse` | COVERED | Kernel default test and trigger management create test. |
+| `OneActiveCallPerTriggerRecord` | COVERED | Schema-v8 partial unique index plus `trigger_evaluate_crash_re_evaluate_cannot_double_fire`. |
+| `OverlapPendingStateIsPerRecordBounded` | COVERED | `trigger_overlap_policies_preserve_one_active_call_and_order`; `trigger_capacity_refuses_at_each_named_bound_without_eviction`. |
+| `QueueAdmissionIsNotDeliveryOutcome` | COVERED | Pending and firing/result are separate projections; overlap tests assert pending reason rather than target outcome. |
+| `CoalescingStagesRemainDistinct` | COVERED | Missed-fire coalescing and overlap pending coalescing use distinct typed decisions and evidence prefixes; policy tests exercise both. |
+| `PendingIdentityAndOrderAreDeterministic` | COVERED | Pending ids derive from occurrence ids; schema enforces unique per-record admission sequence; overlap test covers retained pending identity. |
+| `MissedFirePrecedesOverlap` | COVERED | `trigger_admission_order_is_fixed_and_authority_neutral` proves a missed terminal result returns before overlap and capacity states. |
+| `TriggerQueuesAndActiveCallsUseThreeNamedBounds` | COVERED | `trigger_production_limits_are_exactly_named`; `trigger_capacity_refuses_at_each_named_bound_without_eviction`. |
+| `AdmissionOrderIsFixedAndAuthorityNeutral` | COVERED | `trigger_admission_order_is_fixed_and_authority_neutral`; no capacity branch mints or widens authority. |
+| `PendingAdmissionIsDurableBeforeVisibility` | COVERED | `trigger_append_failure_suppresses_pending_and_call_effects`; pending evidence contains both projections and startup replay applies it transactionally. |
+| `PendingAdmissionNeverEvicts` | COVERED | Capacity test plus insert-only pending schema; no eviction mutation exists. |
+| `NoImplicitResidentRetryQueue` | COVERED | Direct active-capacity failure is terminal; only overlap-authorized pending rows may wait. In-flight idempotency remains active and is never expired into hidden re-execution by the trigger scheduler. |
+| `TriggerWorkCannotStarveResidentControl` | COVERED | `trigger_load_does_not_starve_writer_control_status_or_ordinary_calls` proves independent active permits and writer progress; scheduler turn/poll constants are asserted. |
+| `DequeueAndRestartAreDeterministic` | COVERED | Primary integration deletes trigger projections, replays the validated ledger, restarts, and proves no second effect; pending order is `(trigger id, admission sequence)`. |
+| `DequeueRechecksCurrentLaw` | COVERED | Pending dequeue requires exact current record/policy/validity and otherwise appends `call-trigger-pending-suppressed-v1` before terminal projection. |
+| `TerminalDispositionPreventsResurrection` | COVERED | `trigger_terminal_dispositions_survive_restart_without_resurrection`; primary integration's ledger-rebuild proof. |
+| `LaterOccurrencesRequireExplicitPolicy` | COVERED | Temporal identity includes nominal occurrence; terminal rows advance the exact watermark, while only a distinct later nominal occurrence can enter policy evaluation. |
+
+### Named deferrals and interdicts
+
+| Slot | Status | Evidence / reason |
+|---|---|---|
+| `MotherEventSourceAdapterRuntime` | DEFERRED | Production management rejects `trigger_class=event` with the exact named message; Part A adds no Mother observer task, source registration, or adapter-trigger lookup. |
+| `RegistrySyncTriggerComposition` | DEFERRED | Trigger target validation rejects registry-sync composition; no unattended sync target or call path exists. |
+| `NetworkArtifactAcquisitionAdapter` | DEFERRED | No network/acquisition adapter, credential field, source authority, or trigger-carried acquisition authority was added. This remains coupled to `RegistrySyncTriggerComposition`. |
+
+### Observation-kind composition
+
+| Obligation | Status | Evidence |
+|---|---|---|
+| Trigger authority, lifecycle, firing, and completion use existing kinds | COVERED | `mct_daemon_bin::resident::trigger_scheduler::tests::trigger_observation_mapping_uses_existing_kinds`; trigger authority uses `OperatorActionRecorded`, occurrence state uses `LifecycleTransitionRecorded`, firing uses `CallConstructed`, and terminal calls retain `ResultRecorded`. `ObservationKind` is unchanged. |
 
 ## Retained pre-Slice3 full-coverage status summary
 
