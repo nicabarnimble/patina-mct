@@ -5,12 +5,36 @@ Status: complete — Replacement Slice 4A
 ## Reconstructed range
 
 - Required starting branch/tree: `patina` at `20941a4fb7ad5275fea578c67715dc335767ace1`.
-- Full Part A range: `20941a4..HEAD`; `HEAD` is the Part A integration, attribution, and close-out commit.
+- Full immutable Part A range: `20941a4..bf4e922`; `bf4e9225c6e7b83b9974863b39ed47d5dcec31d7` is the Part A integration, attribution, and close-out commit.
 - Ratified D1A/D1B checkpoint: `82713eb`.
 - Kernel, schema-v8, authority management, scheduler, policy/capacity/recovery, and resident execution substrate: `e3d8a37`.
-- Resident acquisition-backed integration proof, Track 3 attribution, product docs, and this close-out: `HEAD`.
+- Resident acquisition-backed integration proof, Track 3 attribution, product docs, and this close-out: `bf4e922`.
 
-The pre-existing untracked older session and belief artifacts were not included. Part B did not begin before this close-out.
+The pre-existing untracked older session and belief artifacts were not included. Part B did not begin before the `bf4e922` close-out boundary.
+
+### 2026-07-21 disk reissuance
+
+Context recovery initially reported this close-out as missing. Git-object inspection proved that no Part A artifact needed to be invented: `bf4e922` already contains this file, has `e3d8a37` as its sole parent, and lands the Track 3 trigger rows and proof integration together. The cited proof-step diff is:
+
+```text
+git diff e3d8a37..bf4e922 -- \
+  crates/mct-daemon/src/daemon/resident/trigger_scheduler.rs \
+  layer/surface/build/spec-drift-audit/track3/LEDGER.md \
+  layer/surface/build/feat/trigger-event-runtime/CLOSEOUT.md
+
+3 files changed, 900 insertions(+), 10 deletions(-)
+```
+
+The immutable Track 3 addition is the `Replacement Slice 4A — trigger authority and resident scheduler` section in `bf4e922:layer/surface/build/spec-drift-audit/track3/LEDGER.md`: four trigger structural groups, every named `MctCallTriggerAuthority` invariant, all three named deferrals, and the unchanged-observation-kind disposition are explicit.
+
+The SPEC-targeted commands were reissued from the descendant tree after recovery. All thirteen named checks passed, including the acquisition-backed `resident_temporal_trigger_fires_once_and_recovers_without_duplication` proof:
+
+```text
+PART_A_REISSUE_TARGETED_TESTS=PASS
+13 named tests; 13 passed; 0 failed
+```
+
+The original implementation-red and final gate transcripts remain below. This reissuance changes citation durability only; it does not move Part B evidence into Part A.
 
 ## Failing-test-first record
 
@@ -59,7 +83,7 @@ Final targeted `--nocapture` runs passed for the additive origin, authority life
 
 ## Required Part A integration proof — 12-step disk reconstruction
 
-All citations refer to `crates/mct-daemon/src/daemon/resident/trigger_scheduler.rs`.
+All citations refer to the immutable blob `bf4e922:crates/mct-daemon/src/daemon/resident/trigger_scheduler.rs`.
 
 | Step | Landed proof |
 |---:|---|
