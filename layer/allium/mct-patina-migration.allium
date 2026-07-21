@@ -167,6 +167,11 @@ contract MigrationResponsibilityPlacement {
 -- Decision: Source credentials remain under independent secrets and connection authority. A
 -- source-authority record neither stores nor implies credentials; the two authorities meet only at
 -- the acquisition adapter.
+-- Decision: 2026-07-21 Area 3 continuation leaves `patinaMother`-style unattended registry sync
+-- rejected pending the coupled `RegistrySyncTriggerComposition` and
+-- `NetworkArtifactAcquisitionAdapter` gates. Trigger authority cannot carry acquisition authority,
+-- standing source authority cannot originate calls, and operator-pointed acquisition remains manual,
+-- one-shot, and non-recurring. Neither coupled slot may close without addressing the other.
 
 contract PatinaRegistrySyncQuarryDisposition {
     @invariant GenericRegistryMechanismBecomesMctProduct
@@ -197,13 +202,54 @@ contract PatinaRegistrySyncQuarryDisposition {
         -- Config-implied trust, sync-implied lifecycle authority, allow-by-default access, and
         -- inherited database or API shape are rejected rather than translated as authority.
 
-    @invariant RecurringSyncAwaitsSchedulingLaw
-        -- Registry law defines an explicit sync operation but grants no periodic or event-triggered
-        -- initiation; that authority belongs to separately elicited scheduling law.
+    @invariant RecurringSyncAwaitsCoupledComposition
+        -- Registry law grants no periodic or event-triggered initiation before the coupled
+        -- RegistrySyncTriggerComposition and NetworkArtifactAcquisitionAdapter gate resolves the
+        -- triggerable operation and exact independent authority linkage.
 
     @invariant SourceCredentialsRemainIndependent
         -- Source authority contains no credential authority; independently governed secrets and
         -- connection evidence meet source trust only at the acquisition adapter effect boundary.
+}
+
+------------------------------------------------------------
+-- Watcher-composition quarry disposition
+------------------------------------------------------------
+
+-- Decision: 2026-07-21 Area 3 continuation applies the placement test per part to
+-- `patinaMother`'s watcher composition. Generic trigger and event-delivery mechanism becomes MCT
+-- product responsibility; trigger authority, watch ToyGrant, call authority, and current effect
+-- decisions remain MCT kernel law; scan, comparison, filtering, cadence, and event meaning remain
+-- Child meaning.
+-- Decision: The byte-exact `patina:watch/events@0.1.x` ABI is retained only through a validated
+-- compatibility narrowing. Its legacy absolute-path semantics are rejected in disposition bin 4.
+-- On composed MCT delivery the deprecated slot must equal the safe root-relative canonical path,
+-- and mismatch is refused with evidence. Successor contracts remove the slot.
+
+contract PatinaWatcherQuarryDisposition {
+    @invariant GenericTriggerAndDeliveryBecomeMctProduct
+        -- Generic bounded trigger evaluation, event handoff, evidence, and delivery projection are
+        -- rebuilt as MCT product responsibilities rather than inherited from `patinaMother`.
+
+    @invariant WatchAndCallAuthorityRemainKernel
+        -- CallTriggerAuthority, watch ToyGrant, call authority, and current adapter-effect decisions
+        -- remain independent MCT kernel authority records and evaluations.
+
+    @invariant WatchApplicationMeaningRemainsChildMeaning
+        -- Scan, comparison, filtering, cadence, debounce beyond mechanical bounded coalescing, and
+        -- event interpretation remain Child application meaning rather than entering Mother.
+
+    @invariant LegacyAbsolutePathSemanticsAreRejected
+        -- Disposition bin 4 rejects `patinaMother`'s absolute-path event semantics; no absolute host
+        -- or guest path becomes MCT watch evidence, payload meaning, or authority.
+
+    @invariant LegacyAbiShapeRequiresValidatedNarrowing
+        -- The byte-exact `patina:watch/events@0.1.x` ABI may be retained only when its deprecated
+        -- slot equals the safe root-relative canonical path and mismatch is refused with evidence.
+
+    @invariant DeprecatedSlotCannotPropagate
+        -- Successor watch-events contracts omit the deprecated field; compatibility cannot turn the
+        -- rejected legacy semantic shape into a permanent MCT contract.
 }
 
 ------------------------------------------------------------

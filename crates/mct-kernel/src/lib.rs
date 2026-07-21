@@ -24,6 +24,10 @@ pub mod peer;
 pub mod route;
 /// Canonical toy contracts, grants, and toy-call authorization tokens.
 pub mod toy;
+/// Standing trigger authority, occurrence identity, and admission policy.
+pub mod trigger;
+/// Scoped Child watch authority, event evidence, and call-out identities.
+pub mod watch;
 
 pub use artifact::{
     ArtifactAcquisition, ArtifactAcquisitionAuthorityPath, ArtifactAcquisitionAuthorityReason,
@@ -63,10 +67,13 @@ pub use error::{InvalidFieldReason, MctKernelError, MctKernelResult};
 pub use id::{
     ArtifactAcquisitionDecisionId, ArtifactAcquisitionId, ArtifactSourceAuthorityId, AuditRef,
     AuthorizedArtifactAcquisitionId, AuthorizedChildInvocationId, AuthorizedRouteExecutionId,
-    AuthorizedToyCallId, CallId, ChildApprovalId, ChildAssignmentId, ChildCallEvaluationId,
-    ChildId, ChildInstanceId, ComponentArtifactId, DecisionId, EndpointIdText, MctNodeId,
-    ObservationId, PeerBindingId, ProjectId, ProtocolRequestId, ReplyId, ResultRef, SpanId,
-    Timestamp, ToyGrantEvaluationId, ToyGrantId, ToyId, TraceId, UserId, VisionId,
+    AuthorizedToyCallId, CallId, CallTriggerAuthorityId, CallTriggerFiringId,
+    CallTriggerOccurrenceId, CallTriggerPendingOccurrenceId, ChildApprovalId, ChildAssignmentId,
+    ChildCallEvaluationId, ChildId, ChildInstanceId, ComponentArtifactId, DecisionId,
+    EndpointIdText, MctNodeId, ObservationId, PeerBindingId, ProjectId, ProtocolRequestId, ReplyId,
+    ResultRef, SpanId, Timestamp, ToyGrantEvaluationId, ToyGrantId, ToyId, TraceId, UserId,
+    VisionId, WatchEventBatchId, WatchEventDeliveryDispositionId, WatchEventDeliveryId,
+    WatchEventId, WatchObservationScopeId,
 };
 pub use observation::{
     AdapterDiagnosticKind, AdapterDiagnosticObservationInput, MctObservation, ObservationKind,
@@ -98,6 +105,32 @@ pub use toy::{
     ToyGrantReasonCode, ToyGrantScope, ToyGrantState, ToyGrantSubject, ToyGrantVerdict,
     evaluate_toy_grant_for_call,
 };
+pub use trigger::{
+    CallTriggerAuthority, CallTriggerAuthorityState, CallTriggerClass,
+    CallTriggerMissedFireDecision, CallTriggerOccurrenceCandidate, CallTriggerOverlapDecision,
+    CallTriggerPendingReason, CallTriggerRepresentedSet, CallTriggerSource,
+    CallTriggerTerminalDisposition, CallTriggerTerminalDispositionKind, KnownCallTriggerOccurrence,
+    MCT_TRIGGER_MIN_INTERVAL_MS, MissedFirePolicy, OverlapPolicy,
+    derive_coalesced_occurrence_identity, derive_represented_set_ref,
+    derive_temporal_occurrence_identity, derive_trigger_call_identity,
+    derive_trigger_firing_identity, derive_trigger_idempotency_key,
+    derive_trigger_pending_identity, evaluate_missed_fire_policy, evaluate_overlap_policy,
+    trigger_represented_set_from_bounds,
+};
+pub use watch::{
+    AuthorizedWatchObservationSession, LegacyWatchCompatibilityValidation,
+    MCT_CHILD_CALLOUT_MAX_DEPTH, MCT_KEYVALUE_KEY_MAX_BYTES, MCT_KEYVALUE_LIST_PAGE_MAX,
+    MCT_KEYVALUE_MAX_KEYS_PER_BUCKET, MCT_KEYVALUE_VALUE_MAX_BYTES, MCT_WATCH_MAX_EVENTS_PER_BATCH,
+    MCT_WATCH_MESSAGE_MAX_BYTES, MCT_WATCH_METADATA_PAIRS_MAX, MCT_WATCH_TOY_ACTION,
+    MCT_WATCH_TOY_ID, WatchCoalescingPolicy, WatchEventBatchEvidence, WatchEventClass,
+    WatchEventDeliveryDisposition, WatchEventDeliveryEvidence, WatchEventDisposition,
+    WatchEventEvidence, WatchObservationScope, WatchObservationScopeState,
+    WatchObservationSessionRequest, WatchObserverRef, WatchObserverShape, WatchScopeMode,
+    WatchTraversalScope, authorize_watch_observation_session, derive_watch_batch_id,
+    derive_watch_callout_call_id, derive_watch_callout_event_id,
+    derive_watch_callout_idempotency_key, validate_legacy_watch_paths,
+    validate_safe_watch_relative_path,
+};
 
 /// Returns the crate version for health and smoke tests.
 pub fn version() -> &'static str {
@@ -109,5 +142,14 @@ mod tests {
     #[test]
     fn exposes_version() {
         assert_eq!(super::version(), "0.1.0");
+    }
+
+    #[test]
+    fn watch_scope_contract_is_closed_before_adapter_work() {
+        assert_eq!(
+            serde_json::to_string(&super::WatchTraversalScope::Recursive).unwrap(),
+            "\"recursive\""
+        );
+        assert_eq!(super::MCT_WATCH_MAX_EVENTS_PER_BATCH, 128);
     }
 }

@@ -22,7 +22,7 @@ use publication::{
 };
 
 mod idempotency;
-pub(super) use idempotency::execute_idempotent_call;
+pub(super) use idempotency::{execute_idempotent_call, execute_idempotent_call_with_context};
 
 #[cfg(unix)]
 mod local_ingress;
@@ -46,9 +46,20 @@ use forwarding::*;
 mod pipeline;
 #[cfg(test)]
 use pipeline::execute_resident_call_at;
-pub(super) use pipeline::{ResidentRuntimePaths, execute_resident_call};
+pub(super) use pipeline::{
+    ResidentCallIngressContext, ResidentRuntimePaths, execute_resident_call,
+    execute_resident_call_with_context,
+};
+
+mod trigger_scheduler;
+use trigger_scheduler::{
+    SystemTriggerClock, TriggerClock, TriggerLimits, reconcile_trigger_projection,
+    run_trigger_scheduler_with_runtime,
+};
 
 mod serving;
+#[cfg(test)]
+use serving::run_test_resident_mother_with_trigger_runtime;
 pub(super) use serving::{ResidentStatusSource, run_serve};
 #[cfg(test)]
 pub(crate) use serving::{run_test_resident_mother, run_test_supervised_resident_mother};

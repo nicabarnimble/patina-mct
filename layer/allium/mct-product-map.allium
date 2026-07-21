@@ -810,7 +810,7 @@ entity MctCall {
     authority_context: AuthorityContextSnapshot
     deadline: Timestamp
     trace_context: TraceContext
-    origin: iroh | jvm_adapter | wasm_host | process_harness | cli
+    origin: iroh | jvm_adapter | wasm_host | process_harness | cli | trigger_firing
 }
 
 actor MotherAuthority {
@@ -854,7 +854,7 @@ contract MctCallAtomicity {
         -- Route selections, execution outcomes, and replies are separate records that reference `call_id`.
 
     @invariant AdapterNeutralAuthority
-        -- Iroh, JVM adapter, WASM host, process harness, and CLI calls enter the same authority pipeline after translation to `MctCall`.
+        -- Iroh, JVM adapter, WASM host, process harness, CLI, and trigger-firing calls enter the same authority pipeline after translation to `MctCall`.
 
     @invariant OriginIsForObservationNotPermission
         -- The origin adapter may be used for audit, telemetry, and dispatch of the protocol
@@ -922,9 +922,19 @@ contract MctLocalApplicationIngress {
 -- idempotency, authority, routing, revalidation, and effect law. Trigger authority creates no
 -- Child, Toy, route, data, or effect authority and cannot preserve stale authority after revocation.
 -- Every firing's evidence references the governing trigger record and policy revision.
--- Decision: Call-origin mapping for trigger-fired calls remains open for the implementing SPEC's
--- operator gate under D1.3 truthful-origin discipline. A firing cannot default to `JvmAdapter` or
--- any existing origin whose lineage it does not truthfully have.
+-- Decision: 2026-07-21 Area 3 continuation ratifies `CallOrigin::TriggerFiring` as the one
+-- truthful kernel origin for both temporal and event firings. Trigger class and source remain in
+-- `CallTriggerFiringEvidence`; no separate temporal/event origin variants are created.
+-- Decision: `trigger_firing` serialization is additive. Existing origin spellings and historical
+-- ledger facts remain unchanged, while new readers can distinguish the new lineage without
+-- relabeling an old call.
+-- Decision: Trigger-firing idempotency scope includes the exact governing trigger-authority id.
+-- Every distinct firing occurrence carries a distinct idempotency key; retrying one occurrence
+-- reuses its key and may replay, while distinct occurrences and distinct trigger records cannot
+-- share replay state. Key derivation and concrete bounds remain SPEC-local.
+-- Decision: `TriggerFiring` is a local origin class that may source one remote candidate under
+-- current bilateral authority. It is never a forwarded arrival; forwarding still becomes `Iroh`
+-- under `mct/call/0`, so terminal single-hop law is unchanged.
 
 value CallTriggerScope {
     mother_node_id: String
@@ -939,6 +949,8 @@ value CallTriggerScope {
 entity CallTriggerAuthority {
     trigger_authority_id: String
     scope: CallTriggerScope
+    missed_fire_policy: skip | coalesce_one | fire_late_bounded
+    overlap_policy: refuse | coalesce_one | queue_bounded
     issuer_principal_ref: String
     record_revision: Integer
     policy_revision: Integer
@@ -953,8 +965,23 @@ entity CallTriggerFiringEvidence {
     trigger_authority_id: String
     trigger_record_revision: Integer
     trigger_policy_revision: Integer
+    trigger_class: temporal | event
+    trigger_source_ref: String
     call_id: String
+    idempotency_key_ref: String
     firing_observation_id: String
+}
+
+entity CallTriggerPendingOccurrence {
+    pending_occurrence_id: String
+    trigger_authority_id: String
+    trigger_record_revision: Integer
+    represented_occurrence_set_ref: String
+    admission_sequence: Integer
+    admission_reason: overlap_coalesced | overlap_queued | awaiting_active_slot
+    missed_fire_evaluation_ref: String
+    overlap_evaluation_ref: String
+    admission_observation_id: String
 }
 
 actor CallTriggerAuthorityReader {
@@ -965,6 +992,11 @@ actor CallTriggerAuthorityReader {
 actor CallTriggerFiringReader {
     within: CallTriggerFiringEvidence
     identified_by: firing.firing_id
+}
+
+actor CallTriggerPendingReader {
+    within: CallTriggerPendingOccurrence
+    identified_by: pending.pending_occurrence_id
 }
 
 surface CallTriggerAuthorityProjection {
@@ -984,6 +1016,8 @@ surface CallTriggerAuthorityProjection {
         trigger.scope.payload_constraint_ref
         trigger.scope.trigger_class
         trigger.scope.trigger_source_ref
+        trigger.missed_fire_policy
+        trigger.overlap_policy
         trigger.issuer_principal_ref
         trigger.record_revision
         trigger.policy_revision
@@ -1002,9 +1036,75 @@ surface CallTriggerFiringProjection {
         firing.trigger_authority_id
         firing.trigger_record_revision
         firing.trigger_policy_revision
+        firing.trigger_class
+        firing.trigger_source_ref
         firing.call_id
+        firing.idempotency_key_ref
         firing.firing_observation_id
 }
+
+surface CallTriggerPendingProjection {
+    facing reader: CallTriggerPendingReader
+    context pending: CallTriggerPendingOccurrence
+
+    exposes:
+        pending.pending_occurrence_id
+        pending.trigger_authority_id
+        pending.trigger_record_revision
+        pending.represented_occurrence_set_ref
+        pending.admission_sequence
+        pending.admission_reason
+        pending.missed_fire_evaluation_ref
+        pending.overlap_evaluation_ref
+        pending.admission_observation_id
+}
+
+-- Decision: 2026-07-21 Area 3 continuation fixes the cadence boundary: Mother provides the
+-- authorized mechanism to attempt one scoped call at time T or upon event E, while the
+-- Child/application owns why that time or event matters. Capture rhythm, sync policy, polling
+-- cadence, and debounce meaning beyond mechanical bounded coalescing remain application meaning.
+-- Encoding T or E in a trigger record transfers none of that meaning to Mother. A Child may request
+-- cadence but cannot activate its own trigger authority.
+-- Decision: 2026-07-21 each trigger record names `missed_fire_policy` as skip, coalesce_one, or
+-- fire_late_bounded, with skip as the safe default. Skip creates no late call; coalesce_one creates
+-- at most one fresh call representing all currently known misses; fire_late_bounded creates at most
+-- one fresh call per known miss in occurrence order under named SPEC-local per-record and
+-- resident-wide bounds. Every non-fire, coalescing, loss, and capacity disposition remains evidence.
+-- Decision: Catch-up uses only known occurrences. Temporal misses may be reconstructed from the
+-- durable record; event misses require retained event identity and sequence. A sequence gap without
+-- retained event content is loss evidence, never a fabricated event. Current revocation, expiry,
+-- supersession, or narrowing defeats every catch-up policy, and policy revision never reinterprets
+-- misses governed by an older record revision.
+-- Decision: Catch-up evaluation is deterministic for one trigger record revision and represented
+-- known-miss set. Coalesced or per-occurrence identities derive from that set, so evaluation after a
+-- crash reproduces identical occurrence and idempotency identities rather than double-firing.
+-- Decision: 2026-07-21 each trigger record names `overlap_policy` as refuse, coalesce_one, or
+-- queue_bounded, with refuse as the safe default. Overlap exists when the prior firing has a target
+-- call but no durable terminal `MctResult`. Each trigger record permits at most one active target
+-- call; refusal suppresses a new occurrence, coalescing retains at most one deterministic pending
+-- representative, and bounded queueing retains deterministic per-occurrence pending identities.
+-- Decision: Pending state is capped by a named SPEC-local per-record constant. Admission to pending
+-- state is not another delivery disposition; dequeue re-enters the existing fired, coalesced,
+-- suppressed, or capacity_refused pre-call set and current authority checks. Revocation, expiry,
+-- supersession, narrowing, or capacity prevents a pending occurrence from becoming a call and
+-- leaves evidence. Source, missed-fire, and overlap coalescing remain distinct mechanisms.
+-- Decision: Missed-fire evaluation first determines which occurrences exist; every live or catch-up
+-- occurrence then passes through overlap policy. Both stages use deterministic identities and
+-- ordering, so crash recovery at their seam cannot bypass, double-admit, or reorder an occurrence.
+-- Decision: 2026-07-21 trigger work is bounded by three disclosed SPEC-local constants: per-record
+-- pending occurrences, resident-wide pending trigger occurrences, and resident-wide active trigger
+-- calls no greater than ordinary active-call capacity. Admission order is missed-fire evaluation,
+-- overlap evaluation, per-record pending capacity, resident-wide pending/active capacity, then
+-- fresh current checks before firing. No stage grants authority supplied by another.
+-- Decision: Pending admission is durable before scheduler visibility, never evicts earlier work,
+-- and reconstructs deterministically with active/terminal call facts after restart. Failed append
+-- creates neither pending state nor call. A new pending admission at capacity and a directly
+-- fireable occurrence unable to reserve an active slot become terminal capacity_refused; there is
+-- no implicit second resident queue or hidden retry. Only overlap-admitted pending work may wait.
+-- Decision: Terminal dispositions gate all later evaluation. An occurrence already durably skipped,
+-- suppressed, capacity_refused, or fired with a terminal `MctResult` is excluded from missed-fire
+-- reconstruction. Restart cannot resurrect refusal as a miss; only explicit policies can establish
+-- a distinct later governed occurrence.
 
 contract MctCallTriggerAuthority {
     @invariant ManagementRequiresCurrentLocalAuthority
@@ -1036,19 +1136,554 @@ contract MctCallTriggerAuthority {
         -- activate, or widen the governing record.
 
     @invariant FiringEvidenceCarriesTriggerProvenance
-        -- Every fired call has evidence referencing the exact trigger record revision and governing
-        -- policy revision in addition to its fresh call facts.
+        -- Every fired call has evidence referencing the exact trigger record revision, governing
+        -- policy revision, trigger class, and trigger source in addition to its fresh call facts.
 
-    @invariant TriggerOriginCannotDefaultUntruthfully
-        -- Until an implementing SPEC ratifies truthful origin telemetry, a fired call cannot be
-        -- labeled `JvmAdapter` or assigned any existing lineage by convenience.
+    @invariant TriggerFiringOriginIsTruthfulAndAdditive
+        -- Temporal and event firings use only `trigger_firing`; the variant names Mother's local
+        -- firing lineage, does not claim another ingress, and adds no relabeling of historical facts.
+
+    @invariant TriggerFiringIdempotencyIsRecordAndOccurrenceScoped
+        -- Replay scope includes the exact trigger-authority id. One occurrence reuses one distinct
+        -- idempotency key for retry, while different occurrences or records share no replay state.
+
+    @invariant TriggerFiringIsLocalAndSingleHop
+        -- A trigger firing is local and may source one remote candidate only under current
+        -- bilateral authority; it is never a forwarded arrival and cannot weaken terminal
+        -- `mct/call/0` single-hop behavior.
+
+    @invariant MechanismDoesNotOwnCadenceMeaning
+        -- Mother supplies authorized fire-at-T and fire-on-E mechanism. The Child/application owns
+        -- capture rhythm, sync policy, polling cadence, and debounce meaning beyond mechanical
+        -- bounded coalescing; recording T or E transfers none of that meaning or trigger authority.
+
+    @invariant MissedFirePolicyIsExplicitAndDefaultsToSkip
+        -- Every trigger record chooses skip, coalesce_one, or fire_late_bounded; absent choice uses
+        -- skip and cannot produce a late call.
+
+    @invariant CatchUpUsesOnlyKnownOccurrences
+        -- Temporal catch-up uses occurrences derivable from the durable record; event catch-up
+        -- requires retained identity and sequence, while an unmaterialized gap cannot become a call.
+
+    @invariant CurrentAuthorityDefeatsCatchUp
+        -- Revoked, expired, superseded, narrowed, or otherwise stale trigger and call authority
+        -- prevents late firing regardless of the record's missed-fire policy.
+
+    @invariant CatchUpIsBoundedByNamedConstants
+        -- Coalescing creates at most one call and per-occurrence catch-up is capped by disclosed
+        -- SPEC-local per-record and resident-wide bounds; excess misses become capacity evidence.
+
+    @invariant MissedFireDispositionsRemainEvidence
+        -- Skipped, coalesced, lost, capacity-refused, and late-fired occurrences retain the exact
+        -- trigger revision, intended time or event sequence, represented set, and typed reason.
+
+    @invariant PolicyRevisionDoesNotReinterpretMisses
+        -- Revising missed-fire policy creates a new trigger revision and cannot change how
+        -- occurrences governed by a prior revision are identified or dispositioned.
+
+    @invariant CatchUpIdentityIsDeterministic
+        -- For one trigger revision and represented known-miss set, coalesced and per-occurrence
+        -- identities are deterministic; crash re-evaluation reproduces the same idempotency scope
+        -- and replays rather than firing the missed set twice.
+
+    @invariant OverlapPolicyIsExplicitAndDefaultsToRefuse
+        -- Every trigger record chooses refuse, coalesce_one, or queue_bounded; absent choice refuses
+        -- a new occurrence while another call from that record lacks a durable terminal result.
+
+    @invariant OneActiveCallPerTriggerRecord
+        -- One trigger record has at most one target call without a durable terminal `MctResult`;
+        -- overlap policy never creates parallel active calls for that record.
+
+    @invariant OverlapPendingStateIsPerRecordBounded
+        -- Coalescing retains at most one representative and queueing is capped by a disclosed
+        -- SPEC-local per-record constant; excess occurrences become capacity-refused evidence.
+
+    @invariant QueueAdmissionIsNotDeliveryOutcome
+        -- Pending admission introduces no delivery disposition; dequeue re-evaluates current law
+        -- before producing fired, coalesced, suppressed, or capacity_refused evidence.
+
+    @invariant CoalescingStagesRemainDistinct
+        -- Source-batch, missed-fire, and overlap coalescing each retain their own represented set,
+        -- reason, and evidence and cannot silently collapse into one ambiguous operation.
+
+    @invariant PendingIdentityAndOrderAreDeterministic
+        -- Pending occurrence identity and order reproduce across recovery; authority or policy
+        -- change suppresses rather than reinterprets an already admitted occurrence.
+
+    @invariant MissedFirePrecedesOverlap
+        -- Missed-fire evaluation determines the occurrence set first, then every live or catch-up
+        -- occurrence passes overlap policy; deterministic identities across the seam prevent bypass,
+        -- duplicate admission, and reordering after a crash.
+
+    @invariant TriggerQueuesAndActiveCallsUseThreeNamedBounds
+        -- Disclosed SPEC-local constants cap per-record pending, resident-wide pending, and
+        -- resident-wide active trigger calls; the active bound cannot exceed ordinary call capacity.
+
+    @invariant AdmissionOrderIsFixedAndAuthorityNeutral
+        -- Every occurrence passes missed-fire, overlap, per-record capacity, resident-wide capacity,
+        -- and fresh pre-fire checks in order, and no stage manufactures another stage's authority.
+
+    @invariant PendingAdmissionIsDurableBeforeVisibility
+        -- A pending identity, represented set, policy evaluations, reason, and admission sequence
+        -- become durable before scheduler visibility; append failure creates neither pending nor call.
+
+    @invariant PendingAdmissionNeverEvicts
+        -- Capacity cannot silently evict earlier admitted work; a new admission beyond either bound
+        -- terminates as capacity_refused with evidence.
+
+    @invariant NoImplicitResidentRetryQueue
+        -- A directly fireable occurrence unable to reserve resident active capacity terminates as
+        -- capacity_refused; only work already admitted by overlap policy may remain pending.
+
+    @invariant TriggerWorkCannotStarveResidentControl
+        -- Trigger activity cannot consume bounds required by the observation writer, lifecycle
+        -- control, status reads, or ordinary resident call admission.
+
+    @invariant DequeueAndRestartAreDeterministic
+        -- Durable admission order, stable occurrence identity, active calls, and terminal results
+        -- determine dequeue and restart reconstruction without hidden priority or unobserved success.
+
+    @invariant DequeueRechecksCurrentLaw
+        -- Pending work receives fresh trigger, call, payload, idempotency, route, revalidation, and
+        -- effect checks immediately before a call may be constructed.
+
+    @invariant TerminalDispositionPreventsResurrection
+        -- Skipped, suppressed, capacity-refused, and fired-with-terminal-result occurrences are
+        -- excluded from re-evaluation and missed-fire reconstruction across restart.
+
+    @invariant LaterOccurrencesRequireExplicitPolicy
+        -- Refusal cannot be relabeled as a miss or hidden retry; only the ratified missed-fire and
+        -- overlap policies may establish a distinct later governed occurrence.
 }
 
-open question "CallTriggerAuthority origin mapping — which truthful CallOrigin identifies time-triggered and event-triggered calls at the implementing SPEC operator gate?"
-open question "CallTriggerAuthority event-source Toy — what contract and authority bind an external event source to firing eligibility?"
-open question "CallTriggerAuthority domain cadence — how does a Child express application cadence meaning without moving that meaning into Mother?"
-open question "CallTriggerAuthority bounds — which named queue, backpressure, missed-fire, coalescing, expiry, and retry obligations govern firing?"
-open question "Registry sync initiation — which explicit schedule or event authority may initiate the already-governed registry sync operation?"
+-- Decision: 2026-07-21 Area 3 continuation sorts `patinaMother`'s watcher composition into two
+-- lawful MCT observation shapes, with exactly one shape selected per path. A Child that directly
+-- observes uses a real watch Toy under current ToyGrant. An `mctMother`-side event-source adapter
+-- is reserved for a source observed by the `mctMother` itself under independent current effect
+-- authority, following the D1.15 no-Child-acts precedent.
+-- Decision: An `mctMother`-side adapter cannot impersonate a Child or replace the ToyGrant required
+-- when a Child performs observation. Conversely, a Child watch Toy grants observation only: it
+-- supplies no call origination, standing trigger, delivery, route, or downstream effect authority.
+-- Decision: A watching Child emits through ordinary Child calling under existing call law. Holding
+-- a watch Toy cannot create unattended calls; `CallTriggerAuthority` remains the sole standing
+-- authority to originate a future call attempt.
+
+contract MctEventSourcePlacement {
+    @invariant OneObservationShapePerPath
+        -- One observation path selects exactly one observer shape: a directly observing Child with
+        -- a watch Toy, or a Mother event-source adapter when no Child performs the observation.
+
+    @invariant DirectChildObservationRequiresWatchToy
+        -- A Child that directly observes a source requires a current scoped watch ToyGrant; its
+        -- application meaning or possession of another capability cannot substitute for that grant.
+
+    @invariant MotherObservationRequiresIndependentEffectAuthority
+        -- A Mother event-source adapter may observe only under its own current effect authority,
+        -- independently of trigger authority, and only when no Child acts as observer.
+
+    @invariant MotherAdapterCannotImpersonateChild
+        -- A Mother event-source adapter cannot claim Child observation or bypass the watch ToyGrant
+        -- required when a Child actually performs the source effect.
+
+    @invariant WatchToyGrantsObservationOnly
+        -- A watch Toy grants only its scoped observation effect and creates no call origination,
+        -- standing trigger, delivery, route, data, or downstream effect authority.
+
+    @invariant ChildEmissionReentersCallLaw
+        -- Event emission by a watching Child is ordinary Child calling and re-enters current call,
+        -- payload, idempotency, authority, routing, revalidation, effect, and observation law.
+
+    @invariant TriggerAuthorityIsSoleStandingOrigination
+        -- A watch grant cannot originate unattended calls; `CallTriggerAuthority` remains the sole
+        -- standing authority to originate a scoped fresh call attempt.
+}
+
+-- Decision: 2026-07-21 Area 3 continuation ratifies one minimum `WatchObservationScope` for both
+-- a Child watch ToyGrant and the independent effect authority of an `mctMother`-side event-source
+-- adapter. The record names one canonical root, constrained or deliberately explicit-broad scope,
+-- root-only or recursive traversal, a non-empty subset of created/modified/deleted event classes,
+-- a per-record batch maximum below a named SPEC-local ceiling, an explicit deterministic
+-- coalescing policy, and a current revision/state with explicit start and expiry.
+-- Decision: Missing, stale, expired, revoked, or superseded watch scope grants nothing. Watch
+-- authority supplies event observation and safe metadata only. Content reads, writes, deletes, or
+-- any other filesystem effect require a separate current scoped filesystem ToyGrant.
+-- Decision: Safe watch metadata contains only a root-relative canonical path, event class, and
+-- mechanical facts. Absolute paths are not exposed. A subject that resolves outside the canonical
+-- root, including through a symlink escape, is excluded rather than reported.
+-- Decision: Every delivered event or batch references the exact governing watch-scope record and
+-- revision. Batches carry a monotonic sequence within that scope so loss, reordering, and
+-- coalescing remain detectable and countable from evidence.
+
+entity WatchObservationScope {
+    watch_scope_id: String
+    observer_shape: child_toy | mother_adapter
+    observer_ref: String
+    scope_mode: constrained | explicit_broad
+    canonical_root_ref: String
+    traversal_scope: root_only | recursive
+    event_classes: List<String>
+    max_events_per_batch: Integer
+    coalescing_policy_ref: String
+    starts_at: Timestamp
+    expires_at: Timestamp
+    scope_revision: Integer
+    authority_state: requested | active | revoked | expired | superseded
+    authority_observation_id: String
+}
+
+actor WatchObservationScopeReader {
+    within: WatchObservationScope
+    identified_by: scope.watch_scope_id
+}
+
+surface WatchObservationScopeProjection {
+    facing reader: WatchObservationScopeReader
+    context scope: WatchObservationScope
+
+    exposes:
+        scope.watch_scope_id
+        scope.observer_shape
+        scope.observer_ref
+        scope.scope_mode
+        scope.canonical_root_ref
+        scope.traversal_scope
+        scope.event_classes
+        scope.max_events_per_batch
+        scope.coalescing_policy_ref
+        scope.starts_at
+        scope.expires_at
+        scope.scope_revision
+        scope.authority_state
+        scope.authority_observation_id
+}
+
+contract MctWatchObservationScope {
+    @invariant RootAndBreadthAreExplicit
+        -- One canonical root is constrained or deliberately explicit-broad; a missing root or scope
+        -- mode grants no observation.
+
+    @invariant TraversalIsExplicit
+        -- Root-only and recursive traversal are distinct scopes; recursion is never inferred.
+
+    @invariant EventClassesAreExplicit
+        -- A non-empty subset of created, modified, and deleted is named. An absent or unlisted
+        -- event class grants no observation, and another class requires an explicit contract change.
+
+    @invariant BatchIsBoundedByNamedCeiling
+        -- Each record names a positive event maximum per batch no greater than a disclosed
+        -- SPEC-local constant; capacity cannot create an unbounded queue or widen observation.
+
+    @invariant CoalescingIsExplicitDeterministicAndCountable
+        -- The record names no coalescing or a deterministic policy defining equivalence, survivor,
+        -- and order; coalesced inputs remain countable and evidence-linked.
+
+    @invariant ValidityIsCurrentAndBounded
+        -- Observation requires the exact active revision within its explicit start and expiry;
+        -- missing, stale, revoked, expired, or superseded scope grants nothing.
+
+    @invariant WatchAuthorityIsObservationOnly
+        -- Watch authority exposes event observation and safe metadata only. Content reads, writes,
+        -- deletes, and every other filesystem effect require a separate scoped filesystem ToyGrant.
+
+    @invariant SafeMetadataIsCanonicalAndRootRelative
+        -- Event metadata contains a root-relative canonical path, event class, and mechanical facts,
+        -- never an absolute path or content bytes.
+
+    @invariant EscapedSubjectsAreExcluded
+        -- A subject resolving outside the canonical root, including through a symlink, is excluded
+        -- from observation and cannot be reported as an escaped path.
+
+    @invariant DeliveryCarriesExactScopeProvenance
+        -- Every delivered event or batch references the governing watch-scope id and exact revision.
+
+    @invariant BatchSequenceIsMonotonicPerScope
+        -- Delivered batches carry a per-scope monotonic sequence so loss, reordering, and
+        -- coalescing are detectable and countable from durable evidence.
+}
+
+-- Decision: 2026-07-21 Area 3 continuation rejects the absolute-path semantics in
+-- `patinaMother`'s `patina:watch/events@0.1.x` composition while retaining its byte-exact legacy
+-- ABI shape under validated narrowing. On composed delivery, the deprecated `absolute-path` slot
+-- must equal the safe root-relative canonical path carried by `relative-path`; mismatch is refused
+-- with durable evidence rather than normalized after acceptance.
+-- Decision: This narrowing is an enforced compatibility invariant, not documentation, and applies
+-- only to `patina:watch/events@0.1.x`. A successor watch-events contract removes the deprecated
+-- slot entirely; its name, value, or compatibility meaning cannot propagate into another version.
+
+contract MctLegacyWatchEventsCompatibility {
+    @invariant LegacyAbsolutePathSlotIsNarrowed
+        -- For `patina:watch/events@0.1.x` composed delivery, the deprecated `absolute-path` slot
+        -- equals the same safe root-relative canonical path as `relative-path` and carries no
+        -- absolute host, guest, root, or authority meaning.
+
+    @invariant MismatchIsRefusedWithEvidence
+        -- A legacy event whose two path slots differ is refused before delivery and leaves durable
+        -- typed refusal evidence; acceptance cannot sanitize or reinterpret the mismatch afterward.
+
+    @invariant NarrowingIsLegacyAbiOnly
+        -- The compatibility rule applies only to the byte-exact `patina:watch/events@0.1.x` ABI and
+        -- supplies no general permission to preserve a misleading field in another contract.
+
+    @invariant SuccessorDropsDeprecatedSlot
+        -- Every successor watch-events contract omits `absolute-path`; the deprecated slot and its
+        -- narrowed compatibility meaning cannot propagate beyond the legacy ABI.
+}
+
+-- Decision: 2026-07-21 Area 3 continuation rebuilds `patinaMother`'s watcher delivery as two
+-- exclusive MCT paths. A watching Child emits a fresh ordinary Child call under current call law;
+-- for the required WASM fixture its truthful origin is `WasmHost`. An `mctMother`-side source
+-- adapter first records receipt and eligibility, then requires matching current
+-- `CallTriggerAuthority` and emits a fresh `TriggerFiring` call. One event cannot use both paths.
+-- Decision: Child-path evidence names its actual causative call. When that call came from a trigger
+-- firing it also links the exact firing, trigger record, and revision; a manual or other call never
+-- receives fabricated trigger lineage. Mother-adapter delivery directly names the event and exact
+-- trigger record, record revision, and policy revision.
+-- Decision: Batch, event, and delivery records retain exact scope provenance, monotonic batch
+-- sequence, safe event identity, authority decisions, resulting call, and durable terminal result
+-- references. Event receipt and delivery eligibility are durable before delivery effect or
+-- acknowledgement. Append failure suppresses delivery.
+-- Decision: Delivery disposition is a pre-call closed set: fired, coalesced, suppressed, or
+-- capacity_refused. After a target call exists, delivery evidence references that call's existing
+-- closed `MctResult` rather than introducing a parallel post-call outcome enum. "Delivered" means
+-- the referenced target call has a durable successful result, not merely receipt, queueing, or call
+-- construction.
+-- Decision: The required composed proof is temporal `TriggerFiring` to
+-- `folder-watch-actor@0.1.0`, watch-Toy observation, ordinary `WasmHost` call, validated legacy ABI,
+-- and `watch-null-sink@0.1.0.emit`. The sink receives no watch authority; its own current grants
+-- govern logging and measure effects.
+
+entity WatchEventBatchEvidence {
+    batch_id: String
+    watch_scope_id: String
+    watch_scope_revision: Integer
+    batch_sequence: Integer
+    observer_shape: child_toy | mother_adapter
+    observer_authority_decision_ref: String
+    raw_event_count: Integer
+    eligible_event_count: Integer
+    coalesced_event_count: Integer
+    excluded_event_count: Integer
+    capacity_refused_event_count: Integer
+    source_effect_observation_id: String
+}
+
+entity WatchEventEvidence {
+    event_id: String
+    batch_id: String
+    batch_position: Integer
+    event_class: created | modified | deleted
+    root_relative_canonical_path: String
+    mechanical_facts_ref: String
+    causative_call_id: String?
+    causative_trigger_firing_id: String?
+    causative_adapter_observation_id: String?
+    compatibility_validation: not_applicable | matched | mismatch_refused
+    event_observation_id: String
+}
+
+entity WatchEventDeliveryDisposition {
+    delivery_disposition_id: String
+    event_id: String
+    batch_id: String
+    delivery_path: child_call | trigger_firing
+    target: OperationTarget
+    disposition: fired | coalesced | suppressed | capacity_refused
+    child_call_authority_ref: String?
+    trigger_authority_id: String?
+    trigger_record_revision: Integer?
+    trigger_policy_revision: Integer?
+    planned_call_id: String?
+    disposition_observation_id: String
+}
+
+entity WatchEventDeliveryEvidence {
+    delivery_id: String
+    delivery_disposition_id: String
+    event_id: String
+    target_call_id: String
+    target_result_ref: String
+    completion_observation_id: String
+}
+
+actor WatchEventBatchReader {
+    within: WatchEventBatchEvidence
+    identified_by: batch.batch_id
+}
+
+actor WatchEventReader {
+    within: WatchEventEvidence
+    identified_by: event.event_id
+}
+
+actor WatchEventDeliveryDispositionReader {
+    within: WatchEventDeliveryDisposition
+    identified_by: delivery.delivery_disposition_id
+}
+
+actor WatchEventDeliveryReader {
+    within: WatchEventDeliveryEvidence
+    identified_by: delivery.delivery_id
+}
+
+surface WatchEventBatchProjection {
+    facing reader: WatchEventBatchReader
+    context batch: WatchEventBatchEvidence
+
+    exposes:
+        batch.batch_id
+        batch.watch_scope_id
+        batch.watch_scope_revision
+        batch.batch_sequence
+        batch.observer_shape
+        batch.observer_authority_decision_ref
+        batch.raw_event_count
+        batch.eligible_event_count
+        batch.coalesced_event_count
+        batch.excluded_event_count
+        batch.capacity_refused_event_count
+        batch.source_effect_observation_id
+}
+
+surface WatchEventProjection {
+    facing reader: WatchEventReader
+    context event: WatchEventEvidence
+
+    exposes:
+        event.event_id
+        event.batch_id
+        event.batch_position
+        event.event_class
+        event.root_relative_canonical_path
+        event.mechanical_facts_ref
+        event.causative_call_id
+        event.causative_trigger_firing_id
+        event.causative_adapter_observation_id
+        event.compatibility_validation
+        event.event_observation_id
+}
+
+surface WatchEventDeliveryDispositionProjection {
+    facing reader: WatchEventDeliveryDispositionReader
+    context delivery: WatchEventDeliveryDisposition
+
+    exposes:
+        delivery.delivery_disposition_id
+        delivery.event_id
+        delivery.batch_id
+        delivery.delivery_path
+        delivery.target.namespace
+        delivery.target.interface_name
+        delivery.target.function_name
+        delivery.disposition
+        delivery.child_call_authority_ref
+        delivery.trigger_authority_id
+        delivery.trigger_record_revision
+        delivery.trigger_policy_revision
+        delivery.planned_call_id
+        delivery.disposition_observation_id
+}
+
+surface WatchEventDeliveryProjection {
+    facing reader: WatchEventDeliveryReader
+    context delivery: WatchEventDeliveryEvidence
+
+    exposes:
+        delivery.delivery_id
+        delivery.delivery_disposition_id
+        delivery.event_id
+        delivery.target_call_id
+        delivery.target_result_ref
+        delivery.completion_observation_id
+}
+
+contract MctWatchEventDelivery {
+    @invariant DeliveryPathsAreExclusive
+        -- One eligible event selects either ordinary Child calling or Mother trigger firing; it
+        -- cannot create both delivery attempts.
+
+    @invariant ChildDeliveryIsOrdinaryCurrentCall
+        -- A watching Child emits through a fresh ordinary call that re-enters current payload,
+        -- idempotency, authority, routing, revalidation, effect, result, and observation law; the
+        -- watch Toy supplies none of that authority.
+
+    @invariant WasmFixtureUsesTruthfulWasmHostOrigin
+        -- Delivery originating from the required WASM watcher uses `WasmHost`, not
+        -- `TriggerFiring`, because the Child and host boundary construct that call.
+
+    @invariant MotherDeliveryRequiresTriggerAuthority
+        -- A Mother event-source adapter records receipt and eligibility before a matching current
+        -- trigger record may originate one fresh `TriggerFiring` call.
+
+    @invariant TriggerLineageIsNeverFabricated
+        -- Child delivery names its actual causative call and links trigger provenance only when
+        -- that call was trigger-fired; Mother-triggered delivery names the exact event, trigger
+        -- record revision, and policy revision directly.
+
+    @invariant BatchEvidenceIsCompleteAndScoped
+        -- Every batch records exact scope id/revision, monotonic sequence, observer authority,
+        -- source effect, and raw, eligible, coalesced, excluded, and capacity-refused counts.
+
+    @invariant EventEvidenceIsSafeAndCausal
+        -- Every event records batch position, class, canonical root-relative path, safe mechanical
+        -- facts, actual causal lineage, and applicable legacy compatibility validation without
+        -- payload bytes or absolute paths.
+
+    @invariant DurableReceiptAndEligibilityPrecedeDelivery
+        -- Source receipt and delivery eligibility or non-delivery disposition are durable before a
+        -- target call effect or acknowledgement; append failure suppresses delivery.
+
+    @invariant PreCallDispositionSetIsClosed
+        -- Delivery-specific disposition is exactly fired, coalesced, suppressed, or
+        -- capacity_refused and describes only the decision before a target call exists.
+
+    @invariant PostCallOutcomeReusesMctResult
+        -- Once a target call exists, delivery evidence references its existing immutable
+        -- `MctResult`; no delivery-specific post-call outcome enum may duplicate or collapse the
+        -- closed success, denied, failed, timed_out, and cancelled set.
+
+    @invariant DeliveredMeansDurableTargetSuccess
+        -- An event is delivered only when its target call has a durable successful `MctResult`, not
+        -- when the event is observed, eligible, queued, dispositioned as fired, or constructed.
+
+    @invariant SinkEffectsRequireSinkGrants
+        -- Delivery grants the sink no watch or effect authority; its logging, measure, and every
+        -- other Toy effect require the sink's own current scoped grants.
+}
+
+-- Decision: 2026-07-21 Area 3 continuation defers recurring/event-driven registry sync to the
+-- named `RegistrySyncTriggerComposition` slot. Until that gate, unattended registry sync is
+-- forbidden; trigger authority cannot carry or imply acquisition authority; standing source
+-- authority cannot originate calls; and operator-pointed acquisition remains manual, one-shot, and
+-- non-recurring.
+-- Decision: `RegistrySyncTriggerComposition` is coupled to the D1.14
+-- `NetworkArtifactAcquisitionAdapter` slot. The composition comes due when that adapter is designed,
+-- and neither slot may close without jointly resolving the triggerable sync-operation boundary,
+-- exact authority-record linkage, independent adapter/connection/secret authority, and evidence.
+
+contract MctRegistrySyncInitiationDeferral {
+    @invariant UnattendedRegistrySyncIsForbidden
+        -- No schedule, event, source configuration, or staged artifact may initiate unattended
+        -- registry sync before the coupled composition gate is ratified.
+
+    @invariant TriggerAuthorityCannotCarryAcquisitionAuthority
+        -- `CallTriggerAuthority` can originate only its scoped call attempt and cannot contain,
+        -- imply, preserve, or substitute for source trust or acquisition effect authority.
+
+    @invariant StandingSourceAuthorityCannotOriginateCalls
+        -- `ArtifactSourceAuthority` can govern source trust but cannot schedule, trigger, or
+        -- otherwise originate a call or sync operation.
+
+    @invariant OperatorPointedAcquisitionRemainsManualAndOneShot
+        -- An operator-pointed decision remains one explicit manual acquisition attempt and cannot
+        -- become recurring, unattended, trigger-carried, or reusable source authority.
+
+    @invariant RegistrySyncAndNetworkAdapterSlotsAreCoupled
+        -- RegistrySyncTriggerComposition and NetworkArtifactAcquisitionAdapter come due together;
+        -- neither slot closes without resolving the other's authority, operation, and evidence edge.
+}
+
+open question "RegistrySyncTriggerComposition — with NetworkArtifactAcquisitionAdapter, what triggerable sync-operation boundary and exact revision linkage compose trigger and standing acquisition authority without merging them?"
+open question "NetworkArtifactAcquisitionAdapter — with RegistrySyncTriggerComposition, what deny-by-default egress, connection, secret, source, verification, and initiation evidence governs network acquisition?"
 
 -- Decision: `mct/call/0` is the remote WIT-shaped call protocol. It may run only after an admitted `mct/hello/0` decision that accepted `mct/call/0` for the peer binding and Vision scope.
 -- Decision: `mct/call/0` is a transport envelope around the semantic `MctCall`; it does not create a second call model. The receiving Mother constructs or rejects one immutable `MctCall` before authority routing.

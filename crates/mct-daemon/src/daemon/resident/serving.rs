@@ -249,7 +249,33 @@ pub(crate) async fn run_test_resident_mother<S>(
 where
     S: std::future::Future<Output = ()> + Send,
 {
-    run_resident_mother(
+    run_test_resident_mother_with_trigger_runtime(
+        paths,
+        identity_path,
+        ledger_path,
+        socket_path,
+        shutdown,
+        ready,
+        (Arc::new(SystemTriggerClock), TriggerLimits::default()),
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(super) async fn run_test_resident_mother_with_trigger_runtime<S>(
+    paths: ResidentRuntimePaths,
+    identity_path: PathBuf,
+    ledger_path: PathBuf,
+    socket_path: PathBuf,
+    shutdown: S,
+    ready: Option<tokio::sync::oneshot::Sender<MotherIrohEndpointTicket>>,
+    trigger_runtime: (Arc<dyn TriggerClock>, TriggerLimits),
+) -> Result<()>
+where
+    S: std::future::Future<Output = ()> + Send,
+{
+    let (trigger_clock, trigger_limits) = trigger_runtime;
+    run_resident_mother_with_trigger_runtime(
         ResidentMotherConfig {
             config_path: paths.config_path().to_path_buf(),
             identity_path,
@@ -263,6 +289,8 @@ where
         },
         shutdown,
         ready,
+        trigger_clock,
+        trigger_limits,
     )
     .await
 }
@@ -271,6 +299,26 @@ async fn run_resident_mother<S>(
     config: ResidentMotherConfig,
     shutdown: S,
     ready: Option<tokio::sync::oneshot::Sender<MotherIrohEndpointTicket>>,
+) -> Result<()>
+where
+    S: std::future::Future<Output = ()> + Send,
+{
+    run_resident_mother_with_trigger_runtime(
+        config,
+        shutdown,
+        ready,
+        Arc::new(SystemTriggerClock),
+        TriggerLimits::default(),
+    )
+    .await
+}
+
+async fn run_resident_mother_with_trigger_runtime<S>(
+    config: ResidentMotherConfig,
+    shutdown: S,
+    ready: Option<tokio::sync::oneshot::Sender<MotherIrohEndpointTicket>>,
+    trigger_clock: Arc<dyn TriggerClock>,
+    trigger_limits: TriggerLimits,
 ) -> Result<()>
 where
     S: std::future::Future<Output = ()> + Send,
@@ -330,6 +378,8 @@ where
     }
     let ticket = endpoint.ticket();
     let load_report = load_children_from_dir(MctChildLoadOptions::new(config.children_dir.clone()));
+    reconcile_trigger_projection(&config.state_path, &config.ledger_path)
+        .context("reconcile trigger ledger projection before resident readiness")?;
     let state = MctRuntimeStateStore::open(&config.state_path)
         .with_context(|| format!("open runtime state {}", config.state_path.display()))?;
     let runtime_summary = state.summary()?;
@@ -371,6 +421,17 @@ where
     });
 
     let (shutdown_tx, _) = broadcast::channel(4);
+    let trigger_task = tokio::spawn(run_trigger_scheduler_with_runtime(
+        ResidentRuntimePaths::new(
+            config.config_path.clone(),
+            config.children_dir.clone(),
+            config.state_path.clone(),
+        ),
+        ledger.clone(),
+        shutdown_tx.subscribe(),
+        trigger_clock,
+        trigger_limits,
+    ));
     let control_task = spawn_resident_control_task(
         config.control.clone(),
         ResidentRuntimePaths::new(
@@ -471,6 +532,7 @@ where
         eprintln!("ledger shutdown observation failed: {error}");
     }
     let _ = tokio::time::timeout(Duration::from_secs(2), event_task).await;
+    let _ = tokio::time::timeout(Duration::from_secs(2), trigger_task).await;
     control_task.abort();
     if clean_shutdown_observed && let Some(instance) = &supervised_instance {
         let _ = record_supervised_clean_shutdown_completed(instance, &ledger).await;

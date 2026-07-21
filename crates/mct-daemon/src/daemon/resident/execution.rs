@@ -17,22 +17,25 @@ pub(super) struct LocalExecutionReport {
     observations: Vec<MctObservation>,
     inline_result_payload: Option<Vec<u8>>,
     run_id: Option<String>,
+    produced_messages: Vec<MctWitProducedMessage>,
 }
 
+type LocalExecutionParts = (
+    MctResult,
+    Vec<MctObservation>,
+    Option<Vec<u8>>,
+    Option<String>,
+    Vec<MctWitProducedMessage>,
+);
+
 impl LocalExecutionReport {
-    pub(super) fn into_parts(
-        self,
-    ) -> (
-        MctResult,
-        Vec<MctObservation>,
-        Option<Vec<u8>>,
-        Option<String>,
-    ) {
+    pub(super) fn into_parts(self) -> LocalExecutionParts {
         (
             self.result,
             self.observations,
             self.inline_result_payload,
             self.run_id,
+            self.produced_messages,
         )
     }
 }
@@ -105,6 +108,7 @@ pub(super) fn execute_authorized_resident_child(
     request: MctCallProtocolRequest,
     inline_payload: Option<Vec<u8>>,
     current_revisions: AuthorityContextSnapshot,
+    before_effect_ledger: Option<ResidentLedgerWriter>,
 ) -> Result<LocalExecutionReport> {
     let call = request.call.clone();
     let state = MctRuntimeStateStore::open(paths.state_path())?;
@@ -173,6 +177,7 @@ pub(super) fn execute_authorized_resident_child(
                 &request,
                 inline_payload.as_deref(),
                 paths.state_path(),
+                before_effect_ledger,
             )?
         }
     };
@@ -255,6 +260,289 @@ fn execute_resident_process_child(
         observations: report.observations,
         inline_result_payload,
         run_id: None,
+        produced_messages: Vec::new(),
+    })
+}
+
+fn authorize_resident_watch_toy(
+    state: &MctRuntimeStateStore,
+    child: &mct_daemon::MctLoadedChild,
+    authorized_child: &AuthorizedChildInvocation,
+    call: &MctCall,
+    toy_id: &str,
+    action: &str,
+    label: &str,
+) -> std::result::Result<CliAuthorizedToy, CliToyAuthorizationError> {
+    let contracts = state.toy_contracts().map_err(cli_adapter_error)?;
+    let grants = state.toy_grant_snapshots().map_err(cli_adapter_error)?;
+    let toy_id = ToyId::new(toy_id).map_err(|error| cli_adapter_error(error.into()))?;
+    let resource_id = grants
+        .iter()
+        .find(|grant| {
+            grant.toy_id == toy_id
+                && grant.subject.child_name == child.name
+                && grant.subject.artifact_id == child.artifact_id
+                && grant.subject.artifact_version == child.version
+                && grant.subject.assignment_id.as_ref() == Some(authorized_child.assignment_id())
+                && grant.grant_state == ToyGrantState::Active
+                && grant
+                    .scope
+                    .allowed_actions
+                    .iter()
+                    .any(|allowed| allowed == action)
+        })
+        .and_then(|grant| grant.scope.resource_id.clone())
+        .ok_or_else(|| CliToyAuthorizationError {
+            safe_message: format!("current exact {label} Toy grant not found"),
+            observations: Vec::new(),
+        })?;
+    authorize_cli_toy(CliToyAuthorizationRequest {
+        child,
+        authorized_child,
+        call,
+        contracts: &contracts,
+        grants: &grants,
+        toy_id,
+        action,
+        resource_id: Some(resource_id),
+        label,
+    })
+}
+
+fn resident_watch_host_adapters(
+    state: &MctRuntimeStateStore,
+    state_path: &Path,
+    child: &mct_daemon::MctLoadedChild,
+    authorized_child: &AuthorizedChildInvocation,
+    call: &MctCall,
+    imports: &BTreeSet<String>,
+) -> std::result::Result<CliWitHostAdapterBuild, CliToyAuthorizationError> {
+    let scopes = state
+        .watch_observation_scopes()
+        .map_err(cli_adapter_error)?;
+    let scope = scopes
+        .into_iter()
+        .filter(|scope| {
+            scope.authority_state == WatchObservationScopeState::Active
+                && scope.observer_ref.child_name == child.name
+                && scope.observer_ref.artifact_id.as_str() == child.artifact_id
+                && scope.observer_ref.assignment_id == *authorized_child.assignment_id()
+        })
+        .max_by_key(|scope| scope.scope_revision)
+        .ok_or_else(|| CliToyAuthorizationError {
+            safe_message: "current exact Watch observation scope not found".into(),
+            observations: Vec::new(),
+        })?;
+    let now = current_timestamp();
+    let observer_request = WatchObservationSessionRequest {
+        current_observer: scope.observer_ref.clone(),
+        now: now.clone(),
+    };
+    let watch_preopen = authorize_resident_watch_toy(
+        state,
+        child,
+        authorized_child,
+        call,
+        MCT_WATCH_TOY_ID,
+        MCT_WATCH_TOY_ACTION,
+        "watch-preopen",
+    )?;
+    let mut observations = vec![toy_grant_evaluation_observation(
+        call.trace_context.trace_id.clone(),
+        now.clone(),
+        &watch_preopen.evaluation,
+    )];
+    let _watch_session =
+        authorize_watch_observation_session(watch_preopen.authorized, &scope, &observer_request)
+            .map_err(|error| CliToyAuthorizationError {
+                safe_message: error.to_string(),
+                observations: observations.clone(),
+            })?;
+    if scope.traversal_scope != WatchTraversalScope::Recursive {
+        return Err(CliToyAuthorizationError {
+            safe_message: "root-only Watch traversal is unsupported by the v1 WASI adapter".into(),
+            observations,
+        });
+    }
+    let root = scope
+        .canonical_root_ref
+        .strip_prefix("file://")
+        .map(PathBuf::from)
+        .ok_or_else(|| CliToyAuthorizationError {
+            safe_message: "Watch root is not a canonical local directory reference".into(),
+            observations: observations.clone(),
+        })?;
+    let content = authorize_resident_watch_toy(
+        state,
+        child,
+        authorized_child,
+        call,
+        MCT_DIRECTORY_READ_TOY_ID,
+        "read-content",
+        "watch-content-read",
+    )?;
+    let content_resource = content
+        .authorized
+        .resource_id()
+        .map(str::to_owned)
+        .unwrap_or_default();
+    if content_resource != scope.canonical_root_ref {
+        return Err(CliToyAuthorizationError {
+            safe_message: "content-read root must equal the v1 Watch root".into(),
+            observations,
+        });
+    }
+    observations.push(toy_grant_evaluation_observation(
+        call.trace_context.trace_id.clone(),
+        now.clone(),
+        &content.evaluation,
+    ));
+
+    let mut toy_registry = MctToyAdapterRegistry::new();
+    let mut logging = None;
+    let mut measure = None;
+    for (import, toy_id, label, slot) in [
+        (
+            "wasi:logging/logging@0.1.0",
+            MCT_WASI_LOGGING_TOY_ID,
+            "watch-logging",
+            0u8,
+        ),
+        (
+            "patina:measure/measure@0.1.0",
+            MCT_PATINA_MEASURE_TOY_ID,
+            "watch-measure",
+            1u8,
+        ),
+    ] {
+        if imports.contains(import) {
+            let authorized = authorize_resident_watch_toy(
+                state,
+                child,
+                authorized_child,
+                call,
+                toy_id,
+                "invoke",
+                label,
+            )?;
+            observations.push(toy_grant_evaluation_observation(
+                call.trace_context.trace_id.clone(),
+                now.clone(),
+                &authorized.evaluation,
+            ));
+            let id = ToyId::new(toy_id).map_err(|error| cli_adapter_error(error.into()))?;
+            toy_registry.register(id, MctToyBackend::EchoJson);
+            let adapter = wit_toy_adapter(authorized.authorized, &format!("obs-{label}"));
+            if slot == 0 {
+                logging = Some(adapter);
+            } else {
+                measure = Some(adapter);
+            }
+        }
+    }
+
+    let keyvalue = if imports.contains("wasi:keyvalue/store@0.2.0") {
+        let get = authorize_resident_watch_toy(
+            state,
+            child,
+            authorized_child,
+            call,
+            MCT_CHILD_KEYVALUE_TOY_ID,
+            "get",
+            "watch-keyvalue-get",
+        )?;
+        let set = authorize_resident_watch_toy(
+            state,
+            child,
+            authorized_child,
+            call,
+            MCT_CHILD_KEYVALUE_TOY_ID,
+            "set",
+            "watch-keyvalue-set",
+        )?;
+        observations.extend([
+            toy_grant_evaluation_observation(
+                call.trace_context.trace_id.clone(),
+                now.clone(),
+                &get.evaluation,
+            ),
+            toy_grant_evaluation_observation(
+                call.trace_context.trace_id.clone(),
+                now.clone(),
+                &set.evaluation,
+            ),
+        ]);
+        let resource = get.authorized.resource_id().unwrap_or_default().to_owned();
+        let bucket_identifier = resource
+            .rsplit_once(":bucket:")
+            .map(|(_, bucket)| bucket.to_owned())
+            .ok_or_else(|| CliToyAuthorizationError {
+                safe_message: "keyvalue grant has malformed bucket resource".into(),
+                observations: observations.clone(),
+            })?;
+        toy_registry.register(
+            ToyId::new(MCT_CHILD_KEYVALUE_TOY_ID)
+                .map_err(|error| cli_adapter_error(error.into()))?,
+            MctToyBackend::EchoJson,
+        );
+        Some(MctWitKeyvalueHostAdapter {
+            get: wit_toy_adapter(get.authorized, "obs-watch-keyvalue-get"),
+            set: wit_toy_adapter(set.authorized, "obs-watch-keyvalue-set"),
+            state_path: state_path.to_path_buf(),
+            bucket_identifier,
+            bucket_resource_id: resource,
+        })
+    } else {
+        None
+    };
+
+    let messaging = if imports.contains("wasi:messaging/producer@0.2.0") {
+        let callout = authorize_resident_watch_toy(
+            state,
+            child,
+            authorized_child,
+            call,
+            MCT_WATCH_TOY_ID,
+            MCT_WATCH_TOY_ACTION,
+            "watch-callout",
+        )?;
+        observations.push(toy_grant_evaluation_observation(
+            call.trace_context.trace_id.clone(),
+            now,
+            &callout.evaluation,
+        ));
+        toy_registry.register(
+            ToyId::new(MCT_WATCH_TOY_ID).map_err(|error| cli_adapter_error(error.into()))?,
+            MctToyBackend::EchoJson,
+        );
+        Some(MctWitMessagingHostAdapter {
+            toy: wit_toy_adapter(callout.authorized, "obs-watch-callout"),
+            watch_admission: MctWitWatchMessageAdmission {
+                event_classes: scope.event_classes.iter().copied().collect(),
+                max_events_per_batch: scope.max_events_per_batch,
+            },
+        })
+    } else {
+        None
+    };
+
+    Ok(CliWitHostAdapterBuild {
+        adapters: MctWitHostImportAdapters {
+            toy_registry,
+            logging,
+            measure,
+            git: None,
+            keyvalue,
+            messaging,
+            wasi: Some(MctWasiHostConfig {
+                preopens: vec![MctWasiPreopen {
+                    host_path: root,
+                    guest_path: "/input".into(),
+                    access: MctWasiPreopenAccess::ReadOnly,
+                }],
+            }),
+        },
+        observations,
     })
 }
 
@@ -263,6 +551,7 @@ fn execute_resident_wit_child(
     request: &MctCallProtocolRequest,
     inline_payload: Option<&[u8]>,
     state_path: &Path,
+    before_effect_ledger: Option<ResidentLedgerWriter>,
 ) -> Result<LocalExecutionReport> {
     let call = &request.call;
     let content_type = inline_payload_content_type(&request.payload).unwrap_or("application/json");
@@ -293,16 +582,29 @@ fn execute_resident_wit_child(
         })
         .and_then(|grant| grant.scope.resource_id)
         .map(PathBuf::from);
-    let adapter_build = match build_wit_host_adapters_for_cli_call(CliWitAdapterRequest {
-        state: &state,
-        child: &execution.child,
-        authorized_child: &execution.authorized,
-        call,
-        imports: &imports,
-        project_root: project_root.as_deref(),
-        guest_project: "/project",
-        git_repo: project_root.as_deref(),
-    }) {
+    let adapter_build = match if imports.contains("wasi:keyvalue/store@0.2.0")
+        || imports.contains("wasi:messaging/producer@0.2.0")
+    {
+        resident_watch_host_adapters(
+            &state,
+            state_path,
+            &execution.child,
+            &execution.authorized,
+            call,
+            &imports,
+        )
+    } else {
+        build_wit_host_adapters_for_cli_call(CliWitAdapterRequest {
+            state: &state,
+            child: &execution.child,
+            authorized_child: &execution.authorized,
+            call,
+            imports: &imports,
+            project_root: project_root.as_deref(),
+            guest_project: "/project",
+            git_repo: project_root.as_deref(),
+        })
+    } {
         Ok(build) => build,
         Err(error) => {
             return Ok(resident_toy_authority_denial_report(
@@ -312,6 +614,13 @@ fn execute_resident_wit_child(
             ));
         }
     };
+    let mut observations = adapter_build.observations;
+    if let Some(ledger) = before_effect_ledger {
+        tokio::runtime::Handle::current()
+            .block_on(ledger.append(observations.clone()))
+            .context("append Toy and Watch authority evaluations before WIT effects")?;
+        observations.clear();
+    }
     let mut report = runtime.invoke_authorized_child_wit_export_with_host_adapters(
         execution.authorized,
         &execution.child,
@@ -335,8 +644,8 @@ fn execute_resident_wit_child(
             completed_at: current_timestamp(),
         },
     )?;
-    let mut observations = adapter_build.observations;
     observations.append(&mut report.observations);
+    let produced_messages = report.produced_messages;
     let result_bytes = serde_json::to_vec(&report.output_json)?;
     let mut result = report.result;
     result.authority_decision_ref = execution.route_decision_id;
@@ -352,6 +661,7 @@ fn execute_resident_wit_child(
         observations,
         inline_result_payload,
         run_id: None,
+        produced_messages,
     })
 }
 
@@ -430,6 +740,7 @@ pub(super) fn resident_route_revision_denial_report(
         observations: vec![observation],
         inline_result_payload: None,
         run_id: None,
+        produced_messages: Vec::new(),
     }
 }
 
@@ -495,6 +806,7 @@ fn resident_toy_authority_denial_report(
         observations,
         inline_result_payload: None,
         run_id: None,
+        produced_messages: Vec::new(),
     }
 }
 
@@ -552,6 +864,7 @@ pub(super) fn resident_delivery_failure_report(
         observations: vec![observation],
         inline_result_payload: None,
         run_id: None,
+        produced_messages: Vec::new(),
     }
 }
 
@@ -932,6 +1245,7 @@ listens = []
             request,
             None,
             stale_revisions,
+            None,
         )
         .unwrap();
 

@@ -223,6 +223,8 @@ pub struct AuthorizedToyCall {
     toy_id: ToyId,
     /// Child instance allowed to exercise the toy.
     child_instance_id: ChildInstanceId,
+    /// Exact resource authorized by the evaluated grant/request, when scoped.
+    resource_id: Option<String>,
     /// Authority decision tied to this token.
     authority_decision_id: DecisionId,
     /// Token expiry, using grant expiry or call deadline when the grant has none.
@@ -262,6 +264,11 @@ impl AuthorizedToyCall {
     /// Child instance allowed to exercise the toy.
     pub fn child_instance_id(&self) -> &ChildInstanceId {
         &self.child_instance_id
+    }
+
+    /// Exact resource authorized for this token, when one was requested.
+    pub fn resource_id(&self) -> Option<&str> {
+        self.resource_id.as_deref()
     }
 
     /// Authority decision tied to this token.
@@ -468,6 +475,7 @@ pub fn evaluate_toy_grant_for_call(
             grant_id: grant.grant_id.clone(),
             toy_id: request.toy_id.clone(),
             child_instance_id: request.child_instance_id.clone(),
+            resource_id: request.resource_id.clone(),
             authority_decision_id: evaluation.decision_id.clone(),
             expires_at: grant
                 .constraints
