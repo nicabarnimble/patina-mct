@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 
 pub const MCT_IDEMPOTENCY_TTL_SECONDS: i64 = 12 * 60;
 pub const MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER: usize = 256;
@@ -135,6 +135,14 @@ pub struct MctRuntimeStateSummary {
     pub pending_trigger_occurrences: u64,
     #[serde(default)]
     pub active_trigger_firings: u64,
+    #[serde(default)]
+    pub watch_scope_records: u64,
+    #[serde(default)]
+    pub current_watch_scopes: u64,
+    #[serde(default)]
+    pub watch_event_batches: u64,
+    #[serde(default)]
+    pub watch_event_deliveries: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -776,6 +784,111 @@ impl MctRuntimeStateStore {
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS watch_observation_scopes (
+                watch_scope_id TEXT NOT NULL,
+                scope_revision INTEGER NOT NULL CHECK(scope_revision >= 1),
+                policy_revision INTEGER NOT NULL CHECK(policy_revision >= 1),
+                child_name TEXT NOT NULL,
+                artifact_id TEXT NOT NULL,
+                assignment_id TEXT NOT NULL,
+                canonical_root_ref TEXT NOT NULL,
+                traversal_scope TEXT NOT NULL CHECK(traversal_scope IN ('root_only', 'recursive')),
+                authority_state TEXT NOT NULL CHECK(authority_state IN ('active', 'revoked', 'superseded')),
+                starts_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                authority_observation_id TEXT NOT NULL,
+                canonical_record_digest TEXT NOT NULL,
+                record_json TEXT NOT NULL,
+                is_current INTEGER NOT NULL CHECK(is_current IN (0, 1)),
+                projected_at TEXT NOT NULL,
+                PRIMARY KEY (watch_scope_id, scope_revision)
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_watch_scope_one_current_revision
+            ON watch_observation_scopes(watch_scope_id)
+            WHERE is_current = 1;
+
+            CREATE INDEX IF NOT EXISTS idx_watch_scope_current_observer
+            ON watch_observation_scopes(is_current, authority_state, child_name, artifact_id, assignment_id);
+
+            CREATE TABLE IF NOT EXISTS watch_scope_sequence_counters (
+                watch_scope_id TEXT NOT NULL,
+                scope_revision INTEGER NOT NULL,
+                next_sequence INTEGER NOT NULL CHECK(next_sequence >= 1),
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (watch_scope_id, scope_revision),
+                FOREIGN KEY(watch_scope_id, scope_revision)
+                    REFERENCES watch_observation_scopes(watch_scope_id, scope_revision)
+            );
+
+            CREATE TABLE IF NOT EXISTS watch_event_batches (
+                batch_id TEXT PRIMARY KEY,
+                watch_scope_id TEXT NOT NULL,
+                scope_revision INTEGER NOT NULL,
+                sequence INTEGER NOT NULL CHECK(sequence >= 1),
+                parent_call_id TEXT NOT NULL,
+                batch_json TEXT NOT NULL,
+                sealed_observation_id TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(watch_scope_id, scope_revision, sequence),
+                FOREIGN KEY(watch_scope_id, scope_revision)
+                    REFERENCES watch_observation_scopes(watch_scope_id, scope_revision)
+            );
+
+            CREATE TABLE IF NOT EXISTS watch_scope_observed_subjects (
+                watch_scope_id TEXT NOT NULL,
+                scope_revision INTEGER NOT NULL,
+                relative_path TEXT NOT NULL,
+                last_event_id TEXT NOT NULL,
+                last_observed_at TEXT NOT NULL,
+                present INTEGER NOT NULL CHECK(present IN (0, 1)),
+                PRIMARY KEY (watch_scope_id, scope_revision, relative_path),
+                FOREIGN KEY(watch_scope_id, scope_revision)
+                    REFERENCES watch_observation_scopes(watch_scope_id, scope_revision)
+            );
+
+            CREATE TABLE IF NOT EXISTS watch_events (
+                event_id TEXT PRIMARY KEY,
+                batch_id TEXT NOT NULL REFERENCES watch_event_batches(batch_id),
+                batch_position INTEGER NOT NULL CHECK(batch_position >= 0),
+                relative_path TEXT NOT NULL,
+                event_json TEXT NOT NULL,
+                event_observation_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(batch_id, batch_position)
+            );
+
+            CREATE TABLE IF NOT EXISTS watch_event_delivery_dispositions (
+                disposition_id TEXT PRIMARY KEY,
+                event_id TEXT NOT NULL UNIQUE REFERENCES watch_events(event_id),
+                disposition TEXT NOT NULL CHECK(disposition IN ('fired', 'coalesced', 'suppressed', 'capacity_refused')),
+                planned_call_id TEXT,
+                compatibility_validation TEXT NOT NULL CHECK(compatibility_validation IN ('matched', 'mismatch_refused')),
+                disposition_json TEXT NOT NULL,
+                disposition_observation_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                CHECK ((disposition = 'fired' AND planned_call_id IS NOT NULL)
+                    OR (disposition != 'fired' AND planned_call_id IS NULL))
+            );
+
+            CREATE TABLE IF NOT EXISTS watch_event_deliveries (
+                delivery_id TEXT PRIMARY KEY,
+                disposition_id TEXT NOT NULL UNIQUE REFERENCES watch_event_delivery_dispositions(disposition_id),
+                target_call_id TEXT NOT NULL UNIQUE,
+                target_result_ref TEXT NOT NULL,
+                target_result_observation_id TEXT NOT NULL,
+                delivered INTEGER NOT NULL CHECK(delivered IN (0, 1)),
+                delivery_json TEXT NOT NULL,
+                completed_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS watch_projection_meta (
+                projection_name TEXT PRIMARY KEY,
+                ledger_identity TEXT NOT NULL,
+                last_ledger_sequence INTEGER NOT NULL CHECK(last_ledger_sequence >= 0),
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TRIGGER IF NOT EXISTS active_toy_grant_requires_authority_bearing_toy_insert
             BEFORE INSERT ON toy_grant_snapshots
             WHEN NEW.grant_state = 'active'
@@ -1000,6 +1113,10 @@ impl MctRuntimeStateStore {
                 Some("state = 'pending'"),
             )?,
             active_trigger_firings: self.count("call_trigger_firings", Some("state = 'active'"))?,
+            watch_scope_records: self.count("watch_observation_scopes", None)?,
+            current_watch_scopes: self.count("watch_observation_scopes", Some("is_current = 1"))?,
+            watch_event_batches: self.count("watch_event_batches", None)?,
+            watch_event_deliveries: self.count("watch_event_deliveries", None)?,
         })
     }
 
@@ -1181,6 +1298,166 @@ impl MctRuntimeStateStore {
                 Ok(authority)
             })
             .collect()
+    }
+
+    pub fn insert_watch_observation_scope(&self, scope: &WatchObservationScope) -> Result<()> {
+        scope.validate().map_err(anyhow::Error::from)?;
+        if scope.authority_state == WatchObservationScopeState::Superseded {
+            bail!("new Watch scope revision cannot be born superseded");
+        }
+        let transaction =
+            rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let current_json = transaction
+            .query_row(
+                r#"
+                SELECT record_json FROM watch_observation_scopes
+                WHERE watch_scope_id = ?1 AND is_current = 1
+                "#,
+                params![scope.watch_scope_id.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        match current_json {
+            None => {
+                if scope.scope_revision != 1
+                    || scope.authority_state != WatchObservationScopeState::Active
+                {
+                    bail!("first Watch scope revision must be active revision one");
+                }
+            }
+            Some(current_json) => {
+                let current: WatchObservationScope = from_json_cell(&current_json)?;
+                if current.authority_state == WatchObservationScopeState::Revoked {
+                    bail!("revoked Watch scope id cannot be resurrected");
+                }
+                if scope.scope_revision != current.scope_revision + 1 {
+                    bail!("Watch scope revision must exactly increment current revision");
+                }
+                transaction.execute(
+                    r#"
+                    UPDATE watch_observation_scopes SET is_current = 0
+                    WHERE watch_scope_id = ?1 AND scope_revision = ?2 AND is_current = 1
+                    "#,
+                    params![
+                        current.watch_scope_id.as_str(),
+                        current.scope_revision as i64
+                    ],
+                )?;
+            }
+        }
+        transaction.execute(
+            r#"
+            INSERT INTO watch_observation_scopes(
+                watch_scope_id, scope_revision, policy_revision, child_name,
+                artifact_id, assignment_id, canonical_root_ref, traversal_scope,
+                authority_state, starts_at, expires_at, authority_observation_id,
+                canonical_record_digest, record_json, is_current, projected_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 1, ?15)
+            "#,
+            params![
+                scope.watch_scope_id.as_str(),
+                scope.scope_revision as i64,
+                scope.policy_revision as i64,
+                scope.observer_ref.child_name.as_str(),
+                scope.observer_ref.artifact_id.as_str(),
+                scope.observer_ref.assignment_id.as_str(),
+                scope.canonical_root_ref.as_str(),
+                json_atom(&scope.traversal_scope)?,
+                json_atom(&scope.authority_state)?,
+                scope.starts_at.as_str(),
+                scope.expires_at.as_str(),
+                scope.authority_observation_id.as_str(),
+                scope.canonical_record_digest.as_str(),
+                json_string(scope)?,
+                current_timestamp_string(),
+            ],
+        )?;
+        transaction.execute(
+            r#"
+            INSERT OR IGNORE INTO watch_scope_sequence_counters(
+                watch_scope_id, scope_revision, next_sequence, updated_at
+            ) VALUES (?1, ?2, 1, ?3)
+            "#,
+            params![
+                scope.watch_scope_id.as_str(),
+                scope.scope_revision as i64,
+                current_timestamp_string(),
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn current_watch_observation_scope(
+        &self,
+        watch_scope_id: &WatchObservationScopeId,
+    ) -> Result<Option<WatchObservationScope>> {
+        let record_json = self
+            .conn
+            .query_row(
+                r#"
+                SELECT record_json FROM watch_observation_scopes
+                WHERE watch_scope_id = ?1 AND is_current = 1
+                "#,
+                params![watch_scope_id.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        record_json
+            .map(|json| {
+                let scope: WatchObservationScope = from_json_cell(&json)?;
+                scope.validate().map_err(anyhow::Error::from)?;
+                Ok(scope)
+            })
+            .transpose()
+    }
+
+    pub fn watch_observation_scopes(&self) -> Result<Vec<WatchObservationScope>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT record_json FROM watch_observation_scopes
+            ORDER BY watch_scope_id, scope_revision
+            "#,
+        )?;
+        stmt.query_map([], |row| row.get::<_, String>(0))?
+            .map(|json| {
+                let scope: WatchObservationScope = from_json_cell(&json?)?;
+                scope.validate().map_err(anyhow::Error::from)?;
+                Ok(scope)
+            })
+            .collect()
+    }
+
+    pub fn reserve_watch_batch_sequence(
+        &self,
+        watch_scope_id: &WatchObservationScopeId,
+        scope_revision: u64,
+    ) -> Result<u64> {
+        let transaction =
+            rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let sequence: i64 = transaction.query_row(
+            r#"
+            SELECT next_sequence FROM watch_scope_sequence_counters
+            WHERE watch_scope_id = ?1 AND scope_revision = ?2
+            "#,
+            params![watch_scope_id.as_str(), scope_revision as i64],
+            |row| row.get(0),
+        )?;
+        transaction.execute(
+            r#"
+            UPDATE watch_scope_sequence_counters
+            SET next_sequence = next_sequence + 1, updated_at = ?1
+            WHERE watch_scope_id = ?2 AND scope_revision = ?3 AND next_sequence = ?4
+            "#,
+            params![
+                current_timestamp_string(),
+                watch_scope_id.as_str(),
+                scope_revision as i64,
+                sequence,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(sequence as u64)
     }
 
     pub fn latest_call_trigger_nominal_at(
@@ -3303,6 +3580,14 @@ fn is_known_count_table(table: &str) -> bool {
             | "call_trigger_firings"
             | "call_trigger_occurrences"
             | "call_trigger_projection_meta"
+            | "watch_observation_scopes"
+            | "watch_scope_sequence_counters"
+            | "watch_event_batches"
+            | "watch_scope_observed_subjects"
+            | "watch_events"
+            | "watch_event_delivery_dispositions"
+            | "watch_event_deliveries"
+            | "watch_projection_meta"
     )
 }
 
@@ -4374,7 +4659,7 @@ mod tests {
     fn schema_v8_adds_closed_trigger_authority_and_scheduler_projections() {
         let dir = tempfile::tempdir().unwrap();
         let store = MctRuntimeStateStore::open(dir.path().join("state.sqlite")).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 8);
+        assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
         for table in [
             "call_trigger_authorities",
             "call_trigger_occurrences",
@@ -4384,6 +4669,96 @@ mod tests {
         ] {
             assert_eq!(store.count(table, None).unwrap(), 0, "{table}");
         }
+    }
+
+    #[test]
+    fn schema_v9_adds_closed_watch_authority_event_and_delivery_projections() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MctRuntimeStateStore::open(dir.path().join("state.sqlite")).unwrap();
+        assert_eq!(store.schema_version().unwrap(), 9);
+        for table in [
+            "watch_observation_scopes",
+            "watch_scope_sequence_counters",
+            "watch_event_batches",
+            "watch_scope_observed_subjects",
+            "watch_events",
+            "watch_event_delivery_dispositions",
+            "watch_event_deliveries",
+            "watch_projection_meta",
+        ] {
+            assert_eq!(store.count(table, None).unwrap(), 0, "{table}");
+        }
+    }
+
+    #[test]
+    fn watch_scope_projection_is_revisioned_current_and_sequences_are_monotonic() {
+        fn scope(revision: u64, state: WatchObservationScopeState) -> WatchObservationScope {
+            WatchObservationScope {
+                watch_scope_id: WatchObservationScopeId::new("watch-state").unwrap(),
+                observer_shape: WatchObserverShape::ChildToy,
+                observer_ref: WatchObserverRef {
+                    child_name: "folder-watch-actor".into(),
+                    artifact_id: ComponentArtifactId::new(format!("sha256:{}", "a".repeat(64)))
+                        .unwrap(),
+                    artifact_version: "0.1.0".into(),
+                    assignment_id: ChildAssignmentId::new("assignment-watch").unwrap(),
+                },
+                scope_mode: WatchScopeMode::Constrained,
+                canonical_root_ref: "file:///tmp/watch-state".into(),
+                traversal_scope: WatchTraversalScope::Recursive,
+                event_classes: vec![WatchEventClass::Created, WatchEventClass::Deleted],
+                max_events_per_batch: 16,
+                coalescing_policy: WatchCoalescingPolicy::LastPerPath,
+                starts_at: Timestamp::new("2026-07-21T12:00:00Z").unwrap(),
+                expires_at: Timestamp::new("2026-07-21T13:00:00Z").unwrap(),
+                scope_revision: revision,
+                policy_revision: 1,
+                authority_state: state,
+                authority_observation_id: ObservationId::new(format!("obs-watch-state-{revision}"))
+                    .unwrap(),
+                canonical_record_digest: String::new(),
+            }
+            .seal()
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = MctRuntimeStateStore::open(dir.path().join("state.sqlite")).unwrap();
+        let first = scope(1, WatchObservationScopeState::Active);
+        store.insert_watch_observation_scope(&first).unwrap();
+        assert_eq!(
+            store
+                .current_watch_observation_scope(&first.watch_scope_id)
+                .unwrap(),
+            Some(first.clone())
+        );
+        assert_eq!(
+            store
+                .reserve_watch_batch_sequence(&first.watch_scope_id, 1)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .reserve_watch_batch_sequence(&first.watch_scope_id, 1)
+                .unwrap(),
+            2
+        );
+        assert!(store.insert_watch_observation_scope(&first).is_err());
+
+        let revoked = scope(2, WatchObservationScopeState::Revoked);
+        store.insert_watch_observation_scope(&revoked).unwrap();
+        assert_eq!(
+            store
+                .current_watch_observation_scope(&first.watch_scope_id)
+                .unwrap(),
+            Some(revoked)
+        );
+        assert_eq!(store.watch_observation_scopes().unwrap().len(), 2);
+        assert!(
+            store
+                .insert_watch_observation_scope(&scope(3, WatchObservationScopeState::Active))
+                .is_err()
+        );
     }
 
     #[test]

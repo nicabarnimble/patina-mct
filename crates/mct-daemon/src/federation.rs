@@ -272,6 +272,10 @@ mod tests {
                 current_trigger_records: 0,
                 pending_trigger_occurrences: 0,
                 active_trigger_firings: 0,
+                watch_scope_records: 0,
+                current_watch_scopes: 0,
+                watch_event_batches: 0,
+                watch_event_deliveries: 0,
             },
             MctNodeId::new("node-a").expect("string ID literal/generated value must be non-empty"),
             VisionId::new("vision-a").expect("string ID literal/generated value must be non-empty"),
@@ -389,6 +393,10 @@ mod tests {
             current_trigger_records: 0,
             pending_trigger_occurrences: 0,
             active_trigger_firings: 0,
+            watch_scope_records: 0,
+            current_watch_scopes: 0,
+            watch_event_batches: 0,
+            watch_event_deliveries: 0,
         }
     }
 
