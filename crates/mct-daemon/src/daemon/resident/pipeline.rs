@@ -873,6 +873,122 @@ listens = []
     }
 
     #[tokio::test]
+    async fn watch_admission_append_failure_suppresses_every_nested_delivery() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("watch-root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("safe.txt"), b"safe").unwrap();
+        let paths = ResidentRuntimePaths::new(
+            dir.path().join("config.json"),
+            dir.path().join("children"),
+            dir.path().join("state.sqlite"),
+        );
+        let state = MctRuntimeStateStore::open(paths.state_path()).unwrap();
+        let scope = WatchObservationScope {
+            watch_scope_id: WatchObservationScopeId::new("scope-append-failure").unwrap(),
+            observer_shape: WatchObserverShape::ChildToy,
+            observer_ref: WatchObserverRef {
+                child_name: "folder-watch-actor".into(),
+                artifact_id: ComponentArtifactId::new(format!("sha256:{}", "a".repeat(64)))
+                    .unwrap(),
+                artifact_version: "0.1.0".into(),
+                assignment_id: ChildAssignmentId::new("assignment:folder-watch-actor").unwrap(),
+            },
+            scope_mode: WatchScopeMode::Constrained,
+            canonical_root_ref: format!("file://{}", root.canonicalize().unwrap().display()),
+            traversal_scope: WatchTraversalScope::Recursive,
+            event_classes: vec![WatchEventClass::Created],
+            max_events_per_batch: 8,
+            coalescing_policy: WatchCoalescingPolicy::None,
+            starts_at: Timestamp::new("2026-01-01T00:00:00Z").unwrap(),
+            expires_at: Timestamp::new("2099-01-01T00:00:00Z").unwrap(),
+            scope_revision: 1,
+            policy_revision: 1,
+            authority_state: WatchObservationScopeState::Active,
+            authority_observation_id: ObservationId::new("obs-scope-append-failure").unwrap(),
+            canonical_record_digest: String::new(),
+        }
+        .seal();
+        state.insert_watch_observation_scope(&scope).unwrap();
+        let parent = MctCall {
+            call_id: CallId::new("call-watch-append-failure").unwrap(),
+            caller: CallerIdentity {
+                node_id: MctNodeId::new("local-mct").unwrap(),
+                vision_id: VisionId::new("vision-local").unwrap(),
+                project_id: None,
+                user_id: None,
+            },
+            target: OperationTarget::new("patina:watch", "control@0.1.0", "scan-now").unwrap(),
+            payload_metadata: PayloadMetadata {
+                data_classification: "public".into(),
+                size_bytes: 2,
+                contains_secret_scoped_material: false,
+            },
+            authority_context: AuthorityContextSnapshot {
+                policy_revision: 1,
+                grants_revision: 1,
+                vision_policy_revision: 1,
+            },
+            deadline: Timestamp::new("2099-01-01T00:00:00Z").unwrap(),
+            trace_context: TraceContext {
+                trace_id: TraceId::new("trace-watch-append-failure").unwrap(),
+                span_id: SpanId::new("span-watch-append-failure").unwrap(),
+            },
+            origin: CallOrigin::WasmHost,
+        };
+        let wire = serde_json::json!({
+            "watcher": "folder-watch-actor",
+            "stream": "source",
+            "change_kind": "created",
+            "absolute_path": "safe.txt",
+            "relative_path": "safe.txt",
+            "size_bytes": 4,
+            "modified_unix_ms": 1,
+            "sha256": "abc",
+            "detected_at": "2026-07-21T00:00:00Z"
+        });
+        let route = RouteTaken {
+            node_id: MctNodeId::new("local-mct").unwrap(),
+            child_id: Some(ChildId::new("child:folder-watch-actor").unwrap()),
+            runtime_kind: RuntimeKind::WasmComponent,
+        };
+        let result = execute_watch_callouts(
+            &paths,
+            &ResidentLedgerWriter::failed_for_test(),
+            &parent,
+            Some(&route),
+            &ResidentCallIngressContext::LocalPrincipal {
+                origin: CallOrigin::WasmHost,
+                caller: parent.caller.clone(),
+            },
+            vec![MctWitProducedMessage {
+                target_operation: "patina:watch/events@0.1.0.emit".into(),
+                topic: "file-created".into(),
+                content_type: Some("application/json".into()),
+                data: serde_json::to_vec(&wire).unwrap(),
+                metadata: Vec::new(),
+                offset: 1,
+            }],
+        )
+        .await;
+        assert!(result.is_err());
+        let summary = MctRuntimeStateStore::open(paths.state_path())
+            .unwrap()
+            .summary()
+            .unwrap();
+        assert_eq!(summary.watch_event_batches, 0);
+        assert_eq!(summary.watch_events, 0);
+        assert_eq!(summary.watch_event_deliveries, 0);
+        assert!(
+            MctRuntimeStateStore::open(paths.state_path())
+                .unwrap()
+                .list_runs(10)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn jvm_bridge_json_call_enters_resident_route_path() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.json");

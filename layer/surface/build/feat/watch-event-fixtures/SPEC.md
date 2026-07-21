@@ -339,7 +339,7 @@ Operator amendment accepted 2026-07-21 after checkpoint review. The MCT rebuild 
 
 An admitted offset means only that the invocation-local host buffer accepted the event. It does not mean that evidence is durable, a target call was admitted, or delivery succeeded. After the watcher export returns, Mother normalizes the complete admitted set into deterministic batch order. Before the parent call completes it:
 
-1. appends the batch/event/pre-call disposition facts under the separately ruled D1B.7-A.1 timing;
+1. appends the batch/event/pre-call disposition facts under the ratified D1B.7-A.1 timing;
 2. constructs one fresh immutable target request per fired disposition with `CallOrigin::WasmHost` and local-only `ResidentCallIngressContext::ChildCallOut`;
 3. re-enters the shared resident payload/idempotency/child/routing/revalidation/effect/result pipeline; and
 4. appends/result-projects delivery completion before acknowledging parent-call completion.
@@ -455,7 +455,7 @@ Under D1B.7-A, the synchronous Wasmtime send bridge performs every admission che
 
 Watch grant/scope decisions and the read-only preopen remain independently authorized. The buffered bridge carries no authority token except the non-clone capabilities already minted by kernel evaluation. Adapters still perform effects; the kernel still decides.
 
-**Open operator gate — D1B.7-A.1:** whether event/admission facts may be buffered with the admitted set and appended durably as one batch before any nested delivery begins. Until accepted or rejected, this SPEC cannot claim its composed proof complete.
+**D1B.7-A.1 — ratified 2026-07-21:** event/admission facts are buffered with the admitted set and appended durably as one normalized batch before any nested delivery begins. The watcher is a mid-execution Child and the parent call is the atomic evidenced unit; an invocation-local admitted offset is not an external durability acknowledgement. Append failure suppresses every nested call and delivered claim.
 
 ### D1B.13 — Mother-side event-source adapter remains deferred
 
