@@ -517,6 +517,10 @@ fn resident_watch_host_adapters(
         );
         Some(MctWitMessagingHostAdapter {
             toy: wit_toy_adapter(callout.authorized, "obs-watch-callout"),
+            watch_admission: MctWitWatchMessageAdmission {
+                event_classes: scope.event_classes.iter().copied().collect(),
+                max_events_per_batch: scope.max_events_per_batch,
+            },
         })
     } else {
         None

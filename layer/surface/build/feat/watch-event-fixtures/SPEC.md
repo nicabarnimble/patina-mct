@@ -323,22 +323,28 @@ toy:mct:patina-measure  -> patina:measure/measure@0.1.0.(gauge|counter)
 
 The watcher and sink receive distinct grants. Sink delivery cannot borrow watcher grants, and successful call delivery grants no logging or metric effect.
 
-### D1B.7 — watcher call-out is an ordinary nested resident call
+### D1B.7-A — watcher admission is synchronous; deterministic delivery is buffered
 
-The MCT rebuild retains the exact source's used `wasi:messaging/producer@0.2.0` import, but the host implementation is not a general broker.
+Operator amendment accepted 2026-07-21 after checkpoint review. The MCT rebuild retains the exact source's used `wasi:messaging/producer@0.2.0` import, but the host implementation is not a general broker.
 
 `producer.connect(name)` accepts only a canonical operation id of the form
 `<namespace>/<interface@version>.<function>` and returns an invocation-local resource. It creates no durable subscription, route, target approval, or standing authority. The integration configures the watcher stream to `patina:watch/events@0.1.0.emit` before activating the trigger.
 
-`producer.send(client, message)`:
+`producer.send(client, message)` is the synchronous admission boundary. Before returning an admitted offset it:
 
-1. accepts only topic `file-created|file-modified|file-deleted`, content type `application/json`, bounded payload/metadata, and the exact watcher event JSON shape;
-2. binds the message to the current parent `MctCall`, authorized Child invocation, Watch session, batch, and actual optional trigger context;
-3. validates safe path, event class, batch capacity, and legacy ABI equality;
-4. appends event and pre-call disposition evidence before any target call;
-5. constructs one fresh immutable target request with `CallOrigin::WasmHost` and local-only `ResidentCallIngressContext::ChildCallOut`;
-6. re-enters the shared resident payload/idempotency/child/routing/revalidation/effect/result pipeline; and
-7. appends/result-projects delivery completion before returning the send result to the watcher.
+1. requires current exact Watch Toy authorization;
+2. accepts only topic `file-created|file-modified|file-deleted`, content type `application/json`, bounded payload/metadata, and the exact watcher event JSON shape;
+3. validates safe path, event class against the current scope, per-scope and resident batch capacity, and exact legacy ABI equality; and
+4. returns a stable typed refusal synchronously when any check fails, without adding the message to the admitted set or constructing a target call.
+
+An admitted offset means only that the invocation-local host buffer accepted the event. It does not mean that evidence is durable, a target call was admitted, or delivery succeeded. After the watcher export returns, Mother normalizes the complete admitted set into deterministic batch order. Before the parent call completes it:
+
+1. appends the batch/event/pre-call disposition facts under the separately ruled D1B.7-A.1 timing;
+2. constructs one fresh immutable target request per fired disposition with `CallOrigin::WasmHost` and local-only `ResidentCallIngressContext::ChildCallOut`;
+3. re-enters the shared resident payload/idempotency/child/routing/revalidation/effect/result pipeline; and
+4. appends/result-projects delivery completion before acknowledging parent-call completion.
+
+The exact watcher cannot both reveal future sends to the host and block its first send until scan-wide sorting completes. D1B.7-A therefore makes the parent invocation the atomic evidenced unit while preserving synchronous fail-closed admission and deterministic whole-batch identities.
 
 The target call's canonical caller copies the current local node/Vision/project and authenticated principal from the parent call; it does not claim the Child is an OS principal. Causal evidence names the exact parent call and authorized Child invocation.
 
@@ -417,7 +423,7 @@ watch_scope_observed_subjects
 
 The batch id is deterministic from `(watch_scope_id, revision, sequence, parent_call_id)`. A resident-wide `WatchCoordinator` serializes sequence reservation per scope. It appends a batch-open/source-start fact before exposing the preopen, then projects the unique sequence. Crash after append is reconciled from ledger before another sequence is assigned.
 
-Each message appends event plus disposition before nested call execution. Batch counts are projections derived from immutable event/disposition rows and sealed at parent call completion. Failed batch-seal append prevents a delivered claim even if an already started external effect cannot be undone.
+Each synchronously admitted message contributes one event and disposition to the invocation-local set. After deterministic normalization, the complete set crosses the D1B.7-A.1 batch durability barrier before any nested call executes. Batch counts are projections derived from immutable event/disposition rows and sealed at parent call completion. Failed batch-seal append prevents a delivered claim even if an already started external effect cannot be undone.
 
 `WatchEventEvidence.causative_call_id` always names the watcher call. `causative_trigger_firing_id` is present only when the local parent ingress context is Trigger and matches the exact firing/record/revision. Manual, UDS, CLI, or other WasmHost parents leave it null. `causative_adapter_observation_id` remains null for this Child path.
 
@@ -443,20 +449,13 @@ Canonical bounded details carry the Allium entity fields and observation referen
 
 If this table cannot truthfully express a required fact, implementation stops for an operator decision before changing the enum.
 
-### D1B.12 — source receipt/eligibility is synchronous before delivery
+### D1B.12 — source admission precedes buffered delivery
 
-The existing Wasmtime path accumulates many adapter observations until component return. That is insufficient for event delivery. Part B introduces a resident-owned synchronous effect bridge available only on the blocking Wasmtime worker:
+Under D1B.7-A, the synchronous Wasmtime send bridge performs every admission check and buffers only typed admitted events. It neither runs a nested call nor claims durable admission while the watcher export is still executing. After export return, the resident uses the canonical `ResidentLedgerWriter`; it creates no side ledger. No nested `execute_resident_call` begins until the admitted set has crossed the operator-ruled D1B.7-A.1 durability barrier. Append failure suppresses every nested call and delivered claim.
 
-```text
-ResidentWasmEffectBridge {
-  append_before_effect(observations) -> durable sequence
-  execute_child_callout(request, payload, context) -> terminal result
-}
-```
+Watch grant/scope decisions and the read-only preopen remain independently authorized. The buffered bridge carries no authority token except the non-clone capabilities already minted by kernel evaluation. Adapters still perform effects; the kernel still decides.
 
-It uses the current Tokio runtime handle to await the canonical `ResidentLedgerWriter`; it creates no side ledger. Watch grant/scope decisions and `ToyCallStarted` are durable before preopen. Event eligibility and disposition are durable before nested `execute_resident_call`. Append failure returns a host error and suppresses preopen, message acknowledgement, nested call, or delivered claim as applicable.
-
-The bridge carries no authority token except the non-clone capabilities already minted by kernel evaluation. Adapters still perform effects; the kernel still decides.
+**Open operator gate — D1B.7-A.1:** whether event/admission facts may be buffered with the admitted set and appended durably as one batch before any nested delivery begins. Until accepted or rejected, this SPEC cannot claim its composed proof complete.
 
 ### D1B.13 — Mother-side event-source adapter remains deferred
 
