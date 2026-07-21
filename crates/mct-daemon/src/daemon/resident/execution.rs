@@ -168,7 +168,12 @@ pub(super) fn execute_authorized_resident_child(
             execute_resident_process_child(child_execution, &request, inline_payload.as_deref())?
         }
         mct_daemon::MctChildIngressMode::Hybrid | mct_daemon::MctChildIngressMode::WitOnly => {
-            execute_resident_wit_child(child_execution, &request, inline_payload.as_deref())?
+            execute_resident_wit_child(
+                child_execution,
+                &request,
+                inline_payload.as_deref(),
+                paths.state_path(),
+            )?
         }
     };
     if let Some(route) = report.result.route_taken.as_ref() {
@@ -257,6 +262,7 @@ fn execute_resident_wit_child(
     execution: PreparedChildExecution,
     request: &MctCallProtocolRequest,
     inline_payload: Option<&[u8]>,
+    state_path: &Path,
 ) -> Result<LocalExecutionReport> {
     let call = &request.call;
     let content_type = inline_payload_content_type(&request.payload).unwrap_or("application/json");
@@ -274,12 +280,44 @@ fn execute_resident_wit_child(
         None => serde_json::json!([]),
     };
     let runtime = MctWasmComponentRuntime::new(default_wasm_host_config())?;
-    let report = runtime.invoke_authorized_child_wit_export_with_host_adapters(
+    let imports = runtime.discover_wit_imports(&execution.child.wasm_path)?;
+    let state = MctRuntimeStateStore::open(state_path)?;
+    let project_root = state
+        .toy_grant_snapshots()?
+        .into_iter()
+        .find(|grant| {
+            grant.toy_id == slate_filesystem_toy_id()
+                && grant.subject.child_name == execution.child.name
+                && grant.subject.artifact_id == execution.child.artifact_id
+                && grant.grant_state == ToyGrantState::Active
+        })
+        .and_then(|grant| grant.scope.resource_id)
+        .map(PathBuf::from);
+    let adapter_build = match build_wit_host_adapters_for_cli_call(CliWitAdapterRequest {
+        state: &state,
+        child: &execution.child,
+        authorized_child: &execution.authorized,
+        call,
+        imports: &imports,
+        project_root: project_root.as_deref(),
+        guest_project: "/project",
+        git_repo: project_root.as_deref(),
+    }) {
+        Ok(build) => build,
+        Err(error) => {
+            return Ok(resident_toy_authority_denial_report(
+                call,
+                execution.route_decision_id,
+                error,
+            ));
+        }
+    };
+    let mut report = runtime.invoke_authorized_child_wit_export_with_host_adapters(
         execution.authorized,
         &execution.child,
         call,
         &args_json,
-        MctWitHostImportAdapters::none(),
+        adapter_build.adapters,
         MctWasmComponentInvocationIds {
             started_observation_id: ObservationId::new(format!(
                 "obs-resident-wasm-wit-started:{}",
@@ -297,6 +335,8 @@ fn execute_resident_wit_child(
             completed_at: current_timestamp(),
         },
     )?;
+    let mut observations = adapter_build.observations;
+    observations.append(&mut report.observations);
     let result_bytes = serde_json::to_vec(&report.output_json)?;
     let mut result = report.result;
     result.authority_decision_ref = execution.route_decision_id;
@@ -309,7 +349,7 @@ fn execute_resident_wit_child(
     );
     Ok(LocalExecutionReport {
         result,
-        observations: report.observations,
+        observations,
         inline_result_payload,
         run_id: None,
     })
@@ -402,6 +442,59 @@ pub(super) fn route_taken_for_outcome(
             Some(route_taken)
         }
         ResultOutcome::Denied | ResultOutcome::Cancelled => None,
+    }
+}
+
+fn resident_toy_authority_denial_report(
+    call: &MctCall,
+    authority_decision_ref: DecisionId,
+    error: CliToyAuthorizationError,
+) -> LocalExecutionReport {
+    let mut observations = error.observations;
+    observations.push(MctObservation {
+        observation_id: ObservationId::new(format!("obs-resident-toy-denied:{}", call.call_id))
+            .expect("generated observation id is non-empty"),
+        observed_at: current_timestamp(),
+        kind: ObservationKind::CallDenied,
+        source_plane: SourcePlane::Kernel,
+        trace: ObservationTraceRef {
+            trace_id: call.trace_context.trace_id.clone(),
+            span_id: Some(call.trace_context.span_id.clone()),
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: Some(call.call_id.clone()),
+        decision_id: Some(authority_decision_ref.clone()),
+        subject_id: None,
+        resource_id: Some("required-toy-authority".into()),
+        policy_revision: Some(call.authority_context.policy_revision),
+        grants_revision: Some(call.authority_context.grants_revision),
+        outcome: ObservationOutcome::Denied,
+        visibility: ObservationVisibility::InternalOnly,
+        safe_message: "not authorized".into(),
+        detail_ref: Some(error.safe_message),
+    });
+    LocalExecutionReport {
+        result: MctResult {
+            call_id: call.call_id.clone(),
+            outcome: ResultOutcome::Denied,
+            route_taken: None,
+            authority_decision_ref,
+            execution_summary: ExecutionSummary {
+                wall_time_ms: 0,
+                execution_time_ms: None,
+                queue_wait_ms: None,
+                input_size_bytes: call.payload_metadata.size_bytes,
+                output_size_bytes: None,
+            },
+            result_payload: MctCallPayloadHandle::Empty,
+            requester_message: "not authorized".into(),
+            audit_ref: AuditRef::new(format!("audit-resident-toy-denied:{}", call.call_id))
+                .expect("generated audit ref is non-empty"),
+        },
+        observations,
+        inline_result_payload: None,
+        run_id: None,
     }
 }
 

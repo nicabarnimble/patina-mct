@@ -6,6 +6,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+/// Artifact source, acquisition, and filesystem effect authority.
+pub mod artifact;
 /// Call records, JSON edge validation, and call protocol admission decisions.
 pub mod call;
 /// Child artifact, approval, assignment, lifecycle, and invocation authority.
@@ -23,6 +25,15 @@ pub mod route;
 /// Canonical toy contracts, grants, and toy-call authorization tokens.
 pub mod toy;
 
+pub use artifact::{
+    ArtifactAcquisition, ArtifactAcquisitionAuthorityPath, ArtifactAcquisitionAuthorityReason,
+    ArtifactAcquisitionAuthorityRequest, ArtifactAcquisitionAuthorityResult,
+    ArtifactAcquisitionOutcome, ArtifactSourceAuthority, ArtifactSourceAuthorityState,
+    ArtifactSourceScope, ArtifactSourceScopeMode, ArtifactVerificationOutcome,
+    AuthorizedFilesystemArtifactAcquisition, FilesystemAcquisitionEffectAuthority,
+    OperatorPointedAcquisitionState, OperatorPointedArtifactAcquisitionDecision,
+    evaluate_artifact_acquisition_authority,
+};
 pub use call::{
     AuthorityContextSnapshot, CallEvaluationContext, CallEvaluationIds, CallOrigin,
     CallProtocolOutcome, CallProtocolReason, CallProtocolReplyOutcome, CallerIdentity,
@@ -40,8 +51,8 @@ pub use call::{
     evaluate_payload_integrity,
 };
 pub use child::{
-    AuthorizedChildInvocation, ChildApproval, ChildApprovalState, ChildAssignment,
-    ChildAssignmentState, ChildCallAuthorityEvaluation, ChildCallAuthorityIds,
+    ArtifactProvenanceStatus, AuthorizedChildInvocation, ChildApproval, ChildApprovalState,
+    ChildAssignment, ChildAssignmentState, ChildCallAuthorityEvaluation, ChildCallAuthorityIds,
     ChildCallAuthorityRequest, ChildCallAuthorityResult, ChildCallReasonCode, ChildCallVerdict,
     ChildIngressMode, ChildInstance, ChildInstanceState, ChildLifecycleTransition,
     ChildLifecycleTransitionReason, ComponentArtifact, ComponentRuntimeShape, ComponentWitExport,
@@ -50,11 +61,12 @@ pub use child::{
 };
 pub use error::{InvalidFieldReason, MctKernelError, MctKernelResult};
 pub use id::{
-    AuditRef, AuthorizedChildInvocationId, AuthorizedRouteExecutionId, AuthorizedToyCallId, CallId,
-    ChildApprovalId, ChildAssignmentId, ChildCallEvaluationId, ChildId, ChildInstanceId,
-    ComponentArtifactId, DecisionId, EndpointIdText, MctNodeId, ObservationId, PeerBindingId,
-    ProjectId, ProtocolRequestId, ReplyId, ResultRef, SpanId, Timestamp, ToyGrantEvaluationId,
-    ToyGrantId, ToyId, TraceId, UserId, VisionId,
+    ArtifactAcquisitionDecisionId, ArtifactAcquisitionId, ArtifactSourceAuthorityId, AuditRef,
+    AuthorizedArtifactAcquisitionId, AuthorizedChildInvocationId, AuthorizedRouteExecutionId,
+    AuthorizedToyCallId, CallId, ChildApprovalId, ChildAssignmentId, ChildCallEvaluationId,
+    ChildId, ChildInstanceId, ComponentArtifactId, DecisionId, EndpointIdText, MctNodeId,
+    ObservationId, PeerBindingId, ProjectId, ProtocolRequestId, ReplyId, ResultRef, SpanId,
+    Timestamp, ToyGrantEvaluationId, ToyGrantId, ToyId, TraceId, UserId, VisionId,
 };
 pub use observation::{
     AdapterDiagnosticKind, AdapterDiagnosticObservationInput, MctObservation, ObservationKind,

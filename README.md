@@ -62,20 +62,32 @@ Build and check the workspace:
 cargo test -p mct-kernel -p mct-daemon
 ```
 
-Load child packages from a directory (strict integrity requires the
-`.sha256` sidecars to verify):
-
-```bash
-cargo run -p mct-daemon -- children load .mct/children --strict-integrity
-```
-
-Approve a verified child package (`slate-manager`, a work-tracking component,
-is the reference child used throughout):
+Acquire selected local build output into the immutable artifact catalog. This
+creates package SHA-256 sidecars and records independent BLAKE3 evidence; it
+does not approve or assign the child:
 
 ```bash
 cargo run -p mct-daemon -- \
-  children approve slate-manager /path/to/slate-release-bundle \
-  --strict-integrity
+  artifacts stage /path/to/slate-build-output \
+  --manifest slate-manager.toml \
+  --component slate-manager.wasm \
+  --child slate-manager \
+  --version 0.2.0 \
+  --children-dir .mct/children \
+  --state .mct/state.sqlite \
+  --ledger .mct/observations.jsonl \
+  --json
+```
+
+Approve the exact acquisition-backed digest returned by staging
+(`slate-manager` is the reference child used throughout):
+
+```bash
+cargo run -p mct-daemon -- \
+  children approve slate-manager .mct/children \
+  --artifact sha256:<digest> \
+  --strict-integrity \
+  --state .mct/state.sqlite
 ```
 
 Grant the child a narrow toy authority scoped to one project directory:
@@ -83,7 +95,8 @@ Grant the child a narrow toy authority scoped to one project directory:
 ```bash
 cargo run -p mct-daemon -- \
   toys authorize-slate slate-manager /path/to/project \
-  --children-dir /path/to/slate-release-bundle
+  --children-dir .mct/children \
+  --state .mct/state.sqlite
 ```
 
 Invoke a typed WIT export, with `/project` explicitly preopened:
@@ -94,7 +107,8 @@ cargo run -p mct-daemon -- \
   patina:slate/control@0.1.0.list-work \
   '[{"project":"/project","status":null,"kind":null}]' \
   --project-root /path/to/project \
-  --children-dir /path/to/slate-release-bundle
+  --children-dir .mct/children \
+  --state .mct/state.sqlite
 ```
 
 Note that `--project-root` supplies a path; it does not create authority. The

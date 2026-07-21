@@ -19,6 +19,41 @@ struct ResidentLedgerWrite {
 
 impl ResidentLedgerWriter {
     #[cfg(test)]
+    pub(crate) fn fail_after_batches_for_test(path: PathBuf, allowed_batches: usize) -> Self {
+        let mut ledger = JsonlObservationLedger::open(&path, "ledger-local", "local-mct").unwrap();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<ResidentLedgerWrite>(8);
+        let fenced = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let task_fenced = Arc::clone(&fenced);
+        tokio::task::spawn_blocking(move || {
+            let mut completed = 0usize;
+            while let Some(write) = receiver.blocking_recv() {
+                if completed >= allowed_batches {
+                    task_fenced.store(true, Ordering::SeqCst);
+                    let _ = write.ack.send(Err("injected resident writer loss".into()));
+                    continue;
+                }
+                let appended_at = mct_daemon::current_timestamp_string();
+                let result = write
+                    .observations
+                    .into_iter()
+                    .try_for_each(|observation| {
+                        ledger
+                            .append_before_effect(observation, appended_at.clone())
+                            .map(|_| ())
+                    })
+                    .map_err(|error| error.to_string());
+                completed += 1;
+                let _ = write.ack.send(result);
+            }
+        });
+        Self {
+            sender,
+            fenced,
+            path: Some(Arc::new(path)),
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn failed_for_test() -> Self {
         let (sender, receiver) = tokio::sync::mpsc::channel(1);
         drop(receiver);
