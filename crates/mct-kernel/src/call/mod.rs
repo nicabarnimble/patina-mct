@@ -138,6 +138,8 @@ pub enum CallOrigin {
     ProcessHarness,
     /// Call was submitted by a local CLI command.
     Cli,
+    /// Call was constructed by a current local trigger firing.
+    TriggerFiring,
 }
 
 impl CallOrigin {
@@ -149,7 +151,11 @@ impl CallOrigin {
     pub const fn allows_remote_candidate_sourcing(self) -> bool {
         match self {
             Self::Iroh => false,
-            Self::JvmAdapter | Self::WasmHost | Self::ProcessHarness | Self::Cli => true,
+            Self::JvmAdapter
+            | Self::WasmHost
+            | Self::ProcessHarness
+            | Self::Cli
+            | Self::TriggerFiring => true,
         }
     }
 }
@@ -1281,6 +1287,31 @@ mod tests {
         ] {
             assert!(origin.allows_remote_candidate_sourcing(), "{origin:?}");
         }
+    }
+
+    #[test]
+    fn trigger_firing_origin_is_additive_local_and_single_hop() {
+        let historical = [
+            (CallOrigin::Iroh, "\"iroh\""),
+            (CallOrigin::JvmAdapter, "\"jvm_adapter\""),
+            (CallOrigin::WasmHost, "\"wasm_host\""),
+            (CallOrigin::ProcessHarness, "\"process_harness\""),
+            (CallOrigin::Cli, "\"cli\""),
+        ];
+        for (origin, expected) in historical {
+            assert_eq!(serde_json::to_string(&origin).unwrap(), expected);
+            assert_eq!(
+                serde_json::from_str::<CallOrigin>(expected).unwrap(),
+                origin
+            );
+        }
+        assert_eq!(
+            serde_json::to_string(&CallOrigin::TriggerFiring).unwrap(),
+            "\"trigger_firing\""
+        );
+        assert!(CallOrigin::TriggerFiring.allows_remote_candidate_sourcing());
+        assert!(!CallOrigin::Iroh.allows_remote_candidate_sourcing());
+        assert!(serde_json::from_str::<CallOrigin>("\"trigger\"").is_err());
     }
 
     #[test]

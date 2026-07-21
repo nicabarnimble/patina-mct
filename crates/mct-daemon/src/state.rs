@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 pub const MCT_IDEMPOTENCY_TTL_SECONDS: i64 = 12 * 60;
 pub const MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER: usize = 256;
@@ -31,6 +31,71 @@ pub enum MctIdempotencyReservation {
     ExecuteFresh,
     Replay(Box<MctRecordedCallReply>),
     Refused(MctIdempotencyReason),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MctTriggerOccurrenceDisposition {
+    Pending,
+    Fired,
+    Skipped,
+    Suppressed,
+    CapacityRefused,
+}
+
+impl MctTriggerOccurrenceDisposition {
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Fired | Self::Skipped | Self::Suppressed | Self::CapacityRefused
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctTriggerOccurrenceRecord {
+    pub occurrence_id: CallTriggerOccurrenceId,
+    pub trigger_authority_id: CallTriggerAuthorityId,
+    pub record_revision: u64,
+    pub nominal_at: Option<Timestamp>,
+    pub represented_set: CallTriggerRepresentedSet,
+    pub missed_fire_result: String,
+    pub overlap_result: Option<String>,
+    pub final_disposition: MctTriggerOccurrenceDisposition,
+    pub disposition_observation_id: ObservationId,
+    pub created_at: Timestamp,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctTriggerPendingOccurrenceRecord {
+    pub pending_occurrence_id: CallTriggerPendingOccurrenceId,
+    pub occurrence_id: CallTriggerOccurrenceId,
+    pub trigger_authority_id: CallTriggerAuthorityId,
+    pub record_revision: u64,
+    pub policy_revision: u64,
+    pub admission_sequence: u64,
+    pub pending_reason: CallTriggerPendingReason,
+    pub represented_set: CallTriggerRepresentedSet,
+    pub admission_observation_id: ObservationId,
+    pub state: String,
+    pub admitted_at: Timestamp,
+    pub consumed_at: Option<Timestamp>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctTriggerFiringRecord {
+    pub firing_id: CallTriggerFiringId,
+    pub occurrence_id: CallTriggerOccurrenceId,
+    pub trigger_authority_id: CallTriggerAuthorityId,
+    pub record_revision: u64,
+    pub policy_revision: u64,
+    pub call_id: CallId,
+    pub idempotency_key_ref: String,
+    pub firing_observation_id: ObservationId,
+    pub target_result_ref: Option<ResultRef>,
+    pub state: String,
+    pub fired_at: Timestamp,
+    pub completed_at: Option<Timestamp>,
 }
 
 /// Project-local durable runtime state for one standalone MCT node.
@@ -62,6 +127,14 @@ pub struct MctRuntimeStateSummary {
     pub child_subscriptions: u64,
     pub toy_catalog_contracts: u64,
     pub toy_grant_snapshots: u64,
+    #[serde(default)]
+    pub trigger_records: u64,
+    #[serde(default)]
+    pub current_trigger_records: u64,
+    #[serde(default)]
+    pub pending_trigger_occurrences: u64,
+    #[serde(default)]
+    pub active_trigger_firings: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -616,6 +689,93 @@ impl MctRuntimeStateStore {
             CREATE INDEX IF NOT EXISTS idx_toy_grants_toy_state
             ON toy_grant_snapshots(toy_id, grant_state, grants_revision);
 
+            CREATE TABLE IF NOT EXISTS call_trigger_authorities (
+                trigger_authority_id TEXT NOT NULL,
+                record_revision INTEGER NOT NULL CHECK(record_revision >= 1),
+                policy_revision INTEGER NOT NULL CHECK(policy_revision >= 1),
+                trigger_class TEXT NOT NULL CHECK(trigger_class IN ('temporal', 'event')),
+                authority_state TEXT NOT NULL CHECK(authority_state IN ('active', 'revoked', 'superseded')),
+                starts_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                authority_observation_id TEXT NOT NULL,
+                canonical_record_digest TEXT NOT NULL,
+                record_json TEXT NOT NULL,
+                is_current INTEGER NOT NULL CHECK(is_current IN (0, 1)),
+                projected_at TEXT NOT NULL,
+                PRIMARY KEY (trigger_authority_id, record_revision)
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_call_trigger_one_current_revision
+            ON call_trigger_authorities(trigger_authority_id)
+            WHERE is_current = 1;
+
+            CREATE INDEX IF NOT EXISTS idx_call_trigger_current_schedule
+            ON call_trigger_authorities(is_current, authority_state, starts_at, expires_at);
+
+            CREATE TABLE IF NOT EXISTS call_trigger_occurrences (
+                occurrence_id TEXT PRIMARY KEY,
+                trigger_authority_id TEXT NOT NULL,
+                record_revision INTEGER NOT NULL,
+                nominal_at TEXT,
+                represented_set_json TEXT NOT NULL,
+                missed_fire_result TEXT NOT NULL,
+                overlap_result TEXT,
+                final_disposition TEXT NOT NULL CHECK(final_disposition IN ('pending', 'fired', 'skipped', 'suppressed', 'capacity_refused')),
+                disposition_observation_id TEXT NOT NULL,
+                terminal INTEGER NOT NULL CHECK(terminal IN (0, 1)),
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(trigger_authority_id, record_revision)
+                    REFERENCES call_trigger_authorities(trigger_authority_id, record_revision)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_call_trigger_occurrence_record
+            ON call_trigger_occurrences(trigger_authority_id, record_revision, nominal_at);
+
+            CREATE TABLE IF NOT EXISTS call_trigger_pending_occurrences (
+                pending_occurrence_id TEXT PRIMARY KEY,
+                occurrence_id TEXT NOT NULL UNIQUE REFERENCES call_trigger_occurrences(occurrence_id),
+                trigger_authority_id TEXT NOT NULL,
+                record_revision INTEGER NOT NULL,
+                policy_revision INTEGER NOT NULL,
+                admission_sequence INTEGER NOT NULL CHECK(admission_sequence >= 1),
+                pending_reason TEXT NOT NULL CHECK(pending_reason IN ('overlap_coalesced', 'overlap_queued')),
+                represented_set_json TEXT NOT NULL,
+                admission_observation_id TEXT NOT NULL,
+                state TEXT NOT NULL CHECK(state IN ('pending', 'consumed', 'suppressed')),
+                admitted_at TEXT NOT NULL,
+                consumed_at TEXT,
+                UNIQUE(trigger_authority_id, admission_sequence)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_call_trigger_pending_state
+            ON call_trigger_pending_occurrences(state, trigger_authority_id, admission_sequence);
+
+            CREATE TABLE IF NOT EXISTS call_trigger_firings (
+                firing_id TEXT PRIMARY KEY,
+                occurrence_id TEXT NOT NULL UNIQUE REFERENCES call_trigger_occurrences(occurrence_id),
+                trigger_authority_id TEXT NOT NULL,
+                record_revision INTEGER NOT NULL,
+                policy_revision INTEGER NOT NULL,
+                call_id TEXT NOT NULL UNIQUE,
+                idempotency_key_ref TEXT NOT NULL,
+                firing_observation_id TEXT NOT NULL,
+                target_result_ref TEXT,
+                state TEXT NOT NULL CHECK(state IN ('active', 'terminal')),
+                fired_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_call_trigger_one_active_firing
+            ON call_trigger_firings(trigger_authority_id)
+            WHERE state = 'active';
+
+            CREATE TABLE IF NOT EXISTS call_trigger_projection_meta (
+                projection_name TEXT PRIMARY KEY,
+                ledger_identity TEXT NOT NULL,
+                last_ledger_sequence INTEGER NOT NULL CHECK(last_ledger_sequence >= 0),
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TRIGGER IF NOT EXISTS active_toy_grant_requires_authority_bearing_toy_insert
             BEFORE INSERT ON toy_grant_snapshots
             WHEN NEW.grant_state = 'active'
@@ -832,6 +992,14 @@ impl MctRuntimeStateStore {
             child_subscriptions: self.count("child_subscriptions", None)?,
             toy_catalog_contracts: self.count("toy_catalog_contracts", None)?,
             toy_grant_snapshots: self.count("toy_grant_snapshots", None)?,
+            trigger_records: self.count("call_trigger_authorities", None)?,
+            current_trigger_records: self
+                .count("call_trigger_authorities", Some("is_current = 1"))?,
+            pending_trigger_occurrences: self.count(
+                "call_trigger_pending_occurrences",
+                Some("state = 'pending'"),
+            )?,
+            active_trigger_firings: self.count("call_trigger_firings", Some("state = 'active'"))?,
         })
     }
 
@@ -842,6 +1010,760 @@ impl MctRuntimeStateStore {
             |row| row.get(0),
         )?;
         value.parse().context("parse schema version")
+    }
+
+    pub fn insert_call_trigger_authority(&self, authority: &CallTriggerAuthority) -> Result<()> {
+        authority.validate().map_err(anyhow::Error::from)?;
+        if authority.authority_state == CallTriggerAuthorityState::Superseded {
+            bail!("new trigger revision cannot be born superseded");
+        }
+        let transaction =
+            rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let current_json = transaction
+            .query_row(
+                r#"
+                SELECT record_json
+                FROM call_trigger_authorities
+                WHERE trigger_authority_id = ?1 AND is_current = 1
+                "#,
+                params![authority.trigger_authority_id.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        match current_json {
+            None => {
+                if authority.record_revision != 1
+                    || authority.authority_state != CallTriggerAuthorityState::Active
+                {
+                    bail!("first trigger revision must be active revision one");
+                }
+            }
+            Some(current_json) => {
+                let current: CallTriggerAuthority = from_json_cell(&current_json)?;
+                if current.authority_state == CallTriggerAuthorityState::Revoked {
+                    bail!("revoked trigger id cannot be resurrected");
+                }
+                if authority.record_revision != current.record_revision + 1 {
+                    bail!("trigger revision must exactly increment current revision");
+                }
+                transaction.execute(
+                    r#"
+                    UPDATE call_trigger_authorities
+                    SET is_current = 0
+                    WHERE trigger_authority_id = ?1 AND record_revision = ?2 AND is_current = 1
+                    "#,
+                    params![
+                        current.trigger_authority_id.as_str(),
+                        current.record_revision as i64
+                    ],
+                )?;
+            }
+        }
+        transaction.execute(
+            r#"
+            INSERT INTO call_trigger_authorities(
+                trigger_authority_id, record_revision, policy_revision,
+                trigger_class, authority_state, starts_at, expires_at,
+                authority_observation_id, canonical_record_digest, record_json,
+                is_current, projected_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1, ?11)
+            "#,
+            params![
+                authority.trigger_authority_id.as_str(),
+                authority.record_revision as i64,
+                authority.policy_revision as i64,
+                json_atom(&authority.trigger_source.class())?,
+                json_atom(&authority.authority_state)?,
+                authority.starts_at.as_str(),
+                authority.expires_at.as_str(),
+                authority.authority_observation_id.as_str(),
+                authority.canonical_record_digest,
+                json_string(authority)?,
+                current_timestamp_string(),
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn current_call_trigger_authority(
+        &self,
+        trigger_authority_id: &CallTriggerAuthorityId,
+    ) -> Result<Option<CallTriggerAuthority>> {
+        let record_json = self
+            .conn
+            .query_row(
+                r#"
+                SELECT record_json
+                FROM call_trigger_authorities
+                WHERE trigger_authority_id = ?1 AND is_current = 1
+                "#,
+                params![trigger_authority_id.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        record_json
+            .map(|json| {
+                let authority: CallTriggerAuthority = from_json_cell(&json)?;
+                authority.validate().map_err(anyhow::Error::from)?;
+                Ok(authority)
+            })
+            .transpose()
+    }
+
+    pub fn call_trigger_authority_projected_at(
+        &self,
+        trigger_authority_id: &CallTriggerAuthorityId,
+        record_revision: u64,
+    ) -> Result<Option<Timestamp>> {
+        let value = self
+            .conn
+            .query_row(
+                r#"
+                SELECT projected_at FROM call_trigger_authorities
+                WHERE trigger_authority_id = ?1 AND record_revision = ?2
+                "#,
+                params![trigger_authority_id.as_str(), record_revision as i64],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        value.map(Timestamp::new).transpose().map_err(Into::into)
+    }
+
+    pub fn call_trigger_authorities(&self) -> Result<Vec<CallTriggerAuthority>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT record_json
+            FROM call_trigger_authorities
+            ORDER BY trigger_authority_id, record_revision
+            "#,
+        )?;
+        stmt.query_map([], |row| row.get::<_, String>(0))?
+            .map(|json| {
+                let authority: CallTriggerAuthority = from_json_cell(&json?)?;
+                authority.validate().map_err(anyhow::Error::from)?;
+                Ok(authority)
+            })
+            .collect()
+    }
+
+    pub fn current_call_trigger_authorities(&self) -> Result<Vec<CallTriggerAuthority>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT record_json
+            FROM call_trigger_authorities
+            WHERE is_current = 1
+            ORDER BY trigger_authority_id
+            "#,
+        )?;
+        stmt.query_map([], |row| row.get::<_, String>(0))?
+            .map(|json| {
+                let authority: CallTriggerAuthority = from_json_cell(&json?)?;
+                authority.validate().map_err(anyhow::Error::from)?;
+                Ok(authority)
+            })
+            .collect()
+    }
+
+    pub fn current_active_call_trigger_authorities(&self) -> Result<Vec<CallTriggerAuthority>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT record_json
+            FROM call_trigger_authorities
+            WHERE is_current = 1 AND authority_state = 'active'
+            ORDER BY trigger_authority_id
+            "#,
+        )?;
+        stmt.query_map([], |row| row.get::<_, String>(0))?
+            .map(|json| {
+                let authority: CallTriggerAuthority = from_json_cell(&json?)?;
+                authority.validate().map_err(anyhow::Error::from)?;
+                Ok(authority)
+            })
+            .collect()
+    }
+
+    pub fn latest_call_trigger_nominal_at(
+        &self,
+        trigger_authority_id: &CallTriggerAuthorityId,
+        record_revision: u64,
+    ) -> Result<Option<Timestamp>> {
+        let value = self.conn.query_row(
+            r#"
+            SELECT MAX(nominal_at)
+            FROM call_trigger_occurrences
+            WHERE trigger_authority_id = ?1 AND record_revision = ?2
+            "#,
+            params![trigger_authority_id.as_str(), record_revision as i64],
+            |row| row.get::<_, Option<String>>(0),
+        )?;
+        value.map(Timestamp::new).transpose().map_err(Into::into)
+    }
+
+    pub fn call_trigger_occurrence_exists(
+        &self,
+        occurrence_id: &CallTriggerOccurrenceId,
+    ) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM call_trigger_occurrences WHERE occurrence_id = ?1)",
+            params![occurrence_id.as_str()],
+            |row| row.get::<_, i64>(0),
+        )? != 0)
+    }
+
+    pub fn insert_call_trigger_occurrence(
+        &self,
+        occurrence: &MctTriggerOccurrenceRecord,
+    ) -> Result<()> {
+        if occurrence.record_revision == 0
+            || occurrence.represented_set.count == 0
+            || occurrence.final_disposition == MctTriggerOccurrenceDisposition::Pending
+        {
+            bail!("terminal trigger occurrence projection is malformed");
+        }
+        self.conn.execute(
+            r#"
+            INSERT INTO call_trigger_occurrences(
+                occurrence_id, trigger_authority_id, record_revision, nominal_at,
+                represented_set_json, missed_fire_result, overlap_result,
+                final_disposition, disposition_observation_id, terminal, created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10)
+            "#,
+            params![
+                occurrence.occurrence_id.as_str(),
+                occurrence.trigger_authority_id.as_str(),
+                occurrence.record_revision as i64,
+                occurrence.nominal_at.as_ref().map(Timestamp::as_str),
+                json_string(&occurrence.represented_set)?,
+                occurrence.missed_fire_result,
+                occurrence.overlap_result,
+                json_atom(&occurrence.final_disposition)?,
+                occurrence.disposition_observation_id.as_str(),
+                occurrence.created_at.as_str(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn next_call_trigger_pending_sequence(
+        &self,
+        trigger_authority_id: &CallTriggerAuthorityId,
+    ) -> Result<u64> {
+        let sequence: i64 = self.conn.query_row(
+            r#"
+            SELECT COALESCE(MAX(admission_sequence), 0) + 1
+            FROM call_trigger_pending_occurrences
+            WHERE trigger_authority_id = ?1
+            "#,
+            params![trigger_authority_id.as_str()],
+            |row| row.get(0),
+        )?;
+        Ok(sequence.max(1) as u64)
+    }
+
+    pub fn call_trigger_pending_counts(
+        &self,
+        trigger_authority_id: &CallTriggerAuthorityId,
+    ) -> Result<(usize, usize)> {
+        let per_record: i64 = self.conn.query_row(
+            r#"
+            SELECT COUNT(*) FROM call_trigger_pending_occurrences
+            WHERE trigger_authority_id = ?1 AND state = 'pending'
+            "#,
+            params![trigger_authority_id.as_str()],
+            |row| row.get(0),
+        )?;
+        let resident: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM call_trigger_pending_occurrences WHERE state = 'pending'",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok((per_record.max(0) as usize, resident.max(0) as usize))
+    }
+
+    pub fn insert_call_trigger_pending_occurrence(
+        &self,
+        occurrence: &MctTriggerOccurrenceRecord,
+        pending: &MctTriggerPendingOccurrenceRecord,
+    ) -> Result<()> {
+        if occurrence.final_disposition != MctTriggerOccurrenceDisposition::Pending
+            || pending.state != "pending"
+            || occurrence.occurrence_id != pending.occurrence_id
+            || occurrence.trigger_authority_id != pending.trigger_authority_id
+            || occurrence.record_revision != pending.record_revision
+        {
+            bail!("pending trigger occurrence projection is inconsistent");
+        }
+        let transaction =
+            rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        transaction.execute(
+            r#"
+            INSERT INTO call_trigger_occurrences(
+                occurrence_id, trigger_authority_id, record_revision, nominal_at,
+                represented_set_json, missed_fire_result, overlap_result,
+                final_disposition, disposition_observation_id, terminal, created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, 0, ?9)
+            "#,
+            params![
+                occurrence.occurrence_id.as_str(),
+                occurrence.trigger_authority_id.as_str(),
+                occurrence.record_revision as i64,
+                occurrence.nominal_at.as_ref().map(Timestamp::as_str),
+                json_string(&occurrence.represented_set)?,
+                occurrence.missed_fire_result,
+                occurrence.overlap_result,
+                occurrence.disposition_observation_id.as_str(),
+                occurrence.created_at.as_str(),
+            ],
+        )?;
+        transaction.execute(
+            r#"
+            INSERT INTO call_trigger_pending_occurrences(
+                pending_occurrence_id, occurrence_id, trigger_authority_id,
+                record_revision, policy_revision, admission_sequence,
+                pending_reason, represented_set_json, admission_observation_id,
+                state, admitted_at, consumed_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', ?10, NULL)
+            "#,
+            params![
+                pending.pending_occurrence_id.as_str(),
+                pending.occurrence_id.as_str(),
+                pending.trigger_authority_id.as_str(),
+                pending.record_revision as i64,
+                pending.policy_revision as i64,
+                pending.admission_sequence as i64,
+                json_atom(&pending.pending_reason)?,
+                json_string(&pending.represented_set)?,
+                pending.admission_observation_id.as_str(),
+                pending.admitted_at.as_str(),
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn call_trigger_occurrences(&self) -> Result<Vec<MctTriggerOccurrenceRecord>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT occurrence_id, trigger_authority_id, record_revision,
+                   nominal_at, represented_set_json, missed_fire_result,
+                   overlap_result, final_disposition,
+                   disposition_observation_id, created_at
+            FROM call_trigger_occurrences ORDER BY created_at, occurrence_id
+            "#,
+        )?;
+        stmt.query_map([], trigger_occurrence_from_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn call_trigger_occurrence(
+        &self,
+        occurrence_id: &CallTriggerOccurrenceId,
+    ) -> Result<Option<MctTriggerOccurrenceRecord>> {
+        self.conn
+            .query_row(
+                r#"
+                SELECT occurrence_id, trigger_authority_id, record_revision,
+                       nominal_at, represented_set_json, missed_fire_result,
+                       overlap_result, final_disposition,
+                       disposition_observation_id, created_at
+                FROM call_trigger_occurrences
+                WHERE occurrence_id = ?1
+                "#,
+                params![occurrence_id.as_str()],
+                trigger_occurrence_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn call_trigger_firings(&self) -> Result<Vec<MctTriggerFiringRecord>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT firing_id, occurrence_id, trigger_authority_id, record_revision,
+                   policy_revision, call_id, idempotency_key_ref,
+                   firing_observation_id, target_result_ref, state, fired_at, completed_at
+            FROM call_trigger_firings ORDER BY fired_at, firing_id
+            "#,
+        )?;
+        stmt.query_map([], trigger_firing_from_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn call_trigger_firing(
+        &self,
+        firing_id: &CallTriggerFiringId,
+    ) -> Result<Option<MctTriggerFiringRecord>> {
+        self.conn
+            .query_row(
+                r#"
+                SELECT firing_id, occurrence_id, trigger_authority_id, record_revision,
+                       policy_revision, call_id, idempotency_key_ref,
+                       firing_observation_id, target_result_ref, state, fired_at, completed_at
+                FROM call_trigger_firings WHERE firing_id = ?1
+                "#,
+                params![firing_id.as_str()],
+                trigger_firing_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn active_call_trigger_firings(&self) -> Result<Vec<MctTriggerFiringRecord>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT firing_id, occurrence_id, trigger_authority_id, record_revision,
+                   policy_revision, call_id, idempotency_key_ref,
+                   firing_observation_id, target_result_ref, state, fired_at, completed_at
+            FROM call_trigger_firings
+            WHERE state = 'active'
+            ORDER BY fired_at, firing_id
+            "#,
+        )?;
+        stmt.query_map([], trigger_firing_from_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn active_call_trigger_firing(
+        &self,
+        trigger_authority_id: &CallTriggerAuthorityId,
+    ) -> Result<Option<MctTriggerFiringRecord>> {
+        self.conn
+            .query_row(
+                r#"
+                SELECT firing_id, occurrence_id, trigger_authority_id, record_revision,
+                       policy_revision, call_id, idempotency_key_ref,
+                       firing_observation_id, target_result_ref, state, fired_at, completed_at
+                FROM call_trigger_firings
+                WHERE trigger_authority_id = ?1 AND state = 'active'
+                "#,
+                params![trigger_authority_id.as_str()],
+                trigger_firing_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn insert_call_trigger_firing(
+        &self,
+        occurrence: &MctTriggerOccurrenceRecord,
+        firing: &MctTriggerFiringRecord,
+    ) -> Result<()> {
+        if occurrence.final_disposition != MctTriggerOccurrenceDisposition::Fired
+            || firing.state != "active"
+            || occurrence.occurrence_id != firing.occurrence_id
+            || occurrence.trigger_authority_id != firing.trigger_authority_id
+        {
+            bail!("trigger firing projection is inconsistent");
+        }
+        let transaction =
+            rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let pending = transaction
+            .query_row(
+                "SELECT state FROM call_trigger_pending_occurrences WHERE occurrence_id = ?1",
+                params![occurrence.occurrence_id.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if let Some(state) = pending {
+            if state != "pending" {
+                bail!("trigger pending occurrence is not consumable");
+            }
+            transaction.execute(
+                r#"
+                UPDATE call_trigger_occurrences
+                SET final_disposition = 'fired', terminal = 1,
+                    disposition_observation_id = ?1, overlap_result = ?2
+                WHERE occurrence_id = ?3 AND terminal = 0 AND final_disposition = 'pending'
+                "#,
+                params![
+                    occurrence.disposition_observation_id.as_str(),
+                    occurrence.overlap_result,
+                    occurrence.occurrence_id.as_str(),
+                ],
+            )?;
+            transaction.execute(
+                r#"
+                UPDATE call_trigger_pending_occurrences
+                SET state = 'consumed', consumed_at = ?1
+                WHERE occurrence_id = ?2 AND state = 'pending'
+                "#,
+                params![
+                    occurrence.created_at.as_str(),
+                    occurrence.occurrence_id.as_str()
+                ],
+            )?;
+        } else {
+            transaction.execute(
+                r#"
+                INSERT INTO call_trigger_occurrences(
+                    occurrence_id, trigger_authority_id, record_revision, nominal_at,
+                    represented_set_json, missed_fire_result, overlap_result,
+                    final_disposition, disposition_observation_id, terminal, created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'fired', ?8, 1, ?9)
+                "#,
+                params![
+                    occurrence.occurrence_id.as_str(),
+                    occurrence.trigger_authority_id.as_str(),
+                    occurrence.record_revision as i64,
+                    occurrence.nominal_at.as_ref().map(Timestamp::as_str),
+                    json_string(&occurrence.represented_set)?,
+                    occurrence.missed_fire_result,
+                    occurrence.overlap_result,
+                    occurrence.disposition_observation_id.as_str(),
+                    occurrence.created_at.as_str(),
+                ],
+            )?;
+        }
+        transaction.execute(
+            r#"
+            INSERT INTO call_trigger_firings(
+                firing_id, occurrence_id, trigger_authority_id, record_revision,
+                policy_revision, call_id, idempotency_key_ref,
+                firing_observation_id, target_result_ref, state, fired_at, completed_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, 'active', ?9, NULL)
+            "#,
+            params![
+                firing.firing_id.as_str(),
+                firing.occurrence_id.as_str(),
+                firing.trigger_authority_id.as_str(),
+                firing.record_revision as i64,
+                firing.policy_revision as i64,
+                firing.call_id.as_str(),
+                firing.idempotency_key_ref,
+                firing.firing_observation_id.as_str(),
+                firing.fired_at.as_str(),
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn complete_call_trigger_firing(
+        &self,
+        firing_id: &CallTriggerFiringId,
+        target_result_ref: Option<&ResultRef>,
+        completed_at: &Timestamp,
+    ) -> Result<()> {
+        let changed = self.conn.execute(
+            r#"
+            UPDATE call_trigger_firings
+            SET target_result_ref = ?1, state = 'terminal', completed_at = ?2
+            WHERE firing_id = ?3 AND state = 'active'
+            "#,
+            params![
+                target_result_ref.map(ResultRef::as_str),
+                completed_at.as_str(),
+                firing_id.as_str(),
+            ],
+        )?;
+        if changed != 1 {
+            bail!("trigger firing completion did not match one active firing");
+        }
+        Ok(())
+    }
+
+    pub fn call_trigger_pending_occurrence(
+        &self,
+        pending_occurrence_id: &CallTriggerPendingOccurrenceId,
+    ) -> Result<Option<MctTriggerPendingOccurrenceRecord>> {
+        self.conn
+            .query_row(
+                r#"
+                SELECT pending_occurrence_id, occurrence_id, trigger_authority_id,
+                       record_revision, policy_revision, admission_sequence,
+                       pending_reason, represented_set_json, admission_observation_id,
+                       state, admitted_at, consumed_at
+                FROM call_trigger_pending_occurrences
+                WHERE pending_occurrence_id = ?1
+                "#,
+                params![pending_occurrence_id.as_str()],
+                trigger_pending_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn coalesced_call_trigger_pending_occurrence(
+        &self,
+        trigger_authority_id: &CallTriggerAuthorityId,
+    ) -> Result<Option<MctTriggerPendingOccurrenceRecord>> {
+        self.conn
+            .query_row(
+                r#"
+                SELECT pending_occurrence_id, occurrence_id, trigger_authority_id,
+                       record_revision, policy_revision, admission_sequence,
+                       pending_reason, represented_set_json, admission_observation_id,
+                       state, admitted_at, consumed_at
+                FROM call_trigger_pending_occurrences
+                WHERE trigger_authority_id = ?1 AND state = 'pending'
+                  AND pending_reason = 'overlap_coalesced'
+                ORDER BY admission_sequence LIMIT 1
+                "#,
+                params![trigger_authority_id.as_str()],
+                trigger_pending_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn update_coalesced_call_trigger_pending_occurrence(
+        &self,
+        pending_occurrence_id: &CallTriggerPendingOccurrenceId,
+        represented_set: &CallTriggerRepresentedSet,
+        nominal_at: Option<&Timestamp>,
+        observation_id: &ObservationId,
+    ) -> Result<()> {
+        let transaction =
+            rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let occurrence_id: String = transaction.query_row(
+            r#"
+            SELECT occurrence_id FROM call_trigger_pending_occurrences
+            WHERE pending_occurrence_id = ?1 AND state = 'pending'
+              AND pending_reason = 'overlap_coalesced'
+            "#,
+            params![pending_occurrence_id.as_str()],
+            |row| row.get(0),
+        )?;
+        transaction.execute(
+            r#"
+            UPDATE call_trigger_pending_occurrences
+            SET represented_set_json = ?1, admission_observation_id = ?2
+            WHERE pending_occurrence_id = ?3 AND state = 'pending'
+            "#,
+            params![
+                json_string(represented_set)?,
+                observation_id.as_str(),
+                pending_occurrence_id.as_str(),
+            ],
+        )?;
+        transaction.execute(
+            r#"
+            UPDATE call_trigger_occurrences
+            SET represented_set_json = ?1, nominal_at = COALESCE(?2, nominal_at),
+                disposition_observation_id = ?3
+            WHERE occurrence_id = ?4 AND terminal = 0
+            "#,
+            params![
+                json_string(represented_set)?,
+                nominal_at.map(Timestamp::as_str),
+                observation_id.as_str(),
+                occurrence_id
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn suppress_call_trigger_pending_occurrence(
+        &self,
+        pending_occurrence_id: &CallTriggerPendingOccurrenceId,
+        observation_id: &ObservationId,
+        suppressed_at: &Timestamp,
+    ) -> Result<()> {
+        let transaction =
+            rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let occurrence_id: String = transaction.query_row(
+            r#"
+            SELECT occurrence_id FROM call_trigger_pending_occurrences
+            WHERE pending_occurrence_id = ?1 AND state = 'pending'
+            "#,
+            params![pending_occurrence_id.as_str()],
+            |row| row.get(0),
+        )?;
+        transaction.execute(
+            r#"
+            UPDATE call_trigger_pending_occurrences
+            SET state = 'suppressed', consumed_at = ?1
+            WHERE pending_occurrence_id = ?2 AND state = 'pending'
+            "#,
+            params![suppressed_at.as_str(), pending_occurrence_id.as_str()],
+        )?;
+        transaction.execute(
+            r#"
+            UPDATE call_trigger_occurrences
+            SET final_disposition = 'suppressed', terminal = 1,
+                disposition_observation_id = ?1, overlap_result = 'dequeue_current_law_denied'
+            WHERE occurrence_id = ?2 AND terminal = 0
+            "#,
+            params![observation_id.as_str(), occurrence_id],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn call_trigger_pending_occurrences(
+        &self,
+    ) -> Result<Vec<MctTriggerPendingOccurrenceRecord>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT pending_occurrence_id, occurrence_id, trigger_authority_id,
+                   record_revision, policy_revision, admission_sequence,
+                   pending_reason, represented_set_json, admission_observation_id,
+                   state, admitted_at, consumed_at
+            FROM call_trigger_pending_occurrences
+            WHERE state = 'pending'
+            ORDER BY trigger_authority_id, admission_sequence
+            "#,
+        )?;
+        stmt.query_map([], trigger_pending_from_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn update_call_trigger_projection_checkpoint(
+        &self,
+        ledger_identity: &str,
+        last_ledger_sequence: u64,
+    ) -> Result<()> {
+        if ledger_identity.trim().is_empty() {
+            bail!("trigger projection ledger identity must not be blank");
+        }
+        self.conn.execute(
+            r#"
+            INSERT INTO call_trigger_projection_meta(
+                projection_name, ledger_identity, last_ledger_sequence, updated_at
+            ) VALUES ('trigger-runtime-v1', ?1, ?2, ?3)
+            ON CONFLICT(projection_name) DO UPDATE SET
+                ledger_identity = excluded.ledger_identity,
+                last_ledger_sequence = excluded.last_ledger_sequence,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                ledger_identity,
+                last_ledger_sequence as i64,
+                current_timestamp_string(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn call_idempotency_entry_state(
+        &self,
+        caller_scope: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<MctIdempotencyEntryState>> {
+        let value = self
+            .conn
+            .query_row(
+                r#"
+                SELECT entry_state FROM call_idempotency_entries
+                WHERE caller_scope = ?1 AND idempotency_key = ?2
+                "#,
+                params![caller_scope, idempotency_key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        value
+            .map(|state| match state.as_str() {
+                "in_flight" => Ok(MctIdempotencyEntryState::InFlight),
+                "completed" => Ok(MctIdempotencyEntryState::Completed),
+                other => bail!("unknown idempotency entry state '{other}'"),
+            })
+            .transpose()
     }
 
     pub fn reserve_call_idempotency(
@@ -1868,6 +2790,23 @@ impl MctRuntimeStateStore {
             .context("read runtime run")
     }
 
+    pub fn get_run_by_call_id(&self, call_id: &CallId) -> Result<Option<MctRuntimeRunRecord>> {
+        self.conn
+            .query_row(
+                r#"
+                SELECT run_id, call_id, runtime_kind, child_name, child_instance_id,
+                       authority_decision_id, trace_id, state, started_at, completed_at,
+                       call_json, child_invocation_provenance_json, result_json
+                FROM runtime_runs WHERE call_id = ?1
+                ORDER BY started_at DESC LIMIT 1
+                "#,
+                params![call_id.as_str()],
+                run_from_row,
+            )
+            .optional()
+            .context("read runtime run by call id")
+    }
+
     pub fn list_runs(&self, limit: u32) -> Result<Vec<MctRuntimeRunRecord>> {
         let mut stmt = self.conn.prepare(
             r#"
@@ -2359,7 +3298,90 @@ fn is_known_count_table(table: &str) -> bool {
             | "metric_points"
             | "toy_catalog_contracts"
             | "toy_grant_snapshots"
+            | "call_trigger_authorities"
+            | "call_trigger_pending_occurrences"
+            | "call_trigger_firings"
+            | "call_trigger_occurrences"
+            | "call_trigger_projection_meta"
     )
+}
+
+fn trigger_occurrence_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<MctTriggerOccurrenceRecord> {
+    Ok(MctTriggerOccurrenceRecord {
+        occurrence_id: CallTriggerOccurrenceId::new(row.get::<_, String>(0)?)
+            .expect("stored trigger occurrence id must be non-empty"),
+        trigger_authority_id: CallTriggerAuthorityId::new(row.get::<_, String>(1)?)
+            .expect("stored trigger authority id must be non-empty"),
+        record_revision: row.get::<_, i64>(2)?.max(0) as u64,
+        nominal_at: row
+            .get::<_, Option<String>>(3)?
+            .map(|value| Timestamp::new(value).expect("stored nominal_at must be RFC3339")),
+        represented_set: from_json_cell(&row.get::<_, String>(4)?).map_err(to_sql_error)?,
+        missed_fire_result: row.get(5)?,
+        overlap_result: row.get(6)?,
+        final_disposition: from_json_atom(&row.get::<_, String>(7)?).map_err(to_sql_error)?,
+        disposition_observation_id: ObservationId::new(row.get::<_, String>(8)?)
+            .expect("stored trigger disposition observation id must be non-empty"),
+        created_at: Timestamp::new(row.get::<_, String>(9)?)
+            .expect("stored trigger occurrence created_at must be RFC3339"),
+    })
+}
+
+fn trigger_firing_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MctTriggerFiringRecord> {
+    Ok(MctTriggerFiringRecord {
+        firing_id: CallTriggerFiringId::new(row.get::<_, String>(0)?)
+            .expect("stored trigger firing id must be non-empty"),
+        occurrence_id: CallTriggerOccurrenceId::new(row.get::<_, String>(1)?)
+            .expect("stored trigger occurrence id must be non-empty"),
+        trigger_authority_id: CallTriggerAuthorityId::new(row.get::<_, String>(2)?)
+            .expect("stored trigger authority id must be non-empty"),
+        record_revision: row.get::<_, i64>(3)?.max(0) as u64,
+        policy_revision: row.get::<_, i64>(4)?.max(0) as u64,
+        call_id: CallId::new(row.get::<_, String>(5)?)
+            .expect("stored trigger call id must be non-empty"),
+        idempotency_key_ref: row.get(6)?,
+        firing_observation_id: ObservationId::new(row.get::<_, String>(7)?)
+            .expect("stored trigger firing observation id must be non-empty"),
+        target_result_ref: row
+            .get::<_, Option<String>>(8)?
+            .map(|value| ResultRef::new(value).expect("stored result ref must be non-empty")),
+        state: row.get(9)?,
+        fired_at: Timestamp::new(row.get::<_, String>(10)?)
+            .expect("stored fired_at must be RFC3339"),
+        completed_at: row
+            .get::<_, Option<String>>(11)?
+            .map(|value| Timestamp::new(value).expect("stored completed_at must be RFC3339")),
+    })
+}
+
+fn trigger_pending_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<MctTriggerPendingOccurrenceRecord> {
+    let pending_reason = from_json_atom(&row.get::<_, String>(6)?).map_err(to_sql_error)?;
+    let represented_set = from_json_cell(&row.get::<_, String>(7)?).map_err(to_sql_error)?;
+    Ok(MctTriggerPendingOccurrenceRecord {
+        pending_occurrence_id: CallTriggerPendingOccurrenceId::new(row.get::<_, String>(0)?)
+            .expect("stored trigger pending id must be non-empty"),
+        occurrence_id: CallTriggerOccurrenceId::new(row.get::<_, String>(1)?)
+            .expect("stored trigger occurrence id must be non-empty"),
+        trigger_authority_id: CallTriggerAuthorityId::new(row.get::<_, String>(2)?)
+            .expect("stored trigger authority id must be non-empty"),
+        record_revision: row.get::<_, i64>(3)?.max(0) as u64,
+        policy_revision: row.get::<_, i64>(4)?.max(0) as u64,
+        admission_sequence: row.get::<_, i64>(5)?.max(0) as u64,
+        pending_reason,
+        represented_set,
+        admission_observation_id: ObservationId::new(row.get::<_, String>(8)?)
+            .expect("stored trigger pending observation id must be non-empty"),
+        state: row.get(9)?,
+        admitted_at: Timestamp::new(row.get::<_, String>(10)?)
+            .expect("stored admitted_at must be RFC3339"),
+        consumed_at: row
+            .get::<_, Option<String>>(11)?
+            .map(|value| Timestamp::new(value).expect("stored consumed_at must be RFC3339")),
+    })
 }
 
 fn validate_remote_capability_view(
@@ -2891,6 +3913,39 @@ pub fn default_state_path() -> PathBuf {
 mod tests {
     use super::*;
 
+    fn trigger_authority(revision: u64, state: CallTriggerAuthorityState) -> CallTriggerAuthority {
+        CallTriggerAuthority {
+            trigger_authority_id: CallTriggerAuthorityId::new("trigger-a").unwrap(),
+            mother_node_id: MctNodeId::new("node-a").unwrap(),
+            vision_id: VisionId::new("vision-a").unwrap(),
+            canonical_caller: CallerIdentity {
+                node_id: MctNodeId::new("node-a").unwrap(),
+                user_id: Some(UserId::new("uid:501").unwrap()),
+                vision_id: VisionId::new("vision-a").unwrap(),
+                project_id: None,
+            },
+            target: OperationTarget::new("patina:watch", "control@0.1.0", "scan-now").unwrap(),
+            payload_constraint: MctCallPayloadHandle::Empty,
+            trigger_source: CallTriggerSource::Temporal {
+                anchor_at: Timestamp::new("2026-07-21T12:00:00Z").unwrap(),
+                interval_ms: 1_000,
+            },
+            trigger_source_ref: "blake3:source".into(),
+            missed_fire_policy: MissedFirePolicy::Skip,
+            overlap_policy: OverlapPolicy::Refuse,
+            issuer_principal_ref: "os-uid:501".into(),
+            record_revision: revision,
+            policy_revision: revision,
+            starts_at: Timestamp::new("2026-07-21T12:00:00Z").unwrap(),
+            expires_at: Timestamp::new("2026-07-21T13:00:00Z").unwrap(),
+            authority_state: state,
+            authority_observation_id: ObservationId::new(format!("obs-trigger-a-{revision}"))
+                .unwrap(),
+            canonical_record_digest: String::new(),
+        }
+        .seal()
+    }
+
     fn artifact() -> ComponentArtifact {
         ComponentArtifact {
             artifact_id: ComponentArtifactId::new("artifact-a")
@@ -3274,6 +4329,64 @@ mod tests {
     }
 
     #[test]
+    fn trigger_authority_projection_is_revisioned_current_and_non_resurrecting() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MctRuntimeStateStore::open(dir.path().join("state.sqlite")).unwrap();
+        let first = trigger_authority(1, CallTriggerAuthorityState::Active);
+        store.insert_call_trigger_authority(&first).unwrap();
+        assert_eq!(
+            store
+                .current_call_trigger_authority(&first.trigger_authority_id)
+                .unwrap(),
+            Some(first.clone())
+        );
+        assert!(store.insert_call_trigger_authority(&first).is_err());
+
+        let second = trigger_authority(2, CallTriggerAuthorityState::Active);
+        store.insert_call_trigger_authority(&second).unwrap();
+        assert_eq!(
+            store
+                .current_call_trigger_authority(&first.trigger_authority_id)
+                .unwrap(),
+            Some(second)
+        );
+        assert_eq!(store.call_trigger_authorities().unwrap().len(), 2);
+
+        let revoked = trigger_authority(3, CallTriggerAuthorityState::Revoked);
+        store.insert_call_trigger_authority(&revoked).unwrap();
+        assert_eq!(
+            store
+                .current_call_trigger_authority(&first.trigger_authority_id)
+                .unwrap(),
+            Some(revoked)
+        );
+        assert!(
+            store
+                .insert_call_trigger_authority(&trigger_authority(
+                    4,
+                    CallTriggerAuthorityState::Active
+                ))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn schema_v8_adds_closed_trigger_authority_and_scheduler_projections() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MctRuntimeStateStore::open(dir.path().join("state.sqlite")).unwrap();
+        assert_eq!(store.schema_version().unwrap(), 8);
+        for table in [
+            "call_trigger_authorities",
+            "call_trigger_occurrences",
+            "call_trigger_pending_occurrences",
+            "call_trigger_firings",
+            "call_trigger_projection_meta",
+        ] {
+            assert_eq!(store.count(table, None).unwrap(), 0, "{table}");
+        }
+    }
+
+    #[test]
     fn state_store_persists_approved_assignment_and_ready_instance() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.sqlite");
@@ -3626,6 +4739,43 @@ mod tests {
         let summary = store.summary().unwrap();
         assert_eq!(summary.child_state_keys, 1);
         assert_eq!(summary.child_subscriptions, 1);
+    }
+
+    #[test]
+    fn trigger_in_flight_recovery_never_expires_into_hidden_reexecution() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.sqlite");
+        let store = MctRuntimeStateStore::open(&path).unwrap();
+        let fingerprint = MctIdempotencyFingerprint {
+            target: "patina:demo/control@0.1.0.run".into(),
+            call_id: CallId::new("call-trigger-in-flight").unwrap(),
+            payload_digest: "blake3:payload".into(),
+        };
+        store
+            .reserve_call_idempotency(
+                "trigger:trigger-a",
+                "trigger-v1:key-a",
+                &fingerprint,
+                &Timestamp::new("2026-07-10T00:00:00Z").unwrap(),
+                &Timestamp::new("2026-07-10T00:12:00Z").unwrap(),
+                1,
+            )
+            .unwrap();
+        drop(store);
+        let reopened = MctRuntimeStateStore::open(path).unwrap();
+        assert_eq!(
+            reopened
+                .call_idempotency_entry_state("trigger:trigger-a", "trigger-v1:key-a")
+                .unwrap(),
+            Some(MctIdempotencyEntryState::InFlight)
+        );
+        assert_eq!(
+            reopened
+                .call_idempotency_entry_state("trigger:trigger-a", "trigger-v1:key-a")
+                .unwrap(),
+            Some(MctIdempotencyEntryState::InFlight),
+            "the trigger recovery reader does not apply ordinary TTL eviction"
+        );
     }
 
     #[test]

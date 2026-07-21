@@ -668,6 +668,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn locally_submitted_body_cannot_claim_trigger_firing_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let (paths, _identity_path, ledger_path) = local_paths(&dir);
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let payload = b"{}";
+        let digest = blake3::hash(payload).to_hex().to_string();
+        let mut body: serde_json::Value = serde_json::from_slice(&submission_body(
+            payload,
+            &digest,
+            "call-cannot-claim-trigger",
+        ))
+        .unwrap();
+        body["origin"] = serde_json::Value::String("trigger_firing".into());
+        body["trigger_authority_id"] = serde_json::Value::String("trigger-forged".into());
+        let response = execute_local_submission(
+            paths,
+            ledger.clone(),
+            MctUdsPeerCredentials {
+                uid: 501,
+                gid: 20,
+                pid: Some(42),
+            },
+            serde_json::to_vec(&body).unwrap(),
+        )
+        .await
+        .expect("malformed local submission is durably refused");
+        assert_eq!(response.status_code, 400);
+        assert!(response.body.contains("malformed call"));
+        ledger.close().await;
+        let text = std::fs::read_to_string(ledger_path).unwrap();
+        assert!(text.contains("malformed_envelope"));
+        assert!(!text.contains("trigger-forged"));
+    }
+
+    #[tokio::test]
     async fn resident_call_uds_rejects_bad_payload_and_keeps_ledger_byte_free() {
         let dir = tempfile::tempdir().unwrap();
         let (paths, _identity_path, ledger_path) = local_paths(&dir);

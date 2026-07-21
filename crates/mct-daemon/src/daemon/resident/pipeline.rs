@@ -5,6 +5,63 @@
 
 use super::*;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ResidentCallIngressContext {
+    Peer {
+        binding_id: PeerBindingId,
+    },
+    LocalPrincipal {
+        origin: CallOrigin,
+        caller: CallerIdentity,
+    },
+    Trigger {
+        trigger_authority_id: CallTriggerAuthorityId,
+        record_revision: u64,
+        firing_id: CallTriggerFiringId,
+        occurrence_id: CallTriggerOccurrenceId,
+    },
+    #[allow(dead_code)] // Ratified D1B interface; implemented only after Part A lands.
+    ChildCallOut {
+        parent_call_id: CallId,
+        parent_firing_id: Option<CallTriggerFiringId>,
+        depth: u8,
+    },
+}
+
+impl ResidentCallIngressContext {
+    pub(super) fn ordinary(request: &MctCallProtocolRequest) -> Option<Self> {
+        match request.call.origin {
+            CallOrigin::Iroh => Some(Self::Peer {
+                binding_id: request.authority.peer_binding_id.clone(),
+            }),
+            CallOrigin::TriggerFiring => None,
+            origin => Some(Self::LocalPrincipal {
+                origin,
+                caller: request.call.caller.clone(),
+            }),
+        }
+    }
+
+    fn matches_request(&self, request: &MctCallProtocolRequest) -> bool {
+        match self {
+            Self::Peer { binding_id } => {
+                request.call.origin == CallOrigin::Iroh
+                    && binding_id == &request.authority.peer_binding_id
+            }
+            Self::LocalPrincipal { origin, caller } => {
+                *origin == request.call.origin
+                    && *origin != CallOrigin::Iroh
+                    && *origin != CallOrigin::TriggerFiring
+                    && caller == &request.call.caller
+            }
+            Self::Trigger { .. } => request.call.origin == CallOrigin::TriggerFiring,
+            Self::ChildCallOut { depth, .. } => {
+                request.call.origin == CallOrigin::WasmHost && *depth > 0
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ResidentRuntimePaths {
     config_path: PathBuf,
@@ -38,9 +95,31 @@ pub(crate) async fn execute_resident_call(
     request: MctCallProtocolRequest,
     payload: ResidentPayloadIngress,
 ) -> MctIrohCallHandlerResult {
-    execute_resident_call_at(paths, ledger, request, payload, current_timestamp()).await
+    let Some(context) = ResidentCallIngressContext::ordinary(&request) else {
+        return MctIrohCallHandlerResult::denied();
+    };
+    execute_resident_call_with_context(paths, ledger, request, payload, context).await
 }
 
+pub(crate) async fn execute_resident_call_with_context(
+    paths: ResidentRuntimePaths,
+    ledger: ResidentLedgerWriter,
+    request: MctCallProtocolRequest,
+    payload: ResidentPayloadIngress,
+    context: ResidentCallIngressContext,
+) -> MctIrohCallHandlerResult {
+    execute_resident_call_at_with_context(
+        paths,
+        ledger,
+        request,
+        payload,
+        current_timestamp(),
+        context,
+    )
+    .await
+}
+
+#[cfg(test)]
 pub(super) async fn execute_resident_call_at(
     paths: ResidentRuntimePaths,
     ledger: ResidentLedgerWriter,
@@ -48,6 +127,23 @@ pub(super) async fn execute_resident_call_at(
     payload: ResidentPayloadIngress,
     now: Timestamp,
 ) -> MctIrohCallHandlerResult {
+    let Some(context) = ResidentCallIngressContext::ordinary(&request) else {
+        return MctIrohCallHandlerResult::denied();
+    };
+    execute_resident_call_at_with_context(paths, ledger, request, payload, now, context).await
+}
+
+async fn execute_resident_call_at_with_context(
+    paths: ResidentRuntimePaths,
+    ledger: ResidentLedgerWriter,
+    request: MctCallProtocolRequest,
+    payload: ResidentPayloadIngress,
+    now: Timestamp,
+    context: ResidentCallIngressContext,
+) -> MctIrohCallHandlerResult {
+    if !context.matches_request(&request) {
+        return MctIrohCallHandlerResult::denied();
+    }
     let inline_payload = match resolve_resident_request_payload(&paths, &request, payload).await {
         Ok(payload) => payload.into_inner(),
         Err(report) => {
@@ -63,11 +159,12 @@ pub(super) async fn execute_resident_call_at(
     let state_path = paths.state_path().to_path_buf();
     let idempotency_request = request.clone();
     let idempotency_ledger = ledger.clone();
-    execute_idempotent_call(
+    execute_idempotent_call_with_context(
         state_path,
         idempotency_ledger,
         idempotency_request,
         now,
+        context,
         move || execute_resident_call_after_payload(paths, ledger, request, inline_payload),
     )
     .await
@@ -90,11 +187,63 @@ async fn execute_resident_call_after_payload(
     match authorization {
         RouteDisposition::Denied {
             decision,
-            observations,
+            mut observations,
         } => {
+            let result = no_route_denied_result(
+                &request.call,
+                &decision,
+                AuditRef::new(format!("audit:denied:{}", request.call.call_id))
+                    .expect("generated denied audit ref must be non-empty"),
+            );
+            let result_ref = ResultRef::new(format!("result-resident:{}", request.call.call_id))
+                .expect("generated denied result ref must be non-empty");
+            observations.push(MctObservation {
+                observation_id: ObservationId::new(format!(
+                    "obs:result-resident:{}",
+                    request.call.call_id
+                ))
+                .expect("generated denied result observation id must be non-empty"),
+                observed_at: current_timestamp(),
+                kind: ObservationKind::ResultRecorded,
+                source_plane: SourcePlane::Kernel,
+                trace: ObservationTraceRef {
+                    trace_id: request.call.trace_context.trace_id.clone(),
+                    span_id: Some(request.call.trace_context.span_id.clone()),
+                    parent_span_id: None,
+                    external_trace_id: None,
+                },
+                call_id: Some(request.call.call_id.clone()),
+                decision_id: Some(decision.decision_id.clone()),
+                subject_id: Some(request.call.caller.node_id.to_string()),
+                resource_id: Some(result_ref.to_string()),
+                policy_revision: Some(request.call.authority_context.policy_revision),
+                grants_revision: Some(request.call.authority_context.grants_revision),
+                outcome: ObservationOutcome::Denied,
+                visibility: ObservationVisibility::InternalOnly,
+                safe_message: "resident denied result recorded".into(),
+                detail_ref: Some("result_outcome:denied".into()),
+            });
             if let Err(error) = ledger.append(observations).await {
                 eprintln!("resident route denial ledger write failed: {error}");
                 return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+            }
+            let run_id = format!("run-denied:{}", request.call.call_id);
+            let projection = MctRuntimeStateStore::open(paths.state_path()).and_then(|state| {
+                if state.get_run(&run_id)?.is_none() {
+                    state.insert_run_started(
+                        &run_id,
+                        &request.call,
+                        RuntimeKind::Internal,
+                        None,
+                        current_timestamp_string(),
+                    )?;
+                }
+                state.complete_run(&run_id, &result, current_timestamp_string())?;
+                Ok(())
+            });
+            if let Err(error) = projection {
+                eprintln!("resident denied result projection failed: {error}");
+                return MctIrohCallHandlerResult::failed("runtime state unavailable");
             }
             MctIrohCallHandlerResult::denied().with_route(Some(decision.decision_id), None)
         }

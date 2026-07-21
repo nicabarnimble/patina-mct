@@ -60,6 +60,17 @@ pub enum MctKernelError {
         handle_size_bytes: u64,
     },
 
+    #[error("invalid {record}.{field}: {reason}")]
+    /// A closed trigger or watch authority constraint was malformed.
+    InvalidConstraint {
+        /// Name of the kernel record being validated.
+        record: &'static str,
+        /// Field within the record that violated the invariant.
+        field: &'static str,
+        /// Stable caller-safe description of the failed constraint.
+        reason: &'static str,
+    },
+
     #[error("failed to encode MCT call protocol JSON edge value: {source}")]
     /// Serialization failed while emitting a validated call protocol edge value.
     EncodeCallProtocolJson {

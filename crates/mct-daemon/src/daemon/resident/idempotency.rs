@@ -2,17 +2,27 @@
 
 use super::*;
 
-fn resident_idempotency_caller_scope(request: &MctCallProtocolRequest) -> String {
-    if request.call.origin == CallOrigin::Iroh {
-        format!("peer-binding:{}", request.authority.peer_binding_id)
-    } else {
-        format!(
+fn resident_idempotency_caller_scope(
+    request: &MctCallProtocolRequest,
+    context: &ResidentCallIngressContext,
+) -> String {
+    match context {
+        ResidentCallIngressContext::Peer { binding_id } => {
+            format!("peer-binding:{binding_id}")
+        }
+        ResidentCallIngressContext::Trigger {
+            trigger_authority_id,
+            ..
+        } => format!("trigger:{trigger_authority_id}"),
+        ResidentCallIngressContext::LocalPrincipal { .. }
+        | ResidentCallIngressContext::ChildCallOut { .. } => format!(
             "local:{}:{}:{}:{}:{}",
             match request.call.origin {
                 CallOrigin::JvmAdapter => "jvm",
                 CallOrigin::WasmHost => "wasm",
                 CallOrigin::ProcessHarness => "process",
                 CallOrigin::Cli => "cli",
+                CallOrigin::TriggerFiring => "trigger",
                 CallOrigin::Iroh => "iroh",
             },
             request.call.caller.node_id,
@@ -29,7 +39,7 @@ fn resident_idempotency_caller_scope(request: &MctCallProtocolRequest) -> String
                 .project_id
                 .as_ref()
                 .map_or("-", ProjectId::as_str),
-        )
+        ),
     }
 }
 
@@ -221,10 +231,28 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = MctIrohCallHandlerResult>,
 {
+    let Some(context) = ResidentCallIngressContext::ordinary(&request) else {
+        return MctIrohCallHandlerResult::denied();
+    };
+    execute_idempotent_call_with_context(state_path, ledger, request, now, context, execute).await
+}
+
+pub(crate) async fn execute_idempotent_call_with_context<F, Fut>(
+    state_path: PathBuf,
+    ledger: ResidentLedgerWriter,
+    request: MctCallProtocolRequest,
+    now: Timestamp,
+    context: ResidentCallIngressContext,
+    execute: F,
+) -> MctIrohCallHandlerResult
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = MctIrohCallHandlerResult>,
+{
     let Some(idempotency_key) = request.idempotency_key.clone() else {
         return execute().await;
     };
-    let caller_scope = resident_idempotency_caller_scope(&request);
+    let caller_scope = resident_idempotency_caller_scope(&request, &context);
     let fingerprint = resident_idempotency_fingerprint(&request);
     let expires_at = match idempotency_expiry(&now) {
         Ok(expires_at) => expires_at,
@@ -324,6 +352,34 @@ mod tests {
         call.origin = CallOrigin::Iroh;
         call
     }
+    #[test]
+    fn trigger_firing_idempotency_is_record_and_occurrence_scoped() {
+        let mut request = resident_test_protocol_request(resident_test_call(
+            TraceId::new("trace-trigger-scope").unwrap(),
+        ));
+        request.call.origin = CallOrigin::TriggerFiring;
+        let first = ResidentCallIngressContext::Trigger {
+            trigger_authority_id: CallTriggerAuthorityId::new("trigger-a").unwrap(),
+            record_revision: 1,
+            firing_id: CallTriggerFiringId::new("firing-a-1").unwrap(),
+            occurrence_id: CallTriggerOccurrenceId::new("occurrence-a-1").unwrap(),
+        };
+        let second = ResidentCallIngressContext::Trigger {
+            trigger_authority_id: CallTriggerAuthorityId::new("trigger-b").unwrap(),
+            record_revision: 1,
+            firing_id: CallTriggerFiringId::new("firing-b-1").unwrap(),
+            occurrence_id: CallTriggerOccurrenceId::new("occurrence-b-1").unwrap(),
+        };
+        assert_eq!(
+            resident_idempotency_caller_scope(&request, &first),
+            "trigger:trigger-a"
+        );
+        assert_ne!(
+            resident_idempotency_caller_scope(&request, &first),
+            resident_idempotency_caller_scope(&request, &second)
+        );
+    }
+
     fn resident_test_protocol_request(call: MctCall) -> MctCallProtocolRequest {
         MctCallProtocolRequest {
             protocol_request_id: ProtocolRequestId::new("proto-resident-wit")
