@@ -551,7 +551,7 @@ fn ingest_trigger_payload(
     Ok(handle)
 }
 
-fn take_required(args: &mut Vec<String>, flag: &str) -> Result<String> {
+pub(super) fn take_required(args: &mut Vec<String>, flag: &str) -> Result<String> {
     take_option(args, flag).with_context(|| format!("missing required {flag}"))
 }
 

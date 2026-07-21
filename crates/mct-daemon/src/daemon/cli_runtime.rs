@@ -753,15 +753,26 @@ pub(super) fn build_wit_host_adapters_for_cli_call(
     let mut wasi_preopens = Vec::new();
 
     if request.imports.contains("wasi:logging/logging@0.1.0") {
+        let (logging_toy_id, logging_resource_id) = current_child_toy_grant(
+            &grants,
+            request.child,
+            request.authorized_child,
+            &[MCT_WASI_LOGGING_TOY_ID, slate_logging_toy_id().as_str()],
+            "invoke",
+        )
+        .ok_or_else(|| CliToyAuthorizationError {
+            safe_message: "current exact logging Toy grant not found".into(),
+            observations: observations.clone(),
+        })?;
         let authorized = authorize_cli_toy(CliToyAuthorizationRequest {
             child: request.child,
             authorized_child: request.authorized_child,
             call: request.call,
             contracts: &contracts,
             grants: &grants,
-            toy_id: slate_logging_toy_id(),
+            toy_id: logging_toy_id.clone(),
             action: "invoke",
-            resource_id: resource_id.clone(),
+            resource_id: logging_resource_id,
             label: "logging",
         })?;
         observations.push(toy_grant_evaluation_observation(
@@ -769,7 +780,7 @@ pub(super) fn build_wit_host_adapters_for_cli_call(
             current_timestamp(),
             &authorized.evaluation,
         ));
-        toy_registry.register(slate_logging_toy_id(), MctToyBackend::EchoJson);
+        toy_registry.register(logging_toy_id, MctToyBackend::EchoJson);
         logging = Some(wit_toy_adapter(
             authorized.authorized,
             "obs-cli-wit-logging",
@@ -777,15 +788,26 @@ pub(super) fn build_wit_host_adapters_for_cli_call(
     }
 
     if request.imports.contains("patina:measure/measure@0.1.0") {
+        let (measure_toy_id, measure_resource_id) = current_child_toy_grant(
+            &grants,
+            request.child,
+            request.authorized_child,
+            &[MCT_PATINA_MEASURE_TOY_ID, slate_measure_toy_id().as_str()],
+            "invoke",
+        )
+        .ok_or_else(|| CliToyAuthorizationError {
+            safe_message: "current exact measure Toy grant not found".into(),
+            observations: observations.clone(),
+        })?;
         let authorized = authorize_cli_toy(CliToyAuthorizationRequest {
             child: request.child,
             authorized_child: request.authorized_child,
             call: request.call,
             contracts: &contracts,
             grants: &grants,
-            toy_id: slate_measure_toy_id(),
+            toy_id: measure_toy_id.clone(),
             action: "invoke",
-            resource_id: resource_id.clone(),
+            resource_id: measure_resource_id,
             label: "measure",
         })?;
         observations.push(toy_grant_evaluation_observation(
@@ -793,7 +815,7 @@ pub(super) fn build_wit_host_adapters_for_cli_call(
             current_timestamp(),
             &authorized.evaluation,
         ));
-        toy_registry.register(slate_measure_toy_id(), MctToyBackend::EchoJson);
+        toy_registry.register(measure_toy_id, MctToyBackend::EchoJson);
         measure = Some(wit_toy_adapter(
             authorized.authorized,
             "obs-cli-wit-measure",
@@ -834,13 +856,10 @@ pub(super) fn build_wit_host_adapters_for_cli_call(
         git = Some(wit_toy_adapter(authorized.authorized, "obs-cli-wit-git"));
     }
 
-    if imports_need_wasi_p2(request.imports) && imports_need_wasi_filesystem(request.imports) {
-        let project_root = request
-            .project_root
-            .ok_or_else(|| CliToyAuthorizationError {
-                safe_message: "WIT filesystem imports require --project-root".into(),
-                observations: observations.clone(),
-            })?;
+    if imports_need_wasi_p2(request.imports)
+        && imports_need_wasi_filesystem(request.imports)
+        && let Some(project_root) = request.project_root
+    {
         let authorized = authorize_cli_toy(CliToyAuthorizationRequest {
             child: request.child,
             authorized_child: request.authorized_child,
@@ -874,9 +893,39 @@ pub(super) fn build_wit_host_adapters_for_cli_call(
             logging,
             measure,
             git,
+            keyvalue: None,
+            messaging: None,
             wasi,
         },
         observations,
+    })
+}
+
+fn current_child_toy_grant(
+    grants: &[ToyGrant],
+    child: &mct_daemon::MctLoadedChild,
+    authorized_child: &AuthorizedChildInvocation,
+    candidates: &[&str],
+    action: &str,
+) -> Option<(ToyId, Option<String>)> {
+    candidates.iter().find_map(|candidate| {
+        grants
+            .iter()
+            .find(|grant| {
+                grant.toy_id.as_str() == *candidate
+                    && grant.subject.child_name == child.name
+                    && grant.subject.artifact_id == child.artifact_id
+                    && grant.subject.artifact_version == child.version
+                    && grant.subject.assignment_id.as_ref()
+                        == Some(authorized_child.assignment_id())
+                    && grant.grant_state == ToyGrantState::Active
+                    && grant
+                        .scope
+                        .allowed_actions
+                        .iter()
+                        .any(|allowed| allowed == action)
+            })
+            .map(|grant| (grant.toy_id.clone(), grant.scope.resource_id.clone()))
     })
 }
 
