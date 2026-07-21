@@ -122,7 +122,7 @@ Dependency-ordered; each item assumes the ones before it.
 - [ ] Live node identity rotation — requires endpoint rebind plus peer re-admission design. Track 1 Slice 4 intentionally makes identity creation/rotation offline-only and refuses mutation while a resident endpoint is bound.
 - [ ] Consolidate the concurrent and single-connection Iroh call-serving branches behind one reviewed lifecycle routine without weakening the mandatory observation sink or malformed fail-closed ordering; Slice 3 intentionally made both public paths correct before attempting that behavior-owning refactor.
 - [ ] Property-based tests for ALPN intersection and payload validation.
-- [ ] Make the exact supported `folder-watch-actor@0.1.0` and `watch-null-sink@0.1.0` artifacts available to MCT CI so their declared WIT exports can be invoked alongside the existing real `slate-manager` compatibility test; generated lookalikes prove loader shape but not external package compatibility.
+- [ ] Make the exact supported `folder-watch-actor@0.1.0` and `watch-null-sink@0.1.0` artifacts available to MCT CI so their declared WIT exports can be invoked alongside the real `slate-manager@0.2.0` acquisition-to-execution fixture. Daily-Driver Slice 3 now proves Slate from immutable acquisition through supervised execution, revocation, restart denial, and uninstall preservation; the other two real fixtures remain required before the full three-fixture `patinaMother` replacement test can close.
 - [ ] Per-connection hello state (subsumed by item 1).
 - [x] Child SDK / packaging tooling in-repo (children currently built in
       the integrated Patina repo). Completed 2026-07-04 in the integrated

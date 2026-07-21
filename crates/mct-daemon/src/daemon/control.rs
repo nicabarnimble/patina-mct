@@ -441,6 +441,10 @@ pub(super) struct ChildApproveRequest {
     pub(super) expected_children_dir: PathBuf,
     pub(super) child_name: String,
     pub(super) strict_integrity: bool,
+    #[serde(default)]
+    pub(super) expected_state_path: Option<PathBuf>,
+    #[serde(default)]
+    pub(super) expected_artifact_id: Option<String>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -456,6 +460,8 @@ struct PreparedChildMutation {
     child_name: String,
     config: mct_daemon::MctDaemonConfig,
     approving: bool,
+    approval_artifact_id: Option<ComponentArtifactId>,
+    approval_acquisition_ids: Vec<ArtifactAcquisitionId>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -465,6 +471,8 @@ pub(super) struct ChildMutationSuccess {
     pub(super) assignment_state: ChildAssignmentState,
     pub(super) approval_count: usize,
     pub(super) assignment_count: usize,
+    pub(super) approval_artifact_id: Option<ComponentArtifactId>,
+    pub(super) approval_acquisition_ids: Vec<ArtifactAcquisitionId>,
 }
 
 struct MutationObservationFact {
@@ -515,6 +523,7 @@ fn mutation_observation(fact: MutationObservationFact) -> MctObservation {
 fn prepare_child_mutation(
     configured_path: &Path,
     configured_children_dir: &Path,
+    configured_state_path: Option<&Path>,
     path: &str,
     body: &[u8],
 ) -> Result<PreparedChildMutation> {
@@ -528,29 +537,44 @@ fn prepare_child_mutation(
                 serde_json::from_slice(body).context("decode child approval request")?;
             require_expected_config_path(&request.expected_config_path, configured_path)?;
             require_expected_config_path(&request.expected_children_dir, configured_children_dir)?;
+            if let (Some(expected), Some(configured)) = (
+                request.expected_state_path.as_deref(),
+                configured_state_path,
+            ) {
+                require_expected_config_path(expected, configured)?;
+            }
             if request.child_name.trim().is_empty() {
                 bail!("child name must not be empty");
             }
-            let report = load_children_from_dir(MctChildLoadOptions {
-                children_dir: configured_children_dir.to_path_buf(),
-                integrity_mode: if request.strict_integrity {
-                    MctChildIntegrityMode::RequireSidecars
-                } else {
-                    MctChildIntegrityMode::AuditOnly
-                },
-            });
-            let child = report
-                .children
-                .iter()
-                .find(|child| child.name == request.child_name)
-                .ok_or_else(|| anyhow::anyhow!("loaded child not found"))?;
+            let expected_artifact_id = request
+                .expected_artifact_id
+                .as_deref()
+                .context("child approval requires one exact artifact id")?;
+            let state_path = configured_state_path
+                .or(request.expected_state_path.as_deref())
+                .context("exact artifact approval requires runtime state")?;
+            let state = MctRuntimeStateStore::open(state_path)?;
+            let artifact_id = ComponentArtifactId::new(expected_artifact_id)?;
+            let (_, acquisitions, child) =
+                super::cli_runtime::load_exact_catalog_approval_evidence(
+                    &state,
+                    configured_children_dir,
+                    &artifact_id,
+                    &request.child_name,
+                )?;
+            let approval_acquisition_ids = acquisitions
+                .into_iter()
+                .map(|acquisition| acquisition.acquisition_id)
+                .collect();
             let config = store
-                .prepare_approved_and_assigned_child(child, MctOperatorChildScope::default())?;
+                .prepare_approved_and_assigned_child(&child, MctOperatorChildScope::default())?;
             Ok(PreparedChildMutation {
                 config_path: configured_path.to_path_buf(),
                 child_name: request.child_name,
                 config,
                 approving: true,
+                approval_artifact_id: Some(artifact_id),
+                approval_acquisition_ids,
             })
         }
         "/children/revoke" => {
@@ -563,6 +587,8 @@ fn prepare_child_mutation(
                 child_name: request.child_name,
                 config,
                 approving: false,
+                approval_artifact_id: None,
+                approval_acquisition_ids: Vec::new(),
             })
         }
         _ => bail!("unknown child authority mutation route"),
@@ -646,6 +672,8 @@ impl PreparedChildMutation {
             assignment_state: self.config.child_assignments[&self.child_name].assignment_state,
             approval_count: self.config.child_approvals.len(),
             assignment_count: self.config.child_assignments.len(),
+            approval_artifact_id: self.approval_artifact_id.clone(),
+            approval_acquisition_ids: self.approval_acquisition_ids.clone(),
         })
     }
 }
@@ -653,19 +681,21 @@ impl PreparedChildMutation {
 async fn execute_resident_child_mutation(
     configured_path: &Path,
     children_dir: &Path,
+    state_path: Option<&Path>,
     ledger: &ResidentLedgerWriter,
     path: &str,
     body: &[u8],
 ) -> MctControlPlaneResponse {
-    let prepared = match prepare_child_mutation(configured_path, children_dir, path, body) {
-        Ok(prepared) => prepared,
-        Err(_) => {
-            return peer_mutation_response(
-                400,
-                serde_json::json!({"error": "child authority mutation rejected"}),
-            );
-        }
-    };
+    let prepared =
+        match prepare_child_mutation(configured_path, children_dir, state_path, path, body) {
+            Ok(prepared) => prepared,
+            Err(_) => {
+                return peer_mutation_response(
+                    400,
+                    serde_json::json!({"error": "child authority mutation rejected"}),
+                );
+            }
+        };
     if ledger
         .append(prepared.decision_observations())
         .await
@@ -853,6 +883,362 @@ async fn execute_resident_blob_mutation(
         );
     }
     peer_mutation_response(201, serde_json::json!({"payload": handle}))
+}
+
+fn artifact_stage_observation(
+    request: &MctArtifactStageRequest,
+    observation_id: &ObservationId,
+    kind: ObservationKind,
+    plane: SourcePlane,
+    outcome: ObservationOutcome,
+    message: impl Into<String>,
+) -> MctObservation {
+    let mut observation = mutation_observation(MutationObservationFact {
+        namespace: "artifact-stage",
+        kind,
+        subject_id: request.claimed_child_name.clone(),
+        resource_id: format!(
+            "file://{};version={}",
+            request.source_root.display(),
+            request.claimed_artifact_version
+        ),
+        policy_revision: Some(1),
+        grants_revision: None,
+        outcome,
+        source_plane: plane,
+        safe_message: message.into(),
+    });
+    observation.observation_id = observation_id.clone();
+    observation
+}
+
+fn artifact_stage_decision_observations(
+    request: &MctArtifactStageRequest,
+    context: &MctArtifactAttemptContext,
+) -> Vec<MctObservation> {
+    vec![
+        artifact_stage_observation(
+            request,
+            &context.authority_observation_id,
+            ObservationKind::OperatorActionRecorded,
+            SourcePlane::Operator,
+            ObservationOutcome::Allowed,
+            "operator-pointed artifact acquisition admitted",
+        ),
+        artifact_stage_observation(
+            request,
+            &context.adapter_start_observation_id,
+            ObservationKind::AdapterEffectStarted,
+            SourcePlane::Adapter,
+            ObservationOutcome::Started,
+            "filesystem artifact acquisition started",
+        ),
+    ]
+}
+
+fn artifact_stage_terminal_observations(
+    request: &MctArtifactStageRequest,
+    context: &MctArtifactAttemptContext,
+    report: Option<&MctArtifactAcquisitionReport>,
+) -> Vec<MctObservation> {
+    match report {
+        Some(report) => vec![
+            artifact_stage_observation(
+                request,
+                &context.acquisition_observation_id,
+                ObservationKind::AdapterEffectCompleted,
+                SourcePlane::Adapter,
+                ObservationOutcome::Completed,
+                format!(
+                    "filesystem artifact acquisition completed id={} size={} digest={}",
+                    report.acquisition_id,
+                    report.observed_size_bytes.unwrap_or_default(),
+                    report.observed_digest.as_deref().unwrap_or("unknown")
+                ),
+            ),
+            artifact_stage_observation(
+                request,
+                &context.verification_observation_id,
+                ObservationKind::ArtifactVerified,
+                SourcePlane::Kernel,
+                ObservationOutcome::Allowed,
+                format!(
+                    "artifact verified id={}",
+                    report.artifact_id.as_deref().unwrap_or("unknown")
+                ),
+            ),
+        ],
+        None => vec![
+            artifact_stage_observation(
+                request,
+                &context.acquisition_observation_id,
+                ObservationKind::AdapterEffectFailed,
+                SourcePlane::Adapter,
+                ObservationOutcome::Failed,
+                "filesystem artifact acquisition failed",
+            ),
+            artifact_stage_observation(
+                request,
+                &context.verification_observation_id,
+                ObservationKind::ArtifactRejected,
+                SourcePlane::Kernel,
+                ObservationOutcome::Denied,
+                "artifact acquisition rejected",
+            ),
+        ],
+    }
+}
+
+pub(super) fn execute_offline_artifact_stage(
+    ledger_path: &Path,
+    request: &MctArtifactStageRequest,
+) -> Result<MctArtifactAcquisitionReport> {
+    let mut ledger = JsonlObservationLedger::open(ledger_path, "ledger-local", "local-mct")
+        .with_context(|| {
+            format!(
+                "acquire exclusive observation ledger writer lock at {}",
+                ledger_path.display()
+            )
+        })?;
+    let context = new_artifact_attempt_context()?;
+    ledger.append_batch_before_effect(
+        artifact_stage_decision_observations(request, &context),
+        mct_daemon::current_timestamp_string(),
+    )?;
+    match stage_artifact_with_context_and_observer(request, &context, |report| {
+        ledger
+            .append_batch_before_effect(
+                artifact_stage_terminal_observations(request, &context, Some(report)),
+                mct_daemon::current_timestamp_string(),
+            )
+            .map(|_| ())
+            .context("artifact terminal observation was not durable")
+    }) {
+        Ok(report) => Ok(report),
+        Err(error) => {
+            if let Err(observation_error) = ledger.append_batch_before_effect(
+                artifact_stage_terminal_observations(request, &context, None),
+                mct_daemon::current_timestamp_string(),
+            ) {
+                if let Ok(state) = MctRuntimeStateStore::open(&request.state_path) {
+                    let _ = state.rollback_artifact_publication(&context.acquisition_id);
+                }
+                return Err(observation_error)
+                    .context("artifact failure observation was not durable");
+            }
+            Err(error)
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ArtifactSourceMutationRequest {
+    pub(super) expected_state_path: PathBuf,
+    pub(super) source: ArtifactSourceAuthority,
+    pub(super) record_digest: String,
+}
+
+async fn execute_resident_artifact_source_mutation(
+    configured_state_path: &Path,
+    ledger: &ResidentLedgerWriter,
+    path: &str,
+    body: &[u8],
+) -> MctControlPlaneResponse {
+    let request: ArtifactSourceMutationRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(_) => {
+            return peer_mutation_response(
+                400,
+                serde_json::json!({"error": "artifact source mutation rejected"}),
+            );
+        }
+    };
+    if require_expected_config_path(&request.expected_state_path, configured_state_path).is_err() {
+        return peer_mutation_response(
+            409,
+            serde_json::json!({"error": "artifact source state path mismatch"}),
+        );
+    }
+    let expected_state = match path {
+        "/artifacts/sources/create" => ArtifactSourceAuthorityState::Active,
+        "/artifacts/sources/revoke" => ArtifactSourceAuthorityState::Revoked,
+        _ => {
+            return peer_mutation_response(
+                404,
+                serde_json::json!({"error": "unknown artifact source mutation"}),
+            );
+        }
+    };
+    if request.source.authority_state != expected_state {
+        return peer_mutation_response(
+            400,
+            serde_json::json!({"error": "artifact source state does not match mutation"}),
+        );
+    }
+    if MctRuntimeStateStore::open(configured_state_path)
+        .and_then(|state| {
+            state.validate_source_authority_projection(&request.source, &request.record_digest)
+        })
+        .is_err()
+    {
+        return peer_mutation_response(
+            400,
+            serde_json::json!({"error": "artifact source authority is invalid or conflicts"}),
+        );
+    }
+    let observation = MctObservation {
+        observation_id: request.source.authority_observation_id.clone(),
+        observed_at: current_timestamp(),
+        kind: ObservationKind::OperatorActionRecorded,
+        source_plane: SourcePlane::Operator,
+        trace: ObservationTraceRef {
+            trace_id: TraceId::new(format!(
+                "trace:artifact-source:{}",
+                request.source.source_authority_id
+            ))
+            .expect("source id makes non-empty trace"),
+            span_id: None,
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: None,
+        decision_id: None,
+        subject_id: Some(request.source.source_authority_id.to_string()),
+        resource_id: Some(request.source.source_ref.clone()),
+        policy_revision: Some(request.source.policy_revision),
+        grants_revision: None,
+        outcome: if expected_state == ArtifactSourceAuthorityState::Active {
+            ObservationOutcome::Allowed
+        } else {
+            ObservationOutcome::Denied
+        },
+        visibility: ObservationVisibility::NodeOperator,
+        safe_message: format!(
+            "artifact source authority {} digest={}",
+            if expected_state == ArtifactSourceAuthorityState::Active {
+                "created"
+            } else {
+                "revoked"
+            },
+            request.record_digest
+        ),
+        detail_ref: None,
+    };
+    if ledger.append(vec![observation]).await.is_err() {
+        return peer_mutation_response(
+            500,
+            serde_json::json!({"error": "artifact source authority was not durable"}),
+        );
+    }
+    match MctRuntimeStateStore::open(configured_state_path)
+        .and_then(|state| state.upsert_source_authority(&request.source, &request.record_digest))
+    {
+        Ok(()) => peer_mutation_response(
+            200,
+            serde_json::to_value(request.source).expect("source authority serializes"),
+        ),
+        Err(_) => peer_mutation_response(
+            500,
+            serde_json::json!({"error": "artifact source projection failed"}),
+        ),
+    }
+}
+
+async fn execute_resident_artifact_stage(
+    configured_children_dir: &Path,
+    configured_state_path: &Path,
+    ledger: &ResidentLedgerWriter,
+    body: &[u8],
+) -> MctControlPlaneResponse {
+    let request: MctArtifactStageRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(_) => {
+            return peer_mutation_response(
+                400,
+                serde_json::json!({"error": "artifact stage request rejected"}),
+            );
+        }
+    };
+    if require_expected_config_path(&request.children_dir, configured_children_dir).is_err()
+        || require_expected_config_path(&request.state_path, configured_state_path).is_err()
+    {
+        return peer_mutation_response(
+            409,
+            serde_json::json!({"error": "artifact stage path mismatch"}),
+        );
+    }
+    let context = match new_artifact_attempt_context() {
+        Ok(context) => context,
+        Err(_) => {
+            return peer_mutation_response(
+                500,
+                serde_json::json!({"error": "artifact attempt identity creation failed"}),
+            );
+        }
+    };
+    if ledger
+        .append(artifact_stage_decision_observations(&request, &context))
+        .await
+        .is_err()
+    {
+        return peer_mutation_response(
+            500,
+            serde_json::json!({"error": "artifact acquisition authority was not durable"}),
+        );
+    }
+    let stage_request = request.clone();
+    let stage_context = context.clone();
+    let stage_ledger = ledger.clone();
+    let runtime = tokio::runtime::Handle::current();
+    let stage_result = tokio::task::spawn_blocking(move || {
+        stage_artifact_with_context_and_observer(&stage_request, &stage_context, |report| {
+            runtime.block_on(stage_ledger.append(artifact_stage_terminal_observations(
+                &stage_request,
+                &stage_context,
+                Some(report),
+            )))
+        })
+    })
+    .await;
+    match stage_result {
+        Ok(Ok(report)) => peer_mutation_response(
+            200,
+            serde_json::to_value(report).expect("artifact report serializes"),
+        ),
+        Ok(Err(error))
+            if format!("{error:#}")
+                .contains("terminal facts were not durable before publication") =>
+        {
+            peer_mutation_response(
+                500,
+                serde_json::json!({"error": "artifact acquisition outcome was not durable"}),
+            )
+        }
+        Ok(Err(_)) => {
+            let durable = ledger
+                .append(artifact_stage_terminal_observations(
+                    &request, &context, None,
+                ))
+                .await
+                .is_ok();
+            if !durable && let Ok(state) = MctRuntimeStateStore::open(&request.state_path) {
+                let _ = state.rollback_artifact_publication(&context.acquisition_id);
+            }
+            peer_mutation_response(
+                400,
+                serde_json::json!({"error": if durable {
+                    "artifact acquisition rejected"
+                } else {
+                    "artifact acquisition rejected and failure observation was not durable"
+                }}),
+            )
+        }
+        Err(_) => peer_mutation_response(
+            500,
+            serde_json::json!({"error": "artifact acquisition worker failed"}),
+        ),
+    }
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -1107,6 +1493,12 @@ async fn execute_resident_registry_mutation(
     path: &str,
     body: &[u8],
 ) -> MctControlPlaneResponse {
+    if matches!(path, "/registry/install" | "/registry/sync") {
+        return peer_mutation_response(
+            410,
+            serde_json::json!({"error": "legacy registry mutation closed; use artifacts acquisition"}),
+        );
+    }
     let prepared = match prepare_registry_mutation(children_dir, state_path, path, body) {
         Ok(prepared) => prepared,
         Err(_) => {
@@ -1150,6 +1542,7 @@ async fn execute_resident_registry_mutation(
     }
 }
 
+#[cfg(test)]
 pub(super) fn execute_offline_registry_mutation(
     children_dir: &Path,
     state_path: &Path,
@@ -1512,6 +1905,33 @@ fn resident_mutation_handler(
                         serde_json::json!({"error": "registry mutation unavailable"}),
                     ),
                 }
+            } else if path.starts_with("/artifacts/sources/") {
+                match state_path {
+                    Some(state_path) => {
+                        execute_resident_artifact_source_mutation(
+                            &state_path,
+                            &ledger,
+                            &path,
+                            &body,
+                        )
+                        .await
+                    }
+                    None => peer_mutation_response(
+                        404,
+                        serde_json::json!({"error": "artifact source mutation unavailable"}),
+                    ),
+                }
+            } else if path == "/artifacts/stage" {
+                match state_path {
+                    Some(state_path) => {
+                        execute_resident_artifact_stage(&children_dir, &state_path, &ledger, &body)
+                            .await
+                    }
+                    None => peer_mutation_response(
+                        404,
+                        serde_json::json!({"error": "artifact staging unavailable"}),
+                    ),
+                }
             } else if path.starts_with("/toys/") || path == "/pando/record" {
                 match state_path {
                     Some(state_path) => {
@@ -1534,6 +1954,7 @@ fn resident_mutation_handler(
                 execute_resident_child_mutation(
                     &configured_path,
                     &children_dir,
+                    state_path.as_deref(),
                     &ledger,
                     &path,
                     &body,
@@ -1572,6 +1993,7 @@ pub(super) fn resident_observed_mutation_handler(
 pub(super) fn execute_offline_child_mutation(
     configured_path: &Path,
     children_dir: &Path,
+    state_path: &Path,
     ledger_path: &Path,
     path: &str,
     body: &[u8],
@@ -1583,7 +2005,8 @@ pub(super) fn execute_offline_child_mutation(
                 ledger_path.display()
             )
         })?;
-    let prepared = prepare_child_mutation(configured_path, children_dir, path, body)?;
+    let prepared =
+        prepare_child_mutation(configured_path, children_dir, Some(state_path), path, body)?;
     ledger.append_batch_before_effect(
         prepared.decision_observations(),
         mct_daemon::current_timestamp_string(),
@@ -2413,87 +2836,45 @@ listens = []
     }
 
     #[tokio::test]
-    async fn live_child_authority_mutations_are_durable_before_config_effect() {
+    async fn child_name_only_approval_is_rejected_before_authority_or_config_effect() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.json");
         let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
         write_resident_process_child(&children_dir);
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
         let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
-        let handler = resident_authority_mutation_handler(
+        let handler = resident_observed_mutation_handler(
             config_path.clone(),
-            children_dir.clone(),
+            children_dir,
+            state_path,
             ledger.clone(),
         );
-
-        for (path, body) in [
-            (
-                "/children/approve",
-                serde_json::json!({
-                    "expected_config_path": config_path,
-                    "expected_children_dir": children_dir,
-                    "child_name": "resident-echo",
-                    "strict_integrity": true
-                }),
-            ),
-            (
-                "/children/revoke",
-                serde_json::json!({
-                    "expected_config_path": config_path,
-                    "child_name": "resident-echo"
-                }),
-            ),
-        ] {
-            let (status, response) = post_mutation(
-                Arc::clone(&listener),
-                handler.clone(),
-                &socket_path,
-                path,
-                body,
-            )
-            .await;
-            assert_eq!(status, 200, "{response}");
-            let entries =
-                JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
-                    .unwrap()
-                    .entries()
-                    .unwrap();
-            assert!(
-                entries
-                    .iter()
-                    .all(|entry| { entry.durability_class == DurabilityClass::BeforeEffect })
-            );
-        }
+        let (status, _) = post_mutation(
+            listener,
+            handler.clone(),
+            &socket_path,
+            "/children/approve",
+            serde_json::json!({
+                "expected_config_path": config_path,
+                "expected_children_dir": dir.path().join("children"),
+                "child_name": "resident-echo",
+                "strict_integrity": true
+            }),
+        )
+        .await;
+        assert_eq!(status, 400);
+        assert!(!config_path.exists());
         drop(handler);
         ledger.close().await;
-
-        let config = MctDaemonConfigStore::new(&config_path).load().unwrap();
-        assert_eq!(
-            config.child_approvals["resident-echo"].approval_state,
-            ChildApprovalState::Revoked
-        );
-        assert_eq!(
-            config.child_assignments["resident-echo"].assignment_state,
-            ChildAssignmentState::Revoked
-        );
-        let kinds =
+        assert!(
             JsonlObservationLedger::open_read_only(ledger_path, "ledger-local", "local-mct")
                 .unwrap()
                 .entries()
                 .unwrap()
-                .into_iter()
-                .map(|entry| entry.observation.kind)
-                .collect::<Vec<_>>();
-        assert_eq!(
-            kinds,
-            vec![
-                ObservationKind::ChildApproved,
-                ObservationKind::ChildAssigned,
-                ObservationKind::ChildRevoked,
-                ObservationKind::ChildAssignmentRevoked,
-            ]
+                .is_empty()
         );
     }
 
@@ -2590,7 +2971,115 @@ listens = []
     }
 
     #[tokio::test]
-    async fn child_append_failure_prevents_config_effect() {
+    async fn artifact_acquisition_append_failure_suppresses_filesystem_and_catalog_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("child.toml"), "source-must-not-be-read").unwrap();
+        std::fs::write(source.join("child.wasm"), b"source-must-not-be-read").unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let socket_path = dir.path().join("control.sock");
+        let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
+        let handler = resident_observed_mutation_handler(
+            config_path,
+            children_dir.clone(),
+            state_path.clone(),
+            ResidentLedgerWriter::failed_for_test(),
+        );
+        let request = MctArtifactStageRequest {
+            source_root: source,
+            manifest_path: PathBuf::from("child.toml"),
+            component_path: PathBuf::from("child.wasm"),
+            claimed_child_name: "fixture".into(),
+            claimed_artifact_version: "1.0.0".into(),
+            expected_digest: None,
+            standing_source_authority_id: None,
+            claimed_publisher: None,
+            require_source_sidecars: false,
+            children_dir: children_dir.clone(),
+            state_path: state_path.clone(),
+        };
+        let (status, _) = post_mutation(
+            listener,
+            handler,
+            &socket_path,
+            "/artifacts/stage",
+            serde_json::to_value(request).unwrap(),
+        )
+        .await;
+        assert_eq!(status, 500);
+        assert!(!children_dir.exists());
+        assert!(!state_path.exists());
+    }
+
+    #[tokio::test]
+    async fn artifact_writer_loss_after_read_leaves_no_artifact_authority_or_catalog_package() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/slate-manager-0.2.0");
+        std::fs::copy(
+            fixture.join("slate-manager.toml"),
+            source.join("slate-manager.toml"),
+        )
+        .unwrap();
+        std::fs::copy(
+            fixture.join("slate-manager.wasm"),
+            source.join("slate-manager.wasm"),
+        )
+        .unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let socket_path = dir.path().join("control.sock");
+        let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
+        let writer = ResidentLedgerWriter::fail_after_batches_for_test(ledger_path, 1);
+        let handler = resident_observed_mutation_handler(
+            config_path,
+            children_dir.clone(),
+            state_path.clone(),
+            writer,
+        );
+        let request = MctArtifactStageRequest {
+            source_root: source,
+            manifest_path: PathBuf::from("slate-manager.toml"),
+            component_path: PathBuf::from("slate-manager.wasm"),
+            claimed_child_name: "slate-manager".into(),
+            claimed_artifact_version: "0.2.0".into(),
+            expected_digest: None,
+            standing_source_authority_id: None,
+            claimed_publisher: None,
+            require_source_sidecars: false,
+            children_dir: children_dir.clone(),
+            state_path: state_path.clone(),
+        };
+        let (status, _) = post_mutation(
+            listener,
+            handler,
+            &socket_path,
+            "/artifacts/stage",
+            serde_json::to_value(request).unwrap(),
+        )
+        .await;
+        assert_eq!(status, 500);
+        let state = MctRuntimeStateStore::open(state_path).unwrap();
+        assert_eq!(state.summary().unwrap().artifacts, 0);
+        assert!(state.artifact_acquisitions().unwrap().is_empty());
+        assert!(
+            !children_dir.join("artifacts/sha256").exists()
+                || std::fs::read_dir(children_dir.join("artifacts/sha256"))
+                    .unwrap()
+                    .next()
+                    .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn child_name_only_approval_cannot_reach_append_or_config_effect() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.json");
         let children_dir = dir.path().join("children");
@@ -2617,7 +3106,7 @@ listens = []
             }),
         )
         .await;
-        assert_eq!(status, 500);
+        assert_eq!(status, 400);
         assert!(!config_path.exists());
     }
 
@@ -2789,158 +3278,46 @@ listens = []
     }
 
     #[tokio::test]
-    async fn live_registry_install_and_sync_are_observed_before_storage_effects() {
+    async fn live_registry_install_and_sync_are_closed_without_storage_effects() {
         let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("config.json");
-        let source_dir = dir.path().join("package");
         let children_dir = dir.path().join("children");
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
-        write_resident_process_child(&source_dir);
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
         let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
         let handler = resident_observed_mutation_handler(
-            config_path,
+            dir.path().join("config.json"),
             children_dir.clone(),
             state_path.clone(),
             ledger.clone(),
         );
-
-        let (install_status, install_response) = post_mutation(
-            Arc::clone(&listener),
-            handler.clone(),
-            &socket_path,
-            "/registry/install",
-            serde_json::json!({
-                "expected_children_dir": children_dir,
-                "source_dir": source_dir.join("resident-echo"),
-                "replace": false
-            }),
-        )
-        .await;
-        assert_eq!(install_status, 200, "{install_response}");
-        assert!(children_dir.join("resident-echo").exists());
-
-        let (sync_status, sync_response) = post_mutation(
-            Arc::clone(&listener),
-            handler.clone(),
-            &socket_path,
-            "/registry/sync",
-            serde_json::json!({
-                "expected_children_dir": children_dir,
-                "expected_state_path": state_path,
-                "source_id": "resident-registry",
-                "strict_integrity": false
-            }),
-        )
-        .await;
-        assert_eq!(sync_status, 200, "{sync_response}");
-        assert_eq!(
-            MctRuntimeStateStore::open(&state_path)
-                .unwrap()
-                .summary()
-                .unwrap()
-                .artifacts,
-            1,
-            "{sync_response}"
-        );
+        for path in ["/registry/install", "/registry/sync"] {
+            let (status, response) = post_mutation(
+                Arc::clone(&listener),
+                handler.clone(),
+                &socket_path,
+                path,
+                serde_json::json!({}),
+            )
+            .await;
+            assert_eq!(status, 410, "{response}");
+        }
+        assert!(!children_dir.exists());
+        assert!(!state_path.exists());
         drop(handler);
         ledger.close().await;
-
-        let entries =
+        assert!(
             JsonlObservationLedger::open_read_only(ledger_path, "ledger-local", "local-mct")
                 .unwrap()
                 .entries()
-                .unwrap();
-        assert!(
-            entries
-                .iter()
-                .all(|entry| { entry.durability_class == DurabilityClass::BeforeEffect })
-        );
-        assert!(
-            entries
-                .iter()
-                .any(|entry| { entry.observation.kind == ObservationKind::ArtifactVerified })
-        );
-        assert!(
-            entries
-                .iter()
-                .any(|entry| { entry.observation.kind == ObservationKind::StorageAppendSucceeded })
-        );
-        assert!(
-            entries
-                .iter()
-                .any(|entry| { entry.observation.kind == ObservationKind::OperatorActionRecorded })
+                .unwrap()
+                .is_empty()
         );
     }
 
-    /// Covers the artifact rejection edge of
-    /// `MctObservationSubsystemCoverage.ChildLifecycleCoverage`.
     #[tokio::test]
-    async fn live_registry_sync_observes_artifact_rejection_before_state_effect() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("config.json");
-        let children_dir = dir.path().join("children");
-        let state_path = dir.path().join("state.sqlite");
-        let ledger_path = dir.path().join("observations.jsonl");
-        let socket_path = dir.path().join("control.sock");
-        write_resident_process_child(&children_dir);
-        std::fs::remove_file(
-            children_dir
-                .join("resident-echo")
-                .join("resident-echo.wasm.sha256"),
-        )
-        .unwrap();
-        let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
-        let handler = resident_observed_mutation_handler(
-            config_path,
-            children_dir.clone(),
-            state_path.clone(),
-            ledger.clone(),
-        );
-
-        let (status, response) = post_mutation(
-            listener,
-            handler.clone(),
-            &socket_path,
-            "/registry/sync",
-            serde_json::json!({
-                "expected_children_dir": children_dir,
-                "expected_state_path": state_path,
-                "source_id": "resident-registry-rejected",
-                "strict_integrity": true
-            }),
-        )
-        .await;
-
-        assert_eq!(status, 200, "{response}");
-        assert_eq!(
-            MctRuntimeStateStore::open(&state_path)
-                .unwrap()
-                .summary()
-                .unwrap()
-                .artifacts,
-            0
-        );
-        drop(handler);
-        ledger.close().await;
-        let entries =
-            JsonlObservationLedger::open_read_only(ledger_path, "ledger-local", "local-mct")
-                .unwrap()
-                .entries()
-                .unwrap();
-        let rejection = entries
-            .iter()
-            .find(|entry| entry.observation.kind == ObservationKind::ArtifactRejected)
-            .unwrap();
-        assert_eq!(rejection.observation.outcome, ObservationOutcome::Denied);
-        assert_eq!(rejection.durability_class, DurabilityClass::BeforeEffect);
-    }
-
-    #[tokio::test]
-    async fn registry_append_failure_prevents_install_and_offline_lock_contention_refuses() {
+    async fn registry_is_closed_and_offline_lock_contention_refuses_legacy_helper() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.json");
         let source_parent = dir.path().join("package");
@@ -2971,7 +3348,7 @@ listens = []
             serde_json::to_value(&request).unwrap(),
         )
         .await;
-        assert_eq!(status, 500);
+        assert_eq!(status, 410);
         assert!(!children_dir.join("resident-echo").exists());
 
         let _lock =
@@ -3164,30 +3541,35 @@ listens = []
         let config_path = dir.path().join("config.json");
         let children_dir = dir.path().join("children");
         let identity_path = dir.path().join("node.key");
+        let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         write_resident_process_child(&children_dir);
 
-        execute_offline_child_mutation(
-            &config_path,
-            &children_dir,
-            &ledger_path,
-            "/children/approve",
-            &serde_json::to_vec(&serde_json::json!({
-                "expected_config_path": config_path,
-                "expected_children_dir": children_dir,
-                "child_name": "resident-echo",
-                "strict_integrity": true
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+        assert!(
+            execute_offline_child_mutation(
+                &config_path,
+                &children_dir,
+                &state_path,
+                &ledger_path,
+                "/children/approve",
+                &serde_json::to_vec(&serde_json::json!({
+                    "expected_config_path": config_path,
+                    "expected_children_dir": children_dir,
+                    "child_name": "resident-echo",
+                    "strict_integrity": true
+                }))
+                .unwrap(),
+            )
+            .is_err()
+        );
+        assert!(!config_path.exists());
         execute_offline_identity_mutation(&config_path, &identity_path, &ledger_path).unwrap();
         assert!(identity_path.exists());
         assert!(config_path.exists());
 
         let secret = std::fs::read_to_string(&identity_path).unwrap();
         let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
-        assert!(ledger_text.contains("child_approved"));
+        assert!(!ledger_text.contains("child_approved"));
         assert!(ledger_text.contains("operator_action_recorded"));
         assert!(!ledger_text.contains(secret.trim()));
 

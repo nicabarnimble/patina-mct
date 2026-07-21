@@ -76,6 +76,16 @@ pub enum VerificationStatus {
     Rejected,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// Whether an artifact has post-law acquisition evidence.
+pub enum ArtifactProvenanceStatus {
+    /// At least one successful verified acquisition references this artifact.
+    AcquisitionBacked,
+    /// The artifact predates acquisition law and has no fabricated equivalent evidence.
+    HistoricalUnknown,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Immutable artifact identity and verified WIT export facts.
 ///
@@ -101,6 +111,10 @@ pub struct ComponentArtifact {
     pub lifecycle_exports: LifecycleExports,
     /// Verification result used by authority evaluation.
     pub verification_status: VerificationStatus,
+    /// Whether this artifact is backed by acquisition evidence or explicitly historical.
+    pub provenance_status: ArtifactProvenanceStatus,
+    /// Successful acquisition facts referenced by this artifact.
+    pub acquisition_ids: Vec<crate::ArtifactAcquisitionId>,
     /// Observation that recorded creation of this artifact fact.
     pub created_by_observation_id: ObservationId,
 }
@@ -973,6 +987,8 @@ mod tests {
             ingress_mode: ChildIngressMode::WitOnly,
             lifecycle_exports: LifecycleExports::AbsentAllowed,
             verification_status: VerificationStatus::Verified,
+            provenance_status: ArtifactProvenanceStatus::HistoricalUnknown,
+            acquisition_ids: Vec::new(),
             created_by_observation_id: ObservationId::new("obs-artifact")
                 .expect("string ID literal/generated value must be non-empty"),
         }

@@ -9,7 +9,8 @@ Goal: build the next operational layer after the v0 `patinaMother` replacement b
 3. [ ] During/after Multi-Mother, design storage/network `mctToy` contracts from the `patinaToy` capability audit.
 4. [ ] JVM SDK targeting the chosen resident ingress: synchronous JSON `POST /calls` over the owner-authenticated UDS control socket. The SDK must use UUID idempotency keys by default because `(node, UID, Vision)` scope is shared by same-user applications.
 5. [x] macOS user-launchd supervisor install/start/stop/restart/uninstall completed 2026-07-15 under `layer/surface/build/feat/supervisor-lifecycle/SPEC.md`. The daily-operation pain clock that started 2026-07-14 is closed. Linux systemd and non-GUI/headless launchd domains remain separately gated future adapters.
-6. [ ] Resume the paused `mct-release-hardening` and `mct-interface-launcher-control` epics as the final gate. Replacement of `patinaMother` cannot be claimed while they are paused; they are deferred, not dropped.
+6. [x] Acquisition-backed immutable artifact staging completed 2026-07-16 under `layer/surface/build/feat/artifact-acquisition/SPEC.md`, including the real supervised `slate-manager@0.2.0` daily-driver proof.
+7. [ ] Resume the paused `mct-release-hardening` and `mct-interface-launcher-control` epics as the final gate. Replacement of `patinaMother` cannot be claimed while they are paused; they are deferred, not dropped.
 
 ## Completed: Multi-Mother — single-hop forwarding
 
@@ -108,6 +109,20 @@ Completed 2026-07-15 under `layer/surface/build/feat/supervisor-lifecycle/SPEC.m
 - [ ] Decide macOS headless/SSH-only LaunchDaemon or non-GUI domain semantics through a separate operator gate.
 
 Executable digest binding is intentionally strict: replacing binary bytes requires `install --replace`. Until revised, launchd may throttle-loop on the failed-closed digest mismatch; the replacement runbook documents diagnosis and remediation.
+
+## Completed: artifact acquisition — Daily-Driver Slice 3
+
+Completed 2026-07-16 under `layer/surface/build/feat/artifact-acquisition/SPEC.md`:
+
+- [x] Add explicit `artifacts stage|acquire|show|acquisitions|sources` commands and resident UDS mutations.
+- [x] Require exactly one bounded source-trust path plus a fresh one-attempt filesystem effect capability.
+- [x] Verify SHA-256 sidecars as the package floor and record independent BLAKE3 acquisition evidence.
+- [x] Publish immutable packages under `.mct/children/artifacts/sha256/<component-digest>/` only after durable acquisition/verification facts.
+- [x] Persist operator decisions, standing source records, attempts, packages, and acquisition-backed artifact provenance; migrate pre-law rows as `historical_unknown`.
+- [x] Close `registry install/sync` as ambient mutation bypasses and require exact `children approve --artifact sha256:<digest>` evidence.
+- [x] Prove real `slate-manager@0.2.0` acquisition, denial before approval/grants, ToyGrant-backed execution, revocation, restart denial, and uninstall preservation.
+- [ ] Import and prove real `folder-watch-actor@0.1.0` and `watch-null-sink@0.1.0` fixtures before claiming the full three-fixture `patinaMother` replacement test.
+- [ ] Add network acquisition only through a separately gated deny-by-default egress Toy plus independent connection/secret authority.
 
 ## JVM SDK
 

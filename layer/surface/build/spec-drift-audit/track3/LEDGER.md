@@ -1,6 +1,6 @@
 # Contract obligation ledger
 
-Status date: 2026-07-12; W2 extension 2026-07-14; Daily-Driver Slice 2 extension 2026-07-15
+Status date: 2026-07-12; W2 extension 2026-07-14; Daily-Driver Slice 2 extension 2026-07-15; artifact-acquisition extension 2026-07-16
 
 Scope: complete named-invariant coverage for `mct-product-map.allium` and `mct-peer-ontology.allium`, plus bulk attribution of tool-derived structural obligations. The 2026-07-12 priority and full-inventory evidence is retained in place; the 2026-07-14 local-application-ingress invariants and W2-A remediation obligations extend it below.
 
@@ -60,11 +60,11 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 | `LocalAcknowledgementRequiresDurableFacts` | COVERED | `mct_daemon_bin::resident::local_ingress::tests::resident_call_uds_observes_decision_before_response`; `mct_daemon_bin::resident::serving::tests::resident_call_uds_executes_approved_child_and_projects_control_state` checks durable construction before reading the terminal UDS response. |
 | `AdapterOriginNamesIngressLineage` | COVERED | `mct_daemon_bin::resident::pipeline::tests::jvm_bridge_json_call_enters_resident_route_path` asserts the translated origin; `mct_daemon_bin::resident::serving::tests::resident_call_uds_executes_approved_child_and_projects_control_state` proves the production local bridge enters that one resident path. |
 | `SharedPrincipalSharesIdempotencyScope` | COVERED | `mct_daemon_bin::resident::local_ingress::tests::resident_call_uds_idempotency_is_authenticated_caller_scoped` proves same-principal replay and same-key/different-fingerprint refusal. |
-| `CallsRemainOutsideMutationSequencer` | COVERED | `mct_daemon_bin::resident::serving::tests::resident_call_uds_executes_approved_child_and_projects_control_state` exercises call and read requests through the concurrent resident UDS dispatcher; `mct_daemon_bin::control::tests::live_child_authority_mutations_are_durable_before_config_effect` independently proves protected mutation serialization. |
+| `CallsRemainOutsideMutationSequencer` | COVERED | `mct_daemon_bin::resident::serving::tests::resident_call_uds_executes_approved_child_and_projects_control_state` exercises call and read requests through the concurrent resident UDS dispatcher; `mct_daemon_bin::supervisor_lifecycle::tests::supervised_slate_artifact_acquisition_executes_and_revokes_end_to_end` interleaves protected artifact/approval/grant mutations with concurrent call ingress. |
 | W2-A/A9 dispatch authentication and streaming call-body bound | COVERED | `mct_daemon_bin::resident::local_ingress::tests::resident_call_uds_dispatch_authenticates_and_bounds_before_body_read` sends headers only over a real `UnixStream` and proves UID refusal and oversized-frame refusal both occur before body consumption. |
 | W2-A/A11 forwarded cancellation projection | COVERED | `mct_daemon_bin::resident::forwarding::tests::two_mother_forwarding_preserves_cancelled_reply` proves a two-Mother executor cancellation remains `cancelled`, keeps no caller route, and is observed as cancelled at the origin. |
 | W2-A/A10 whole-path replay/reopen proof | COVERED | `mct_daemon_bin::resident::serving::tests::resident_call_uds_executes_approved_child_and_projects_control_state` proves same-key UDS replay, one child effect, state/ledger reopen, and replay with result bytes after resident restart. |
-| W2-A/A12 current resident child-count projection | COVERED | `mct_daemon_bin::resident::serving::tests::resident_status_reflects_live_child_mutations` proves live registry installation and child revocation immediately change loaded and approved status counts. |
+| W2-A/A12 current resident child-count projection | COVERED | `mct_daemon_bin::resident::serving::tests::resident_status_reflects_live_child_mutations` proves catalog package insertion and child revocation immediately change loaded and approved status counts. |
 
 ### Operational self-observation and macOS supervisor lifecycle
 
@@ -144,7 +144,7 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 | Invariant / obligation | Status | Evidence |
 |---|---|---|
 | `MctHelloProtocol.HelloObservationsBeforeEffects` | COVERED | `mct_daemon_bin::resident::observation::tests::resident_hello_observations_are_durable_before_responses`; `mct_iroh::tests::failed_hello_observation_prevents_response_and_remembered_admission` |
-| `MctLocalFirstObservationLedger.AuthorityFactsAreDurableBeforeEffect` | COVERED | `mct_iroh::tests::denied_call_fact_is_recorded_before_reply`; `mct_daemon_bin::control::tests::live_child_authority_mutations_are_durable_before_config_effect`; `mct_daemon_bin::control::tests::resident_append_failure_prevents_peer_config_effect` |
+| `MctLocalFirstObservationLedger.AuthorityFactsAreDurableBeforeEffect` | COVERED | `mct_iroh::tests::denied_call_fact_is_recorded_before_reply`; `mct_daemon_bin::supervisor_lifecycle::tests::supervised_slate_artifact_acquisition_executes_and_revokes_end_to_end`; `mct_daemon_bin::control::tests::artifact_acquisition_append_failure_suppresses_filesystem_and_catalog_effects`; `mct_daemon_bin::control::tests::resident_append_failure_prevents_peer_config_effect` |
 | `MctObservabilitySpine.AuthorityDecisionsAreObserved` | COVERED | `mct_kernel::observation::tests::kernel_denial_evaluations_become_observations`; `mct_daemon_bin::control::tests::live_uds_peer_mutations_are_durable_and_secret_free`; `mct_daemon_bin::control::tests::live_toy_grants_and_composition_state_are_observed_before_effects` |
 | `MctObservabilitySpine.AdapterEffectsAreObserved` | COVERED | `mct_iroh::tests::iroh_adapter_observations_cover_endpoint_and_protocol_events`; `mct_daemon::process::tests::process_harness_timeout_returns_typed_result_and_observation`; `mct_daemon::toy::tests::toy_backend_failure_is_adapter_observation_not_kernel_denial` |
 
@@ -387,7 +387,7 @@ The historical pass read 236 load-bearing `-- Decision:` statements and grouped 
 
 | Invariant | Status | Evidence / reason |
 |---|---|---|
-| `ResidentOwnsLiveMutations` | COVERED | `mct_daemon_bin::control::tests::live_child_authority_mutations_are_durable_before_config_effect` |
+| `ResidentOwnsLiveMutations` | COVERED | `mct_daemon_bin::supervisor_lifecycle::tests::supervised_slate_artifact_acquisition_executes_and_revokes_end_to_end` |
 | `OfflineMutationRequiresExclusiveLedgerOwnership` | COVERED | `mct_daemon_bin::control::tests::offline_child_and_identity_mutations_hold_the_writer_lock_and_hide_secrets` |
 | `ConnectedResidentResponseNeverFallsBack` | COVERED | `mct_daemon_bin::control::tests::live_resident_refuses_identity_rotation_without_offline_fallback` |
 | `MutationDecisionIsDurableBeforeEffect` | COVERED | `mct_daemon_bin::control::tests::administrative_append_failure_and_offline_lock_contention_prevent_state_effects` |
@@ -402,7 +402,7 @@ The historical pass read 236 load-bearing `-- Decision:` statements and grouped 
 | `AuthorityCoverage` | COVERED | `mct_kernel::observation::tests::kernel_denial_evaluations_become_observations`; `mct_iroh::tests::iroh_adapter_observations_cover_endpoint_and_protocol_events` |
 | `RoutingCoverage` | COVERED | `mct_kernel::observation::tests::candidate_observations_record_specific_elimination_class`; `mct_kernel::observation::tests::route_revalidation_observation_records_allowed_and_denied_outcomes` |
 | `ResultCoverage` | COVERED | Resolved spec-ward in `8565636` after applying the triage rule through the real resident and Iroh paths. `mct_iroh::tests::cancelled_call_preserves_wire_outcome_route_absence_and_buffered_observations` proves cancelled result and reply facts retain `cancelled` under buffered durability; `mct_daemon_bin::resident::idempotency::tests::cancelled_idempotent_reply_replays_cancelled_with_durable_observation` proves replay retains the outcome under before-effect durability. |
-| `ChildLifecycleCoverage` | COVERED | `mct_kernel::observation::tests::child_authority_and_instance_observation_matrix_is_typed` proves every approval, assignment, and instance-state projection; `mct_daemon_bin::control::tests::live_registry_sync_observes_artifact_rejection_before_state_effect` and `mct_daemon_bin::control::tests::live_registry_install_and_sync_are_observed_before_storage_effects` prove rejected and verified artifact facts through the real control path. |
+| `ChildLifecycleCoverage` | COVERED | `mct_kernel::observation::tests::child_authority_and_instance_observation_matrix_is_typed` proves approval, assignment, and instance-state projections; `mct_daemon_bin::supervisor_lifecycle::tests::supervised_slate_artifact_acquisition_executes_and_revokes_end_to_end` proves verified acquisition, approval, assignment, execution, and revocation through resident control; `mct_daemon::acquisition::tests::artifact_acquisition_failures_are_observed_without_artifact_publication` proves rejection evidence. |
 | `ToyCoverage` | COVERED | `mct_kernel::observation::tests::toy_grant_evaluations_become_observations`; `mct_daemon::toy::tests::toy_backend_failure_is_adapter_observation_not_kernel_denial` |
 | `PeerCoverage` | COVERED | `mct_iroh::tests::iroh_adapter_observations_cover_endpoint_and_protocol_events`; `mct_daemon_bin::ingress::tests::standalone_serve_process_persists_hello_and_call_lifecycle` |
 | `RuntimeAdapterCoverage` | COVERED | `mct_daemon::process::tests::process_harness_timeout_returns_typed_result_and_observation`; `mct_daemon::wasm::tests::wasm_component_runtime_trap_maps_to_adapter_observation`; `mct_daemon_bin::resident::pipeline::tests::jvm_bridge_json_call_enters_resident_route_path` |
@@ -445,7 +445,7 @@ The historical pass read 236 load-bearing `-- Decision:` statements and grouped 
 | `ReplacementLoadsBeforeSwap` | COVERED | `mct_daemon::lifecycle::tests::reload_records_replacement_ready_before_predecessor_drain`; `mct_daemon::state::tests::child_reload_swap_is_atomic_and_failed_swap_keeps_persisted_predecessor_ready` |
 | `CallsRequireReadyAuthorizedInstance` | COVERED | `mct_kernel::child::tests::ready_approved_assigned_instance_produces_authorized_child_invocation`; `mct_daemon::process::tests::process_harness_denies_stale_child_capability_before_spawn` |
 | `FailedReplacementDoesNotPoisonCurrent` | COVERED | `mct_daemon_bin::cli_runtime::tests::reload_command_failure_keeps_persisted_generation_ready_and_routable` |
-| `LifecycleTransitionsAreObserved` | COVERED | `mct_kernel::observation::tests::child_authority_and_instance_observation_matrix_is_typed`; `mct_daemon_bin::control::tests::live_registry_sync_observes_artifact_rejection_before_state_effect`; A7 replacement ordering remains covered by `mct_daemon::lifecycle::tests::reload_records_replacement_ready_before_predecessor_drain`. |
+| `LifecycleTransitionsAreObserved` | COVERED | `mct_kernel::observation::tests::child_authority_and_instance_observation_matrix_is_typed`; `mct_daemon_bin::supervisor_lifecycle::tests::supervised_slate_artifact_acquisition_executes_and_revokes_end_to_end`; `mct_daemon_bin::control::tests::artifact_writer_loss_after_read_leaves_no_artifact_authority_or_catalog_package`; A7 replacement ordering remains covered by `mct_daemon::lifecycle::tests::reload_records_replacement_ready_before_predecessor_drain`. |
 
 #### `MctToyGrantAuthority`
 
@@ -495,9 +495,69 @@ The historical pass read 236 load-bearing `-- Decision:` statements and grouped 
 | `FederationControlHasIndependentAuthority` | DEFERRED | FederationControlAuthorization and `mct/federation/0` are future scope. |
 | `BrokeredSubmissionIsANewRelationship` | DEFERRED | Brokered multi-hop submission is future scope and cannot be added to terminal `mct/call/0` for testability. |
 
-## Full-coverage status summary
+## Daily-Driver Slice 3 — artifact acquisition
 
-### Named contract invariants (228 total)
+### `MctArtifactAcquisitionAuthority`
+
+| Invariant | Status | Evidence / reason |
+|---|---|---|
+| `AcquisitionRequiresExplicitAuthorityPath` | COVERED | `mct_kernel::artifact::tests::artifact_acquisition_requires_source_path_and_current_adapter_authority`; `mct_kernel::artifact::tests::source_trust_and_adapter_authority_are_independent_and_exact` |
+| `StandingSourceAuthorityIsExplicitAndBounded` | COVERED | `mct_daemon::state::tests::standing_source_creation_rejects_unbounded_credentialed_and_unsupported_records`; `mct_kernel::artifact::tests::standing_source_rejects_stale_revoked_expired_wrong_scope_and_policy` |
+| `OperatorPointedAcquisitionCreatesNoAmbientTrust` | COVERED | `mct_daemon::acquisition::tests::identical_reacquisition_adds_evidence_without_replacing_immutable_artifact` proves two attempts consume two distinct decisions; the projection has no reusable source record. |
+| `SourceTrustAndAdapterAuthorityAreIndependent` | COVERED | `mct_kernel::artifact::tests::source_trust_and_adapter_authority_are_independent_and_exact`; `mct_daemon_bin::control::tests::artifact_acquisition_append_failure_suppresses_filesystem_and_catalog_effects` |
+| `DigestVerificationIsUnwaivableFloor` | COVERED | `mct_daemon::acquisition::tests::staged_package_reconciles_sha256_floor_with_blake3_acquisition_evidence`; `mct_daemon::acquisition::tests::malformed_tampered_oversize_and_escaping_sources_leave_attempt_evidence_only` |
+| `VerificationGatesArtifactRecord` | COVERED | `mct_daemon::acquisition::tests::artifact_acquisition_failures_are_observed_without_artifact_publication`; `mct_daemon_bin::control::tests::artifact_writer_loss_after_read_leaves_no_artifact_authority_or_catalog_package` |
+| `AcquisitionGrantsNoLifecycleAuthority` | COVERED | `mct_daemon_bin::supervisor_lifecycle::tests::supervised_slate_artifact_acquisition_executes_and_revokes_end_to_end` proves denial after verified publication and before exact approval/assignment. |
+| `AcquisitionIsIndependentLifecycleFact` | COVERED | The same supervised test correlates separate acquisition, verification, approval, assignment, run, and revocation facts across reopen. |
+| `FailedAcquisitionCreatesNoArtifact` | COVERED | `mct_daemon::acquisition::tests::artifact_acquisition_failures_are_observed_without_artifact_publication`; `malformed_tampered_oversize_and_escaping_sources_leave_attempt_evidence_only` |
+| `UniformAcquisitionProvenance` | COVERED | `mct_daemon::state::tests::component_artifacts_require_real_acquisition_or_explicit_legacy_migration`; supervised Slate proof. |
+| `HistoricalUnknownProvenanceIsExplicit` | COVERED | `mct_daemon::state::tests::pre_v7_artifact_migration_marks_historical_unknown_without_fabricating_acquisition`; `mct_daemon_bin::supervisor_lifecycle::tests::exact_approval_refuses_wrong_historical_failed_and_tampered_artifact_evidence` |
+| `UpdatesRequireExactArtifactApproval` | COVERED | `mct_daemon_bin::control::tests::child_name_only_approval_is_rejected_before_authority_or_config_effect`; `mct_daemon_bin::supervisor_lifecycle::tests::exact_approval_refuses_wrong_historical_failed_and_tampered_artifact_evidence` |
+| `ChannelSimilarityCannotTransferApproval` | COVERED | Exact digest/package/catalog matching in `exact_approval_refuses_wrong_historical_failed_and_tampered_artifact_evidence`; no channel field exists in the approval mutation. |
+| `RevocationCannotApproveReplacement` | COVERED | Supervised Slate proof revokes, restarts, and remains denied while the immutable package and acquisition evidence remain present. |
+| `PreauthorizedChannelsRequireNewAuthorityLaw` | DEFERRED | No channel or update scheduler was added; introducing one remains a separately gated law change. |
+| `SourceCredentialsRemainSeparateAuthority` | COVERED | Source-record validation accepts only credential-free canonical `file://` roots and stores no credential field; this slice adds no network/secret attachment path. |
+
+### `MctChildComponentLifecycle` acquisition extension
+
+| Invariant | Status | Evidence / reason |
+|---|---|---|
+| `AcquisitionIsFifthIndependentFact` | COVERED | Supervised Slate proof and `mct_daemon::state::tests::component_artifacts_require_real_acquisition_or_explicit_legacy_migration`. |
+| `NewArtifactsRequireAcquisitionProvenance` | COVERED | `component_artifacts_require_real_acquisition_or_explicit_legacy_migration`; `artifact_acquisition_failures_are_observed_without_artifact_publication`. |
+| `ArtifactIsImmutableValue` | COVERED | `mct_daemon::acquisition::tests::identical_reacquisition_adds_evidence_without_replacing_immutable_artifact`; `same_digest_different_manifest_fact_cannot_replace_catalog_artifact`. |
+| `ApprovalIsAuthorityNotRuntime` | COVERED | Supervised proof denies before approval and again before ToyGrants, then requires current run authority. |
+| `AssignmentIsScopedBinding` | COVERED | Supervised exact approval response names the artifact and acquisition, while existing state/kernel assignment tests retain exact scope enforcement. |
+| `CallsRequireReadyAuthorizedInstance` | COVERED | Supervised proof exercises pre-approval denial, post-grant execution, revocation denial, and restart-visible denial. |
+| `LifecycleTransitionsAreObserved` | COVERED | Supervised proof correlates acquisition/verification/approval/assignment/revocation observation ids; writer-loss test proves no unobserved artifact authority survives. |
+
+### `PatinaRegistrySyncQuarryDisposition`
+
+| Invariant | Status | Evidence / reason |
+|---|---|---|
+| `GenericRegistryMechanismBecomesMctProduct` | COVERED | `mct_daemon_bin::supervisor_lifecycle::tests::artifact_command_surface_is_explicit_and_supervisor_distinct` |
+| `SourceAccessBecomesToyAdapter` | COVERED | D1.5/D1.15 direct-operator filesystem effect capability is proved by kernel independence tests and `artifact_slice_exposes_only_filesystem_adapter_and_existing_toy_catalog`; a future network source still requires the deny-by-default egress Toy and separate connection/secret authority. |
+| `RegistryAuthorityRemainsKernel` | COVERED | `mct_kernel::artifact::tests::source_trust_and_adapter_authority_are_independent_and_exact`; adapters receive only the private authorized capability. |
+| `AcquisitionFactsAreEvidenceNotGrants` | COVERED | Supervised proof requires separate exact approval, assignment, and four existing ToyGrants after acquisition. |
+| `PatinaSourceMeaningRemainsChildMeaning` | COVERED | Standing-source evaluation derives package WIT namespaces and checks exact artifact/publisher/namespace/action scope; no Mother relationship meaning is inferred. |
+| `RegistryToolingIsOptionalAndOutsideKernel` | COVERED | CLI/UDS/filesystem staging remain daemon adapters; kernel contains only authority values/evaluation and no registry client. |
+| `AmbientRegistryShapeIsRejected` | COVERED | `mct_daemon_bin::control::tests::live_registry_install_and_sync_are_closed_without_storage_effects`; `registry_is_closed_and_offline_lock_contention_refuses_legacy_helper`. |
+| `RecurringSyncAwaitsSchedulingLaw` | DEFERRED | No trigger, watcher, recurring sync, or scheduling path was added. |
+| `SourceCredentialsRemainIndependent` | DEFERRED | Filesystem acquisition needs none; future credential attachment and network connection authority remain an explicit empty slot. |
+
+### Acquisition structural projections
+
+| Plan obligation group | Status | Evidence |
+|---|---|---|
+| `ArtifactSourceScope`, `ArtifactSourceAuthority`, reader/projection fields | COVERED | Kernel standing-scope matrix plus state create/revoke/reopen and record-digest tests. |
+| `OperatorPointedArtifactAcquisitionDecision`, reader/projection fields | COVERED | `identical_reacquisition_adds_evidence_without_replacing_immutable_artifact` persists and reopens distinct consumed decisions. |
+| `ArtifactAcquisition`, reader/projection fields | COVERED | Failure matrix, reacquisition tests, and supervised exact observation-id correlation/reopen. |
+| New `ComponentArtifact.provenance_status`, `acquisition_ids`, catalog exposure | COVERED | v7 migration tests, immutable-fact collision test, exact approval evidence projection, and supervised reopen. |
+
+## Retained pre-Slice3 full-coverage status summary
+
+The historical counts below are retained for the pre-Slice3 inventory. The acquisition rows above are the additive, explicit disposition for this slice and are not folded into these historical totals.
+
+### Named contract invariants (228 pre-Slice3 total)
 
 | Status | Invariants |
 |---|---:|
@@ -513,4 +573,4 @@ The historical pass read 236 load-bearing `-- Decision:` statements and grouped 
 | `mct-product-map.allium` | 179 (`entity_fields` 56, `entity_optional` 38, `surface_actor` 27, `surface_exposure` 27, `value_equality` 29, `when_presence` 2) | 14 | COVERED |
 | `mct-peer-ontology.allium` | 0 | 0 | COVERED (no emitted structural obligations) |
 
-Inventory check: 228 product-map/peer-ontology invariants parsed, 165 full-inventory rows plus the retained slice-1 priority names, with the 2026-07-12 evidence preserved and the five W2 invariant rows added.
+Baseline inventory check: 228 pre-Slice3 product-map/peer-ontology invariants parsed, 165 full-inventory rows plus the retained slice-1 priority names, with the 2026-07-12 evidence preserved and the five W2 invariant rows added. Slice3 acquisition attribution is maintained in the additive tables above.
