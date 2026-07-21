@@ -621,6 +621,89 @@ The current `allium plan layer/allium/mct-product-map.allium` emits 232 obligati
 |---|---|---|
 | Trigger authority, lifecycle, firing, and completion use existing kinds | COVERED | `mct_daemon_bin::resident::trigger_scheduler::tests::trigger_observation_mapping_uses_existing_kinds`; trigger authority uses `OperatorActionRecorded`, occurrence state uses `LifecycleTransitionRecorded`, firing uses `CallConstructed`, and terminal calls retain `ResultRecorded`. `ObservationKind` is unchanged. |
 
+## Replacement Slice 4B — Watch delivery and exact fixtures
+
+### Watch/event structural projections
+
+| Plan obligation group | Status | Evidence |
+|---|---|---|
+| `WatchObservationScope` value/entity/projection obligations | COVERED | `mct_kernel::watch::tests::watch_scope_validation_is_closed_bounded_and_digest_bound`; `mct_daemon::state::tests::watch_scope_projection_is_revisioned_current_and_sequences_are_monotonic`; `mct_daemon_bin::watch::tests::watch_scope_and_toy_grant_are_both_current_before_observation`. |
+| `WatchEventBatchEvidence`, `WatchEventEvidence`, and delivery projection obligations | COVERED | `mct_daemon_bin::watch::tests::watch_batches_are_bounded_sequenced_deterministic_and_countable`; composed supervised fixture proof and SQLite schema-v10 reopen assertions. |
+
+### `MctEventSourcePlacement`
+
+| Invariant | Status | Evidence / reason |
+|---|---|---|
+| `OneObservationShapePerPath` | COVERED | Child observation requires the exact `ChildToy` scope; `MotherEventSourceAdapterRuntime` remains absent and deferred. |
+| `DirectChildObservationRequiresWatchToy` | COVERED | `watch_scope_and_toy_grant_are_both_current_before_observation`. |
+| `MotherObservationRequiresIndependentEffectAuthority` | DEFERRED | Exact named `MotherEventSourceAdapterRuntime`; Part B adds no Mother observer path. |
+| `MotherAdapterCannotImpersonateChild` | COVERED | Watch authorization requires exact Child artifact and assignment; no Mother adapter exists. |
+| `WatchToyGrantsObservationOnly` | COVERED | `watch_grant_cannot_read_content_state_or_originate_delivery`; directory-read, keyvalue, observability, and call-out checks remain separate. |
+| `ChildEmissionReentersCallLaw` | COVERED | `watcher_child_callout_reenters_ordinary_call_law`; supervised sink delivery traverses ordinary resident call/result law. |
+| `TriggerAuthorityIsSoleStandingOrigination` | COVERED | Watch grants contain no schedule/call target; composed proof uses the independent temporal trigger to invoke the watcher. |
+
+### `MctWatchObservationScope`
+
+| Invariant | Status | Evidence / reason |
+|---|---|---|
+| `RootAndBreadthAreExplicit` | COVERED | Kernel scope validation and owner-authenticated Watch grant tests. |
+| `TraversalIsExplicit` | COVERED | Scope enum is closed; the v1 adapter refuses `root_only` rather than widening it to recursive. |
+| `EventClassesAreExplicit` | COVERED | Send-time admission requires the emitted class in the current scope. |
+| `BatchIsBoundedByNamedCeiling` | COVERED | `watch_send_admission_refuses_paths_shape_and_capacity_synchronously`; kernel and daemon batch-bound tests. |
+| `CoalescingIsExplicitDeterministicAndCountable` | COVERED | `watch_batches_are_bounded_sequenced_deterministic_and_countable`. |
+| `ValidityIsCurrentAndBounded` | COVERED | `watch_scope_and_toy_grant_are_both_current_before_observation`; supervised post-revocation denial. |
+| `WatchAuthorityIsObservationOnly` | COVERED | `watch_grant_cannot_read_content_state_or_originate_delivery`. |
+| `SafeMetadataIsCanonicalAndRootRelative` | COVERED | Send-time safe-path validation and `watch_adapter_excludes_escaped_symlinks_and_absolute_paths`. |
+| `EscapedSubjectsAreExcluded` | COVERED | `watch_adapter_excludes_escaped_symlinks_and_absolute_paths`. |
+| `DeliveryCarriesExactScopeProvenance` | COVERED | Batch/event/delivery schema tests plus composed reopen proof. |
+| `BatchSequenceIsMonotonicPerScope` | COVERED | State sequence-counter test and deterministic batch test. |
+
+### `MctLegacyWatchEventsCompatibility`
+
+| Invariant | Status | Evidence / reason |
+|---|---|---|
+| `LegacyAbsolutePathSlotIsNarrowed` | COVERED | Exact source-derived patch plus send-time `validate_legacy_watch_paths`. |
+| `MismatchIsRefusedWithEvidence` | COVERED | `legacy_watch_abi_mismatch_is_refused_before_sink_call`; typed send refusal and batch admission barrier tests. |
+| `NarrowingIsLegacyAbiOnly` | COVERED | Kernel validator rejects non-0.1.x interface identities. |
+| `SuccessorDropsDeprecatedSlot` | COVERED | Contract schema test refuses carrying the legacy slot into a successor; no successor runtime registration exists. |
+
+### `MctWatchEventDelivery`
+
+| Invariant | Status | Evidence / reason |
+|---|---|---|
+| `DeliveryPathsAreExclusive` | COVERED | Part B implements only Child call-out; `MotherEventSourceAdapterRuntime` has no executable path. |
+| `ChildDeliveryIsOrdinaryCurrentCall` | COVERED | `watcher_child_callout_reenters_ordinary_call_law`. |
+| `WasmFixtureUsesTruthfulWasmHostOrigin` | COVERED | Nested fixture calls persist `CallOrigin::WasmHost`; parent trigger lineage remains separate. |
+| `MotherDeliveryRequiresTriggerAuthority` | DEFERRED | `MotherEventSourceAdapterRuntime`; no Mother delivery is implemented. |
+| `TriggerLineageIsNeverFabricated` | COVERED | `watch_delivery_lineage_is_actual_and_never_fabricated`. |
+| `BatchEvidenceIsCompleteAndScoped` | COVERED | Deterministic batch test and supervised persisted/reopened summary. |
+| `EventEvidenceIsSafeAndCausal` | COVERED | Safe adapter test, deterministic identity helpers, and exact parent-call linkage. |
+| `DurableReceiptAndEligibilityPrecedeDelivery` | COVERED | D1B.7-A.1: the invocation-local admitted set is normalized and appended through the canonical writer before the first nested effect; `watch_admission_append_failure_suppresses_every_nested_delivery` proves the failure barrier. |
+| `PreCallDispositionSetIsClosed` | COVERED | Kernel closed enum and `watch_delivery_reuses_closed_mct_result_outcomes`. |
+| `PostCallOutcomeReusesMctResult` | COVERED | `watch_delivery_reuses_closed_mct_result_outcomes`. |
+| `DeliveredMeansDurableTargetSuccess` | COVERED | Delivery projection references the target result and follows completed success only. |
+| `SinkEffectsRequireSinkGrants` | COVERED | `exact_watch_null_sink_executes_without_watch_or_filesystem_authority`; composed proof grants logging/measure independently. |
+
+### `PatinaWatcherQuarryDisposition`
+
+| Invariant | Status | Evidence / reason |
+|---|---|---|
+| `GenericTriggerAndDeliveryBecomeMctProduct` | COVERED | Parts A/B implement kernel authority, resident scheduling, Watch evidence, and ordinary delivery without a `patinaMother` runtime dependency. |
+| `WatchAndCallAuthorityRemainKernel` | COVERED | Separate Watch, directory-read, keyvalue, observability, Child, route, and call-out evaluations. |
+| `WatchApplicationMeaningRemainsChildMeaning` | COVERED | Source-derived watcher retains scan/diff/filter behavior; Mother supplies read-only mechanics and deterministic evidence only. |
+| `LegacyAbsolutePathSemanticsAreRejected` | COVERED | Source patch narrows both slots and host validation refuses mismatches/unsafe values. |
+| `LegacyAbiShapeRequiresValidatedNarrowing` | COVERED | Fixture provenance test, exact 0.1.x validator, and mismatch refusal test. |
+| `DeprecatedSlotCannotPropagate` | COVERED | Successor contract validation disallows the slot; compatibility dispatch is exact-version only. |
+
+### Part B interdicts and observation composition
+
+| Slot / obligation | Status | Evidence / reason |
+|---|---|---|
+| `MotherEventSourceAdapterRuntime` | DEFERRED | No native watcher task, source registration, or Mother-trigger lookup exists. |
+| `RegistrySyncTriggerComposition` | DEFERRED | No unattended registry sync path was added. |
+| `NetworkArtifactAcquisitionAdapter` | DEFERRED | No network acquisition adapter was added; remains coupled to registry-sync composition. |
+| Existing observation vocabulary only | COVERED | `watch_delivery_observation_mapping_uses_existing_kinds`; `crates/mct-kernel/src/observation.rs` remains unchanged from `20941a4`. |
+
 ## Retained pre-Slice3 full-coverage status summary
 
 The historical counts below are retained for the pre-Slice3 inventory. The acquisition rows above are the additive, explicit disposition for this slice and are not folded into these historical totals.

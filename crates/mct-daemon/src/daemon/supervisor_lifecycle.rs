@@ -3320,7 +3320,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn supervised_trigger_watch_delivery_fixtures_reach_parent_completion_checkpoint() {
+    async fn supervised_trigger_watch_delivery_fixtures_execute_end_to_end() {
         use base64::Engine as _;
         use sha2::{Digest, Sha256};
         use std::collections::BTreeMap;
