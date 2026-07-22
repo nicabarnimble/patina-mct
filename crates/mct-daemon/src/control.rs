@@ -5,7 +5,7 @@ use crate::{
 use anyhow::{Context, Result, bail};
 use mct_iroh::MotherIrohEndpointSnapshot;
 use serde::{Deserialize, Serialize};
-use std::{future::Future, path::Path, pin::Pin, sync::Arc};
+use std::{future::Future, path::Path, pin::Pin, sync::Arc, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -107,6 +107,7 @@ pub struct MctControlPlaneResponse {
 }
 
 const MCT_UDS_CONTROL_HEADER_READ_BUDGET_BYTES: usize = 4096;
+const MCT_UDS_CONTROL_REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const MCT_UDS_CONTROL_READ_BUDGET_BYTES: usize =
     MCT_BLOB_MAX_BYTES.div_ceil(3) * 4 + MCT_UDS_CONTROL_HEADER_READ_BUDGET_BYTES;
 
@@ -115,49 +116,10 @@ type MctUdsControlMutationFuture =
     Pin<Box<dyn Future<Output = MctControlPlaneResponse> + Send + 'static>>;
 
 #[cfg(unix)]
-type MctUdsControlMutationCallback = dyn Fn(Option<MctUdsPeerCredentials>, String, Vec<u8>) -> MctUdsControlMutationFuture
+type MctUdsControlMutationCallback = dyn Fn(MctUdsAuthenticatedOwner, String, Vec<u8>) -> MctUdsControlMutationFuture
     + Send
     + Sync
     + 'static;
-
-/// Local-only extension point for binary-owned UDS mutation handlers.
-#[cfg(unix)]
-#[derive(Clone)]
-pub struct MctUdsControlMutationHandler {
-    callback: Arc<MctUdsControlMutationCallback>,
-}
-
-#[cfg(unix)]
-impl MctUdsControlMutationHandler {
-    pub fn new<F, Fut>(callback: F) -> Self
-    where
-        F: Fn(String, Vec<u8>) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = MctControlPlaneResponse> + Send + 'static,
-    {
-        Self {
-            callback: Arc::new(move |_peer, path, body| Box::pin(callback(path, body))),
-        }
-    }
-
-    pub fn new_authenticated<F, Fut>(callback: F) -> Self
-    where
-        F: Fn(Option<MctUdsPeerCredentials>, String, Vec<u8>) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = MctControlPlaneResponse> + Send + 'static,
-    {
-        Self {
-            callback: Arc::new(move |peer, path, body| Box::pin(callback(peer, path, body))),
-        }
-    }
-
-    async fn handle(
-        &self,
-        peer: Option<MctUdsPeerCredentials>,
-        path: String,
-        body: Vec<u8>,
-    ) -> MctControlPlaneResponse {
-        (self.callback)(peer, path, body).await
-    }
-}
 
 #[cfg(unix)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -165,6 +127,76 @@ pub struct MctUdsPeerCredentials {
     pub uid: u32,
     pub gid: u32,
     pub pid: Option<i32>,
+}
+
+/// Unforgeable proof that the shared resident UDS preflight authenticated the socket owner.
+///
+/// The private field makes the control stream preflight the sole capability minting site.
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MctUdsAuthenticatedOwner {
+    peer: MctUdsPeerCredentials,
+}
+
+#[cfg(unix)]
+impl MctUdsAuthenticatedOwner {
+    pub fn uid(self) -> u32 {
+        self.peer.uid
+    }
+
+    pub fn credentials(self) -> MctUdsPeerCredentials {
+        self.peer
+    }
+}
+
+/// Local-only extension point for binary-owned, owner-authenticated UDS mutations.
+#[cfg(unix)]
+#[derive(Clone)]
+pub struct MctUdsControlMutationHandler {
+    expected_owner_uid: u32,
+    callback: Arc<MctUdsControlMutationCallback>,
+}
+
+#[cfg(unix)]
+impl MctUdsControlMutationHandler {
+    pub fn new<F, Fut>(expected_owner_uid: u32, callback: F) -> Self
+    where
+        F: Fn(MctUdsAuthenticatedOwner, String, Vec<u8>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = MctControlPlaneResponse> + Send + 'static,
+    {
+        Self {
+            expected_owner_uid,
+            callback: Arc::new(move |owner, path, body| Box::pin(callback(owner, path, body))),
+        }
+    }
+
+    fn authenticate_owner(
+        &self,
+        peer: Option<MctUdsPeerCredentials>,
+    ) -> std::result::Result<MctUdsAuthenticatedOwner, MctControlPlaneResponse> {
+        let Some(peer) = peer else {
+            return Err(json_response(
+                401,
+                serde_json::json!({"error": "resident mutation peer credentials unavailable"}),
+            ));
+        };
+        if peer.uid != self.expected_owner_uid {
+            return Err(json_response(
+                403,
+                serde_json::json!({"error": "resident mutation peer UID refused"}),
+            ));
+        }
+        Ok(MctUdsAuthenticatedOwner { peer })
+    }
+
+    async fn handle(
+        &self,
+        owner: MctUdsAuthenticatedOwner,
+        path: String,
+        body: Vec<u8>,
+    ) -> MctControlPlaneResponse {
+        (self.callback)(owner, path, body).await
+    }
 }
 
 #[cfg(unix)]
@@ -475,9 +507,13 @@ pub async fn serve_uds_control_stream_with_handlers(
             gid: credentials.gid(),
             pid: credentials.pid(),
         });
-    let headers = read_http_headers_bounded(&mut stream, MCT_UDS_CONTROL_HEADER_READ_BUDGET_BYTES)
-        .await
-        .context("read uds control request headers")?;
+    let headers = read_http_headers_bounded_with_deadline(
+        &mut stream,
+        MCT_UDS_CONTROL_HEADER_READ_BUDGET_BYTES,
+        MCT_UDS_CONTROL_REQUEST_READ_TIMEOUT,
+    )
+    .await
+    .context("read uds control request headers")?;
     let request = String::from_utf8_lossy(&headers);
     let (method, path) = parse_http_request_line(&request)?;
     let authorization_header = parse_authorization_header(&request);
@@ -486,10 +522,11 @@ pub async fn serve_uds_control_stream_with_handlers(
         match call_handler {
             Some(handler) => match handler.preflight(peer, content_length).await {
                 MctUdsControlCallPreflight::Authenticated(peer) => {
-                    let body = read_http_body_bounded(
+                    let body = read_http_body_bounded_with_deadline(
                         &mut stream,
                         content_length,
                         mct_iroh::MCT_CALL_FRAME_READ_BUDGET_BYTES,
+                        MCT_UDS_CONTROL_REQUEST_READ_TIMEOUT,
                     )
                     .await
                     .context("read bounded uds call body")?;
@@ -502,26 +539,34 @@ pub async fn serve_uds_control_stream_with_handlers(
                 serde_json::json!({"error": "method not allowed"}),
             )),
         }
-    } else {
-        let body_budget = MCT_UDS_CONTROL_READ_BUDGET_BYTES
-            .checked_sub(headers.len())
-            .context("control request headers exceed bounded read budget")?;
-        let body = read_http_body_bounded(&mut stream, content_length, body_budget)
-            .await
-            .context("read uds control request body")?;
-        if method == "POST"
-            && let Some(handler) = mutation_handler
-        {
-            Some(handler.handle(peer, path.to_owned(), body).await)
-        } else {
-            Some(handle_control_plane_path_result_with_auth(
-                method,
-                path,
-                snapshot.as_ref(),
-                &MctControlPlaneAuthPolicy::open_local(),
-                authorization_header,
-            ))
+    } else if method == "POST"
+        && let Some(handler) = mutation_handler
+    {
+        match handler.authenticate_owner(peer) {
+            Ok(owner) => {
+                let body_budget = MCT_UDS_CONTROL_READ_BUDGET_BYTES
+                    .checked_sub(headers.len())
+                    .context("control request headers exceed bounded read budget")?;
+                let body = read_http_body_bounded_with_deadline(
+                    &mut stream,
+                    content_length,
+                    body_budget,
+                    MCT_UDS_CONTROL_REQUEST_READ_TIMEOUT,
+                )
+                .await
+                .context("read uds control request body")?;
+                Some(handler.handle(owner, path.to_owned(), body).await)
+            }
+            Err(response) => Some(response),
         }
+    } else {
+        Some(handle_control_plane_path_result_with_auth(
+            method,
+            path,
+            snapshot.as_ref(),
+            &MctControlPlaneAuthPolicy::open_local(),
+            authorization_header,
+        ))
     };
     if let Some(response) = response {
         stream
@@ -612,6 +657,19 @@ where
     Ok(headers)
 }
 
+async fn read_http_headers_bounded_with_deadline<S>(
+    stream: &mut S,
+    budget: usize,
+    deadline: Duration,
+) -> Result<Vec<u8>>
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
+    tokio::time::timeout(deadline, read_http_headers_bounded(stream, budget))
+        .await
+        .context("control request header read deadline elapsed")?
+}
+
 async fn read_http_body_bounded<S>(
     stream: &mut S,
     content_length: usize,
@@ -629,6 +687,27 @@ where
         .await
         .context("read complete control request body")?;
     Ok(body)
+}
+
+async fn read_http_body_bounded_with_deadline<S>(
+    stream: &mut S,
+    content_length: usize,
+    budget: usize,
+    deadline: Duration,
+) -> Result<Vec<u8>>
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
+    tokio::time::timeout(
+        deadline,
+        read_http_body_bounded(stream, content_length, budget),
+    )
+    .await
+    .context("control request body read deadline elapsed")?
+}
+
+pub fn control_response_http_bytes(response: &MctControlPlaneResponse) -> String {
+    http_response_bytes(response)
 }
 
 fn http_response_bytes(response: &MctControlPlaneResponse) -> String {
@@ -800,9 +879,12 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn uds_local_mutation_handler_receives_post_body() {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
+        use std::{
+            os::unix::fs::MetadataExt as _,
+            sync::{
+                Arc,
+                atomic::{AtomicBool, Ordering},
+            },
         };
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -811,7 +893,8 @@ mod tests {
         let listener = UnixListener::bind(&socket_path).unwrap();
         let called = Arc::new(AtomicBool::new(false));
         let callback_called = Arc::clone(&called);
-        let handler = MctUdsControlMutationHandler::new(move |path, body| {
+        let expected_uid = std::fs::metadata(&socket_path).unwrap().uid();
+        let handler = MctUdsControlMutationHandler::new(expected_uid, move |_owner, path, body| {
             let callback_called = Arc::clone(&callback_called);
             async move {
                 callback_called.store(true, Ordering::SeqCst);
@@ -879,11 +962,10 @@ mod tests {
         .parse::<u32>()
         .unwrap();
         let handler =
-            MctUdsControlMutationHandler::new_authenticated(move |peer, path, body| async move {
-                let peer = peer.expect("Unix peer credentials must be available");
+            MctUdsControlMutationHandler::new(expected_uid, move |owner, path, body| async move {
                 assert_eq!(path, "/lifecycle/fact");
                 assert_eq!(body, br#"{"action":"stop_prepare"}"#);
-                assert_eq!(peer.uid, expected_uid);
+                assert_eq!(owner.uid(), expected_uid);
                 MctControlPlaneResponse {
                     status_code: 200,
                     content_type: "application/json".into(),
@@ -921,6 +1003,89 @@ mod tests {
                 .unwrap()
                 .starts_with("HTTP/1.1 200")
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn uds_mutation_authentication_precedes_body_read() {
+        use std::{
+            os::unix::fs::MetadataExt as _,
+            sync::{
+                Arc,
+                atomic::{AtomicBool, Ordering},
+            },
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("control.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let called = Arc::new(AtomicBool::new(false));
+        let callback_called = Arc::clone(&called);
+        let actual_uid = std::fs::metadata(&socket_path).unwrap().uid();
+        let refused_uid = actual_uid.checked_add(1).unwrap();
+        let handler =
+            MctUdsControlMutationHandler::new(refused_uid, move |_owner, _path, _body| {
+                let callback_called = Arc::clone(&callback_called);
+                async move {
+                    callback_called.store(true, Ordering::SeqCst);
+                    MctControlPlaneResponse {
+                        status_code: 200,
+                        content_type: "application/json".into(),
+                        body: r#"{"status":"ok"}"#.into(),
+                    }
+                }
+            });
+        let server = tokio::spawn(async move {
+            serve_uds_control_once_with_snapshot_result_blob_store_and_mutations(
+                &listener,
+                Ok(snapshot()),
+                None,
+                Some(&handler),
+            )
+            .await
+            .unwrap();
+        });
+        let mut client = tokio::net::UnixStream::connect(socket_path).await.unwrap();
+        client
+            .write_all(
+                b"POST /peers/revoke HTTP/1.1\r\nHost: local\r\nContent-Length: 1024\r\n\r\n",
+            )
+            .await
+            .unwrap();
+
+        let mut response = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            client.read_to_end(&mut response),
+        )
+        .await
+        .expect("owner refusal must not wait for the declared body")
+        .unwrap();
+        server.await.unwrap();
+
+        assert!(!called.load(Ordering::SeqCst));
+        assert!(
+            String::from_utf8(response)
+                .unwrap()
+                .starts_with("HTTP/1.1 403")
+        );
+    }
+
+    #[tokio::test]
+    async fn uds_request_header_read_has_a_deadline() {
+        use tokio::io::AsyncWriteExt as _;
+
+        let (mut client, mut server) = tokio::io::duplex(64);
+        client.write_all(b"POST /blobs HTTP/1.1\r\n").await.unwrap();
+        let error = read_http_headers_bounded_with_deadline(
+            &mut server,
+            MCT_UDS_CONTROL_HEADER_READ_BUDGET_BYTES,
+            std::time::Duration::from_millis(25),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("deadline"));
     }
 
     #[test]

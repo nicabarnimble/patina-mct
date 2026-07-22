@@ -63,16 +63,17 @@ pub use config::{
 pub use control::{
     MctControlPlaneAuthPolicy, MctControlPlaneResponse, MctControlPlaneSnapshot,
     MctControlPlaneSnapshotError, MctControlPlaneSnapshotResult, MctDaemonLocalControlFacts,
-    MctDaemonLocalControlRequest, MctDaemonLocalControlResponse, handle_control_plane_path,
-    handle_control_plane_path_result_with_auth, handle_control_plane_path_with_auth,
-    handle_local_control_request, serve_http_control_once, serve_http_control_once_with_auth,
-    serve_http_control_once_with_snapshot_result,
+    MctDaemonLocalControlRequest, MctDaemonLocalControlResponse, control_response_http_bytes,
+    handle_control_plane_path, handle_control_plane_path_result_with_auth,
+    handle_control_plane_path_with_auth, handle_local_control_request, serve_http_control_once,
+    serve_http_control_once_with_auth, serve_http_control_once_with_snapshot_result,
 };
 #[cfg(unix)]
 pub use control::{
-    MctUdsControlCallHandler, MctUdsControlCallPreflight, MctUdsControlMutationHandler,
-    MctUdsPeerCredentials, serve_uds_control_once, serve_uds_control_once_with_auth,
-    serve_uds_control_once_with_handlers, serve_uds_control_once_with_snapshot_result,
+    MctUdsAuthenticatedOwner, MctUdsControlCallHandler, MctUdsControlCallPreflight,
+    MctUdsControlMutationHandler, MctUdsPeerCredentials, serve_uds_control_once,
+    serve_uds_control_once_with_auth, serve_uds_control_once_with_handlers,
+    serve_uds_control_once_with_snapshot_result,
     serve_uds_control_once_with_snapshot_result_and_blob_store,
     serve_uds_control_once_with_snapshot_result_blob_store_and_mutations,
     serve_uds_control_stream_with_handlers,
