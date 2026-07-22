@@ -23,6 +23,7 @@ const RELEASE_LICENSE_FILE: &str = "LICENSE";
 const RELEASE_CHECKSUMS_FILE: &str = "CHECKSUMS";
 const RELEASE_INFO_PLIST: &str = "payload/mct-daemon.app/Contents/Info.plist";
 const RELEASE_EXECUTABLE: &str = "payload/mct-daemon.app/Contents/MacOS/mct-daemon";
+const RELEASE_CODE_RESOURCES: &str = "payload/mct-daemon.app/Contents/_CodeSignature/CodeResources";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -385,12 +386,20 @@ fn validated_entry_path<R: Read>(entry: &tar::Entry<'_, R>) -> Result<String> {
     {
         bail!("release archive path contains an unsafe component");
     }
-    let text = path
+    let mut text = path
         .to_str()
         .context("release archive path is not UTF-8")?
         .to_owned();
     if text.contains('\\') || text.bytes().any(|byte| byte == 0) {
         bail!("release archive path contains an ambiguous separator");
+    }
+    if entry.header().entry_type().is_dir() {
+        if !text.ends_with('/') || text.ends_with("//") {
+            bail!("release archive directory path is not canonical");
+        }
+        text.pop();
+    } else if text.ends_with('/') {
+        bail!("release archive file path is not canonical");
     }
     Ok(text)
 }
@@ -451,6 +460,7 @@ fn validate_exact_layout(
         format!("{root}/payload/mct-daemon.app"),
         format!("{root}/payload/mct-daemon.app/Contents"),
         format!("{root}/payload/mct-daemon.app/Contents/MacOS"),
+        format!("{root}/payload/mct-daemon.app/Contents/_CodeSignature"),
     ];
     let expected_files = [
         format!("{root}/{RELEASE_MANIFEST_FILE}"),
@@ -461,6 +471,7 @@ fn validate_exact_layout(
         format!("{root}/{RELEASE_CHECKSUMS_FILE}"),
         format!("{root}/{RELEASE_INFO_PLIST}"),
         format!("{root}/{}", manifest.executable_relative_path),
+        format!("{root}/{RELEASE_CODE_RESOURCES}"),
     ];
     let expected = expected_dirs
         .iter()
