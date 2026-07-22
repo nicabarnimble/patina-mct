@@ -23,6 +23,7 @@ It does not close operational `patinaMother` shutoff or into-the-wild GA. Networ
 - Real packaged smoke and corrections: `e19d14e`, `d24ed35`, `10320aa`.
 - Baseline harness and record: `72e69a7`, `08a508f`, `50a75a7`.
 - Track 3 and operator docs: `67d0c1a`, `dcd5510`.
+- R3-F1 revoked-occurrence clock-domain remediation: `45dcdf0`.
 
 The two pre-existing untracked session/belief artifacts were never included in a release worktree or commit.
 
@@ -32,7 +33,11 @@ The first version gate failed before workspace inheritance existed. The first ar
 
 The first real smoke failed because the long macOS temporary path exceeded the Unix-socket path bound. Cleanup could not claim a clean lifecycle, so the fixed-label service was safety-unloaded and its preserved root diagnosed; the next implementation used a bounded `/private/tmp` root. A later deterministic trigger request used the wrong serde tag and was corrected to `source_kind`. The first full baseline used a one-second recovery interval, allowing additional turns; the final exact 60-second interval proves one 4,097-occurrence turn.
 
-No unchanged transient failure failed twice. The recorded R2B targeted trigger failure passed on its exact rerun and all later complete suites.
+The final post-close-out suite first failed `injected_temporal_trigger_fires_once_and_recovers_without_duplication` at `trigger_scheduler.rs:2731`: revision 2 lacked its durable `Suppressed` occurrence. Its exact rerun passed. The mandatory complete rerun then failed the same assertion again and also failed `resident_temporal_trigger_fires_once_and_recovers_without_duplication` at line 2420 for the same missing disposition. Work correctly stopped under the second-failure protocol and no final-HEAD package was claimed.
+
+R3-F1 adjudicated this as a product defect rather than a test flake: revoked-authority evaluation used mutation-path wall-clock `projected_at` as the range start while using the injected scheduler clock as the range end. Under load, an occurrence due between the previous durable disposition and revocation projection could receive no disposition. The failing-test-first regression fixed `projected_at` ten seconds after the last durable occurrence and evaluated one second after it; before remediation it failed exactly with `trigger trigger-scheduler revision 2 did not durably reach Suppressed`.
+
+Commit `45dcdf0` derives the once-only revoked-revision candidate from the next nominal occurrence after the latest durable occurrence disposition across all revisions. Due-ness is decided only by the evaluation clock; mutation timestamps remain evidence and are absent from scheduler arithmetic. The existing `record_terminal_range` path and once-only current-revision guard remain intact. Both recovery tests now poll for the first firing's durable terminal disposition instead of using elapsed-time assumptions. The gap regression, both recovery tests, the 417-test workspace, all-feature Clippy with warnings denied, audit, tier-0, Allium check/analyse, formatting, and comparative-vocabulary checks passed.
 
 ## Required Integration Proof reconstruction
 
@@ -67,7 +72,7 @@ No Required Integration Proof row is waived.
 - Upgrade guide: `layer/surface/build/product/RELEASE-UPGRADE-v0.2.0.md`.
 - Baselines: `layer/surface/build/product/BASELINES-v0.2.0-aarch64-apple-darwin.md`.
 - Attribution: `layer/surface/build/spec-drift-audit/track3/LEDGER.md`.
-- Packaged smoke transcript: generated adjacent to the final local archive as `<archive>.smoke.txt`.
+- Packaged smoke transcript: generated adjacent to the final local archive as `<archive>.smoke.txt`; it cites the detached source revision, primary and alternate archive identities, three-fixture/restart proof, exact-approval refusal and success, supervisor revision 2, preservation checks, and D1.18 postflight.
 
 ## Validation contract
 
@@ -85,4 +90,4 @@ cargo audit
 ./scripts/release-local.sh smoke --artifact target/release-artifacts/mct-daemon-v0.2.0-aarch64-apple-darwin.tar.gz --nocapture
 ```
 
-Archive identities are recorded by their external sidecars and final smoke transcript rather than embedded here, avoiding a recursive source-commit/package-checksum claim.
+The final detached build and packaged smoke are emitted from the close-out HEAD after this document lands. Their exact source revision and archive identities are recorded by the release manifest, external SHA-256/BLAKE3 sidecars, and checksum-addressable smoke transcript rather than embedded here, avoiding a recursive source-commit/package-checksum claim.
