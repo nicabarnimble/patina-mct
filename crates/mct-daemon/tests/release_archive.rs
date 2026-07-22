@@ -15,6 +15,7 @@ const SOURCE_EPOCH: u64 = 1_700_000_000;
 enum ArchiveMutation {
     None,
     ExtraFile,
+    ExtraSignatureMember,
     DuplicateNotes,
     SymlinkLicense,
     Traversal,
@@ -46,6 +47,12 @@ fn release_archive_verifier_enforces_closed_layout_and_bounds() {
     assert_eq!(verified.manifest.target_triple, TARGET);
     assert_eq!(verified.release_notes, "# MCT 0.2.0\n\nRelease notes.\n");
     assert!(verified.executable_path.is_file());
+    assert!(
+        verified
+            .release_root
+            .join("payload/mct-daemon.app/Contents/_CodeSignature/CodeResources")
+            .is_file()
+    );
     assert!(verified.release_root.starts_with(&destination));
     assert_eq!(
         fs::read(&verified.executable_path).unwrap(),
@@ -57,6 +64,7 @@ fn release_archive_verifier_enforces_closed_layout_and_bounds() {
 fn hostile_release_archives_and_sidecars_leave_no_extracted_tree() {
     for mutation in [
         ArchiveMutation::ExtraFile,
+        ArchiveMutation::ExtraSignatureMember,
         ArchiveMutation::DuplicateNotes,
         ArchiveMutation::SymlinkLicense,
         ArchiveMutation::Traversal,
@@ -138,6 +146,10 @@ fn release_fixture(mutation: ArchiveMutation) -> ReleaseFixture {
         b"#!/bin/sh\nexit 0\n".to_vec(),
     );
     files.insert(
+        "payload/mct-daemon.app/Contents/_CodeSignature/CodeResources".into(),
+        b"<?xml version=\"1.0\"?>\n<plist version=\"1.0\"><dict/></plist>\n".to_vec(),
+    );
+    files.insert(
         "RELEASE-NOTES.md".into(),
         if matches!(mutation, ArchiveMutation::TerminalEscapeNotes) {
             b"# MCT 0.2.0\n\x1b[31mforged\n".to_vec()
@@ -211,6 +223,7 @@ fn release_fixture(mutation: ArchiveMutation) -> ReleaseFixture {
         format!("{root}/payload/mct-daemon.app"),
         format!("{root}/payload/mct-daemon.app/Contents"),
         format!("{root}/payload/mct-daemon.app/Contents/MacOS"),
+        format!("{root}/payload/mct-daemon.app/Contents/_CodeSignature"),
     ] {
         append_directory(&mut builder, &directory);
     }
@@ -236,6 +249,14 @@ fn release_fixture(mutation: ArchiveMutation) -> ReleaseFixture {
     }
     if matches!(mutation, ArchiveMutation::ExtraFile) {
         append_file(&mut builder, &format!("{root}/EXTRA"), b"extra", 0o644);
+    }
+    if matches!(mutation, ArchiveMutation::ExtraSignatureMember) {
+        append_file(
+            &mut builder,
+            &format!("{root}/payload/mct-daemon.app/Contents/_CodeSignature/CodeDirectory"),
+            b"forbidden detached signature member",
+            0o644,
+        );
     }
     if matches!(mutation, ArchiveMutation::Traversal) {
         append_raw_path_file(&mut builder, "../escape", b"escape", 0o644);
@@ -264,7 +285,7 @@ fn release_fixture(mutation: ArchiveMutation) -> ReleaseFixture {
 fn append_directory<W: Write>(builder: &mut tar::Builder<W>, path: &str) {
     let mut header = tar::Header::new_gnu();
     header.set_entry_type(tar::EntryType::Directory);
-    header.set_path(path).unwrap();
+    header.set_path(format!("{path}/")).unwrap();
     header.set_size(0);
     normalized_header(&mut header, 0o755);
     header.set_cksum();
