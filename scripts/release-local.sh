@@ -110,7 +110,7 @@ PY
   trap - RETURN
 }
 
-smoke_release() {
+smoke_release() (
   local artifact= nocapture=false
   while (($#)); do
     case $1 in
@@ -134,12 +134,12 @@ smoke_release() {
 
   local uid lock work source smoke_root extract_dir snapshot_dir transcript success=false
   uid=$(/usr/bin/id -u)
-  lock="${TMPDIR:-/tmp}/mct-release-smoke-$uid.lock"
+  lock="/tmp/mct-release-smoke-$uid.lock"
   if ! mkdir "$lock" 2>/dev/null; then
     printf 'another per-UID release smoke holds %s\n' "$lock" >&2
     exit 1
   fi
-  work=$(mktemp -d "${TMPDIR:-/tmp}/mct-release-smoke.XXXXXX")
+  work=$(mktemp -d "/tmp/mct-release-smoke.XXXXXX")
   chmod 700 "$work"
   source="$work/source"
   smoke_root="$work/service-root"
@@ -185,7 +185,7 @@ smoke_release() {
   cleanup_smoke() {
     local status=$?
     set +e
-    if [[ -n $harness && -x $harness && -e $smoke_root/supervisor.json ]]; then
+    if [[ -n ${harness:-} && -x $harness && -e $smoke_root/supervisor.json ]]; then
       "$harness" release-smoke-internal stop --root "$smoke_root" >>"$transcript" 2>&1
       "$harness" release-smoke-internal uninstall --root "$smoke_root" >>"$transcript" 2>&1
     fi
@@ -343,7 +343,7 @@ smoke_release() {
   success=true
   printf 'release-smoke: PASS archive=%s alternate=%s transcript=%s nocapture=%s\n' \
     "$artifact" "$alternate_id" "$transcript" "$nocapture"
-}
+)
 
 case $command_name in
   build) build_release "$@" ;;
