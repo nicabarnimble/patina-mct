@@ -27,5 +27,8 @@ jobs:
       - name: Install Allium
         run: scripts/install-allium-ci.sh
 
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version 0.22.2
+
       - name: Check Allium specs and Rust tests
         run: scripts/ci-tier0.sh
