@@ -200,6 +200,7 @@ if summary().get("daemon_release_artifacts") != 1 or summary().get("artifacts") 
 source_root = root / "fixture-sources"
 source_root.mkdir()
 fixture_copies: dict[str, Path] = {}
+fixture_copy_hashes: dict[Path, str] = {}
 for child, version, manifest, component in [
     ("slate-manager", "0.2.0", "slate-manager.toml", "slate-manager.wasm"),
     ("folder-watch-actor", "0.1.0", "child.toml", "folder-watch-actor.wasm"),
@@ -210,6 +211,8 @@ for child, version, manifest, component in [
     fixture = args.fixtures / f"{child}-{version}"
     shutil.copy2(fixture / manifest, source / manifest)
     shutil.copy2(fixture / component, source / component)
+    for copied in [source / manifest, source / component]:
+        fixture_copy_hashes[copied] = hashlib.sha256(copied.read_bytes()).hexdigest()
     fixture_copies[child] = source
 
 project = root / "slate-project"
@@ -361,7 +364,7 @@ trigger = {
         },
         "payload_constraint": blob["payload"],
         "trigger_source": {
-            "trigger_kind": "temporal",
+            "source_kind": "temporal",
             "anchor_at": timestamp(anchor),
             "interval_ms": 60000,
         },
@@ -432,6 +435,9 @@ if final_summary.get("watch_event_deliveries") != 2:
     fail(f"Watch revocation did not survive restart: {final_summary!r}")
 if final_summary.get("artifacts") != 3:
     fail(f"three fixture artifacts were not preserved: {final_summary!r}")
+for copied, before_hash in fixture_copy_hashes.items():
+    if hashlib.sha256(copied.read_bytes()).hexdigest() != before_hash:
+        fail(f"operator-pointed acquisition mutated fixture source: {copied}")
 
 print(json.dumps({
     "slate_artifact": slate_artifact,

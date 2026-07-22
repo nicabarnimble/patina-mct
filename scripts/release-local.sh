@@ -323,16 +323,28 @@ smoke_release() (
     printf 'smoke did not preserve both immutable daemon releases\n' >&2
     exit 1
   }
+  "$binary" state summary --state "$smoke_root/state.sqlite" --json >"$work/state-before-uninstall.json"
   jq -e '.daemon_release_artifacts == 2 and .artifacts == 3' \
-    <("$binary" state summary --state "$smoke_root/state.sqlite" --json) >/dev/null
+    "$work/state-before-uninstall.json" >/dev/null
 
   printf '=== release smoke: clean stop, uninstall, preservation, and D1.18 postflight ===\n'
   "$harness" release-smoke-internal stop --root "$smoke_root"
   "$harness" release-smoke-internal uninstall --root "$smoke_root"
   installed=false
   "$harness" release-smoke-internal postflight --root "$smoke_root"
-  [[ -f $smoke_root/observations.jsonl && -f $smoke_root/state.sqlite && -d $smoke_root/releases ]] || {
-    printf 'uninstall did not preserve release evidence\n' >&2
+  [[ -f $smoke_root/observations.jsonl && -f $smoke_root/state.sqlite && -d $smoke_root/releases \
+      && -f $smoke_root/config.json && -f $smoke_root/identity/iroh-secret.hex \
+      && -d $smoke_root/children ]] || {
+    printf 'uninstall did not preserve release evidence and runtime state\n' >&2
+    exit 1
+  }
+  "$binary" state summary --state "$smoke_root/state.sqlite" --json >"$work/state-after-uninstall.json"
+  cmp -s "$work/state-before-uninstall.json" "$work/state-after-uninstall.json" || {
+    printf 'uninstall changed preserved runtime-state projections\n' >&2
+    exit 1
+  }
+  [[ $(find "$smoke_root/releases/sha256" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ') == 2 ]] || {
+    printf 'uninstall did not preserve both immutable daemon releases\n' >&2
     exit 1
   }
   [[ ! -e $smoke_root/supervisor.json && ! -e $smoke_root/launchd/io.patina.mct.mother.plist ]] || {
@@ -340,9 +352,13 @@ smoke_release() (
     exit 1
   }
   compare_production
+  local durable_transcript
+  durable_transcript="$artifact.smoke.txt"
   success=true
   printf 'release-smoke: PASS archive=%s alternate=%s transcript=%s nocapture=%s\n' \
-    "$artifact" "$alternate_id" "$transcript" "$nocapture"
+    "$artifact" "$alternate_id" "$durable_transcript" "$nocapture"
+  sleep 0.1
+  cp "$transcript" "$durable_transcript"
 )
 
 case $command_name in
