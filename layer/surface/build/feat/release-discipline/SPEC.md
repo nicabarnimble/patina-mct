@@ -116,7 +116,7 @@ This slice establishes release mechanics around the existing authority and lifec
 
 ## D1 Decisions — ratified implementation contract
 
-The operator ratified D1.1–D1.14 on 2026-07-22, added D1.15–D1.16 before the first failing implementation test, and ratified D1.17 when implementation proved that bundle signing necessarily adds its sealed resource member. Any later semantic change requires another explicit D1.x amendment.
+The operator ratified D1.1–D1.14 on 2026-07-22, added D1.15–D1.16 before the first failing implementation test, ratified D1.17 when implementation proved that bundle signing necessarily adds its sealed resource member, and ratified D1.18 when implementation exposed the fixed production plist collision in an otherwise isolated real-launchd smoke. Any later semantic change requires another explicit D1.x amendment.
 
 ### D1.1 — One workspace version is the product version
 
@@ -549,9 +549,9 @@ Upgrade orchestration, status polling, tests, reports, and operator documentatio
 
 ### D1.16 — Release smoke and a production resident are mutually exclusive moments
 
-The fixed label `io.patina.mct.mother` is global within `gui/<uid>`. The operator knowingly accepts that the real-launchd release smoke and a production `mctMother` resident cannot run concurrently. Once `mctMother` is a daily driver, running the smoke requires an explicit temporary production stop and later explicit restart.
+The fixed label `io.patina.mct.mother` is global within `gui/<uid>`. The operator knowingly accepts only that the real-launchd release smoke and a production `mctMother` resident cannot run concurrently. Once `mctMother` is a daily driver, running the smoke requires an explicit temporary production stop and later explicit restart.
 
-The smoke's existing refuse-not-skip preflight is the enforcement boundary: if that fixed label is loaded, the smoke performs no stop, install, replacement, or fallback and exits with guidance describing the required operator-controlled production stop. It never takes authority to stop the production resident itself. The smoke script's help/documentation states this operational property and its restart responsibility.
+The smoke's existing refuse-not-skip preflight is the label-exclusivity enforcement boundary: if that fixed label is loaded, the smoke performs no stop, install, replacement, or fallback and exits with guidance describing the required operator-controlled production stop. It never takes authority to stop the production resident itself. The smoke script's help/documentation states this operational property and its restart responsibility. Production file safety is not delegated to the operator; D1.18 supplies that guarantee.
 
 **Rationale:** A truthful mutually exclusive maintenance window is safer than a test-only label override or hidden production-service mutation.
 
@@ -562,6 +562,16 @@ The exact macOS payload layout includes the `Contents/_CodeSignature/` directory
 The future notarization slot's hardened-runtime Developer ID signing replaces the member's contents through the same target-adapter seam without a layout change. Signature resources remain package evidence, not publisher or update authority.
 
 **Rationale:** A signed Mach-O app bundle necessarily seals its resources in `CodeResources`; naming that generated member preserves both exact-layout verification and the no-redesign notarization seam.
+
+### D1.18 — Smoke orchestration uses an internal isolated plist seam
+
+The real-launchd smoke retains the exact fixed `io.patina.mct.mother` label and production `gui/<uid>` launchd domain, but its supervisor record names a dedicated plist inside the owner-private temporary smoke root. Install, start, status, stop, replacement, and uninstall reuse the exact production record rendering, validation, append-before-effect ordering, `LaunchdSupervisorAdapter`, and lifecycle composition. The internal seam changes only the plist location selected before those paths run; it does not alter supervisor law, service identity, process-context proof, or launchctl behavior.
+
+The mechanism is smoke-orchestration-internal and is absent from the production `mct-daemon` CLI surface, using the same seam discipline as the private fake supervisor adapter. No production command-line flag, environment variable, config field, record input, or other operator-controlled value can select another plist path or service label. The distributed executable therefore exposes only the ratified fixed production plist selection.
+
+Before any smoke mutation, orchestration snapshots the default production supervisor record and plist as exact presence-plus-byte states and proves the fixed label unloaded. After clean smoke uninstall—and on every cleanup path on which comparison can run—it compares both default paths byte-for-byte with their snapshots. Absence before and after satisfies the same rule. A mismatch blocks release, preserves the smoke root and transcript, and is never reported as cleanup success.
+
+**Rationale:** Fixed-label launchd truth requires temporal exclusivity, while a root-local internal plist prevents isolated release proof from overwriting or removing production policy files.
 
 ## Failing-Test-First Implementation Order
 
