@@ -54,6 +54,43 @@ struct DueOccurrenceRange {
     count: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FireLateRecoveryPlan {
+    admitted: u64,
+    refused: Option<u64>,
+}
+
+impl FireLateRecoveryPlan {
+    fn evaluations(self) -> usize {
+        usize::try_from(self.admitted).unwrap_or(usize::MAX) + usize::from(self.refused.is_some())
+    }
+}
+
+fn fire_late_recovery_plan(
+    missed_count: u64,
+    recovery_limit: u64,
+    turn_budget: usize,
+) -> FireLateRecoveryPlan {
+    if missed_count == 0 || turn_budget == 0 {
+        return FireLateRecoveryPlan {
+            admitted: 0,
+            refused: None,
+        };
+    }
+    let unconstrained_admitted = missed_count.min(recovery_limit).min(turn_budget as u64);
+    if unconstrained_admitted == missed_count {
+        return FireLateRecoveryPlan {
+            admitted: unconstrained_admitted,
+            refused: None,
+        };
+    }
+    let admitted = unconstrained_admitted.min(turn_budget.saturating_sub(1) as u64);
+    FireLateRecoveryPlan {
+        admitted,
+        refused: Some(missed_count - admitted),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum SchedulerAdmissionDecision {
     FireNow,
@@ -997,11 +1034,13 @@ impl TriggerScheduler {
                     *budget = budget.saturating_sub(1);
                 }
                 MissedFirePolicy::FireLateBounded => {
-                    let admitted = missed
-                        .count
-                        .min(self.limits.max_recovery_range_occurrences)
-                        .min(*budget as u64);
-                    for offset in 0..admitted {
+                    let plan = fire_late_recovery_plan(
+                        missed.count,
+                        self.limits.max_recovery_range_occurrences,
+                        *budget,
+                    );
+                    debug_assert!(plan.evaluations() <= *budget);
+                    for offset in 0..plan.admitted {
                         let index = missed.first_index + offset;
                         let (candidate, nominal_at) = singleton_candidate(authority, index)?;
                         self.process_candidate(
@@ -1013,13 +1052,14 @@ impl TriggerScheduler {
                         .await?;
                         *budget = budget.saturating_sub(1);
                     }
-                    if admitted < missed.count && *budget > 0 {
+                    if let Some(refused_count) = plan.refused {
+                        let first_refused_index = missed.first_index + plan.admitted;
                         let refused = DueOccurrenceRange {
-                            first_index: missed.first_index + admitted,
+                            first_index: first_refused_index,
                             last_index: missed.last_index,
-                            first_at: occurrence_at(authority, missed.first_index + admitted)?.1,
+                            first_at: occurrence_at(authority, first_refused_index)?.1,
                             last_at: missed.last_at,
-                            count: missed.count - admitted,
+                            count: refused_count,
                         };
                         self.record_terminal_range(
                             authority,
@@ -2735,6 +2775,18 @@ listens = []
         );
         assert_eq!(bounded.candidates.len(), 2);
         assert_eq!(bounded.terminal[0].represented_set.count, 1);
+    }
+
+    #[test]
+    fn production_fire_late_recovery_terminally_refuses_every_excess_occurrence() {
+        let plan = fire_late_recovery_plan(
+            MCT_TRIGGER_MAX_RECOVERY_RANGE_OCCURRENCES + 1,
+            MCT_TRIGGER_MAX_RECOVERY_RANGE_OCCURRENCES,
+            MCT_TRIGGER_MAX_EVALUATIONS_PER_TURN,
+        );
+        assert_eq!(plan.admitted, 31);
+        assert_eq!(plan.refused, Some(4_066));
+        assert_eq!(plan.evaluations(), MCT_TRIGGER_MAX_EVALUATIONS_PER_TURN);
     }
 
     #[test]
