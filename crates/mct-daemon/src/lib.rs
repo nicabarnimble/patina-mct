@@ -164,13 +164,13 @@ mod tests {
 
     #[test]
     fn exposes_version() {
-        assert_eq!(super::version(), "0.1.0");
+        assert_eq!(super::version(), env!("CARGO_PKG_VERSION"));
     }
 
     #[test]
     fn daemon_reports_health_and_readiness() {
         let ready = daemon_status(Some(iroh_snapshot(MotherIrohEndpointLifecycle::Bound)));
-        assert_eq!(ready.version, "0.1.0");
+        assert_eq!(ready.version, env!("CARGO_PKG_VERSION"));
         assert_eq!(ready.health, MctDaemonHealth::Healthy);
         assert_eq!(ready.readiness, MctDaemonReadiness::Ready);
         assert_eq!(ready.safe_message, "ready");
