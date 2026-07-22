@@ -292,7 +292,7 @@ blob = expect("POST", "/blobs", {
 ledger_lines_before = len(ledger.read_text().splitlines())
 ledger_bytes_before = ledger.stat().st_size
 now = datetime.now(timezone.utc)
-anchor = now - timedelta(seconds=4096.2)
+anchor = now - timedelta(minutes=4096, seconds=1)
 iso = lambda value: value.isoformat(timespec="microseconds").replace("+00:00", "Z")
 turn_cpu_before = cpu_seconds(pid)
 turn_started = time.monotonic_ns()
@@ -303,7 +303,7 @@ expect("POST", "/triggers/create", {
         "trigger_authority_id": "trigger:release-baseline-turn",
         "target": {"namespace": "patina:watch", "interface_name": "events@0.1.0", "function_name": "emit"},
         "payload_constraint": blob["payload"],
-        "trigger_source": {"source_kind": "temporal", "anchor_at": iso(anchor), "interval_ms": 1000},
+        "trigger_source": {"source_kind": "temporal", "anchor_at": iso(anchor), "interval_ms": 60000},
         "missed_fire_policy": "fire_late_bounded",
         "overlap_policy": "refuse",
         "starts_at": iso(anchor),
