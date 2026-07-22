@@ -1007,6 +1007,25 @@ fn artifact_stage_terminal_observations(
     }
 }
 
+fn artifact_stage_standing_source_proof(
+    request: &MctArtifactStageRequest,
+    ledger_path: Option<&Path>,
+) -> Result<Option<MctStandingSourceLedgerProof>> {
+    request
+        .standing_source_authority_id
+        .as_deref()
+        .map(|source_authority_id| {
+            let ledger_path = ledger_path
+                .context("standing artifact source requires an available resident ledger path")?;
+            verify_standing_source_ledger_correlation(
+                &request.state_path,
+                ledger_path,
+                source_authority_id,
+            )
+        })
+        .transpose()
+}
+
 pub(super) fn execute_offline_artifact_stage(
     ledger_path: &Path,
     request: &MctArtifactStageRequest,
@@ -1023,15 +1042,21 @@ pub(super) fn execute_offline_artifact_stage(
         artifact_stage_decision_observations(request, &context),
         mct_daemon::current_timestamp_string(),
     )?;
-    match stage_artifact_with_context_and_observer(request, &context, |report| {
-        ledger
-            .append_batch_before_effect(
-                artifact_stage_terminal_observations(request, &context, Some(report)),
-                mct_daemon::current_timestamp_string(),
-            )
-            .map(|_| ())
-            .context("artifact terminal observation was not durable")
-    }) {
+    let standing_source_proof = artifact_stage_standing_source_proof(request, Some(ledger_path))?;
+    match stage_artifact_with_context_and_observer(
+        request,
+        &context,
+        standing_source_proof.as_ref(),
+        |report| {
+            ledger
+                .append_batch_before_effect(
+                    artifact_stage_terminal_observations(request, &context, Some(report)),
+                    mct_daemon::current_timestamp_string(),
+                )
+                .map(|_| ())
+                .context("artifact terminal observation was not durable")
+        },
+    ) {
         Ok(report) => Ok(report),
         Err(error) => {
             if let Err(observation_error) = ledger.append_batch_before_effect(
@@ -1207,18 +1232,38 @@ async fn execute_resident_artifact_stage(
             serde_json::json!({"error": "artifact acquisition authority was not durable"}),
         );
     }
+    let standing_source_proof = match artifact_stage_standing_source_proof(&request, ledger.path())
+    {
+        Ok(proof) => proof,
+        Err(_) => {
+            let _ = ledger
+                .append(artifact_stage_terminal_observations(
+                    &request, &context, None,
+                ))
+                .await;
+            return peer_mutation_response(
+                400,
+                serde_json::json!({"error": "standing artifact source ledger proof rejected"}),
+            );
+        }
+    };
     let stage_request = request.clone();
     let stage_context = context.clone();
     let stage_ledger = ledger.clone();
     let runtime = tokio::runtime::Handle::current();
     let stage_result = tokio::task::spawn_blocking(move || {
-        stage_artifact_with_context_and_observer(&stage_request, &stage_context, |report| {
-            runtime.block_on(stage_ledger.append(artifact_stage_terminal_observations(
-                &stage_request,
-                &stage_context,
-                Some(report),
-            )))
-        })
+        stage_artifact_with_context_and_observer(
+            &stage_request,
+            &stage_context,
+            standing_source_proof.as_ref(),
+            |report| {
+                runtime.block_on(stage_ledger.append(artifact_stage_terminal_observations(
+                    &stage_request,
+                    &stage_context,
+                    Some(report),
+                )))
+            },
+        )
     })
     .await;
     match stage_result {
@@ -3328,6 +3373,96 @@ listens = []
         assert_eq!(status, 500);
         assert!(!children_dir.exists());
         assert!(!state_path.exists());
+    }
+
+    #[tokio::test]
+    async fn resident_standing_acquisition_requires_and_consumes_shared_ledger_proof() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_catalog = dir.path().join("source-catalog");
+        write_resident_process_child(&source_catalog);
+        let source_root = source_catalog.join("resident-echo").canonicalize().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let socket_path = dir.path().join("control.sock");
+        let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let handler = resident_observed_mutation_handler(
+            config_path,
+            children_dir.clone(),
+            state_path.clone(),
+            ledger.clone(),
+        );
+        let source = ArtifactSourceAuthority {
+            source_authority_id: ArtifactSourceAuthorityId::new("source-resident-proof").unwrap(),
+            source_ref: format!("file://{}", source_root.display()),
+            scope: ArtifactSourceScope {
+                scope_mode: ArtifactSourceScopeMode::Constrained,
+                artifact_scope: vec!["resident-echo@0.1.0".into()],
+                publisher_scope: vec!["resident-fixture".into()],
+                namespace_scope: vec!["patina:demo".into()],
+                allowed_actions: vec!["acquire".into()],
+            },
+            integrity_policy_ref: "sha256-sidecars-v1".into(),
+            provenance_policy_ref: None,
+            issuer_principal_ref: "os-uid:501".into(),
+            policy_revision: 1,
+            authority_state: ArtifactSourceAuthorityState::Active,
+            issued_at: Timestamp::new("2026-07-21T00:00:00Z").unwrap(),
+            expires_at: Timestamp::new("2099-01-01T00:00:00Z").unwrap(),
+            authority_observation_id: ObservationId::new("obs-source-resident-proof").unwrap(),
+        };
+        let record_digest = blake3::hash(&serde_json::to_vec(&source).unwrap())
+            .to_hex()
+            .to_string();
+        let (source_status, source_response) = post_mutation(
+            Arc::clone(&listener),
+            handler.clone(),
+            &socket_path,
+            "/artifacts/sources/create",
+            serde_json::to_value(ArtifactSourceMutationRequest {
+                expected_state_path: state_path.clone(),
+                source: source.clone(),
+                record_digest,
+            })
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(source_status, 200, "{source_response}");
+
+        let request = MctArtifactStageRequest {
+            source_root,
+            manifest_path: PathBuf::from("child.toml"),
+            component_path: PathBuf::from("resident-echo.wasm"),
+            claimed_child_name: "resident-echo".into(),
+            claimed_artifact_version: "0.1.0".into(),
+            expected_digest: None,
+            standing_source_authority_id: Some(source.source_authority_id.to_string()),
+            claimed_publisher: Some("resident-fixture".into()),
+            require_source_sidecars: true,
+            children_dir: children_dir.clone(),
+            state_path: state_path.clone(),
+        };
+        let (stage_status, stage_response) = post_mutation(
+            listener,
+            handler.clone(),
+            &socket_path,
+            "/artifacts/stage",
+            serde_json::to_value(request).unwrap(),
+        )
+        .await;
+        assert_eq!(stage_status, 200, "{stage_response}");
+        assert_eq!(
+            MctRuntimeStateStore::open(&state_path)
+                .unwrap()
+                .artifact_acquisitions()
+                .unwrap()
+                .len(),
+            1
+        );
+        drop(handler);
+        ledger.close().await;
     }
 
     #[tokio::test]

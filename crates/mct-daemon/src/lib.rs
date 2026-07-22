@@ -32,8 +32,9 @@ mod wit_values;
 pub use acquisition::{
     MCT_CHILD_MANIFEST_MAX_BYTES, MCT_COMPONENT_ARTIFACT_MAX_BYTES,
     MCT_FILESYSTEM_ACQUISITION_ADAPTER, MctArtifactAcquisitionReport, MctArtifactAttemptContext,
-    MctArtifactStageRequest, new_artifact_attempt_context, stage_artifact_with_context,
-    stage_artifact_with_context_and_observer, stage_operator_pointed_artifact,
+    MctArtifactStageRequest, MctStandingSourceLedgerProof, new_artifact_attempt_context,
+    stage_artifact_with_context, stage_artifact_with_context_and_observer,
+    stage_operator_pointed_artifact, verify_standing_source_ledger_correlation,
 };
 pub use blob_store::{
     MCT_BLOB_MAX_BYTES, MctLocalBlobStore, MctLocalBlobStoreError, content_addressed_blob_handle,
