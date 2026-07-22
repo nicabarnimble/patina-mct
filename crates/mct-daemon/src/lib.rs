@@ -110,8 +110,10 @@ pub use release::{
     MCT_DAEMON_RELEASE_EXTRACTED_MAX_BYTES, MCT_DAEMON_RELEASE_FILESYSTEM_ADAPTER,
     MCT_DAEMON_RELEASE_MAX_ENTRIES, MCT_DAEMON_RELEASE_METADATA_FILE_MAX_BYTES,
     MctDaemonReleaseAcquisitionReport, MctDaemonReleaseAcquisitionRequest,
+    MctDaemonReleaseSourceKind, MctDaemonReleaseSourcePlan, MctVerifiedDaemonRelease,
     OperatorPointedDaemonReleaseAcquisitionDecisionV1, ReleaseManifestV1,
     VerifiedDaemonReleaseArchive, acquire_operator_file_daemon_release_offline,
+    acquire_operator_file_daemon_release_with_observer, plan_daemon_release_source,
     verify_and_extract_daemon_release_archive,
 };
 pub use state::{

@@ -1189,6 +1189,60 @@ async fn execute_resident_artifact_source_mutation(
     }
 }
 
+async fn execute_resident_daemon_release_acquisition(
+    owner: mct_daemon::MctUdsAuthenticatedOwner,
+    configured_state_path: &Path,
+    ledger: &ResidentLedgerWriter,
+    body: &[u8],
+) -> MctControlPlaneResponse {
+    let request: MctDaemonReleaseAcquisitionRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(_) => {
+            return peer_mutation_response(
+                400,
+                serde_json::json!({"error": "daemon release acquisition request rejected"}),
+            );
+        }
+    };
+    let expected_releases = configured_state_path
+        .parent()
+        .map(|root| root.join("releases"));
+    let expected_ledger = ledger.path();
+    if request.authenticated_uid != owner.uid()
+        || require_expected_config_path(&request.state_path, configured_state_path).is_err()
+        || expected_releases.as_ref() != Some(&request.releases_dir)
+        || expected_ledger != Some(request.ledger_path.as_path())
+    {
+        return peer_mutation_response(
+            409,
+            serde_json::json!({"error": "daemon release acquisition authority or path mismatch"}),
+        );
+    }
+
+    let callback_ledger = ledger.clone();
+    let runtime = tokio::runtime::Handle::current();
+    let result = tokio::task::spawn_blocking(move || {
+        acquire_operator_file_daemon_release_with_observer(&request, move |observation| {
+            runtime.block_on(callback_ledger.append(vec![observation]))
+        })
+    })
+    .await;
+    match result {
+        Ok(Ok(report)) => peer_mutation_response(
+            200,
+            serde_json::to_value(report).expect("daemon release report serializes"),
+        ),
+        Ok(Err(_)) => peer_mutation_response(
+            400,
+            serde_json::json!({"error": "daemon release acquisition failed closed"}),
+        ),
+        Err(_) => peer_mutation_response(
+            500,
+            serde_json::json!({"error": "daemon release acquisition worker failed"}),
+        ),
+    }
+}
+
 async fn execute_resident_artifact_stage(
     _owner: mct_daemon::MctUdsAuthenticatedOwner,
     configured_children_dir: &Path,
@@ -1935,6 +1989,7 @@ enum ResidentMutationKind {
     Registry,
     ArtifactSource,
     ArtifactStage,
+    DaemonRelease,
     Watch,
     Trigger,
     Administrative,
@@ -1977,6 +2032,10 @@ const RESIDENT_MUTATION_ROUTES: &[ResidentMutationRoute] = &[
     ResidentMutationRoute {
         path: "/artifacts/stage",
         kind: ResidentMutationKind::ArtifactStage,
+    },
+    ResidentMutationRoute {
+        path: "/releases/acquire",
+        kind: ResidentMutationKind::DaemonRelease,
     },
     ResidentMutationRoute {
         path: "/watch/grant",
@@ -2116,6 +2175,15 @@ fn resident_mutation_handler(
                         .await
                     }
                     None => unavailable_mutation_response("artifact staging unavailable"),
+                },
+                Some(ResidentMutationKind::DaemonRelease) => match state_path.as_deref() {
+                    Some(state_path) => {
+                        execute_resident_daemon_release_acquisition(
+                            owner, state_path, &ledger, &body,
+                        )
+                        .await
+                    }
+                    None => unavailable_mutation_response("daemon release acquisition unavailable"),
                 },
                 Some(ResidentMutationKind::Watch) => match state_path.as_deref() {
                     Some(state_path) => {
