@@ -138,93 +138,44 @@ archive_sha256=$(cut -d' ' -f1 "$artifact.sha256")
 archive_blake3=$(cut -d' ' -f1 "$artifact.blake3")
 source_revision=$(jq -er .source_commit "$release_root/RELEASE-MANIFEST.json")
 executable_blake3=$(jq -er .executable_blake3 "$release_root/RELEASE-MANIFEST.json")
-rust_version=$(jq -er .rust_version "$release_root/RELEASE-MANIFEST.json")
+rust_version=$(jq -er .rust_version "$release_root/RELEASE-MANIFEST.json" | tr '\n' '; ' | sed 's/;$//')
 cargo_version=$(jq -er .cargo_version "$release_root/RELEASE-MANIFEST.json")
 os_version=$(sw_vers -productVersion)
 hardware_model=$(sysctl -n hw.model)
 logical_cpus=$(sysctl -n hw.logicalcpu)
 memory_bytes=$(sysctl -n hw.memsize)
 power_mode=$(pmset -g custom | tr '\n' ' ' | tr -s ' ' | sed 's/^ //; s/ $//')
-fixture_wall=$(awk '/ real / {print $1; exit}' "$work/fixture-time.txt")
-fixture_user=$(awk '/ user / {print $1; exit}' "$work/fixture-time.txt")
-fixture_sys=$(awk '/ sys / {print $1; exit}' "$work/fixture-time.txt")
+fixture_wall=$(awk '$2 == "real" {print $1; exit}' "$work/fixture-time.txt")
+fixture_user=$(awk '$2 == "user" {print $1; exit}' "$work/fixture-time.txt")
+fixture_sys=$(awk '$2 == "sys" {print $1; exit}' "$work/fixture-time.txt")
 fixture_peak_rss=$(awk '/maximum resident set size/ {print $1; exit}' "$work/fixture-time.txt")
-mkdir -p "$(dirname "$output")"
-python3 - "$work/baselines.json" "$work/fixture-proof.json" "$output" <<PY
-import json, sys
-baseline = json.load(open(sys.argv[1]))
-fixture = json.load(open(sys.argv[2]))
-out = sys.argv[3]
-def values(items): return ", ".join(f"{value:.3f}" if isinstance(value, float) else str(value) for value in items)
-text = f'''# MCT 0.2.0 performance baselines — aarch64-apple-darwin
-
-These values are release evidence, not SLOs or admission thresholds.
-
-## Artifact and host
-
-- Source revision: `$source_revision`
-- Archive SHA-256: `sha256:$archive_sha256`
-- Archive BLAKE3: `blake3:$archive_blake3`
-- Executable BLAKE3: `$executable_blake3`
-- Rust: `$rust_version`
-- Cargo: `$cargo_version`
-- macOS: `$os_version`; architecture: `arm64`
-- Hardware model: `$hardware_model`; logical CPUs: `$logical_cpus`; memory bytes: `$memory_bytes`
-- Power configuration: `$power_mode`
-
-## Startup
-
-Method: five real fixed-label launchd `start` requests through the internal D1.18 plist seam, each awaiting owner-authenticated readiness, followed by clean `stop`.
-
-- Samples (ms): {values(baseline['startup_ms'])}
-- Min/median/max (ms): {baseline['startup_min_ms']:.3f} / {baseline['startup_median_ms']:.3f} / {baseline['startup_max_ms']:.3f}
-
-## Idle RSS
-
-Method: 60 seconds ready and idle, then seven RSS samples ten seconds apart from the launchd-supervised PID.
-
-- Samples (bytes): {values(baseline['idle_rss_bytes'])}
-- Min/median/max (bytes): {baseline['idle_rss_min_bytes']} / {baseline['idle_rss_median_bytes']} / {baseline['idle_rss_max_bytes']}
-
-## Owner-authenticated UDS calls
-
-Payload: exact approved `watch-null-sink@0.1.0` `patina:watch/events@0.1.0.emit` call with public inline legacy file-change data.
-
-- Sequential: {baseline['uds_latency_warmups']} warmups; {baseline['uds_latency_samples']} measured; {baseline['uds_latency_successes']} successes
-- p50/p95/p99/max (µs): {baseline['uds_latency_p50_us']:.3f} / {baseline['uds_latency_p95_us']:.3f} / {baseline['uds_latency_p99_us']:.3f} / {baseline['uds_latency_max_us']:.3f}
-- Throughput: {baseline['throughput_clients']} clients × {baseline['throughput_calls_per_client']} calls in {baseline['throughput_seconds']:.3f}s = {baseline['throughput_calls_per_second']:.3f} calls/s; failures={baseline['throughput_failures']}
-- Throughput resident CPU seconds: {baseline['throughput_cpu_seconds']:.3f}; peak RSS bytes: {baseline['throughput_peak_rss_bytes']}
-
-## Trigger-turn load
-
-Method: one production scheduler recovery range of 4,097 occurrences under `fire_late_bounded`, yielding 31 admitted candidates plus one terminal record representing every excess refusal.
-
-- Turn wall/CPU: {baseline['trigger_turn_ms']:.3f} ms / {baseline['trigger_turn_cpu_seconds']:.3f} s
-- Admitted candidates: {baseline['trigger_turn_admitted']}; terminally represented refusals: {baseline['trigger_turn_terminal_refusals']}
-- Concurrent ordinary owner-authenticated status latency: {baseline['trigger_turn_status_ms']:.3f} ms
-- Ledger bytes after turn: {baseline['trigger_turn_ledger_bytes_after']}
-
-## Complete three-fixture resources
-
-Method: `/usr/bin/time -l python3 scripts/release-smoke-proof.py ...` over copied Slate, folder-watch actor, and null-sink fixtures, including exact approval/grants, Watch call-out, temporal trigger, revocation, and clean restart.
-
-- Wall/user/system seconds: `$fixture_wall` / `$fixture_user` / `$fixture_sys`
-- Peak RSS bytes: `$fixture_peak_rss`
-- Catalog bytes delta: {int('$catalog_after') - int('$catalog_before')}
-- State bytes delta: {int('$state_after') - int('$state_before')}
-- Ledger bytes delta: {int('$ledger_after') - int('$ledger_before')}
-- Terminal outcomes: fixture acquisitions={fixture['fixture_acquisitions']}; Watch deliveries={fixture['watch_event_deliveries']}; revocation survived restart={str(fixture['revocation_survived_restart']).lower()}
-
-## Reproduction
-
-```text
-scripts/release-local.sh baselines --artifact $artifact --output $output
-```
-
-The harness refuses an occupied fixed MCT launchd label, uses no network acquisition, snapshots and post-compares production supervisor files byte-for-byte, and exposes no alternate plist or label selector in the distributed CLI.
-'''
-open(out, 'w').write(text)
-PY
+jq -n \
+  --arg source_revision "$source_revision" \
+  --arg archive_sha256 "$archive_sha256" \
+  --arg archive_blake3 "$archive_blake3" \
+  --arg executable_blake3 "$executable_blake3" \
+  --arg rust_version "$rust_version" \
+  --arg cargo_version "$cargo_version" \
+  --arg os_version "$os_version" \
+  --arg hardware_model "$hardware_model" \
+  --arg logical_cpus "$logical_cpus" \
+  --arg memory_bytes "$memory_bytes" \
+  --arg power_mode "$power_mode" \
+  --arg fixture_wall "$fixture_wall" \
+  --arg fixture_user "$fixture_user" \
+  --arg fixture_sys "$fixture_sys" \
+  --arg fixture_peak_rss "$fixture_peak_rss" \
+  --argjson catalog_delta "$((catalog_after - catalog_before))" \
+  --argjson state_delta "$((state_after - state_before))" \
+  --argjson ledger_delta "$((ledger_after - ledger_before))" \
+  --arg artifact "$artifact" \
+  --arg output "$output" \
+  '$ARGS.named' >"$work/context.json"
+python3 "$source/scripts/render-release-baselines.py" \
+  --baseline-json "$work/baselines.json" \
+  --fixture-json "$work/fixture-proof.json" \
+  --context-json "$work/context.json" \
+  --output "$output"
 
 success=true
 printf 'release-baselines: wrote %s\n' "$output"
