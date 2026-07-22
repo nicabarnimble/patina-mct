@@ -11,7 +11,7 @@ Goal: build the next operational layer after the v0 `patinaMother` replacement b
 5. [x] macOS user-launchd supervisor install/start/stop/restart/uninstall completed 2026-07-15 under `layer/surface/build/feat/supervisor-lifecycle/SPEC.md`. The daily-operation pain clock that started 2026-07-14 is closed. Linux systemd and non-GUI/headless launchd domains remain separately gated future adapters.
 6. [x] Acquisition-backed immutable artifact staging completed 2026-07-16 under `layer/surface/build/feat/artifact-acquisition/SPEC.md`, including the real supervised `slate-manager@0.2.0` daily-driver proof.
 7. [x] Durable temporal triggering and scoped Watch delivery completed 2026-07-21 under the Replacement Slice 4A/4B SPECs, including the source-derived watcher, exact sink, and supervised three-fixture proof.
-8. [ ] Resume the paused `mct-release-hardening` and `mct-interface-launcher-control` epics as the final gate. Replacement of `patinaMother` cannot be claimed while they are paused; they are deferred, not dropped.
+8. [ ] Adjudicate the final claims separately. The supervised three-fixture suite proves the v0 `patinaMother` **runtime responsibility replacement** boundary. Operational shutoff of `patinaMother` remains gated by an operator-ratified inventory of required Patina/interface/`patina ai` behavior and either a replacement application layer or explicit accepted gaps. Into-the-wild release remains gated by the refreshed security findings, version/packaging/distribution/docs discipline, dependency audit, and production performance baseline. The paused `mct-interface-launcher-control` epic remains follow-on interface-layer work above MCT and does not negate the landed runtime proof.
 
 ## Completed: Multi-Mother — single-hop forwarding
 
