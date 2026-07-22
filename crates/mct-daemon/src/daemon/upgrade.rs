@@ -129,6 +129,7 @@ pub(super) fn run_upgrade(mut args: Vec<String>) -> Result<()> {
     let approval = match supplied_approval {
         Some(approval) => approval,
         None if json => {
+            record_upgrade_fact(&context, artifact_id, "upgrade_approval_denied")?;
             bail!("JSON upgrade requires --approve-artifact with the exact release artifact id")
         }
         None => {
@@ -136,15 +137,32 @@ pub(super) fn run_upgrade(mut args: Vec<String>) -> Result<()> {
             std::io::stdout().flush()?;
             let mut input = String::new();
             if std::io::stdin().read_line(&mut input)? == 0 {
+                record_upgrade_fact(&context, artifact_id, "upgrade_approval_denied")?;
                 bail!("upgrade approval denied at EOF; no lifecycle effect occurred");
             }
             input.trim_end_matches(['\r', '\n']).to_owned()
         }
     };
     if approval != *artifact_id {
+        record_upgrade_fact(&context, artifact_id, "upgrade_approval_denied")?;
         bail!(
             "upgrade approval did not equal the exact release artifact id; no lifecycle effect occurred"
         );
     }
-    bail!("exact upgrade approval admitted, but lifecycle composition is not yet implemented")
+    record_upgrade_fact(&context, artifact_id, "upgrade_approval_admitted")?;
+    let completion = execute_upgrade_lifecycle(&context, &verified.report().artifact)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&completion)?);
+    } else {
+        println!(
+            "upgrade completed artifact={} supervisor={} revision={}",
+            artifact_id,
+            completion
+                .supervisor_record_id
+                .as_deref()
+                .unwrap_or("unknown"),
+            completion.supervisor_revision.unwrap_or_default()
+        );
+    }
+    Ok(())
 }

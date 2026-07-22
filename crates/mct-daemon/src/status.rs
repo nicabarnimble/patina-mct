@@ -29,6 +29,12 @@ pub struct MctDaemonStatus {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MctResidentStatus {
+    #[serde(default)]
+    pub product_version: String,
+    #[serde(default)]
+    pub supervisor_revision: Option<u64>,
+    #[serde(default)]
+    pub executable_digest: Option<String>,
     pub node_id: MctNodeId,
     pub vision_id: VisionId,
     pub accepted_connection_count: u64,

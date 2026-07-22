@@ -11,6 +11,7 @@ use std::{
 };
 
 pub(super) const MCT_LAUNCHD_LABEL: &str = "io.patina.mct.mother";
+pub(super) const MCT_UPGRADE_POST_VERIFY_DEADLINE_SECONDS: u64 = 30;
 const SUPERVISOR_SCHEMA_VERSION: u32 = 1;
 const SUPERVISOR_RECORD_FILE: &str = "supervisor.json";
 static NEXT_LIFECYCLE_ID: AtomicU64 = AtomicU64::new(1);
@@ -399,6 +400,8 @@ async fn execute_authenticated_lifecycle_fact(
     #[serde(deny_unknown_fields)]
     struct Request {
         action: String,
+        #[serde(default)]
+        release_artifact_id: Option<String>,
     }
 
     let request: Request = match serde_json::from_slice::<Request>(body) {
@@ -446,12 +449,60 @@ async fn execute_authenticated_lifecycle_fact(
             "supervisor restart completed through clean stop/start",
             "completed",
         ),
+        "upgrade_approval_admitted" => (
+            ObservationOutcome::Allowed,
+            "exact daemon release artifact approval admitted before lifecycle effects",
+            "allowed",
+        ),
+        "upgrade_approval_denied" => (
+            ObservationOutcome::Denied,
+            "daemon release artifact approval denied without lifecycle effects",
+            "denied",
+        ),
+        "upgrade_complete" => (
+            ObservationOutcome::Completed,
+            "daemon release upgrade completed after bounded post-verification",
+            "completed",
+        ),
+        "upgrade_failed" => (
+            ObservationOutcome::Failed,
+            "daemon release upgrade failed without automatic rollback",
+            "failed",
+        ),
         _ => {
             return lifecycle_http_response(
                 400,
                 serde_json::json!({"error": "unknown lifecycle fact action"}),
             );
         }
+    };
+    let release_artifact_id = if request.action.starts_with("upgrade_") {
+        match request.release_artifact_id.as_deref() {
+            Some(value)
+                if value.strip_prefix("sha256:").is_some_and(|digest| {
+                    digest.len() == 64
+                        && digest
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                }) =>
+            {
+                Some(value)
+            }
+            _ => {
+                return lifecycle_http_response(
+                    400,
+                    serde_json::json!({"error": "upgrade lifecycle fact requires exact release artifact id"}),
+                );
+            }
+        }
+    } else {
+        if request.release_artifact_id.is_some() {
+            return lifecycle_http_response(
+                400,
+                serde_json::json!({"error": "non-upgrade lifecycle fact cannot name a release artifact"}),
+            );
+        }
+        None
     };
     let governing = ledger.path().and_then(|path| {
         JsonlObservationLedger::open_read_only(path, "ledger-local", "local-mct")
@@ -481,6 +532,16 @@ async fn execute_authenticated_lifecycle_fact(
     });
     let (record_id, record_revision, record_detail) =
         governing.unwrap_or_else(|| (MCT_LAUNCHD_LABEL.into(), None, None));
+    let lifecycle_resource = release_artifact_id.unwrap_or(record_id.as_str());
+    let lifecycle_detail = if lifecycle_resource == record_id {
+        record_detail
+    } else {
+        Some(format!(
+            "supervisor-record:{}@{}",
+            record_id,
+            record_revision.unwrap_or_default()
+        ))
+    };
     let attempt_id = generated_id(&format!("lifecycle-{}", request.action));
     let operator_id = generated_id("obs-lifecycle-control-operator");
     let lifecycle_id = generated_id("obs-lifecycle-control");
@@ -503,11 +564,11 @@ async fn execute_authenticated_lifecycle_fact(
             ObservationKind::LifecycleTransitionRecorded,
             SourcePlane::Operator,
             "local-mct",
-            &record_id,
+            lifecycle_resource,
             record_revision,
             outcome,
             message,
-            record_detail,
+            lifecycle_detail,
         ),
     ];
     let adapter_fact = match request.action.as_str() {
@@ -1276,6 +1337,7 @@ fn require_macos_lifecycle() -> Result<()> {
 
 #[derive(Clone, Debug)]
 pub(super) struct UpgradeSupervisorContext {
+    paths: SupervisorPaths,
     pub state_path: PathBuf,
     pub ledger_path: PathBuf,
     pub uds_path: PathBuf,
@@ -1309,6 +1371,7 @@ pub(super) fn upgrade_supervisor_context(
         );
     }
     Ok(UpgradeSupervisorContext {
+        paths: paths.clone(),
         state_path: paths.state,
         ledger_path: paths.ledger,
         uds_path: paths.uds,
@@ -1319,6 +1382,190 @@ pub(super) fn upgrade_supervisor_context(
         supervisor_revision: record.record_revision,
         authenticated_uid: uid,
     })
+}
+
+pub(super) fn record_upgrade_fact(
+    context: &UpgradeSupervisorContext,
+    release_artifact_id: &str,
+    action: &str,
+) -> Result<LifecycleReport> {
+    if !matches!(
+        action,
+        "upgrade_approval_admitted"
+            | "upgrade_approval_denied"
+            | "upgrade_complete"
+            | "upgrade_failed"
+    ) {
+        bail!("unknown upgrade lifecycle fact");
+    }
+    let outcome = match action {
+        "upgrade_approval_admitted" => ObservationOutcome::Allowed,
+        "upgrade_approval_denied" => ObservationOutcome::Denied,
+        "upgrade_complete" => ObservationOutcome::Completed,
+        "upgrade_failed" => ObservationOutcome::Failed,
+        _ => unreachable!(),
+    };
+    let message = match action {
+        "upgrade_approval_admitted" => {
+            "exact daemon release artifact approval admitted before lifecycle effects"
+        }
+        "upgrade_approval_denied" => {
+            "daemon release artifact approval denied without lifecycle effects"
+        }
+        "upgrade_complete" => "daemon release upgrade completed after bounded post-verification",
+        "upgrade_failed" => "daemon release upgrade failed without automatic rollback",
+        _ => unreachable!(),
+    };
+    let record = validate_supervisor_record_for_stop(&context.paths.record)?;
+    if record.owner_uid != context.authenticated_uid
+        || record.record_id != context.supervisor_record_id
+        || (action.starts_with("upgrade_approval")
+            && record.record_revision != context.supervisor_revision)
+    {
+        bail!("upgrade lifecycle fact does not match authenticated supervisor context");
+    }
+    if let Ok(report) = post_lifecycle_control_request(
+        &record,
+        action,
+        context.authenticated_uid,
+        Some(release_artifact_id),
+    ) {
+        return Ok(report);
+    }
+    let mut ledger =
+        JsonlObservationLedger::open(&record.ledger_path, "ledger-local", "local-mct")?;
+    let attempt_id = generated_id("lifecycle-upgrade");
+    let operator_id = generated_id("obs-upgrade-operator");
+    let lifecycle_id = generated_id("obs-upgrade-lifecycle");
+    append_before_effect(
+        &mut ledger,
+        [
+            lifecycle_observation(
+                &operator_id,
+                &attempt_id,
+                ObservationKind::OperatorActionRecorded,
+                SourcePlane::Operator,
+                "local-mct",
+                &format!("os-uid:{}", context.authenticated_uid),
+                Some(record.record_revision),
+                outcome,
+                "authenticated direct upgrade lifecycle fact recorded",
+                None,
+            ),
+            lifecycle_observation(
+                &lifecycle_id,
+                &attempt_id,
+                ObservationKind::LifecycleTransitionRecorded,
+                SourcePlane::Operator,
+                "local-mct",
+                release_artifact_id,
+                Some(record.record_revision),
+                outcome,
+                message,
+                Some(format!(
+                    "supervisor-record:{}@{}",
+                    record.record_id, record.record_revision
+                )),
+            ),
+        ],
+    )?;
+    Ok(LifecycleReport {
+        action: action.into(),
+        outcome: format!("{outcome:?}").to_lowercase(),
+        attempt_id,
+        subject_id: "local-mct".into(),
+        supervisor_record_id: Some(record.record_id),
+        supervisor_revision: Some(record.record_revision),
+        observation_id: lifecycle_id,
+        running: None,
+        ready: None,
+        safe_message: message.into(),
+    })
+}
+
+pub(super) fn execute_upgrade_lifecycle(
+    context: &UpgradeSupervisorContext,
+    artifact: &DaemonReleaseArtifactV1,
+) -> Result<LifecycleReport> {
+    execute_upgrade_lifecycle_with_adapter(
+        context,
+        artifact,
+        &LaunchdSupervisorAdapter,
+        true,
+        |successor| {
+            let deadline = std::time::Instant::now()
+                + Duration::from_secs(MCT_UPGRADE_POST_VERIFY_DEADLINE_SECONDS);
+            loop {
+                if let Ok(status) = query_resident_status(&successor.uds_path)
+                    && status.running
+                    && status.health == MctDaemonHealth::Healthy
+                    && status.readiness == MctDaemonReadiness::Ready
+                    && status.version == artifact.product_version
+                    && status.supervisor_revision == Some(successor.record_revision)
+                    && status.executable_digest.as_deref()
+                        == Some(format!("blake3:{}", successor.executable_digest).as_str())
+                {
+                    return Ok(());
+                }
+                if std::time::Instant::now() >= deadline {
+                    bail!(
+                        "upgrade post-verification exceeded MCT_UPGRADE_POST_VERIFY_DEADLINE_SECONDS"
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        },
+    )
+}
+
+fn execute_upgrade_lifecycle_with_adapter<F>(
+    context: &UpgradeSupervisorContext,
+    artifact: &DaemonReleaseArtifactV1,
+    adapter: &dyn SupervisorAdapter,
+    wait_ready: bool,
+    post_verify: F,
+) -> Result<LifecycleReport>
+where
+    F: FnOnce(&SupervisorRecordV1) -> Result<()>,
+{
+    let candidate_executable = artifact
+        .immutable_release_path
+        .join(&artifact.executable_relative_path);
+    if !candidate_executable.is_file()
+        || format!("blake3:{}", file_digest(&candidate_executable)?) != artifact.executable_blake3
+    {
+        bail!("verified daemon release executable changed before replacement");
+    }
+    let execute = || -> Result<LifecycleReport> {
+        stop_with_adapter(&context.paths, context.authenticated_uid, adapter)?;
+        install_with_adapter(
+            &context.paths,
+            &candidate_executable,
+            context.authenticated_uid,
+            true,
+            adapter,
+        )?;
+        start_with_adapter(
+            &context.paths,
+            context.authenticated_uid,
+            adapter,
+            wait_ready,
+        )?;
+        let successor = validate_supervisor_record(&context.paths.record, true)?;
+        post_verify(&successor)?;
+        record_upgrade_fact(context, &artifact.release_artifact_id, "upgrade_complete")
+    };
+    match execute() {
+        Ok(report) => Ok(report),
+        Err(error) => {
+            let _ = record_upgrade_fact(context, &artifact.release_artifact_id, "upgrade_failed");
+            Err(error).context(format!(
+                "upgrade failed without automatic rollback; prior immutable release retained; run `{}` install --replace --root {} --executable <prior-exact-path>, then start",
+                context.current_executable.display(),
+                context.paths.root.display()
+            ))
+        }
+    }
 }
 
 pub(super) fn run_install(mut args: Vec<String>) -> Result<()> {
@@ -1401,12 +1648,25 @@ fn append_direct_lifecycle_fact(
 fn post_lifecycle_control(
     record: &SupervisorRecordV1,
     action: &str,
+    uid: u32,
+) -> Result<LifecycleReport> {
+    post_lifecycle_control_request(record, action, uid, None)
+}
+
+#[cfg(unix)]
+fn post_lifecycle_control_request(
+    record: &SupervisorRecordV1,
+    action: &str,
     _uid: u32,
+    release_artifact_id: Option<&str>,
 ) -> Result<LifecycleReport> {
     use std::io::{Read as _, Write as _};
     use std::os::unix::net::UnixStream;
 
-    let body = serde_json::to_vec(&serde_json::json!({"action": action}))?;
+    let body = serde_json::to_vec(&serde_json::json!({
+        "action": action,
+        "release_artifact_id": release_artifact_id,
+    }))?;
     let mut stream = UnixStream::connect(&record.uds_path).with_context(|| {
         format!(
             "connect resident lifecycle control {}",
@@ -1437,6 +1697,16 @@ fn post_lifecycle_control(
     _record: &SupervisorRecordV1,
     _action: &str,
     _uid: u32,
+) -> Result<LifecycleReport> {
+    bail!("resident lifecycle control requires Unix-domain sockets")
+}
+
+#[cfg(not(unix))]
+fn post_lifecycle_control_request(
+    _record: &SupervisorRecordV1,
+    _action: &str,
+    _uid: u32,
+    _release_artifact_id: Option<&str>,
 ) -> Result<LifecycleReport> {
     bail!("resident lifecycle control requires Unix-domain sockets")
 }
@@ -3191,6 +3461,98 @@ mod tests {
         assert!(network.to_string().contains("operator_file"));
         assert!(help_text().contains("upgrade <artifact-ref>"));
         assert!(!help_text().contains("upgrade --yes"));
+    }
+
+    #[test]
+    fn exact_upgrade_approval_composes_shared_replace_and_named_post_verify() {
+        assert_eq!(MCT_UPGRADE_POST_VERIFY_DEADLINE_SECONDS, 30);
+        let temp = tempfile::tempdir().unwrap();
+        let paths = SupervisorPaths::isolated(temp.path()).unwrap();
+        let uid = current_uid().unwrap();
+        let adapter = FakeSupervisorAdapter::default();
+        let current = std::env::current_exe().unwrap();
+        let initial = install_with_adapter(&paths, &current, uid, false, &adapter).unwrap();
+        let context = UpgradeSupervisorContext {
+            paths: paths.clone(),
+            state_path: paths.state.clone(),
+            ledger_path: paths.ledger.clone(),
+            uds_path: paths.uds.clone(),
+            releases_dir: paths.root.join("releases"),
+            current_executable: current.clone(),
+            current_executable_digest: format!("blake3:{}", file_digest(&current).unwrap()),
+            supervisor_record_id: initial.supervisor_record_id.unwrap(),
+            supervisor_revision: initial.supervisor_revision.unwrap(),
+            authenticated_uid: uid,
+        };
+        let immutable = paths.root.join("releases/sha256/candidate");
+        let relative = PathBuf::from("payload/mct-daemon.app/Contents/MacOS/mct-daemon");
+        let candidate = immutable.join(&relative);
+        fs::create_dir_all(candidate.parent().unwrap()).unwrap();
+        fs::copy(&current, &candidate).unwrap();
+        let artifact_id = format!("sha256:{}", "a".repeat(64));
+        let artifact = DaemonReleaseArtifactV1 {
+            schema_version: 1,
+            release_artifact_id: artifact_id.clone(),
+            product: "mct-daemon".into(),
+            product_version: mct_daemon::version().into(),
+            target_triple: "aarch64-apple-darwin".into(),
+            archive_size_bytes: 1,
+            archive_sha256: artifact_id.clone(),
+            archive_blake3: format!("blake3:{}", "b".repeat(64)),
+            release_manifest_sha256: format!("sha256:{}", "c".repeat(64)),
+            executable_relative_path: relative.to_string_lossy().into_owned(),
+            executable_sha256: format!("sha256:{}", "d".repeat(64)),
+            executable_blake3: format!("blake3:{}", file_digest(&candidate).unwrap()),
+            release_notes_sha256: format!("sha256:{}", "e".repeat(64)),
+            sbom_sha256: format!("sha256:{}", "1".repeat(64)),
+            fixture_provenance_sha256: format!("sha256:{}", "2".repeat(64)),
+            source_revision: "3".repeat(40),
+            rust_toolchain: "1.96.0".into(),
+            signing_mode: "adhoc".into(),
+            source_kind: "operator_file".into(),
+            source_ref: "file:///tmp/candidate.tar.gz".into(),
+            acquisition_decision_id: "decision:test-upgrade".into(),
+            adapter_effect_authority_ref: "obs:test-upgrade-adapter".into(),
+            acquisition_observation_id: "obs:test-upgrade-acquired".into(),
+            verification_observation_id: "obs:test-upgrade-verified".into(),
+            immutable_release_path: immutable,
+        };
+
+        record_upgrade_fact(&context, &artifact_id, "upgrade_approval_admitted").unwrap();
+        let completion = execute_upgrade_lifecycle_with_adapter(
+            &context,
+            &artifact,
+            &adapter,
+            false,
+            |successor| {
+                assert_eq!(successor.record_revision, context.supervisor_revision + 1);
+                assert_eq!(successor.executable_path, candidate);
+                assert_eq!(
+                    format!("blake3:{}", successor.executable_digest),
+                    artifact.executable_blake3
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(completion.action, "upgrade_complete");
+        let messages = entries(&paths.ledger)
+            .into_iter()
+            .map(|entry| entry.observation.safe_message)
+            .collect::<Vec<_>>();
+        let approval = messages
+            .iter()
+            .position(|message| message.contains("exact daemon release artifact approval"))
+            .unwrap();
+        let replacement = messages
+            .iter()
+            .position(|message| message.contains("record revision 2 install started"))
+            .unwrap();
+        let completion = messages
+            .iter()
+            .position(|message| message.contains("upgrade completed after bounded"))
+            .unwrap();
+        assert!(approval < replacement && replacement < completion);
     }
 
     #[test]
