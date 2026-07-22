@@ -1,10 +1,10 @@
 ---
 type: feat
 id: release-discipline
-status: proposed
+status: active
 created: 2026-07-22
 target: release-hardening-r3
-operator_gate: D1-pending
+operator_gate: D1-ratified
 sessions:
   origin: 20260721-191819-362076000
   work: []
@@ -116,7 +116,7 @@ This slice establishes release mechanics around the existing authority and lifec
 
 ## D1 Decisions — proposed for operator ratification
 
-D1.1–D1.14 are one operator gate. Implementation does not begin until D1 is ratified; later semantic changes are recorded as D1.x amendments.
+The operator ratified D1.1–D1.14 on 2026-07-22 and added D1.15–D1.16 before the first failing implementation test. Any later semantic change requires another explicit D1.x amendment.
 
 ### D1.1 — One workspace version is the product version
 
@@ -355,7 +355,7 @@ After approval, generic orchestration invokes shared lifecycle functions in this
 1. request and complete the existing clean `stop` path, or observe its stopped no-op;
 2. call the existing `install --replace` implementation with `--executable` equal to the manifest-selected executable under the immutable release path;
 3. call the existing `start` implementation;
-4. poll the owner-authenticated resident status until the fixed 30-second post-verify deadline; the status projection gains bounded `product_version`, supervisor revision, and executable-digest fields derived by the resident from its exact governing record and compiled product version;
+4. poll the owner-authenticated resident status until `MCT_UPGRADE_POST_VERIFY_DEADLINE_SECONDS` elapses; the status projection gains bounded `product_version`, supervisor revision, and executable-digest fields derived by the resident from its exact governing record and compiled product version;
 5. require `running=true`, `health=healthy`, `readiness=ready`, the expected product version, supervisor revision, and executable digest; and
 6. append upgrade/post-verify completion before returning success.
 
@@ -534,6 +534,26 @@ A discovered Allium conflict, need for update-channel authority, need for a prod
 
 **Rationale:** Fast portable checks and target-only release proof remain honest without silently weakening either.
 
+### D1.15 — The upgrade post-verify deadline is a named bound
+
+The post-start health deadline in D1.7 is exactly:
+
+```text
+MCT_UPGRADE_POST_VERIFY_DEADLINE_SECONDS = 30
+```
+
+Upgrade orchestration, status polling, tests, reports, and operator documentation reference this SPEC-local product constant rather than embedding `30` or an unnamed duration. Changing the value requires a later D1.x amendment. Timeout remains an observed failed upgrade and never becomes success or implicit rollback.
+
+**Rationale:** The existing 30-second decision remains unchanged while following the bounded-by-named-constant discipline used throughout the runtime.
+
+### D1.16 — Release smoke and a production resident are mutually exclusive moments
+
+The fixed label `io.patina.mct.mother` is global within `gui/<uid>`. The operator knowingly accepts that the real-launchd release smoke and a production `mctMother` resident cannot run concurrently. Once `mctMother` is a daily driver, running the smoke requires an explicit temporary production stop and later explicit restart.
+
+The smoke's existing refuse-not-skip preflight is the enforcement boundary: if that fixed label is loaded, the smoke performs no stop, install, replacement, or fallback and exits with guidance describing the required operator-controlled production stop. It never takes authority to stop the production resident itself. The smoke script's help/documentation states this operational property and its restart responsibility.
+
+**Rationale:** A truthful mutually exclusive maintenance window is safer than a test-only label override or hidden production-service mutation.
+
 ## Failing-Test-First Implementation Order
 
 1. Ratify D1 and capture the first failing unified-version/release-layout checks.
@@ -571,7 +591,7 @@ The primary landed release/upgrade proof must cite each step by exact file:line 
 10. Refuse EOF, wrong digest, version-only, and filename-only approval; prove no stop, supervisor revision, plist, executable binding, or resident instance change.
 11. Approve the exact release artifact id; prove the approval/lifecycle fact is durable before clean stop or replacement.
 12. Prove the existing clean stop completes before shared `install --replace`, the record revision binds the immutable candidate executable, and existing predecessor/plist integrity checks remain active.
-13. Start the candidate through the existing shared path and prove 30-second post-verification checks running/healthy/ready, version, revision, and executable digest before completion.
+13. Start the candidate through the existing shared path and prove `MCT_UPGRADE_POST_VERIFY_DEADLINE_SECONDS` bounds post-verification checks for running/healthy/ready, version, revision, and executable digest before completion.
 14. Reopen the ledger/state and reconstruct the exact equal-version/different-digest delta through acquisition, verification, approval, stop, record revision, start, health, and upgrade completion.
 15. Capture all six baseline families from the packaged successor and verify sample/count/method completeness without applying numeric thresholds.
 16. Stop and uninstall, then prove service/plist/current record absence and preservation of ledger, state, identity, fixture artifacts, authority, runs, baseline transcript references, and both immutable releases.
@@ -654,6 +674,6 @@ Close-out is reconstructed from disk and contains:
 
 ## Build Readiness
 
-**STOP — D1 operator ratification required.**
+**READY — D1.1–D1.16 ratified 2026-07-22.**
 
-This SPEC authorizes no implementation until the operator ratifies D1.1–D1.14 or issues amendments as D1.x.
+Implementation proceeds failing-test-first in the order above. A later semantic change, Allium conflict, coupled-slot dependency, or need for a production test escape hatch stops for an explicit operator amendment.
