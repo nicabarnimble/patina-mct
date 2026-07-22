@@ -2318,7 +2318,7 @@ checksum = "4facc753ae494aeb6e3c22f839b158aebd4f9270f55cd3c79906c45476c47ab4"
 
 [[package]]
 name = "mct-daemon"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -2343,7 +2343,7 @@ dependencies = [
 
 [[package]]
 name = "mct-iroh"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -2359,7 +2359,7 @@ dependencies = [
 
 [[package]]
 name = "mct-kernel"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "jiff",
@@ -2370,7 +2370,7 @@ dependencies = [
 
 [[package]]
 name = "mct-observation"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "mct-kernel",
