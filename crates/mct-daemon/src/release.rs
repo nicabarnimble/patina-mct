@@ -61,6 +61,76 @@ pub struct VerifiedDaemonReleaseArchive {
     pub release_notes: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorPointedDaemonReleaseAcquisitionDecisionV1 {
+    pub schema_version: u32,
+    pub decision_id: String,
+    pub source_ref: String,
+    pub expected_archive_identity: Option<String>,
+    pub product: String,
+    pub target_triple: String,
+    pub attempt_id: String,
+    pub authenticated_uid: u32,
+    pub policy_revision: u64,
+    pub deadline: String,
+    pub decision_state: String,
+    pub authority_observation_id: String,
+    pub consumed_at: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DaemonReleaseArtifactV1 {
+    pub schema_version: u32,
+    pub release_artifact_id: String,
+    pub product: String,
+    pub product_version: String,
+    pub target_triple: String,
+    pub archive_size_bytes: u64,
+    pub archive_sha256: String,
+    pub archive_blake3: String,
+    pub release_manifest_sha256: String,
+    pub executable_relative_path: String,
+    pub executable_sha256: String,
+    pub executable_blake3: String,
+    pub release_notes_sha256: String,
+    pub sbom_sha256: String,
+    pub fixture_provenance_sha256: String,
+    pub source_revision: String,
+    pub rust_toolchain: String,
+    pub signing_mode: String,
+    pub source_kind: String,
+    pub source_ref: String,
+    pub acquisition_decision_id: String,
+    pub adapter_effect_authority_ref: String,
+    pub acquisition_observation_id: String,
+    pub verification_observation_id: String,
+    pub immutable_release_path: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DaemonReleaseAcquisitionV1 {
+    pub schema_version: u32,
+    pub attempt_id: String,
+    pub acquisition_decision_id: String,
+    pub source_kind: String,
+    pub source_ref: String,
+    pub expected_archive_identity: Option<String>,
+    pub target_triple: String,
+    pub authenticated_uid: u32,
+    pub policy_revision: u64,
+    pub adapter_effect_authority_ref: String,
+    pub acquisition_observation_id: String,
+    pub verification_observation_id: Option<String>,
+    pub release_artifact_id: Option<String>,
+    pub acquisition_outcome: String,
+    pub verification_outcome: String,
+    pub safe_message: String,
+    pub created_at: String,
+}
+
 #[derive(Clone, Debug)]
 struct EntryFact {
     path: String,

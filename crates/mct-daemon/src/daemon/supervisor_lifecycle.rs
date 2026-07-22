@@ -3137,6 +3137,16 @@ mod tests {
     }
 
     #[test]
+    fn daemon_release_upgrade_surface_is_distinct_exact_and_source_closed() {
+        let missing = run_upgrade(Vec::new()).unwrap_err();
+        assert!(missing.to_string().contains("requires <artifact-ref>"));
+        let network = run_upgrade(vec!["https://example.invalid/mct.tar.gz".into()]).unwrap_err();
+        assert!(network.to_string().contains("operator_file"));
+        assert!(help_text().contains("upgrade <artifact-ref>"));
+        assert!(!help_text().contains("upgrade --yes"));
+    }
+
+    #[test]
     fn artifact_slice_exposes_only_filesystem_adapter_and_existing_toy_catalog() {
         assert_eq!(slate_toy_contracts().len(), 4);
         assert!(

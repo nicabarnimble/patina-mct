@@ -1,6 +1,7 @@
 use crate::{
-    MctDaemonConfig, MctLoadedChild, MctOperatorChildScope, MctPeerAddressBookEntry,
-    current_timestamp_string,
+    DaemonReleaseAcquisitionV1, DaemonReleaseArtifactV1, MctDaemonConfig, MctLoadedChild,
+    MctOperatorChildScope, MctPeerAddressBookEntry,
+    OperatorPointedDaemonReleaseAcquisitionDecisionV1, current_timestamp_string,
 };
 use anyhow::{Context, Result, bail};
 use mct_kernel::*;
@@ -8,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 
 pub const MCT_IDEMPOTENCY_TTL_SECONDS: i64 = 12 * 60;
 pub const MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER: usize = 256;
@@ -114,6 +115,8 @@ pub struct MctRuntimeStateStore {
 pub struct MctRuntimeStateSummary {
     pub schema_version: i64,
     pub artifacts: u64,
+    #[serde(default)]
+    pub daemon_release_artifacts: u64,
     pub approved_children: u64,
     pub active_assignments: u64,
     pub ready_instances: u64,
@@ -665,6 +668,52 @@ impl MctRuntimeStateStore {
                 published_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS operator_pointed_daemon_release_acquisition_decisions (
+                decision_id TEXT PRIMARY KEY,
+                attempt_id TEXT NOT NULL UNIQUE,
+                source_ref TEXT NOT NULL,
+                target_triple TEXT NOT NULL,
+                authenticated_uid INTEGER NOT NULL,
+                policy_revision INTEGER NOT NULL,
+                deadline TEXT NOT NULL,
+                decision_state TEXT NOT NULL,
+                authority_observation_id TEXT NOT NULL UNIQUE,
+                decision_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS daemon_release_artifacts (
+                release_artifact_id TEXT PRIMARY KEY,
+                product_version TEXT NOT NULL,
+                target_triple TEXT NOT NULL,
+                archive_sha256 TEXT NOT NULL UNIQUE,
+                archive_blake3 TEXT NOT NULL UNIQUE,
+                executable_sha256 TEXT NOT NULL,
+                executable_blake3 TEXT NOT NULL,
+                immutable_release_path TEXT NOT NULL UNIQUE,
+                artifact_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS daemon_release_acquisitions (
+                attempt_id TEXT PRIMARY KEY,
+                acquisition_decision_id TEXT NOT NULL UNIQUE
+                    REFERENCES operator_pointed_daemon_release_acquisition_decisions(decision_id),
+                release_artifact_id TEXT REFERENCES daemon_release_artifacts(release_artifact_id),
+                source_kind TEXT NOT NULL CHECK(source_kind = 'operator_file'),
+                source_ref TEXT NOT NULL,
+                acquisition_outcome TEXT NOT NULL,
+                verification_outcome TEXT NOT NULL,
+                acquisition_observation_id TEXT NOT NULL UNIQUE,
+                verification_observation_id TEXT,
+                acquisition_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                CHECK (
+                    release_artifact_id IS NULL
+                    OR (acquisition_outcome = 'acquired' AND verification_outcome = 'verified')
+                )
+            );
+
             CREATE TABLE IF NOT EXISTS composition_runs (
                 composition_id TEXT PRIMARY KEY,
                 state TEXT NOT NULL,
@@ -1094,6 +1143,7 @@ impl MctRuntimeStateStore {
         Ok(MctRuntimeStateSummary {
             schema_version: self.schema_version()?,
             artifacts: self.count("component_artifacts", None)?,
+            daemon_release_artifacts: self.count("daemon_release_artifacts", None)?,
             approved_children: self
                 .count("child_approvals", Some("approval_state = 'approved'"))?,
             active_assignments: self
@@ -2779,6 +2829,212 @@ impl MctRuntimeStateStore {
             .context("read component artifact package")
     }
 
+    pub fn record_daemon_release_decision(
+        &self,
+        decision: &OperatorPointedDaemonReleaseAcquisitionDecisionV1,
+    ) -> Result<()> {
+        if decision.schema_version != 1
+            || decision.product != "mct-daemon"
+            || decision.source_ref.trim().is_empty()
+            || decision.target_triple.trim().is_empty()
+            || decision.attempt_id.trim().is_empty()
+            || decision.decision_id.trim().is_empty()
+            || decision.decision_state != "active"
+            || decision.authority_observation_id.trim().is_empty()
+            || decision.consumed_at.is_some()
+        {
+            bail!("daemon release decision shape is invalid");
+        }
+        self.conn.execute(
+            r#"
+            INSERT INTO operator_pointed_daemon_release_acquisition_decisions(
+                decision_id, attempt_id, source_ref, target_triple, authenticated_uid,
+                policy_revision, deadline, decision_state, authority_observation_id,
+                decision_json, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            "#,
+            params![
+                decision.decision_id,
+                decision.attempt_id,
+                decision.source_ref,
+                decision.target_triple,
+                decision.authenticated_uid,
+                decision.policy_revision,
+                decision.deadline,
+                decision.decision_state,
+                decision.authority_observation_id,
+                json_string(decision)?,
+                current_timestamp_string(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn consume_daemon_release_decision(&self, decision_id: &str) -> Result<()> {
+        let mut decision = self
+            .daemon_release_decisions()?
+            .into_iter()
+            .find(|decision| decision.decision_id == decision_id)
+            .context("daemon release decision does not exist")?;
+        if decision.decision_state != "active" || decision.consumed_at.is_some() {
+            bail!("daemon release decision is not active");
+        }
+        decision.decision_state = "consumed".into();
+        decision.consumed_at = Some(current_timestamp_string());
+        let changed = self.conn.execute(
+            r#"
+            UPDATE operator_pointed_daemon_release_acquisition_decisions
+            SET decision_state = 'consumed', decision_json = ?2, updated_at = ?3
+            WHERE decision_id = ?1 AND decision_state = 'active'
+            "#,
+            params![
+                decision_id,
+                json_string(&decision)?,
+                current_timestamp_string()
+            ],
+        )?;
+        if changed != 1 {
+            bail!("daemon release decision was concurrently consumed");
+        }
+        Ok(())
+    }
+
+    pub fn daemon_release_decisions(
+        &self,
+    ) -> Result<Vec<OperatorPointedDaemonReleaseAcquisitionDecisionV1>> {
+        let mut statement = self.conn.prepare(
+            "SELECT decision_json FROM operator_pointed_daemon_release_acquisition_decisions ORDER BY rowid",
+        )?;
+        statement
+            .query_map([], |row| {
+                let json = row.get::<_, String>(0)?;
+                from_json_cell(&json).map_err(to_sql_error)
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("read daemon release decisions")
+    }
+
+    pub fn daemon_release_artifact(
+        &self,
+        release_artifact_id: &str,
+    ) -> Result<Option<DaemonReleaseArtifactV1>> {
+        self.conn
+            .query_row(
+                "SELECT artifact_json FROM daemon_release_artifacts WHERE release_artifact_id = ?1",
+                params![release_artifact_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|json| serde_json::from_str(&json).context("decode daemon release artifact"))
+            .transpose()
+    }
+
+    pub fn daemon_release_artifacts(&self) -> Result<Vec<DaemonReleaseArtifactV1>> {
+        let mut statement = self.conn.prepare(
+            "SELECT artifact_json FROM daemon_release_artifacts ORDER BY created_at, release_artifact_id",
+        )?;
+        statement
+            .query_map([], |row| {
+                let json = row.get::<_, String>(0)?;
+                from_json_cell(&json).map_err(to_sql_error)
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("read daemon release artifacts")
+    }
+
+    pub fn daemon_release_acquisitions(&self) -> Result<Vec<DaemonReleaseAcquisitionV1>> {
+        let mut statement = self.conn.prepare(
+            "SELECT acquisition_json FROM daemon_release_acquisitions ORDER BY created_at, attempt_id",
+        )?;
+        statement
+            .query_map([], |row| {
+                let json = row.get::<_, String>(0)?;
+                from_json_cell(&json).map_err(to_sql_error)
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("read daemon release acquisitions")
+    }
+
+    pub fn record_failed_daemon_release_acquisition(
+        &self,
+        acquisition: &DaemonReleaseAcquisitionV1,
+    ) -> Result<()> {
+        if acquisition.release_artifact_id.is_some()
+            || acquisition.acquisition_outcome == "acquired"
+            || acquisition.verification_outcome == "verified"
+        {
+            bail!("failed daemon release acquisition cannot name verified release bytes");
+        }
+        self.insert_daemon_release_acquisition(acquisition)
+    }
+
+    pub fn record_verified_daemon_release(
+        &self,
+        acquisition: &DaemonReleaseAcquisitionV1,
+        artifact: &DaemonReleaseArtifactV1,
+    ) -> Result<()> {
+        validate_daemon_release_artifact(artifact)?;
+        if acquisition.schema_version != 1
+            || acquisition.source_kind != "operator_file"
+            || acquisition.acquisition_outcome != "acquired"
+            || acquisition.verification_outcome != "verified"
+            || acquisition.release_artifact_id.as_deref()
+                != Some(artifact.release_artifact_id.as_str())
+            || acquisition.verification_observation_id.as_deref()
+                != Some(artifact.verification_observation_id.as_str())
+            || acquisition.acquisition_decision_id != artifact.acquisition_decision_id
+        {
+            bail!("verified daemon release transaction has mismatched evidence");
+        }
+        if let Some(existing) = self.daemon_release_artifact(&artifact.release_artifact_id)?
+            && existing != *artifact
+        {
+            bail!("immutable daemon release artifact conflicts with persisted facts");
+        }
+        let transaction = self.conn.unchecked_transaction()?;
+        transaction.execute(
+            r#"
+            INSERT INTO daemon_release_artifacts(
+                release_artifact_id, product_version, target_triple, archive_sha256,
+                archive_blake3, executable_sha256, executable_blake3,
+                immutable_release_path, artifact_json, created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ON CONFLICT(release_artifact_id) DO NOTHING
+            "#,
+            params![
+                artifact.release_artifact_id,
+                artifact.product_version,
+                artifact.target_triple,
+                artifact.archive_sha256,
+                artifact.archive_blake3,
+                artifact.executable_sha256,
+                artifact.executable_blake3,
+                artifact.immutable_release_path.display().to_string(),
+                json_string(artifact)?,
+                current_timestamp_string(),
+            ],
+        )?;
+        insert_daemon_release_acquisition_on(&transaction, acquisition)?;
+        transaction.commit()?;
+        let persisted = self
+            .daemon_release_artifact(&artifact.release_artifact_id)?
+            .context("verified daemon release artifact was not persisted")?;
+        if persisted != *artifact {
+            bail!("immutable daemon release artifact conflicts with persisted facts");
+        }
+        Ok(())
+    }
+
+    fn insert_daemon_release_acquisition(
+        &self,
+        acquisition: &DaemonReleaseAcquisitionV1,
+    ) -> Result<()> {
+        let transaction = self.conn.unchecked_transaction()?;
+        insert_daemon_release_acquisition_on(&transaction, acquisition)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn validate_source_authority_projection(
         &self,
         source: &ArtifactSourceAuthority,
@@ -3793,6 +4049,7 @@ fn is_known_count_table(table: &str) -> bool {
     matches!(
         table,
         "component_artifacts"
+            | "daemon_release_artifacts"
             | "child_approvals"
             | "child_assignments"
             | "child_instances"
@@ -4063,6 +4320,83 @@ fn insert_acquisition_on(
                 .as_ref()
                 .map(ComponentArtifactId::as_str),
             current_timestamp_string(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn validate_daemon_release_artifact(artifact: &DaemonReleaseArtifactV1) -> Result<()> {
+    let tagged = |value: &str, algorithm: &str| {
+        value
+            .strip_prefix(&format!("{algorithm}:"))
+            .is_some_and(|digest| {
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+    };
+    if artifact.schema_version != 1
+        || artifact.product != "mct-daemon"
+        || artifact.source_kind != "operator_file"
+        || artifact.signing_mode != "adhoc"
+        || artifact.release_artifact_id != artifact.archive_sha256
+        || !tagged(&artifact.archive_sha256, "sha256")
+        || !tagged(&artifact.archive_blake3, "blake3")
+        || !tagged(&artifact.release_manifest_sha256, "sha256")
+        || !tagged(&artifact.executable_sha256, "sha256")
+        || !tagged(&artifact.executable_blake3, "blake3")
+        || !tagged(&artifact.release_notes_sha256, "sha256")
+        || !tagged(&artifact.sbom_sha256, "sha256")
+        || !tagged(&artifact.fixture_provenance_sha256, "sha256")
+        || !artifact.immutable_release_path.is_absolute()
+        || artifact.acquisition_decision_id.trim().is_empty()
+        || artifact.adapter_effect_authority_ref.trim().is_empty()
+        || artifact.acquisition_observation_id.trim().is_empty()
+        || artifact.verification_observation_id.trim().is_empty()
+    {
+        bail!("daemon release artifact shape is invalid");
+    }
+    Ok(())
+}
+
+fn insert_daemon_release_acquisition_on(
+    transaction: &rusqlite::Transaction<'_>,
+    acquisition: &DaemonReleaseAcquisitionV1,
+) -> Result<()> {
+    if acquisition.schema_version != 1
+        || acquisition.attempt_id.trim().is_empty()
+        || acquisition.acquisition_decision_id.trim().is_empty()
+        || acquisition.source_kind != "operator_file"
+        || acquisition.source_ref.trim().is_empty()
+        || acquisition.target_triple.trim().is_empty()
+        || acquisition.adapter_effect_authority_ref.trim().is_empty()
+        || acquisition.acquisition_observation_id.trim().is_empty()
+        || acquisition.safe_message.trim().is_empty()
+    {
+        bail!("daemon release acquisition shape is invalid");
+    }
+    transaction.execute(
+        r#"
+        INSERT INTO daemon_release_acquisitions(
+            attempt_id, acquisition_decision_id, release_artifact_id, source_kind,
+            source_ref, acquisition_outcome, verification_outcome,
+            acquisition_observation_id, verification_observation_id,
+            acquisition_json, created_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+        params![
+            acquisition.attempt_id,
+            acquisition.acquisition_decision_id,
+            acquisition.release_artifact_id,
+            acquisition.source_kind,
+            acquisition.source_ref,
+            acquisition.acquisition_outcome,
+            acquisition.verification_outcome,
+            acquisition.acquisition_observation_id,
+            acquisition.verification_observation_id,
+            json_string(acquisition)?,
+            acquisition.created_at,
         ],
     )?;
     Ok(())
@@ -5154,6 +5488,99 @@ mod tests {
         store
             .upsert_toy_grant_snapshot(&toy_grant(ToyGrantState::Requested))
             .unwrap();
+    }
+
+    #[test]
+    fn schema_v11_keeps_daemon_release_evidence_out_of_child_ontology() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MctRuntimeStateStore::open(dir.path().join("state.sqlite")).unwrap();
+        let decision = OperatorPointedDaemonReleaseAcquisitionDecisionV1 {
+            schema_version: 1,
+            decision_id: "daemon-release-decision:test".into(),
+            source_ref: "file:///tmp/release.tar.gz".into(),
+            expected_archive_identity: Some(format!("sha256:{}", "a".repeat(64))),
+            product: "mct-daemon".into(),
+            target_triple: "aarch64-apple-darwin".into(),
+            attempt_id: "daemon-release-attempt:test".into(),
+            authenticated_uid: 501,
+            policy_revision: 1,
+            deadline: "2026-07-22T12:01:00Z".into(),
+            decision_state: "active".into(),
+            authority_observation_id: "obs:daemon-release-decision:test".into(),
+            consumed_at: None,
+        };
+        store.record_daemon_release_decision(&decision).unwrap();
+        let release_id = format!("sha256:{}", "a".repeat(64));
+        let artifact = DaemonReleaseArtifactV1 {
+            schema_version: 1,
+            release_artifact_id: release_id.clone(),
+            product: "mct-daemon".into(),
+            product_version: "0.2.0".into(),
+            target_triple: "aarch64-apple-darwin".into(),
+            archive_size_bytes: 42,
+            archive_sha256: release_id.clone(),
+            archive_blake3: format!("blake3:{}", "b".repeat(64)),
+            release_manifest_sha256: format!("sha256:{}", "c".repeat(64)),
+            executable_relative_path: "payload/mct-daemon.app/Contents/MacOS/mct-daemon".into(),
+            executable_sha256: format!("sha256:{}", "d".repeat(64)),
+            executable_blake3: format!("blake3:{}", "e".repeat(64)),
+            release_notes_sha256: format!("sha256:{}", "1".repeat(64)),
+            sbom_sha256: format!("sha256:{}", "2".repeat(64)),
+            fixture_provenance_sha256: format!("sha256:{}", "3".repeat(64)),
+            source_revision: "4".repeat(40),
+            rust_toolchain: "1.96.0".into(),
+            signing_mode: "adhoc".into(),
+            source_kind: "operator_file".into(),
+            source_ref: decision.source_ref.clone(),
+            acquisition_decision_id: decision.decision_id.clone(),
+            adapter_effect_authority_ref: "obs:daemon-release-adapter:test".into(),
+            acquisition_observation_id: "obs:daemon-release-acquired:test".into(),
+            verification_observation_id: "obs:daemon-release-verified:test".into(),
+            immutable_release_path: dir.path().join("releases/sha256/aa"),
+        };
+        let acquisition = DaemonReleaseAcquisitionV1 {
+            schema_version: 1,
+            attempt_id: decision.attempt_id.clone(),
+            acquisition_decision_id: decision.decision_id.clone(),
+            source_kind: "operator_file".into(),
+            source_ref: decision.source_ref.clone(),
+            expected_archive_identity: decision.expected_archive_identity.clone(),
+            target_triple: decision.target_triple.clone(),
+            authenticated_uid: decision.authenticated_uid,
+            policy_revision: decision.policy_revision,
+            adapter_effect_authority_ref: artifact.adapter_effect_authority_ref.clone(),
+            acquisition_observation_id: artifact.acquisition_observation_id.clone(),
+            verification_observation_id: Some(artifact.verification_observation_id.clone()),
+            release_artifact_id: Some(release_id),
+            acquisition_outcome: "acquired".into(),
+            verification_outcome: "verified".into(),
+            safe_message: "daemon release archive acquired and verified".into(),
+            created_at: "2026-07-22T12:00:00Z".into(),
+        };
+        store
+            .record_verified_daemon_release(&acquisition, &artifact)
+            .unwrap();
+        store
+            .consume_daemon_release_decision(&decision.decision_id)
+            .unwrap();
+
+        assert_eq!(store.daemon_release_artifacts().unwrap(), vec![artifact]);
+        assert_eq!(
+            store.daemon_release_acquisitions().unwrap(),
+            vec![acquisition]
+        );
+        assert_eq!(store.summary().unwrap().daemon_release_artifacts, 1);
+        assert_eq!(store.summary().unwrap().artifacts, 0);
+        assert!(
+            store
+                .get_artifact(&ComponentArtifactId::new("sha256:not-daemon-release").unwrap())
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            store.daemon_release_decisions().unwrap()[0].decision_state,
+            "consumed"
+        );
     }
 
     #[test]
