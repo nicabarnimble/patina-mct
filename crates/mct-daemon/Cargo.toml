@@ -6,6 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+release-smoke-internal = []
+
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true

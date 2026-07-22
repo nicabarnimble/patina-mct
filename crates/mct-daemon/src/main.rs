@@ -71,6 +71,8 @@ async fn main() -> Result<()> {
         "version" => println!("mct-daemon {}", mct_daemon::version()),
         "status" => run_status(args)?,
         "upgrade" => run_upgrade(args)?,
+        #[cfg(feature = "release-smoke-internal")]
+        "release-smoke-internal" => run_release_smoke_internal(args)?,
         "install" => run_install(args)?,
         "uninstall" => run_uninstall(args)?,
         "start" => run_start(args)?,

@@ -85,7 +85,10 @@ fn print_upgrade_candidate(
     Ok(())
 }
 
-pub(super) fn run_upgrade(mut args: Vec<String>) -> Result<()> {
+fn run_upgrade_with_context_factory<F>(mut args: Vec<String>, context_factory: F) -> Result<()>
+where
+    F: FnOnce(Option<PathBuf>) -> Result<UpgradeSupervisorContext>,
+{
     if args.is_empty() {
         bail!("upgrade requires <artifact-ref>");
     }
@@ -108,7 +111,7 @@ pub(super) fn run_upgrade(mut args: Vec<String>) -> Result<()> {
         bail!("unexpected upgrade arguments: {}", args.join(" "));
     }
 
-    let context = upgrade_supervisor_context(selected_root)?;
+    let context = context_factory(selected_root)?;
     let request = MctDaemonReleaseAcquisitionRequest {
         source_path: source_plan.source_path,
         expected_archive_identity: expected_digest,
@@ -172,6 +175,23 @@ pub(super) fn run_upgrade(mut args: Vec<String>) -> Result<()> {
         );
     }
     Ok(())
+}
+
+pub(super) fn run_upgrade(args: Vec<String>) -> Result<()> {
+    run_upgrade_with_context_factory(args, upgrade_supervisor_context)
+}
+
+#[cfg(feature = "release-smoke-internal")]
+pub(super) fn run_upgrade_in_context(
+    args: Vec<String>,
+    context: UpgradeSupervisorContext,
+) -> Result<()> {
+    run_upgrade_with_context_factory(args, |selected_root| {
+        if selected_root.is_some() {
+            bail!("release-smoke-internal upgrade does not admit a second root selector");
+        }
+        Ok(context)
+    })
 }
 
 #[cfg(test)]
