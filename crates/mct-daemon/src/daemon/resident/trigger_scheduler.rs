@@ -1111,13 +1111,9 @@ impl TriggerScheduler {
         {
             return Ok(());
         }
-        let projected_at = state
-            .call_trigger_authority_projected_at(
-                &authority.trigger_authority_id,
-                authority.record_revision,
-            )?
-            .context("revoked trigger projection time missing")?;
-        let Some(range) = temporal_due_range(authority, Some(&projected_at), now)? else {
+        let after =
+            state.latest_call_trigger_nominal_at_any_revision(&authority.trigger_authority_id)?;
+        let Some(range) = temporal_due_range(authority, after.as_ref(), now)? else {
             return Ok(());
         };
         let next = DueOccurrenceRange {
@@ -1999,6 +1995,34 @@ listens = []
         panic!("resident observation writer did not release after shutdown")
     }
 
+    async fn wait_for_trigger_disposition(
+        state_path: &Path,
+        trigger_authority_id: &CallTriggerAuthorityId,
+        record_revision: u64,
+        disposition: MctTriggerOccurrenceDisposition,
+    ) -> MctTriggerOccurrenceRecord {
+        for _ in 0..200 {
+            if let Some(occurrence) = MctRuntimeStateStore::open(state_path)
+                .unwrap()
+                .call_trigger_occurrences()
+                .unwrap()
+                .into_iter()
+                .find(|occurrence| {
+                    occurrence.trigger_authority_id == *trigger_authority_id
+                        && occurrence.record_revision == record_revision
+                        && occurrence.final_disposition == disposition
+                        && occurrence.final_disposition.is_terminal()
+                })
+            {
+                return occurrence;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!(
+            "trigger {trigger_authority_id} revision {record_revision} did not durably reach {disposition:?}"
+        )
+    }
+
     async fn admit_crash_firing_and_overlap_pending(
         paths: &ResidentRuntimePaths,
         ledger_path: &Path,
@@ -2257,9 +2281,19 @@ listens = []
         assert_eq!(state.summary().unwrap().active_trigger_firings, 0);
         drop(state);
 
+        // The first firing's terminal disposition is the deterministic barrier
+        // before any later authority mutation; elapsed wall time is irrelevant.
+        let durable_first = wait_for_trigger_disposition(
+            &state_path,
+            &created.trigger_authority_id,
+            1,
+            MctTriggerOccurrenceDisposition::Fired,
+        )
+        .await;
+        assert_eq!(durable_first.occurrence_id, first_occurrence.occurrence_id);
+
         // Re-evaluating the same injected nominal instant remains terminal and
         // cannot create a second call or target effect.
-        tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(
             MctRuntimeStateStore::open(&state_path)
                 .unwrap()
@@ -2295,6 +2329,8 @@ listens = []
         let revoked =
             revoke_after_writer_release(&config_path, &state_path, &ledger_path, &revoke).await;
         assert_eq!(revoked.authority_state, CallTriggerAuthorityState::Revoked);
+        let next_after_last_disposition = occurrence_at(&revoked, 3).unwrap().1;
+        clock.set(next_after_last_disposition.as_str());
 
         // Destroy every trigger projection so resident startup must reconstruct
         // exact authority, firing, and pending identities from the ledger.
@@ -2395,7 +2431,13 @@ listens = []
         let (status_code, status_body) = get_uds_json(&socket_path, "/status").await;
         assert_eq!(status_code, 200, "{status_body}");
 
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        wait_for_trigger_disposition(
+            &state_path,
+            &created.trigger_authority_id,
+            2,
+            MctTriggerOccurrenceDisposition::Suppressed,
+        )
+        .await;
         let recovered = MctRuntimeStateStore::open(&state_path).unwrap();
         assert_eq!(
             recovered
@@ -2624,6 +2666,13 @@ listens = []
         );
         clock.set(first_due.as_str());
         scheduler.evaluate_turn().await.unwrap();
+        wait_for_trigger_disposition(
+            &state_path,
+            &created.trigger_authority_id,
+            1,
+            MctTriggerOccurrenceDisposition::Fired,
+        )
+        .await;
         for _ in 0..100 {
             if MctRuntimeStateStore::open(&state_path)
                 .unwrap()
@@ -2654,7 +2703,13 @@ listens = []
         drop(state);
 
         scheduler.evaluate_turn().await.unwrap();
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        wait_for_trigger_disposition(
+            &state_path,
+            &created.trigger_authority_id,
+            1,
+            MctTriggerOccurrenceDisposition::Fired,
+        )
+        .await;
         assert_eq!(
             std::fs::read_to_string(artifact.with_extension("wasm.count"))
                 .unwrap()
@@ -2692,7 +2747,13 @@ listens = []
             TriggerLimits::default(),
         );
         recovered.evaluate_turn().await.unwrap();
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        wait_for_trigger_disposition(
+            &state_path,
+            &created.trigger_authority_id,
+            1,
+            MctTriggerOccurrenceDisposition::Fired,
+        )
+        .await;
         assert_eq!(
             std::fs::read_to_string(artifact.with_extension("wasm.count"))
                 .unwrap()
@@ -2899,6 +2960,84 @@ listens = []
         assert!(state.call_trigger_occurrences().unwrap().is_empty());
         assert!(state.call_trigger_pending_occurrences().unwrap().is_empty());
         assert!(state.call_trigger_firings().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn revoked_authority_suppresses_due_gap_after_last_durable_disposition() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let authority = crate::triggers::authority_for_scheduler_test();
+        let state = MctRuntimeStateStore::open(&state_path).unwrap();
+        state.insert_call_trigger_authority(&authority).unwrap();
+        drop(state);
+
+        let ledger = ResidentLedgerWriter::spawn(ledger_path).unwrap();
+        let paths = ResidentRuntimePaths::new(
+            dir.path().join("config.json"),
+            dir.path().join("children"),
+            state_path.clone(),
+        );
+        let clock = Arc::new(ManualClock::new("2026-07-21T12:00:00Z"));
+        let scheduler = TriggerScheduler::new(
+            paths,
+            ledger.clone(),
+            clock.clone(),
+            TriggerLimits::default(),
+        );
+        let (evaluated, evaluated_at) = singleton_candidate(&authority, 0).unwrap();
+        scheduler
+            .record_terminal_candidate(
+                &authority,
+                evaluated,
+                evaluated_at,
+                MctTriggerOccurrenceDisposition::Skipped,
+                "last_evaluation",
+                "skip",
+            )
+            .await
+            .unwrap();
+
+        let mut revoked = authority.clone();
+        revoked.record_revision = 2;
+        revoked.policy_revision = 2;
+        revoked.authority_state = CallTriggerAuthorityState::Revoked;
+        revoked.authority_observation_id = ObservationId::new("obs-trigger-revoked-gap").unwrap();
+        revoked.canonical_record_digest.clear();
+        let revoked = revoked.seal();
+        MctRuntimeStateStore::open(&state_path)
+            .unwrap()
+            .insert_call_trigger_authority(&revoked)
+            .unwrap();
+        rusqlite::Connection::open(&state_path)
+            .unwrap()
+            .execute(
+                "UPDATE call_trigger_authorities SET projected_at = ?1 WHERE record_revision = 2",
+                ["2026-07-21T12:00:10Z"],
+            )
+            .unwrap();
+
+        // Index one became due after the prior turn but before the mutation's
+        // wall-clock projection timestamp. Scheduling arithmetic must derive
+        // from the durable index-zero disposition and the evaluation clock.
+        clock.set("2026-07-21T12:00:01Z");
+        scheduler
+            .evaluate_revoked_authority(&revoked, &clock.now())
+            .await
+            .unwrap();
+        let suppressed = wait_for_trigger_disposition(
+            &state_path,
+            &authority.trigger_authority_id,
+            2,
+            MctTriggerOccurrenceDisposition::Suppressed,
+        )
+        .await;
+        assert_eq!(
+            suppressed.nominal_at.unwrap().as_str(),
+            "2026-07-21T12:00:01Z"
+        );
+        drop(scheduler);
+        ledger.close().await;
     }
 
     #[tokio::test]

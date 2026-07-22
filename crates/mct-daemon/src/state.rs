@@ -1289,25 +1289,6 @@ impl MctRuntimeStateStore {
             .transpose()
     }
 
-    pub fn call_trigger_authority_projected_at(
-        &self,
-        trigger_authority_id: &CallTriggerAuthorityId,
-        record_revision: u64,
-    ) -> Result<Option<Timestamp>> {
-        let value = self
-            .conn
-            .query_row(
-                r#"
-                SELECT projected_at FROM call_trigger_authorities
-                WHERE trigger_authority_id = ?1 AND record_revision = ?2
-                "#,
-                params![trigger_authority_id.as_str(), record_revision as i64],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        value.map(Timestamp::new).transpose().map_err(Into::into)
-    }
-
     pub fn call_trigger_authorities(&self) -> Result<Vec<CallTriggerAuthority>> {
         let mut stmt = self.conn.prepare(
             r#"
@@ -1751,6 +1732,22 @@ impl MctRuntimeStateStore {
             WHERE trigger_authority_id = ?1 AND record_revision = ?2
             "#,
             params![trigger_authority_id.as_str(), record_revision as i64],
+            |row| row.get::<_, Option<String>>(0),
+        )?;
+        value.map(Timestamp::new).transpose().map_err(Into::into)
+    }
+
+    pub fn latest_call_trigger_nominal_at_any_revision(
+        &self,
+        trigger_authority_id: &CallTriggerAuthorityId,
+    ) -> Result<Option<Timestamp>> {
+        let value = self.conn.query_row(
+            r#"
+            SELECT MAX(nominal_at)
+            FROM call_trigger_occurrences
+            WHERE trigger_authority_id = ?1
+            "#,
+            params![trigger_authority_id.as_str()],
             |row| row.get::<_, Option<String>>(0),
         )?;
         value.map(Timestamp::new).transpose().map_err(Into::into)
