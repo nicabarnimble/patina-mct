@@ -22,11 +22,12 @@ if a persisted grant, evaluated against the current call, says it may.
 
 ## Status
 
-Early and under active development. The local slices work — loading and
-approving verified child packages, invoking typed WIT exports with
-capability-scoped host access, recording the audit trail — and the
-peer-to-peer protocol is a functional early slice. APIs and CLI surfaces are
-still evolving; nothing here is stable yet.
+Version 0.2.0 is a pre-GA release for `aarch64-apple-darwin`. Its local
+runtime, signed peer admission, launchd supervision, immutable artifact
+acquisition, temporal triggers, scoped Watch delivery, closed release package,
+and exact-approved upgrade path are proven. APIs and CLI surfaces are still
+evolving; operational `patinaMother` shutoff and into-the-wild 1.0.0 GA remain
+separate, unclaimed gates.
 
 ## What works today
 
@@ -49,71 +50,84 @@ still evolving; nothing here is stable yet.
   an append-only, hash-chained ledger with exclusive writer locking and
   lock-free read-only validation. Logs and metrics are projections of this
   ledger, never the truth themselves.
-- **Local control plane** — HTTP or Unix-socket status/state snapshots.
+- **Observed service and release lifecycle** — macOS user-launchd install/start/
+  stop/restart/uninstall, closed ad-hoc-signed archives with SBOM/provenance,
+  immutable daemon-release evidence, and digest-exact guided upgrade.
+- **Local control plane** — HTTP or owner-authenticated Unix-socket status,
+  calls, and administrative mutations.
 - **Peer protocols (early)** — Iroh-based hello/call slices: a peer Mother is
   admitted only against a persisted binding, and admission never pre-
   authorizes calls.
 
 ## Quick start
 
-Build and check the workspace:
+Obtain the target archive and both sidecars, then verify from a trusted matching
+checkout before extracting:
 
 ```bash
-cargo test -p mct-kernel -p mct-daemon
+archive=/absolute/path/mct-daemon-v0.2.0-aarch64-apple-darwin.tar.gz
+./scripts/verify-release-artifact.sh "$archive"
 ```
 
-Acquire selected local build output into the immutable artifact catalog. This
-creates package SHA-256 sidecars and records independent BLAKE3 evidence; it
-does not approve or assign the child:
+Set `MCT` to the extracted distributed executable and install it through the
+observed launchd lifecycle:
 
 ```bash
-cargo run -p mct-daemon -- \
-  artifacts stage /path/to/slate-build-output \
+MCT=/absolute/path/mct-daemon-v0.2.0-aarch64-apple-darwin/payload/mct-daemon.app/Contents/MacOS/mct-daemon
+"$MCT" install --executable "$MCT"
+"$MCT" start
+"$MCT" status --json
+```
+
+Acquire selected local Child output into the immutable artifact catalog. This
+records independent digest/evidence facts; it does not approve or assign the
+Child:
+
+```bash
+"$MCT" artifacts stage /path/to/slate-build-output \
   --manifest slate-manager.toml \
   --component slate-manager.wasm \
   --child slate-manager \
   --version 0.2.0 \
-  --children-dir .mct/children \
-  --state .mct/state.sqlite \
-  --ledger .mct/observations.jsonl \
+  --children-dir ~/.mct/children \
+  --state ~/.mct/state.sqlite \
+  --ledger ~/.mct/observations.jsonl \
+  --uds ~/.mct/control.sock \
   --json
 ```
 
-Approve the exact acquisition-backed digest returned by staging
-(`slate-manager` is the reference child used throughout):
+Approve only the exact acquisition-backed digest returned by staging, then
+grant the narrow Slate Toy authority:
 
 ```bash
-cargo run -p mct-daemon -- \
-  children approve slate-manager .mct/children \
+"$MCT" children approve slate-manager ~/.mct/children \
   --artifact sha256:<digest> \
   --strict-integrity \
-  --state .mct/state.sqlite
+  --state ~/.mct/state.sqlite \
+  --uds ~/.mct/control.sock
+
+"$MCT" toys authorize-slate slate-manager /path/to/project \
+  --children-dir ~/.mct/children \
+  --state ~/.mct/state.sqlite \
+  --uds ~/.mct/control.sock
 ```
 
-Grant the child a narrow toy authority scoped to one project directory:
+Upgrade is evidence-informed and requires approval equal to the complete
+candidate archive identity:
 
 ```bash
-cargo run -p mct-daemon -- \
-  toys authorize-slate slate-manager /path/to/project \
-  --children-dir .mct/children \
-  --state .mct/state.sqlite
+"$MCT" upgrade /absolute/path/to/candidate.tar.gz \
+  --expected-digest sha256:<candidate-archive-digest> \
+  --approve-artifact sha256:<candidate-archive-digest> \
+  --json
 ```
 
-Invoke a typed WIT export, with `/project` explicitly preopened:
-
-```bash
-cargo run -p mct-daemon -- \
-  wasm call-wit slate-manager \
-  patina:slate/control@0.1.0.list-work \
-  '[{"project":"/project","status":null,"kind":null}]' \
-  --project-root /path/to/project \
-  --children-dir .mct/children \
-  --state .mct/state.sqlite
-```
-
-Note that `--project-root` supplies a path; it does not create authority. The
-call still evaluates the persisted approval and toy grants before any host
-import is linked.
+A version, filename, broad confirmation, or different digest grants no
+replacement authority. Upgrade composes the existing clean stop,
+`install --replace`, start, and bounded post-verification paths; it never rolls
+back automatically. See
+[`RELEASE-UPGRADE-v0.2.0.md`](layer/surface/build/product/RELEASE-UPGRADE-v0.2.0.md)
+for diagnosis and explicit retained-release rollback.
 
 ## Security model
 
