@@ -2968,6 +2968,47 @@ impl MctRuntimeStateStore {
         self.insert_daemon_release_acquisition(acquisition)
     }
 
+    pub fn rollback_daemon_release_acquisition(&self, attempt_id: &str) -> Result<Option<PathBuf>> {
+        let artifact_id = self
+            .conn
+            .query_row(
+                "SELECT release_artifact_id FROM daemon_release_acquisitions WHERE attempt_id = ?1",
+                params![attempt_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        let transaction = self.conn.unchecked_transaction()?;
+        transaction.execute(
+            "DELETE FROM daemon_release_acquisitions WHERE attempt_id = ?1",
+            params![attempt_id],
+        )?;
+        let mut remove_path = None;
+        if let Some(artifact_id) = artifact_id {
+            let remaining: i64 = transaction.query_row(
+                "SELECT COUNT(*) FROM daemon_release_acquisitions WHERE release_artifact_id = ?1",
+                params![artifact_id],
+                |row| row.get(0),
+            )?;
+            if remaining == 0 {
+                remove_path = transaction
+                    .query_row(
+                        "SELECT immutable_release_path FROM daemon_release_artifacts WHERE release_artifact_id = ?1",
+                        params![artifact_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                    .map(PathBuf::from);
+                transaction.execute(
+                    "DELETE FROM daemon_release_artifacts WHERE release_artifact_id = ?1",
+                    params![artifact_id],
+                )?;
+            }
+        }
+        transaction.commit()?;
+        Ok(remove_path)
+    }
+
     pub fn record_verified_daemon_release(
         &self,
         acquisition: &DaemonReleaseAcquisitionV1,

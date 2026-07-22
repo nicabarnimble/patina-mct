@@ -17,6 +17,15 @@ fn exact_sha256(value: Option<String>, label: &str) -> Result<Option<String>> {
     Ok(Some(value))
 }
 
+fn require_exact_upgrade_approval(approval: &str, release_artifact_id: &str) -> Result<()> {
+    if approval != release_artifact_id {
+        bail!(
+            "upgrade approval did not equal the exact release artifact id; no lifecycle effect occurred"
+        );
+    }
+    Ok(())
+}
+
 fn print_upgrade_candidate(
     context: &UpgradeSupervisorContext,
     verified: &MctVerifiedDaemonRelease,
@@ -143,11 +152,9 @@ pub(super) fn run_upgrade(mut args: Vec<String>) -> Result<()> {
             input.trim_end_matches(['\r', '\n']).to_owned()
         }
     };
-    if approval != *artifact_id {
+    if let Err(error) = require_exact_upgrade_approval(&approval, artifact_id) {
         record_upgrade_fact(&context, artifact_id, "upgrade_approval_denied")?;
-        bail!(
-            "upgrade approval did not equal the exact release artifact id; no lifecycle effect occurred"
-        );
+        return Err(error);
     }
     record_upgrade_fact(&context, artifact_id, "upgrade_approval_admitted")?;
     let completion = execute_upgrade_lifecycle(&context, &verified.report().artifact)?;
@@ -165,4 +172,25 @@ pub(super) fn run_upgrade(mut args: Vec<String>) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn approval_is_only_the_complete_exact_archive_sha256_identity() {
+        let artifact = format!("sha256:{}", "a".repeat(64));
+        assert!(require_exact_upgrade_approval(&artifact, &artifact).is_ok());
+        let wrong_digest = format!("sha256:{}", "b".repeat(64));
+        for refusal in [
+            "0.2.0",
+            "mct-daemon-v0.2.0-aarch64-apple-darwin.tar.gz",
+            "yes",
+            "",
+            wrong_digest.as_str(),
+        ] {
+            assert!(require_exact_upgrade_approval(refusal, &artifact).is_err());
+        }
+    }
 }

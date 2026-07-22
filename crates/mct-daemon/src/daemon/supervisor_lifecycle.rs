@@ -3553,6 +3553,49 @@ mod tests {
             .position(|message| message.contains("upgrade completed after bounded"))
             .unwrap();
         assert!(approval < replacement && replacement < completion);
+
+        let successor = validate_supervisor_record(&paths.record, true).unwrap();
+        let failed_context = UpgradeSupervisorContext {
+            paths: paths.clone(),
+            state_path: paths.state.clone(),
+            ledger_path: paths.ledger.clone(),
+            uds_path: paths.uds.clone(),
+            releases_dir: paths.root.join("releases"),
+            current_executable: candidate.clone(),
+            current_executable_digest: format!("blake3:{}", file_digest(&candidate).unwrap()),
+            supervisor_record_id: successor.record_id.clone(),
+            supervisor_revision: successor.record_revision,
+            authenticated_uid: uid,
+        };
+        let mut failed_artifact = artifact.clone();
+        failed_artifact.release_artifact_id = format!("sha256:{}", "f".repeat(64));
+        failed_artifact.archive_sha256 = failed_artifact.release_artifact_id.clone();
+        *adapter.loaded.lock().unwrap() = false;
+        adapter.simulate_start_failure();
+        record_upgrade_fact(
+            &failed_context,
+            &failed_artifact.release_artifact_id,
+            "upgrade_approval_admitted",
+        )
+        .unwrap();
+        let error = execute_upgrade_lifecycle_with_adapter(
+            &failed_context,
+            &failed_artifact,
+            &adapter,
+            false,
+            |_| Ok(()),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("without automatic rollback"));
+        let failed_record = validate_supervisor_record(&paths.record, true).unwrap();
+        assert_eq!(failed_record.record_revision, successor.record_revision + 1);
+        assert_eq!(failed_record.executable_path, candidate);
+        assert!(entries(&paths.ledger).iter().any(|entry| {
+            entry.observation.resource_id.as_deref()
+                == Some(failed_artifact.release_artifact_id.as_str())
+                && entry.observation.safe_message
+                    == "daemon release upgrade failed without automatic rollback"
+        }));
     }
 
     #[test]

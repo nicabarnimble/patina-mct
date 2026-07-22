@@ -587,6 +587,13 @@ where
         fs::File::open(immutable_path.parent().unwrap())?.sync_all()?;
         candidate_artifact
     };
+    let executable_path = immutable_path.join(&artifact.executable_relative_path);
+    if !executable_path.is_file() {
+        if artifact.acquisition_decision_id == decision_id {
+            let _ = fs::remove_dir_all(&immutable_path);
+        }
+        bail!("immutable daemon release executable is absent after publication");
+    }
     let acquisition = DaemonReleaseAcquisitionV1 {
         schema_version: 1,
         attempt_id: attempt_id.clone(),
@@ -614,7 +621,7 @@ where
         return Err(error).context("persist verified daemon release projection");
     }
     state.consume_daemon_release_decision(&decision_id)?;
-    observe(release_observation(
+    if let Err(error) = observe(release_observation(
         (
             &format!("obs:daemon-release-storage-complete:{suffix}"),
             &attempt_id,
@@ -626,10 +633,12 @@ where
         ("local-mct", "mct:daemon-release-storage/filesystem@1"),
         request.policy_revision,
         "immutable daemon release publication completed",
-    )?)?;
-    let executable_path = immutable_path.join(&artifact.executable_relative_path);
-    if !executable_path.is_file() {
-        bail!("immutable daemon release executable is absent after publication");
+    )?) {
+        if let Some(path) = state.rollback_daemon_release_acquisition(&attempt_id)? {
+            let _ = fs::remove_dir_all(path);
+        }
+        return Err(error)
+            .context("daemon release storage completion was not durable; publication rolled back");
     }
     Ok(MctDaemonReleaseAcquisitionReport {
         acquisition,
@@ -1506,6 +1515,50 @@ mod acquisition_tests {
         assert_eq!(
             state.daemon_release_acquisitions().unwrap()[2].verification_outcome,
             "rejected"
+        );
+    }
+
+    #[test]
+    fn release_publication_rolls_back_when_terminal_writer_is_lost() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = release_fixture(temp.path());
+        let request = MctDaemonReleaseAcquisitionRequest {
+            source_path: archive,
+            expected_archive_identity: None,
+            target_triple: TARGET.into(),
+            releases_dir: temp.path().join("service/releases"),
+            state_path: temp.path().join("service/state.sqlite"),
+            ledger_path: temp.path().join("service/observations.jsonl"),
+            authenticated_uid: 501,
+            policy_revision: 1,
+        };
+        let mut ledger =
+            JsonlObservationLedger::open(&request.ledger_path, "ledger-local", "local-mct")
+                .unwrap();
+        let result = acquire_operator_file_daemon_release_with_platform_verifier(
+            &request,
+            |_| Ok(()),
+            |observation| {
+                if observation.safe_message == "immutable daemon release publication completed" {
+                    bail!("injected terminal writer loss");
+                }
+                append_release_observation(&mut ledger, observation)
+            },
+        );
+        assert!(result.unwrap_err().to_string().contains("rolled back"));
+        drop(ledger);
+        let state = MctRuntimeStateStore::open(&request.state_path).unwrap();
+        assert!(state.daemon_release_artifacts().unwrap().is_empty());
+        assert!(state.daemon_release_acquisitions().unwrap().is_empty());
+        assert_eq!(
+            fs::read_dir(request.releases_dir.join("sha256"))
+                .unwrap()
+                .count(),
+            0
+        );
+        assert_eq!(
+            state.daemon_release_decisions().unwrap()[0].decision_state,
+            "consumed"
         );
     }
 
