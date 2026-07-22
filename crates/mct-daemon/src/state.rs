@@ -2974,20 +2974,29 @@ impl MctRuntimeStateStore {
         artifact: &DaemonReleaseArtifactV1,
     ) -> Result<()> {
         validate_daemon_release_artifact(artifact)?;
+        let existing = self.daemon_release_artifact(&artifact.release_artifact_id)?;
+        let first_acquisition_matches = existing.is_some()
+            || (acquisition.verification_observation_id.as_deref()
+                == Some(artifact.verification_observation_id.as_str())
+                && acquisition.acquisition_decision_id == artifact.acquisition_decision_id
+                && acquisition.acquisition_observation_id == artifact.acquisition_observation_id
+                && acquisition.adapter_effect_authority_ref
+                    == artifact.adapter_effect_authority_ref);
         if acquisition.schema_version != 1
             || acquisition.source_kind != "operator_file"
+            || acquisition.source_ref != artifact.source_ref
+            || acquisition.target_triple != artifact.target_triple
             || acquisition.acquisition_outcome != "acquired"
             || acquisition.verification_outcome != "verified"
             || acquisition.release_artifact_id.as_deref()
                 != Some(artifact.release_artifact_id.as_str())
-            || acquisition.verification_observation_id.as_deref()
-                != Some(artifact.verification_observation_id.as_str())
-            || acquisition.acquisition_decision_id != artifact.acquisition_decision_id
+            || !first_acquisition_matches
         {
             bail!("verified daemon release transaction has mismatched evidence");
         }
-        if let Some(existing) = self.daemon_release_artifact(&artifact.release_artifact_id)?
-            && existing != *artifact
+        if existing
+            .as_ref()
+            .is_some_and(|existing| existing != artifact)
         {
             bail!("immutable daemon release artifact conflicts with persisted facts");
         }

@@ -105,10 +105,14 @@ pub use registry::{
     sync_child_registry_source,
 };
 pub use release::{
-    DaemonReleaseAcquisitionV1, DaemonReleaseArtifactV1, MCT_DAEMON_RELEASE_ARCHIVE_MAX_BYTES,
-    MCT_DAEMON_RELEASE_EXTRACTED_MAX_BYTES, MCT_DAEMON_RELEASE_MAX_ENTRIES,
-    MCT_DAEMON_RELEASE_METADATA_FILE_MAX_BYTES, OperatorPointedDaemonReleaseAcquisitionDecisionV1,
-    ReleaseManifestV1, VerifiedDaemonReleaseArchive, verify_and_extract_daemon_release_archive,
+    DaemonReleaseAcquisitionV1, DaemonReleaseArtifactV1,
+    MCT_DAEMON_RELEASE_ACQUISITION_DEADLINE_SECONDS, MCT_DAEMON_RELEASE_ARCHIVE_MAX_BYTES,
+    MCT_DAEMON_RELEASE_EXTRACTED_MAX_BYTES, MCT_DAEMON_RELEASE_FILESYSTEM_ADAPTER,
+    MCT_DAEMON_RELEASE_MAX_ENTRIES, MCT_DAEMON_RELEASE_METADATA_FILE_MAX_BYTES,
+    MctDaemonReleaseAcquisitionReport, MctDaemonReleaseAcquisitionRequest,
+    OperatorPointedDaemonReleaseAcquisitionDecisionV1, ReleaseManifestV1,
+    VerifiedDaemonReleaseArchive, acquire_operator_file_daemon_release_offline,
+    verify_and_extract_daemon_release_archive,
 };
 pub use state::{
     ChildInvocationProvenance, MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER, MCT_IDEMPOTENCY_TTL_SECONDS,

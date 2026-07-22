@@ -1,5 +1,11 @@
+use crate::{MctRuntimeStateStore, current_timestamp, current_timestamp_string};
 use anyhow::{Context as _, Result, bail};
 use flate2::read::GzDecoder;
+use mct_kernel::{
+    DecisionId, MctObservation, ObservationId, ObservationKind, ObservationOutcome,
+    ObservationTraceRef, ObservationVisibility, SourcePlane, TraceId,
+};
+use mct_observation::{DurabilityClass, ExportStatus, JsonlObservationLedger};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::{
@@ -8,12 +14,19 @@ use std::{
     io::{Read, Write as _},
     os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _},
     path::{Component, Path, PathBuf},
+    process::{Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 pub const MCT_DAEMON_RELEASE_ARCHIVE_MAX_BYTES: u64 = 256 * 1024 * 1024;
 pub const MCT_DAEMON_RELEASE_EXTRACTED_MAX_BYTES: u64 = 512 * 1024 * 1024;
 pub const MCT_DAEMON_RELEASE_MAX_ENTRIES: usize = 32;
 pub const MCT_DAEMON_RELEASE_METADATA_FILE_MAX_BYTES: u64 = 8 * 1024 * 1024;
+pub const MCT_DAEMON_RELEASE_ACQUISITION_DEADLINE_SECONDS: i64 = 60;
+pub const MCT_DAEMON_RELEASE_FILESYSTEM_ADAPTER: &str =
+    "mct:daemon-release-acquisition/filesystem@1";
+
+static NEXT_DAEMON_RELEASE_ATTEMPT: AtomicU64 = AtomicU64::new(1);
 
 const RELEASE_MANIFEST_FILE: &str = "RELEASE-MANIFEST.json";
 const RELEASE_NOTES_FILE: &str = "RELEASE-NOTES.md";
@@ -131,6 +144,37 @@ pub struct DaemonReleaseAcquisitionV1 {
     pub created_at: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MctDaemonReleaseAcquisitionRequest {
+    pub source_path: PathBuf,
+    pub expected_archive_identity: Option<String>,
+    pub target_triple: String,
+    pub releases_dir: PathBuf,
+    pub state_path: PathBuf,
+    pub ledger_path: PathBuf,
+    pub authenticated_uid: u32,
+    pub policy_revision: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctDaemonReleaseAcquisitionReport {
+    pub acquisition: DaemonReleaseAcquisitionV1,
+    pub artifact: DaemonReleaseArtifactV1,
+    pub release_notes: String,
+}
+
+#[derive(Debug)]
+struct DaemonReleaseFilesystemEffectAuthority {
+    source_path: PathBuf,
+    source_ref: String,
+    attempt_id: String,
+    authenticated_uid: u32,
+    policy_revision: u64,
+    adapter_effect_authority_ref: String,
+    deadline: jiff::Timestamp,
+}
+
 #[derive(Clone, Debug)]
 struct EntryFact {
     path: String,
@@ -223,6 +267,519 @@ pub fn verify_and_extract_daemon_release_archive(
         executable_path,
         release_notes: scan.release_notes,
     })
+}
+
+pub fn acquire_operator_file_daemon_release_offline(
+    request: &MctDaemonReleaseAcquisitionRequest,
+) -> Result<MctDaemonReleaseAcquisitionReport> {
+    acquire_operator_file_daemon_release_with_platform_verifier(
+        request,
+        verify_macos_release_signature,
+    )
+}
+
+fn acquire_operator_file_daemon_release_with_platform_verifier<F>(
+    request: &MctDaemonReleaseAcquisitionRequest,
+    verify_platform: F,
+) -> Result<MctDaemonReleaseAcquisitionReport>
+where
+    F: FnOnce(&Path) -> Result<()>,
+{
+    validate_expected_archive_identity(request.expected_archive_identity.as_deref())?;
+    if request.target_triple != "aarch64-apple-darwin"
+        || !request.releases_dir.is_absolute()
+        || !request.state_path.is_absolute()
+        || !request.ledger_path.is_absolute()
+        || request.policy_revision == 0
+    {
+        bail!("daemon release acquisition target, paths, or policy revision is invalid");
+    }
+    let source_path = canonical_regular_file(&request.source_path, "release archive")?;
+    let source_text = source_path
+        .to_str()
+        .context("release archive canonical path is not UTF-8")?;
+    if source_text
+        .chars()
+        .any(|character| character.is_control() || matches!(character, '?' | '#' | '@'))
+    {
+        bail!("release archive canonical path cannot form a credential-free file URI");
+    }
+    let source_ref = format!("file://{source_text}");
+    let sequence = NEXT_DAEMON_RELEASE_ATTEMPT.fetch_add(1, Ordering::SeqCst);
+    let suffix = format!("{}-{sequence}", current_timestamp_string());
+    let attempt_id = format!("daemon-release-attempt:{suffix}");
+    let decision_id = format!("daemon-release-decision:{suffix}");
+    let authority_observation_id = format!("obs:daemon-release-decision:{suffix}");
+    let adapter_start_observation_id = format!("obs:daemon-release-adapter-start:{suffix}");
+    let acquisition_observation_id = format!("obs:daemon-release-acquired:{suffix}");
+    let verification_observation_id = format!("obs:daemon-release-verified:{suffix}");
+    let deadline = jiff::Timestamp::now()
+        + jiff::SignedDuration::from_secs(MCT_DAEMON_RELEASE_ACQUISITION_DEADLINE_SECONDS);
+    let decision = OperatorPointedDaemonReleaseAcquisitionDecisionV1 {
+        schema_version: 1,
+        decision_id: decision_id.clone(),
+        source_ref: source_ref.clone(),
+        expected_archive_identity: request.expected_archive_identity.clone(),
+        product: "mct-daemon".into(),
+        target_triple: request.target_triple.clone(),
+        attempt_id: attempt_id.clone(),
+        authenticated_uid: request.authenticated_uid,
+        policy_revision: request.policy_revision,
+        deadline: deadline.to_string(),
+        decision_state: "active".into(),
+        authority_observation_id: authority_observation_id.clone(),
+        consumed_at: None,
+    };
+    let state = MctRuntimeStateStore::open(&request.state_path)?;
+    state.record_daemon_release_decision(&decision)?;
+    let mut ledger =
+        JsonlObservationLedger::open(&request.ledger_path, "ledger-local", "local-mct")?;
+    append_release_observation(
+        &mut ledger,
+        release_observation(
+            (&authority_observation_id, &attempt_id, &decision_id),
+            ObservationKind::OperatorActionRecorded,
+            SourcePlane::Operator,
+            ObservationOutcome::Allowed,
+            (
+                &format!("os-uid:{}", request.authenticated_uid),
+                &source_ref,
+            ),
+            request.policy_revision,
+            "operator-pointed daemon release acquisition admitted",
+        )?,
+    )?;
+    append_release_observation(
+        &mut ledger,
+        release_observation(
+            (&adapter_start_observation_id, &attempt_id, &decision_id),
+            ObservationKind::AdapterEffectStarted,
+            SourcePlane::Adapter,
+            ObservationOutcome::Started,
+            ("local-mct", MCT_DAEMON_RELEASE_FILESYSTEM_ADAPTER),
+            request.policy_revision,
+            "daemon release filesystem acquisition started",
+        )?,
+    )?;
+    let authority = DaemonReleaseFilesystemEffectAuthority {
+        source_path: source_path.clone(),
+        source_ref: source_ref.clone(),
+        attempt_id: attempt_id.clone(),
+        authenticated_uid: request.authenticated_uid,
+        policy_revision: request.policy_revision,
+        adapter_effect_authority_ref: adapter_start_observation_id.clone(),
+        deadline,
+    };
+    let acquiring_root = request.releases_dir.join(".acquiring");
+    let staging = acquiring_root.join(attempt_id.replace(':', "-"));
+    if staging.exists() {
+        bail!("daemon release acquisition staging path already exists");
+    }
+    let verified = authority.acquire_and_verify(request, &staging, verify_platform);
+    let verified = match verified {
+        Ok(verified) => verified,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging);
+            append_release_observation(
+                &mut ledger,
+                release_observation(
+                    (&acquisition_observation_id, &attempt_id, &decision_id),
+                    ObservationKind::AdapterEffectFailed,
+                    SourcePlane::Adapter,
+                    ObservationOutcome::Failed,
+                    ("local-mct", MCT_DAEMON_RELEASE_FILESYSTEM_ADAPTER),
+                    request.policy_revision,
+                    "daemon release filesystem acquisition failed",
+                )?,
+            )?;
+            append_release_observation(
+                &mut ledger,
+                release_observation(
+                    (&verification_observation_id, &attempt_id, &decision_id),
+                    ObservationKind::ArtifactRejected,
+                    SourcePlane::Adapter,
+                    ObservationOutcome::Denied,
+                    ("local-mct", &source_ref),
+                    request.policy_revision,
+                    "daemon release archive rejected",
+                )?,
+            )?;
+            let failed = DaemonReleaseAcquisitionV1 {
+                schema_version: 1,
+                attempt_id,
+                acquisition_decision_id: decision_id.clone(),
+                source_kind: "operator_file".into(),
+                source_ref,
+                expected_archive_identity: request.expected_archive_identity.clone(),
+                target_triple: request.target_triple.clone(),
+                authenticated_uid: request.authenticated_uid,
+                policy_revision: request.policy_revision,
+                adapter_effect_authority_ref: adapter_start_observation_id,
+                acquisition_observation_id,
+                verification_observation_id: Some(verification_observation_id),
+                release_artifact_id: None,
+                acquisition_outcome: "failed".into(),
+                verification_outcome: "rejected".into(),
+                safe_message: "daemon release acquisition failed verification".into(),
+                created_at: current_timestamp_string(),
+            };
+            state.record_failed_daemon_release_acquisition(&failed)?;
+            state.consume_daemon_release_decision(&decision_id)?;
+            return Err(error).context("daemon release archive acquisition rejected");
+        }
+    };
+    append_release_observation(
+        &mut ledger,
+        release_observation(
+            (&acquisition_observation_id, &attempt_id, &decision_id),
+            ObservationKind::AdapterEffectCompleted,
+            SourcePlane::Adapter,
+            ObservationOutcome::Completed,
+            ("local-mct", MCT_DAEMON_RELEASE_FILESYSTEM_ADAPTER),
+            request.policy_revision,
+            "daemon release filesystem acquisition completed",
+        )?,
+    )?;
+    append_release_observation(
+        &mut ledger,
+        release_observation(
+            (&verification_observation_id, &attempt_id, &decision_id),
+            ObservationKind::ArtifactVerified,
+            SourcePlane::Adapter,
+            ObservationOutcome::Allowed,
+            ("local-mct", &verified.archive_sha256),
+            request.policy_revision,
+            "daemon release archive verified",
+        )?,
+    )?;
+
+    copy_release_sidecars(&source_path, &staging)?;
+    let digest = verified
+        .archive_sha256
+        .strip_prefix("sha256:")
+        .context("verified release archive has no SHA-256 tag")?;
+    let immutable_path = request.releases_dir.join("sha256").join(digest);
+    let manifest_path = verified.release_root.join(RELEASE_MANIFEST_FILE);
+    let release_manifest_sha256 = format!("sha256:{}", hash_file(&manifest_path)?.0);
+    let relative_release_root = verified
+        .release_root
+        .strip_prefix(&staging)
+        .context("verified release root escaped acquisition staging")?
+        .to_path_buf();
+    let candidate_artifact = DaemonReleaseArtifactV1 {
+        schema_version: 1,
+        release_artifact_id: verified.archive_sha256.clone(),
+        product: verified.manifest.product.clone(),
+        product_version: verified.manifest.product_version.clone(),
+        target_triple: verified.manifest.target_triple.clone(),
+        archive_size_bytes: verified.archive_size_bytes,
+        archive_sha256: verified.archive_sha256.clone(),
+        archive_blake3: verified.archive_blake3.clone(),
+        release_manifest_sha256,
+        executable_relative_path: verified.manifest.executable_relative_path.clone(),
+        executable_sha256: verified.manifest.executable_sha256.clone(),
+        executable_blake3: verified.manifest.executable_blake3.clone(),
+        release_notes_sha256: verified.manifest.release_notes_sha256.clone(),
+        sbom_sha256: verified.manifest.sbom_sha256.clone(),
+        fixture_provenance_sha256: verified.manifest.fixture_provenance_sha256.clone(),
+        source_revision: verified.manifest.source_commit.clone(),
+        rust_toolchain: verified.manifest.rust_toolchain.clone(),
+        signing_mode: verified.manifest.signing_mode.clone(),
+        source_kind: "operator_file".into(),
+        source_ref: source_ref.clone(),
+        acquisition_decision_id: decision_id.clone(),
+        adapter_effect_authority_ref: adapter_start_observation_id.clone(),
+        acquisition_observation_id: acquisition_observation_id.clone(),
+        verification_observation_id: verification_observation_id.clone(),
+        immutable_release_path: immutable_path.clone(),
+    };
+    append_release_observation(
+        &mut ledger,
+        release_observation(
+            (
+                &format!("obs:daemon-release-storage-start:{suffix}"),
+                &attempt_id,
+                &decision_id,
+            ),
+            ObservationKind::AdapterEffectStarted,
+            SourcePlane::Adapter,
+            ObservationOutcome::Started,
+            ("local-mct", "mct:daemon-release-storage/filesystem@1"),
+            request.policy_revision,
+            "immutable daemon release publication or reuse started",
+        )?,
+    )?;
+    let artifact = if immutable_path.exists() {
+        let existing = state
+            .daemon_release_artifact(&candidate_artifact.release_artifact_id)?
+            .context("immutable daemon release path exists without release projection")?;
+        if !same_daemon_release_bytes(&existing, &candidate_artifact)
+            || !directory_trees_equal(&immutable_path, &staging)?
+        {
+            let _ = fs::remove_dir_all(&staging);
+            bail!("immutable daemon release path conflicts with verified bytes or facts");
+        }
+        fs::remove_dir_all(&staging)?;
+        existing
+    } else {
+        fs::create_dir_all(
+            immutable_path
+                .parent()
+                .context("immutable daemon release path has no parent")?,
+        )?;
+        fs::rename(&staging, &immutable_path)
+            .context("publish immutable daemon release directory")?;
+        fs::File::open(immutable_path.parent().unwrap())?.sync_all()?;
+        candidate_artifact
+    };
+    let acquisition = DaemonReleaseAcquisitionV1 {
+        schema_version: 1,
+        attempt_id: attempt_id.clone(),
+        acquisition_decision_id: decision_id.clone(),
+        source_kind: "operator_file".into(),
+        source_ref,
+        expected_archive_identity: request.expected_archive_identity.clone(),
+        target_triple: request.target_triple.clone(),
+        authenticated_uid: request.authenticated_uid,
+        policy_revision: request.policy_revision,
+        adapter_effect_authority_ref: adapter_start_observation_id,
+        acquisition_observation_id,
+        verification_observation_id: Some(verification_observation_id),
+        release_artifact_id: Some(artifact.release_artifact_id.clone()),
+        acquisition_outcome: "acquired".into(),
+        verification_outcome: "verified".into(),
+        safe_message: "daemon release archive acquired and verified".into(),
+        created_at: current_timestamp_string(),
+    };
+    let was_new = artifact.acquisition_decision_id == decision_id;
+    if let Err(error) = state.record_verified_daemon_release(&acquisition, &artifact) {
+        if was_new {
+            let _ = fs::remove_dir_all(&immutable_path);
+        }
+        return Err(error).context("persist verified daemon release projection");
+    }
+    state.consume_daemon_release_decision(&decision_id)?;
+    append_release_observation(
+        &mut ledger,
+        release_observation(
+            (
+                &format!("obs:daemon-release-storage-complete:{suffix}"),
+                &attempt_id,
+                &decision_id,
+            ),
+            ObservationKind::AdapterEffectCompleted,
+            SourcePlane::Adapter,
+            ObservationOutcome::Completed,
+            ("local-mct", "mct:daemon-release-storage/filesystem@1"),
+            request.policy_revision,
+            "immutable daemon release publication completed",
+        )?,
+    )?;
+    let executable_path = immutable_path
+        .join(relative_release_root)
+        .join(&artifact.executable_relative_path);
+    if !executable_path.is_file() {
+        bail!("immutable daemon release executable is absent after publication");
+    }
+    Ok(MctDaemonReleaseAcquisitionReport {
+        acquisition,
+        artifact,
+        release_notes: verified.release_notes,
+    })
+}
+
+impl DaemonReleaseFilesystemEffectAuthority {
+    fn acquire_and_verify<F>(
+        self,
+        request: &MctDaemonReleaseAcquisitionRequest,
+        staging: &Path,
+        verify_platform: F,
+    ) -> Result<VerifiedDaemonReleaseArchive>
+    where
+        F: FnOnce(&Path) -> Result<()>,
+    {
+        if self.source_path != request.source_path.canonicalize()?
+            || self.authenticated_uid != request.authenticated_uid
+            || self.policy_revision != request.policy_revision
+            || self.attempt_id.trim().is_empty()
+            || self.source_ref.trim().is_empty()
+            || self.adapter_effect_authority_ref.trim().is_empty()
+            || jiff::Timestamp::now() > self.deadline
+        {
+            bail!("daemon release filesystem effect authority is stale or mismatched");
+        }
+        fs::create_dir_all(
+            staging
+                .parent()
+                .context("daemon release staging has no parent")?,
+        )?;
+        let verified = verify_and_extract_daemon_release_archive(
+            &self.source_path,
+            staging,
+            request.expected_archive_identity.as_deref(),
+            &request.target_triple,
+        )?;
+        if jiff::Timestamp::now() > self.deadline {
+            bail!("daemon release acquisition exceeded its named deadline");
+        }
+        verify_platform(&verified.release_root)?;
+        Ok(verified)
+    }
+}
+
+fn verify_macos_release_signature(release_root: &Path) -> Result<()> {
+    if !cfg!(target_os = "macos") {
+        bail!("aarch64-apple-darwin signature verification requires macOS");
+    }
+    let bundle = release_root.join("payload/mct-daemon.app");
+    let status = Command::new("/usr/bin/codesign")
+        .args(["--verify", "--strict", "--verbose=2"])
+        .arg(&bundle)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("invoke macOS release signature verifier")?;
+    if !status.success() {
+        bail!("macOS release signature verification failed");
+    }
+    Ok(())
+}
+
+fn release_observation(
+    correlation: (&str, &str, &str),
+    kind: ObservationKind,
+    source_plane: SourcePlane,
+    outcome: ObservationOutcome,
+    subject_resource: (&str, &str),
+    policy_revision: u64,
+    safe_message: &str,
+) -> Result<MctObservation> {
+    let (observation_id, attempt_id, decision_id) = correlation;
+    let (subject_id, resource_id) = subject_resource;
+    Ok(MctObservation {
+        observation_id: ObservationId::new(observation_id)?,
+        observed_at: current_timestamp(),
+        kind,
+        source_plane,
+        trace: ObservationTraceRef {
+            trace_id: TraceId::new(attempt_id)?,
+            span_id: None,
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: None,
+        decision_id: Some(DecisionId::new(decision_id)?),
+        subject_id: Some(subject_id.into()),
+        resource_id: Some(resource_id.into()),
+        policy_revision: Some(policy_revision),
+        grants_revision: None,
+        outcome,
+        visibility: ObservationVisibility::NodeOperator,
+        safe_message: safe_message.into(),
+        detail_ref: None,
+    })
+}
+
+fn append_release_observation(
+    ledger: &mut JsonlObservationLedger,
+    observation: MctObservation,
+) -> Result<()> {
+    ledger.append(
+        observation,
+        current_timestamp_string(),
+        DurabilityClass::BeforeEffect,
+        ExportStatus::NotRequired,
+    )?;
+    Ok(())
+}
+
+fn validate_expected_archive_identity(expected: Option<&str>) -> Result<()> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    if !is_tagged_lower_hex(expected, "sha256") {
+        bail!("expected daemon release identity must be sha256:<64-lower-hex>");
+    }
+    Ok(())
+}
+
+fn copy_release_sidecars(source: &Path, staging: &Path) -> Result<()> {
+    let name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("release archive name is not UTF-8")?;
+    for algorithm in ["sha256", "blake3"] {
+        let sidecar = source.with_file_name(format!("{name}.{algorithm}"));
+        let destination = staging.join(format!("archive.{algorithm}"));
+        fs::copy(&sidecar, &destination)?;
+        let file = fs::OpenOptions::new().read(true).open(&destination)?;
+        file.sync_all()?;
+    }
+    fs::File::open(staging)?.sync_all()?;
+    Ok(())
+}
+
+fn same_daemon_release_bytes(
+    left: &DaemonReleaseArtifactV1,
+    right: &DaemonReleaseArtifactV1,
+) -> bool {
+    left.schema_version == right.schema_version
+        && left.release_artifact_id == right.release_artifact_id
+        && left.product == right.product
+        && left.product_version == right.product_version
+        && left.target_triple == right.target_triple
+        && left.archive_size_bytes == right.archive_size_bytes
+        && left.archive_sha256 == right.archive_sha256
+        && left.archive_blake3 == right.archive_blake3
+        && left.release_manifest_sha256 == right.release_manifest_sha256
+        && left.executable_relative_path == right.executable_relative_path
+        && left.executable_sha256 == right.executable_sha256
+        && left.executable_blake3 == right.executable_blake3
+        && left.release_notes_sha256 == right.release_notes_sha256
+        && left.sbom_sha256 == right.sbom_sha256
+        && left.fixture_provenance_sha256 == right.fixture_provenance_sha256
+        && left.source_revision == right.source_revision
+        && left.rust_toolchain == right.rust_toolchain
+        && left.signing_mode == right.signing_mode
+        && left.source_kind == right.source_kind
+        && left.source_ref == right.source_ref
+        && left.immutable_release_path == right.immutable_release_path
+}
+
+fn directory_trees_equal(left: &Path, right: &Path) -> Result<bool> {
+    fn facts(root: &Path) -> Result<BTreeMap<String, Option<String>>> {
+        fn visit(
+            root: &Path,
+            current: &Path,
+            output: &mut BTreeMap<String, Option<String>>,
+        ) -> Result<()> {
+            let mut entries = fs::read_dir(current)?.collect::<std::io::Result<Vec<_>>>()?;
+            entries.sort_by_key(|entry| entry.file_name());
+            for entry in entries {
+                let path = entry.path();
+                let metadata = fs::symlink_metadata(&path)?;
+                let relative = path
+                    .strip_prefix(root)?
+                    .to_str()
+                    .context("immutable release path is not UTF-8")?
+                    .to_owned();
+                if metadata.is_dir() {
+                    output.insert(relative, None);
+                    visit(root, &path, output)?;
+                } else if metadata.is_file() && !metadata.file_type().is_symlink() {
+                    output.insert(relative, Some(hash_file(&path)?.0));
+                } else {
+                    bail!("immutable release contains unsupported filesystem entry");
+                }
+            }
+            Ok(())
+        }
+        let mut output = BTreeMap::new();
+        visit(root, root, &mut output)?;
+        Ok(output)
+    }
+    Ok(facts(left)? == facts(right)?)
 }
 
 fn canonical_regular_file(path: &Path, label: &str) -> Result<PathBuf> {
@@ -820,4 +1377,258 @@ fn is_lower_hex(value: &str, len: usize) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+#[cfg(test)]
+mod acquisition_tests {
+    use super::*;
+    use flate2::{Compression, GzBuilder};
+
+    const TARGET: &str = "aarch64-apple-darwin";
+    const EPOCH: u64 = 1_700_000_000;
+
+    #[test]
+    fn operator_file_release_acquisition_is_observed_immutable_and_not_child_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = release_fixture(temp.path());
+        let request = MctDaemonReleaseAcquisitionRequest {
+            source_path: archive.clone(),
+            expected_archive_identity: None,
+            target_triple: TARGET.into(),
+            releases_dir: temp.path().join("service/releases"),
+            state_path: temp.path().join("service/state.sqlite"),
+            ledger_path: temp.path().join("service/observations.jsonl"),
+            authenticated_uid: 501,
+            policy_revision: 1,
+        };
+
+        let first =
+            acquire_operator_file_daemon_release_with_platform_verifier(&request, |_| Ok(()))
+                .unwrap();
+        let second =
+            acquire_operator_file_daemon_release_with_platform_verifier(&request, |_| Ok(()))
+                .unwrap();
+        assert_eq!(first.artifact, second.artifact);
+        assert_eq!(
+            first.artifact.release_artifact_id,
+            first.artifact.archive_sha256
+        );
+        assert!(first.artifact.immutable_release_path.is_dir());
+        let state = MctRuntimeStateStore::open(&request.state_path).unwrap();
+        assert_eq!(state.daemon_release_artifacts().unwrap().len(), 1);
+        assert_eq!(state.daemon_release_acquisitions().unwrap().len(), 2);
+        assert_eq!(state.summary().unwrap().artifacts, 0);
+        assert_eq!(state.summary().unwrap().daemon_release_artifacts, 1);
+        let entries = JsonlObservationLedger::open_read_only(
+            &request.ledger_path,
+            "ledger-local",
+            "local-mct",
+        )
+        .unwrap()
+        .entries()
+        .unwrap();
+        let kinds = entries
+            .iter()
+            .map(|entry| entry.observation.kind)
+            .collect::<Vec<_>>();
+        assert_eq!(kinds[0], ObservationKind::OperatorActionRecorded);
+        assert_eq!(kinds[1], ObservationKind::AdapterEffectStarted);
+        assert_eq!(kinds[2], ObservationKind::AdapterEffectCompleted);
+        assert_eq!(kinds[3], ObservationKind::ArtifactVerified);
+        let verification_index = kinds
+            .iter()
+            .position(|kind| *kind == ObservationKind::ArtifactVerified)
+            .unwrap();
+        let storage_index = kinds
+            .iter()
+            .enumerate()
+            .find(|(index, kind)| {
+                *index > verification_index && **kind == ObservationKind::AdapterEffectStarted
+            })
+            .map(|(index, _)| index)
+            .unwrap();
+        assert!(verification_index < storage_index);
+
+        let mut bytes = fs::read(&archive).unwrap();
+        bytes.push(0);
+        fs::write(&archive, bytes).unwrap();
+        let error =
+            acquire_operator_file_daemon_release_with_platform_verifier(&request, |_| Ok(()))
+                .unwrap_err();
+        assert!(error.to_string().contains("rejected"));
+        let state = MctRuntimeStateStore::open(&request.state_path).unwrap();
+        assert_eq!(state.daemon_release_artifacts().unwrap().len(), 1);
+        assert_eq!(state.daemon_release_acquisitions().unwrap().len(), 3);
+        assert_eq!(
+            state.daemon_release_acquisitions().unwrap()[2].verification_outcome,
+            "rejected"
+        );
+    }
+
+    #[test]
+    fn malformed_release_request_refuses_before_source_or_evidence_effects() {
+        let temp = tempfile::tempdir().unwrap();
+        let request = MctDaemonReleaseAcquisitionRequest {
+            source_path: temp.path().join("absent.tar.gz"),
+            expected_archive_identity: Some("sha256:WRONG".into()),
+            target_triple: TARGET.into(),
+            releases_dir: temp.path().join("releases"),
+            state_path: temp.path().join("state.sqlite"),
+            ledger_path: temp.path().join("observations.jsonl"),
+            authenticated_uid: 501,
+            policy_revision: 1,
+        };
+        assert!(
+            acquire_operator_file_daemon_release_with_platform_verifier(&request, |_| Ok(()))
+                .unwrap_err()
+                .to_string()
+                .contains("64-lower-hex")
+        );
+        assert!(!request.state_path.exists());
+        assert!(!request.ledger_path.exists());
+    }
+
+    fn release_fixture(directory: &Path) -> PathBuf {
+        let version = crate::version();
+        let root = format!("mct-daemon-v{version}-{TARGET}");
+        let archive_name = format!("{root}.tar.gz");
+        let archive = directory.join(&archive_name);
+        let mut files = BTreeMap::<String, Vec<u8>>::new();
+        files.insert(
+            RELEASE_INFO_PLIST.into(),
+            b"<?xml version=\"1.0\"?>\n<plist version=\"1.0\"><dict/></plist>\n".to_vec(),
+        );
+        files.insert(RELEASE_EXECUTABLE.into(), b"test executable".to_vec());
+        files.insert(RELEASE_CODE_RESOURCES.into(), b"sealed resources".to_vec());
+        files.insert(
+            RELEASE_NOTES_FILE.into(),
+            b"# MCT 0.2.0\n\nNotes.\n".to_vec(),
+        );
+        files.insert(
+            RELEASE_SBOM_FILE.into(),
+            br#"{"bomFormat":"CycloneDX","specVersion":"1.6"}"#.to_vec(),
+        );
+        files.insert(
+            RELEASE_FIXTURE_PROVENANCE_FILE.into(),
+            br#"{"fixtures":[]}"#.to_vec(),
+        );
+        files.insert(RELEASE_LICENSE_FILE.into(), b"MIT License\n".to_vec());
+        let manifest = ReleaseManifestV1 {
+            schema_version: 1,
+            package_format_version: 1,
+            release_mode: "smoke".into(),
+            product: "mct-daemon".into(),
+            product_version: version.into(),
+            target_triple: TARGET.into(),
+            source_commit: "1".repeat(40),
+            source_epoch: EPOCH,
+            rust_toolchain: "1.96.0".into(),
+            rust_version: "rustc 1.96.0".into(),
+            cargo_version: "cargo 1.96.0".into(),
+            lockfile_sha256: tagged_sha(b"lockfile"),
+            executable_relative_path: RELEASE_EXECUTABLE.into(),
+            executable_sha256: tagged_sha(&files[RELEASE_EXECUTABLE]),
+            executable_blake3: format!(
+                "blake3:{}",
+                blake3::hash(&files[RELEASE_EXECUTABLE]).to_hex()
+            ),
+            release_notes_sha256: tagged_sha(&files[RELEASE_NOTES_FILE]),
+            sbom_sha256: tagged_sha(&files[RELEASE_SBOM_FILE]),
+            fixture_provenance_sha256: tagged_sha(&files[RELEASE_FIXTURE_PROVENANCE_FILE]),
+            distribution_license: "MIT".into(),
+            signing_mode: "adhoc".into(),
+        };
+        files.insert(
+            RELEASE_MANIFEST_FILE.into(),
+            serde_json::to_vec(&manifest).unwrap(),
+        );
+        let mut lines = files
+            .iter()
+            .flat_map(|(path, bytes)| {
+                [
+                    format!("blake3 {} {path}", blake3::hash(bytes).to_hex()),
+                    format!("sha256 {} {path}", sha_hex(bytes)),
+                ]
+            })
+            .collect::<Vec<_>>();
+        lines.sort();
+        files.insert(
+            RELEASE_CHECKSUMS_FILE.into(),
+            format!("{}\n", lines.join("\n")).into_bytes(),
+        );
+
+        let encoder = GzBuilder::new()
+            .mtime(EPOCH as u32)
+            .write(fs::File::create(&archive).unwrap(), Compression::best());
+        let mut tar = tar::Builder::new(encoder);
+        for path in [
+            root.clone(),
+            format!("{root}/payload"),
+            format!("{root}/payload/mct-daemon.app"),
+            format!("{root}/payload/mct-daemon.app/Contents"),
+            format!("{root}/payload/mct-daemon.app/Contents/MacOS"),
+            format!("{root}/payload/mct-daemon.app/Contents/_CodeSignature"),
+        ] {
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Directory);
+            header.set_path(format!("{path}/")).unwrap();
+            header.set_size(0);
+            normalize(&mut header, 0o755);
+            tar.append(&header, &[][..]).unwrap();
+        }
+        for (path, bytes) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_path(format!("{root}/{path}")).unwrap();
+            header.set_size(bytes.len() as u64);
+            normalize(
+                &mut header,
+                if path == RELEASE_EXECUTABLE {
+                    0o755
+                } else {
+                    0o644
+                },
+            );
+            tar.append(&header, bytes.as_slice()).unwrap();
+        }
+        tar.into_inner()
+            .unwrap()
+            .finish()
+            .unwrap()
+            .sync_all()
+            .unwrap();
+        let archive_bytes = fs::read(&archive).unwrap();
+        fs::write(
+            directory.join(format!("{archive_name}.sha256")),
+            format!("{}  {archive_name}\n", sha_hex(&archive_bytes)),
+        )
+        .unwrap();
+        fs::write(
+            directory.join(format!("{archive_name}.blake3")),
+            format!(
+                "{}  {archive_name}\n",
+                blake3::hash(&archive_bytes).to_hex()
+            ),
+        )
+        .unwrap();
+        archive
+    }
+
+    fn normalize(header: &mut tar::Header, mode: u32) {
+        header.set_mode(mode);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_mtime(EPOCH);
+        header.set_username("").unwrap();
+        header.set_groupname("").unwrap();
+        header.set_cksum();
+    }
+
+    fn sha_hex(bytes: &[u8]) -> String {
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
+    fn tagged_sha(bytes: &[u8]) -> String {
+        format!("sha256:{}", sha_hex(bytes))
+    }
 }
