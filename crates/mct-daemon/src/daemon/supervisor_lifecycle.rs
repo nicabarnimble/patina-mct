@@ -1274,6 +1274,53 @@ fn require_macos_lifecycle() -> Result<()> {
     }
 }
 
+#[derive(Clone, Debug)]
+pub(super) struct UpgradeSupervisorContext {
+    pub state_path: PathBuf,
+    pub ledger_path: PathBuf,
+    pub uds_path: PathBuf,
+    pub releases_dir: PathBuf,
+    pub current_executable: PathBuf,
+    pub current_executable_digest: String,
+    pub supervisor_record_id: String,
+    pub supervisor_revision: u64,
+    pub authenticated_uid: u32,
+}
+
+pub(super) fn upgrade_supervisor_context(
+    selected_root: Option<PathBuf>,
+) -> Result<UpgradeSupervisorContext> {
+    require_macos_lifecycle()?;
+    let uid = current_uid()?;
+    let home = current_home(uid)?;
+    let root = selected_root.unwrap_or_else(|| home.join(".mct"));
+    let paths = SupervisorPaths::production(root, &home)?;
+    let record = validate_supervisor_record(&paths.record, true)?;
+    if record.owner_uid != uid {
+        bail!("upgrade supervisor record is not owned by the authenticated UID");
+    }
+    let current_executable = std::env::current_exe()?.canonicalize()?;
+    let recorded_executable = record.executable_path.canonicalize()?;
+    if current_executable != recorded_executable
+        || file_digest(&current_executable)? != record.executable_digest
+    {
+        bail!(
+            "upgrade must be invoked through the exact executable bound by the current supervisor record"
+        );
+    }
+    Ok(UpgradeSupervisorContext {
+        state_path: paths.state,
+        ledger_path: paths.ledger,
+        uds_path: paths.uds,
+        releases_dir: paths.root.join("releases"),
+        current_executable,
+        current_executable_digest: format!("blake3:{}", record.executable_digest),
+        supervisor_record_id: record.record_id,
+        supervisor_revision: record.record_revision,
+        authenticated_uid: uid,
+    })
+}
+
 pub(super) fn run_install(mut args: Vec<String>) -> Result<()> {
     require_macos_lifecycle()?;
     let replace = take_flag(&mut args, "--replace");

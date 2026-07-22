@@ -164,6 +164,69 @@ pub struct MctDaemonReleaseAcquisitionReport {
     pub release_notes: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MctDaemonReleaseSourceKind {
+    OperatorFile,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctDaemonReleaseSourcePlan {
+    pub source_kind: MctDaemonReleaseSourceKind,
+    pub source_path: PathBuf,
+}
+
+pub fn plan_daemon_release_source(artifact_ref: &str) -> Result<MctDaemonReleaseSourcePlan> {
+    let path = if let Some(path) = artifact_ref.strip_prefix("file://") {
+        if path.is_empty()
+            || !path.starts_with('/')
+            || path.contains('?')
+            || path.contains('#')
+            || path.contains('@')
+            || path.contains('%')
+        {
+            bail!("upgrade operator_file reference must be a credential-free canonical file URI");
+        }
+        PathBuf::from(path)
+    } else {
+        if artifact_ref.contains("://") {
+            bail!("upgrade source_kind is operator_file in v0.2; network sources are closed");
+        }
+        let path = PathBuf::from(artifact_ref);
+        if !path.is_absolute() {
+            bail!("upgrade operator_file path must be absolute");
+        }
+        path
+    };
+    Ok(MctDaemonReleaseSourcePlan {
+        source_kind: MctDaemonReleaseSourceKind::OperatorFile,
+        source_path: path,
+    })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MctVerifiedDaemonRelease {
+    report: MctDaemonReleaseAcquisitionReport,
+}
+
+impl MctVerifiedDaemonRelease {
+    pub fn from_acquisition(report: MctDaemonReleaseAcquisitionReport) -> Result<Self> {
+        if report.acquisition.source_kind != "operator_file"
+            || report.acquisition.acquisition_outcome != "acquired"
+            || report.acquisition.verification_outcome != "verified"
+            || report.acquisition.release_artifact_id.as_deref()
+                != Some(report.artifact.release_artifact_id.as_str())
+        {
+            bail!("upgrade planner requires verified daemon release evidence");
+        }
+        Ok(Self { report })
+    }
+
+    pub fn report(&self) -> &MctDaemonReleaseAcquisitionReport {
+        &self.report
+    }
+}
+
 #[derive(Debug)]
 struct DaemonReleaseFilesystemEffectAuthority {
     source_path: PathBuf,
@@ -272,18 +335,37 @@ pub fn verify_and_extract_daemon_release_archive(
 pub fn acquire_operator_file_daemon_release_offline(
     request: &MctDaemonReleaseAcquisitionRequest,
 ) -> Result<MctDaemonReleaseAcquisitionReport> {
+    let mut ledger =
+        JsonlObservationLedger::open(&request.ledger_path, "ledger-local", "local-mct")?;
     acquire_operator_file_daemon_release_with_platform_verifier(
         request,
         verify_macos_release_signature,
+        |observation| append_release_observation(&mut ledger, observation),
     )
 }
 
-fn acquire_operator_file_daemon_release_with_platform_verifier<F>(
+pub fn acquire_operator_file_daemon_release_with_observer<F>(
+    request: &MctDaemonReleaseAcquisitionRequest,
+    observe: F,
+) -> Result<MctDaemonReleaseAcquisitionReport>
+where
+    F: FnMut(MctObservation) -> Result<()>,
+{
+    acquire_operator_file_daemon_release_with_platform_verifier(
+        request,
+        verify_macos_release_signature,
+        observe,
+    )
+}
+
+fn acquire_operator_file_daemon_release_with_platform_verifier<F, O>(
     request: &MctDaemonReleaseAcquisitionRequest,
     verify_platform: F,
+    mut observe: O,
 ) -> Result<MctDaemonReleaseAcquisitionReport>
 where
     F: FnOnce(&Path) -> Result<()>,
+    O: FnMut(MctObservation) -> Result<()>,
 {
     validate_expected_archive_identity(request.expected_archive_identity.as_deref())?;
     if request.target_triple != "aarch64-apple-darwin"
@@ -332,35 +414,27 @@ where
     };
     let state = MctRuntimeStateStore::open(&request.state_path)?;
     state.record_daemon_release_decision(&decision)?;
-    let mut ledger =
-        JsonlObservationLedger::open(&request.ledger_path, "ledger-local", "local-mct")?;
-    append_release_observation(
-        &mut ledger,
-        release_observation(
-            (&authority_observation_id, &attempt_id, &decision_id),
-            ObservationKind::OperatorActionRecorded,
-            SourcePlane::Operator,
-            ObservationOutcome::Allowed,
-            (
-                &format!("os-uid:{}", request.authenticated_uid),
-                &source_ref,
-            ),
-            request.policy_revision,
-            "operator-pointed daemon release acquisition admitted",
-        )?,
-    )?;
-    append_release_observation(
-        &mut ledger,
-        release_observation(
-            (&adapter_start_observation_id, &attempt_id, &decision_id),
-            ObservationKind::AdapterEffectStarted,
-            SourcePlane::Adapter,
-            ObservationOutcome::Started,
-            ("local-mct", MCT_DAEMON_RELEASE_FILESYSTEM_ADAPTER),
-            request.policy_revision,
-            "daemon release filesystem acquisition started",
-        )?,
-    )?;
+    observe(release_observation(
+        (&authority_observation_id, &attempt_id, &decision_id),
+        ObservationKind::OperatorActionRecorded,
+        SourcePlane::Operator,
+        ObservationOutcome::Allowed,
+        (
+            &format!("os-uid:{}", request.authenticated_uid),
+            &source_ref,
+        ),
+        request.policy_revision,
+        "operator-pointed daemon release acquisition admitted",
+    )?)?;
+    observe(release_observation(
+        (&adapter_start_observation_id, &attempt_id, &decision_id),
+        ObservationKind::AdapterEffectStarted,
+        SourcePlane::Adapter,
+        ObservationOutcome::Started,
+        ("local-mct", MCT_DAEMON_RELEASE_FILESYSTEM_ADAPTER),
+        request.policy_revision,
+        "daemon release filesystem acquisition started",
+    )?)?;
     let authority = DaemonReleaseFilesystemEffectAuthority {
         source_path: source_path.clone(),
         source_ref: source_ref.clone(),
@@ -380,30 +454,24 @@ where
         Ok(verified) => verified,
         Err(error) => {
             let _ = fs::remove_dir_all(&staging);
-            append_release_observation(
-                &mut ledger,
-                release_observation(
-                    (&acquisition_observation_id, &attempt_id, &decision_id),
-                    ObservationKind::AdapterEffectFailed,
-                    SourcePlane::Adapter,
-                    ObservationOutcome::Failed,
-                    ("local-mct", MCT_DAEMON_RELEASE_FILESYSTEM_ADAPTER),
-                    request.policy_revision,
-                    "daemon release filesystem acquisition failed",
-                )?,
-            )?;
-            append_release_observation(
-                &mut ledger,
-                release_observation(
-                    (&verification_observation_id, &attempt_id, &decision_id),
-                    ObservationKind::ArtifactRejected,
-                    SourcePlane::Adapter,
-                    ObservationOutcome::Denied,
-                    ("local-mct", &source_ref),
-                    request.policy_revision,
-                    "daemon release archive rejected",
-                )?,
-            )?;
+            observe(release_observation(
+                (&acquisition_observation_id, &attempt_id, &decision_id),
+                ObservationKind::AdapterEffectFailed,
+                SourcePlane::Adapter,
+                ObservationOutcome::Failed,
+                ("local-mct", MCT_DAEMON_RELEASE_FILESYSTEM_ADAPTER),
+                request.policy_revision,
+                "daemon release filesystem acquisition failed",
+            )?)?;
+            observe(release_observation(
+                (&verification_observation_id, &attempt_id, &decision_id),
+                ObservationKind::ArtifactRejected,
+                SourcePlane::Adapter,
+                ObservationOutcome::Denied,
+                ("local-mct", &source_ref),
+                request.policy_revision,
+                "daemon release archive rejected",
+            )?)?;
             let failed = DaemonReleaseAcquisitionV1 {
                 schema_version: 1,
                 attempt_id,
@@ -428,32 +496,26 @@ where
             return Err(error).context("daemon release archive acquisition rejected");
         }
     };
-    append_release_observation(
-        &mut ledger,
-        release_observation(
-            (&acquisition_observation_id, &attempt_id, &decision_id),
-            ObservationKind::AdapterEffectCompleted,
-            SourcePlane::Adapter,
-            ObservationOutcome::Completed,
-            ("local-mct", MCT_DAEMON_RELEASE_FILESYSTEM_ADAPTER),
-            request.policy_revision,
-            "daemon release filesystem acquisition completed",
-        )?,
-    )?;
-    append_release_observation(
-        &mut ledger,
-        release_observation(
-            (&verification_observation_id, &attempt_id, &decision_id),
-            ObservationKind::ArtifactVerified,
-            SourcePlane::Adapter,
-            ObservationOutcome::Allowed,
-            ("local-mct", &verified.archive_sha256),
-            request.policy_revision,
-            "daemon release archive verified",
-        )?,
-    )?;
+    observe(release_observation(
+        (&acquisition_observation_id, &attempt_id, &decision_id),
+        ObservationKind::AdapterEffectCompleted,
+        SourcePlane::Adapter,
+        ObservationOutcome::Completed,
+        ("local-mct", MCT_DAEMON_RELEASE_FILESYSTEM_ADAPTER),
+        request.policy_revision,
+        "daemon release filesystem acquisition completed",
+    )?)?;
+    observe(release_observation(
+        (&verification_observation_id, &attempt_id, &decision_id),
+        ObservationKind::ArtifactVerified,
+        SourcePlane::Adapter,
+        ObservationOutcome::Allowed,
+        ("local-mct", &verified.archive_sha256),
+        request.policy_revision,
+        "daemon release archive verified",
+    )?)?;
 
-    copy_release_sidecars(&source_path, &staging)?;
+    copy_release_sidecars(&source_path, &verified.release_root)?;
     let digest = verified
         .archive_sha256
         .strip_prefix("sha256:")
@@ -461,11 +523,6 @@ where
     let immutable_path = request.releases_dir.join("sha256").join(digest);
     let manifest_path = verified.release_root.join(RELEASE_MANIFEST_FILE);
     let release_manifest_sha256 = format!("sha256:{}", hash_file(&manifest_path)?.0);
-    let relative_release_root = verified
-        .release_root
-        .strip_prefix(&staging)
-        .context("verified release root escaped acquisition staging")?
-        .to_path_buf();
     let candidate_artifact = DaemonReleaseArtifactV1 {
         schema_version: 1,
         release_artifact_id: verified.archive_sha256.clone(),
@@ -493,28 +550,25 @@ where
         verification_observation_id: verification_observation_id.clone(),
         immutable_release_path: immutable_path.clone(),
     };
-    append_release_observation(
-        &mut ledger,
-        release_observation(
-            (
-                &format!("obs:daemon-release-storage-start:{suffix}"),
-                &attempt_id,
-                &decision_id,
-            ),
-            ObservationKind::AdapterEffectStarted,
-            SourcePlane::Adapter,
-            ObservationOutcome::Started,
-            ("local-mct", "mct:daemon-release-storage/filesystem@1"),
-            request.policy_revision,
-            "immutable daemon release publication or reuse started",
-        )?,
-    )?;
+    observe(release_observation(
+        (
+            &format!("obs:daemon-release-storage-start:{suffix}"),
+            &attempt_id,
+            &decision_id,
+        ),
+        ObservationKind::AdapterEffectStarted,
+        SourcePlane::Adapter,
+        ObservationOutcome::Started,
+        ("local-mct", "mct:daemon-release-storage/filesystem@1"),
+        request.policy_revision,
+        "immutable daemon release publication or reuse started",
+    )?)?;
     let artifact = if immutable_path.exists() {
         let existing = state
             .daemon_release_artifact(&candidate_artifact.release_artifact_id)?
             .context("immutable daemon release path exists without release projection")?;
         if !same_daemon_release_bytes(&existing, &candidate_artifact)
-            || !directory_trees_equal(&immutable_path, &staging)?
+            || !directory_trees_equal(&immutable_path, &verified.release_root)?
         {
             let _ = fs::remove_dir_all(&staging);
             bail!("immutable daemon release path conflicts with verified bytes or facts");
@@ -527,8 +581,9 @@ where
                 .parent()
                 .context("immutable daemon release path has no parent")?,
         )?;
-        fs::rename(&staging, &immutable_path)
+        fs::rename(&verified.release_root, &immutable_path)
             .context("publish immutable daemon release directory")?;
+        fs::remove_dir(&staging)?;
         fs::File::open(immutable_path.parent().unwrap())?.sync_all()?;
         candidate_artifact
     };
@@ -559,25 +614,20 @@ where
         return Err(error).context("persist verified daemon release projection");
     }
     state.consume_daemon_release_decision(&decision_id)?;
-    append_release_observation(
-        &mut ledger,
-        release_observation(
-            (
-                &format!("obs:daemon-release-storage-complete:{suffix}"),
-                &attempt_id,
-                &decision_id,
-            ),
-            ObservationKind::AdapterEffectCompleted,
-            SourcePlane::Adapter,
-            ObservationOutcome::Completed,
-            ("local-mct", "mct:daemon-release-storage/filesystem@1"),
-            request.policy_revision,
-            "immutable daemon release publication completed",
-        )?,
-    )?;
-    let executable_path = immutable_path
-        .join(relative_release_root)
-        .join(&artifact.executable_relative_path);
+    observe(release_observation(
+        (
+            &format!("obs:daemon-release-storage-complete:{suffix}"),
+            &attempt_id,
+            &decision_id,
+        ),
+        ObservationKind::AdapterEffectCompleted,
+        SourcePlane::Adapter,
+        ObservationOutcome::Completed,
+        ("local-mct", "mct:daemon-release-storage/filesystem@1"),
+        request.policy_revision,
+        "immutable daemon release publication completed",
+    )?)?;
+    let executable_path = immutable_path.join(&artifact.executable_relative_path);
     if !executable_path.is_file() {
         bail!("immutable daemon release executable is absent after publication");
     }
@@ -1402,12 +1452,8 @@ mod acquisition_tests {
             policy_revision: 1,
         };
 
-        let first =
-            acquire_operator_file_daemon_release_with_platform_verifier(&request, |_| Ok(()))
-                .unwrap();
-        let second =
-            acquire_operator_file_daemon_release_with_platform_verifier(&request, |_| Ok(()))
-                .unwrap();
+        let first = acquire_for_test(&request).unwrap();
+        let second = acquire_for_test(&request).unwrap();
         assert_eq!(first.artifact, second.artifact);
         assert_eq!(
             first.artifact.release_artifact_id,
@@ -1452,9 +1498,7 @@ mod acquisition_tests {
         let mut bytes = fs::read(&archive).unwrap();
         bytes.push(0);
         fs::write(&archive, bytes).unwrap();
-        let error =
-            acquire_operator_file_daemon_release_with_platform_verifier(&request, |_| Ok(()))
-                .unwrap_err();
+        let error = acquire_for_test(&request).unwrap_err();
         assert!(error.to_string().contains("rejected"));
         let state = MctRuntimeStateStore::open(&request.state_path).unwrap();
         assert_eq!(state.daemon_release_artifacts().unwrap().len(), 1);
@@ -1463,6 +1507,28 @@ mod acquisition_tests {
             state.daemon_release_acquisitions().unwrap()[2].verification_outcome,
             "rejected"
         );
+    }
+
+    #[test]
+    fn release_source_plan_is_operator_file_only_and_network_adapter_remains_closed() {
+        for reference in [
+            "https://example.invalid/release.tar.gz",
+            "git://example.invalid/release",
+            "oci://registry.invalid/release",
+            "iroh://ticket",
+            "relative/release.tar.gz",
+            "file:///tmp/release.tar.gz?credential=secret",
+            "file://user@host/tmp/release.tar.gz",
+        ] {
+            assert!(
+                plan_daemon_release_source(reference).is_err(),
+                "{reference}"
+            );
+        }
+        let direct = plan_daemon_release_source("/tmp/release.tar.gz").unwrap();
+        let file = plan_daemon_release_source("file:///tmp/release.tar.gz").unwrap();
+        assert_eq!(direct, file);
+        assert_eq!(direct.source_kind, MctDaemonReleaseSourceKind::OperatorFile);
     }
 
     #[test]
@@ -1479,13 +1545,29 @@ mod acquisition_tests {
             policy_revision: 1,
         };
         assert!(
-            acquire_operator_file_daemon_release_with_platform_verifier(&request, |_| Ok(()))
-                .unwrap_err()
-                .to_string()
-                .contains("64-lower-hex")
+            acquire_operator_file_daemon_release_with_platform_verifier(
+                &request,
+                |_| Ok(()),
+                |_| Ok(()),
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("64-lower-hex")
         );
         assert!(!request.state_path.exists());
         assert!(!request.ledger_path.exists());
+    }
+
+    fn acquire_for_test(
+        request: &MctDaemonReleaseAcquisitionRequest,
+    ) -> Result<MctDaemonReleaseAcquisitionReport> {
+        let mut ledger =
+            JsonlObservationLedger::open(&request.ledger_path, "ledger-local", "local-mct")?;
+        acquire_operator_file_daemon_release_with_platform_verifier(
+            request,
+            |_| Ok(()),
+            |observation| append_release_observation(&mut ledger, observation),
+        )
     }
 
     fn release_fixture(directory: &Path) -> PathBuf {
