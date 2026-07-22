@@ -11,7 +11,11 @@ Goal: build the next operational layer after the v0 `patinaMother` replacement b
 5. [x] macOS user-launchd supervisor install/start/stop/restart/uninstall completed 2026-07-15 under `layer/surface/build/feat/supervisor-lifecycle/SPEC.md`. The daily-operation pain clock that started 2026-07-14 is closed. Linux systemd and non-GUI/headless launchd domains remain separately gated future adapters.
 6. [x] Acquisition-backed immutable artifact staging completed 2026-07-16 under `layer/surface/build/feat/artifact-acquisition/SPEC.md`, including the real supervised `slate-manager@0.2.0` daily-driver proof.
 7. [x] Durable temporal triggering and scoped Watch delivery completed 2026-07-21 under the Replacement Slice 4A/4B SPECs, including the source-derived watcher, exact sink, and supervised three-fixture proof.
-8. [ ] Adjudicate the final claims separately. The supervised three-fixture suite proves the v0 `patinaMother` **runtime responsibility replacement** boundary. Operational shutoff of `patinaMother` remains gated by an operator-ratified inventory of required Patina/interface/`patina ai` behavior and either a replacement application layer or explicit accepted gaps. Into-the-wild release remains gated by the refreshed security findings, version/packaging/distribution/docs discipline, dependency audit, and production performance baseline. The paused `mct-interface-launcher-control` epic remains follow-on interface-layer work above MCT and does not negate the landed runtime proof.
+8. [ ] Adjudicate the final claims separately. The supervised three-fixture suite proves the v0 `patinaMother` **runtime responsibility replacement** boundary. Operational shutoff of `patinaMother` remains gated by an operator-ratified inventory of required Patina/interface/`patina ai` behavior and either a replacement application layer or explicit accepted gaps. The paused `mct-interface-launcher-control` epic remains follow-on interface-layer work above MCT and does not negate the landed runtime proof.
+   - [x] R1 release/security review landed in `RELEASE-REVIEW-R1.md`, preserving runtime replacement, operational shutoff, and into-the-wild publication as three separate claims.
+   - [x] R2 closed the six reviewed security findings: UDS authentication/read bounds, parent-directory fsync, ledger-correlated standing-source proof, terminal recovery-excess accounting, dependency/audit policy, and raw Git stderr suppression.
+   - [x] R3 release discipline landed under `feat/release-discipline/SPEC.md`: unified 0.2.0 versioning, closed signed package/SBOM/provenance, daemon-specific immutable release evidence, operator-file-only acquisition, exact-approved shared lifecycle upgrade, real packaged smoke, and the committed `BASELINES-v0.2.0-aarch64-apple-darwin.md` record.
+   - [ ] R5/into-the-wild work remains separate: exact publication tag/release, update-channel authority, network acquisition, notarization activation, and 1.0.0 GA are not implied by R3.
 
 ## Completed: Multi-Mother — single-hop forwarding
 
@@ -149,7 +153,7 @@ Completed 2026-07-21 under `layer/surface/build/feat/watch-event-fixtures/SPEC.m
 - [x] Prove supervised Slate acquisition plus temporal watcher invocation plus exact sink delivery, revocation, restart, and reopened evidence.
 - [x] Keep `MotherEventSourceAdapterRuntime`, `RegistrySyncTriggerComposition`, and `NetworkArtifactAcquisitionAdapter` closed and add no `ObservationKind`.
 
-The three-fixture runtime slice is complete. Full `patinaMother` replacement remains unclaimed until the paused release-hardening and interface-launcher-control gates close.
+The three-fixture runtime slice and R3 release-hardening mechanics are complete. Operational `patinaMother` shutoff and into-the-wild GA remain unclaimed until their separate inventory/interface and R5 publication gates close.
 
 ## JVM SDK
 
