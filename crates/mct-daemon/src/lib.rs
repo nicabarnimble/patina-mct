@@ -22,6 +22,7 @@ mod lifecycle;
 mod metrics;
 mod process;
 mod registry;
+mod release;
 mod state;
 mod status;
 mod supervisor;
@@ -102,6 +103,11 @@ pub use process::{
 pub use registry::{
     MctChildPackageInstallReport, MctRegistrySyncReport, install_verified_child_package,
     sync_child_registry_source,
+};
+pub use release::{
+    MCT_DAEMON_RELEASE_ARCHIVE_MAX_BYTES, MCT_DAEMON_RELEASE_EXTRACTED_MAX_BYTES,
+    MCT_DAEMON_RELEASE_MAX_ENTRIES, MCT_DAEMON_RELEASE_METADATA_FILE_MAX_BYTES, ReleaseManifestV1,
+    VerifiedDaemonReleaseArchive, verify_and_extract_daemon_release_archive,
 };
 pub use state::{
     ChildInvocationProvenance, MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER, MCT_IDEMPOTENCY_TTL_SECONDS,
