@@ -10,6 +10,7 @@ usage() {
 usage:
   $0 build [--target aarch64-apple-darwin] [--output directory]
   $0 smoke --artifact archive [--nocapture]
+  $0 baselines --artifact archive --output BASELINES.md
 
 The real launchd smoke uses the fixed io.patina.mct.mother label. If that
 label is loaded, smoke refuses without stopping it. Stop a production resident
@@ -364,5 +365,6 @@ smoke_release() (
 case $command_name in
   build) build_release "$@" ;;
   smoke) smoke_release "$@" ;;
+  baselines) exec "$repo_root/scripts/release-baselines.sh" "$@" ;;
   *) usage; exit 2 ;;
 esac
