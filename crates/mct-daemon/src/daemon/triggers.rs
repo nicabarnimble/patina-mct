@@ -58,7 +58,7 @@ struct TriggerBlobIngestRequest {
 }
 
 #[derive(Clone, Debug)]
-struct PreparedTriggerMutation {
+pub(super) struct PreparedTriggerMutation {
     state_path: PathBuf,
     authority: CallTriggerAuthority,
     observation: MctObservation,
@@ -267,7 +267,7 @@ fn build_trigger_authority(
     Ok(authority)
 }
 
-fn prepare_trigger_mutation(
+pub(super) fn prepare_trigger_mutation(
     config_path: &Path,
     state_path: &Path,
     uid: u32,
@@ -376,20 +376,15 @@ impl PreparedTriggerMutation {
 }
 
 pub(super) async fn execute_resident_trigger_mutation(
+    owner: mct_daemon::MctUdsAuthenticatedOwner,
     config_path: &Path,
     state_path: &Path,
     ledger: &ResidentLedgerWriter,
-    peer: Option<MctUdsPeerCredentials>,
     path: &str,
     body: &[u8],
 ) -> MctControlPlaneResponse {
-    let Some(peer) = peer else {
-        return trigger_response(
-            401,
-            serde_json::json!({"error": "trigger authority requires authenticated owner"}),
-        );
-    };
-    let prepared = match prepare_trigger_mutation(config_path, state_path, peer.uid, path, body) {
+    let prepared = match prepare_trigger_mutation(config_path, state_path, owner.uid(), path, body)
+    {
         Ok(prepared) => prepared,
         Err(_) => {
             return trigger_response(
@@ -398,6 +393,13 @@ pub(super) async fn execute_resident_trigger_mutation(
             );
         }
     };
+    execute_prepared_resident_trigger_mutation(prepared, ledger).await
+}
+
+pub(super) async fn execute_prepared_resident_trigger_mutation(
+    prepared: PreparedTriggerMutation,
+    ledger: &ResidentLedgerWriter,
+) -> MctControlPlaneResponse {
     if ledger
         .append(vec![prepared.observation.clone()])
         .await
@@ -1010,17 +1012,17 @@ mod tests {
             expected_state_path: state_path.clone(),
             scope: scope(&state_path, "trigger-no-append"),
         };
-        let response = execute_resident_trigger_mutation(
+        let prepared = prepare_trigger_mutation(
             &config_path,
             &state_path,
-            &ResidentLedgerWriter::failed_for_test(),
-            Some(MctUdsPeerCredentials {
-                uid: 501,
-                gid: 20,
-                pid: Some(42),
-            }),
+            501,
             "/triggers/create",
             &serde_json::to_vec(&request).unwrap(),
+        )
+        .unwrap();
+        let response = execute_prepared_resident_trigger_mutation(
+            prepared,
+            &ResidentLedgerWriter::failed_for_test(),
         )
         .await;
         assert_eq!(response.status_code, 500);

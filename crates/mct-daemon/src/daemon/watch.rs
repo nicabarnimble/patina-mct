@@ -442,20 +442,15 @@ fn grant_observation(grant: &ToyGrant) -> MctObservation {
 }
 
 pub(super) async fn execute_resident_watch_mutation(
+    owner: mct_daemon::MctUdsAuthenticatedOwner,
     configured_config_path: &Path,
     configured_children_dir: &Path,
     configured_state_path: &Path,
     ledger: &ResidentLedgerWriter,
-    peer: Option<MctUdsPeerCredentials>,
     path: &str,
     body: &[u8],
 ) -> MctControlPlaneResponse {
-    let Some(peer) = peer else {
-        return response(
-            403,
-            serde_json::json!({"error": "Watch authority requires authenticated owner"}),
-        );
-    };
+    let peer = owner.credentials();
     match path {
         "/watch/grant" => {
             let request: WatchGrantRequest = match serde_json::from_slice(body) {

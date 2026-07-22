@@ -303,10 +303,15 @@ fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
         .open(&temp)
         .with_context(|| format!("create staged {}", temp.display()))?;
     file.write_all(bytes)?;
-    file.sync_all()?;
     fs::set_permissions(&temp, fs::Permissions::from_mode(mode))?;
+    file.sync_all()?;
+    drop(file);
     fs::rename(&temp, path)
         .with_context(|| format!("publish {} from {}", path.display(), temp.display()))?;
+    fs::File::open(parent)
+        .with_context(|| format!("open parent directory {} for sync", parent.display()))?
+        .sync_all()
+        .with_context(|| format!("sync parent directory {} after publish", parent.display()))?;
     Ok(())
 }
 
@@ -378,8 +383,16 @@ fn lifecycle_http_response(status_code: u16, value: serde_json::Value) -> MctCon
 }
 
 pub(super) async fn execute_resident_lifecycle_fact(
+    owner: mct_daemon::MctUdsAuthenticatedOwner,
     ledger: &ResidentLedgerWriter,
-    peer: Option<MctUdsPeerCredentials>,
+    body: &[u8],
+) -> MctControlPlaneResponse {
+    execute_authenticated_lifecycle_fact(owner.uid(), ledger, body).await
+}
+
+async fn execute_authenticated_lifecycle_fact(
+    owner_uid: u32,
+    ledger: &ResidentLedgerWriter,
     body: &[u8],
 ) -> MctControlPlaneResponse {
     #[derive(Deserialize)]
@@ -388,27 +401,6 @@ pub(super) async fn execute_resident_lifecycle_fact(
         action: String,
     }
 
-    let expected_uid = match current_uid() {
-        Ok(uid) => uid,
-        Err(_) => {
-            return lifecycle_http_response(
-                503,
-                serde_json::json!({"error": "lifecycle authentication unavailable"}),
-            );
-        }
-    };
-    let Some(peer) = peer else {
-        return lifecycle_http_response(
-            401,
-            serde_json::json!({"error": "lifecycle peer credentials unavailable"}),
-        );
-    };
-    if peer.uid != expected_uid {
-        return lifecycle_http_response(
-            403,
-            serde_json::json!({"error": "lifecycle peer UID refused"}),
-        );
-    }
     let request: Request = match serde_json::from_slice::<Request>(body) {
         Ok(request) => request,
         _ => {
@@ -499,7 +491,7 @@ pub(super) async fn execute_resident_lifecycle_fact(
             ObservationKind::OperatorActionRecorded,
             SourcePlane::Operator,
             "local-mct",
-            &format!("os-uid:{}", peer.uid),
+            &format!("os-uid:{owner_uid}"),
             None,
             ObservationOutcome::Allowed,
             "owner-authenticated UDS lifecycle fact admitted",
@@ -2833,13 +2825,9 @@ mod tests {
             )])
             .await;
         assert!(append.is_err());
-        let response = execute_resident_lifecycle_fact(
+        let response = execute_authenticated_lifecycle_fact(
+            current_uid().unwrap(),
             &writer,
-            Some(MctUdsPeerCredentials {
-                uid: current_uid().unwrap(),
-                gid: 0,
-                pid: None,
-            }),
             br#"{"action":"stop_prepare"}"#,
         )
         .await;

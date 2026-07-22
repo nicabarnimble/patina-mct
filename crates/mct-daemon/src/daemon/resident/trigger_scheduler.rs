@@ -2666,17 +2666,17 @@ listens = []
             trigger_authority_id: CallTriggerAuthorityId::new("trigger-integration").unwrap(),
             expected_revision: 1,
         };
-        let response = crate::triggers::execute_resident_trigger_mutation(
+        let prepared = crate::triggers::prepare_trigger_mutation(
             &config_path,
             &state_path,
-            &recovered_ledger,
-            Some(MctUdsPeerCredentials {
-                uid: 501,
-                gid: 20,
-                pid: Some(42),
-            }),
+            501,
             "/triggers/revoke",
             &serde_json::to_vec(&revoke).unwrap(),
+        )
+        .unwrap();
+        let response = crate::triggers::execute_prepared_resident_trigger_mutation(
+            prepared,
+            &recovered_ledger,
         )
         .await;
         assert_eq!(response.status_code, 200);
