@@ -60,6 +60,16 @@ impl SupervisorPaths {
         )
     }
 
+    #[cfg(any(test, feature = "release-smoke-internal"))]
+    fn smoke_internal(root: &Path) -> Result<Self> {
+        let root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        Self::with_plist(
+            root.clone(),
+            root.join("launchd")
+                .join(format!("{MCT_LAUNCHD_LABEL}.plist")),
+        )
+    }
+
     #[cfg(test)]
     fn isolated(root: &Path) -> Result<Self> {
         let root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
@@ -1349,19 +1359,16 @@ pub(super) struct UpgradeSupervisorContext {
     pub authenticated_uid: u32,
 }
 
-pub(super) fn upgrade_supervisor_context(
-    selected_root: Option<PathBuf>,
+fn upgrade_supervisor_context_for_paths(
+    paths: SupervisorPaths,
+    current_executable: PathBuf,
+    uid: u32,
 ) -> Result<UpgradeSupervisorContext> {
-    require_macos_lifecycle()?;
-    let uid = current_uid()?;
-    let home = current_home(uid)?;
-    let root = selected_root.unwrap_or_else(|| home.join(".mct"));
-    let paths = SupervisorPaths::production(root, &home)?;
     let record = validate_supervisor_record(&paths.record, true)?;
     if record.owner_uid != uid {
         bail!("upgrade supervisor record is not owned by the authenticated UID");
     }
-    let current_executable = std::env::current_exe()?.canonicalize()?;
+    let current_executable = current_executable.canonicalize()?;
     let recorded_executable = record.executable_path.canonicalize()?;
     if current_executable != recorded_executable
         || file_digest(&current_executable)? != record.executable_digest
@@ -1382,6 +1389,17 @@ pub(super) fn upgrade_supervisor_context(
         supervisor_revision: record.record_revision,
         authenticated_uid: uid,
     })
+}
+
+pub(super) fn upgrade_supervisor_context(
+    selected_root: Option<PathBuf>,
+) -> Result<UpgradeSupervisorContext> {
+    require_macos_lifecycle()?;
+    let uid = current_uid()?;
+    let home = current_home(uid)?;
+    let root = selected_root.unwrap_or_else(|| home.join(".mct"));
+    let paths = SupervisorPaths::production(root, &home)?;
+    upgrade_supervisor_context_for_paths(paths, std::env::current_exe()?, uid)
 }
 
 pub(super) fn record_upgrade_fact(
@@ -2241,6 +2259,122 @@ pub(super) fn run_uninstall(args: Vec<String>) -> Result<()> {
     print_lifecycle_report(&report, json)
 }
 
+#[cfg(feature = "release-smoke-internal")]
+fn require_release_smoke_label_unloaded(uid: u32) -> Result<()> {
+    let domain = format!("gui/{uid}");
+    let domain_status = Command::new("/bin/launchctl")
+        .args(["print", &domain])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("inspect release-smoke launchd GUI domain")?;
+    if !domain_status.success() {
+        bail!("release smoke requires an available launchd GUI domain");
+    }
+    let service = format!("{domain}/{MCT_LAUNCHD_LABEL}");
+    let service_status = Command::new("/bin/launchctl")
+        .args(["print", &service])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("inspect release-smoke fixed service label")?;
+    if service_status.success() {
+        bail!(
+            "release smoke refused: fixed label {MCT_LAUNCHD_LABEL} is loaded; stop the production resident explicitly and restart it after smoke"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "release-smoke-internal")]
+pub(super) fn run_release_smoke_internal(mut args: Vec<String>) -> Result<()> {
+    require_macos_lifecycle()?;
+    if args.is_empty() {
+        bail!("release-smoke-internal requires an action");
+    }
+    let action = args.remove(0);
+    let root = take_option(&mut args, "--root")
+        .map(PathBuf::from)
+        .context("release-smoke-internal requires --root")?;
+    if !root.is_absolute() {
+        bail!("release-smoke-internal root must be absolute");
+    }
+    let uid = current_uid()?;
+    let home = current_home(uid)?;
+    if root == home.join(".mct") {
+        bail!("release-smoke-internal refuses the production service root");
+    }
+    let metadata = fs::metadata(&root).context("inspect owner-private release-smoke root")?;
+    if metadata.uid() != uid || metadata.permissions().mode() & 0o077 != 0 {
+        bail!("release-smoke-internal root must be owner-private and authenticated-UID owned");
+    }
+    let paths = SupervisorPaths::smoke_internal(&root)?;
+    match action.as_str() {
+        "preflight" => {
+            if !args.is_empty() {
+                bail!("unexpected release-smoke preflight arguments");
+            }
+            require_release_smoke_label_unloaded(uid)?;
+            println!("release-smoke: fixed label is unloaded");
+            Ok(())
+        }
+        "install" => {
+            let executable = take_option(&mut args, "--executable")
+                .map(PathBuf::from)
+                .context("release-smoke install requires --executable")?;
+            if !args.is_empty() {
+                bail!("unexpected release-smoke install arguments");
+            }
+            require_release_smoke_label_unloaded(uid)?;
+            let report =
+                install_with_adapter(&paths, &executable, uid, false, &LaunchdSupervisorAdapter)?;
+            print_lifecycle_report(&report, true)
+        }
+        "start" => {
+            if !args.is_empty() {
+                bail!("unexpected release-smoke start arguments");
+            }
+            require_release_smoke_label_unloaded(uid)?;
+            let report = start_with_adapter(&paths, uid, &LaunchdSupervisorAdapter, true)?;
+            print_lifecycle_report(&report, true)
+        }
+        "stop" => {
+            if !args.is_empty() {
+                bail!("unexpected release-smoke stop arguments");
+            }
+            let report = stop_with_adapter(&paths, uid, &LaunchdSupervisorAdapter)?;
+            print_lifecycle_report(&report, true)
+        }
+        "uninstall" => {
+            if !args.is_empty() {
+                bail!("unexpected release-smoke uninstall arguments");
+            }
+            let report = uninstall_with_adapter(&paths, uid, &LaunchdSupervisorAdapter)?;
+            print_lifecycle_report(&report, true)
+        }
+        "upgrade" => {
+            let record = validate_supervisor_record(&paths.record, true)?;
+            let context =
+                upgrade_supervisor_context_for_paths(paths, record.executable_path.clone(), uid)?;
+            run_upgrade_in_context(args, context)
+        }
+        "postflight" => {
+            if !args.is_empty() {
+                bail!("unexpected release-smoke postflight arguments");
+            }
+            require_release_smoke_label_unloaded(uid)?;
+            if paths.record.exists() || paths.plist.exists() {
+                bail!("release smoke postflight found residual supervisor policy");
+            }
+            println!("release-smoke: fixed label unloaded and smoke policy absent");
+            Ok(())
+        }
+        _ => bail!("unknown release-smoke-internal action"),
+    }
+}
+
 #[cfg(test)]
 #[derive(Default)]
 struct FakeSupervisorAdapter {
@@ -2991,6 +3125,38 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing ordered lifecycle fact: {expected}"));
             cursor += relative + 1;
         }
+    }
+
+    #[test]
+    fn smoke_plist_seam_is_internal_isolated_and_keeps_fixed_service_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("smoke-root");
+        fs::create_dir(&root).unwrap();
+        let smoke = SupervisorPaths::smoke_internal(&root).unwrap();
+        assert_eq!(
+            smoke.plist,
+            smoke
+                .root
+                .join("launchd")
+                .join(format!("{MCT_LAUNCHD_LABEL}.plist"))
+        );
+        assert!(smoke.plist.starts_with(&smoke.root));
+        assert_eq!(MCT_LAUNCHD_LABEL, "io.patina.mct.mother");
+
+        let home = temp.path().join("home");
+        let production = SupervisorPaths::production(root.clone(), &home).unwrap();
+        assert_eq!(
+            production.plist,
+            home.join("Library")
+                .join("LaunchAgents")
+                .join(format!("{MCT_LAUNCHD_LABEL}.plist"))
+        );
+        assert_ne!(smoke.plist, production.plist);
+
+        let help = help_text();
+        assert!(!help.contains("--plist"));
+        assert!(!help.contains("--label"));
+        assert!(!help.contains("release-smoke-internal"));
     }
 
     #[test]
