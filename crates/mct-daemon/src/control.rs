@@ -770,6 +770,7 @@ mod tests {
             Some(MctRuntimeStateSummary {
                 schema_version: 1,
                 artifacts: 1,
+                daemon_release_artifacts: 0,
                 approved_children: 1,
                 active_assignments: 1,
                 ready_instances: 1,

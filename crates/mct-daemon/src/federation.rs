@@ -255,6 +255,7 @@ mod tests {
             &MctRuntimeStateSummary {
                 schema_version: 1,
                 artifacts: 2,
+                daemon_release_artifacts: 0,
                 approved_children: 1,
                 active_assignments: 1,
                 ready_instances: 1,
@@ -377,6 +378,7 @@ mod tests {
         MctRuntimeStateSummary {
             schema_version: 1,
             artifacts: 2,
+            daemon_release_artifacts: 0,
             approved_children: 1,
             active_assignments: 1,
             ready_instances: 1,
