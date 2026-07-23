@@ -106,6 +106,8 @@ pub use registry::{
     MctChildPackageInstallReport, MctRegistrySyncReport, install_verified_child_package,
     sync_child_registry_source,
 };
+#[cfg(feature = "fuzzing")]
+pub use release::fuzz_release_archive;
 pub use release::{
     DaemonReleaseAcquisitionV1, DaemonReleaseArtifactV1,
     MCT_DAEMON_RELEASE_ACQUISITION_DEADLINE_SECONDS, MCT_DAEMON_RELEASE_ARCHIVE_MAX_BYTES,

@@ -24,3 +24,10 @@ path = "fuzz_targets/uds_control_request.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "release_archive"
+path = "fuzz_targets/release_archive.rs"
+test = false
+doc = false
+bench = false
