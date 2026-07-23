@@ -1,0 +1,19 @@
+[package]
+name = "mct-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+autobins = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+mct-daemon = { path = "../crates/mct-daemon", features = ["fuzzing"] }
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]
+members = ["."]
