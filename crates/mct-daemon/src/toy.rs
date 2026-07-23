@@ -405,13 +405,37 @@ enum GitToyError {
         #[source]
         source: std::io::Error,
     },
-    #[error("{stderr}")]
-    GitFailed { stderr: String },
+    #[error("git command failed")]
+    GitFailed,
 }
 
 impl GitToyError {
     fn safe_message(&self) -> String {
-        self.to_string()
+        match self {
+            Self::RepoRootNotDirectory { .. } => "git repository unavailable".into(),
+            Self::InputJson { .. } => "git toy input must be valid JSON".into(),
+            Self::UnsupportedInterface { .. } => "git toy interface unsupported".into(),
+            Self::UnsupportedFunction { .. } => "git toy function unsupported".into(),
+            Self::MissingStringField { field } => {
+                format!("git toy input missing string field '{field}'")
+            }
+            Self::MissingU32Field { field } => {
+                format!("git toy input missing u32 field '{field}'")
+            }
+            Self::U32FieldOverflow { field } => {
+                format!("git toy field '{field}' exceeds u32")
+            }
+            Self::MissingPathListField { field } => {
+                format!("git toy input missing path list field '{field}'")
+            }
+            Self::NonStringPath { field } => {
+                format!("git toy path field '{field}' contains a non-string")
+            }
+            Self::InvalidPath { source } => source.to_string(),
+            Self::InvalidRef { source } => source.to_string(),
+            Self::RunGit { .. } => "git command unavailable".into(),
+            Self::GitFailed => "git command failed".into(),
+        }
     }
 }
 
@@ -574,15 +598,8 @@ fn git_command(repo_root: &Path) -> Command {
     command
 }
 
-fn git_stderr(output: &std::process::Output) -> GitToyError {
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    GitToyError::GitFailed {
-        stderr: if stderr.is_empty() {
-            "git command failed".into()
-        } else {
-            stderr
-        },
-    }
+fn git_stderr(_output: &std::process::Output) -> GitToyError {
+    GitToyError::GitFailed
 }
 
 fn toy_observation(
@@ -963,6 +980,36 @@ mod tests {
                 source: GitRefArgError::LeadingDash { field: "name" }
             }
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_toy_failure_never_projects_raw_stderr_into_safe_or_durable_output() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let repo = init_git_repo();
+        let marker = "SECRET-HOOK-MARKER-must-not-enter-ledger";
+        let hook = repo.path().join(".git/hooks/pre-commit");
+        std::fs::write(
+            &hook,
+            format!("#!/bin/sh\nprintf '{marker}\\n' >&2\nexit 1\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(repo.path().join("README.md"), "changed\n").unwrap();
+        run_git_for_test(repo.path(), &["add", "README.md"]);
+
+        let report = git_report(
+            repo.path(),
+            r#"{"interface":"patina:git/git@0.1.0","function":"commit","message":"blocked"}"#,
+            "toy-git-stderr-redaction",
+        );
+        let durable_json = serde_json::to_string(&report.observations).unwrap();
+
+        assert_eq!(report.outcome, MctToyAdapterOutcome::Failed);
+        assert_eq!(report.safe_message, "git command failed");
+        assert!(!report.safe_message.contains(marker));
+        assert!(!durable_json.contains(marker));
     }
 
     #[test]

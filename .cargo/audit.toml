@@ -1,0 +1,23 @@
+# R2 dependency-audit policy: every vulnerability and every non-exempt warning fails CI.
+[advisories]
+ignore = [
+    # Transitive Linux netlink proc-macro; no maintained release is available in the
+    # current netdev/netwatch chain. Revisit when the Iroh network stack advances.
+    "RUSTSEC-2024-0436",
+    # Transitive proc-macro warning retained in the lock graph; no runtime code.
+    # Revisit with the next Iroh/dependency refresh.
+    "RUSTSEC-2026-0173",
+]
+informational_warnings = ["unmaintained", "unsound"]
+
+[output]
+deny = ["warnings"]
+format = "terminal"
+quiet = false
+show_tree = true
+
+[yanked]
+# futures-buffered 0.2.13 requires spin ^0.10 and 0.10.0 is the only release in
+# that series. Keep the lock exact and revisit with the next n0-future/Iroh refresh.
+enabled = false
+update_index = true

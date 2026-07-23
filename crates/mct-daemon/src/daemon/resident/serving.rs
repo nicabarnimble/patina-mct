@@ -131,6 +131,7 @@ pub(crate) struct ResidentStatusSource {
     children_dir: PathBuf,
     ledger_path: PathBuf,
     ledger_writer: ResidentLedgerWriter,
+    supervisor: Option<SupervisorRecordV1>,
 }
 
 impl ResidentStatusSource {
@@ -138,11 +139,11 @@ impl ResidentStatusSource {
         endpoint: Arc<Mutex<MotherIrohEndpointSnapshot>>,
         identity: (MctNodeId, VisionId),
         accepted_connection_count: Arc<AtomicU64>,
-        config_path: PathBuf,
-        children_dir: PathBuf,
-        ledger_path: PathBuf,
+        paths: (PathBuf, PathBuf, PathBuf),
         ledger_writer: ResidentLedgerWriter,
+        supervisor: Option<SupervisorRecordV1>,
     ) -> Self {
+        let (config_path, children_dir, ledger_path) = paths;
         Self {
             endpoint,
             node_id: identity.0,
@@ -152,6 +153,7 @@ impl ResidentStatusSource {
             children_dir,
             ledger_path,
             ledger_writer,
+            supervisor,
         }
     }
 
@@ -179,6 +181,15 @@ impl ResidentStatusSource {
                     .clone(),
             ),
             Some(MctResidentStatus {
+                product_version: mct_daemon::version().into(),
+                supervisor_revision: self
+                    .supervisor
+                    .as_ref()
+                    .map(|record| record.record_revision),
+                executable_digest: self
+                    .supervisor
+                    .as_ref()
+                    .map(|record| format!("blake3:{}", record.executable_digest)),
                 node_id: self.node_id.clone(),
                 vision_id: self.vision_id.clone(),
                 accepted_connection_count: self.accepted_connection_count.load(Ordering::SeqCst),
@@ -400,10 +411,13 @@ where
         Arc::clone(&endpoint_status),
         (identity.node_id.clone(), identity.vision_id.clone()),
         Arc::clone(&accepted_connection_count),
-        config.config_path.clone(),
-        config.children_dir.clone(),
-        config.ledger_path.clone(),
+        (
+            config.config_path.clone(),
+            config.children_dir.clone(),
+            config.ledger_path.clone(),
+        ),
         ledger.clone(),
+        config.supervisor.clone(),
     ));
 
     let (events, event_rx) = tokio::sync::mpsc::channel(256);
@@ -1971,10 +1985,13 @@ listens = []
                 VisionId::new("vision-status-test").unwrap(),
             ),
             Arc::new(AtomicU64::new(3)),
-            config_path,
-            dir.path().join("children"),
-            PathBuf::from("/path/that/does/not/exist.jsonl"),
+            (
+                config_path,
+                dir.path().join("children"),
+                PathBuf::from("/path/that/does/not/exist.jsonl"),
+            ),
             ResidentLedgerWriter::spawn(dir.path().join("writer.jsonl")).unwrap(),
+            None,
         );
 
         let live = source.status();
@@ -1988,10 +2005,13 @@ listens = []
                 VisionId::new("vision-status-test").unwrap(),
             ),
             Arc::new(AtomicU64::new(3)),
-            source.config_path.clone(),
-            source.children_dir.clone(),
-            source.ledger_path.clone(),
+            (
+                source.config_path.clone(),
+                source.children_dir.clone(),
+                source.ledger_path.clone(),
+            ),
             ResidentLedgerWriter::failed_for_test(),
+            None,
         );
         let fenced = fenced_source.status();
         assert_eq!(fenced.readiness, mct_daemon::MctDaemonReadiness::NotReady);
