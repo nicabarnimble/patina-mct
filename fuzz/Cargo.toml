@@ -17,3 +17,10 @@ path = "src/lib.rs"
 
 [workspace]
 members = ["."]
+
+[[bin]]
+name = "uds_control_request"
+path = "fuzz_targets/uds_control_request.rs"
+test = false
+doc = false
+bench = false
