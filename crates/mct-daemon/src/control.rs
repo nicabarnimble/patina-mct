@@ -111,6 +111,22 @@ const MCT_UDS_CONTROL_REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const MCT_UDS_CONTROL_READ_BUDGET_BYTES: usize =
     MCT_BLOB_MAX_BYTES.div_ceil(3) * 4 + MCT_UDS_CONTROL_HEADER_READ_BUDGET_BYTES;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MctUdsControlRequestRoute {
+    CallPreflight,
+    OwnerMutation,
+    ReadOnly,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MctUdsControlRequestHead {
+    method: String,
+    path: String,
+    authorization_header: Option<String>,
+    content_length: usize,
+    route: MctUdsControlRequestRoute,
+}
+
 #[cfg(unix)]
 type MctUdsControlMutationFuture =
     Pin<Box<dyn Future<Output = MctControlPlaneResponse> + Send + 'static>>;
@@ -514,17 +530,14 @@ pub async fn serve_uds_control_stream_with_handlers(
     )
     .await
     .context("read uds control request headers")?;
-    let request = String::from_utf8_lossy(&headers);
-    let (method, path) = parse_http_request_line(&request)?;
-    let authorization_header = parse_authorization_header(&request);
-    let content_length = parse_content_length(&request)?.unwrap_or(0);
-    let response = if method == "POST" && path == "/calls" {
-        match call_handler {
-            Some(handler) => match handler.preflight(peer, content_length).await {
+    let request = parse_uds_control_request_head(&headers, mutation_handler.is_some())?;
+    let response = match request.route {
+        MctUdsControlRequestRoute::CallPreflight => match call_handler {
+            Some(handler) => match handler.preflight(peer, request.content_length).await {
                 MctUdsControlCallPreflight::Authenticated(peer) => {
                     let body = read_http_body_bounded_with_deadline(
                         &mut stream,
-                        content_length,
+                        request.content_length,
                         mct_iroh::MCT_CALL_FRAME_READ_BUDGET_BYTES,
                         MCT_UDS_CONTROL_REQUEST_READ_TIMEOUT,
                     )
@@ -538,35 +551,35 @@ pub async fn serve_uds_control_stream_with_handlers(
                 405,
                 serde_json::json!({"error": "method not allowed"}),
             )),
-        }
-    } else if method == "POST"
-        && let Some(handler) = mutation_handler
-    {
-        match handler.authenticate_owner(peer) {
-            Ok(owner) => {
-                let body_budget = MCT_UDS_CONTROL_READ_BUDGET_BYTES
-                    .checked_sub(headers.len())
-                    .context("control request headers exceed bounded read budget")?;
-                let body = read_http_body_bounded_with_deadline(
-                    &mut stream,
-                    content_length,
-                    body_budget,
-                    MCT_UDS_CONTROL_REQUEST_READ_TIMEOUT,
-                )
-                .await
-                .context("read uds control request body")?;
-                Some(handler.handle(owner, path.to_owned(), body).await)
+        },
+        MctUdsControlRequestRoute::OwnerMutation => {
+            let handler = mutation_handler
+                .expect("owner-mutation route is constructed only when its handler exists");
+            match handler.authenticate_owner(peer) {
+                Ok(owner) => {
+                    let body_budget = MCT_UDS_CONTROL_READ_BUDGET_BYTES
+                        .checked_sub(headers.len())
+                        .context("control request headers exceed bounded read budget")?;
+                    let body = read_http_body_bounded_with_deadline(
+                        &mut stream,
+                        request.content_length,
+                        body_budget,
+                        MCT_UDS_CONTROL_REQUEST_READ_TIMEOUT,
+                    )
+                    .await
+                    .context("read uds control request body")?;
+                    Some(handler.handle(owner, request.path, body).await)
+                }
+                Err(response) => Some(response),
             }
-            Err(response) => Some(response),
         }
-    } else {
-        Some(handle_control_plane_path_result_with_auth(
-            method,
-            path,
+        MctUdsControlRequestRoute::ReadOnly => Some(handle_control_plane_path_result_with_auth(
+            &request.method,
+            &request.path,
             snapshot.as_ref(),
             &MctControlPlaneAuthPolicy::open_local(),
-            authorization_header,
-        ))
+            request.authorization_header.as_deref(),
+        )),
     };
     if let Some(response) = response {
         stream
@@ -598,6 +611,42 @@ pub async fn serve_uds_control_once_with_auth(
         .await
         .context("write uds control response")?;
     Ok(())
+}
+
+fn parse_uds_control_request_head(
+    headers: &[u8],
+    mutation_handler_available: bool,
+) -> Result<MctUdsControlRequestHead> {
+    if headers.len() > MCT_UDS_CONTROL_HEADER_READ_BUDGET_BYTES {
+        bail!("control request headers exceed bounded read budget");
+    }
+    if !headers.ends_with(b"\r\n\r\n") {
+        bail!("control request ended before header terminator");
+    }
+    let request = String::from_utf8_lossy(headers);
+    let (method, path) = parse_http_request_line(&request)?;
+    let route = if method == "POST" && path == "/calls" {
+        MctUdsControlRequestRoute::CallPreflight
+    } else if method == "POST" && mutation_handler_available {
+        MctUdsControlRequestRoute::OwnerMutation
+    } else {
+        MctUdsControlRequestRoute::ReadOnly
+    };
+    Ok(MctUdsControlRequestHead {
+        method: method.to_owned(),
+        path: path.to_owned(),
+        authorization_header: parse_authorization_header(&request).map(str::to_owned),
+        content_length: parse_content_length(&request)?.unwrap_or(0),
+        route,
+    })
+}
+
+#[cfg(feature = "fuzzing")]
+pub fn fuzz_uds_control_request(data: &[u8]) {
+    let Some((&flags, headers)) = data.split_first() else {
+        return;
+    };
+    let _ = parse_uds_control_request_head(headers, flags & 1 == 1);
 }
 
 fn parse_http_request_line(request: &str) -> Result<(&str, &str)> {
@@ -1060,6 +1109,39 @@ mod tests {
                 .unwrap()
                 .starts_with("HTTP/1.1 403")
         );
+    }
+
+    #[test]
+    fn uds_request_head_is_bounded_and_classifies_preflight_before_owner_mutation() {
+        let call = parse_uds_control_request_head(
+            b"POST /calls HTTP/1.1\r\nHost: local\r\nContent-Length: 17\r\n\r\n",
+            true,
+        )
+        .unwrap();
+        assert_eq!(call.route, MctUdsControlRequestRoute::CallPreflight);
+        assert_eq!(call.content_length, 17);
+
+        let mutation = parse_uds_control_request_head(
+            b"POST /peers/revoke HTTP/1.1\r\nHost: local\r\nContent-Length: 0\r\n\r\n",
+            true,
+        )
+        .unwrap();
+        assert_eq!(mutation.route, MctUdsControlRequestRoute::OwnerMutation);
+
+        let read_only = parse_uds_control_request_head(
+            b"GET /status HTTP/1.1\r\nAuthorization: Bearer secret\r\n\r\n",
+            false,
+        )
+        .unwrap();
+        assert_eq!(read_only.route, MctUdsControlRequestRoute::ReadOnly);
+        assert_eq!(
+            read_only.authorization_header.as_deref(),
+            Some("Bearer secret")
+        );
+
+        let oversized = vec![b'x'; MCT_UDS_CONTROL_HEADER_READ_BUDGET_BYTES + 1];
+        assert!(parse_uds_control_request_head(&oversized, true).is_err());
+        assert!(parse_uds_control_request_head(b"GET /status HTTP/1.1\r\n", false).is_err());
     }
 
     #[tokio::test]

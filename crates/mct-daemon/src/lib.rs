@@ -62,6 +62,8 @@ pub use config::{
     MctStoredChildAssignment, current_timestamp, current_timestamp_string, default_config_path,
     outbound_peer_binding_for_local,
 };
+#[cfg(feature = "fuzzing")]
+pub use control::fuzz_uds_control_request;
 pub use control::{
     MctControlPlaneAuthPolicy, MctControlPlaneResponse, MctControlPlaneSnapshot,
     MctControlPlaneSnapshotError, MctControlPlaneSnapshotResult, MctDaemonLocalControlFacts,
