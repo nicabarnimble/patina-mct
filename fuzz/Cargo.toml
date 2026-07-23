@@ -38,3 +38,10 @@ path = "fuzz_targets/child_package_manifest.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "pando_manifest"
+path = "fuzz_targets/pando_manifest.rs"
+test = false
+doc = false
+bench = false
