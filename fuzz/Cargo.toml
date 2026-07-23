@@ -31,3 +31,10 @@ path = "fuzz_targets/release_archive.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "child_package_manifest"
+path = "fuzz_targets/child_package_manifest.rs"
+test = false
+doc = false
+bench = false

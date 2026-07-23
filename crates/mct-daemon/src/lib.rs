@@ -30,6 +30,8 @@ mod toy;
 mod wasm;
 mod wit_values;
 
+#[cfg(feature = "fuzzing")]
+pub use acquisition::fuzz_child_package_manifest;
 pub use acquisition::{
     MCT_CHILD_MANIFEST_MAX_BYTES, MCT_COMPONENT_ARTIFACT_MAX_BYTES,
     MCT_FILESYSTEM_ACQUISITION_ADAPTER, MctArtifactAcquisitionReport, MctArtifactAttemptContext,
