@@ -3949,7 +3949,11 @@ mod tests {
             path: &str,
             value: &serde_json::Value,
         ) -> (u16, serde_json::Value) {
-            let body = serde_json::to_vec(value).unwrap();
+            let body = if method == "GET" {
+                Vec::new()
+            } else {
+                serde_json::to_vec(value).unwrap()
+            };
             let request = format!(
                 "{method} {path} HTTP/1.1\r\nHost: local\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
                 body.len()
@@ -3958,7 +3962,12 @@ mod tests {
             stream.write_all(request.as_bytes()).await.unwrap();
             stream.write_all(&body).await.unwrap();
             let mut response = Vec::new();
-            stream.read_to_end(&mut response).await.unwrap();
+            if let Err(error) = stream.read_to_end(&mut response).await {
+                panic!(
+                    "UDS {method} {path} response read failed: {error}; partial response: {}",
+                    String::from_utf8_lossy(&response)
+                );
+            }
             let response = String::from_utf8(response).unwrap();
             let status = response
                 .split_whitespace()
