@@ -755,7 +755,6 @@ fn json_response<T: Serialize>(status_code: u16, value: T) -> MctControlPlaneRes
 mod tests {
     use super::*;
     use crate::{MctDaemonHealth, MctDaemonReadiness, local_blob_store_for_state_path};
-    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 
     fn snapshot() -> MctControlPlaneSnapshot {
         MctControlPlaneSnapshot::new(
@@ -832,15 +831,7 @@ mod tests {
         let state_path = dir.path().join("state.sqlite");
         let socket_path = dir.path().join("control.sock");
         let listener = UnixListener::bind(&socket_path).unwrap();
-        let bytes = b"control blob bytes";
-        let digest = blake3::hash(bytes).to_hex().to_string();
-        let body = serde_json::json!({
-            "digest": digest,
-            "size_bytes": bytes.len(),
-            "content_type": "application/octet-stream",
-            "bytes_base64": BASE64_STANDARD.encode(bytes),
-        })
-        .to_string();
+        let digest = blake3::hash(b"control blob bytes").to_hex().to_string();
         let server = tokio::spawn(async move {
             serve_uds_control_once_with_snapshot_result_blob_store_and_mutations(
                 &listener,
@@ -853,19 +844,17 @@ mod tests {
         });
         let mut client = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
         client
-            .write_all(
-                format!(
-                    "POST /blobs HTTP/1.1\r\nHost: local\r\nContent-Length: {}\r\n\r\n{}",
-                    body.len(),
-                    body
-                )
-                .as_bytes(),
-            )
+            .write_all(b"POST /blobs HTTP/1.1\r\nHost: local\r\nContent-Length: 1024\r\n\r\n")
             .await
             .unwrap();
-        client.shutdown().await.unwrap();
         let mut response = String::new();
-        client.read_to_string(&mut response).await.unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            client.read_to_string(&mut response),
+        )
+        .await
+        .expect("missing mutation owner must refuse before reading the declared body")
+        .unwrap();
         server.await.unwrap();
 
         assert!(response.starts_with("HTTP/1.1 405"), "{response}");
