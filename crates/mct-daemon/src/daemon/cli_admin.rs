@@ -593,6 +593,8 @@ pub(super) fn run_runs(mut args: Vec<String>) -> Result<()> {
 pub(super) struct MctCliResidentStatus {
     pub running: bool,
     pub version: String,
+    pub supervisor_revision: Option<u64>,
+    pub executable_digest: Option<String>,
     pub health: MctDaemonHealth,
     pub readiness: MctDaemonReadiness,
     pub node_id: MctNodeId,
@@ -660,6 +662,8 @@ pub(super) fn query_resident_status(socket_path: &Path) -> Result<MctCliResident
     Ok(MctCliResidentStatus {
         running: true,
         version: snapshot.status.version,
+        supervisor_revision: resident.supervisor_revision,
+        executable_digest: resident.executable_digest,
         health: snapshot.status.health,
         readiness: snapshot.status.readiness,
         node_id: resident.node_id,

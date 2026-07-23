@@ -22,6 +22,7 @@ mod lifecycle;
 mod metrics;
 mod process;
 mod registry;
+mod release;
 mod state;
 mod status;
 mod supervisor;
@@ -32,8 +33,9 @@ mod wit_values;
 pub use acquisition::{
     MCT_CHILD_MANIFEST_MAX_BYTES, MCT_COMPONENT_ARTIFACT_MAX_BYTES,
     MCT_FILESYSTEM_ACQUISITION_ADAPTER, MctArtifactAcquisitionReport, MctArtifactAttemptContext,
-    MctArtifactStageRequest, new_artifact_attempt_context, stage_artifact_with_context,
-    stage_artifact_with_context_and_observer, stage_operator_pointed_artifact,
+    MctArtifactStageRequest, MctStandingSourceLedgerProof, new_artifact_attempt_context,
+    stage_artifact_with_context, stage_artifact_with_context_and_observer,
+    stage_operator_pointed_artifact, verify_standing_source_ledger_correlation,
 };
 pub use blob_store::{
     MCT_BLOB_MAX_BYTES, MctLocalBlobStore, MctLocalBlobStoreError, content_addressed_blob_handle,
@@ -63,16 +65,17 @@ pub use config::{
 pub use control::{
     MctControlPlaneAuthPolicy, MctControlPlaneResponse, MctControlPlaneSnapshot,
     MctControlPlaneSnapshotError, MctControlPlaneSnapshotResult, MctDaemonLocalControlFacts,
-    MctDaemonLocalControlRequest, MctDaemonLocalControlResponse, handle_control_plane_path,
-    handle_control_plane_path_result_with_auth, handle_control_plane_path_with_auth,
-    handle_local_control_request, serve_http_control_once, serve_http_control_once_with_auth,
-    serve_http_control_once_with_snapshot_result,
+    MctDaemonLocalControlRequest, MctDaemonLocalControlResponse, control_response_http_bytes,
+    handle_control_plane_path, handle_control_plane_path_result_with_auth,
+    handle_control_plane_path_with_auth, handle_local_control_request, serve_http_control_once,
+    serve_http_control_once_with_auth, serve_http_control_once_with_snapshot_result,
 };
 #[cfg(unix)]
 pub use control::{
-    MctUdsControlCallHandler, MctUdsControlCallPreflight, MctUdsControlMutationHandler,
-    MctUdsPeerCredentials, serve_uds_control_once, serve_uds_control_once_with_auth,
-    serve_uds_control_once_with_handlers, serve_uds_control_once_with_snapshot_result,
+    MctUdsAuthenticatedOwner, MctUdsControlCallHandler, MctUdsControlCallPreflight,
+    MctUdsControlMutationHandler, MctUdsPeerCredentials, serve_uds_control_once,
+    serve_uds_control_once_with_auth, serve_uds_control_once_with_handlers,
+    serve_uds_control_once_with_snapshot_result,
     serve_uds_control_once_with_snapshot_result_and_blob_store,
     serve_uds_control_once_with_snapshot_result_blob_store_and_mutations,
     serve_uds_control_stream_with_handlers,
@@ -100,6 +103,18 @@ pub use process::{
 pub use registry::{
     MctChildPackageInstallReport, MctRegistrySyncReport, install_verified_child_package,
     sync_child_registry_source,
+};
+pub use release::{
+    DaemonReleaseAcquisitionV1, DaemonReleaseArtifactV1,
+    MCT_DAEMON_RELEASE_ACQUISITION_DEADLINE_SECONDS, MCT_DAEMON_RELEASE_ARCHIVE_MAX_BYTES,
+    MCT_DAEMON_RELEASE_EXTRACTED_MAX_BYTES, MCT_DAEMON_RELEASE_FILESYSTEM_ADAPTER,
+    MCT_DAEMON_RELEASE_MAX_ENTRIES, MCT_DAEMON_RELEASE_METADATA_FILE_MAX_BYTES,
+    MctDaemonReleaseAcquisitionReport, MctDaemonReleaseAcquisitionRequest,
+    MctDaemonReleaseSourceKind, MctDaemonReleaseSourcePlan, MctVerifiedDaemonRelease,
+    OperatorPointedDaemonReleaseAcquisitionDecisionV1, ReleaseManifestV1,
+    VerifiedDaemonReleaseArchive, acquire_operator_file_daemon_release_offline,
+    acquire_operator_file_daemon_release_with_observer, plan_daemon_release_source,
+    verify_and_extract_daemon_release_archive,
 };
 pub use state::{
     ChildInvocationProvenance, MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER, MCT_IDEMPOTENCY_TTL_SECONDS,
@@ -162,13 +177,13 @@ mod tests {
 
     #[test]
     fn exposes_version() {
-        assert_eq!(super::version(), "0.1.0");
+        assert_eq!(super::version(), env!("CARGO_PKG_VERSION"));
     }
 
     #[test]
     fn daemon_reports_health_and_readiness() {
         let ready = daemon_status(Some(iroh_snapshot(MotherIrohEndpointLifecycle::Bound)));
-        assert_eq!(ready.version, "0.1.0");
+        assert_eq!(ready.version, env!("CARGO_PKG_VERSION"));
         assert_eq!(ready.health, MctDaemonHealth::Healthy);
         assert_eq!(ready.readiness, MctDaemonReadiness::Ready);
         assert_eq!(ready.safe_message, "ready");

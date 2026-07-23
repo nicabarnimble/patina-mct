@@ -6,10 +6,13 @@ use anyhow::{Context, Result, bail};
 use mct_kernel::{
     ArtifactAcquisition, ArtifactAcquisitionAuthorityPath, ArtifactAcquisitionAuthorityRequest,
     ArtifactAcquisitionDecisionId, ArtifactAcquisitionId, ArtifactAcquisitionOutcome,
-    ArtifactProvenanceStatus, ArtifactVerificationOutcome, AuthorizedArtifactAcquisitionId,
-    FilesystemAcquisitionEffectAuthority, ObservationId, OperatorPointedAcquisitionState,
-    OperatorPointedArtifactAcquisitionDecision, Timestamp, evaluate_artifact_acquisition_authority,
+    ArtifactProvenanceStatus, ArtifactSourceAuthority, ArtifactSourceAuthorityState,
+    ArtifactVerificationOutcome, AuthorizedArtifactAcquisitionId,
+    FilesystemAcquisitionEffectAuthority, ObservationId, ObservationKind, ObservationOutcome,
+    OperatorPointedAcquisitionState, OperatorPointedArtifactAcquisitionDecision, SourcePlane,
+    Timestamp, evaluate_artifact_acquisition_authority,
 };
+use mct_observation::JsonlObservationLedger;
 use patina_sdk::manifest::ChildManifest as SdkChildManifest;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -60,6 +63,70 @@ pub fn new_artifact_attempt_context() -> Result<MctArtifactAttemptContext> {
         verification_observation_id: ObservationId::new(format!(
             "obs:artifact-verification:{suffix}"
         ))?,
+    })
+}
+
+/// Validated correlation between one standing-source projection and its canonical ledger fact.
+///
+/// Private fields prevent SQLite state alone from being repackaged as proof.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MctStandingSourceLedgerProof {
+    source: ArtifactSourceAuthority,
+    record_digest: String,
+    ledger_sequence: u64,
+}
+
+/// Validates one standing source against the hash-validated canonical observation ledger.
+pub fn verify_standing_source_ledger_correlation(
+    state_path: &Path,
+    ledger_path: &Path,
+    source_authority_id: &str,
+) -> Result<MctStandingSourceLedgerProof> {
+    let state = MctRuntimeStateStore::open(state_path)?;
+    let (source, projected_digest) = state
+        .source_authorities()?
+        .into_iter()
+        .find(|(source, _)| source.source_authority_id.as_str() == source_authority_id)
+        .context("standing artifact source authority not found in projection")?;
+    let record_digest = blake3::hash(&serde_json::to_vec(&source)?)
+        .to_hex()
+        .to_string();
+    if projected_digest != record_digest {
+        bail!("standing artifact source projection digest mismatch");
+    }
+    if source.authority_state != ArtifactSourceAuthorityState::Active {
+        bail!("standing artifact source is not active");
+    }
+
+    let entries = JsonlObservationLedger::open_read_only(ledger_path, "ledger-local", "local-mct")?
+        .entries()
+        .context("read validated standing-source ledger")?;
+    let matching = entries
+        .iter()
+        .filter(|entry| entry.observation.observation_id == source.authority_observation_id)
+        .collect::<Vec<_>>();
+    if matching.len() != 1 {
+        bail!("standing artifact source requires exactly one ledger authority fact");
+    }
+    let entry = matching[0];
+    let observation = &entry.observation;
+    let expected_message = format!("artifact source authority created digest={record_digest}");
+    if observation.kind != ObservationKind::OperatorActionRecorded
+        || observation.source_plane != SourcePlane::Operator
+        || observation.subject_id.as_deref() != Some(source.source_authority_id.as_str())
+        || observation.resource_id.as_deref() != Some(source.source_ref.as_str())
+        || observation.policy_revision != Some(source.policy_revision)
+        || observation.outcome != ObservationOutcome::Allowed
+        || observation.safe_message != expected_message
+        || observation.detail_ref.is_some()
+    {
+        bail!("standing artifact source ledger authority fact mismatch");
+    }
+
+    Ok(MctStandingSourceLedgerProof {
+        source,
+        record_digest,
+        ledger_sequence: entry.local_sequence,
     })
 }
 
@@ -137,13 +204,14 @@ pub fn stage_artifact_with_context(
     request: &MctArtifactStageRequest,
     context: &MctArtifactAttemptContext,
 ) -> Result<MctArtifactAcquisitionReport> {
-    stage_artifact_with_context_and_observer(request, context, |_| Ok(()))
+    stage_artifact_with_context_and_observer(request, context, None, |_| Ok(()))
 }
 
 /// Executes an attempt and requires its successful terminal facts before catalog publication.
 pub fn stage_artifact_with_context_and_observer<F>(
     request: &MctArtifactStageRequest,
     context: &MctArtifactAttemptContext,
+    standing_source_proof: Option<&MctStandingSourceLedgerProof>,
     observe_verified: F,
 ) -> Result<MctArtifactAcquisitionReport>
 where
@@ -159,32 +227,42 @@ where
     }
     let claimed_source_root =
         std::path::absolute(&request.source_root).context("make artifact source root absolute")?;
-    let resolved_source_root = request.source_root.canonicalize();
-    let state = MctRuntimeStateStore::open(&request.state_path)?;
-    let standing = request
+    let operator_source_root = request
         .standing_source_authority_id
-        .as_deref()
-        .map(|source_id| {
-            let (source, record_digest) = state
+        .is_none()
+        .then(|| request.source_root.canonicalize());
+    let state = MctRuntimeStateStore::open(&request.state_path)?;
+    let standing = match request.standing_source_authority_id.as_deref() {
+        Some(source_id) => {
+            let proof = standing_source_proof
+                .context("standing artifact source requires validated ledger proof")?;
+            if proof.source.source_authority_id.as_str() != source_id {
+                bail!("standing artifact source proof identifies a different source");
+            }
+            let projected = state
                 .source_authorities()?
                 .into_iter()
                 .find(|(source, _)| source.source_authority_id.as_str() == source_id)
                 .context("standing artifact source authority not found")?;
-            let expected_digest = blake3::hash(&serde_json::to_vec(&source)?)
-                .to_hex()
-                .to_string();
-            if record_digest != expected_digest {
-                bail!("standing artifact source authority record digest mismatch");
+            if projected.0 != proof.source || projected.1 != proof.record_digest {
+                bail!("standing artifact source projection changed after ledger proof");
             }
-            Ok(source)
-        })
-        .transpose()?;
+            Some(proof.source.clone())
+        }
+        None => {
+            if standing_source_proof.is_some() {
+                bail!("operator-pointed acquisition cannot consume standing-source proof");
+            }
+            None
+        }
+    };
     let source_ref = standing.as_ref().map_or_else(
         || {
             format!(
                 "file://{}",
-                resolved_source_root
+                operator_source_root
                     .as_ref()
+                    .and_then(|root| root.as_ref().ok())
                     .unwrap_or(&claimed_source_root)
                     .display()
             )
@@ -308,6 +386,8 @@ where
     };
     let record_rejected = |acquisition: &ArtifactAcquisition| record_terminal(acquisition);
 
+    let resolved_source_root =
+        operator_source_root.unwrap_or_else(|| request.source_root.canonicalize());
     let source_root = match resolved_source_root {
         Ok(root) if root.is_dir() => root,
         Ok(_) => {
@@ -863,6 +943,192 @@ allow = ["patina:fixture/control@0.1.0.run"]
             children_dir: root.join("children"),
             state_path: root.join("state.sqlite"),
         }
+    }
+
+    fn standing_source(
+        request: &MctArtifactStageRequest,
+        source_id: &str,
+        observation_id: &str,
+    ) -> ArtifactSourceAuthority {
+        ArtifactSourceAuthority {
+            source_authority_id: mct_kernel::ArtifactSourceAuthorityId::new(source_id).unwrap(),
+            source_ref: format!(
+                "file://{}",
+                request.source_root.canonicalize().unwrap().display()
+            ),
+            scope: mct_kernel::ArtifactSourceScope {
+                scope_mode: mct_kernel::ArtifactSourceScopeMode::Constrained,
+                artifact_scope: vec!["fixture@1.0.0".into()],
+                publisher_scope: vec!["fixture-publisher".into()],
+                namespace_scope: vec!["patina:fixture".into()],
+                allowed_actions: vec!["acquire".into()],
+            },
+            integrity_policy_ref: "sha256-sidecars-v1".into(),
+            provenance_policy_ref: None,
+            issuer_principal_ref: "os-uid:501".into(),
+            policy_revision: 1,
+            authority_state: ArtifactSourceAuthorityState::Active,
+            issued_at: Timestamp::new("2026-07-21T00:00:00Z").unwrap(),
+            expires_at: Timestamp::new("2099-01-01T00:00:00Z").unwrap(),
+            authority_observation_id: ObservationId::new(observation_id).unwrap(),
+        }
+    }
+
+    fn write_standing_source_observation(
+        source: &ArtifactSourceAuthority,
+        ledger_path: &Path,
+        safe_message: String,
+    ) {
+        use mct_kernel::{MctObservation, ObservationTraceRef, ObservationVisibility, TraceId};
+
+        let mut ledger =
+            JsonlObservationLedger::open(ledger_path, "ledger-local", "local-mct").unwrap();
+        ledger
+            .append_batch_before_effect(
+                [MctObservation {
+                    observation_id: source.authority_observation_id.clone(),
+                    observed_at: source.issued_at.clone(),
+                    kind: ObservationKind::OperatorActionRecorded,
+                    source_plane: SourcePlane::Operator,
+                    trace: ObservationTraceRef {
+                        trace_id: TraceId::new(format!("trace:{}", source.source_authority_id))
+                            .unwrap(),
+                        span_id: None,
+                        parent_span_id: None,
+                        external_trace_id: None,
+                    },
+                    call_id: None,
+                    decision_id: None,
+                    subject_id: Some(source.source_authority_id.to_string()),
+                    resource_id: Some(source.source_ref.clone()),
+                    policy_revision: Some(source.policy_revision),
+                    grants_revision: None,
+                    outcome: ObservationOutcome::Allowed,
+                    visibility: ObservationVisibility::NodeOperator,
+                    safe_message,
+                    detail_ref: None,
+                }],
+                current_timestamp_string(),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn standing_source_projection_without_ledger_fact_grants_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let request = raw_request(root.path(), None);
+        let source = standing_source(&request, "source-unobserved", "obs-source-unobserved");
+        let digest = blake3::hash(&serde_json::to_vec(&source).unwrap())
+            .to_hex()
+            .to_string();
+        MctRuntimeStateStore::open(&request.state_path)
+            .unwrap()
+            .upsert_source_authority(&source, &digest)
+            .unwrap();
+        let ledger_path = root.path().join("observations.jsonl");
+        drop(JsonlObservationLedger::open(&ledger_path, "ledger-local", "local-mct").unwrap());
+
+        let error = verify_standing_source_ledger_correlation(
+            &request.state_path,
+            &ledger_path,
+            source.source_authority_id.as_str(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("ledger"));
+
+        let mut standing_request = request;
+        standing_request.source_root = root.path().join("source-must-not-be-read");
+        standing_request.standing_source_authority_id =
+            Some(source.source_authority_id.to_string());
+        standing_request.claimed_publisher = Some("fixture-publisher".into());
+        let stage_error = stage_artifact_with_context(
+            &standing_request,
+            &new_artifact_attempt_context().unwrap(),
+        )
+        .unwrap_err();
+        assert!(stage_error.to_string().contains("validated ledger proof"));
+    }
+
+    #[test]
+    fn standing_source_ledger_proof_is_required_to_mint_acquisition_capability() {
+        let root = tempfile::tempdir().unwrap();
+        let mut request = raw_request(root.path(), None);
+        let source = standing_source(&request, "source-observed", "obs-source-observed");
+        let digest = blake3::hash(&serde_json::to_vec(&source).unwrap())
+            .to_hex()
+            .to_string();
+        MctRuntimeStateStore::open(&request.state_path)
+            .unwrap()
+            .upsert_source_authority(&source, &digest)
+            .unwrap();
+        let ledger_path = root.path().join("observations.jsonl");
+        write_standing_source_observation(
+            &source,
+            &ledger_path,
+            format!("artifact source authority created digest={digest}"),
+        );
+
+        let proof = verify_standing_source_ledger_correlation(
+            &request.state_path,
+            &ledger_path,
+            source.source_authority_id.as_str(),
+        )
+        .unwrap();
+        request.standing_source_authority_id = Some(source.source_authority_id.to_string());
+        request.claimed_publisher = Some("fixture-publisher".into());
+        let report = stage_artifact_with_context_and_observer(
+            &request,
+            &new_artifact_attempt_context().unwrap(),
+            Some(&proof),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(report.acquisition_outcome, "acquired");
+        assert!(report.artifact_id.is_some());
+    }
+
+    #[test]
+    fn standing_source_ledger_proof_rejects_mismatched_and_hash_invalid_facts() {
+        let root = tempfile::tempdir().unwrap();
+        let request = raw_request(root.path(), None);
+        let source = standing_source(&request, "source-mismatch", "obs-source-mismatch");
+        let digest = blake3::hash(&serde_json::to_vec(&source).unwrap())
+            .to_hex()
+            .to_string();
+        MctRuntimeStateStore::open(&request.state_path)
+            .unwrap()
+            .upsert_source_authority(&source, &digest)
+            .unwrap();
+        let ledger_path = root.path().join("observations.jsonl");
+        write_standing_source_observation(
+            &source,
+            &ledger_path,
+            format!(
+                "artifact source authority created digest={}",
+                "0".repeat(64)
+            ),
+        );
+
+        let mismatch = verify_standing_source_ledger_correlation(
+            &request.state_path,
+            &ledger_path,
+            source.source_authority_id.as_str(),
+        )
+        .unwrap_err();
+        assert!(mismatch.to_string().contains("mismatch"));
+
+        let tampered = fs::read_to_string(&ledger_path)
+            .unwrap()
+            .replacen("created", "creaxed", 1);
+        fs::write(&ledger_path, tampered).unwrap();
+        assert!(
+            verify_standing_source_ledger_correlation(
+                &request.state_path,
+                &ledger_path,
+                source.source_authority_id.as_str(),
+            )
+            .is_err()
+        );
     }
 
     #[test]

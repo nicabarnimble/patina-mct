@@ -1,6 +1,8 @@
 use super::*;
 
 const PEER_MUTATION_BODY_MAX_BYTES: usize = 64 * 1024;
+const RESIDENT_UDS_CONNECTION_LIMIT: usize = 64;
+const RESIDENT_UDS_CAPACITY_RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
 static NEXT_PEER_MUTATION_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -344,6 +346,7 @@ fn peer_mutation_response(status_code: u16, body: serde_json::Value) -> MctContr
 }
 
 async fn execute_resident_peer_mutation(
+    _owner: mct_daemon::MctUdsAuthenticatedOwner,
     configured_path: &Path,
     ledger: &ResidentLedgerWriter,
     path: &str,
@@ -394,10 +397,23 @@ pub(super) fn resident_peer_mutation_handler(
     configured_path: PathBuf,
     ledger: ResidentLedgerWriter,
 ) -> mct_daemon::MctUdsControlMutationHandler {
-    mct_daemon::MctUdsControlMutationHandler::new(move |path, body| {
+    use std::os::unix::fs::MetadataExt as _;
+    let expected_owner_uid = std::fs::metadata(&configured_path)
+        .or_else(|_| {
+            std::fs::metadata(
+                configured_path
+                    .parent()
+                    .expect("test resident config path must have a parent"),
+            )
+        })
+        .expect("test resident config or parent must exist")
+        .uid();
+    mct_daemon::MctUdsControlMutationHandler::new(expected_owner_uid, move |owner, path, body| {
         let configured_path = configured_path.clone();
         let ledger = ledger.clone();
-        async move { execute_resident_peer_mutation(&configured_path, &ledger, &path, &body).await }
+        async move {
+            execute_resident_peer_mutation(owner, &configured_path, &ledger, &path, &body).await
+        }
     })
 }
 
@@ -679,6 +695,7 @@ impl PreparedChildMutation {
 }
 
 async fn execute_resident_child_mutation(
+    _owner: mct_daemon::MctUdsAuthenticatedOwner,
     configured_path: &Path,
     children_dir: &Path,
     state_path: Option<&Path>,
@@ -796,6 +813,7 @@ async fn append_blob_rejection(
 }
 
 async fn execute_resident_blob_mutation(
+    _owner: mct_daemon::MctUdsAuthenticatedOwner,
     state_path: &Path,
     ledger: &ResidentLedgerWriter,
     body: &[u8],
@@ -989,6 +1007,25 @@ fn artifact_stage_terminal_observations(
     }
 }
 
+fn artifact_stage_standing_source_proof(
+    request: &MctArtifactStageRequest,
+    ledger_path: Option<&Path>,
+) -> Result<Option<MctStandingSourceLedgerProof>> {
+    request
+        .standing_source_authority_id
+        .as_deref()
+        .map(|source_authority_id| {
+            let ledger_path = ledger_path
+                .context("standing artifact source requires an available resident ledger path")?;
+            verify_standing_source_ledger_correlation(
+                &request.state_path,
+                ledger_path,
+                source_authority_id,
+            )
+        })
+        .transpose()
+}
+
 pub(super) fn execute_offline_artifact_stage(
     ledger_path: &Path,
     request: &MctArtifactStageRequest,
@@ -1005,15 +1042,21 @@ pub(super) fn execute_offline_artifact_stage(
         artifact_stage_decision_observations(request, &context),
         mct_daemon::current_timestamp_string(),
     )?;
-    match stage_artifact_with_context_and_observer(request, &context, |report| {
-        ledger
-            .append_batch_before_effect(
-                artifact_stage_terminal_observations(request, &context, Some(report)),
-                mct_daemon::current_timestamp_string(),
-            )
-            .map(|_| ())
-            .context("artifact terminal observation was not durable")
-    }) {
+    let standing_source_proof = artifact_stage_standing_source_proof(request, Some(ledger_path))?;
+    match stage_artifact_with_context_and_observer(
+        request,
+        &context,
+        standing_source_proof.as_ref(),
+        |report| {
+            ledger
+                .append_batch_before_effect(
+                    artifact_stage_terminal_observations(request, &context, Some(report)),
+                    mct_daemon::current_timestamp_string(),
+                )
+                .map(|_| ())
+                .context("artifact terminal observation was not durable")
+        },
+    ) {
         Ok(report) => Ok(report),
         Err(error) => {
             if let Err(observation_error) = ledger.append_batch_before_effect(
@@ -1040,6 +1083,7 @@ pub(super) struct ArtifactSourceMutationRequest {
 }
 
 async fn execute_resident_artifact_source_mutation(
+    _owner: mct_daemon::MctUdsAuthenticatedOwner,
     configured_state_path: &Path,
     ledger: &ResidentLedgerWriter,
     path: &str,
@@ -1145,7 +1189,62 @@ async fn execute_resident_artifact_source_mutation(
     }
 }
 
+async fn execute_resident_daemon_release_acquisition(
+    owner: mct_daemon::MctUdsAuthenticatedOwner,
+    configured_state_path: &Path,
+    ledger: &ResidentLedgerWriter,
+    body: &[u8],
+) -> MctControlPlaneResponse {
+    let request: MctDaemonReleaseAcquisitionRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(_) => {
+            return peer_mutation_response(
+                400,
+                serde_json::json!({"error": "daemon release acquisition request rejected"}),
+            );
+        }
+    };
+    let expected_releases = configured_state_path
+        .parent()
+        .map(|root| root.join("releases"));
+    let expected_ledger = ledger.path();
+    if request.authenticated_uid != owner.uid()
+        || require_expected_config_path(&request.state_path, configured_state_path).is_err()
+        || expected_releases.as_ref() != Some(&request.releases_dir)
+        || expected_ledger != Some(request.ledger_path.as_path())
+    {
+        return peer_mutation_response(
+            409,
+            serde_json::json!({"error": "daemon release acquisition authority or path mismatch"}),
+        );
+    }
+
+    let callback_ledger = ledger.clone();
+    let runtime = tokio::runtime::Handle::current();
+    let result = tokio::task::spawn_blocking(move || {
+        acquire_operator_file_daemon_release_with_observer(&request, move |observation| {
+            runtime.block_on(callback_ledger.append(vec![observation]))
+        })
+    })
+    .await;
+    match result {
+        Ok(Ok(report)) => peer_mutation_response(
+            200,
+            serde_json::to_value(report).expect("daemon release report serializes"),
+        ),
+        Ok(Err(_)) => peer_mutation_response(
+            400,
+            serde_json::json!({"error": "daemon release acquisition failed closed"}),
+        ),
+        Err(_) => peer_mutation_response(
+            500,
+            serde_json::json!({"error": "daemon release acquisition worker failed"}),
+        ),
+    }
+}
+
 async fn execute_resident_artifact_stage(
+    _owner: mct_daemon::MctUdsAuthenticatedOwner,
     configured_children_dir: &Path,
     configured_state_path: &Path,
     ledger: &ResidentLedgerWriter,
@@ -1187,18 +1286,38 @@ async fn execute_resident_artifact_stage(
             serde_json::json!({"error": "artifact acquisition authority was not durable"}),
         );
     }
+    let standing_source_proof = match artifact_stage_standing_source_proof(&request, ledger.path())
+    {
+        Ok(proof) => proof,
+        Err(_) => {
+            let _ = ledger
+                .append(artifact_stage_terminal_observations(
+                    &request, &context, None,
+                ))
+                .await;
+            return peer_mutation_response(
+                400,
+                serde_json::json!({"error": "standing artifact source ledger proof rejected"}),
+            );
+        }
+    };
     let stage_request = request.clone();
     let stage_context = context.clone();
     let stage_ledger = ledger.clone();
     let runtime = tokio::runtime::Handle::current();
     let stage_result = tokio::task::spawn_blocking(move || {
-        stage_artifact_with_context_and_observer(&stage_request, &stage_context, |report| {
-            runtime.block_on(stage_ledger.append(artifact_stage_terminal_observations(
-                &stage_request,
-                &stage_context,
-                Some(report),
-            )))
-        })
+        stage_artifact_with_context_and_observer(
+            &stage_request,
+            &stage_context,
+            standing_source_proof.as_ref(),
+            |report| {
+                runtime.block_on(stage_ledger.append(artifact_stage_terminal_observations(
+                    &stage_request,
+                    &stage_context,
+                    Some(report),
+                )))
+            },
+        )
     })
     .await;
     match stage_result {
@@ -1487,6 +1606,7 @@ impl PreparedRegistryMutation {
 }
 
 async fn execute_resident_registry_mutation(
+    _owner: mct_daemon::MctUdsAuthenticatedOwner,
     children_dir: &Path,
     state_path: &Path,
     ledger: &ResidentLedgerWriter,
@@ -1789,6 +1909,7 @@ impl PreparedAdministrativeMutation {
 }
 
 async fn execute_resident_administrative_mutation(
+    _owner: mct_daemon::MctUdsAuthenticatedOwner,
     config_path: &Path,
     children_dir: &Path,
     state_path: &Path,
@@ -1861,14 +1982,147 @@ pub(super) fn execute_offline_administrative_mutation(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResidentMutationKind {
+    Lifecycle,
+    Blob,
+    Registry,
+    ArtifactSource,
+    ArtifactStage,
+    DaemonRelease,
+    Watch,
+    Trigger,
+    Administrative,
+    Child,
+    Identity,
+    Peer,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ResidentMutationRoute {
+    path: &'static str,
+    kind: ResidentMutationKind,
+}
+
+const RESIDENT_MUTATION_ROUTES: &[ResidentMutationRoute] = &[
+    ResidentMutationRoute {
+        path: "/lifecycle/fact",
+        kind: ResidentMutationKind::Lifecycle,
+    },
+    ResidentMutationRoute {
+        path: "/blobs",
+        kind: ResidentMutationKind::Blob,
+    },
+    ResidentMutationRoute {
+        path: "/registry/install",
+        kind: ResidentMutationKind::Registry,
+    },
+    ResidentMutationRoute {
+        path: "/registry/sync",
+        kind: ResidentMutationKind::Registry,
+    },
+    ResidentMutationRoute {
+        path: "/artifacts/sources/create",
+        kind: ResidentMutationKind::ArtifactSource,
+    },
+    ResidentMutationRoute {
+        path: "/artifacts/sources/revoke",
+        kind: ResidentMutationKind::ArtifactSource,
+    },
+    ResidentMutationRoute {
+        path: "/artifacts/stage",
+        kind: ResidentMutationKind::ArtifactStage,
+    },
+    ResidentMutationRoute {
+        path: "/releases/acquire",
+        kind: ResidentMutationKind::DaemonRelease,
+    },
+    ResidentMutationRoute {
+        path: "/watch/grant",
+        kind: ResidentMutationKind::Watch,
+    },
+    ResidentMutationRoute {
+        path: "/watch/supporting-grant",
+        kind: ResidentMutationKind::Watch,
+    },
+    ResidentMutationRoute {
+        path: "/watch/revoke",
+        kind: ResidentMutationKind::Watch,
+    },
+    ResidentMutationRoute {
+        path: "/triggers/create",
+        kind: ResidentMutationKind::Trigger,
+    },
+    ResidentMutationRoute {
+        path: "/triggers/revise",
+        kind: ResidentMutationKind::Trigger,
+    },
+    ResidentMutationRoute {
+        path: "/triggers/revoke",
+        kind: ResidentMutationKind::Trigger,
+    },
+    ResidentMutationRoute {
+        path: "/toys/authorize-slate",
+        kind: ResidentMutationKind::Administrative,
+    },
+    ResidentMutationRoute {
+        path: "/toys/authorize-secret",
+        kind: ResidentMutationKind::Administrative,
+    },
+    ResidentMutationRoute {
+        path: "/pando/record",
+        kind: ResidentMutationKind::Administrative,
+    },
+    ResidentMutationRoute {
+        path: "/children/approve",
+        kind: ResidentMutationKind::Child,
+    },
+    ResidentMutationRoute {
+        path: "/children/revoke",
+        kind: ResidentMutationKind::Child,
+    },
+    ResidentMutationRoute {
+        path: "/identity/ensure",
+        kind: ResidentMutationKind::Identity,
+    },
+    ResidentMutationRoute {
+        path: "/peers/add",
+        kind: ResidentMutationKind::Peer,
+    },
+    ResidentMutationRoute {
+        path: "/peers/proof",
+        kind: ResidentMutationKind::Peer,
+    },
+    ResidentMutationRoute {
+        path: "/peers/revoke",
+        kind: ResidentMutationKind::Peer,
+    },
+    ResidentMutationRoute {
+        path: "/peers/remove",
+        kind: ResidentMutationKind::Peer,
+    },
+];
+
+fn resident_mutation_route(path: &str) -> Option<ResidentMutationKind> {
+    RESIDENT_MUTATION_ROUTES
+        .iter()
+        .find(|route| route.path == path)
+        .map(|route| route.kind)
+}
+
+fn unavailable_mutation_response(error: &'static str) -> MctControlPlaneResponse {
+    peer_mutation_response(404, serde_json::json!({"error": error}))
+}
+
 fn resident_mutation_handler(
     configured_path: PathBuf,
     children_dir: PathBuf,
     state_path: Option<PathBuf>,
     ledger: ResidentLedgerWriter,
+    expected_owner_uid: u32,
 ) -> mct_daemon::MctUdsControlMutationHandler {
     let mutation_guard = Arc::new(tokio::sync::Mutex::new(()));
-    mct_daemon::MctUdsControlMutationHandler::new_authenticated(move |peer, path, body| {
+    mct_daemon::MctUdsControlMutationHandler::new(expected_owner_uid, move |owner, path, body| {
         let configured_path = configured_path.clone();
         let children_dir = children_dir.clone();
         let state_path = state_path.clone();
@@ -1876,134 +2130,129 @@ fn resident_mutation_handler(
         let mutation_guard = Arc::clone(&mutation_guard);
         async move {
             let _mutation_guard = mutation_guard.lock().await;
-            if path == "/lifecycle/fact" {
-                execute_resident_lifecycle_fact(&ledger, peer, &body).await
-            } else if path == "/blobs" {
-                match state_path {
-                    Some(state_path) => {
-                        execute_resident_blob_mutation(&state_path, &ledger, &body).await
-                    }
-                    None => peer_mutation_response(
-                        404,
-                        serde_json::json!({"error": "blob ingest unavailable"}),
-                    ),
+            match resident_mutation_route(&path) {
+                Some(ResidentMutationKind::Lifecycle) => {
+                    execute_resident_lifecycle_fact(owner, &ledger, &body).await
                 }
-            } else if path.starts_with("/registry/") {
-                match state_path {
+                Some(ResidentMutationKind::Blob) => match state_path.as_deref() {
+                    Some(state_path) => {
+                        execute_resident_blob_mutation(owner, state_path, &ledger, &body).await
+                    }
+                    None => unavailable_mutation_response("blob ingest unavailable"),
+                },
+                Some(ResidentMutationKind::Registry) => match state_path.as_deref() {
                     Some(state_path) => {
                         execute_resident_registry_mutation(
+                            owner,
                             &children_dir,
-                            &state_path,
+                            state_path,
                             &ledger,
                             &path,
                             &body,
                         )
                         .await
                     }
-                    None => peer_mutation_response(
-                        404,
-                        serde_json::json!({"error": "registry mutation unavailable"}),
-                    ),
-                }
-            } else if path.starts_with("/artifacts/sources/") {
-                match state_path {
+                    None => unavailable_mutation_response("registry mutation unavailable"),
+                },
+                Some(ResidentMutationKind::ArtifactSource) => match state_path.as_deref() {
                     Some(state_path) => {
                         execute_resident_artifact_source_mutation(
-                            &state_path,
+                            owner, state_path, &ledger, &path, &body,
+                        )
+                        .await
+                    }
+                    None => unavailable_mutation_response("artifact source mutation unavailable"),
+                },
+                Some(ResidentMutationKind::ArtifactStage) => match state_path.as_deref() {
+                    Some(state_path) => {
+                        execute_resident_artifact_stage(
+                            owner,
+                            &children_dir,
+                            state_path,
                             &ledger,
-                            &path,
                             &body,
                         )
                         .await
                     }
-                    None => peer_mutation_response(
-                        404,
-                        serde_json::json!({"error": "artifact source mutation unavailable"}),
-                    ),
-                }
-            } else if path == "/artifacts/stage" {
-                match state_path {
+                    None => unavailable_mutation_response("artifact staging unavailable"),
+                },
+                Some(ResidentMutationKind::DaemonRelease) => match state_path.as_deref() {
                     Some(state_path) => {
-                        execute_resident_artifact_stage(&children_dir, &state_path, &ledger, &body)
-                            .await
+                        execute_resident_daemon_release_acquisition(
+                            owner, state_path, &ledger, &body,
+                        )
+                        .await
                     }
-                    None => peer_mutation_response(
-                        404,
-                        serde_json::json!({"error": "artifact staging unavailable"}),
-                    ),
-                }
-            } else if path.starts_with("/watch/") {
-                match state_path {
+                    None => unavailable_mutation_response("daemon release acquisition unavailable"),
+                },
+                Some(ResidentMutationKind::Watch) => match state_path.as_deref() {
                     Some(state_path) => {
                         execute_resident_watch_mutation(
+                            owner,
                             &configured_path,
                             &children_dir,
-                            &state_path,
+                            state_path,
                             &ledger,
-                            peer,
                             &path,
                             &body,
                         )
                         .await
                     }
-                    None => peer_mutation_response(
-                        404,
-                        serde_json::json!({"error": "Watch authority mutation unavailable"}),
-                    ),
-                }
-            } else if path.starts_with("/triggers/") {
-                match state_path {
+                    None => unavailable_mutation_response("Watch authority mutation unavailable"),
+                },
+                Some(ResidentMutationKind::Trigger) => match state_path.as_deref() {
                     Some(state_path) => {
                         execute_resident_trigger_mutation(
+                            owner,
                             &configured_path,
-                            &state_path,
+                            state_path,
                             &ledger,
-                            peer,
                             &path,
                             &body,
                         )
                         .await
                     }
-                    None => peer_mutation_response(
-                        404,
-                        serde_json::json!({"error": "trigger authority mutation unavailable"}),
-                    ),
-                }
-            } else if path.starts_with("/toys/") || path == "/pando/record" {
-                match state_path {
+                    None => unavailable_mutation_response("trigger authority mutation unavailable"),
+                },
+                Some(ResidentMutationKind::Administrative) => match state_path.as_deref() {
                     Some(state_path) => {
                         execute_resident_administrative_mutation(
+                            owner,
                             &configured_path,
                             &children_dir,
-                            &state_path,
+                            state_path,
                             &ledger,
                             &path,
                             &body,
                         )
                         .await
                     }
-                    None => peer_mutation_response(
-                        404,
-                        serde_json::json!({"error": "administrative mutation unavailable"}),
-                    ),
+                    None => unavailable_mutation_response("administrative mutation unavailable"),
+                },
+                Some(ResidentMutationKind::Child) => {
+                    execute_resident_child_mutation(
+                        owner,
+                        &configured_path,
+                        &children_dir,
+                        state_path.as_deref(),
+                        &ledger,
+                        &path,
+                        &body,
+                    )
+                    .await
                 }
-            } else if path.starts_with("/children/") {
-                execute_resident_child_mutation(
-                    &configured_path,
-                    &children_dir,
-                    state_path.as_deref(),
-                    &ledger,
-                    &path,
-                    &body,
-                )
-                .await
-            } else if path == "/identity/ensure" {
-                peer_mutation_response(
+                Some(ResidentMutationKind::Identity) => peer_mutation_response(
                     409,
                     serde_json::json!({"error": "stop the daemon to create or rotate identity"}),
-                )
-            } else {
-                execute_resident_peer_mutation(&configured_path, &ledger, &path, &body).await
+                ),
+                Some(ResidentMutationKind::Peer) => {
+                    execute_resident_peer_mutation(owner, &configured_path, &ledger, &path, &body)
+                        .await
+                }
+                None => peer_mutation_response(
+                    404,
+                    serde_json::json!({"error": "resident mutation route not found"}),
+                ),
             }
         }
     })
@@ -2015,7 +2264,24 @@ pub(super) fn resident_authority_mutation_handler(
     children_dir: PathBuf,
     ledger: ResidentLedgerWriter,
 ) -> mct_daemon::MctUdsControlMutationHandler {
-    resident_mutation_handler(configured_path, children_dir, None, ledger)
+    use std::os::unix::fs::MetadataExt as _;
+    let expected_owner_uid = std::fs::metadata(&configured_path)
+        .or_else(|_| {
+            std::fs::metadata(
+                configured_path
+                    .parent()
+                    .expect("test resident config path must have a parent"),
+            )
+        })
+        .expect("test resident config or parent must exist")
+        .uid();
+    resident_mutation_handler(
+        configured_path,
+        children_dir,
+        None,
+        ledger,
+        expected_owner_uid,
+    )
 }
 
 pub(super) fn resident_observed_mutation_handler(
@@ -2024,7 +2290,24 @@ pub(super) fn resident_observed_mutation_handler(
     state_path: PathBuf,
     ledger: ResidentLedgerWriter,
 ) -> mct_daemon::MctUdsControlMutationHandler {
-    resident_mutation_handler(configured_path, children_dir, Some(state_path), ledger)
+    use std::os::unix::fs::MetadataExt as _;
+    let expected_owner_uid = std::fs::metadata(&configured_path)
+        .or_else(|_| {
+            std::fs::metadata(
+                configured_path
+                    .parent()
+                    .expect("resident config path must have a parent"),
+            )
+        })
+        .expect("resident config or parent must exist before the UDS mutation handler starts")
+        .uid();
+    resident_mutation_handler(
+        configured_path,
+        children_dir,
+        Some(state_path),
+        ledger,
+        expected_owner_uid,
+    )
 }
 
 pub(super) fn execute_offline_child_mutation(
@@ -2323,6 +2606,10 @@ pub(super) async fn run_control_serve_uds_with_state_until(
     );
     let snapshot_source =
         ControlSnapshotSource::open_with_status(paths.state_path(), status_source);
+    let config_owner_uid = std::fs::metadata(paths.config_path())?.uid();
+    if config_owner_uid != expected_uid {
+        bail!("resident config and UDS socket owner UID differ");
+    }
     let mutation_handler = resident_observed_mutation_handler(
         paths.config_path().to_path_buf(),
         paths.children_dir().to_path_buf(),
@@ -2332,23 +2619,44 @@ pub(super) async fn run_control_serve_uds_with_state_until(
     let call_handler =
         resident_local_call_handler(paths, ledger, expected_uid, max_in_flight_calls);
     let mut connections = tokio::task::JoinSet::new();
+    let connection_capacity = Arc::new(tokio::sync::Semaphore::new(RESIDENT_UDS_CONNECTION_LIMIT));
     loop {
         tokio::select! {
             _ = shutdown.recv() => break,
             accepted = listener.accept() => {
-                let (stream, _) = accepted.context("accept uds control")?;
-                let snapshot_source = snapshot_source.clone();
-                let mutation_handler = mutation_handler.clone();
-                let call_handler = call_handler.clone();
-                connections.spawn(async move {
-                    mct_daemon::serve_uds_control_stream_with_handlers(
-                        stream,
-                        control_snapshot(&snapshot_source).await,
-                        Some(&mutation_handler),
-                        Some(&call_handler),
-                    )
-                    .await
-                });
+                let (mut stream, _) = accepted.context("accept uds control")?;
+                let permit = Arc::clone(&connection_capacity).try_acquire_owned();
+                match permit {
+                    Ok(permit) => {
+                        let snapshot_source = snapshot_source.clone();
+                        let mutation_handler = mutation_handler.clone();
+                        let call_handler = call_handler.clone();
+                        connections.spawn(async move {
+                            let _permit = permit;
+                            mct_daemon::serve_uds_control_stream_with_handlers(
+                                stream,
+                                control_snapshot(&snapshot_source).await,
+                                Some(&mutation_handler),
+                                Some(&call_handler),
+                            )
+                            .await
+                        });
+                    }
+                    Err(_) => {
+                        use tokio::io::AsyncWriteExt as _;
+                        let response = peer_mutation_response(
+                            503,
+                            serde_json::json!({"error": "resident UDS connection capacity reached"}),
+                        );
+                        let _ = tokio::time::timeout(
+                            RESIDENT_UDS_CAPACITY_RESPONSE_TIMEOUT,
+                            stream.write_all(
+                                mct_daemon::control_response_http_bytes(&response).as_bytes(),
+                            ),
+                        )
+                        .await;
+                    }
+                }
             }
             completed = connections.join_next(), if !connections.is_empty() => {
                 match completed {
@@ -2476,6 +2784,90 @@ pub(super) fn control_snapshot_from_state(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resident_uds_connection_admission_is_bounded() {
+        let capacity = Arc::new(tokio::sync::Semaphore::new(RESIDENT_UDS_CONNECTION_LIMIT));
+        let permits = (0..RESIDENT_UDS_CONNECTION_LIMIT)
+            .map(|_| Arc::clone(&capacity).try_acquire_owned().unwrap())
+            .collect::<Vec<_>>();
+        assert!(Arc::clone(&capacity).try_acquire_owned().is_err());
+        drop(permits);
+        assert!(Arc::clone(&capacity).try_acquire_owned().is_ok());
+    }
+
+    #[tokio::test]
+    async fn every_resident_mutation_route_authenticates_before_body_by_construction() {
+        use std::{
+            os::unix::fs::MetadataExt as _,
+            sync::{
+                Arc,
+                atomic::{AtomicBool, Ordering},
+            },
+        };
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        for route in RESIDENT_MUTATION_ROUTES {
+            let dir = tempfile::tempdir().unwrap();
+            let socket_path = dir.path().join("control.sock");
+            let listener = UnixListener::bind(&socket_path).unwrap();
+            let actual_uid = std::fs::metadata(&socket_path).unwrap().uid();
+            let refused_uid = actual_uid.checked_add(1).unwrap();
+            let called = Arc::new(AtomicBool::new(false));
+            let callback_called = Arc::clone(&called);
+            let handler = mct_daemon::MctUdsControlMutationHandler::new(
+                refused_uid,
+                move |_owner, _path, _body| {
+                    let callback_called = Arc::clone(&callback_called);
+                    async move {
+                        callback_called.store(true, Ordering::SeqCst);
+                        peer_mutation_response(200, serde_json::json!({"status": "ok"}))
+                    }
+                },
+            );
+            let server = tokio::spawn(async move {
+                mct_daemon::serve_uds_control_once_with_handlers(
+                    &listener,
+                    control_snapshot(&ControlSnapshotSource::Unavailable).await,
+                    None,
+                    Some(&handler),
+                    None,
+                )
+                .await
+                .unwrap();
+            });
+            let mut client = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+            client
+                .write_all(
+                    format!(
+                        "POST {} HTTP/1.1\r\nHost: local\r\nContent-Length: 1024\r\n\r\n",
+                        route.path
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+
+            let mut response = Vec::new();
+            tokio::time::timeout(
+                Duration::from_millis(250),
+                client.read_to_end(&mut response),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("{} authentication waited for body", route.path))
+            .unwrap();
+            server.await.unwrap();
+
+            assert!(!called.load(Ordering::SeqCst), "{}", route.path);
+            assert!(
+                String::from_utf8(response)
+                    .unwrap()
+                    .starts_with("HTTP/1.1 403"),
+                "{}",
+                route.path
+            );
+        }
+    }
 
     fn write_resident_process_child(children_dir: &Path) {
         write_resident_process_child_script(
@@ -3049,6 +3441,96 @@ listens = []
         assert_eq!(status, 500);
         assert!(!children_dir.exists());
         assert!(!state_path.exists());
+    }
+
+    #[tokio::test]
+    async fn resident_standing_acquisition_requires_and_consumes_shared_ledger_proof() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_catalog = dir.path().join("source-catalog");
+        write_resident_process_child(&source_catalog);
+        let source_root = source_catalog.join("resident-echo").canonicalize().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let socket_path = dir.path().join("control.sock");
+        let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let handler = resident_observed_mutation_handler(
+            config_path,
+            children_dir.clone(),
+            state_path.clone(),
+            ledger.clone(),
+        );
+        let source = ArtifactSourceAuthority {
+            source_authority_id: ArtifactSourceAuthorityId::new("source-resident-proof").unwrap(),
+            source_ref: format!("file://{}", source_root.display()),
+            scope: ArtifactSourceScope {
+                scope_mode: ArtifactSourceScopeMode::Constrained,
+                artifact_scope: vec!["resident-echo@0.1.0".into()],
+                publisher_scope: vec!["resident-fixture".into()],
+                namespace_scope: vec!["patina:demo".into()],
+                allowed_actions: vec!["acquire".into()],
+            },
+            integrity_policy_ref: "sha256-sidecars-v1".into(),
+            provenance_policy_ref: None,
+            issuer_principal_ref: "os-uid:501".into(),
+            policy_revision: 1,
+            authority_state: ArtifactSourceAuthorityState::Active,
+            issued_at: Timestamp::new("2026-07-21T00:00:00Z").unwrap(),
+            expires_at: Timestamp::new("2099-01-01T00:00:00Z").unwrap(),
+            authority_observation_id: ObservationId::new("obs-source-resident-proof").unwrap(),
+        };
+        let record_digest = blake3::hash(&serde_json::to_vec(&source).unwrap())
+            .to_hex()
+            .to_string();
+        let (source_status, source_response) = post_mutation(
+            Arc::clone(&listener),
+            handler.clone(),
+            &socket_path,
+            "/artifacts/sources/create",
+            serde_json::to_value(ArtifactSourceMutationRequest {
+                expected_state_path: state_path.clone(),
+                source: source.clone(),
+                record_digest,
+            })
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(source_status, 200, "{source_response}");
+
+        let request = MctArtifactStageRequest {
+            source_root,
+            manifest_path: PathBuf::from("child.toml"),
+            component_path: PathBuf::from("resident-echo.wasm"),
+            claimed_child_name: "resident-echo".into(),
+            claimed_artifact_version: "0.1.0".into(),
+            expected_digest: None,
+            standing_source_authority_id: Some(source.source_authority_id.to_string()),
+            claimed_publisher: Some("resident-fixture".into()),
+            require_source_sidecars: true,
+            children_dir: children_dir.clone(),
+            state_path: state_path.clone(),
+        };
+        let (stage_status, stage_response) = post_mutation(
+            listener,
+            handler.clone(),
+            &socket_path,
+            "/artifacts/stage",
+            serde_json::to_value(request).unwrap(),
+        )
+        .await;
+        assert_eq!(stage_status, 200, "{stage_response}");
+        assert_eq!(
+            MctRuntimeStateStore::open(&state_path)
+                .unwrap()
+                .artifact_acquisitions()
+                .unwrap()
+                .len(),
+            1
+        );
+        drop(handler);
+        ledger.close().await;
     }
 
     #[tokio::test]
