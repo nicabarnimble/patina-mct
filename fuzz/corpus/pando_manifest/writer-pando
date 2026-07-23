@@ -1,0 +1,20 @@
+[pando]
+name = "writer"
+
+[[children]]
+name = "draft"
+
+[[children]]
+name = "review"
+
+[commands.run]
+child = "draft"
+action = "compose"
+
+[composition]
+entry = { child = "draft", toy = "toy:store/write" }
+
+[[composition.wiring]]
+from = "draft"
+to = "review"
+toy = "toy:queue/send"
