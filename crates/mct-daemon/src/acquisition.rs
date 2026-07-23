@@ -909,6 +909,23 @@ fn timestamp_after_one_minute() -> Result<Timestamp> {
     )?)
 }
 
+#[cfg(feature = "fuzzing")]
+pub fn fuzz_child_package_manifest(data: &[u8]) {
+    let Ok(source) = std::str::from_utf8(data) else {
+        return;
+    };
+    let Ok(manifest) = SdkChildManifest::from_toml_str(source) else {
+        return;
+    };
+    let _ = manifest_namespaces(&manifest);
+    let selected = manifest
+        .artifact
+        .wasm
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("artifact/child.wasm"));
+    let _ = canonical_package_manifest(source, &manifest, &selected);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

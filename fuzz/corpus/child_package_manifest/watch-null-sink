@@ -1,0 +1,21 @@
+[child]
+name = "watch-null-sink"
+version = "0.1.0"
+kind = "child"
+role = "app"
+patina_min = "0.71.0"
+
+[child.ingress]
+mode = "wit-only"
+
+[child.contract]
+default = "patina:watch/events@0.1.0.emit"
+allow = [
+  "patina:watch/events@0.1.0.emit",
+]
+
+[needs]
+toys = ["logging", "measure"]
+
+[needs.metrics]
+watch_events_dropped = { type = "counter", labels = [] }
