@@ -1,2 +1,5 @@
 # Unified diff context lines intentionally contain one prefix space.
 crates/mct-daemon/tests/fixtures/folder-watch-actor-0.1.0/MCT-REBUILD.patch whitespace=-blank-at-eol,-blank-at-eof
+
+# Fuzz corpus seeds are raw fuzzer input bytes (some deliberately CRLF), not text.
+fuzz/corpus/** binary
