@@ -1,18 +1,30 @@
 # Post-R3 credibility slice close-out
 
-Status: complete — assurance docs, Scorecard workflow, hostile-input fuzz coverage
+Status: landed — pending external evidence (Scorecard initial score)
 
 ## Claim boundary
 
 This slice adds credibility *evidence surfaces* over the already-landed R2
 security closure and R3 release discipline. It introduces no new runtime
-behavior, no new authority surface, and no new product-map invariant. It does
-not touch the operational `patinaMother` shutoff (R4) or into-the-wild
-publication (R5) claims, which remain separately gated.
+authority surface and no new product-map invariant. It does not touch the
+operational `patinaMother` shutoff (R4) or into-the-wild publication (R5)
+claims, which remain separately gated.
 
-## Reconstructed implementation range
+## Reconstructed commit range
 
-Commits `5ba5eed..4d8713e` (10 commits on `patina`):
+The original implementation range `5ba5eed..4d8713e` contains **11 commits**.
+The complete range through this repaired close-out contains **15 commits**.
+The repair endpoint is resolved from the transcript introduced by that commit,
+avoiding an impossible self-referential commit hash:
+
+```bash
+repair_endpoint=$(git log -1 --format=%H -- \
+  layer/surface/build/feat/post-r3-credibility/close-out-test-transcript.txt)
+git rev-list --count 5ba5eed.."$repair_endpoint"
+git log --reverse --format='%h %s' 5ba5eed.."$repair_endpoint"
+```
+
+The resulting ordered list is:
 
 - `bec8434` docs(assurance): add ASSURANCE.md and SECURITY.md
 - `70930dd` fix(ci): remove or guard tier0 python3>=3.11 dependency
@@ -25,14 +37,21 @@ Commits `5ba5eed..4d8713e` (10 commits on `patina`):
 - `b47be97` ci: add bounded fuzz smoke workflow
 - `471f5b5` docs(product): record post-R3 credibility slice close-out
 - `4d8713e` fix(ci): scratch fuzz corpora in smoke run and mark seeds binary
+- `47b6106` docs(release): durable post-R3 credibility slice close-out evidence
+- `76e3eec` chore(fuzz): keep text manifest seeds diffable
+- `6f6ae18` ci(fuzz): bound smoke job with timeout-minutes
+- repair endpoint: docs(release): repair close-out to disk-verifiable evidence
 
 Division-of-labor note: `bec8434`, `70930dd`, `b4bd807`, and the `79b009f`
 scaffold were landed by the pi build agent. Tasks under `a958b84..b47be97`
-plus the `4d8713e` repair were completed directly by Claude after pi's
-provider flagged the fuzz work mid-task (operator-ratified exception).
+plus `4d8713e` were completed directly by Claude after pi's provider flagged
+the fuzz work mid-task (operator-ratified exception). The repair commits begin
+at `76e3eec`.
 
-The two pre-existing untracked session/belief artifacts were never included in
-any commit.
+At the repaired close-out commit, `git status --porcelain` reports only the two
+pre-existing untracked session and belief artifacts; the abandoned truncated
+product-directory close-out draft was removed with operator approval and was
+never committed.
 
 ## Fuzz seams (file:line proof citations)
 
@@ -42,80 +61,87 @@ entry point re-exported from `crates/mct-daemon/src/lib.rs`:
 | Target | Entry point | Seam under test |
 |---|---|---|
 | `uds_control_request` | `control::fuzz_uds_control_request` (`crates/mct-daemon/src/control.rs:645`) | `parse_uds_control_request_head` — bounded header parse, request-line/content-length extraction, owner/preflight/read-only route classification (`crates/mct-daemon/src/control.rs:616`) |
-| `release_archive` | `release::fuzz_release_archive` (`crates/mct-daemon/src/release.rs:1446`) | `scan_archive_reader` — gzip/tar walk, layout, manifest decode, internal checksums, display-safe metadata before extraction (`crates/mct-daemon/src/release.rs:922`) |
+| `release_archive` | `release::fuzz_release_archive` (`crates/mct-daemon/src/release.rs:1446`) | `scan_archive_reader` — gzip/tar walk, layout, manifest decode, internal checksums, and display-safe metadata before extraction (`crates/mct-daemon/src/release.rs:922`) |
 | `child_package_manifest` | `acquisition::fuzz_child_package_manifest` (`crates/mct-daemon/src/acquisition.rs:913`) | `SdkChildManifest::from_toml_str` → `manifest_namespaces` → `canonical_package_manifest` (`crates/mct-daemon/src/acquisition.rs:750`, `:766`) |
 | `pando_manifest` | `parse_pando_manifest_str` (public) (`crates/mct-daemon/src/composition.rs:163`) | `MctPandoManifest` TOML parse plus structural validation (`crates/mct-daemon/src/composition.rs:164`) |
 
-Excluded by operator ruling: daemon `config.json` and supervisor records —
-daemon-owned projections, not operator-external input seams. Verified absent
-from all fuzz references.
+Excluded by operator ruling: daemon `config.json` and supervisor records are
+daemon-owned projections, not operator-external input seams. They have no fuzz
+targets.
 
-## Corpus seeds
+## Corpus and durable fuzz evidence
 
-Nine curated seeds, marked `binary` in `.gitattributes` (some are
-deliberately CRLF UDS HTTP heads and must not be normalized):
+Nine curated seeds are committed:
 
-- `uds_control_request`: `call-preflight`, `owner-mutation`, `read-only-auth`
-- `release_archive`: `valid-release` (regenerable via the `#[ignore]`
-  `write_release_archive_fuzz_seed` test from the existing `release_fixture`)
+- `uds_control_request`: `call-preflight`, `owner-mutation`, `read-only-auth`;
+- `release_archive`: `valid-release`, regenerable via the ignored
+  `write_release_archive_fuzz_seed` test;
 - `child_package_manifest`: `slate-manager`, `folder-watch-actor`,
-  `watch-null-sink` (copied from committed `tests/fixtures`)
-- `pando_manifest`: `slate-pando`, `writer-pando` (from the composition tests)
+  `watch-null-sink`; and
+- `pando_manifest`: `slate-pando`, `writer-pando`.
 
-## Per-commit and slice validation evidence
+`.gitattributes` marks only the raw CRLF UDS heads and gzip release archive as
+binary. The five Child/Pando TOML manifests remain reviewable text.
 
-Every commit passed, per the binding per-commit protocol:
+The durable fuzz evidence is the four target declarations and source files,
+the nine seeds, and the scratch-first bounded CI smoke in
+`.github/workflows/fuzz.yml`. The four declared targets compile with
+`cargo +nightly fuzz build --fuzz-dir fuzz`; CI will run 25,000 executions per
+target after push. The whole job is bounded at 30 minutes: four 120-second fuzz
+windows total 8 minutes, leaving 22 minutes for setup and sanitizer builds.
+`find fuzz/artifacts -type f 2>/dev/null` returns no files at this close-out.
+No local fuzz-run count, coverage count, or zero-crash result is claimed here.
 
+## Workspace test evidence
+
+The full committed transcript is
+[`close-out-test-transcript.txt`](close-out-test-transcript.txt), produced with:
+
+```bash
+cargo test --workspace
 ```
-cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh
+
+Its SHA-256 is
+`00d8f67e2f4175e10828336643c0c2487a4446822eab11f6b5b41f1e9f4aac1c`.
+The 11 suite result lines record **418 passed, 0 failed, 1 ignored**. The one
+ignored test is `write_release_archive_fuzz_seed`, visible in the transcript
+and defined at `crates/mct-daemon/src/release.rs:1624`; it intentionally
+regenerates the committed release-archive seed.
+
+The earlier claim that every implementation commit had durable per-commit
+validation evidence is withdrawn: no landed logs support that historical
+claim. The binding repair gate remains reproducible at any named commit:
+
+```bash
+cargo test --workspace && \
+  cargo clippy --workspace --all-targets -- -D warnings && \
+  ./scripts/ci-tier0.sh
 ```
 
-Final slice validation (from disk, this close-out HEAD):
-
-- `cargo test --workspace -- --nocapture`: **418 tests passed**, 0 failed, 0
-  ignored across 11 suites. Full transcript captured at
-  `close-out-test-transcript.txt` (session scratch), SHA-256 prefix
-  `619667eedc539eb2`.
-- `cargo clippy --workspace --all-targets -- -D warnings`: clean (exit 0).
-- `./scripts/ci-tier0.sh`: exit 0 (now python3-version-independent).
-
-## Fuzz evidence run
-
-Toolchain `rustc 1.96.0-nightly (3b1b0ef4d 2026-03-11)`, cargo-fuzz 0.13.2.
-Each target run 100,000 executions over its committed corpus into a scratch
-output dir (committed corpora left unmodified, confirmed via `git status`):
-
-| Target | Runs | Edge cov | Features | Corpus | Crashes |
-|---|---:|---:|---:|---:|---:|
-| `uds_control_request` | 100,000 | 279 | 700 | 237 | 0 |
-| `release_archive` | 100,000 | 2,483 | 6,403 | 400 | 0 |
-| `child_package_manifest` | 100,000 | 3,429 | 10,630 | 589 | 0 |
-| `pando_manifest` | 100,000 | 2,905 | 7,053 | 524 | 0 |
-
-`fuzz/artifacts/` holds zero crash files. No sanitizer aborts, no panics, no
-timeouts observed.
+`scripts/check-release-version.sh` no longer imports `tomllib` and therefore no
+longer requires Python >=3.11. It passes with macOS system Python 3.9; reproduce
+that selection by placing a `python3` symlink to `/usr/bin/python3` first on
+`PATH` before invoking the script.
 
 ## Flake log
 
-No flakes. The workspace suite and all four fuzz targets ran clean on first
-attempt at this HEAD. One earlier process error, corrected before it reached a
-durable commit: an initial `uds_control_request` smoke run without a scratch
-output dir let libFuzzer write ~190 machine-generated entries into the
-committed corpus; the commit was amended to the 3 curated seeds, and `4d8713e`
-moved the CI smoke to a scratch-first invocation so this cannot recur in CI.
+The committed workspace transcript contains no failed test. No single-test
+failure occurred while producing it, so the flake protocol required no rerun.
+Repair-commit gate outcomes and any later flake are reported from disk at the
+operator review gate rather than inferred here.
 
 ## Deferred / pending
 
-- **OpenSSF Scorecard initial score**: the workflow (`b4bd807`) is
-  digest-pinned and `publish_results: true` is valid because the repository is
-  public, but no score exists until the workflow first runs on GitHub
-  (`branch_protection_rule` / weekly schedule / push to `main`). The initial
-  observed score must be recorded here after that first run — it is not
-  reconstructable from local disk.
+- **Push and PR:** this range remains local pending operator review.
+- **OpenSSF Scorecard initial score:** the digest-pinned workflow has not run
+  because it has not been pushed. `publish_results: true` is valid for this
+  public repository, but the initial observed score can only be recorded after
+  push/merge and the first default-branch workflow run. Until then this
+  close-out remains pending external evidence.
 
 ## Map-tend waiver
 
 No `mct-product-map.allium` change and no LEDGER attribution rows: the four
 targets are test evidence exercising existing landed parse contracts. They
-emit no new structural obligations, entities, surfaces, or authority. Recorded
-against TODO item 8 in `MCT-NEXT-BUILD-TODO.md`.
+emit no new structural obligations, entities, surfaces, or authority. The
+waiver is recorded against TODO item 8 in `MCT-NEXT-BUILD-TODO.md`.
