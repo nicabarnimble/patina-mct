@@ -32,7 +32,8 @@ jobs:
       - name: Run bounded fuzz smoke over committed corpora
         run: |
           for target in uds_control_request release_archive child_package_manifest pando_manifest; do
-            cargo fuzz run "$target" --fuzz-dir fuzz -- -runs=25000 -max_total_time=120
+            scratch="$(mktemp -d)"
+            cargo fuzz run "$target" --fuzz-dir fuzz "$scratch" "fuzz/corpus/$target" -- -runs=25000 -max_total_time=120
           done
 
       - name: Retain crash artifacts
