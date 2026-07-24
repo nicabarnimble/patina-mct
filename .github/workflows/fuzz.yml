@@ -34,7 +34,7 @@ jobs:
         run: |
           for target in uds_control_request release_archive child_package_manifest pando_manifest; do
             scratch="$(mktemp -d)"
-            cargo fuzz run "$target" --fuzz-dir fuzz "$scratch" "fuzz/corpus/$target" -- -runs=25000 -max_total_time=120
+            cargo +nightly fuzz run "$target" --fuzz-dir fuzz "$scratch" "fuzz/corpus/$target" -- -runs=25000 -max_total_time=120
           done
 
       - name: Retain crash artifacts
