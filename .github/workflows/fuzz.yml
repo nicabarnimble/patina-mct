@@ -1,0 +1,46 @@
+name: Fuzz smoke
+
+on:
+  push:
+    tags-ignore:
+      - "v*"
+  pull_request:
+    branches: [patina, main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz-smoke:
+    name: Bounded fuzz smoke — hostile-input parsers
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install nightly-2026-03-11 Rust
+        uses: dtolnay/rust-toolchain@4fd1da8b0805d2d2e936788875a7d65dbd677dc2 # nightly-2026-03-11
+        with:
+          toolchain: nightly-2026-03-11
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked --version 0.13.2
+
+      - name: Run bounded fuzz smoke over committed corpora
+        run: |
+          for target in uds_control_request release_archive child_package_manifest pando_manifest; do
+            scratch="$(mktemp -d)"
+            cargo +nightly-2026-03-11 fuzz run "$target" --fuzz-dir fuzz "$scratch" "fuzz/corpus/$target" -- -runs=25000 -max_total_time=120
+          done
+
+      - name: Retain crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-crash-artifacts
+          path: fuzz/artifacts/
+          retention-days: 14

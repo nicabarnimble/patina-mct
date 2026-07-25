@@ -1,0 +1,47 @@
+[package]
+name = "mct-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+autobins = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+mct-daemon = { path = "../crates/mct-daemon", features = ["fuzzing"] }
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "uds_control_request"
+path = "fuzz_targets/uds_control_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "release_archive"
+path = "fuzz_targets/release_archive.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "child_package_manifest"
+path = "fuzz_targets/child_package_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pando_manifest"
+path = "fuzz_targets/pando_manifest.rs"
+test = false
+doc = false
+bench = false

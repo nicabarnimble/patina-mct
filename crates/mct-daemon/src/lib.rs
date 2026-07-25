@@ -30,6 +30,8 @@ mod toy;
 mod wasm;
 mod wit_values;
 
+#[cfg(feature = "fuzzing")]
+pub use acquisition::fuzz_child_package_manifest;
 pub use acquisition::{
     MCT_CHILD_MANIFEST_MAX_BYTES, MCT_COMPONENT_ARTIFACT_MAX_BYTES,
     MCT_FILESYSTEM_ACQUISITION_ADAPTER, MctArtifactAcquisitionReport, MctArtifactAttemptContext,
@@ -62,6 +64,8 @@ pub use config::{
     MctStoredChildAssignment, current_timestamp, current_timestamp_string, default_config_path,
     outbound_peer_binding_for_local,
 };
+#[cfg(feature = "fuzzing")]
+pub use control::fuzz_uds_control_request;
 pub use control::{
     MctControlPlaneAuthPolicy, MctControlPlaneResponse, MctControlPlaneSnapshot,
     MctControlPlaneSnapshotError, MctControlPlaneSnapshotResult, MctDaemonLocalControlFacts,
@@ -104,6 +108,8 @@ pub use registry::{
     MctChildPackageInstallReport, MctRegistrySyncReport, install_verified_child_package,
     sync_child_registry_source,
 };
+#[cfg(feature = "fuzzing")]
+pub use release::fuzz_release_archive;
 pub use release::{
     DaemonReleaseAcquisitionV1, DaemonReleaseArtifactV1,
     MCT_DAEMON_RELEASE_ACQUISITION_DEADLINE_SECONDS, MCT_DAEMON_RELEASE_ARCHIVE_MAX_BYTES,
