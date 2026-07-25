@@ -1,6 +1,6 @@
 # Post-R3 credibility slice close-out
 
-Status: landed — pending external evidence (Scorecard initial score)
+Status: complete
 
 ## Claim boundary
 
@@ -130,14 +130,19 @@ failure occurred while producing it, so the flake protocol required no rerun.
 Repair-commit gate outcomes and any later flake are reported from disk at the
 operator review gate rather than inferred here.
 
-## Deferred / pending
+## Resolved post-merge evidence
 
-- **Push and PR:** this range remains local pending operator review.
-- **OpenSSF Scorecard initial score:** the digest-pinned workflow has not run
-  because it has not been pushed. `publish_results: true` is valid for this
-  public repository, but the initial observed score can only be recorded after
-  push/merge and the first default-branch workflow run. Until then this
-  close-out remains pending external evidence.
+- **Push and PR:** PR #31 merged to `main` at `39c5e33`.
+- **OpenSSF Scorecard initial score:** **5.1**, observed at
+  `2026-07-25T02:02:28Z` for evaluated commit `39c5e33` with Scorecard
+  `v5.3.0`. The reproducible source is the public API:
+  <https://api.securityscorecards.dev/projects/github.com/nicabarnimble/patina-mct>.
+  Fuzzing, Security-Policy, Token-Permissions, Dangerous-Workflow, License,
+  and CI-Tests scored 10. The zero-scored checks are structural for a young
+  single-maintainer repository. Two items merit separate follow-up:
+  Vulnerabilities scored 8 with 2 existing advisories detected and should be
+  triaged against the R2 RustSec closure in a future slice; Binary-Artifacts
+  scored 7, likely reflecting the committed binary corpus seeds and fixtures.
 
 ## Map-tend waiver
 
