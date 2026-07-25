@@ -1,0 +1,487 @@
+$ cargo test --workspace
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+     Running unittests src/lib.rs (target/debug/deps/mct_daemon-0f4c7e09b0e6e44d)
+
+running 134 tests
+test blob_store::tests::fetch_absent_digest_is_typed_unavailable ... ok
+test blob_store::tests::ingest_rejects_digest_mismatch_without_visible_blob ... ok
+test blob_store::tests::fetch_returns_tampered_bytes_for_kernel_integrity_decision ... ok
+test children::tests::authority_projection_rejects_unverified_artifacts ... ok
+test children::tests::authority_projection_authorizes_only_explicit_local_approvals ... ok
+test children::tests::duplicate_child_names_are_failed_closed ... ok
+test children::tests::loads_sdk_child_package_from_directory_manifest ... ok
+test children::tests::loads_standalone_wasm_children_from_directory ... ok
+test children::tests::loads_sdk_child_packages_from_child_subdirectories ... ok
+test children::tests::sdk_child_package_rejects_missing_artifact_declaration ... ok
+test children::tests::registry_routes_only_allowlisted_ready_children ... ok
+test children::tests::sdk_child_package_uses_manifest_declared_artifact ... ok
+test children::tests::strict_integrity_requires_hash_sidecars ... ok
+test composition::tests::pando_manifest_builds_activation_plan ... ok
+test composition::tests::pando_manifest_missing_requirements_returns_typed_diagnostics ... ok
+test composition::tests::pando_manifest_rejects_multiple_positional_args ... ok
+test composition::tests::parses_pando_manifest_and_builds_registry_status ... ok
+test composition::tests::pando_manifest_loader_does_not_hardcode_legacy_builtins ... ok
+test config::tests::config_projection_authorizes_only_stored_approved_assignments ... ok
+test config::tests::config_projects_peer_bindings_from_local_identity ... ok
+test config::tests::config_store_persists_child_approval_assignment_and_revocation ... ok
+test config::tests::config_store_persists_local_identity_without_storing_secret ... ok
+test config::tests::config_store_persists_peer_address_book_entry ... ok
+test config::tests::config_store_rejects_unverified_child_approval ... ok
+test config::tests::peer_authority_projection_requires_local_identity ... ok
+test control::tests::control_plane_auth_policy_fails_closed_when_token_required ... ok
+test control::tests::control_plane_authorization_header_is_case_insensitive ... ok
+test control::tests::control_plane_open_policy_preserves_existing_routes ... ok
+test control::tests::control_plane_routes_status_state_runs_and_not_found ... ok
+test control::tests::uds_authenticated_mutation_handler_receives_peer_credentials ... ok
+test control::tests::uds_blob_ingest_requires_an_observing_mutation_owner ... ok
+test control::tests::uds_local_mutation_handler_receives_post_body ... ok
+test control::tests::uds_mutation_authentication_precedes_body_read ... ok
+test control::tests::uds_request_head_is_bounded_and_classifies_preflight_before_owner_mutation ... ok
+test control::tests::uds_request_header_read_has_a_deadline ... ok
+test blob_store::tests::ingest_rejects_oversized_input_before_visibility ... ok
+test federation::tests::federation_view_is_vision_scoped ... ok
+test federation::tests::honest_local_execution_offer_excludes_approved_assigned_non_ready_child ... ok
+test inspector::tests::inspector_filters_observations_by_call_child_and_peer ... ok
+test inspector::tests::inspector_limits_recent_observations_without_view_buffers ... ok
+test lifecycle::tests::failed_replacement_keeps_current_generation_ready_and_callable ... ok
+test lifecycle::tests::reload_records_replacement_ready_before_predecessor_drain ... ok
+test lifecycle::tests::warmup_requires_approved_authority ... ok
+test composition::tests::records_composition_plan_in_state ... ok
+test process::tests::process_harness_denies_stale_child_capability_before_spawn ... ok
+test acquisition::tests::standing_source_projection_without_ledger_fact_grants_nothing ... ok
+test acquisition::tests::artifact_acquisition_failures_are_observed_without_artifact_publication ... ok
+test process::tests::process_harness_timeout_returns_typed_result_and_observation ... ok
+test registry::tests::install_replace_updates_package_contents ... ok
+test acquisition::tests::staged_package_reconciles_sha256_floor_with_blake3_acquisition_evidence ... ok
+test cycle::tests::task_cycle_drains_ticks_leases_executes_and_records_metrics ... ok
+test acquisition::tests::standing_source_ledger_proof_rejects_mismatched_and_hash_invalid_facts ... ok
+test release::acquisition_tests::malformed_release_request_refuses_before_source_or_evidence_effects ... ok
+test registry::tests::install_requires_replace_for_existing_child ... ok
+test release::acquisition_tests::release_source_plan_is_operator_file_only_and_network_adapter_remains_closed ... ok
+test release::acquisition_tests::write_release_archive_fuzz_seed ... ignored, regenerates the committed fuzz corpus seed from the release fixture
+test acquisition::tests::standing_source_ledger_proof_is_required_to_mint_acquisition_capability ... ok
+test registry::tests::installs_verified_package_atomically_under_child_name ... ok
+test metrics::tests::metrics_snapshot_projects_state_summary ... ok
+test acquisition::tests::same_digest_different_manifest_fact_cannot_replace_catalog_artifact ... ok
+test registry::tests::registry_sync_records_loaded_children_as_candidates ... ok
+test process::tests::process_harness_invokes_only_with_authorized_child_invocation ... ok
+test acquisition::tests::identical_reacquisition_adds_evidence_without_replacing_immutable_artifact ... ok
+test state::tests::component_artifacts_require_real_acquisition_or_explicit_legacy_migration ... ok
+test state::tests::child_reload_swap_is_atomic_and_failed_swap_keeps_persisted_predecessor_ready ... ok
+test acquisition::tests::package_shaped_acquisition_discovers_declared_component_only_after_authority_start ... ok
+test state::tests::idempotency_store_scopes_reserves_replays_expires_and_survives_reopen ... ok
+test state::tests::child_keyvalue_is_bucket_scoped_bounded_and_refuses_without_eviction ... ok
+test release::acquisition_tests::release_publication_rolls_back_when_terminal_writer_is_lost ... ok
+test state::tests::schema_v10_adds_watch_authority_delivery_and_bounded_keyvalue_projections ... ok
+test state::tests::pre_v7_artifact_migration_marks_historical_unknown_without_fabricating_acquisition ... ok
+test state::tests::schema_v11_keeps_daemon_release_evidence_out_of_child_ontology ... ok
+test state::tests::schema_v8_adds_closed_trigger_authority_and_scheduler_projections ... ok
+test state::tests::state_store_enforces_active_assignment_requires_approved_artifact ... ok
+test state::tests::standing_source_creation_rejects_unbounded_credentialed_and_unsupported_records ... ok
+test state::tests::state_store_leases_and_completes_tasks_with_dedupe ... ok
+test state::tests::state_store_migrates_legacy_child_invocation_records_to_provenance ... ok
+test state::tests::state_store_persists_child_state_checkpoints_subscriptions_and_offsets ... ok
+test supervisor::tests::process_supervisor_recovers_persisted_running_status_as_stopped ... ok
+test supervisor::tests::process_supervisor_spawns_statuses_and_stops_long_lived_child ... ok
+test tests::daemon_reports_health_and_readiness ... ok
+test tests::exposes_version ... ok
+test state::tests::state_store_persists_approved_assignment_and_ready_instance ... ok
+test tests::fake_echo_slice_records_trace_and_result ... ok
+test tests::local_control_status_request_reports_daemon_status ... ok
+test state::tests::state_store_persists_runs_observations_and_metrics ... ok
+test tests::fake_end_to_end_status_reports_runtime_spine ... ok
+test release::acquisition_tests::operator_file_release_acquisition_is_observed_immutable_and_not_child_evidence ... ok
+test state::tests::state_store_rejects_active_grant_for_non_authority_toy ... ok
+test state::tests::trigger_authority_projection_is_revisioned_current_and_non_resurrecting ... ok
+test toy::tests::secret_toy_backend_returns_secret_without_observing_value ... ok
+test toy::tests::secret_toy_grant_evaluation_requires_explicit_scope ... ok
+test toy::tests::toy_adapter_denies_stale_toy_capability_before_backend_call ... ok
+test toy::tests::toy_adapter_requires_authorized_toy_call_and_records_success ... ok
+test toy::tests::toy_backend_failure_is_adapter_observation_not_kernel_denial ... ok
+test state::tests::state_store_schema_inventory_stays_private_to_daemon ... ok
+test state::tests::state_store_persists_toy_grant_snapshots ... ok
+test wasm::tests::mct_wit_runtime_exposes_no_ambient_directory_without_preopen ... ok
+test state::tests::watch_scope_projection_is_revisioned_current_and_sequences_are_monotonic ... ok
+test state::tests::trigger_in_flight_recovery_never_expires_into_hidden_reexecution ... ok
+test supervisor::tests::process_supervisor_observes_exited_child_status ... ok
+test wasm::tests::mct_wit_runtime_invokes_authorized_logging_import ... ok
+test wasm::tests::mct_wit_runtime_invokes_authorized_measure_import ... ok
+test wasm::tests::mct_wit_runtime_invokes_typed_component_export ... ok
+test wasm::tests::mct_wit_runtime_invokes_configured_wasi_import ... ok
+test wasm::tests::mct_wit_runtime_rejects_non_allowlisted_operation ... ok
+test wasm::tests::mct_wit_runtime_maps_missing_export_to_adapter_observation ... ok
+test wasm::tests::mct_wit_runtime_lowers_record_args_and_lifts_record_result ... ok
+test wasm::tests::mct_wit_runtime_rejects_configured_unknown_host_import ... ok
+test wasm::tests::mct_wit_runtime_resolves_versioned_component_export ... ok
+test wasm::tests::mct_wit_runtime_rejects_unexported_operation ... ok
+test wasm::tests::wasm_component_runtime_denies_stale_child_capability_before_load ... ok
+test wasm::tests::wasm_component_runtime_invokes_authorized_s32_export ... ok
+test wasm::tests::wasm_component_runtime_invokes_authorized_toy_host_import ... ok
+test wasm::tests::slate_manager_list_work_runs_through_mct_wit_runtime ... ok
+test wasm::tests::mct_wit_runtime_rejects_unimplemented_host_import ... ok
+test wasm::tests::watch_send_admission_refuses_paths_shape_and_capacity_synchronously ... ok
+test wit_values::tests::option_variant_enum_result_flags_matrix_behaves_as_documented ... ok
+test wit_values::tests::record_tuple_list_roundtrip_matrix_is_identity ... ok
+test wit_values::tests::result_lifting_uses_explicit_results_envelope_for_zero_one_many ... ok
+test wit_values::tests::scalar_roundtrip_matrix_is_identity ... ok
+test wasm::tests::wasm_component_runtime_records_failed_toy_host_import ... ok
+test wit_values::tests::strict_fail_closed_on_invalid_shapes_and_no_implicit_coercion ... ok
+test wit_values::tests::structured_error_exposes_stable_code_detail_and_path ... ok
+test wasm::tests::wasm_component_runtime_trap_maps_to_adapter_observation ... ok
+test wasm::tests::exact_watch_null_sink_executes_without_watch_or_filesystem_authority ... ok
+test toy::tests::git_toy_backend_rejects_paths_that_escape_repo ... ok
+test toy::tests::git_toy_ref_validation_remains_typed_before_safe_message_projection ... ok
+test toy::tests::git_toy_rejects_option_like_untrusted_refs_before_invoking_git ... ok
+test toy::tests::git_toy_backend_runs_in_configured_repo_and_records_success ... ok
+test acquisition::tests::malformed_tampered_oversize_and_escaping_sources_leave_attempt_evidence_only ... ok
+test toy::tests::git_toy_failure_never_projects_raw_stderr_into_safe_or_durable_output ... ok
+test wasm::tests::mct_wit_runtime_invokes_authorized_git_import ... ok
+test wasm::tests::source_derived_watcher_executes_with_explicit_bounded_host_adapters ... ok
+
+test result: ok. 133 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.36s
+
+     Running unittests src/main.rs (target/debug/deps/mct_daemon-c51501ae8e67e2d4)
+
+running 141 tests
+test cli_admin::tests::status_missing_resident_degrades_honestly ... ok
+test cli_runtime::tests::authorize_cli_toy_denies_expired_grant_against_current_time ... ok
+test cli_admin::tests::status_reports_real_resident_snapshot ... ok
+test control::tests::control_snapshot_unopenable_state_projects_error_response ... ok
+test control::tests::live_registry_install_and_sync_are_closed_without_storage_effects ... ok
+test control::tests::live_resident_refuses_identity_rotation_without_offline_fallback ... ok
+test control::tests::artifact_acquisition_append_failure_suppresses_filesystem_and_catalog_effects ... ok
+test control::tests::child_name_only_approval_cannot_reach_append_or_config_effect ... ok
+test control::tests::child_name_only_approval_is_rejected_before_authority_or_config_effect ... ok
+test control::tests::offline_peer_mutation_observes_before_effect_and_fails_on_lock_contention ... ok
+test control::tests::resident_append_failure_prevents_peer_config_effect ... ok
+test control::tests::resident_blob_append_failure_leaves_no_visible_cas_object ... ok
+test control::tests::live_uds_peer_mutations_are_durable_and_secret_free ... ok
+test control::tests::resident_apply_failure_records_typed_failure_after_decision ... ok
+test control::tests::resident_uds_connection_admission_is_bounded ... ok
+test control::tests::offline_child_and_identity_mutations_hold_the_writer_lock_and_hide_secrets ... ok
+test control::tests::registry_is_closed_and_offline_lock_contention_refuses_legacy_helper ... ok
+test ingress::tests::offline_identity_cli_observes_before_creating_key_and_config ... ok
+test control::tests::resident_blob_ingest_observes_success_and_typed_rejections_without_bytes ... ok
+test ingress::tests::standalone_serve_refuses_held_ledger_before_endpoint_bind ... ok
+test control::tests::every_resident_mutation_route_authenticates_before_body_by_construction ... ok
+test cli_runtime::tests::reload_command_failure_keeps_persisted_generation_ready_and_routable ... ok
+test cli_admin::tests::authorize_secret_cli_persists_scoped_grant_without_value ... ok
+test control::tests::administrative_append_failure_and_offline_lock_contention_prevent_state_effects ... ok
+test resident::candidates::tests::resident_authorized_unavailable_is_temporal_no_route ... ok
+test resident::candidates::tests::capability_offer_lapses_at_freshness_boundary ... ok
+test control::tests::live_toy_grants_and_composition_state_are_observed_before_effects ... ok
+test resident::candidates::tests::resident_remote_surface_candidate_becomes_admissible_when_all_checks_pass ... ok
+test resident::candidates::tests::resident_remote_route_candidates_reject_unsigned_peer_binding ... ok
+test resident::candidates::tests::two_mother_revoked_or_expired_binding_fails_closed ... ok
+test resident::candidates::tests::resident_remote_surface_candidate_forbids_secret_scope ... ok
+test resident::candidates::tests::eligible_route_candidate_requires_every_current_conjunct ... ok
+test resident::execution::tests::cancelled_result_and_reply_hide_route_while_ledger_keeps_selection ... ok
+test resident::execution::tests::cancelled_result_projection_preserves_cancelled_outcome ... ok
+test control::tests::artifact_writer_loss_after_read_leaves_no_artifact_authority_or_catalog_package ... ok
+test control::tests::resident_standing_acquisition_requires_and_consumes_shared_ledger_proof ... ok
+test resident::candidates::tests::two_mother_unauthorized_operation_fails_closed ... ok
+test resident::candidates::tests::two_mother_wrong_vision_fails_closed ... ok
+test resident::execution::tests::route_taken_projection_follows_outcome_matrix ... ok
+test resident::decision::tests::forwarded_arrival_with_unavailable_local_candidate_is_terminal ... ok
+test resident::forwarding::tests::two_mother_bad_payload_fails_closed ... ok
+test ingress::tests::operator_pointed_egress_is_durable_before_send ... ok
+test resident::decision::tests::resident_no_route_records_specific_elimination ... ok
+test control::tests::live_child_revocation_is_visible_to_the_immediately_following_route ... ok
+test resident::execution::tests::resident_route_revision_guard_denies_before_effect ... ok
+test resident::forwarding::tests::two_mother_remote_denial_fails_closed ... ok
+test ingress::tests::jvm_ingress_dereferences_local_content_addressed_blob ... ok
+test resident::execution::tests::resident_execution_runs_wit_child_and_records_trace ... ok
+test resident::decision::tests::resident_route_optimization_cannot_grant_authority ... ok
+test resident::forwarding::tests::forwarded_envelope_clears_upstream_user_identity ... ok
+test resident::idempotency::tests::trigger_firing_idempotency_is_record_and_occurrence_scoped ... ok
+test resident::local_ingress::tests::locally_submitted_body_cannot_claim_trigger_firing_context ... ok
+test resident::execution::tests::resident_wit_rejects_non_json_payload_before_execution ... ok
+test resident::local_ingress::tests::resident_call_uds_authenticates_peer_before_submission ... ok
+test resident::local_ingress::tests::resident_call_uds_dispatch_authenticates_and_bounds_before_body_read ... ok
+test resident::idempotency::tests::cancelled_idempotent_reply_replays_cancelled_with_durable_observation ... ok
+test resident::forwarding::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello ... ok
+test resident::idempotency::tests::fenced_writer_does_not_acknowledge_or_cache_an_in_progress_effect_outcome ... ok
+test resident::observation::tests::resident_observation_queue_is_bounded_and_acknowledged ... ok
+test resident::forwarding::tests::two_mother_forwarding_preserves_cancelled_reply ... ok
+test resident::local_ingress::tests::resident_call_uds_rejects_bad_payload_and_keeps_ledger_byte_free ... ok
+test resident::payload::tests::resident_local_blob_absent_fails_closed_before_delivery ... ok
+test resident::execution::tests::resident_process_payload_delivery_returns_digest_and_keeps_ledger_byte_free ... ok
+test resident::pipeline::tests::watch_adapter_excludes_escaped_symlinks_and_absolute_paths ... ok
+test resident::payload::tests::resident_local_blob_tamper_fails_closed_via_digest_mismatch ... ok
+test resident::observation::tests::resident_hello_observations_are_durable_before_responses ... ok
+test resident::idempotency::tests::in_flight_idempotency_duplicate_refuses_without_second_execution ... ok
+test resident::local_ingress::tests::resident_call_uds_observes_decision_before_response ... ok
+test ingress::tests::standalone_serve_process_persists_hello_and_call_lifecycle ... ok
+test resident::serving::tests::bootstrap_identity_append_failure_leaves_no_identity_effect ... ok
+test resident::serving::tests::first_boot_identity_is_durable_and_secret_free ... ok
+test resident::local_ingress::tests::resident_call_uds_idempotency_is_authenticated_caller_scoped ... ok
+test resident::pipeline::tests::watch_admission_append_failure_suppresses_every_nested_delivery ... ok
+test resident::publication::tests::admitted_hello_refreshes_peer_callable_surfaces ... ok
+test resident::publication::tests::denied_or_wrong_vision_hello_does_not_refresh_surfaces ... ok
+test resident::publication::tests::hello_response_capability_view_refreshes_surfaces_on_caller ... ok
+test resident::serving::tests::resident_status_source_reflects_closed_endpoint ... ok
+test resident::forwarding::tests::two_mother_mutual_publication_with_unready_children_terminates_single_hop ... ok
+test resident::trigger_scheduler::tests::manual_trigger_clock_is_injected_not_global ... ok
+test resident::trigger_scheduler::tests::production_fire_late_recovery_terminally_refuses_every_excess_occurrence ... ok
+test resident::payload::tests::resident_local_blob_payload_delivery_returns_digest_and_keeps_ledger_byte_free ... ok
+test resident::pipeline::tests::jvm_bridge_json_call_enters_resident_route_path ... ok
+test resident::trigger_scheduler::tests::temporal_occurrence_range_is_deterministic_and_exclusive_at_expiry ... ok
+test resident::trigger_scheduler::tests::trigger_admission_order_is_fixed_and_authority_neutral ... ok
+test resident::trigger_scheduler::tests::revoked_authority_suppresses_due_gap_after_last_durable_disposition ... ok
+test resident::trigger_scheduler::tests::trigger_capacity_refuses_at_each_named_bound_without_eviction ... ok
+test resident::trigger_scheduler::tests::trigger_append_failure_suppresses_pending_and_call_effects ... ok
+test resident::trigger_scheduler::tests::trigger_load_does_not_starve_writer_control_status_or_ordinary_calls ... ok
+test resident::trigger_scheduler::tests::trigger_missed_fire_policies_are_bounded_deterministic_and_countable ... ok
+test resident::trigger_scheduler::tests::trigger_observation_mapping_uses_existing_kinds ... ok
+test resident::trigger_scheduler::tests::trigger_overlap_policies_preserve_one_active_call_and_order ... ok
+test resident::trigger_scheduler::tests::trigger_production_limits_are_exactly_named ... ok
+test resident::trigger_scheduler::tests::trigger_evaluate_crash_re_evaluate_cannot_double_fire ... ok
+test supervisor_lifecycle::tests::artifact_command_surface_is_explicit_and_supervisor_distinct ... ok
+test supervisor_lifecycle::tests::artifact_slice_exposes_only_filesystem_adapter_and_existing_toy_catalog ... ok
+test supervisor_lifecycle::tests::child_approval_names_exact_artifact_and_surfaces_acquisition_evidence ... ok
+test supervisor_lifecycle::tests::daemon_release_upgrade_surface_is_distinct_exact_and_source_closed ... ok
+test resident::trigger_scheduler::tests::trigger_terminal_dispositions_survive_restart_without_resurrection ... ok
+test resident::idempotency::tests::resident_idempotency_replays_scopes_refuses_and_expires_without_payload_leakage ... ok
+test supervisor_lifecycle::tests::exact_approval_refuses_wrong_historical_failed_and_tampered_artifact_evidence ... ok
+test resident::serving::tests::resident_hello_publishes_federation_callable_surface ... ok
+test resident::serving::tests::resident_mother_rejects_unsigned_peer_binding ... ok
+test resident::serving::tests::resident_status_reflects_live_child_mutations ... ok
+test supervisor_lifecycle::tests::resident_writer_loss_fences_lifecycle_and_all_other_protected_effects ... ok
+test resident::forwarding::tests::two_mother_forwards_selected_call_over_iroh_and_maps_reply ... ok
+test supervisor_lifecycle::tests::smoke_plist_seam_is_internal_isolated_and_keeps_fixed_service_identity ... ok
+test resident::trigger_scheduler::tests::injected_temporal_trigger_fires_once_and_recovers_without_duplication ... ok
+test supervisor_lifecycle::tests::standing_artifact_source_authority_is_scoped_observed_and_revocable ... ok
+test resident::serving::tests::resident_mother_serves_peer_control_and_shutdown ... ok
+test resident::serving::tests::resident_call_uds_executes_approved_child_and_projects_control_state ... ok
+test resident::serving::tests::resident_mother_payload_roundtrip_verifies_result_digest ... ok
+test supervisor_lifecycle::tests::supervisor_command_surface_is_explicit_and_macos_only ... ok
+test resident::trigger_scheduler::tests::resident_temporal_trigger_fires_once_and_recovers_without_duplication ... ok
+test supervisor_lifecycle::tests::launchd_adapter_maps_install_start_stop_and_restart_without_ambient_fallbacks ... ok
+test supervisor_lifecycle::tests::launchd_adapter_refuses_missing_gui_domain_without_fallback ... ok
+test supervisor_lifecycle::tests::shutdown_append_failure_has_no_clean_claim_and_next_start_reconciles ... ok
+test supervisor_lifecycle::tests::supervised_start_rejects_unblessed_binary_swap_with_replace_guidance ... ok
+test triggers::tests::trigger_append_failure_suppresses_activation_revision_and_revocation ... ok
+test triggers::tests::trigger_authority_is_scoped_observed_revisioned_and_revocable ... ok
+test triggers::tests::trigger_management_rejects_event_and_authority_expansion ... ok
+test upgrade::tests::approval_is_only_the_complete_exact_archive_sha256_identity ... ok
+test watch::tests::legacy_watch_abi_mismatch_is_refused_before_sink_call ... ok
+test watch::tests::watch_batches_are_bounded_sequenced_deterministic_and_countable ... ok
+test watch::tests::watch_canonical_contracts_are_separate_authorities ... ok
+test watch::tests::watch_delivery_lineage_is_actual_and_never_fabricated ... ok
+test watch::tests::watch_delivery_observation_mapping_uses_existing_kinds ... ok
+test watch::tests::watch_delivery_reuses_closed_mct_result_outcomes ... ok
+test watch::tests::watch_grant_cannot_read_content_state_or_originate_delivery ... ok
+test watch::tests::watch_scope_and_toy_grant_are_both_current_before_observation ... ok
+test watch::tests::watcher_child_callout_reenters_ordinary_call_law ... ok
+test supervisor_lifecycle::tests::watcher_fixture_provenance_is_exact_source_derived_and_sidecar_free ... ok
+test supervisor_lifecycle::tests::install_replace_refuses_loaded_service_durably ... ok
+test supervisor_lifecycle::tests::uninstall_refuses_foreign_plist_with_durable_observation ... ok
+test supervisor_lifecycle::tests::launchd_non_zero_start_is_observed_once_without_fallback ... ok
+test supervisor_lifecycle::tests::supervised_start_rejects_unobserved_tampered_or_stale_records ... ok
+test supervisor_lifecycle::tests::supervisor_install_bootstrap_is_observed_before_every_remaining_effect ... ok
+test supervisor_lifecycle::tests::supervisor_conflicts_refuse_before_launchd_or_endpoint_effects ... ok
+test supervisor_lifecycle::tests::supervisor_start_and_stop_no_ops_are_observed ... ok
+test supervisor_lifecycle::tests::supervisor_lifecycle_install_start_stop_unclean_reconcile_uninstall_preserves_evidence ... ok
+test supervisor_lifecycle::tests::supervised_trigger_watch_delivery_fixtures_execute_end_to_end ... ok
+test supervisor_lifecycle::tests::exact_upgrade_approval_composes_shared_replace_and_named_post_verify ... ok
+
+test result: ok. 141 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 42.71s
+
+     Running tests/release_archive.rs (target/debug/deps/release_archive-07198356cba6a921)
+
+running 3 tests
+test release_archive_expected_digest_and_target_are_additive_gates ... ok
+test release_archive_verifier_enforces_closed_layout_and_bounds ... ok
+test hostile_release_archives_and_sidecars_leave_no_extracted_tree ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests/wasm_limits.rs (target/debug/deps/wasm_limits-5487126b08838356)
+
+running 2 tests
+test component_allocation_over_memory_cap_fails ... ok
+test looping_component_times_out_instead_of_hanging ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running unittests src/lib.rs (target/debug/deps/mct_iroh-21c5d746f351857f)
+
+running 36 tests
+test serve::tests::denied_hellos_leave_no_per_peer_state ... ok
+test serve::tests::serve_state_ids_do_not_collide_across_instances ... ok
+test identity::tests::peer_binding_signature_ref_roundtrips_and_fails_on_tamper ... ok
+test serve::tests::admitted_hello_state_is_capped_oldest_first ... ok
+test tests::caller_rejects_reply_digest_mismatch_and_oversized_result ... ok
+test tests::call_rechecks_narrowed_alpn_scope_after_hello ... ok
+test tests::call_payload_roundtrip_carries_request_and_result_bytes ... ok
+test tests::call_payload_integrity_failures_are_malformed_before_authority ... ok
+test tests::call_rechecks_binding_expiry_after_hello ... ok
+test tests::endpoint_config_can_select_default_relay_mode ... ok
+test tests::endpoint_config_defaults_to_local_mct_alpns ... ok
+test tests::endpoint_config_rejects_empty_alpns ... ok
+test tests::exposes_version ... ok
+test tests::call_rechecks_binding_policy_revision_after_hello ... ok
+test tests::concurrent_call_sink_covers_success_lifecycle ... ok
+test tests::call_rechecks_narrowed_vision_scope_after_hello ... ok
+test tests::call_rechecks_binding_revocation_after_hello ... ok
+test tests::cancelled_call_preserves_wire_outcome_route_absence_and_buffered_observations ... ok
+test tests::call_payload_caps_fail_closed ... ok
+test tests::concurrent_serve_keeps_peer_hello_state_separate ... ok
+test tests::node_secret_key_file_is_created_owner_read_write_only ... ok
+test tests::mother_owned_endpoint_starts_and_closes ... ok
+test tests::denied_call_fact_is_recorded_before_reply ... ok
+test tests::failed_hello_observation_prevents_response_and_remembered_admission ... ok
+test tests::concurrent_serve_refuses_connections_beyond_bound ... ok
+test tests::iroh_call_handler_can_complete_reply_after_runtime_execution ... ok
+test tests::local_iroh_completes_mct_hello_then_call ... ok
+test tests::mother_endpoint_ticket_connects_hello_then_call ... ok
+test tests::concurrent_serve_requires_signed_peer_binding_when_configured ... ok
+test tests::iroh_adapter_observations_cover_endpoint_and_protocol_events ... ok
+test tests::serve_next_denies_binding_expired_against_current_accept_time ... ok
+test tests::unknown_peer_is_denied_before_call ... ok
+test tests::malformed_frames_are_observed_before_safe_reply_and_append_failure_suppresses_reply ... ok
+test tests::call_frame_budget_refuses_oversized_request ... ok
+test tests::send_hello_times_out_when_peer_never_replies ... ok
+test tests::serve_next_times_out_when_peer_never_sends_data ... ok
+
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.02s
+
+     Running unittests src/lib.rs (target/debug/deps/mct_kernel-25e7d8d50315bc1e)
+
+running 92 tests
+test artifact::tests::artifact_acquisition_requires_source_path_and_current_adapter_authority ... ok
+test artifact::tests::standing_scope_is_explicit_and_missing_scope_grants_nothing ... ok
+test artifact::tests::source_trust_and_adapter_authority_are_independent_and_exact ... ok
+test call::tests::call_authority_binding_must_match_admitted_hello ... ok
+test call::tests::admitted_hello_allows_call_for_routing ... ok
+test artifact::tests::standing_source_rejects_stale_revoked_expired_wrong_scope_and_policy ... ok
+test call::tests::call_authority_vision_must_match_admitted_hello_and_call ... ok
+test call::tests::call_caller_must_match_admitted_hello_node ... ok
+test call::tests::call_envelope_roundtrip_preserves_semantic_call_across_edges ... ok
+test call::tests::call_protocol_reply_roundtrips_result_payload_handle ... ok
+test call::tests::call_protocol_json_edge_roundtrips_and_rejects_malformed ... ok
+test call::tests::call_without_admitted_hello_is_denied ... ok
+test call::tests::denied_result_has_no_route_taken ... ok
+test call::tests::call_protocol_reply_roundtrips_route_taken_wire_field ... ok
+test call::tests::call_protocol_json_edge_rejects_invalid_domain_values_with_typed_kernel_error ... ok
+test call::tests::endpoint_mismatch_is_denied ... ok
+test call::tests::hello_without_call_alpn_does_not_authorize_call ... ok
+test call::tests::idempotency_decision_replays_matches_and_refuses_other_cases ... ok
+test call::tests::newer_call_claim_cannot_reuse_hello_admitted_at_an_older_policy_revision ... ok
+test call::tests::only_local_call_origins_allow_remote_candidate_sourcing ... ok
+test call::tests::mct_call_roundtrips_as_json ... ok
+test call::tests::payload_integrity_decisions_cover_local_content_addressed_blob ... ok
+test call::tests::payload_integrity_decisions_cover_reply_result_mismatch_classes ... ok
+test call::tests::payload_integrity_decisions_cover_request_mismatch_classes ... ok
+test call::tests::payload_metadata_mismatch_is_malformed ... ok
+test call::tests::reply_validation_enforces_route_taken_presence_rule ... ok
+test call::tests::trigger_firing_origin_is_additive_local_and_single_hop ... ok
+test child::tests::approval_must_be_approved ... ok
+test child::tests::approval_scope_must_match_call ... ok
+test child::tests::artifact_must_export_operation ... ok
+test child::tests::child_call_reason_uses_snake_case_wire_names ... ok
+test child::tests::lifecycle_transitions_allow_ready_path_and_reject_illegal_restart ... ok
+test child::tests::not_ready_instance_denies_without_authorization ... ok
+test child::tests::ready_approved_assigned_instance_produces_authorized_child_invocation ... ok
+test child::tests::ready_instance_without_assignment_denies_fail_closed ... ok
+test child::tests::revoked_assignment_denies_without_authorization ... ok
+test child::tests::stale_policy_revision_denies_child_call ... ok
+test child::tests::unknown_instance_denies_by_default ... ok
+test id::tests::epoch_second_strings_are_rejected_as_timestamps ... ok
+test id::tests::string_id_construction_rejects_empty_and_blank_values ... ok
+test id::tests::string_ids_roundtrip_as_strings ... ok
+test id::tests::timestamps_order_chronologically_across_subsecond_precision ... ok
+test observation::tests::adapter_diagnostic_observation_covers_failure_kinds ... ok
+test observation::tests::candidate_observations_record_specific_elimination_class ... ok
+test observation::tests::child_lifecycle_and_call_authority_become_observations ... ok
+test observation::tests::child_authority_and_instance_observation_matrix_is_typed ... ok
+test observation::tests::kernel_denial_evaluations_become_observations ... ok
+test observation::tests::no_route_decision_becomes_observation ... ok
+test observation::tests::observation_kind_uses_snake_case_wire_names ... ok
+test observation::tests::route_revalidation_observation_records_allowed_and_denied_outcomes ... ok
+test observation::tests::revoked_and_expired_bindings_become_observations ... ok
+test observation::tests::toy_grant_evaluations_become_observations ... ok
+test observation::tests::toy_grant_observation_matrix_distinguishes_expiry_and_revocation ... ok
+test peer::tests::active_binding_admits_intersection_of_requested_policy_and_binding_alpns ... ok
+test peer::tests::active_binding_past_expiry_is_denied ... ok
+test peer::tests::endpoint_id_is_serialized_as_transport_text ... ok
+test peer::tests::binding_without_expiry_fails_closed ... ok
+test peer::tests::endpoint_mismatch_is_denied_before_binding_lookup ... ok
+test peer::tests::expired_binding_is_denied_with_safe_message ... ok
+test peer::tests::presented_node_claim_must_match_binding_scope ... ok
+test peer::tests::presented_vision_claim_must_match_binding_scope ... ok
+test peer::tests::hello_capability_view_carries_callable_surfaces ... ok
+test peer::tests::revoked_binding_is_denied_with_safe_message ... ok
+test peer::tests::stale_policy_revision_is_denied ... ok
+test peer::tests::unknown_endpoint_is_denied ... ok
+test peer::tests::unsupported_major_version_requests_upgrade ... ok
+test route::tests::candidate_elimination_reasons_expose_denial_class ... ok
+test route::tests::no_route_decision_denies_by_default_without_route_taken ... ok
+test route::tests::route_decision_records_selected_candidate_and_authority_evidence ... ok
+test route::tests::route_decision_uses_snake_case_wire_names ... ok
+test route::tests::route_revalidation_allows_matching_execution_authority ... ok
+test route::tests::route_revalidation_denies_failed_toy_evidence ... ok
+test route::tests::route_revalidation_denies_route_child_mismatch ... ok
+test tests::exposes_version ... ok
+test tests::watch_scope_contract_is_closed_before_adapter_work ... ok
+test route::tests::route_revalidation_denies_stale_policy_before_execution ... ok
+test toy::tests::active_grant_produces_authorized_toy_call ... ok
+test toy::tests::expired_time_window_denies_without_authorization ... ok
+test toy::tests::manifest_need_without_grant_denies_as_missing_grant ... ok
+test toy::tests::revoked_grant_denies_without_authorization ... ok
+test toy::tests::toy_grant_reason_uses_snake_case_wire_names ... ok
+test toy::tests::stale_grant_revision_denies_without_authorization ... ok
+test toy::tests::unknown_toy_denies_by_default ... ok
+test toy::tests::wrong_scope_denies_without_authorization ... ok
+test trigger::tests::trigger_default_policies_are_skip_and_refuse ... ok
+test trigger::tests::trigger_firing_identities_are_record_revision_and_occurrence_scoped ... ok
+test trigger::tests::trigger_overlap_policies_preserve_one_active_call_and_order ... ok
+test watch::tests::legacy_watch_equality_is_exact_and_path_safe ... ok
+test trigger::tests::trigger_missed_fire_policies_are_bounded_deterministic_and_countable ... ok
+test watch::tests::watch_batch_and_callout_identities_are_deterministic_and_distinct ... ok
+test trigger::tests::trigger_authority_validation_is_closed_and_bounded ... ok
+test watch::tests::watch_scope_validation_is_closed_bounded_and_digest_bound ... ok
+
+test result: ok. 92 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/mct_observation-7d9251d0d3585698)
+
+running 11 tests
+test tests::exposes_version ... ok
+test tests::opening_directory_fails_closed ... ok
+test tests::second_open_writer_is_rejected ... ok
+test tests::reopening_with_wrong_ledger_identity_fails_closed ... ok
+test tests::read_only_open_does_not_contend_for_writer_lock ... ok
+test tests::append_and_read_roundtrip ... ok
+test tests::read_only_open_enforces_identity_fail_closed ... ok
+test tests::stale_marker_lock_file_does_not_block_opening_writer ... ok
+test tests::batch_persists_adapter_and_kernel_observations_in_order ... ok
+test tests::queries_by_trace_and_call ... ok
+test tests::reopens_existing_hash_chain ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+   Doc-tests mct_daemon
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mct_iroh
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mct_kernel
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mct_observation
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

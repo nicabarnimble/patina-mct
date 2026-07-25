@@ -916,7 +916,11 @@ fn verify_external_sidecar(
 
 fn scan_archive(archive_path: &Path, expected_target: &str) -> Result<ArchiveScan> {
     let file = fs::File::open(archive_path)?;
-    let decoder = GzDecoder::new(file);
+    scan_archive_reader(file, expected_target)
+}
+
+fn scan_archive_reader(reader: impl Read, expected_target: &str) -> Result<ArchiveScan> {
+    let decoder = GzDecoder::new(reader);
     let mut archive = tar::Archive::new(decoder);
     let mut facts = BTreeMap::new();
     let mut entry_order = Vec::new();
@@ -1438,6 +1442,11 @@ fn is_lower_hex(value: &str, len: usize) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+#[cfg(feature = "fuzzing")]
+pub fn fuzz_release_archive(data: &[u8]) {
+    let _ = scan_archive_reader(data, "aarch64-apple-darwin");
+}
+
 #[cfg(test)]
 mod acquisition_tests {
     use super::*;
@@ -1609,6 +1618,17 @@ mod acquisition_tests {
         );
         assert!(!request.state_path.exists());
         assert!(!request.ledger_path.exists());
+    }
+
+    #[test]
+    #[ignore = "regenerates the committed fuzz corpus seed from the release fixture"]
+    fn write_release_archive_fuzz_seed() {
+        let seed_dir =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/release_archive");
+        fs::create_dir_all(&seed_dir).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let archive = release_fixture(temp.path());
+        fs::copy(&archive, seed_dir.join("valid-release")).unwrap();
     }
 
     fn acquire_for_test(

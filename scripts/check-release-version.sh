@@ -17,50 +17,80 @@ fi
 python3 - "$require_tag" <<'PY'
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 require_tag = sys.argv[1] == "true"
 root = Path.cwd()
 errors: list[str] = []
 
-with (root / "Cargo.toml").open("rb") as handle:
-    workspace = tomllib.load(handle)
-version = workspace.get("workspace", {}).get("package", {}).get("version")
-if not isinstance(version, str):
-    errors.append("Cargo.toml [workspace.package].version is missing")
-    version = "<missing>"
 
-members = workspace.get("workspace", {}).get("members", [])
-if not members:
-    errors.append("Cargo.toml workspace has no members")
-for member in members:
-    manifest_path = root / member / "Cargo.toml"
-    with manifest_path.open("rb") as handle:
-        manifest = tomllib.load(handle)
-    package_version = manifest.get("package", {}).get("version")
-    if package_version != {"workspace": True}:
+def table_body(path: Path, table: str):
+    text = path.read_text(encoding="utf-8")
+    match = re.search(
+        rf"(?ms)^\[{re.escape(table)}\][ \t]*(?:#.*)?$\n(.*?)(?=^\[|\Z)",
+        text,
+    )
+    return match.group(1) if match else None
+
+
+workspace_package = table_body(root / "Cargo.toml", "workspace.package")
+version_match = (
+    re.search(
+        r'^\s*version\s*=\s*"([^"\r\n]+)"\s*(?:#.*)?$',
+        workspace_package,
+        flags=re.MULTILINE,
+    )
+    if workspace_package is not None
+    else None
+)
+version = version_match.group(1) if version_match else "<missing>"
+if version == "<missing>":
+    errors.append("Cargo.toml [workspace.package].version is missing")
+
+metadata_process = subprocess.run(
+    ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"],
+    text=True,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+)
+if metadata_process.returncode != 0:
+    errors.append(
+        "cargo metadata --locked rejected workspace/lockfile state: "
+        + metadata_process.stderr.strip()
+    )
+    workspace_packages = []
+else:
+    metadata = json.loads(metadata_process.stdout)
+    workspace_members = set(metadata.get("workspace_members", []))
+    workspace_packages = [
+        package
+        for package in metadata.get("packages", [])
+        if package.get("id") in workspace_members
+    ]
+    if not workspace_packages:
+        errors.append("Cargo.toml workspace has no members")
+
+for package in workspace_packages:
+    manifest_path = Path(package["manifest_path"])
+    package_table = table_body(manifest_path, "package")
+    inherits_version = package_table is not None and re.search(
+        r"^\s*version\.workspace\s*=\s*true\s*(?:#.*)?$",
+        package_table,
+        flags=re.MULTILINE,
+    )
+    if not inherits_version:
         errors.append(
             f"{manifest_path.relative_to(root)} package.version must inherit workspace version"
         )
-
-if version != "<missing>":
-    with (root / "Cargo.lock").open("rb") as handle:
-        lock = tomllib.load(handle)
-    local_names = {Path(member).name for member in members}
-    lock_versions = {
-        package["name"]: package["version"]
-        for package in lock.get("package", [])
-        if package.get("name") in local_names
-    }
-    for name in sorted(local_names):
-        if lock_versions.get(name) != version:
-            errors.append(
-                f"Cargo.lock {name} version is {lock_versions.get(name)!r}, expected {version}"
-            )
+    if version != "<missing>" and package.get("version") != version:
+        errors.append(
+            f"Cargo.lock {package.get('name')} version is {package.get('version')!r}, "
+            f"expected {version}"
+        )
 
 changelog_path = root / "CHANGELOG.md"
 if not changelog_path.is_file():

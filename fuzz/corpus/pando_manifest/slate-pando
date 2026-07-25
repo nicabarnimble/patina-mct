@@ -1,0 +1,21 @@
+[pando]
+name = "slate"
+description = "Spec workflow"
+version = "0.1.0"
+
+[[children]]
+name = "slate-manager"
+
+[commands.list]
+description = "List specs"
+child = "slate-manager"
+action = "list"
+args = [{ name = "status", type = "string", required = false }]
+
+[composition]
+entry = { child = "slate-manager", toy = "patina:record/transform" }
+
+[[composition.wiring]]
+from = "slate-manager"
+to = "slate-manager"
+toy = "patina:record/transform"
