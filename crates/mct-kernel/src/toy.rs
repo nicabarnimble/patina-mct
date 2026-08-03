@@ -510,11 +510,10 @@ pub fn evaluate_toy_grant_for_call(
             child_instance_id: request.child_instance_id.clone(),
             resource_id: request.resource_id.clone(),
             authority_decision_id: evaluation.decision_id.clone(),
-            expires_at: grant
-                .constraints
-                .expires_at
-                .clone()
-                .unwrap_or_else(|| call.deadline.clone()),
+            expires_at: grant.constraints.expires_at.as_ref().map_or_else(
+                || call.deadline.clone(),
+                |expiry| expiry.clone().min(call.deadline.clone()),
+            ),
             policy_revision: grant.policy_revision,
             grants_revision: grant.grants_revision,
         };
@@ -777,6 +776,22 @@ mod tests {
             authorized.expires_at(),
             &Timestamp::new("2026-05-31T00:05:00Z").unwrap()
         );
+    }
+
+    #[test]
+    fn toy_token_expiry_is_capped_by_effective_call_deadline() {
+        let mut effective_call = call();
+        effective_call.deadline = Timestamp::new("2026-05-31T00:01:00Z").unwrap();
+
+        let result = evaluate_toy_grant_for_call(
+            &effective_call,
+            &request(),
+            &[toy()],
+            &[grant(ToyGrantState::Active)],
+        );
+
+        let authorized = result.authorized.expect("authorized toy call");
+        assert_eq!(authorized.expires_at(), &effective_call.deadline);
     }
 
     #[test]

@@ -711,6 +711,25 @@ enum WasmDeadlinePermit {
     Running(WasmDeadlineGuard),
 }
 
+fn wasm_deadline_wait(
+    call: &MctCall,
+    executing_mother_now: &Timestamp,
+) -> Result<Option<std::time::Duration>, MctWasmComponentRuntimeError> {
+    let deadline = call
+        .deadline
+        .as_str()
+        .parse::<jiff::Timestamp>()
+        .map_err(|error| MctWasmComponentRuntimeError::Configure(error.to_string()))?;
+    let now = executing_mother_now
+        .as_str()
+        .parse::<jiff::Timestamp>()
+        .map_err(|error| MctWasmComponentRuntimeError::Configure(error.to_string()))?;
+    if now >= deadline {
+        return Ok(None);
+    }
+    Ok(Some(deadline.duration_since(now).unsigned_abs()))
+}
+
 fn is_wasm_resource_limit_message(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     message.contains("resource limit")
@@ -943,20 +962,21 @@ impl MctWasmComponentRuntime {
         store: &mut Store<T>,
         call: &MctCall,
     ) -> Result<WasmDeadlinePermit, MctWasmComponentRuntimeError> {
-        let deadline = call
-            .deadline
-            .as_str()
-            .parse::<jiff::Timestamp>()
-            .map_err(|error| MctWasmComponentRuntimeError::Configure(error.to_string()))?;
-        let now = jiff::Timestamp::now();
-        if now >= deadline {
+        self.configure_deadline_at(store, call, &crate::config::current_timestamp())
+    }
+
+    fn configure_deadline_at<T>(
+        &self,
+        store: &mut Store<T>,
+        call: &MctCall,
+        executing_mother_now: &Timestamp,
+    ) -> Result<WasmDeadlinePermit, MctWasmComponentRuntimeError> {
+        let Some(wait) = wasm_deadline_wait(call, executing_mother_now)? else {
             return Ok(WasmDeadlinePermit::Expired);
-        }
+        };
 
         store.set_epoch_deadline(1);
         store.epoch_deadline_trap();
-
-        let wait = deadline.duration_since(now).unsigned_abs();
         let engine = self.engine.clone();
         let completed = Arc::new(AtomicBool::new(false));
         let timed_out = Arc::new(AtomicBool::new(false));
@@ -3878,6 +3898,44 @@ mod tests {
             report.observations[2].kind,
             ObservationKind::ToyCallCompleted
         );
+    }
+
+    #[test]
+    fn far_future_caller_deadline_clamps_wasm_epoch_wait_to_configured_horizon() {
+        let runtime = runtime();
+        let accepted_at = Timestamp::new("2026-08-02T12:00:00Z").unwrap();
+        let mut caller_call = call();
+        caller_call.deadline = Timestamp::new("2026-08-02T14:00:00Z").unwrap();
+        let admission = crate::config::admit_call_deadline(
+            &caller_call.deadline,
+            &accepted_at,
+            crate::config::DEFAULT_MAX_CALL_HORIZON_SECONDS,
+            None,
+        )
+        .unwrap();
+        let crate::config::MctCallDeadlineAdmission::Admitted(effective_deadline) = admission
+        else {
+            panic!("far-future caller deadline must be admitted with a clamp");
+        };
+        caller_call.deadline = effective_deadline;
+        let mut store = Store::new(
+            &runtime.engine,
+            MctWasmEmptyHostState {
+                limits: runtime.store_limits(),
+            },
+        );
+
+        let configured_wait = wasm_deadline_wait(&caller_call, &accepted_at).unwrap();
+        let permit = runtime
+            .configure_deadline_at(&mut store, &caller_call, &accepted_at)
+            .unwrap();
+
+        assert!(matches!(permit, WasmDeadlinePermit::Running(_)));
+        assert_eq!(
+            caller_call.deadline,
+            Timestamp::new("2026-08-02T12:10:00Z").unwrap()
+        );
+        assert_eq!(configured_wait, Some(std::time::Duration::from_secs(600)));
     }
 
     #[test]
