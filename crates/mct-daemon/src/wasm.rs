@@ -1078,10 +1078,10 @@ impl MctWasmComponentRuntime {
         ids: MctWasmComponentInvocationIds,
     ) -> Result<MctWitComponentInvocationReport, MctWasmComponentRuntimeError> {
         let component_path = component_path.as_ref().to_path_buf();
-        let operation = resolve_wit_operation_target(&call.target)?;
-        if authorized.policy_revision() != call.authority_context.policy_revision {
+        let Some(_admitted_effect) = authorized.admit_effect_for_call(call) else {
             return Ok(wit_stale_authority_report(ids, call, &authorized));
-        }
+        };
+        let operation = resolve_wit_operation_target(&call.target)?;
         let started = wasm_observation(
             ids.started_observation_id.clone(),
             ids.started_at.clone(),
@@ -1231,9 +1231,9 @@ impl MctWasmComponentRuntime {
         ids: MctWasmComponentInvocationIds,
     ) -> Result<MctWasmComponentInvocationReport, MctWasmComponentRuntimeError> {
         let component_path = component_path.as_ref().to_path_buf();
-        if authorized.policy_revision() != call.authority_context.policy_revision {
+        let Some(_admitted_effect) = authorized.admit_effect_for_call(call) else {
             return Ok(s32_stale_authority_report(ids, call, &authorized));
-        }
+        };
         let started = wasm_observation(
             ids.started_observation_id.clone(),
             ids.started_at.clone(),
@@ -1322,9 +1322,9 @@ impl MctWasmComponentRuntime {
         let component_path = invocation.component_path;
         let export_name = invocation.export_name;
         let ids = invocation.ids;
-        if authorized.policy_revision() != call.authority_context.policy_revision {
+        let Some(_admitted_effect) = authorized.admit_effect_for_call(call) else {
             return Ok(s32_stale_authority_report(ids, call, &authorized));
-        }
+        };
         let started = wasm_observation(
             ids.started_observation_id.clone(),
             ids.started_at.clone(),
@@ -3874,6 +3874,81 @@ mod tests {
             report.observations[2].kind,
             ObservationKind::ToyCallCompleted
         );
+    }
+
+    #[test]
+    fn wit_runtime_denies_mismatched_child_token_before_component_load() {
+        let runtime = runtime();
+        let mut different_call = call();
+        different_call.call_id = CallId::new("call-wit-different")
+            .expect("string ID literal/generated value must be non-empty");
+        let operation_id = operation_id_from_target(&different_call.target);
+        let child = loaded_typed_child(
+            PathBuf::from("/definitely/not/a/component.wasm"),
+            vec![operation_id],
+        );
+
+        let report = runtime
+            .invoke_authorized_child_wit_export(
+                authorized(),
+                &child,
+                &different_call,
+                &serde_json::json!({}),
+                ids(),
+            )
+            .expect("mismatched token must deny before WIT component load");
+
+        assert_eq!(report.result.outcome, ResultOutcome::Denied);
+        assert_eq!(report.result.route_taken, None);
+        assert_eq!(report.observations.len(), 1);
+    }
+
+    #[test]
+    fn s32_runtime_denies_mismatched_child_token_before_component_load() {
+        let runtime = runtime();
+        let mut different_call = call();
+        different_call.call_id = CallId::new("call-s32-different")
+            .expect("string ID literal/generated value must be non-empty");
+
+        let report = runtime
+            .invoke_authorized_s32_export(
+                authorized(),
+                &different_call,
+                PathBuf::from("/definitely/not/a/component.wasm"),
+                "answer",
+                ids(),
+            )
+            .expect("mismatched token must deny before s32 component load");
+
+        assert_eq!(report.result.outcome, ResultOutcome::Denied);
+        assert_eq!(report.result.route_taken, None);
+        assert_eq!(report.observations.len(), 1);
+    }
+
+    #[test]
+    fn s32_toy_runtime_denies_mismatched_child_token_before_component_load() {
+        let runtime = runtime();
+        let mut different_call = call();
+        different_call.call_id = CallId::new("call-s32-toy-different")
+            .expect("string ID literal/generated value must be non-empty");
+
+        let report = runtime
+            .invoke_authorized_s32_export_with_toy_imports(
+                authorized(),
+                &different_call,
+                MctWasmComponentToyInvocation {
+                    component_path: PathBuf::from("/definitely/not/a/component.wasm"),
+                    export_name: "answer".into(),
+                    toy_registry: MctToyAdapterRegistry::new(),
+                    toy_imports: Vec::new(),
+                    ids: ids(),
+                },
+            )
+            .expect("mismatched token must deny before toy-enabled component load");
+
+        assert_eq!(report.result.outcome, ResultOutcome::Denied);
+        assert_eq!(report.result.route_taken, None);
+        assert_eq!(report.observations.len(), 1);
     }
 
     #[test]
