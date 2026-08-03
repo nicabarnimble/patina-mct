@@ -1,6 +1,6 @@
 # Contract obligation ledger
 
-Status date: 2026-07-12; W2 extension 2026-07-14; Daily-Driver Slice 2 extension 2026-07-15; artifact-acquisition extension 2026-07-16; trigger-runtime Part A extension 2026-07-21
+Status date: 2026-07-12; W2 extension 2026-07-14; Daily-Driver Slice 2 extension 2026-07-15; artifact-acquisition extension 2026-07-16; trigger-runtime Part A extension 2026-07-21; grants-authority v0 Phase G extension 2026-08-02
 
 Scope: complete named-invariant coverage for `mct-product-map.allium` and `mct-peer-ontology.allium`, plus bulk attribution of tool-derived structural obligations. The 2026-07-12 priority and full-inventory evidence is retained in place; the 2026-07-14 local-application-ingress invariants and W2-A remediation obligations extend it below.
 
@@ -12,6 +12,82 @@ Scope: complete named-invariant coverage for `mct-product-map.allium` and `mct-p
 - **DEFERRED** — the law explicitly assigns the behaviour to a named future scope; no current execution path exists to test.
 
 Module names distinguish library tests from binary-local tests: `mct_daemon_bin` denotes tests under `crates/mct-daemon/src/daemon/`.
+
+## Grants authority v0 — Phase G
+
+The ratified Phase G law is captured in [grants-authority-v0](../../feat/grants-authority-v0/SPEC.md). `LAW-LEADS-CODE` rows below are explicit Task B targets and become `COVERED` only after the named proof steps land. `DEFERRED` rows are fenced behind Review 2 and slices 4-8; Task B may not partially implement them.
+
+### Child effect admission
+
+| Invariant | Current status | Phase disposition / evidence |
+|---|---|---|
+| `TwoPhaseRouting.ExecutionTokenBindsExactCall` | LAW-LEADS-CODE | Target COVERED by Phase G Task B proof steps 1-3: process, all three WASM entry points, and Toy effect admission deny token/call mismatch before effect. |
+| `ExecutionTokenBindsSelectedChild` | COVERED | `mct_kernel::route::tests::route_revalidation_denies_route_child_mismatch` proves a selected-route/Child mismatch mints no execution authority. |
+| `EffectAdmissionIsOrderedWithAuthorityMutation` | DEFERRED | Review 2 plus slices 7-8 must establish the current local snapshot and mutation/effect ordering boundary. |
+| `EffectPermitCannotRefreshItself` | DEFERRED | Slice 7 must deny stale locally sourced execution authority and require a complete new evaluation; Task B cannot repair the fenced grants guard. |
+
+### Peer echo and receiving-Mother authority
+
+| Invariant | Current status | Phase disposition / evidence |
+|---|---|---|
+| `MctHelloProtocol.PeerEchoOnlyDetectsStaleness` | DEFERRED | Slice 6 hello/call wire change after Review 2; echo is early rejection only. |
+| `ForgedCurrentGenerationDoesNotGrantAuthority` | DEFERRED | Slices 5-8 must compose local evaluation independently of the peer echo. |
+| `ReceiverAlwaysUsesLocalAuthority` | DEFERRED | Slice 5 local authority provider and snapshots, gated on Review 2. |
+| `GenerationNamespaceMustMatchReceiver` | DEFERRED | Slices 4 and 6 must land the namespaced identity and exact hello/call echo. |
+
+### Call provenance and deadline
+
+| Invariant | Current status | Phase disposition / evidence |
+|---|---|---|
+| `MctCallAuthorityAndDeadline.CallerAuthorityCannotBecomeLocalAuthorityByCopying` | DEFERRED | Slice 5 separates caller expectation from locally sourced execution authority after Review 2. |
+| `LocalExecutionSnapshotHasMotherProvenance` | DEFERRED | Slice 5 local authority provider and snapshot. |
+| `LocalSnapshotIsCoherent` | DEFERRED | Review 2 projection guarantee plus slices 4-5. |
+| `ExecutingMotherClockIsAuthoritative` | LAW-LEADS-CODE | Target COVERED by Task B proof steps 4-5 and 9 using the executing Mother's injected clock. |
+| `CallerDeadlineCannotExtendLocalHorizon` | LAW-LEADS-CODE | Target COVERED by Task B proof steps 6 and 9 with the configured 600-second default horizon. |
+| `ExpiredCallsDoNotBeginEffects` | LAW-LEADS-CODE | Target COVERED by Task B proof steps 7 and 9. |
+| `TokenExpiryDoesNotExceedEffectiveDeadline` | LAW-LEADS-CODE | Target COVERED by Task B proof step 8 on the production Toy-token minting path. |
+| `ClockUncertaintyFailsClosedBeyondConfiguredTolerance` | LAW-LEADS-CODE | Target COVERED by Task B proof step 9; no caller-skew path receives positive authority grace. |
+
+### Grants-authority generation
+
+| Invariant | Current status | Phase disposition / evidence |
+|---|---|---|
+| `MctGrantsAuthorityGeneration.GrantGenerationIsMotherOwned` | DEFERRED | Review 2 gates slice 4 namespaced generation persistence. |
+| `GrantGenerationNeverRepeatsWithinEpoch` | DEFERRED | Review 2 must define replacement/restoration semantics before slice 4 stores authority epoch or generation. |
+| `AuthorityChangingFactsAdvanceGeneration` | DEFERRED | Slice 4 implements the D-G2 authority-shape mutation set after Review 2. |
+| `ConsumptionStateIsALiveFact` | DEFERRED | Slice 8 enforces consumption state at effect time without advancing authority shape. |
+| `TimeBoundsRemainLiveFacts` | DEFERRED | Slice 8 composes current time bounds with generation; Task B enforces token expiry only. |
+
+### Toy effect admission
+
+| Invariant | Current status | Phase disposition / evidence |
+|---|---|---|
+| `MctToyGrantAuthority.ToyTokenBindsCallAndEffect` | DEFERRED | Task B proof step 3 covers its exact-call edge through `ExecutionTokenBindsExactCall`; slice 8 must add complete action/resource/local-version effect scope. |
+| `EveryToyEffectRevalidatesCurrentAuthority` | DEFERRED | Slice 8 current local generation and grant evaluation, gated on Review 2. |
+| `ToyEffectChecksExactGrant` | DEFERRED | Slice 8 exact live grant state, scope, and consumption facts. |
+| `ToyTokenExpiryIsEnforced` | LAW-LEADS-CODE | Target COVERED by Phase G Task B proof steps 4-5. |
+| `RevocationBeforeEffectAdmissionDenies` | DEFERRED | Slice 8 current grant revalidation and effect-admission ordering. |
+| `DelegatedCapabilitiesHaveBoundedRevocationSemantics` | DEFERRED | Slice 8 must prove delegated admission is current and bounded; per-operation mediation and active revocation remain future law. |
+
+### Authority projection freshness
+
+| Invariant | Current status | Phase disposition / evidence |
+|---|---|---|
+| `MctAuthorityProjectionFreshness.AuthorityProjectionIdentifiesCanonicalSource` | DEFERRED | Review 2 owns the proof mechanism; slices 4-5 consume it. |
+| `AuthorityProjectionCoversCurrentGeneration` | DEFERRED | Review 2 plus slices 4-5. |
+| `ProjectionVersionAndFactsAreCoherent` | DEFERRED | Review 2 must define coherent projection advancement/recovery. |
+| `UnprovableFreshnessDenies` | DEFERRED | Slice 5 fails closed when Review 2's freshness proof is unavailable. |
+
+### Phase G disposition counts
+
+| Disposition | New invariants now | Expected after Task B |
+|---|---:|---:|
+| COVERED | 1 | 8 |
+| LAW-LEADS-CODE, targeted by Task B | 7 | 0 |
+| DEFERRED to Review 2 / slices 4-8 | 23 | 23 |
+| **Total new invariants** | **31** | **31** |
+
+The strengthened pre-existing `TwoPhaseRouting.EffectBoundaryRevisionGuardIsDistinct` is tracked in its original routing row below and is no longer credited as covered by a test that supplies a synthetic current revision while the production provider copies grants revision from the call.
 
 ## Tool-derived structural obligations
 
@@ -131,7 +207,7 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 | `OptimizationCannotGrantAuthority` | COVERED | `mct_daemon_bin::resident::decision::tests::resident_route_optimization_cannot_grant_authority` |
 | `DenyReasonsArePolicyReasons` | COVERED | `mct_daemon_bin::resident::decision::tests::resident_no_route_records_specific_elimination`; `mct_kernel::route::tests::candidate_elimination_reasons_expose_denial_class` |
 | `ExecutionRevalidatesAuthority` | COVERED | `mct_kernel::route::tests::route_revalidation_denies_stale_policy_before_execution`; `mct_daemon_bin::resident::forwarding::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello` |
-| `EffectBoundaryRevisionGuardIsDistinct` | COVERED | `mct_daemon_bin::resident::execution::tests::resident_route_revision_guard_denies_before_effect` |
+| `EffectBoundaryRevisionGuardIsDistinct` | LAW-LEADS-CODE | `mct_daemon_bin::resident::execution::tests::resident_route_revision_guard_denies_before_effect` proves the comparison branch only with a supplied differing snapshot; production `current_resident_route_revisions` copies grants revision from the call. Repair is fenced to slice 7 after Review 2 provides a coherent local snapshot. |
 | `EffectBoundaryGuardCannotRepairStaleAuthority` | COVERED | `mct_daemon_bin::resident::execution::tests::resident_route_revision_guard_denies_before_effect` |
 | `PeerEgressAndLocalChildEffectGuardsAreDistinct` | COVERED | `mct_daemon_bin::resident::forwarding::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello`; `mct_daemon_bin::resident::execution::tests::resident_route_revision_guard_denies_before_effect` |
 | `NoRouteDecision.DenyByDefault` | COVERED | `mct_kernel::route::tests::no_route_decision_denies_by_default_without_route_taken` |
