@@ -6,9 +6,15 @@ const RESIDENT_LEDGER_QUEUE_CAPACITY: usize = 256;
 
 #[derive(Clone, Debug)]
 pub(crate) struct ResidentLedgerWriter {
-    sender: tokio::sync::mpsc::Sender<ResidentLedgerWrite>,
+    sender: tokio::sync::mpsc::Sender<ResidentLedgerCommand>,
     fenced: Arc<std::sync::atomic::AtomicBool>,
     path: Option<Arc<PathBuf>>,
+    task: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+}
+
+enum ResidentLedgerCommand {
+    Write(ResidentLedgerWrite),
+    Shutdown(tokio::sync::oneshot::Sender<()>),
 }
 
 struct ResidentLedgerWrite {
@@ -21,12 +27,18 @@ impl ResidentLedgerWriter {
     #[cfg(test)]
     pub(crate) fn fail_after_batches_for_test(path: PathBuf, allowed_batches: usize) -> Self {
         let mut ledger = JsonlObservationLedger::open(&path, "ledger-local", "local-mct").unwrap();
-        let (sender, mut receiver) = tokio::sync::mpsc::channel::<ResidentLedgerWrite>(8);
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<ResidentLedgerCommand>(8);
         let fenced = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let task_fenced = Arc::clone(&fenced);
-        tokio::task::spawn_blocking(move || {
+        let task = tokio::task::spawn_blocking(move || {
             let mut completed = 0usize;
-            while let Some(write) = receiver.blocking_recv() {
+            while let Some(command) = receiver.blocking_recv() {
+                let ResidentLedgerCommand::Write(write) = command else {
+                    if let ResidentLedgerCommand::Shutdown(ack) = command {
+                        let _ = ack.send(());
+                    }
+                    break;
+                };
                 if completed >= allowed_batches {
                     task_fenced.store(true, Ordering::SeqCst);
                     let _ = write.ack.send(Err("injected resident writer loss".into()));
@@ -50,6 +62,7 @@ impl ResidentLedgerWriter {
             sender,
             fenced,
             path: Some(Arc::new(path)),
+            task: Arc::new(std::sync::Mutex::new(Some(task))),
         }
     }
 
@@ -61,6 +74,7 @@ impl ResidentLedgerWriter {
             sender,
             fenced: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             path: None,
+            task: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -68,9 +82,15 @@ impl ResidentLedgerWriter {
         let mut ledger = JsonlObservationLedger::open(&path, "ledger-local", "local-mct")
             .with_context(|| format!("open observation ledger {}", path.display()))?;
         let (sender, mut receiver) =
-            tokio::sync::mpsc::channel::<ResidentLedgerWrite>(RESIDENT_LEDGER_QUEUE_CAPACITY);
-        tokio::task::spawn_blocking(move || {
-            while let Some(write) = receiver.blocking_recv() {
+            tokio::sync::mpsc::channel::<ResidentLedgerCommand>(RESIDENT_LEDGER_QUEUE_CAPACITY);
+        let task = tokio::task::spawn_blocking(move || {
+            while let Some(command) = receiver.blocking_recv() {
+                let ResidentLedgerCommand::Write(write) = command else {
+                    if let ResidentLedgerCommand::Shutdown(ack) = command {
+                        let _ = ack.send(());
+                    }
+                    break;
+                };
                 let appended_at = mct_daemon::current_timestamp_string();
                 let result = write
                     .observations
@@ -96,6 +116,7 @@ impl ResidentLedgerWriter {
             sender,
             fenced: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             path: Some(Arc::new(path)),
+            task: Arc::new(std::sync::Mutex::new(Some(task))),
         })
     }
 
@@ -126,11 +147,11 @@ impl ResidentLedgerWriter {
         let (ack, rx) = tokio::sync::oneshot::channel();
         if let Err(error) = self
             .sender
-            .send(ResidentLedgerWrite {
+            .send(ResidentLedgerCommand::Write(ResidentLedgerWrite {
                 observations,
                 durability,
                 ack,
-            })
+            }))
             .await
         {
             self.fenced.store(true, Ordering::SeqCst);
@@ -147,7 +168,17 @@ impl ResidentLedgerWriter {
     }
 
     pub(crate) async fn close(self) {
-        drop(self.sender);
+        let (ack, acknowledged) = tokio::sync::oneshot::channel();
+        let _ = self.sender.send(ResidentLedgerCommand::Shutdown(ack)).await;
+        let _ = acknowledged.await;
+        let task = self
+            .task
+            .lock()
+            .expect("resident ledger task mutex must not be poisoned")
+            .take();
+        if let Some(task) = task {
+            let _ = task.await;
+        }
     }
 }
 
