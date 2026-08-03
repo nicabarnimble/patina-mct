@@ -315,9 +315,11 @@ impl MctWitHostState {
             started_at: adapter.observed_at.clone(),
             completed_at: adapter.observed_at.clone(),
         };
-        let mut report = self.toy_registry.call_authorized_toy(
+        let executing_mother_now = crate::config::current_timestamp();
+        let mut report = self.toy_registry.call_authorized_toy_at(
             &adapter.authorized_toy_call,
             &self.call,
+            &executing_mother_now,
             &input_json.to_string(),
             ids,
         );
@@ -1351,9 +1353,11 @@ impl MctWasmComponentRuntime {
                     move |mut store: StoreContextMut<'_, MctWasmHostState>, _params: ()| {
                         let registry = store.data().toy_registry.clone();
                         let call = store.data().call.clone();
-                        let report = registry.call_authorized_toy(
+                        let executing_mother_now = crate::config::current_timestamp();
+                        let report = registry.call_authorized_toy_at(
                             &toy_import.authorized_toy_call,
                             &call,
+                            &executing_mother_now,
                             "{}",
                             toy_import.ids.clone(),
                         );

@@ -75,14 +75,17 @@ impl MctToyAdapterRegistry {
         self.backends.insert(toy_id, backend);
     }
 
-    pub fn call_authorized_toy(
+    pub fn call_authorized_toy_at(
         &self,
         authorized: &AuthorizedToyCall,
         call: &MctCall,
+        executing_mother_now: &Timestamp,
         input_json: &str,
         ids: MctToyCallIds,
     ) -> MctToyCallReport {
-        let Some(_admitted_effect) = authorized.admit_effect_for_call(call) else {
+        let Some(_admitted_effect) =
+            authorized.admit_effect_for_call_at(call, executing_mother_now)
+        else {
             return stale_toy_authority_report(authorized, call, ids);
         };
 
@@ -689,6 +692,10 @@ mod tests {
         )
     }
 
+    fn effect_time() -> Timestamp {
+        Timestamp::new("2026-05-31T00:00:30Z").unwrap()
+    }
+
     fn ids(stem: &str) -> MctToyCallIds {
         MctToyCallIds {
             started_observation_id: ObservationId::new(format!("obs-{stem}-started"))
@@ -729,9 +736,10 @@ mod tests {
             MctToyBackend::EchoJson,
         );
 
-        let report = registry.call_authorized_toy(
+        let report = registry.call_authorized_toy_at(
             &authorized("toy-echo"),
             &call(),
+            &effect_time(),
             "{\"ok\":true}",
             ids("toy-success"),
         );
@@ -754,6 +762,51 @@ mod tests {
     }
 
     #[test]
+    fn toy_adapter_denies_token_at_expiry_without_backend_call() {
+        let mut registry = MctToyAdapterRegistry::new();
+        registry.register(
+            ToyId::new("toy-echo").expect("string ID literal/generated value must be non-empty"),
+            MctToyBackend::EchoJson,
+        );
+        let executing_mother_now = Timestamp::new("2026-05-31T00:01:00Z").unwrap();
+
+        let report = registry.call_authorized_toy_at(
+            &authorized("toy-echo"),
+            &call(),
+            &executing_mother_now,
+            "{\"backend_must_not_echo\":true}",
+            ids("toy-token-expired"),
+        );
+
+        assert_eq!(report.outcome, MctToyAdapterOutcome::Failed);
+        assert_eq!(report.output_json, None);
+        assert_eq!(report.observations.len(), 1);
+        assert_eq!(report.observations[0].outcome, ObservationOutcome::Denied);
+    }
+
+    #[test]
+    fn toy_adapter_allows_token_before_expiry() {
+        let mut registry = MctToyAdapterRegistry::new();
+        registry.register(
+            ToyId::new("toy-echo").expect("string ID literal/generated value must be non-empty"),
+            MctToyBackend::EchoJson,
+        );
+        let executing_mother_now = Timestamp::new("2026-05-31T00:00:59Z").unwrap();
+
+        let report = registry.call_authorized_toy_at(
+            &authorized("toy-echo"),
+            &call(),
+            &executing_mother_now,
+            "{\"before_expiry\":true}",
+            ids("toy-token-current"),
+        );
+
+        assert_eq!(report.outcome, MctToyAdapterOutcome::Success);
+        assert_eq!(report.output_json, Some("{\"before_expiry\":true}".into()));
+        assert_eq!(report.observations.len(), 2);
+    }
+
+    #[test]
     fn toy_adapter_denies_mismatched_call_token_before_backend_call() {
         let mut registry = MctToyAdapterRegistry::new();
         registry.register(
@@ -764,9 +817,10 @@ mod tests {
         different_call.call_id = CallId::new("call-toy-different")
             .expect("string ID literal/generated value must be non-empty");
 
-        let report = registry.call_authorized_toy(
+        let report = registry.call_authorized_toy_at(
             &authorized("toy-echo"),
             &different_call,
+            &effect_time(),
             "{\"backend_must_not_echo\":true}",
             ids("toy-call-mismatch"),
         );
@@ -783,9 +837,10 @@ mod tests {
         let mut stale_call = call();
         stale_call.authority_context.grants_revision += 1;
 
-        let report = registry.call_authorized_toy(
+        let report = registry.call_authorized_toy_at(
             &authorized("toy-echo"),
             &stale_call,
+            &effect_time(),
             "{\"ok\":true}",
             ids("toy-stale"),
         );
@@ -811,9 +866,10 @@ mod tests {
             },
         );
 
-        let report = registry.call_authorized_toy(
+        let report = registry.call_authorized_toy_at(
             &authorized(MCT_SECRETS_TOY_ID),
             &call(),
+            &effect_time(),
             r#"{"interface":"patina:secrets/secrets@0.1.0","function":"get","name":"api-token"}"#,
             ids("toy-secret-success"),
         );
@@ -920,9 +976,10 @@ mod tests {
             },
         );
 
-        let report = registry.call_authorized_toy(
+        let report = registry.call_authorized_toy_at(
             &authorized("toy-git"),
             &call(),
+            &effect_time(),
             r#"{"interface":"patina:git/git@0.1.0","function":"create-tag","name":"mct-toy-test"}"#,
             ids("toy-git-success"),
         );
@@ -945,7 +1002,13 @@ mod tests {
                 repo_root: repo.to_path_buf(),
             },
         );
-        registry.call_authorized_toy(&authorized("toy-git"), &call(), input_json, ids(stem))
+        registry.call_authorized_toy_at(
+            &authorized("toy-git"),
+            &call(),
+            &effect_time(),
+            input_json,
+            ids(stem),
+        )
     }
 
     #[test]
@@ -1045,9 +1108,10 @@ mod tests {
             },
         );
 
-        let report = registry.call_authorized_toy(
+        let report = registry.call_authorized_toy_at(
             &authorized("toy-git"),
             &call(),
+            &effect_time(),
             r#"{"interface":"patina:git/git@0.1.0","function":"add-paths","paths":["../outside"]}"#,
             ids("toy-git-reject"),
         );
@@ -1061,9 +1125,10 @@ mod tests {
     fn toy_backend_failure_is_adapter_observation_not_kernel_denial() {
         let registry = MctToyAdapterRegistry::new();
 
-        let report = registry.call_authorized_toy(
+        let report = registry.call_authorized_toy_at(
             &authorized("missing-toy"),
             &call(),
+            &effect_time(),
             "{}",
             ids("toy-failed"),
         );
