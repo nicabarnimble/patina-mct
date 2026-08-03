@@ -5,8 +5,13 @@
 
 #![forbid(unsafe_code)]
 
-use mct_kernel::{CallId, MctObservation, TraceId};
+use mct_kernel::{
+    CallId, MctObservation, ObservationId, ObservationKind, ObservationOutcome,
+    ObservationTraceRef, ObservationVisibility, SourcePlane, Timestamp, TraceId,
+};
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::{
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, Write},
@@ -43,6 +48,19 @@ pub enum ObservationLedgerError {
     },
     #[error("observation ledger sequence mismatch: expected {expected}, found {actual}")]
     SequenceMismatch { expected: u64, actual: u64 },
+    #[error(
+        "observation ledger has an unterminated final frame at byte {offset} ({length} bytes) in {path}"
+    )]
+    UnterminatedTail {
+        path: PathBuf,
+        offset: u64,
+        length: u64,
+        digest: String,
+    },
+    #[error("observation ledger is quarantined: {status:?}")]
+    Quarantined { status: Box<LedgerQuarantineStatus> },
+    #[error("observation ledger has foreign lineage: {status:?}")]
+    ForeignLineage { status: Box<LedgerQuarantineStatus> },
     #[error("observation ledger writer lock error at {path}: {source}")]
     WriterLock {
         path: PathBuf,
@@ -60,6 +78,68 @@ pub enum ObservationLedgerError {
 }
 
 pub type Result<T> = std::result::Result<T, ObservationLedgerError>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LedgerFailureClass {
+    TerminatedMalformedFrame,
+    EntryHashMismatch,
+    PreviousHashMismatch,
+    SequenceDiscontinuity,
+    ForeignLineage,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LedgerQuarantineStatus {
+    pub ledger_path: PathBuf,
+    pub failure_class: LedgerFailureClass,
+    pub first_bad_sequence: Option<u64>,
+    pub first_bad_offset: u64,
+    pub expected: Option<String>,
+    pub observed: Option<String>,
+    pub preserved_ledger_path: Option<PathBuf>,
+    pub diagnostic_record_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LedgerRecoveryStatus {
+    pub ledger_path: PathBuf,
+    pub source_ledger_id: String,
+    pub source_mother_node_id: String,
+    pub residue_offset: u64,
+    pub residue_length: u64,
+    pub residue_digest: String,
+    pub last_committed_sequence: Option<u64>,
+    pub last_committed_hash: Option<String>,
+    pub failure_class: String,
+    pub recovery_decision_id: String,
+    pub recovery_time: String,
+    pub preserved_bytes_path: PathBuf,
+    pub diagnostic_record_path: PathBuf,
+    pub recovery_complete: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecoveryStage {
+    ForensicDirectoryReady,
+    SourceBytesPreserved,
+    DiagnosticRecordPreserved,
+    LedgerTruncated,
+    RecoveryObservationAppended,
+    DiagnosticRecordCompleted,
+}
+
+#[cfg(test)]
+impl RecoveryStage {
+    const ALL: [Self; 6] = [
+        Self::ForensicDirectoryReady,
+        Self::SourceBytesPreserved,
+        Self::DiagnosticRecordPreserved,
+        Self::LedgerTruncated,
+        Self::RecoveryObservationAppended,
+        Self::DiagnosticRecordCompleted,
+    ];
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MctObservationLedgerEntry {
@@ -99,6 +179,7 @@ pub struct JsonlObservationLedger {
     mother_node_id: String,
     next_sequence: u64,
     previous_hash: Option<String>,
+    recovery_status: Option<LedgerRecoveryStatus>,
 }
 
 #[derive(Debug)]
@@ -117,12 +198,25 @@ impl JsonlObservationLedgerReader {
         let path = path.as_ref().to_path_buf();
         let ledger_id = ledger_id.into();
         let mother_node_id = mother_node_id.into();
-        scan_existing(&path, &ledger_id, &mother_node_id)?;
-        Ok(Self {
-            path,
-            ledger_id,
-            mother_node_id,
-        })
+        match scan_existing(&path, &ledger_id, &mother_node_id)? {
+            LedgerScan::Ready(_) => Ok(Self {
+                path,
+                ledger_id,
+                mother_node_id,
+            }),
+            LedgerScan::Residue(residue) => Err(ObservationLedgerError::UnterminatedTail {
+                path,
+                offset: residue.offset,
+                length: residue.bytes.len() as u64,
+                digest: residue.digest,
+            }),
+            LedgerScan::Quarantine(status) => Err(ObservationLedgerError::Quarantined {
+                status: Box::new(status),
+            }),
+            LedgerScan::ForeignLineage(status) => Err(ObservationLedgerError::ForeignLineage {
+                status: Box::new(status),
+            }),
+        }
     }
 
     pub fn iter_entries(&self) -> impl Iterator<Item = Result<MctObservationLedgerEntry>> {
@@ -152,45 +246,12 @@ impl JsonlObservationLedger {
         ledger_id: impl Into<String>,
         mother_node_id: impl Into<String>,
     ) -> Result<Self> {
-        let path = path.as_ref().to_path_buf();
-        let ledger_id = ledger_id.into();
-        let mother_node_id = mother_node_id.into();
-
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|source| ObservationLedgerError::Io {
-                path: parent.to_path_buf(),
-                source,
-            })?;
-        }
-
-        let file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create(true)
-            .open(&path)
-            .map_err(|source| ObservationLedgerError::Io {
-                path: path.clone(),
-                source,
-            })?;
-
-        let file = acquire_writer_lock(&path, file)?;
-        let scan_result = scan_existing(&path, &ledger_id, &mother_node_id);
-        let (next_sequence, previous_hash) = match scan_result {
-            Ok(state) => state,
-            Err(error) => {
-                drop(file);
-                return Err(error);
-            }
-        };
-
-        Ok(Self {
-            path,
-            file,
-            ledger_id,
-            mother_node_id,
-            next_sequence,
-            previous_hash,
-        })
+        open_with_recovery_hook(
+            path.as_ref(),
+            &ledger_id.into(),
+            &mother_node_id.into(),
+            |_| Ok(()),
+        )
     }
 
     pub fn open_read_only(
@@ -199,6 +260,10 @@ impl JsonlObservationLedger {
         mother_node_id: impl Into<String>,
     ) -> Result<JsonlObservationLedgerReader> {
         JsonlObservationLedgerReader::open(path, ledger_id, mother_node_id)
+    }
+
+    pub fn recovery_status(&self) -> Option<&LedgerRecoveryStatus> {
+        self.recovery_status.as_ref()
     }
 
     pub fn append_before_effect(
@@ -324,23 +389,568 @@ fn entries_by_call(
     Ok(entries)
 }
 
-fn scan_existing(
+#[derive(Debug)]
+struct LedgerScanState {
+    next_sequence: u64,
+    previous_hash: Option<String>,
+    committed_len: u64,
+    entries: Vec<MctObservationLedgerEntry>,
+}
+
+#[derive(Debug)]
+struct LedgerTailResidue {
+    offset: u64,
+    bytes: Vec<u8>,
+    digest: String,
+    state: LedgerScanState,
+}
+
+#[derive(Debug)]
+enum LedgerScan {
+    Ready(LedgerScanState),
+    Residue(LedgerTailResidue),
+    Quarantine(LedgerQuarantineStatus),
+    ForeignLineage(LedgerQuarantineStatus),
+}
+
+pub fn forensic_root_path(ledger_path: &Path) -> PathBuf {
+    let file_name = ledger_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("observation-ledger");
+    ledger_path.with_file_name(format!("{file_name}.forensics"))
+}
+
+fn scan_existing(path: &Path, ledger_id: &str, mother_node_id: &str) -> Result<LedgerScan> {
+    let bytes = std::fs::read(path).map_err(|source| ObservationLedgerError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut state = LedgerScanState {
+        next_sequence: 0,
+        previous_hash: None,
+        committed_len: 0,
+        entries: Vec::new(),
+    };
+    let mut frame_start = 0usize;
+
+    for terminator in bytes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, byte)| (*byte == b'\n').then_some(index))
+    {
+        let frame = &bytes[frame_start..terminator];
+        let offset = frame_start as u64;
+        let entry: MctObservationLedgerEntry = match serde_json::from_slice(frame) {
+            Ok(entry) => entry,
+            Err(source) => {
+                return Ok(LedgerScan::Quarantine(quarantine_status(
+                    path,
+                    LedgerFailureClass::TerminatedMalformedFrame,
+                    Some(state.next_sequence),
+                    offset,
+                    Some("one complete JSON ledger entry".into()),
+                    Some(source.to_string()),
+                )));
+            }
+        };
+
+        if entry.local_sequence != state.next_sequence {
+            return Ok(LedgerScan::Quarantine(quarantine_status(
+                path,
+                LedgerFailureClass::SequenceDiscontinuity,
+                Some(state.next_sequence),
+                offset,
+                Some(state.next_sequence.to_string()),
+                Some(entry.local_sequence.to_string()),
+            )));
+        }
+        if entry.ledger_id != ledger_id || entry.mother_node_id != mother_node_id {
+            return Ok(LedgerScan::ForeignLineage(quarantine_status(
+                path,
+                LedgerFailureClass::ForeignLineage,
+                Some(entry.local_sequence),
+                offset,
+                Some(format!("{ledger_id}/{mother_node_id}")),
+                Some(format!("{}/{}", entry.ledger_id, entry.mother_node_id)),
+            )));
+        }
+        if entry.previous_entry_hash != state.previous_hash {
+            return Ok(LedgerScan::Quarantine(quarantine_status(
+                path,
+                LedgerFailureClass::PreviousHashMismatch,
+                Some(entry.local_sequence),
+                offset,
+                state.previous_hash.clone(),
+                entry.previous_entry_hash.clone(),
+            )));
+        }
+        let expected_hash = entry_hash(&entry)?;
+        if entry.entry_hash != expected_hash {
+            return Ok(LedgerScan::Quarantine(quarantine_status(
+                path,
+                LedgerFailureClass::EntryHashMismatch,
+                Some(entry.local_sequence),
+                offset,
+                Some(expected_hash),
+                Some(entry.entry_hash.clone()),
+            )));
+        }
+
+        state.next_sequence += 1;
+        state.previous_hash = Some(entry.entry_hash.clone());
+        state.entries.push(entry);
+        frame_start = terminator + 1;
+        state.committed_len = frame_start as u64;
+    }
+
+    if frame_start < bytes.len() {
+        let residue = bytes[frame_start..].to_vec();
+        let digest = blake3::hash(&residue).to_hex().to_string();
+        return Ok(LedgerScan::Residue(LedgerTailResidue {
+            offset: frame_start as u64,
+            bytes: residue,
+            digest,
+            state,
+        }));
+    }
+
+    Ok(LedgerScan::Ready(state))
+}
+
+fn quarantine_status(
+    path: &Path,
+    failure_class: LedgerFailureClass,
+    first_bad_sequence: Option<u64>,
+    first_bad_offset: u64,
+    expected: Option<String>,
+    observed: Option<String>,
+) -> LedgerQuarantineStatus {
+    LedgerQuarantineStatus {
+        ledger_path: path.to_path_buf(),
+        failure_class,
+        first_bad_sequence,
+        first_bad_offset,
+        expected,
+        observed,
+        preserved_ledger_path: None,
+        diagnostic_record_path: None,
+    }
+}
+
+fn open_with_recovery_hook(
     path: &Path,
     ledger_id: &str,
     mother_node_id: &str,
-) -> Result<(u64, Option<String>)> {
-    let mut next_sequence = 0;
-    let mut previous_hash = None;
-    for entry in LedgerEntryIter::open(
-        path.to_path_buf(),
-        ledger_id.to_owned(),
-        mother_node_id.to_owned(),
-    ) {
-        let entry = entry?;
-        next_sequence = entry.local_sequence + 1;
-        previous_hash = Some(entry.entry_hash);
+    mut hook: impl FnMut(RecoveryStage) -> std::io::Result<()>,
+) -> Result<JsonlObservationLedger> {
+    let path = path.to_path_buf();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| ObservationLedgerError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
     }
-    Ok((next_sequence, previous_hash))
+
+    let file = OpenOptions::new()
+        .read(true)
+        .append(true)
+        .create(true)
+        .open(&path)
+        .map_err(|source| ObservationLedgerError::Io {
+            path: path.clone(),
+            source,
+        })?;
+    let mut file = acquire_writer_lock(&path, file)?;
+
+    let (mut state, recovery_status) = match scan_existing(&path, ledger_id, mother_node_id)? {
+        LedgerScan::Ready(mut state) => {
+            let status = complete_pending_recovery(
+                &path,
+                &mut file,
+                ledger_id,
+                mother_node_id,
+                &mut state,
+                &mut hook,
+            )?;
+            (state, status)
+        }
+        LedgerScan::Residue(residue) => {
+            let (state, status) = recover_tail(
+                &path,
+                &mut file,
+                ledger_id,
+                mother_node_id,
+                residue,
+                &mut hook,
+            )?;
+            (state, Some(status))
+        }
+        LedgerScan::Quarantine(status) => {
+            let status = preserve_quarantine(&path, status)?;
+            return Err(ObservationLedgerError::Quarantined {
+                status: Box::new(status),
+            });
+        }
+        LedgerScan::ForeignLineage(status) => {
+            let status = preserve_quarantine(&path, status)?;
+            return Err(ObservationLedgerError::ForeignLineage {
+                status: Box::new(status),
+            });
+        }
+    };
+
+    // Pending-recovery completion may append the deterministic recovery fact.
+    state.committed_len = std::fs::metadata(&path)
+        .map_err(|source| ObservationLedgerError::Io {
+            path: path.clone(),
+            source,
+        })?
+        .len();
+
+    Ok(JsonlObservationLedger {
+        path,
+        file,
+        ledger_id: ledger_id.to_owned(),
+        mother_node_id: mother_node_id.to_owned(),
+        next_sequence: state.next_sequence,
+        previous_hash: state.previous_hash,
+        recovery_status,
+    })
+}
+
+fn recover_tail(
+    path: &Path,
+    file: &mut File,
+    ledger_id: &str,
+    mother_node_id: &str,
+    residue: LedgerTailResidue,
+    hook: &mut impl FnMut(RecoveryStage) -> std::io::Result<()>,
+) -> Result<(LedgerScanState, LedgerRecoveryStatus)> {
+    let mut status = ensure_residue_forensics(path, ledger_id, mother_node_id, &residue, hook)?;
+
+    file.set_len(residue.state.committed_len)
+        .map_err(|source| ObservationLedgerError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    file.sync_data()
+        .map_err(|source| ObservationLedgerError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    call_recovery_hook(path, hook, RecoveryStage::LedgerTruncated)?;
+
+    let mut state = residue.state;
+    append_recovery_observation(file, path, ledger_id, mother_node_id, &status, &mut state)?;
+    call_recovery_hook(path, hook, RecoveryStage::RecoveryObservationAppended)?;
+
+    status.recovery_complete = true;
+    write_json_durable(&status.diagnostic_record_path, &status)?;
+    call_recovery_hook(path, hook, RecoveryStage::DiagnosticRecordCompleted)?;
+    Ok((state, status))
+}
+
+fn ensure_residue_forensics(
+    path: &Path,
+    ledger_id: &str,
+    mother_node_id: &str,
+    residue: &LedgerTailResidue,
+    hook: &mut impl FnMut(RecoveryStage) -> std::io::Result<()>,
+) -> Result<LedgerRecoveryStatus> {
+    let root = forensic_root_path(path);
+    ensure_private_directory(&root)?;
+    let case_dir = root.join(format!("tail-{}-{}", residue.offset, residue.digest));
+    ensure_private_directory(&case_dir)?;
+    call_recovery_hook(path, hook, RecoveryStage::ForensicDirectoryReady)?;
+
+    let preserved_bytes_path = case_dir.join("source.bin");
+    write_bytes_once_durable(&preserved_bytes_path, &residue.bytes)?;
+    call_recovery_hook(path, hook, RecoveryStage::SourceBytesPreserved)?;
+
+    let diagnostic_record_path = case_dir.join("record.json");
+    let status = if diagnostic_record_path.exists() {
+        read_recovery_status(&diagnostic_record_path)?
+    } else {
+        LedgerRecoveryStatus {
+            ledger_path: path.to_path_buf(),
+            source_ledger_id: ledger_id.to_owned(),
+            source_mother_node_id: mother_node_id.to_owned(),
+            residue_offset: residue.offset,
+            residue_length: residue.bytes.len() as u64,
+            residue_digest: residue.digest.clone(),
+            last_committed_sequence: residue.state.next_sequence.checked_sub(1),
+            last_committed_hash: residue.state.previous_hash.clone(),
+            failure_class: "unterminated_final_frame".into(),
+            recovery_decision_id: format!(
+                "ledger-tail-recovery-{}-{}",
+                residue.offset, residue.digest
+            ),
+            recovery_time: jiff::Timestamp::now().to_string(),
+            preserved_bytes_path,
+            diagnostic_record_path: diagnostic_record_path.clone(),
+            recovery_complete: false,
+        }
+    };
+    write_json_durable(&diagnostic_record_path, &status)?;
+    call_recovery_hook(path, hook, RecoveryStage::DiagnosticRecordPreserved)?;
+    Ok(status)
+}
+
+fn complete_pending_recovery(
+    path: &Path,
+    file: &mut File,
+    ledger_id: &str,
+    mother_node_id: &str,
+    state: &mut LedgerScanState,
+    hook: &mut impl FnMut(RecoveryStage) -> std::io::Result<()>,
+) -> Result<Option<LedgerRecoveryStatus>> {
+    let root = forensic_root_path(path);
+    if !root.exists() {
+        return Ok(None);
+    }
+    let mut records = std::fs::read_dir(&root)
+        .map_err(|source| ObservationLedgerError::Io {
+            path: root.clone(),
+            source,
+        })?
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path().join("record.json"))
+        .filter(|record| record.is_file())
+        .collect::<Vec<_>>();
+    records.sort();
+
+    for record_path in records {
+        let Ok(mut status) = read_recovery_status(&record_path) else {
+            continue;
+        };
+        if status.ledger_path != path
+            || status.source_ledger_id != ledger_id
+            || status.source_mother_node_id != mother_node_id
+            || status.recovery_complete
+        {
+            continue;
+        }
+        let already_observed = state
+            .entries
+            .iter()
+            .any(|entry| entry.observation.observation_id.as_str() == status.recovery_decision_id);
+        if !already_observed {
+            append_recovery_observation(file, path, ledger_id, mother_node_id, &status, state)?;
+            call_recovery_hook(path, hook, RecoveryStage::RecoveryObservationAppended)?;
+        }
+        status.recovery_complete = true;
+        write_json_durable(&record_path, &status)?;
+        call_recovery_hook(path, hook, RecoveryStage::DiagnosticRecordCompleted)?;
+        return Ok(Some(status));
+    }
+    Ok(None)
+}
+
+fn append_recovery_observation(
+    file: &mut File,
+    path: &Path,
+    ledger_id: &str,
+    mother_node_id: &str,
+    status: &LedgerRecoveryStatus,
+    state: &mut LedgerScanState,
+) -> Result<()> {
+    let observation_id = ObservationId::new(status.recovery_decision_id.clone())
+        .expect("deterministic recovery observation identity is non-empty");
+    if state
+        .entries
+        .iter()
+        .any(|entry| entry.observation.observation_id == observation_id)
+    {
+        return Ok(());
+    }
+    let observation = MctObservation {
+        observation_id,
+        observed_at: Timestamp::new(status.recovery_time.clone())
+            .expect("recovery time is generated as RFC3339"),
+        kind: ObservationKind::StorageAppendSucceeded,
+        source_plane: SourcePlane::Storage,
+        trace: ObservationTraceRef {
+            trace_id: TraceId::new(format!("trace-{}", status.recovery_decision_id))
+                .expect("deterministic recovery trace identity is non-empty"),
+            span_id: None,
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: None,
+        decision_id: None,
+        subject_id: Some(mother_node_id.to_owned()),
+        resource_id: Some(ledger_id.to_owned()),
+        policy_revision: None,
+        grants_revision: None,
+        outcome: ObservationOutcome::Completed,
+        visibility: ObservationVisibility::NodeOperator,
+        safe_message: "observation ledger tail recovered".into(),
+        detail_ref: Some(format!("ledger-tail-recovery-v1:{}", status.residue_digest)),
+    };
+    let mut entry = MctObservationLedgerEntry {
+        ledger_id: ledger_id.to_owned(),
+        mother_node_id: mother_node_id.to_owned(),
+        local_sequence: state.next_sequence,
+        observation,
+        previous_entry_hash: state.previous_hash.clone(),
+        entry_hash: String::new(),
+        appended_at: status.recovery_time.clone(),
+        durability_class: DurabilityClass::BeforeEffect,
+        export_status: ExportStatus::NotRequired,
+    };
+    entry.entry_hash = entry_hash(&entry)?;
+    write_entry_durable(file, path, &entry)?;
+    state.next_sequence += 1;
+    state.previous_hash = Some(entry.entry_hash.clone());
+    state.entries.push(entry);
+    Ok(())
+}
+
+fn write_entry_durable(
+    file: &mut File,
+    path: &Path,
+    entry: &MctObservationLedgerEntry,
+) -> Result<()> {
+    let mut bytes = serde_json::to_vec(entry).map_err(|source| ObservationLedgerError::Json {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    bytes.push(b'\n');
+    file.write_all(&bytes)
+        .map_err(|source| ObservationLedgerError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    file.sync_data()
+        .map_err(|source| ObservationLedgerError::Io {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+fn preserve_quarantine(
+    path: &Path,
+    mut status: LedgerQuarantineStatus,
+) -> Result<LedgerQuarantineStatus> {
+    let bytes = std::fs::read(path).map_err(|source| ObservationLedgerError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let digest = blake3::hash(&bytes).to_hex().to_string();
+    let root = forensic_root_path(path);
+    ensure_private_directory(&root)?;
+    let case_dir = root.join(format!(
+        "quarantine-{}-{}-{:?}",
+        status.first_bad_offset, digest, status.failure_class
+    ));
+    ensure_private_directory(&case_dir)?;
+    let preserved_ledger_path = case_dir.join("source.bin");
+    write_bytes_once_durable(&preserved_ledger_path, &bytes)?;
+    let diagnostic_record_path = case_dir.join("record.json");
+    status.preserved_ledger_path = Some(preserved_ledger_path);
+    status.diagnostic_record_path = Some(diagnostic_record_path.clone());
+    write_json_durable(&diagnostic_record_path, &status)?;
+    Ok(status)
+}
+
+fn read_recovery_status(path: &Path) -> Result<LedgerRecoveryStatus> {
+    let bytes = std::fs::read(path).map_err(|source| ObservationLedgerError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    serde_json::from_slice(&bytes).map_err(|source| ObservationLedgerError::Json {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+fn ensure_private_directory(path: &Path) -> Result<()> {
+    std::fs::create_dir_all(path).map_err(|source| ObservationLedgerError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    #[cfg(unix)]
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).map_err(|source| {
+        ObservationLedgerError::Io {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    sync_directory(path)
+}
+
+fn write_bytes_once_durable(path: &Path, bytes: &[u8]) -> Result<()> {
+    if path.exists() {
+        let existing = std::fs::read(path).map_err(|source| ObservationLedgerError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        if existing == bytes {
+            return Ok(());
+        }
+        return Err(ObservationLedgerError::LedgerChanged {
+            path: path.to_path_buf(),
+            expected_sequence: bytes.len() as u64,
+            actual_sequence: existing.len() as u64,
+        });
+    }
+    write_bytes_durable(path, bytes)
+}
+
+fn write_json_durable(path: &Path, value: &impl Serialize) -> Result<()> {
+    let bytes =
+        serde_json::to_vec_pretty(value).map_err(|source| ObservationLedgerError::Json {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    write_bytes_durable(path, &bytes)
+}
+
+fn write_bytes_durable(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let temporary = path.with_extension("tmp");
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
+        .open(&temporary)
+        .map_err(|source| ObservationLedgerError::Io {
+            path: temporary.clone(),
+            source,
+        })?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|source| ObservationLedgerError::Io {
+            path: temporary.clone(),
+            source,
+        })?;
+    std::fs::rename(&temporary, path).map_err(|source| ObservationLedgerError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    sync_directory(parent)
+}
+
+fn sync_directory(path: &Path) -> Result<()> {
+    File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|source| ObservationLedgerError::Io {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+fn call_recovery_hook(
+    path: &Path,
+    hook: &mut impl FnMut(RecoveryStage) -> std::io::Result<()>,
+    stage: RecoveryStage,
+) -> Result<()> {
+    hook(stage).map_err(|source| ObservationLedgerError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 struct LedgerEntryIter {
@@ -580,7 +1190,8 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(ObservationLedgerError::LedgerIdentityMismatch { sequence: 0, .. })
+            Err(ObservationLedgerError::ForeignLineage { status })
+                if status.first_bad_sequence == Some(0)
         ));
     }
 
@@ -638,7 +1249,9 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(ObservationLedgerError::LedgerIdentityMismatch { sequence: 0, .. })
+            Err(ObservationLedgerError::ForeignLineage { status })
+                if status.first_bad_sequence == Some(0)
+                    && status.preserved_ledger_path.is_none()
         ));
     }
 
@@ -823,7 +1436,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(next.local_sequence, 1);
-        assert_eq!(next.previous_entry_hash.as_deref(), Some(first.entry_hash.as_str()));
+        assert_eq!(
+            next.previous_entry_hash.as_deref(),
+            Some(first.entry_hash.as_str())
+        );
     }
 
     /// Proof 2: a torn final frame is preserved before recovery and never changes the committed prefix.
@@ -845,10 +1461,15 @@ mod tests {
         assert!(forensic_records(&path).is_empty());
 
         let mut recovered = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
-        let recovery = recovered.recovery_status().expect("tail recovery is reported");
+        let recovery = recovered
+            .recovery_status()
+            .expect("tail recovery is reported");
         assert_eq!(recovery.residue_offset, committed.len() as u64);
         assert_eq!(recovery.residue_length, residue.len() as u64);
-        assert_eq!(std::fs::read(&recovery.preserved_bytes_path).unwrap(), residue);
+        assert_eq!(
+            std::fs::read(&recovery.preserved_bytes_path).unwrap(),
+            residue
+        );
         assert_eq!(&std::fs::read(&path).unwrap()[..committed.len()], committed);
         assert_eq!(recovered.entries().unwrap()[0], first);
         assert_eq!(
@@ -879,7 +1500,10 @@ mod tests {
 
         let recovered = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
         let status = recovered.recovery_status().unwrap();
-        assert_eq!(std::fs::read(status.preserved_bytes_path).unwrap(), residue);
+        assert_eq!(
+            std::fs::read(&status.preserved_bytes_path).unwrap(),
+            residue
+        );
         let entries = recovered.entries().unwrap();
         assert_eq!(entries[0], first);
         assert_eq!(entries.len(), 2);
@@ -896,12 +1520,18 @@ mod tests {
 
         let error = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap_err();
         let status = match error {
-            ObservationLedgerError::Quarantined { status } => status,
+            ObservationLedgerError::Quarantined { status } => *status,
             other => panic!("expected typed quarantine, got {other:?}"),
         };
-        assert_eq!(status.failure_class, LedgerFailureClass::TerminatedMalformedFrame);
+        assert_eq!(
+            status.failure_class,
+            LedgerFailureClass::TerminatedMalformedFrame
+        );
         assert_eq!(std::fs::read(&path).unwrap(), original);
-        assert_eq!(std::fs::read(status.preserved_ledger_path.unwrap()).unwrap(), original);
+        assert_eq!(
+            std::fs::read(status.preserved_ledger_path.unwrap()).unwrap(),
+            original
+        );
     }
 
     /// Proof 5: a mid-file hash break reports first-bad offset and expected/observed evidence.
@@ -940,7 +1570,7 @@ mod tests {
 
         let error = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap_err();
         let status = match error {
-            ObservationLedgerError::Quarantined { status } => status,
+            ObservationLedgerError::Quarantined { status } => *status,
             other => panic!("expected hash quarantine, got {other:?}"),
         };
         assert_eq!(status.failure_class, LedgerFailureClass::EntryHashMismatch);
@@ -962,15 +1592,12 @@ mod tests {
             let path = dir.path().join(format!("{name}.jsonl"));
             append_fixture_entry(&path, "obs-sequence-0");
             {
-                let mut ledger = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+                let mut ledger =
+                    JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
                 for index in 1..=line_index {
                     ledger
                         .append_before_effect(
-                            observation(
-                                &format!("obs-sequence-{index}"),
-                                "trace-recovery",
-                                None,
-                            ),
+                            observation(&format!("obs-sequence-{index}"), "trace-recovery", None),
                             "2026-05-31T00:00:02Z",
                         )
                         .unwrap();
@@ -983,12 +1610,21 @@ mod tests {
 
             let error = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap_err();
             let status = match error {
-                ObservationLedgerError::Quarantined { status } => status,
+                ObservationLedgerError::Quarantined { status } => *status,
                 other => panic!("expected sequence quarantine for {name}, got {other:?}"),
             };
-            assert_eq!(status.failure_class, LedgerFailureClass::SequenceDiscontinuity);
-            assert_eq!(status.expected.as_deref(), Some(expected.to_string().as_str()));
-            assert_eq!(status.observed.as_deref(), Some(sequence.to_string().as_str()));
+            assert_eq!(
+                status.failure_class,
+                LedgerFailureClass::SequenceDiscontinuity
+            );
+            assert_eq!(
+                status.expected.as_deref(),
+                Some(expected.to_string().as_str())
+            );
+            assert_eq!(
+                status.observed.as_deref(),
+                Some(sequence.to_string().as_str())
+            );
             assert_eq!(std::fs::read(&path).unwrap(), original);
         }
     }
@@ -1004,12 +1640,15 @@ mod tests {
 
             let error = JsonlObservationLedger::open(&path, ledger_id, mother_id).unwrap_err();
             let status = match error {
-                ObservationLedgerError::ForeignLineage { status } => status,
+                ObservationLedgerError::ForeignLineage { status } => *status,
                 other => panic!("expected foreign lineage, got {other:?}"),
             };
             assert_eq!(status.first_bad_sequence, Some(0));
             assert_eq!(std::fs::read(&path).unwrap(), original);
-            assert_eq!(std::fs::read(status.preserved_ledger_path.unwrap()).unwrap(), original);
+            assert_eq!(
+                std::fs::read(status.preserved_ledger_path.unwrap()).unwrap(),
+                original
+            );
         }
     }
 
@@ -1030,7 +1669,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(next.local_sequence, 1);
-        assert_eq!(next.previous_entry_hash.as_deref(), Some(unacknowledged.entry_hash.as_str()));
+        assert_eq!(
+            next.previous_entry_hash.as_deref(),
+            Some(unacknowledged.entry_hash.as_str())
+        );
         assert_eq!(reopened.entries().unwrap().len(), 2);
     }
 
@@ -1046,19 +1688,17 @@ mod tests {
             let original = std::fs::read(&path).unwrap();
 
             let mut failed_once = false;
-            let result = open_with_recovery_hook(
-                &path,
-                "ledger-a",
-                "mother-a",
-                |observed_stage| {
-                    if observed_stage == stage && !failed_once {
-                        failed_once = true;
-                        return Err(std::io::Error::other("injected recovery interruption"));
-                    }
-                    Ok(())
-                },
+            let result = open_with_recovery_hook(&path, "ledger-a", "mother-a", |observed_stage| {
+                if observed_stage == stage && !failed_once {
+                    failed_once = true;
+                    return Err(std::io::Error::other("injected recovery interruption"));
+                }
+                Ok(())
+            });
+            assert!(
+                result.is_err(),
+                "stage {stage:?} did not interrupt recovery"
             );
-            assert!(result.is_err(), "stage {stage:?} did not interrupt recovery");
             let original_available = std::fs::read(&path).unwrap() == original;
             let preserved_available = forensic_records(&path).iter().any(|record| {
                 let bytes_path = record.parent().unwrap().join("source.bin");
@@ -1071,9 +1711,14 @@ mod tests {
                 .entries()
                 .unwrap()
                 .into_iter()
-                .filter(|entry| entry.observation.safe_message == "observation ledger tail recovered")
+                .filter(|entry| {
+                    entry.observation.safe_message == "observation ledger tail recovered"
+                })
                 .count();
-            assert_eq!(recovery_observations, 1, "stage {stage:?} duplicated recovery");
+            assert_eq!(
+                recovery_observations, 1,
+                "stage {stage:?} duplicated recovery"
+            );
         }
     }
 
@@ -1083,7 +1728,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("observations.jsonl");
         let mut obs = observation("obs-escaped", "trace-escaped", None);
-        obs.safe_message = "line one\nline two\r\t\0quote:\" slash:\\ controls:\u{0001}\u{001f}".into();
+        obs.safe_message =
+            "line one\nline two\r\t\0quote:\" slash:\\ controls:\u{0001}\u{001f}".into();
         let expected = obs.safe_message.clone();
         let mut ledger = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
         ledger
@@ -1092,7 +1738,10 @@ mod tests {
 
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(bytes.iter().filter(|byte| **byte == b'\n').count(), 1);
-        assert_eq!(ledger.entries().unwrap()[0].observation.safe_message, expected);
+        assert_eq!(
+            ledger.entries().unwrap()[0].observation.safe_message,
+            expected
+        );
     }
 
     #[test]
