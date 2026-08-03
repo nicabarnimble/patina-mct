@@ -58,10 +58,11 @@ pub use composition::{
     record_composition_plan,
 };
 pub use config::{
-    MctConfigChildAuthorityProjection, MctDaemonConfig, MctDaemonConfigStore, MctLocalNodeIdentity,
-    MctOperatorChildScope, MctOperatorNodeScope, MctOutboundPeerBindingPresentation,
-    MctPeerAddressBookEntry, MctPeerAuthorityProjection, MctStoredChildApproval,
-    MctStoredChildAssignment, current_timestamp, current_timestamp_string, default_config_path,
+    DEFAULT_MAX_CALL_HORIZON_SECONDS, MctCallDeadlineAdmission, MctConfigChildAuthorityProjection,
+    MctDaemonConfig, MctDaemonConfigStore, MctLocalNodeIdentity, MctOperatorChildScope,
+    MctOperatorNodeScope, MctOutboundPeerBindingPresentation, MctPeerAddressBookEntry,
+    MctPeerAuthorityProjection, MctStoredChildApproval, MctStoredChildAssignment,
+    admit_call_deadline, current_timestamp, current_timestamp_string, default_config_path,
     outbound_peer_binding_for_local,
 };
 #[cfg(feature = "fuzzing")]
