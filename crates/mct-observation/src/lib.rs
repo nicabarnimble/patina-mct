@@ -1744,6 +1744,192 @@ mod tests {
         );
     }
 
+    fn forensic_tree(path: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        fn visit(root: &Path, current: &Path, files: &mut Vec<(PathBuf, Vec<u8>)>) {
+            if !current.exists() {
+                return;
+            }
+            for entry in std::fs::read_dir(current).unwrap() {
+                let entry = entry.unwrap();
+                let child = entry.path();
+                if child.is_dir() {
+                    visit(root, &child, files);
+                } else {
+                    files.push((
+                        child.strip_prefix(root).unwrap().to_path_buf(),
+                        std::fs::read(child).unwrap(),
+                    ));
+                }
+            }
+        }
+        let root = forensic_root_path(path);
+        let mut files = Vec::new();
+        visit(&root, &root, &mut files);
+        files.sort_by(|left, right| left.0.cmp(&right.0));
+        files
+    }
+
+    /// Proof 9: either write or durability uncertainty poisons all later appends without another byte.
+    #[test]
+    fn write_and_sync_uncertainty_poison_writer_without_later_file_changes() {
+        for fault in [
+            TestAppendFault::PartialFrame,
+            TestAppendFault::CompleteFrameBeforeDurabilityAck,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("observations.jsonl");
+            let mut ledger = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+            ledger.inject_append_fault_after_for_test(0, fault);
+
+            let first = ledger.append_before_effect(
+                observation("obs-uncertain", "trace-poison", None),
+                "2026-05-31T00:00:01Z",
+            );
+            assert!(matches!(
+                first,
+                Err(ObservationLedgerError::AppendCommitUnknown { .. })
+            ));
+            assert!(ledger.is_poisoned());
+            let after_failure = std::fs::read(&path).unwrap();
+            for index in 0..3 {
+                let later = ledger.append_before_effect(
+                    observation(&format!("obs-poisoned-{index}"), "trace-poison", None),
+                    "2026-05-31T00:00:02Z",
+                );
+                assert!(matches!(
+                    later,
+                    Err(ObservationLedgerError::WriterPoisoned { .. })
+                ));
+                assert_eq!(std::fs::read(&path).unwrap(), after_failure);
+            }
+        }
+    }
+
+    /// Proof 10: exclusive reopen resolves uncertain bytes as committed, residue, or quarantine.
+    #[test]
+    fn poisoned_writer_reopen_resolves_all_three_commit_states() {
+        for (fault, expected) in [
+            (
+                TestAppendFault::CompleteFrameAfterDurabilityAck,
+                "committed",
+            ),
+            (TestAppendFault::PartialFrame, "residue"),
+            (TestAppendFault::TerminatedCorruption, "quarantine"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(format!("{expected}.jsonl"));
+            let mut ledger = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+            ledger.inject_append_fault_after_for_test(0, fault);
+            let result = ledger.append_before_effect(
+                observation("obs-uncertain-resolution", "trace-poison", None),
+                "2026-05-31T00:00:01Z",
+            );
+            assert!(matches!(
+                result,
+                Err(ObservationLedgerError::AppendCommitUnknown { .. })
+            ));
+            drop(ledger);
+
+            match expected {
+                "committed" => {
+                    let mut reopened =
+                        JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+                    assert!(reopened.recovery_status().is_none());
+                    assert_eq!(reopened.entries().unwrap().len(), 1);
+                    assert_eq!(
+                        reopened
+                            .append_before_effect(
+                                observation("obs-after-committed", "trace-poison", None),
+                                "2026-05-31T00:00:02Z",
+                            )
+                            .unwrap()
+                            .local_sequence,
+                        1
+                    );
+                }
+                "residue" => {
+                    let reopened =
+                        JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+                    assert!(reopened.recovery_status().is_some());
+                    assert_eq!(reopened.entries().unwrap().len(), 1);
+                    assert_eq!(
+                        reopened.entries().unwrap()[0].observation.safe_message,
+                        "observation ledger tail recovered"
+                    );
+                }
+                "quarantine" => {
+                    assert!(matches!(
+                        JsonlObservationLedger::open(&path, "ledger-a", "mother-a"),
+                        Err(ObservationLedgerError::Quarantined { .. })
+                    ));
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    /// Proof 11: an acknowledged batch prefix remains committed and is reported without rollback.
+    #[test]
+    fn batch_failure_reports_and_preserves_acknowledged_committed_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let mut ledger = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+        ledger.inject_append_fault_after_for_test(1, TestAppendFault::PartialFrame);
+
+        let error = ledger
+            .append_batch_before_effect(
+                [
+                    observation("obs-batch-0", "trace-batch", None),
+                    observation("obs-batch-1", "trace-batch", None),
+                    observation("obs-batch-2", "trace-batch", None),
+                ],
+                "2026-05-31T00:00:01Z",
+            )
+            .unwrap_err();
+        let outcome = match error {
+            ObservationLedgerError::BatchPartiallyCommitted { outcome } => *outcome,
+            other => panic!("expected typed partial batch outcome, got {other:?}"),
+        };
+        assert_eq!(outcome.acknowledged_committed_prefix.len(), 1);
+        assert_eq!(outcome.acknowledged_committed_prefix[0].local_sequence, 0);
+        assert_eq!(outcome.failed_index, 1);
+        assert!(outcome.commit_unknown);
+        drop(ledger);
+
+        let reopened = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+        let entries = reopened.entries().unwrap();
+        assert_eq!(
+            entries[0].observation.observation_id.as_str(),
+            "obs-batch-0"
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.observation.observation_id.as_str() == "obs-batch-0")
+                .count(),
+            1
+        );
+    }
+
+    /// Proof 12: contention is typed and cannot trigger ledger or forensic recovery mutations.
+    #[test]
+    fn contending_writer_is_typed_and_byte_identical_without_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let _owner = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+        append_raw(&path, b"unterminated-contention-residue");
+        let ledger_before = std::fs::read(&path).unwrap();
+        let forensics_before = forensic_tree(&path);
+
+        let contender = JsonlObservationLedger::open(&path, "ledger-a", "mother-a");
+        assert!(matches!(
+            contender,
+            Err(ObservationLedgerError::WriterContended { .. })
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), ledger_before);
+        assert_eq!(forensic_tree(&path), forensics_before);
+    }
+
     #[test]
     fn opening_directory_fails_closed() {
         let dir = tempfile::tempdir().unwrap();

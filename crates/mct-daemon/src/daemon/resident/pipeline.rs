@@ -1013,6 +1013,48 @@ listens = []
         );
     }
 
+    /// Proof 15: failed BeforeEffect acknowledgement returns observation-unavailable and starts no Child effect.
+    #[tokio::test]
+    async fn before_effect_append_failure_suppresses_child_effect() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let effect_marker = dir.path().join("child-effect-ran");
+        let script = format!(
+            "#!/bin/sh\nprintf effect > '{}'\ncat\n",
+            effect_marker.display()
+        );
+        write_resident_process_child_script(
+            &children_dir,
+            "resident-payload-echo",
+            script.as_bytes(),
+        );
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        MctDaemonConfigStore::new(&config_path)
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+        let (request, payload) =
+            jvm_bridge_protocol_request("patina:demo/control@0.1.0.run", r#"[{"effect":true}]"#)
+                .unwrap();
+
+        let result = execute_resident_call_at(
+            ResidentRuntimePaths::new(config_path, children_dir, state_path),
+            ResidentLedgerWriter::failed_for_test(),
+            request,
+            ResidentPayloadIngress::local(Some(payload)),
+            Timestamp::new("2026-08-02T12:00:00Z").unwrap(),
+        )
+        .await;
+
+        assert_eq!(result.outcome, CallProtocolOutcome::Failed);
+        assert_eq!(result.safe_message, "observation ledger unavailable");
+        assert!(
+            !effect_marker.exists(),
+            "unsuccessful BeforeEffect acknowledgement began a Child effect"
+        );
+    }
+
     #[tokio::test]
     async fn resident_ingress_rejects_expired_call_before_child_effect() {
         let dir = tempfile::tempdir().unwrap();
