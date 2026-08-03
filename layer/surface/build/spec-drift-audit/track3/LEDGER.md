@@ -1,6 +1,6 @@
 # Contract obligation ledger
 
-Status date: 2026-07-12; W2 extension 2026-07-14; Daily-Driver Slice 2 extension 2026-07-15; artifact-acquisition extension 2026-07-16; trigger-runtime Part A extension 2026-07-21; grants-authority v0 Phase G extension 2026-08-02
+Status date: 2026-07-12; W2 extension 2026-07-14; Daily-Driver Slice 2 extension 2026-07-15; artifact-acquisition extension 2026-07-16; trigger-runtime Part A extension 2026-07-21; grants-authority v0 Phase G extension 2026-08-02; ledger commit/recovery Phase H extension 2026-08-03
 
 Scope: complete named-invariant coverage for `mct-product-map.allium` and `mct-peer-ontology.allium`, plus bulk attribution of tool-derived structural obligations. The 2026-07-12 priority and full-inventory evidence is retained in place; the 2026-07-14 local-application-ingress invariants and W2-A remediation obligations extend it below.
 
@@ -12,6 +12,74 @@ Scope: complete named-invariant coverage for `mct-product-map.allium` and `mct-p
 - **DEFERRED** — the law explicitly assigns the behaviour to a named future scope; no current execution path exists to test.
 
 Module names distinguish library tests from binary-local tests: `mct_daemon_bin` denotes tests under `crates/mct-daemon/src/daemon/`.
+
+## Ledger commit and recovery — Phase H / Review 2
+
+The ratified Review 2 law is captured in [ledger-commit-recovery](../../feat/ledger-commit-recovery/SPEC.md). Phase H Task B implements only R2-L1/R2-L2. Its ledger commit/recovery invariants remain `LAW-LEADS-CODE` until all fifteen named proof steps land. Epoch, canonical authority facts, authority-wide projection freshness, and mutation/effect ordering remain `DEFERRED` to R2-L3..L6 and grants-authority slices 4-8.
+
+### Ledger commit and recovery — R2-L1/R2-L2 targets
+
+| Invariant | Current status | Phase disposition / evidence |
+|---|---|---|
+| `MctLedgerCommitAndRecovery.ValidatedSurvivingPrefixIsCanonical` | LAW-LEADS-CODE | R2-L1 proof steps 1, 2, 4-8: maximal complete framed identity/sequence/hash-valid prefix scanning and typed classification. |
+| `CompleteUnacknowledgedFactsResolveByRecovery` | LAW-LEADS-CODE | R2-L1/R2-L2 proof steps 8 and 10: complete uncertain frames recover as committed; reopen resolves all uncertain outcomes. Authority mutation-ID result semantics remain deferred to R2-L3. |
+| `UnterminatedTailIsResidue` | LAW-LEADS-CODE | R2-L1 proof steps 2-4: only an unterminated final frame is automatic residue; terminated malformed frames quarantine. |
+| `ResidueIsPreservedBeforeSetAside` | LAW-LEADS-CODE | R2-L1 proof steps 2, 3, and 13: exact D-R2.4 forensic record precedes set-aside and interrupted recovery is idempotent. |
+| `CorruptionIsNeverSkipped` | LAW-LEADS-CODE | R2-L1 proof steps 4-7: malformed terminated frames, hash breaks, sequence discontinuities, and foreign lineage quarantine without repair. The degraded read-only Mother plane remains deferred to R2-L5. |
+| `CommittedFactsAreNeverRewritten` | LAW-LEADS-CODE | R2-L1/R2-L2 proof steps 2, 4, 6, and 11: recovery changes no committed entry and a committed batch prefix stands. |
+| `UncertainAppendPoisonsWriter` | LAW-LEADS-CODE | R2-L2 proof steps 9 and 10: every later append is fenced without file mutation until exclusive reopen and rescan. |
+| `BeforeEffectRequiresAcknowledgedCommit` | LAW-LEADS-CODE | R2-L2 proof step 15: Child effect marker remains absent after unsuccessful or uncertain observation append. |
+| `OneWriterDefinesLocalOrder` | LAW-LEADS-CODE | R2-L2 proof step 12: typed fail-fast contention performs no ledger, recovery, projection, or forensic mutation. |
+| `EntryEncodingCannotForgeFrameEnd` | LAW-LEADS-CODE | R2-L1 proof step 14: every escapable character round-trips without an interior unescaped terminator. |
+
+### Authority epoch continuity — R2-L3/L4/L5 deferrals
+
+| Invariant | Current status | Phase disposition / evidence |
+|---|---|---|
+| `MctAuthorityEpochContinuity.EpochBeginsWithCanonicalFact` | DEFERRED | R2-L3 creates the canonical epoch fact; D-R2.8 virgin-Mother/operator gating is R2-L5. |
+| `WriterTenureUsesFreshEpoch` | DEFERRED | R2-L3 implements D-R2.1 after R2-L1/R2-L2 establish safe writer tenure. |
+| `EpochTransitionPreservesCurrentGrantMeaning` | DEFERRED | R2-L3/L4 must carry the grant set through epoch transition without changing its meaning. |
+| `RestoredHistoryCannotReuseAuthorityIdentity` | DEFERRED | R2-L3 names fresh authority after replacement, restoration, or reinitialization. |
+| `ProjectionEpochMustMatchCanonicalEpoch` | DEFERRED | R2-L4/L5 projection proof and authority denial. |
+
+### Canonical authority facts — R2-L3/L4 deferrals
+
+| Invariant | Current status | Phase disposition / evidence |
+|---|---|---|
+| `MctCanonicalAuthorityFacts.LedgerFactsAreCanonicalAuthority` | DEFERRED | R2-L3 canonical fact envelope and D-R2.3 import; slices 4-5 consume it. |
+| `MutationAndGenerationAdvanceAreOneFact` | DEFERRED | R2-L3 plus slice 4 names one indivisible canonical authority-shape mutation. |
+| `AuthorityFactIsReplayComplete` | DEFERRED | R2-L3 supplies the complete replay payload; R2-L4 proves reconstruction. |
+| `ConfigurationIsIntentNotAuthority` | DEFERRED | D-R2.3 one-time operator-gated import in R2-L3. |
+| `ProjectionFailureDoesNotUndoCommit` | DEFERRED | D-R2.5 typed mutation outcomes are R2-L3; coherent recovery/denial is R2-L4/L5. |
+
+### Authority-wide projection freshness — R2-L4/L5 deferrals
+
+| Invariant | Current status | Phase disposition / evidence |
+|---|---|---|
+| `MctAuthorityProjectionFreshness.AuthorityCursorReachesCanonicalHead` | DEFERRED | R2-L4 authority-wide replay through the committed head, initially covering Toy catalog/grants and grant-shaping source facts per D-R2.7. |
+| `CursorBindsHeadHashAndAuthorityIdentity` | DEFERRED | R2-L4 coherent source Mother/ledger/head/authority proof. |
+| `ProjectionFactsAndCursorBecomeVisibleTogether` | DEFERRED | R2-L4 coherent projection publication. |
+| `EpochMismatchDenies` | DEFERRED | R2-L4 proof plus R2-L5 fail-closed provider. |
+| `RebuildEqualsReplay` | DEFERRED | R2-L4 incremental-versus-rebuild equivalence proof. |
+| `MctProjectionCursor` authority-state kind, source Mother, through-entry hash, and projection status | DEFERRED | R2-L4 structural projection implementation. Existing trigger/watch checkpoints remain domain diagnostics and cannot establish D-G8 freshness. |
+
+### Mutation/effect ordering — R2-L6 and slices 7-8 deferrals
+
+| Invariant | Current status | Phase disposition / evidence |
+|---|---|---|
+| `TwoPhaseRouting.MutationCommitAndEffectStartHaveOneOrder` | DEFERRED | R2-L6 supplies the ordering boundary; slices 7-8 consume it at Child and Toy effects. |
+| `ProjectionLagCannotOvertakeRevocation` | DEFERRED | R2-L4/L5 current projection proof plus R2-L6 and slices 7-8 effect admission. |
+
+### Phase H initial disposition counts
+
+| Disposition | New invariants after Task A |
+|---|---:|
+| COVERED | 0 |
+| LAW-LEADS-CODE, targeted by R2-L1/R2-L2 | 10 |
+| DEFERRED to R2-L3..L6 / slices 4-8 | 17 |
+| **Total new invariants** | **27** |
+
+**Known seam:** authority readiness waits on full-ledger replay. Ledger growth is therefore a future authority-availability concern; Phase H does not add an alternate authority source, compaction path, or partial-replay freshness claim.
 
 ## Grants authority v0 — Phase G
 
