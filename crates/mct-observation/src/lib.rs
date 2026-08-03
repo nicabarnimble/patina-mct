@@ -61,11 +61,30 @@ pub enum ObservationLedgerError {
     Quarantined { status: Box<LedgerQuarantineStatus> },
     #[error("observation ledger has foreign lineage: {status:?}")]
     ForeignLineage { status: Box<LedgerQuarantineStatus> },
+    #[error(
+        "observation ledger writer lock contention at {path}: already locked by another writer"
+    )]
+    WriterContended { path: PathBuf },
     #[error("observation ledger writer lock error at {path}: {source}")]
     WriterLock {
         path: PathBuf,
         #[source]
         source: std::io::Error,
+    },
+    #[error("observation ledger append commitment is unknown at {path} during {stage:?}: {source}")]
+    AppendCommitUnknown {
+        path: PathBuf,
+        stage: AppendFailureStage,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("observation ledger writer is poisoned at {path}; close and reopen before appending")]
+    WriterPoisoned { path: PathBuf },
+    #[error(
+        "observation ledger batch stopped after its acknowledged committed prefix: {outcome:?}"
+    )]
+    BatchPartiallyCommitted {
+        outcome: Box<BatchPartialCommitOutcome>,
     },
     #[error(
         "observation ledger changed behind writer at {path}: expected sequence {expected_sequence}, found {actual_sequence}"
@@ -78,6 +97,22 @@ pub enum ObservationLedgerError {
 }
 
 pub type Result<T> = std::result::Result<T, ObservationLedgerError>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppendFailureStage {
+    Write,
+    Durability,
+    Acknowledgement,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BatchPartialCommitOutcome {
+    pub acknowledged_committed_prefix: Vec<MctObservationLedgerEntry>,
+    pub failed_index: usize,
+    pub commit_unknown: bool,
+    pub failure: String,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -180,6 +215,31 @@ pub struct JsonlObservationLedger {
     next_sequence: u64,
     previous_hash: Option<String>,
     recovery_status: Option<LedgerRecoveryStatus>,
+    writer_state: LedgerWriterState,
+    #[cfg(test)]
+    append_fault: Option<ScheduledAppendFault>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LedgerWriterState {
+    Ready,
+    Poisoned,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TestAppendFault {
+    PartialFrame,
+    CompleteFrameBeforeDurabilityAck,
+    CompleteFrameAfterDurabilityAck,
+    TerminatedCorruption,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ScheduledAppendFault {
+    successful_appends_before_fault: usize,
+    fault: TestAppendFault,
 }
 
 #[derive(Debug)]
@@ -266,6 +326,22 @@ impl JsonlObservationLedger {
         self.recovery_status.as_ref()
     }
 
+    pub fn is_poisoned(&self) -> bool {
+        self.writer_state == LedgerWriterState::Poisoned
+    }
+
+    #[cfg(test)]
+    fn inject_append_fault_after_for_test(
+        &mut self,
+        successful_appends_before_fault: usize,
+        fault: TestAppendFault,
+    ) {
+        self.append_fault = Some(ScheduledAppendFault {
+            successful_appends_before_fault,
+            fault,
+        });
+    }
+
     pub fn append_before_effect(
         &mut self,
         observation: MctObservation,
@@ -285,10 +361,25 @@ impl JsonlObservationLedger {
         appended_at: impl Into<String>,
     ) -> Result<Vec<MctObservationLedgerEntry>> {
         let appended_at = appended_at.into();
-        observations
-            .into_iter()
-            .map(|observation| self.append_before_effect(observation, appended_at.clone()))
-            .collect()
+        let mut acknowledged_committed_prefix = Vec::new();
+        for (failed_index, observation) in observations.into_iter().enumerate() {
+            match self.append_before_effect(observation, appended_at.clone()) {
+                Ok(entry) => acknowledged_committed_prefix.push(entry),
+                Err(error) => {
+                    let commit_unknown =
+                        matches!(error, ObservationLedgerError::AppendCommitUnknown { .. });
+                    return Err(ObservationLedgerError::BatchPartiallyCommitted {
+                        outcome: Box::new(BatchPartialCommitOutcome {
+                            acknowledged_committed_prefix,
+                            failed_index,
+                            commit_unknown,
+                            failure: error.to_string(),
+                        }),
+                    });
+                }
+            }
+        }
+        Ok(acknowledged_committed_prefix)
     }
 
     pub fn append(
@@ -298,6 +389,11 @@ impl JsonlObservationLedger {
         durability_class: DurabilityClass,
         export_status: ExportStatus,
     ) -> Result<MctObservationLedgerEntry> {
+        if self.is_poisoned() {
+            return Err(ObservationLedgerError::WriterPoisoned {
+                path: self.path.clone(),
+            });
+        }
         let mut entry = MctObservationLedgerEntry {
             ledger_id: self.ledger_id.clone(),
             mother_node_id: self.mother_node_id.clone(),
@@ -311,25 +407,104 @@ impl JsonlObservationLedger {
         };
         entry.entry_hash = entry_hash(&entry)?;
 
-        let line =
-            serde_json::to_string(&entry).map_err(|source| ObservationLedgerError::Json {
+        let mut frame =
+            serde_json::to_vec(&entry).map_err(|source| ObservationLedgerError::Json {
                 path: self.path.clone(),
                 source,
             })?;
-        writeln!(self.file, "{line}").map_err(|source| ObservationLedgerError::Io {
-            path: self.path.clone(),
-            source,
-        })?;
-        self.file
-            .sync_data()
-            .map_err(|source| ObservationLedgerError::Io {
-                path: self.path.clone(),
-                source,
-            })?;
+        frame.push(b'\n');
+        self.append_frame(&frame)?;
 
         self.previous_hash = Some(entry.entry_hash.clone());
         self.next_sequence += 1;
         Ok(entry)
+    }
+
+    fn append_frame(&mut self, frame: &[u8]) -> Result<()> {
+        #[cfg(test)]
+        if let Some(fault) = self.scheduled_fault_for_next_append() {
+            return self.execute_test_append_fault(frame, fault);
+        }
+
+        if let Err(source) = self.file.write_all(frame) {
+            return Err(self.poisoned_append_error(AppendFailureStage::Write, source));
+        }
+        if let Err(source) = self.file.sync_data() {
+            return Err(self.poisoned_append_error(AppendFailureStage::Durability, source));
+        }
+        Ok(())
+    }
+
+    fn poisoned_append_error(
+        &mut self,
+        stage: AppendFailureStage,
+        source: std::io::Error,
+    ) -> ObservationLedgerError {
+        self.writer_state = LedgerWriterState::Poisoned;
+        ObservationLedgerError::AppendCommitUnknown {
+            path: self.path.clone(),
+            stage,
+            source,
+        }
+    }
+
+    #[cfg(test)]
+    fn scheduled_fault_for_next_append(&mut self) -> Option<TestAppendFault> {
+        let scheduled = self.append_fault.as_mut()?;
+        if scheduled.successful_appends_before_fault > 0 {
+            scheduled.successful_appends_before_fault -= 1;
+            return None;
+        }
+        self.append_fault.take().map(|scheduled| scheduled.fault)
+    }
+
+    #[cfg(test)]
+    fn execute_test_append_fault(&mut self, frame: &[u8], fault: TestAppendFault) -> Result<()> {
+        let injected = |message: &'static str| std::io::Error::other(message);
+        match fault {
+            TestAppendFault::PartialFrame => {
+                let partial_len = (frame.len() / 2).max(1);
+                if let Err(source) = self.file.write_all(&frame[..partial_len]) {
+                    return Err(self.poisoned_append_error(AppendFailureStage::Write, source));
+                }
+                let _ = self.file.sync_data();
+                Err(self.poisoned_append_error(
+                    AppendFailureStage::Write,
+                    injected("injected partial frame write failure"),
+                ))
+            }
+            TestAppendFault::CompleteFrameBeforeDurabilityAck => {
+                if let Err(source) = self.file.write_all(frame) {
+                    return Err(self.poisoned_append_error(AppendFailureStage::Write, source));
+                }
+                Err(self.poisoned_append_error(
+                    AppendFailureStage::Durability,
+                    injected("injected durability acknowledgement failure"),
+                ))
+            }
+            TestAppendFault::CompleteFrameAfterDurabilityAck => {
+                if let Err(source) = self.file.write_all(frame) {
+                    return Err(self.poisoned_append_error(AppendFailureStage::Write, source));
+                }
+                if let Err(source) = self.file.sync_data() {
+                    return Err(self.poisoned_append_error(AppendFailureStage::Durability, source));
+                }
+                Err(self.poisoned_append_error(
+                    AppendFailureStage::Acknowledgement,
+                    injected("injected lost append acknowledgement"),
+                ))
+            }
+            TestAppendFault::TerminatedCorruption => {
+                if let Err(source) = self.file.write_all(b"injected-corrupt-frame\n") {
+                    return Err(self.poisoned_append_error(AppendFailureStage::Write, source));
+                }
+                let _ = self.file.sync_data();
+                Err(self.poisoned_append_error(
+                    AppendFailureStage::Acknowledgement,
+                    injected("injected terminated corruption"),
+                ))
+            }
+        }
     }
 
     pub fn iter_entries(&self) -> impl Iterator<Item = Result<MctObservationLedgerEntry>> {
@@ -616,6 +791,9 @@ fn open_with_recovery_hook(
         next_sequence: state.next_sequence,
         previous_hash: state.previous_hash,
         recovery_status,
+        writer_state: LedgerWriterState::Ready,
+        #[cfg(test)]
+        append_fault: None,
     })
 }
 
@@ -1068,21 +1246,15 @@ impl Iterator for LedgerEntryIter {
 }
 
 fn acquire_writer_lock(path: &Path, file: File) -> Result<File> {
-    file.try_lock()
-        .map_err(|source| ObservationLedgerError::WriterLock {
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(ObservationLedgerError::WriterContended {
             path: path.to_path_buf(),
-            source: lock_error_to_io(source),
-        })?;
-    Ok(file)
-}
-
-fn lock_error_to_io(error: std::fs::TryLockError) -> std::io::Error {
-    match error {
-        std::fs::TryLockError::WouldBlock => std::io::Error::new(
-            std::io::ErrorKind::WouldBlock,
-            "observation ledger is already locked by another writer",
-        ),
-        std::fs::TryLockError::Error(source) => source,
+        }),
+        Err(std::fs::TryLockError::Error(source)) => Err(ObservationLedgerError::WriterLock {
+            path: path.to_path_buf(),
+            source,
+        }),
     }
 }
 
@@ -1205,7 +1377,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(ObservationLedgerError::WriterLock { .. })
+            Err(ObservationLedgerError::WriterContended { .. })
         ));
     }
 
