@@ -395,7 +395,33 @@ pub struct AuthorizedChildInvocation {
     policy_revision: u64,
 }
 
+#[derive(Debug)]
+/// Proof that a child invocation token is bound to the supplied call and its
+/// current policy revision at an effect-admission boundary.
+///
+/// The constructor is private to [`AuthorizedChildInvocation::admit_effect_for_call`]
+/// so daemon effect paths cannot obtain this proof without performing both
+/// checks.
+pub struct AdmittedChildEffect<'a> {
+    authorized: &'a AuthorizedChildInvocation,
+}
+
+impl AdmittedChildEffect<'_> {
+    /// Returns the capability whose exact-call binding was admitted.
+    pub fn authorized(&self) -> &AuthorizedChildInvocation {
+        self.authorized
+    }
+}
+
 impl AuthorizedChildInvocation {
+    /// Admits this token for an effect only when its exact call and policy
+    /// revision match the supplied call.
+    pub fn admit_effect_for_call<'a>(&'a self, call: &MctCall) -> Option<AdmittedChildEffect<'a>> {
+        (self.call_id == call.call_id
+            && self.policy_revision == call.authority_context.policy_revision)
+            .then_some(AdmittedChildEffect { authorized: self })
+    }
+
     /// Returns the token identifier minted for this single child invocation.
     pub fn authorized_child_invocation_id(&self) -> &AuthorizedChildInvocationId {
         &self.authorized_child_invocation_id

@@ -235,7 +235,34 @@ pub struct AuthorizedToyCall {
     grants_revision: u64,
 }
 
+#[derive(Debug)]
+/// Proof that a Toy token is bound to the supplied call and its authority
+/// revisions at an effect-admission boundary.
+///
+/// The constructor is private to [`AuthorizedToyCall::admit_effect_for_call`]
+/// so daemon Toy paths cannot obtain this proof without performing every
+/// binding check.
+pub struct AdmittedToyEffect<'a> {
+    authorized: &'a AuthorizedToyCall,
+}
+
+impl AdmittedToyEffect<'_> {
+    /// Returns the capability whose exact-call binding was admitted.
+    pub fn authorized(&self) -> &AuthorizedToyCall {
+        self.authorized
+    }
+}
+
 impl AuthorizedToyCall {
+    /// Admits this token for an effect only when its exact call and authority
+    /// revisions match the supplied call.
+    pub fn admit_effect_for_call<'a>(&'a self, call: &MctCall) -> Option<AdmittedToyEffect<'a>> {
+        (self.call_id == call.call_id
+            && self.policy_revision == call.authority_context.policy_revision
+            && self.grants_revision == call.authority_context.grants_revision)
+            .then_some(AdmittedToyEffect { authorized: self })
+    }
+
     /// Unique token identifier for the authorized toy effect.
     pub fn authorized_toy_call_id(&self) -> &AuthorizedToyCallId {
         &self.authorized_toy_call_id

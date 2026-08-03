@@ -82,11 +82,9 @@ impl MctToyAdapterRegistry {
         input_json: &str,
         ids: MctToyCallIds,
     ) -> MctToyCallReport {
-        if authorized.policy_revision() != call.authority_context.policy_revision
-            || authorized.grants_revision() != call.authority_context.grants_revision
-        {
+        let Some(_admitted_effect) = authorized.admit_effect_for_call(call) else {
             return stale_toy_authority_report(authorized, call, ids);
-        }
+        };
 
         let started = toy_observation(
             ids.started_observation_id,
@@ -753,6 +751,30 @@ mod tests {
                     .expect("string ID literal/generated value must be non-empty")
             )
         );
+    }
+
+    #[test]
+    fn toy_adapter_denies_mismatched_call_token_before_backend_call() {
+        let mut registry = MctToyAdapterRegistry::new();
+        registry.register(
+            ToyId::new("toy-echo").expect("string ID literal/generated value must be non-empty"),
+            MctToyBackend::EchoJson,
+        );
+        let mut different_call = call();
+        different_call.call_id = CallId::new("call-toy-different")
+            .expect("string ID literal/generated value must be non-empty");
+
+        let report = registry.call_authorized_toy(
+            &authorized("toy-echo"),
+            &different_call,
+            "{\"backend_must_not_echo\":true}",
+            ids("toy-call-mismatch"),
+        );
+
+        assert_eq!(report.outcome, MctToyAdapterOutcome::Failed);
+        assert_eq!(report.output_json, None);
+        assert_eq!(report.observations.len(), 1);
+        assert_eq!(report.observations[0].outcome, ObservationOutcome::Denied);
     }
 
     #[test]
