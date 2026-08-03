@@ -21,7 +21,7 @@ The ratified Phase G law is captured in [grants-authority-v0](../../feat/grants-
 
 | Invariant | Current status | Phase disposition / evidence |
 |---|---|---|
-| `TwoPhaseRouting.ExecutionTokenBindsExactCall` | LAW-LEADS-CODE | Target COVERED by Phase G Task B proof steps 1-3: process, all three WASM entry points, and Toy effect admission deny token/call mismatch before effect. |
+| `TwoPhaseRouting.ExecutionTokenBindsExactCall` | COVERED | Phase G proof steps 1-3: `mct_daemon::process::tests::process_harness_denies_mismatched_call_token_before_spawn`; all three `mct_daemon::wasm::tests::{wit_runtime,s32_runtime,s32_toy_runtime}_denies_mismatched_child_token_before_component_load` paths; and `mct_daemon::toy::tests::toy_adapter_denies_mismatched_call_token_before_backend_call`. |
 | `ExecutionTokenBindsSelectedChild` | COVERED | `mct_kernel::route::tests::route_revalidation_denies_route_child_mismatch` proves a selected-route/Child mismatch mints no execution authority. |
 | `EffectAdmissionIsOrderedWithAuthorityMutation` | DEFERRED | Review 2 plus slices 7-8 must establish the current local snapshot and mutation/effect ordering boundary. |
 | `EffectPermitCannotRefreshItself` | DEFERRED | Slice 7 must deny stale locally sourced execution authority and require a complete new evaluation; Task B cannot repair the fenced grants guard. |
@@ -42,11 +42,11 @@ The ratified Phase G law is captured in [grants-authority-v0](../../feat/grants-
 | `MctCallAuthorityAndDeadline.CallerAuthorityCannotBecomeLocalAuthorityByCopying` | DEFERRED | Slice 5 separates caller expectation from locally sourced execution authority after Review 2. |
 | `LocalExecutionSnapshotHasMotherProvenance` | DEFERRED | Slice 5 local authority provider and snapshot. |
 | `LocalSnapshotIsCoherent` | DEFERRED | Review 2 projection guarantee plus slices 4-5. |
-| `ExecutingMotherClockIsAuthoritative` | LAW-LEADS-CODE | Target COVERED by Task B proof steps 4-5 and 9 using the executing Mother's injected clock. |
-| `CallerDeadlineCannotExtendLocalHorizon` | LAW-LEADS-CODE | Target COVERED by Task B proof steps 6 and 9 with the configured 600-second default horizon. |
-| `ExpiredCallsDoNotBeginEffects` | LAW-LEADS-CODE | Target COVERED by Task B proof steps 7 and 9. |
-| `TokenExpiryDoesNotExceedEffectiveDeadline` | LAW-LEADS-CODE | Target COVERED by Task B proof step 8 on the production Toy-token minting path. |
-| `ClockUncertaintyFailsClosedBeyondConfiguredTolerance` | LAW-LEADS-CODE | Target COVERED by Task B proof step 9; no caller-skew path receives positive authority grace. |
+| `ExecutingMotherClockIsAuthoritative` | COVERED | `mct_daemon::toy::tests::toy_adapter_denies_token_at_expiry_without_backend_call`; `toy_adapter_allows_token_before_expiry`; `mct_daemon::config::tests::call_deadline_admission_clamps_ahead_rejects_behind_without_grace`. |
+| `CallerDeadlineCannotExtendLocalHorizon` | COVERED | `mct_daemon::wasm::tests::far_future_caller_deadline_clamps_wasm_epoch_wait_to_configured_horizon`; `mct_daemon::config::tests::call_deadline_admission_clamps_ahead_rejects_behind_without_grace` proves the configurable 600-second default and stricter local bound. |
+| `ExpiredCallsDoNotBeginEffects` | COVERED | `mct_daemon_bin::resident::pipeline::tests::resident_ingress_rejects_expired_call_before_child_effect` proves expiry precedes payload resolution and Child execution; the injected-clock config test proves no positive grace. |
+| `TokenExpiryDoesNotExceedEffectiveDeadline` | COVERED | `mct_kernel::toy::tests::toy_token_expiry_is_capped_by_effective_call_deadline` proves production token minting takes the earlier of grant and effective call deadlines. |
+| `ClockUncertaintyFailsClosedBeyondConfiguredTolerance` | COVERED | `mct_daemon::config::tests::call_deadline_admission_clamps_ahead_rejects_behind_without_grace` proves the configured zero-tolerance behavior: ahead clamps and behind expires. |
 
 ### Grants-authority generation
 
@@ -65,7 +65,7 @@ The ratified Phase G law is captured in [grants-authority-v0](../../feat/grants-
 | `MctToyGrantAuthority.ToyTokenBindsCallAndEffect` | DEFERRED | Task B proof step 3 covers its exact-call edge through `ExecutionTokenBindsExactCall`; slice 8 must add complete action/resource/local-version effect scope. |
 | `EveryToyEffectRevalidatesCurrentAuthority` | DEFERRED | Slice 8 current local generation and grant evaluation, gated on Review 2. |
 | `ToyEffectChecksExactGrant` | DEFERRED | Slice 8 exact live grant state, scope, and consumption facts. |
-| `ToyTokenExpiryIsEnforced` | LAW-LEADS-CODE | Target COVERED by Phase G Task B proof steps 4-5. |
+| `ToyTokenExpiryIsEnforced` | COVERED | `mct_daemon::toy::tests::toy_adapter_denies_token_at_expiry_without_backend_call`; `mct_daemon::toy::tests::toy_adapter_allows_token_before_expiry`. |
 | `RevocationBeforeEffectAdmissionDenies` | DEFERRED | Slice 8 current grant revalidation and effect-admission ordering. |
 | `DelegatedCapabilitiesHaveBoundedRevocationSemantics` | DEFERRED | Slice 8 must prove delegated admission is current and bounded; per-operation mediation and active revocation remain future law. |
 
@@ -80,12 +80,12 @@ The ratified Phase G law is captured in [grants-authority-v0](../../feat/grants-
 
 ### Phase G disposition counts
 
-| Disposition | New invariants now | Expected after Task B |
-|---|---:|---:|
-| COVERED | 1 | 8 |
-| LAW-LEADS-CODE, targeted by Task B | 7 | 0 |
-| DEFERRED to Review 2 / slices 4-8 | 23 | 23 |
-| **Total new invariants** | **31** | **31** |
+| Disposition | New invariants after Task B |
+|---|---:|
+| COVERED | 8 |
+| LAW-LEADS-CODE, targeted by Task B | 0 |
+| DEFERRED to Review 2 / slices 4-8 | 23 |
+| **Total new invariants** | **31** |
 
 The strengthened pre-existing `TwoPhaseRouting.EffectBoundaryRevisionGuardIsDistinct` is tracked in its original routing row below and is no longer credited as covered by a test that supplies a synthetic current revision while the production provider copies grants revision from the call.
 
