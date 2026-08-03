@@ -239,9 +239,9 @@ pub struct AuthorizedToyCall {
 /// Proof that a Toy token is bound to the supplied call and its authority
 /// revisions at an effect-admission boundary.
 ///
-/// The constructor is private to [`AuthorizedToyCall::admit_effect_for_call`]
+/// The constructor is private to [`AuthorizedToyCall::admit_effect_for_call_at`]
 /// so daemon Toy paths cannot obtain this proof without performing every
-/// binding check.
+/// binding and expiry check.
 pub struct AdmittedToyEffect<'a> {
     authorized: &'a AuthorizedToyCall,
 }
@@ -255,11 +255,17 @@ impl AdmittedToyEffect<'_> {
 
 impl AuthorizedToyCall {
     /// Admits this token for an effect only when its exact call and authority
-    /// revisions match the supplied call.
-    pub fn admit_effect_for_call<'a>(&'a self, call: &MctCall) -> Option<AdmittedToyEffect<'a>> {
+    /// revisions match the supplied call and the executing Mother's current
+    /// time is strictly before token expiry.
+    pub fn admit_effect_for_call_at<'a>(
+        &'a self,
+        call: &MctCall,
+        executing_mother_now: &Timestamp,
+    ) -> Option<AdmittedToyEffect<'a>> {
         (self.call_id == call.call_id
             && self.policy_revision == call.authority_context.policy_revision
-            && self.grants_revision == call.authority_context.grants_revision)
+            && self.grants_revision == call.authority_context.grants_revision
+            && executing_mother_now < &self.expires_at)
             .then_some(AdmittedToyEffect { authorized: self })
     }
 
