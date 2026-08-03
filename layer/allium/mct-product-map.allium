@@ -189,6 +189,14 @@ contract TwoPhaseRouting {
         -- before admission denies; a revocation committed after an external effect has started
         -- cannot retroactively undo that already-started effect.
 
+    @invariant MutationCommitAndEffectStartHaveOneOrder
+        -- Canonical authority-mutation commitment and final protected-effect admission share one
+        -- executing-Mother order. An uncertain mutation commit admits no effect.
+
+    @invariant ProjectionLagCannotOvertakeRevocation
+        -- After a revocation fact commits, a stale projection cannot admit an effect while projection
+        -- recovery is incomplete or current canonical coverage is otherwise unprovable.
+
     @invariant EffectPermitCannotRefreshItself
         -- Stale effect authority denies without implicit refresh. Retry requires a complete new
         -- authority evaluation and newly minted token.
@@ -2886,6 +2894,54 @@ contract MctLocalFirstObservationLedger {
         -- Export or projection failure affects export health and retry state, not the underlying observation truth.
 }
 
+contract MctLedgerCommitAndRecovery {
+    @invariant ValidatedSurvivingPrefixIsCanonical
+        -- Canonical ledger truth is the maximal surviving prefix of complete framed entries whose
+        -- source identity, local sequence, and hash lineage all validate.
+
+    @invariant CompleteUnacknowledgedFactsResolveByRecovery
+        -- A complete valid fact found in that surviving prefix is committed even when its caller did
+        -- not receive success. An uncertain authority mutation reports `commit_unknown`; retry with
+        -- the same mutation identity resolves it, while a new identity cannot guess around it.
+
+    @invariant UnterminatedTailIsResidue
+        -- Only one unterminated final frame may be classified as automatic crash residue. Its bytes
+        -- are never a fact even when they happen to decode as a complete entry value.
+
+    @invariant ResidueIsPreservedBeforeSetAside
+        -- Before residue is set aside, its exact bytes, source identity, offset and length, digest,
+        -- last committed head, failure class, recovery decision identity, and recovery time survive
+        -- under the Mother's private durable evidence indefinitely without automatic export.
+
+    @invariant CorruptionIsNeverSkipped
+        -- A terminated malformed frame, hash failure, sequence discontinuity, or foreign lineage is
+        -- preserved with diagnostic evidence and quarantines the ledger. It is never skipped,
+        -- truncated, renumbered, repaired, or automatically adopted. A quarantined Mother may expose
+        -- only the isolated owner-readable health and forensic plane; mutation and authority surfaces deny.
+
+    @invariant CommittedFactsAreNeverRewritten
+        -- Recovery may set aside proven uncommitted residue but never changes or rolls back a fact in
+        -- the committed validated prefix. A committed batch prefix remains canonical after later failure.
+
+    @invariant UncertainAppendPoisonsWriter
+        -- After an append can no longer prove whether offered bytes committed, that writer admits no
+        -- later append. Only close, exclusive reopen, and full rescan can resolve the fact as committed,
+        -- residue, or quarantine.
+
+    @invariant BeforeEffectRequiresAcknowledgedCommit
+        -- A protected effect does not begin when any required BeforeEffect fact has an unsuccessful
+        -- or uncertain acknowledgement, even if later recovery finds that fact committed.
+
+    @invariant OneWriterDefinesLocalOrder
+        -- Exactly one exclusive writer defines a ledger's local append order. Contention fails fast
+        -- and changes no ledger, projection, recovery state, or forensic artifact; ordinary supervisor
+        -- restart policy is the retry mechanism.
+
+    @invariant EntryEncodingCannotForgeFrameEnd
+        -- Serialized entry content cannot contain an unescaped frame terminator, so only the ledger's
+        -- framing boundary can terminate an entry.
+}
+
 -- Decision: MCT adopts the Clojure-style distinction between identity, immutable value, and state as a succession of values.
 -- Decision: Change in MCT is represented by appending new immutable facts or publishing new immutable snapshots, not by rewriting hidden mutable objects.
 -- Decision: Old facts remain true as evidence. Corrections, revocations, retries, supersessions, and status changes are represented as later facts that explain or replace current projections.
@@ -2931,12 +2987,15 @@ surface MctIdentityTimelineView {
 
 entity MctProjectionCursor {
     projection_id: String
-    projection_kind: route_cache | grant_table | child_readiness | node_health | trace_tree | metric_rollup | audit_view | telemetry_export
+    projection_kind: route_cache | grant_table | authority_state | child_readiness | node_health | trace_tree | metric_rollup | audit_view | telemetry_export
+    source_mother_node_id: String
     source_ledger_id: String
     through_sequence: Integer
     through_observation_id: String
+    through_entry_hash: String
     grants_authority: GrantsAuthorityIdentity?
     projection_hash: String
+    projection_status: rebuilding | current | stale | quarantined
     updated_at: Timestamp
 }
 
@@ -2952,14 +3011,17 @@ surface MctProjectionStatus {
     exposes:
         projection.projection_id
         projection.projection_kind
+        projection.source_mother_node_id
         projection.source_ledger_id
         projection.through_sequence
         projection.through_observation_id
+        projection.through_entry_hash
         projection.grants_authority.mother_node_id
         projection.grants_authority.authority_epoch
         projection.grants_authority.generation
         projection.grants_authority.source_authority_observation_id
         projection.projection_hash
+        projection.projection_status
         projection.updated_at
 }
 
@@ -2969,8 +3031,10 @@ contract MctAuthorityProjectionFreshness {
         -- and exact grants-authority identity from which its facts were derived.
 
     @invariant AuthorityProjectionCoversCurrentGeneration
-        -- Authority evaluation may use a projection only when it proves coverage of the current
-        -- canonical grants-authority generation rather than merely a formerly valid generation.
+        -- Authority evaluation may use a projection only when an authority-state cursor proves
+        -- coverage of the current canonical grants-authority generation rather than merely a formerly
+        -- valid generation. Domain cursors such as trigger or watch checkpoints are diagnostics for
+        -- their own replay and cannot serve as this authority proof.
 
     @invariant ProjectionVersionAndFactsAreCoherent
         -- The projected grant facts and the grants-authority identity exposed with them describe
@@ -2979,6 +3043,75 @@ contract MctAuthorityProjectionFreshness {
     @invariant UnprovableFreshnessDenies
         -- When current canonical generation coverage cannot be proved, authority evaluation denies
         -- instead of treating cached, missing, or ambiguous projection state as current.
+
+    @invariant AuthorityCursorReachesCanonicalHead
+        -- A current authority-state projection proves it processed the canonical ledger through its
+        -- committed head, including entries that do not themselves change authority. The first such
+        -- projection covers Toy catalog and grants plus their grant-shaping source facts.
+
+    @invariant CursorBindsHeadHashAndAuthorityIdentity
+        -- Authority coverage binds the source Mother, source ledger, committed sequence and entry hash,
+        -- authority epoch, generation, and source authority observation as one proof.
+
+    @invariant ProjectionFactsAndCursorBecomeVisibleTogether
+        -- Authority facts, projection hash, projection status, and cursor describe one coherent visible
+        -- state; a new cursor cannot expose old facts and new facts cannot expose an old cursor.
+
+    @invariant EpochMismatchDenies
+        -- Projection facts from another authority epoch grant no authority even when their generation,
+        -- source sequence, or record digests happen to match.
+
+    @invariant RebuildEqualsReplay
+        -- Rebuilding from the same validated committed history produces the same authority facts,
+        -- authority identity, and projection hash as uninterrupted incremental replay.
+}
+
+contract MctAuthorityEpochContinuity {
+    @invariant EpochBeginsWithCanonicalFact
+        -- Authority evaluation and advertisement begin only after one committed canonical epoch fact
+        -- names the Mother, source ledger, predecessor head when known, and generation baseline. A
+        -- Mother is virgin only when every daemon-written durable artifact is absent; otherwise
+        -- initialization requires an operator gate.
+
+    @invariant WriterTenureUsesFreshEpoch
+        -- Every successful exclusive writer tenure establishes a fresh non-repeating authority epoch
+        -- before authority evaluation or advertisement becomes available.
+
+    @invariant EpochTransitionPreservesCurrentGrantMeaning
+        -- A writer-tenure epoch transition invalidates prior authority tokens without silently
+        -- widening, narrowing, creating, or removing the current grant set.
+
+    @invariant RestoredHistoryCannotReuseAuthorityIdentity
+        -- Ledger replacement, restoration, or reinitialization cannot make a previously used
+        -- Mother, authority epoch, and generation identity current again.
+
+    @invariant ProjectionEpochMustMatchCanonicalEpoch
+        -- Projection facts under an epoch other than the current canonical epoch grant no authority,
+        -- irrespective of matching generation or record values.
+}
+
+contract MctCanonicalAuthorityFacts {
+    @invariant LedgerFactsAreCanonicalAuthority
+        -- Current grant and catalog authority derives from committed canonical ledger facts rather
+        -- than configuration or projection records.
+
+    @invariant MutationAndGenerationAdvanceAreOneFact
+        -- One logical authority-shape mutation and its resulting generation advance are represented
+        -- by one committed canonical fact, never by independently committable authority changes.
+
+    @invariant AuthorityFactIsReplayComplete
+        -- A canonical authority fact carries enough structured meaning to reconstruct its resulting
+        -- authority state; a digest, safe message, or projection row alone is insufficient.
+
+    @invariant ConfigurationIsIntentNotAuthority
+        -- Configuration and existing projected grant state may request only a one-time operator-gated
+        -- import committed as canonical facts; disagreement with the ledger never grants, retains, or
+        -- revokes authority by itself.
+
+    @invariant ProjectionFailureDoesNotUndoCommit
+        -- A committed authority fact remains canonical when projection fails. Mutation results
+        -- distinguish `committed`, `committed_projection_pending`, `commit_unknown`, and
+        -- `rejected_before_commit`; authority use denies until coherent projection coverage returns.
 }
 
 contract MctImmutabilityModel {
