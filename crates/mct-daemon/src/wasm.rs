@@ -1446,12 +1446,12 @@ fn discover_wit_component_operations(
     let mut operations = BTreeSet::new();
     let component_type = component.component_type();
     for (interface_name, item) in component_type.exports(engine) {
-        let component::types::ComponentItem::ComponentInstance(instance) = item else {
+        let component::types::ComponentItem::ComponentInstance(instance) = item.ty else {
             continue;
         };
         for (function_name, function_item) in instance.exports(engine) {
             if matches!(
-                function_item,
+                function_item.ty,
                 component::types::ComponentItem::ComponentFunc(_)
             ) {
                 operations.insert(format!("{interface_name}.{function_name}"));
