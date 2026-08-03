@@ -6,7 +6,8 @@ created: 2026-08-03
 target: mct-ledger-commit-recovery-phase-h
 sessions:
   origin: 20260724-223731-101286000
-  work: []
+  work:
+    - 20260724-223731-101286000
 related:
   - layer/allium/mct-product-map.allium
   - layer/surface/build/feat/grants-authority-v0/SPEC.md
@@ -18,27 +19,27 @@ related:
 exit_criteria:
   - id: maximal-valid-prefix
     text: Reopen classifies the maximal surviving validated prefix as canonical, distinguishes empty and operationally unavailable ledgers, and resumes from the exact committed head.
-    checked: false
+    checked: true
     verify: Required proof steps 1 and 8 have landed test file and line citations.
   - id: forensic-residue-recovery
     text: An unterminated final frame is preserved with the complete ratified forensic record before only its bytes are set aside, recovery is idempotent, and append resumes from the unchanged committed chain.
-    checked: false
+    checked: true
     verify: Required proof steps 2, 3, and 13 have landed test file and line citations.
   - id: typed-quarantine
     text: Terminated malformed frames, hash breaks, sequence discontinuities, and foreign lineage preserve evidence and produce typed quarantine without truncation, skipping, renumbering, or automatic adoption.
-    checked: false
+    checked: true
     verify: Required proof steps 4-7 have landed test file and line citations.
   - id: poisoned-writer-and-batch-outcomes
     text: Write or durability uncertainty poisons the writer, later appends do not touch the file, exclusive reopen resolves the uncertain fact, and batch failure reports its committed prefix without rollback.
-    checked: false
+    checked: true
     verify: Required proof steps 9-11 have landed test file and line citations.
   - id: exclusive-contention-and-before-effect
     text: A second writer fails fast without recovery or mutation, entry content cannot forge framing, and a failed or uncertain BeforeEffect append suppresses the protected Child effect.
-    checked: false
+    checked: true
     verify: Required proof steps 12, 14, and 15 have landed test file and line citations.
   - id: law-attribution-and-validation
     text: Review 2 law is valid and attributed, every implementation commit and the final phase pass workspace validation, and the phase flake log records the trigger-scheduler collision disposition.
-    checked: false
+    checked: true
     verify: allium check layer/allium && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh
 ---
 
@@ -206,3 +207,74 @@ cargo clippy --workspace --all-targets -- -D warnings
 A failing test is rerun in isolation up to five times. A non-reproducing failure is retained verbatim in the phase flake log; a reproducing failure is fixed before proceeding.
 
 Close-out reconstructs the commit ledger, all fifteen proof citations and verbatim assertions, full validation transcript, flake log, and invariant dispositions from disk. The active session may be updated but must not be archived or ended.
+
+## Gate G1 ratification
+
+The operator ratified Gate G1 without amendment after verifying commits `1c1a2a3..9fa6506`, all 27 invariants, the `MctProjectionCursor` extension, the 10/17+1 Track 3 partition, and the full-ledger-replay seam. Rust work began only after that ratification.
+
+## Commit ledger
+
+| Task | Commit | Disposition |
+|---|---|---|
+| A1 | `1c1a2a3 spec(ledger): ratify Review 2 commit/recovery design D-R2.1..D-R2.8` | Ratified design, exit criteria, proof matrix, and fence. |
+| A2 | `a0e5608 spec(allium): land ledger commit/recovery and authority epoch law (Review 2)` | 27 invariants and projection-cursor law; Allium clean. |
+| A3 | `9fa6506 docs(ledger): attribute Review 2 invariants` | Initial 0/10/17 plus one structural deferral. |
+| B1 test | `baf6f03 test(ledger): specify maximal-prefix recovery and quarantine` | Failing-test-first proofs 1-8, 13, and 14. |
+| B1 implementation | `b1f1df3 fix(ledger): recover torn tails and quarantine corruption` | Maximal-prefix scan, private durable forensics, idempotent recovery observation, typed quarantine/foreign lineage. |
+| B2 test | `cf62f15 test(ledger): specify poisoned-writer and contention outcomes` | Failing-test-first proofs 9-12 and 15. |
+| B2 implementation | `a292152 fix(ledger): fence uncertain writers and isolate ledger tests` | Poison fencing, typed uncertainty/contention/partial batches, joined resident shutdown, retry-loop removal. |
+
+## Fifteen-step proof table
+
+Line citations name the landed test and quote its central assertion verbatim.
+
+| # | Test citation | Verbatim assertion |
+|---:|---|---|
+| 1 | `crates/mct-observation/src/lib.rs:1595-1615` — `crash_before_frame_bytes_reopens_at_previous_head` | `assert_eq!(std::fs::read(&path).unwrap(), before);` and `assert_eq!(next.local_sequence, 1);` |
+| 2 | `crates/mct-observation/src/lib.rs:1619-1662` — `torn_unterminated_tail_is_preserved_and_recovered` | `assert_eq!(&std::fs::read(&path).unwrap()[..committed.len()], committed);` and `assert_eq!(next.local_sequence, 2);` |
+| 3 | `crates/mct-observation/src/lib.rs:1666-1682` — `unparseable_unterminated_final_frame_is_residue` | `assert_eq!(std::fs::read(&status.preserved_bytes_path).unwrap(), residue);` |
+| 4 | `crates/mct-observation/src/lib.rs:1686-1707` — `terminated_malformed_frame_quarantines_and_preserves_entire_ledger` | `assert_eq!(status.failure_class, LedgerFailureClass::TerminatedMalformedFrame);` and `assert_eq!(std::fs::read(&path).unwrap(), original);` |
+| 5 | `crates/mct-observation/src/lib.rs:1711-1753` — `hash_break_quarantines_with_diagnostic_evidence` | `assert_eq!(status.first_bad_sequence, Some(1));`, `assert_eq!(status.first_bad_offset, first_line_length as u64);`, and `assert_eq!(status.observed.as_deref(), Some("forged-entry-hash"));` |
+| 6 | `crates/mct-observation/src/lib.rs:1757-1802` — `every_sequence_discontinuity_quarantines_without_repair` | `assert_eq!(status.failure_class, LedgerFailureClass::SequenceDiscontinuity);` and `assert_eq!(std::fs::read(&path).unwrap(), original);` |
+| 7 | `crates/mct-observation/src/lib.rs:1806-1825` — `wrong_identity_is_typed_foreign_lineage_without_adoption` | `assert_eq!(status.first_bad_sequence, Some(0));` and `assert_eq!(std::fs::read(&path).unwrap(), original);` |
+| 8 | `crates/mct-observation/src/lib.rs:1829-1849` — `complete_unacknowledged_final_frame_is_committed_on_rescan` | `assert_eq!(reopened.entries().unwrap(), vec![unacknowledged.clone()]);` and `assert_eq!(reopened.entries().unwrap().len(), 2);` |
+| 9 | `crates/mct-observation/src/lib.rs:1946-1978` — `write_and_sync_uncertainty_poison_writer_without_later_file_changes` | `assert!(ledger.is_poisoned());` and `assert_eq!(std::fs::read(&path).unwrap(), after_failure);` |
+| 10 | `crates/mct-observation/src/lib.rs:1982-2041` — `poisoned_writer_reopen_resolves_all_three_commit_states` | `assert!(reopened.recovery_status().is_none());`, `assert!(reopened.recovery_status().is_some());`, and `Err(ObservationLedgerError::Quarantined { .. })`. |
+| 11 | `crates/mct-observation/src/lib.rs:2045-2084` — `batch_failure_reports_and_preserves_acknowledged_committed_prefix` | `assert_eq!(outcome.acknowledged_committed_prefix.len(), 1);`, `assert_eq!(outcome.failed_index, 1);`, and `assert!(outcome.commit_unknown);` |
+| 12 | `crates/mct-observation/src/lib.rs:2088-2103` — `contending_writer_is_typed_and_byte_identical_without_recovery` | `Err(ObservationLedgerError::WriterContended { .. })`, `assert_eq!(std::fs::read(&path).unwrap(), ledger_before);`, and `assert_eq!(forensic_tree(&path), forensics_before);` |
+| 13 | `crates/mct-observation/src/lib.rs:1853-1895` — `interrupted_recovery_is_idempotent_at_every_preservation_stage` | `assert!(original_available || preserved_available);` and `assert_eq!(recovery_observations, 1, "stage {stage:?} duplicated recovery");` |
+| 14 | `crates/mct-observation/src/lib.rs:1899-1917` — `escapable_entry_content_round_trips_without_forging_frame_end` | `assert_eq!(bytes.iter().filter(|byte| **byte == b'\n').count(), 1);` |
+| 15 | `crates/mct-daemon/src/daemon/resident/pipeline.rs:1018-1056` — `before_effect_append_failure_suppresses_child_effect` | `assert_eq!(result.outcome, CallProtocolOutcome::Failed);`, `assert_eq!(result.safe_message, "observation ledger unavailable");`, and `assert!(!effect_marker.exists(), "unsuccessful BeforeEffect acknowledgement began a Child effect");` |
+
+## Validation transcript
+
+### B1 implementation (`b1f1df3`)
+
+- `cargo test --workspace` — passed: **439 passed, 1 ignored**.
+- `cargo clippy --workspace --all-targets -- -D warnings` — passed.
+- `./scripts/ci-tier0.sh` — passed; RustSec audit clean and Allium clean.
+- Flakes: none.
+
+### B2 implementation (`a292152`)
+
+- Targeted trigger lock-isolation test, five consecutive runs — **5/5 passed**.
+- `resident::trigger_scheduler::tests`, serial run — **16/16 passed**.
+- First `cargo test --workspace` exposed a deterministic compatibility assertion, not a flake: `supervisor_lifecycle::tests::supervisor_conflicts_refuse_before_launchd_or_endpoint_effects` expected the typed contention message to retain `writer lock`. The message was repaired; isolated rerun passed.
+- Final `cargo test --workspace` — passed: **444 passed, 1 ignored**.
+- `cargo clippy --workspace --all-targets -- -D warnings` — passed.
+- `./scripts/ci-tier0.sh` — passed; RustSec audit clean and Allium clean.
+
+### Flake disposition
+
+No non-reproducing Phase H failures were observed. The prior trigger-scheduler/observation-ledger collision class did **not** reproduce after unique temporary ledger paths, explicit resident writer shutdown, task join, and removal of lock-contention retry loops: five targeted runs, the full 16-test scheduler group, final workspace validation, and Tier 0 all passed.
+
+## Final invariant disposition
+
+Track 3 now reports:
+
+- **10 COVERED** R2-L1/R2-L2 invariants;
+- **0 LAW-LEADS-CODE** Phase H targets;
+- **17 DEFERRED** R2-L3..L6 / slices 4-8 invariants;
+- **1 DEFERRED structural** `MctProjectionCursor` row.
+
+The full-ledger replay readiness seam remains accepted. The on-disk `MctObservationLedgerEntry` schema is unchanged. Quarantine still refuses writer startup; the degraded read-only Mother plane remains fenced to R2-L5. No authority epoch, canonical mutation envelope, authority-wide projection, startup bootstrap/degraded plane, mutation/effect order, resident grants-guard repair, or grants-authority slice 4-8 work landed.

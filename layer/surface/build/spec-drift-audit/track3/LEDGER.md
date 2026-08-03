@@ -15,22 +15,22 @@ Module names distinguish library tests from binary-local tests: `mct_daemon_bin`
 
 ## Ledger commit and recovery — Phase H / Review 2
 
-The ratified Review 2 law is captured in [ledger-commit-recovery](../../feat/ledger-commit-recovery/SPEC.md). Phase H Task B implements only R2-L1/R2-L2. Its ledger commit/recovery invariants remain `LAW-LEADS-CODE` until all fifteen named proof steps land. Epoch, canonical authority facts, authority-wide projection freshness, and mutation/effect ordering remain `DEFERRED` to R2-L3..L6 and grants-authority slices 4-8.
+The ratified Review 2 law is captured in [ledger-commit-recovery](../../feat/ledger-commit-recovery/SPEC.md). Phase H Task B implements only R2-L1/R2-L2. All fifteen named proof steps have landed, so the ten ledger commit/recovery invariants are `COVERED`. Epoch, canonical authority facts, authority-wide projection freshness, and mutation/effect ordering remain `DEFERRED` to R2-L3..L6 and grants-authority slices 4-8.
 
 ### Ledger commit and recovery — R2-L1/R2-L2 targets
 
 | Invariant | Current status | Phase disposition / evidence |
 |---|---|---|
-| `MctLedgerCommitAndRecovery.ValidatedSurvivingPrefixIsCanonical` | LAW-LEADS-CODE | R2-L1 proof steps 1, 2, 4-8: maximal complete framed identity/sequence/hash-valid prefix scanning and typed classification. |
-| `CompleteUnacknowledgedFactsResolveByRecovery` | LAW-LEADS-CODE | R2-L1/R2-L2 proof steps 8 and 10: complete uncertain frames recover as committed; reopen resolves all uncertain outcomes. Authority mutation-ID result semantics remain deferred to R2-L3. |
-| `UnterminatedTailIsResidue` | LAW-LEADS-CODE | R2-L1 proof steps 2-4: only an unterminated final frame is automatic residue; terminated malformed frames quarantine. |
-| `ResidueIsPreservedBeforeSetAside` | LAW-LEADS-CODE | R2-L1 proof steps 2, 3, and 13: exact D-R2.4 forensic record precedes set-aside and interrupted recovery is idempotent. |
-| `CorruptionIsNeverSkipped` | LAW-LEADS-CODE | R2-L1 proof steps 4-7: malformed terminated frames, hash breaks, sequence discontinuities, and foreign lineage quarantine without repair. The degraded read-only Mother plane remains deferred to R2-L5. |
-| `CommittedFactsAreNeverRewritten` | LAW-LEADS-CODE | R2-L1/R2-L2 proof steps 2, 4, 6, and 11: recovery changes no committed entry and a committed batch prefix stands. |
-| `UncertainAppendPoisonsWriter` | LAW-LEADS-CODE | R2-L2 proof steps 9 and 10: every later append is fenced without file mutation until exclusive reopen and rescan. |
-| `BeforeEffectRequiresAcknowledgedCommit` | LAW-LEADS-CODE | R2-L2 proof step 15: Child effect marker remains absent after unsuccessful or uncertain observation append. |
-| `OneWriterDefinesLocalOrder` | LAW-LEADS-CODE | R2-L2 proof step 12: typed fail-fast contention performs no ledger, recovery, projection, or forensic mutation. |
-| `EntryEncodingCannotForgeFrameEnd` | LAW-LEADS-CODE | R2-L1 proof step 14: every escapable character round-trips without an interior unescaped terminator. |
+| `MctLedgerCommitAndRecovery.ValidatedSurvivingPrefixIsCanonical` | COVERED | Proofs 1-8: `mct_observation::tests::{crash_before_frame_bytes_reopens_at_previous_head,torn_unterminated_tail_is_preserved_and_recovered,terminated_malformed_frame_quarantines_and_preserves_entire_ledger,hash_break_quarantines_with_diagnostic_evidence,every_sequence_discontinuity_quarantines_without_repair,wrong_identity_is_typed_foreign_lineage_without_adoption,complete_unacknowledged_final_frame_is_committed_on_rescan}`. |
+| `CompleteUnacknowledgedFactsResolveByRecovery` | COVERED | Proofs 8 and 10: `complete_unacknowledged_final_frame_is_committed_on_rescan` and `poisoned_writer_reopen_resolves_all_three_commit_states`. Authority mutation-ID result semantics remain deferred to R2-L3. |
+| `UnterminatedTailIsResidue` | COVERED | Proofs 2-4: `torn_unterminated_tail_is_preserved_and_recovered`, `unparseable_unterminated_final_frame_is_residue`, and terminated-malformed quarantine. |
+| `ResidueIsPreservedBeforeSetAside` | COVERED | Proofs 2, 3, and 13: exact forensic preservation plus `interrupted_recovery_is_idempotent_at_every_preservation_stage`. |
+| `CorruptionIsNeverSkipped` | COVERED | Proofs 4-7: terminated malformed, hash, sequence, and foreign-lineage tests preserve without repair. The degraded read-only Mother plane remains deferred to R2-L5. |
+| `CommittedFactsAreNeverRewritten` | COVERED | Proofs 2, 4, 6, and 11: recovery leaves committed entries unchanged and `batch_failure_reports_and_preserves_acknowledged_committed_prefix` proves no rollback. |
+| `UncertainAppendPoisonsWriter` | COVERED | Proofs 9 and 10: `write_and_sync_uncertainty_poison_writer_without_later_file_changes` and three-way reopen resolution. |
+| `BeforeEffectRequiresAcknowledgedCommit` | COVERED | Proof 15: `mct_daemon_bin::resident::pipeline::tests::before_effect_append_failure_suppresses_child_effect`. |
+| `OneWriterDefinesLocalOrder` | COVERED | Proof 12: `contending_writer_is_typed_and_byte_identical_without_recovery`; resident writer close now joins shutdown and trigger tests use unique temporary ledger paths without lock retries. |
+| `EntryEncodingCannotForgeFrameEnd` | COVERED | Proof 14: `escapable_entry_content_round_trips_without_forging_frame_end`. |
 
 ### Authority epoch continuity — R2-L3/L4/L5 deferrals
 
@@ -70,14 +70,16 @@ The ratified Review 2 law is captured in [ledger-commit-recovery](../../feat/led
 | `TwoPhaseRouting.MutationCommitAndEffectStartHaveOneOrder` | DEFERRED | R2-L6 supplies the ordering boundary; slices 7-8 consume it at Child and Toy effects. |
 | `ProjectionLagCannotOvertakeRevocation` | DEFERRED | R2-L4/L5 current projection proof plus R2-L6 and slices 7-8 effect admission. |
 
-### Phase H initial disposition counts
+### Phase H final disposition counts
 
-| Disposition | New invariants after Task A |
+| Disposition | New invariants after Task B |
 |---|---:|
-| COVERED | 0 |
-| LAW-LEADS-CODE, targeted by R2-L1/R2-L2 | 10 |
+| COVERED | 10 |
+| LAW-LEADS-CODE | 0 |
 | DEFERRED to R2-L3..L6 / slices 4-8 | 17 |
 | **Total new invariants** | **27** |
+
+The separate `MctProjectionCursor` structural row remains `DEFERRED` to R2-L4, preserving the reconciled **10 / 17 + 1 structural** partition.
 
 **Known seam:** authority readiness waits on full-ledger replay. Ledger growth is therefore a future authority-availability concern; Phase H does not add an alternate authority source, compaction path, or partial-replay freshness claim.
 
