@@ -754,6 +754,347 @@ mod tests {
         );
     }
 
+    fn append_raw(path: &Path, bytes: &[u8]) {
+        let mut file = OpenOptions::new().append(true).open(path).unwrap();
+        file.write_all(bytes).unwrap();
+        file.sync_data().unwrap();
+    }
+
+    fn ledger_lines(path: &Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    fn rewrite_lines(path: &Path, lines: &[serde_json::Value]) {
+        let mut encoded = lines
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n");
+        encoded.push('\n');
+        std::fs::write(path, encoded).unwrap();
+    }
+
+    fn forensic_records(path: &Path) -> Vec<PathBuf> {
+        let root = forensic_root_path(path);
+        if !root.exists() {
+            return Vec::new();
+        }
+        let mut records = std::fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path().join("record.json"))
+            .filter(|record| record.exists())
+            .collect::<Vec<_>>();
+        records.sort();
+        records
+    }
+
+    fn append_fixture_entry(path: &Path, id: &str) -> MctObservationLedgerEntry {
+        let mut ledger = JsonlObservationLedger::open(path, "ledger-a", "mother-a").unwrap();
+        let entry = ledger
+            .append_before_effect(
+                observation(id, "trace-recovery", None),
+                "2026-05-31T00:00:01Z",
+            )
+            .unwrap();
+        drop(ledger);
+        entry
+    }
+
+    /// Proof 1: crash before any new frame bytes leaves exactly the previous committed head.
+    #[test]
+    fn crash_before_frame_bytes_reopens_at_previous_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let first = append_fixture_entry(&path, "obs-before-frame-crash");
+        let before = std::fs::read(&path).unwrap();
+
+        let mut reopened = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(reopened.entries().unwrap(), vec![first.clone()]);
+        let next = reopened
+            .append_before_effect(
+                observation("obs-after-frame-crash", "trace-recovery", None),
+                "2026-05-31T00:00:02Z",
+            )
+            .unwrap();
+        assert_eq!(next.local_sequence, 1);
+        assert_eq!(next.previous_entry_hash.as_deref(), Some(first.entry_hash.as_str()));
+    }
+
+    /// Proof 2: a torn final frame is preserved before recovery and never changes the committed prefix.
+    #[test]
+    fn torn_unterminated_tail_is_preserved_and_recovered() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let first = append_fixture_entry(&path, "obs-before-torn-tail");
+        let committed = std::fs::read(&path).unwrap();
+        let residue = br#"{"ledger_id":"ledger-a","mother_node_id":"mother-a""#;
+        append_raw(&path, residue);
+
+        let reader = JsonlObservationLedger::open_read_only(&path, "ledger-a", "mother-a");
+        assert!(matches!(
+            reader,
+            Err(ObservationLedgerError::UnterminatedTail { offset, length, .. })
+                if offset == committed.len() as u64 && length == residue.len() as u64
+        ));
+        assert!(forensic_records(&path).is_empty());
+
+        let mut recovered = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+        let recovery = recovered.recovery_status().expect("tail recovery is reported");
+        assert_eq!(recovery.residue_offset, committed.len() as u64);
+        assert_eq!(recovery.residue_length, residue.len() as u64);
+        assert_eq!(std::fs::read(&recovery.preserved_bytes_path).unwrap(), residue);
+        assert_eq!(&std::fs::read(&path).unwrap()[..committed.len()], committed);
+        assert_eq!(recovered.entries().unwrap()[0], first);
+        assert_eq!(
+            recovered.entries().unwrap()[1].observation.safe_message,
+            "observation ledger tail recovered"
+        );
+        let next = recovered
+            .append_before_effect(
+                observation("obs-after-torn-tail", "trace-recovery", None),
+                "2026-05-31T00:00:03Z",
+            )
+            .unwrap();
+        assert_eq!(next.local_sequence, 2);
+        assert_eq!(
+            next.previous_entry_hash.as_deref(),
+            Some(recovered.entries().unwrap()[1].entry_hash.as_str())
+        );
+    }
+
+    /// Proof 3: an undecodable unterminated final frame is residue under the same rule.
+    #[test]
+    fn unparseable_unterminated_final_frame_is_residue() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let first = append_fixture_entry(&path, "obs-before-binary-tail");
+        let residue = b"\xff\0not-json";
+        append_raw(&path, residue);
+
+        let recovered = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+        let status = recovered.recovery_status().unwrap();
+        assert_eq!(std::fs::read(status.preserved_bytes_path).unwrap(), residue);
+        let entries = recovered.entries().unwrap();
+        assert_eq!(entries[0], first);
+        assert_eq!(entries.len(), 2);
+    }
+
+    /// Proof 4: a terminated malformed final frame quarantines without truncation.
+    #[test]
+    fn terminated_malformed_frame_quarantines_and_preserves_entire_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        append_fixture_entry(&path, "obs-before-malformed-frame");
+        append_raw(&path, b"not-json\n");
+        let original = std::fs::read(&path).unwrap();
+
+        let error = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap_err();
+        let status = match error {
+            ObservationLedgerError::Quarantined { status } => status,
+            other => panic!("expected typed quarantine, got {other:?}"),
+        };
+        assert_eq!(status.failure_class, LedgerFailureClass::TerminatedMalformedFrame);
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(std::fs::read(status.preserved_ledger_path.unwrap()).unwrap(), original);
+    }
+
+    /// Proof 5: a mid-file hash break reports first-bad offset and expected/observed evidence.
+    #[test]
+    fn hash_break_quarantines_with_diagnostic_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        append_fixture_entry(&path, "obs-hash-0");
+        {
+            let mut ledger = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+            ledger
+                .append_before_effect(
+                    observation("obs-hash-1", "trace-recovery", None),
+                    "2026-05-31T00:00:02Z",
+                )
+                .unwrap();
+        }
+        {
+            let mut ledger = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+            ledger
+                .append_before_effect(
+                    observation("obs-hash-2", "trace-recovery", None),
+                    "2026-05-31T00:00:03Z",
+                )
+                .unwrap();
+        }
+        let mut lines = ledger_lines(&path);
+        lines[1]["entry_hash"] = serde_json::Value::String("forged-entry-hash".into());
+        rewrite_lines(&path, &lines);
+        let first_line_length = std::fs::read(&path)
+            .unwrap()
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .unwrap()
+            + 1;
+
+        let error = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap_err();
+        let status = match error {
+            ObservationLedgerError::Quarantined { status } => status,
+            other => panic!("expected hash quarantine, got {other:?}"),
+        };
+        assert_eq!(status.failure_class, LedgerFailureClass::EntryHashMismatch);
+        assert_eq!(status.first_bad_sequence, Some(1));
+        assert_eq!(status.first_bad_offset, first_line_length as u64);
+        assert!(status.expected.is_some());
+        assert_eq!(status.observed.as_deref(), Some("forged-entry-hash"));
+    }
+
+    /// Proof 6: gaps, duplicates, and regressions quarantine rather than being skipped or renumbered.
+    #[test]
+    fn every_sequence_discontinuity_quarantines_without_repair() {
+        for (name, line_index, expected, sequence) in [
+            ("gap", 1_usize, 1_u64, 2_u64),
+            ("duplicate", 1, 1, 0),
+            ("regression", 2, 2, 0),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(format!("{name}.jsonl"));
+            append_fixture_entry(&path, "obs-sequence-0");
+            {
+                let mut ledger = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+                for index in 1..=line_index {
+                    ledger
+                        .append_before_effect(
+                            observation(
+                                &format!("obs-sequence-{index}"),
+                                "trace-recovery",
+                                None,
+                            ),
+                            "2026-05-31T00:00:02Z",
+                        )
+                        .unwrap();
+                }
+            }
+            let mut lines = ledger_lines(&path);
+            lines[line_index]["local_sequence"] = serde_json::Value::from(sequence);
+            rewrite_lines(&path, &lines);
+            let original = std::fs::read(&path).unwrap();
+
+            let error = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap_err();
+            let status = match error {
+                ObservationLedgerError::Quarantined { status } => status,
+                other => panic!("expected sequence quarantine for {name}, got {other:?}"),
+            };
+            assert_eq!(status.failure_class, LedgerFailureClass::SequenceDiscontinuity);
+            assert_eq!(status.expected.as_deref(), Some(expected.to_string().as_str()));
+            assert_eq!(status.observed.as_deref(), Some(sequence.to_string().as_str()));
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+        }
+    }
+
+    /// Proof 7: foreign ledger or Mother lineage is typed and is never automatically adopted.
+    #[test]
+    fn wrong_identity_is_typed_foreign_lineage_without_adoption() {
+        for (ledger_id, mother_id) in [("ledger-b", "mother-a"), ("ledger-a", "mother-b")] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("observations.jsonl");
+            append_fixture_entry(&path, "obs-foreign-lineage");
+            let original = std::fs::read(&path).unwrap();
+
+            let error = JsonlObservationLedger::open(&path, ledger_id, mother_id).unwrap_err();
+            let status = match error {
+                ObservationLedgerError::ForeignLineage { status } => status,
+                other => panic!("expected foreign lineage, got {other:?}"),
+            };
+            assert_eq!(status.first_bad_sequence, Some(0));
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            assert_eq!(std::fs::read(status.preserved_ledger_path.unwrap()).unwrap(), original);
+        }
+    }
+
+    /// Proof 8: a complete valid unacknowledged frame is recovered as committed, never duplicated.
+    #[test]
+    fn complete_unacknowledged_final_frame_is_committed_on_rescan() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let unacknowledged = append_fixture_entry(&path, "obs-unacknowledged");
+
+        let mut reopened = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+        assert!(reopened.recovery_status().is_none());
+        assert_eq!(reopened.entries().unwrap(), vec![unacknowledged.clone()]);
+        let next = reopened
+            .append_before_effect(
+                observation("obs-after-unacknowledged", "trace-recovery", None),
+                "2026-05-31T00:00:02Z",
+            )
+            .unwrap();
+        assert_eq!(next.local_sequence, 1);
+        assert_eq!(next.previous_entry_hash.as_deref(), Some(unacknowledged.entry_hash.as_str()));
+        assert_eq!(reopened.entries().unwrap().len(), 2);
+    }
+
+    /// Proof 13: interruption at each preservation stage leaves original or preserved bytes and reruns idempotently.
+    #[test]
+    fn interrupted_recovery_is_idempotent_at_every_preservation_stage() {
+        for stage in RecoveryStage::ALL {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("observations.jsonl");
+            append_fixture_entry(&path, "obs-interrupted-recovery");
+            let residue = format!("unterminated-at-{stage:?}").into_bytes();
+            append_raw(&path, &residue);
+            let original = std::fs::read(&path).unwrap();
+
+            let mut failed_once = false;
+            let result = open_with_recovery_hook(
+                &path,
+                "ledger-a",
+                "mother-a",
+                |observed_stage| {
+                    if observed_stage == stage && !failed_once {
+                        failed_once = true;
+                        return Err(std::io::Error::other("injected recovery interruption"));
+                    }
+                    Ok(())
+                },
+            );
+            assert!(result.is_err(), "stage {stage:?} did not interrupt recovery");
+            let original_available = std::fs::read(&path).unwrap() == original;
+            let preserved_available = forensic_records(&path).iter().any(|record| {
+                let bytes_path = record.parent().unwrap().join("source.bin");
+                bytes_path.exists() && std::fs::read(bytes_path).unwrap() == residue
+            });
+            assert!(original_available || preserved_available);
+
+            let reopened = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+            let recovery_observations = reopened
+                .entries()
+                .unwrap()
+                .into_iter()
+                .filter(|entry| entry.observation.safe_message == "observation ledger tail recovered")
+                .count();
+            assert_eq!(recovery_observations, 1, "stage {stage:?} duplicated recovery");
+        }
+    }
+
+    /// Proof 14: encoded entry content cannot create an interior unescaped frame terminator.
+    #[test]
+    fn escapable_entry_content_round_trips_without_forging_frame_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let mut obs = observation("obs-escaped", "trace-escaped", None);
+        obs.safe_message = "line one\nline two\r\t\0quote:\" slash:\\ controls:\u{0001}\u{001f}".into();
+        let expected = obs.safe_message.clone();
+        let mut ledger = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+        ledger
+            .append_before_effect(obs, "2026-05-31T00:00:01Z")
+            .unwrap();
+
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(bytes.iter().filter(|byte| **byte == b'\n').count(), 1);
+        assert_eq!(ledger.entries().unwrap()[0].observation.safe_message, expected);
+    }
+
     #[test]
     fn opening_directory_fails_closed() {
         let dir = tempfile::tempdir().unwrap();
