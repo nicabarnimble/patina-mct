@@ -2402,6 +2402,7 @@ name = "mct-observation"
 version = "0.2.0"
 dependencies = [
  "blake3",
+ "jiff",
  "mct-kernel",
  "serde",
  "serde_json",

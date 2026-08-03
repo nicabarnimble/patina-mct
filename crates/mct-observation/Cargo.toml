@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 mct-kernel = { path = "../mct-kernel" }
 blake3.workspace = true
+jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
