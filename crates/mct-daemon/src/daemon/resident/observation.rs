@@ -6,9 +6,26 @@ const RESIDENT_LEDGER_QUEUE_CAPACITY: usize = 256;
 
 #[derive(Clone, Debug)]
 pub(crate) struct ResidentLedgerWriter {
-    sender: tokio::sync::mpsc::Sender<ResidentLedgerWrite>,
+    sender: tokio::sync::mpsc::Sender<ResidentLedgerCommand>,
     fenced: Arc<std::sync::atomic::AtomicBool>,
     path: Option<Arc<PathBuf>>,
+    task: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+}
+
+enum ResidentLedgerCommand {
+    Write(ResidentLedgerWrite),
+    AuthorityMutation {
+        request: AuthorityMutationRequestV1,
+        ack: tokio::sync::oneshot::Sender<AuthorityMutationResultV1>,
+    },
+    LegacyAuthorityImport {
+        request: LegacyAuthorityImportRequestV1,
+        authenticated_principal_ref: String,
+        imported_state: AuthorityStateV1,
+        decided_at: String,
+        ack: tokio::sync::oneshot::Sender<AuthorityMutationResultV1>,
+    },
+    Shutdown(tokio::sync::oneshot::Sender<()>),
 }
 
 struct ResidentLedgerWrite {
@@ -21,35 +38,58 @@ impl ResidentLedgerWriter {
     #[cfg(test)]
     pub(crate) fn fail_after_batches_for_test(path: PathBuf, allowed_batches: usize) -> Self {
         let mut ledger = JsonlObservationLedger::open(&path, "ledger-local", "local-mct").unwrap();
-        let (sender, mut receiver) = tokio::sync::mpsc::channel::<ResidentLedgerWrite>(8);
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<ResidentLedgerCommand>(8);
         let fenced = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let task_fenced = Arc::clone(&fenced);
-        tokio::task::spawn_blocking(move || {
+        let task = tokio::task::spawn_blocking(move || {
             let mut completed = 0usize;
-            while let Some(write) = receiver.blocking_recv() {
-                if completed >= allowed_batches {
-                    task_fenced.store(true, Ordering::SeqCst);
-                    let _ = write.ack.send(Err("injected resident writer loss".into()));
-                    continue;
+            while let Some(command) = receiver.blocking_recv() {
+                match command {
+                    ResidentLedgerCommand::Write(write) => {
+                        if completed >= allowed_batches {
+                            task_fenced.store(true, Ordering::SeqCst);
+                            let _ = write.ack.send(Err("injected resident writer loss".into()));
+                            continue;
+                        }
+                        let appended_at = mct_daemon::current_timestamp_string();
+                        let result = write
+                            .observations
+                            .into_iter()
+                            .try_for_each(|observation| {
+                                ledger
+                                    .append_before_effect(observation, appended_at.clone())
+                                    .map(|_| ())
+                            })
+                            .map_err(|error| error.to_string());
+                        completed += 1;
+                        let _ = write.ack.send(result);
+                    }
+                    ResidentLedgerCommand::AuthorityMutation { request, ack } => {
+                        task_fenced.store(true, Ordering::SeqCst);
+                        let _ = ack.send(AuthorityMutationResultV1::RejectedBeforeCommit {
+                            mutation_id: request.mutation_id,
+                            reason: AuthorityMutationRejectionReasonV1::WriterPoisoned,
+                        });
+                    }
+                    ResidentLedgerCommand::LegacyAuthorityImport { request, ack, .. } => {
+                        task_fenced.store(true, Ordering::SeqCst);
+                        let _ = ack.send(AuthorityMutationResultV1::RejectedBeforeCommit {
+                            mutation_id: request.import_id,
+                            reason: AuthorityMutationRejectionReasonV1::WriterPoisoned,
+                        });
+                    }
+                    ResidentLedgerCommand::Shutdown(ack) => {
+                        let _ = ack.send(());
+                        break;
+                    }
                 }
-                let appended_at = mct_daemon::current_timestamp_string();
-                let result = write
-                    .observations
-                    .into_iter()
-                    .try_for_each(|observation| {
-                        ledger
-                            .append_before_effect(observation, appended_at.clone())
-                            .map(|_| ())
-                    })
-                    .map_err(|error| error.to_string());
-                completed += 1;
-                let _ = write.ack.send(result);
             }
         });
         Self {
             sender,
             fenced,
             path: Some(Arc::new(path)),
+            task: Arc::new(std::sync::Mutex::new(Some(task))),
         }
     }
 
@@ -61,6 +101,7 @@ impl ResidentLedgerWriter {
             sender,
             fenced: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             path: None,
+            task: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -68,34 +109,78 @@ impl ResidentLedgerWriter {
         let mut ledger = JsonlObservationLedger::open(&path, "ledger-local", "local-mct")
             .with_context(|| format!("open observation ledger {}", path.display()))?;
         let (sender, mut receiver) =
-            tokio::sync::mpsc::channel::<ResidentLedgerWrite>(RESIDENT_LEDGER_QUEUE_CAPACITY);
-        tokio::task::spawn_blocking(move || {
-            while let Some(write) = receiver.blocking_recv() {
-                let appended_at = mct_daemon::current_timestamp_string();
-                let result = write
-                    .observations
-                    .into_iter()
-                    .try_for_each(|observation| match write.durability {
-                        DurabilityClass::BeforeEffect => ledger
-                            .append_before_effect(observation, appended_at.clone())
-                            .map(|_| ()),
-                        DurabilityClass::Buffered | DurabilityClass::ProjectionOnly => ledger
-                            .append(
-                                observation,
-                                appended_at.clone(),
-                                write.durability,
-                                ExportStatus::NotRequired,
-                            )
-                            .map(|_| ()),
-                    })
-                    .map_err(|error| error.to_string());
-                let _ = write.ack.send(result);
+            tokio::sync::mpsc::channel::<ResidentLedgerCommand>(RESIDENT_LEDGER_QUEUE_CAPACITY);
+        let task = tokio::task::spawn_blocking(move || {
+            while let Some(command) = receiver.blocking_recv() {
+                match command {
+                    ResidentLedgerCommand::Write(write) => {
+                        let appended_at = mct_daemon::current_timestamp_string();
+                        let result = write
+                            .observations
+                            .into_iter()
+                            .try_for_each(|observation| match write.durability {
+                                DurabilityClass::BeforeEffect => ledger
+                                    .append_before_effect(observation, appended_at.clone())
+                                    .map(|_| ()),
+                                DurabilityClass::Buffered | DurabilityClass::ProjectionOnly => {
+                                    ledger
+                                        .append(
+                                            observation,
+                                            appended_at.clone(),
+                                            write.durability,
+                                            ExportStatus::NotRequired,
+                                        )
+                                        .map(|_| ())
+                                }
+                            })
+                            .map_err(|error| error.to_string());
+                        let _ = write.ack.send(result);
+                    }
+                    ResidentLedgerCommand::AuthorityMutation { request, ack } => {
+                        let result = match ledger.begin_authority_tenure() {
+                            Ok(()) => ledger.execute_authority_mutation(request, |_| Ok(None)),
+                            Err(_) => AuthorityMutationResultV1::RejectedBeforeCommit {
+                                mutation_id: request.mutation_id,
+                                reason:
+                                    AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
+                            },
+                        };
+                        let _ = ack.send(result);
+                    }
+                    ResidentLedgerCommand::LegacyAuthorityImport {
+                        request,
+                        authenticated_principal_ref,
+                        imported_state,
+                        decided_at,
+                        ack,
+                    } => {
+                        let result = match ledger.begin_authority_tenure() {
+                            Ok(()) => ledger.execute_legacy_authority_import(
+                                request,
+                                authenticated_principal_ref,
+                                imported_state,
+                                decided_at,
+                            ),
+                            Err(_) => AuthorityMutationResultV1::RejectedBeforeCommit {
+                                mutation_id: request.import_id,
+                                reason:
+                                    AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
+                            },
+                        };
+                        let _ = ack.send(result);
+                    }
+                    ResidentLedgerCommand::Shutdown(ack) => {
+                        let _ = ack.send(());
+                        break;
+                    }
+                }
             }
         });
         Ok(Self {
             sender,
             fenced: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             path: Some(Arc::new(path)),
+            task: Arc::new(std::sync::Mutex::new(Some(task))),
         })
     }
 
@@ -105,6 +190,53 @@ impl ResidentLedgerWriter {
 
     pub(crate) fn path(&self) -> Option<&Path> {
         self.path.as_deref().map(PathBuf::as_path)
+    }
+
+    pub(crate) async fn commit_legacy_authority_import(
+        &self,
+        request: LegacyAuthorityImportRequestV1,
+        authenticated_principal_ref: String,
+        imported_state: AuthorityStateV1,
+        decided_at: String,
+    ) -> Result<AuthorityMutationResultV1> {
+        if self.is_fenced() {
+            return Ok(AuthorityMutationResultV1::RejectedBeforeCommit {
+                mutation_id: request.import_id,
+                reason: AuthorityMutationRejectionReasonV1::WriterPoisoned,
+            });
+        }
+        let (ack, rx) = tokio::sync::oneshot::channel();
+        self.sender
+            .send(ResidentLedgerCommand::LegacyAuthorityImport {
+                request,
+                authenticated_principal_ref,
+                imported_state,
+                decided_at,
+                ack,
+            })
+            .await
+            .context("send legacy authority import to resident ledger writer")?;
+        rx.await
+            .context("receive resident legacy authority import acknowledgement")
+    }
+
+    pub(crate) async fn commit_authority_mutation(
+        &self,
+        request: AuthorityMutationRequestV1,
+    ) -> Result<AuthorityMutationResultV1> {
+        if self.is_fenced() {
+            return Ok(AuthorityMutationResultV1::RejectedBeforeCommit {
+                mutation_id: request.mutation_id,
+                reason: AuthorityMutationRejectionReasonV1::WriterPoisoned,
+            });
+        }
+        let (ack, rx) = tokio::sync::oneshot::channel();
+        self.sender
+            .send(ResidentLedgerCommand::AuthorityMutation { request, ack })
+            .await
+            .context("send authority mutation to resident ledger writer")?;
+        rx.await
+            .context("receive resident authority mutation acknowledgement")
     }
 
     pub(crate) async fn append(&self, observations: Vec<MctObservation>) -> Result<()> {
@@ -126,11 +258,11 @@ impl ResidentLedgerWriter {
         let (ack, rx) = tokio::sync::oneshot::channel();
         if let Err(error) = self
             .sender
-            .send(ResidentLedgerWrite {
+            .send(ResidentLedgerCommand::Write(ResidentLedgerWrite {
                 observations,
                 durability,
                 ack,
-            })
+            }))
             .await
         {
             self.fenced.store(true, Ordering::SeqCst);
@@ -147,7 +279,17 @@ impl ResidentLedgerWriter {
     }
 
     pub(crate) async fn close(self) {
-        drop(self.sender);
+        let (ack, acknowledged) = tokio::sync::oneshot::channel();
+        let _ = self.sender.send(ResidentLedgerCommand::Shutdown(ack)).await;
+        let _ = acknowledged.await;
+        let task = self
+            .task
+            .lock()
+            .expect("resident ledger task mutex must not be poisoned")
+            .take();
+        if let Some(task) = task {
+            let _ = task.await;
+        }
     }
 }
 

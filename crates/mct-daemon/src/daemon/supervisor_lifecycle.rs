@@ -4387,6 +4387,7 @@ status = "active"
         );
 
         let toy_request = serde_json::json!({
+            "mutation_id": "supervised-authorize-slate",
             "expected_config_path": paths.config,
             "expected_children_dir": paths.children,
             "expected_state_path": paths.state,

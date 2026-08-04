@@ -315,9 +315,11 @@ impl MctWitHostState {
             started_at: adapter.observed_at.clone(),
             completed_at: adapter.observed_at.clone(),
         };
-        let mut report = self.toy_registry.call_authorized_toy(
+        let executing_mother_now = crate::config::current_timestamp();
+        let mut report = self.toy_registry.call_authorized_toy_at(
             &adapter.authorized_toy_call,
             &self.call,
+            &executing_mother_now,
             &input_json.to_string(),
             ids,
         );
@@ -709,6 +711,25 @@ enum WasmDeadlinePermit {
     Running(WasmDeadlineGuard),
 }
 
+fn wasm_deadline_wait(
+    call: &MctCall,
+    executing_mother_now: &Timestamp,
+) -> Result<Option<std::time::Duration>, MctWasmComponentRuntimeError> {
+    let deadline = call
+        .deadline
+        .as_str()
+        .parse::<jiff::Timestamp>()
+        .map_err(|error| MctWasmComponentRuntimeError::Configure(error.to_string()))?;
+    let now = executing_mother_now
+        .as_str()
+        .parse::<jiff::Timestamp>()
+        .map_err(|error| MctWasmComponentRuntimeError::Configure(error.to_string()))?;
+    if now >= deadline {
+        return Ok(None);
+    }
+    Ok(Some(deadline.duration_since(now).unsigned_abs()))
+}
+
 fn is_wasm_resource_limit_message(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     message.contains("resource limit")
@@ -941,20 +962,21 @@ impl MctWasmComponentRuntime {
         store: &mut Store<T>,
         call: &MctCall,
     ) -> Result<WasmDeadlinePermit, MctWasmComponentRuntimeError> {
-        let deadline = call
-            .deadline
-            .as_str()
-            .parse::<jiff::Timestamp>()
-            .map_err(|error| MctWasmComponentRuntimeError::Configure(error.to_string()))?;
-        let now = jiff::Timestamp::now();
-        if now >= deadline {
+        self.configure_deadline_at(store, call, &crate::config::current_timestamp())
+    }
+
+    fn configure_deadline_at<T>(
+        &self,
+        store: &mut Store<T>,
+        call: &MctCall,
+        executing_mother_now: &Timestamp,
+    ) -> Result<WasmDeadlinePermit, MctWasmComponentRuntimeError> {
+        let Some(wait) = wasm_deadline_wait(call, executing_mother_now)? else {
             return Ok(WasmDeadlinePermit::Expired);
-        }
+        };
 
         store.set_epoch_deadline(1);
         store.epoch_deadline_trap();
-
-        let wait = deadline.duration_since(now).unsigned_abs();
         let engine = self.engine.clone();
         let completed = Arc::new(AtomicBool::new(false));
         let timed_out = Arc::new(AtomicBool::new(false));
@@ -1078,10 +1100,10 @@ impl MctWasmComponentRuntime {
         ids: MctWasmComponentInvocationIds,
     ) -> Result<MctWitComponentInvocationReport, MctWasmComponentRuntimeError> {
         let component_path = component_path.as_ref().to_path_buf();
-        let operation = resolve_wit_operation_target(&call.target)?;
-        if authorized.policy_revision() != call.authority_context.policy_revision {
+        let Some(_admitted_effect) = authorized.admit_effect_for_call(call) else {
             return Ok(wit_stale_authority_report(ids, call, &authorized));
-        }
+        };
+        let operation = resolve_wit_operation_target(&call.target)?;
         let started = wasm_observation(
             ids.started_observation_id.clone(),
             ids.started_at.clone(),
@@ -1231,9 +1253,9 @@ impl MctWasmComponentRuntime {
         ids: MctWasmComponentInvocationIds,
     ) -> Result<MctWasmComponentInvocationReport, MctWasmComponentRuntimeError> {
         let component_path = component_path.as_ref().to_path_buf();
-        if authorized.policy_revision() != call.authority_context.policy_revision {
+        let Some(_admitted_effect) = authorized.admit_effect_for_call(call) else {
             return Ok(s32_stale_authority_report(ids, call, &authorized));
-        }
+        };
         let started = wasm_observation(
             ids.started_observation_id.clone(),
             ids.started_at.clone(),
@@ -1322,9 +1344,9 @@ impl MctWasmComponentRuntime {
         let component_path = invocation.component_path;
         let export_name = invocation.export_name;
         let ids = invocation.ids;
-        if authorized.policy_revision() != call.authority_context.policy_revision {
+        let Some(_admitted_effect) = authorized.admit_effect_for_call(call) else {
             return Ok(s32_stale_authority_report(ids, call, &authorized));
-        }
+        };
         let started = wasm_observation(
             ids.started_observation_id.clone(),
             ids.started_at.clone(),
@@ -1351,9 +1373,11 @@ impl MctWasmComponentRuntime {
                     move |mut store: StoreContextMut<'_, MctWasmHostState>, _params: ()| {
                         let registry = store.data().toy_registry.clone();
                         let call = store.data().call.clone();
-                        let report = registry.call_authorized_toy(
+                        let executing_mother_now = crate::config::current_timestamp();
+                        let report = registry.call_authorized_toy_at(
                             &toy_import.authorized_toy_call,
                             &call,
+                            &executing_mother_now,
                             "{}",
                             toy_import.ids.clone(),
                         );
@@ -1446,12 +1470,12 @@ fn discover_wit_component_operations(
     let mut operations = BTreeSet::new();
     let component_type = component.component_type();
     for (interface_name, item) in component_type.exports(engine) {
-        let component::types::ComponentItem::ComponentInstance(instance) = item else {
+        let component::types::ComponentItem::ComponentInstance(instance) = item.ty else {
             continue;
         };
         for (function_name, function_item) in instance.exports(engine) {
             if matches!(
-                function_item,
+                function_item.ty,
                 component::types::ComponentItem::ComponentFunc(_)
             ) {
                 operations.insert(format!("{interface_name}.{function_name}"));
@@ -3874,6 +3898,119 @@ mod tests {
             report.observations[2].kind,
             ObservationKind::ToyCallCompleted
         );
+    }
+
+    #[test]
+    fn far_future_caller_deadline_clamps_wasm_epoch_wait_to_configured_horizon() {
+        let runtime = runtime();
+        let accepted_at = Timestamp::new("2026-08-02T12:00:00Z").unwrap();
+        let mut caller_call = call();
+        caller_call.deadline = Timestamp::new("2026-08-02T14:00:00Z").unwrap();
+        let admission = crate::config::admit_call_deadline(
+            &caller_call.deadline,
+            &accepted_at,
+            crate::config::DEFAULT_MAX_CALL_HORIZON_SECONDS,
+            None,
+        )
+        .unwrap();
+        let crate::config::MctCallDeadlineAdmission::Admitted(effective_deadline) = admission
+        else {
+            panic!("far-future caller deadline must be admitted with a clamp");
+        };
+        caller_call.deadline = effective_deadline;
+        let mut store = Store::new(
+            &runtime.engine,
+            MctWasmEmptyHostState {
+                limits: runtime.store_limits(),
+            },
+        );
+
+        let configured_wait = wasm_deadline_wait(&caller_call, &accepted_at).unwrap();
+        let permit = runtime
+            .configure_deadline_at(&mut store, &caller_call, &accepted_at)
+            .unwrap();
+
+        assert!(matches!(permit, WasmDeadlinePermit::Running(_)));
+        assert_eq!(
+            caller_call.deadline,
+            Timestamp::new("2026-08-02T12:10:00Z").unwrap()
+        );
+        assert_eq!(configured_wait, Some(std::time::Duration::from_secs(600)));
+    }
+
+    #[test]
+    fn wit_runtime_denies_mismatched_child_token_before_component_load() {
+        let runtime = runtime();
+        let mut different_call = call();
+        different_call.call_id = CallId::new("call-wit-different")
+            .expect("string ID literal/generated value must be non-empty");
+        let operation_id = operation_id_from_target(&different_call.target);
+        let child = loaded_typed_child(
+            PathBuf::from("/definitely/not/a/component.wasm"),
+            vec![operation_id],
+        );
+
+        let report = runtime
+            .invoke_authorized_child_wit_export(
+                authorized(),
+                &child,
+                &different_call,
+                &serde_json::json!({}),
+                ids(),
+            )
+            .expect("mismatched token must deny before WIT component load");
+
+        assert_eq!(report.result.outcome, ResultOutcome::Denied);
+        assert_eq!(report.result.route_taken, None);
+        assert_eq!(report.observations.len(), 1);
+    }
+
+    #[test]
+    fn s32_runtime_denies_mismatched_child_token_before_component_load() {
+        let runtime = runtime();
+        let mut different_call = call();
+        different_call.call_id = CallId::new("call-s32-different")
+            .expect("string ID literal/generated value must be non-empty");
+
+        let report = runtime
+            .invoke_authorized_s32_export(
+                authorized(),
+                &different_call,
+                PathBuf::from("/definitely/not/a/component.wasm"),
+                "answer",
+                ids(),
+            )
+            .expect("mismatched token must deny before s32 component load");
+
+        assert_eq!(report.result.outcome, ResultOutcome::Denied);
+        assert_eq!(report.result.route_taken, None);
+        assert_eq!(report.observations.len(), 1);
+    }
+
+    #[test]
+    fn s32_toy_runtime_denies_mismatched_child_token_before_component_load() {
+        let runtime = runtime();
+        let mut different_call = call();
+        different_call.call_id = CallId::new("call-s32-toy-different")
+            .expect("string ID literal/generated value must be non-empty");
+
+        let report = runtime
+            .invoke_authorized_s32_export_with_toy_imports(
+                authorized(),
+                &different_call,
+                MctWasmComponentToyInvocation {
+                    component_path: PathBuf::from("/definitely/not/a/component.wasm"),
+                    export_name: "answer".into(),
+                    toy_registry: MctToyAdapterRegistry::new(),
+                    toy_imports: Vec::new(),
+                    ids: ids(),
+                },
+            )
+            .expect("mismatched token must deny before toy-enabled component load");
+
+        assert_eq!(report.result.outcome, ResultOutcome::Denied);
+        assert_eq!(report.result.route_taken, None);
+        assert_eq!(report.observations.len(), 1);
     }
 
     #[test]

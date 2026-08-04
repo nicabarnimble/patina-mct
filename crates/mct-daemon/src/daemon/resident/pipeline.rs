@@ -535,13 +535,38 @@ pub(super) async fn execute_resident_call_at(
 async fn execute_resident_call_at_with_context(
     paths: ResidentRuntimePaths,
     ledger: ResidentLedgerWriter,
-    request: MctCallProtocolRequest,
+    mut request: MctCallProtocolRequest,
     payload: ResidentPayloadIngress,
     now: Timestamp,
     context: ResidentCallIngressContext,
 ) -> MctIrohCallHandlerResult {
     if !context.matches_request(&request) {
         return MctIrohCallHandlerResult::denied();
+    }
+    let config = match MctDaemonConfigStore::new(paths.config_path()).load() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("resident call deadline config read failed: {error}");
+            return MctIrohCallHandlerResult::failed("runtime unavailable");
+        }
+    };
+    match admit_call_deadline(
+        &request.call.deadline,
+        &now,
+        config.max_call_horizon_seconds,
+        None,
+    ) {
+        Ok(MctCallDeadlineAdmission::Admitted(effective_deadline)) => {
+            request.call.deadline = effective_deadline;
+        }
+        Ok(MctCallDeadlineAdmission::Expired) => {
+            return MctIrohCallHandlerResult::timed_out()
+                .with_protocol_reason(CallProtocolReason::CallDeadlineExpired);
+        }
+        Err(error) => {
+            eprintln!("resident call deadline evaluation failed: {error}");
+            return MctIrohCallHandlerResult::failed("runtime unavailable");
+        }
     }
     let inline_payload = match resolve_resident_request_payload(&paths, &request, payload).await {
         Ok(payload) => payload.into_inner(),
@@ -986,6 +1011,97 @@ listens = []
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// Proof 15: failed BeforeEffect acknowledgement returns observation-unavailable and starts no Child effect.
+    #[tokio::test]
+    async fn before_effect_append_failure_suppresses_child_effect() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let effect_marker = dir.path().join("child-effect-ran");
+        let script = format!(
+            "#!/bin/sh\nprintf effect > '{}'\ncat\n",
+            effect_marker.display()
+        );
+        write_resident_process_child_script(
+            &children_dir,
+            "resident-payload-echo",
+            script.as_bytes(),
+        );
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        MctDaemonConfigStore::new(&config_path)
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+        let (request, payload) =
+            jvm_bridge_protocol_request("patina:demo/control@0.1.0.run", r#"[{"effect":true}]"#)
+                .unwrap();
+
+        let result = execute_resident_call_at(
+            ResidentRuntimePaths::new(config_path, children_dir, state_path),
+            ResidentLedgerWriter::failed_for_test(),
+            request,
+            ResidentPayloadIngress::local(Some(payload)),
+            Timestamp::new("2026-08-02T12:00:00Z").unwrap(),
+        )
+        .await;
+
+        assert_eq!(result.outcome, CallProtocolOutcome::Failed);
+        assert_eq!(result.safe_message, "observation ledger unavailable");
+        assert!(
+            !effect_marker.exists(),
+            "unsuccessful BeforeEffect acknowledgement began a Child effect"
+        );
+    }
+
+    #[tokio::test]
+    async fn resident_ingress_rejects_expired_call_before_child_effect() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let effect_marker = dir.path().join("child-effect-ran");
+        let script = format!(
+            "#!/bin/sh\nprintf effect > '{}'\ncat\n",
+            effect_marker.display()
+        );
+        write_resident_process_child_script(
+            &children_dir,
+            "resident-payload-echo",
+            script.as_bytes(),
+        );
+
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        MctDaemonConfigStore::new(&config_path)
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+        let ledger = ResidentLedgerWriter::spawn(ledger_path).unwrap();
+        let (mut request, payload) =
+            jvm_bridge_protocol_request("patina:demo/control@0.1.0.run", r#"[{"expired":true}]"#)
+                .unwrap();
+        request.call.deadline = Timestamp::new("2026-08-02T11:59:59Z").unwrap();
+
+        let result = execute_resident_call_at(
+            ResidentRuntimePaths::new(config_path, children_dir, state_path),
+            ledger.clone(),
+            request,
+            ResidentPayloadIngress::local(Some(payload)),
+            Timestamp::new("2026-08-02T12:00:00Z").unwrap(),
+        )
+        .await;
+
+        assert_eq!(result.outcome, CallProtocolOutcome::TimedOut);
+        assert_eq!(
+            result.protocol_reason,
+            Some(CallProtocolReason::CallDeadlineExpired)
+        );
+        assert!(
+            !effect_marker.exists(),
+            "expired ingress began a Child effect"
+        );
+        ledger.close().await;
     }
 
     #[tokio::test]

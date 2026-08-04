@@ -235,7 +235,40 @@ pub struct AuthorizedToyCall {
     grants_revision: u64,
 }
 
+#[derive(Debug)]
+/// Proof that a Toy token is bound to the supplied call and its authority
+/// revisions at an effect-admission boundary.
+///
+/// The constructor is private to [`AuthorizedToyCall::admit_effect_for_call_at`]
+/// so daemon Toy paths cannot obtain this proof without performing every
+/// binding and expiry check.
+pub struct AdmittedToyEffect<'a> {
+    authorized: &'a AuthorizedToyCall,
+}
+
+impl AdmittedToyEffect<'_> {
+    /// Returns the capability whose exact-call binding was admitted.
+    pub fn authorized(&self) -> &AuthorizedToyCall {
+        self.authorized
+    }
+}
+
 impl AuthorizedToyCall {
+    /// Admits this token for an effect only when its exact call and authority
+    /// revisions match the supplied call and the executing Mother's current
+    /// time is strictly before token expiry.
+    pub fn admit_effect_for_call_at<'a>(
+        &'a self,
+        call: &MctCall,
+        executing_mother_now: &Timestamp,
+    ) -> Option<AdmittedToyEffect<'a>> {
+        (self.call_id == call.call_id
+            && self.policy_revision == call.authority_context.policy_revision
+            && self.grants_revision == call.authority_context.grants_revision
+            && executing_mother_now < &self.expires_at)
+            .then_some(AdmittedToyEffect { authorized: self })
+    }
+
     /// Unique token identifier for the authorized toy effect.
     pub fn authorized_toy_call_id(&self) -> &AuthorizedToyCallId {
         &self.authorized_toy_call_id
@@ -477,11 +510,10 @@ pub fn evaluate_toy_grant_for_call(
             child_instance_id: request.child_instance_id.clone(),
             resource_id: request.resource_id.clone(),
             authority_decision_id: evaluation.decision_id.clone(),
-            expires_at: grant
-                .constraints
-                .expires_at
-                .clone()
-                .unwrap_or_else(|| call.deadline.clone()),
+            expires_at: grant.constraints.expires_at.as_ref().map_or_else(
+                || call.deadline.clone(),
+                |expiry| expiry.clone().min(call.deadline.clone()),
+            ),
             policy_revision: grant.policy_revision,
             grants_revision: grant.grants_revision,
         };
@@ -744,6 +776,22 @@ mod tests {
             authorized.expires_at(),
             &Timestamp::new("2026-05-31T00:05:00Z").unwrap()
         );
+    }
+
+    #[test]
+    fn toy_token_expiry_is_capped_by_effective_call_deadline() {
+        let mut effective_call = call();
+        effective_call.deadline = Timestamp::new("2026-05-31T00:01:00Z").unwrap();
+
+        let result = evaluate_toy_grant_for_call(
+            &effective_call,
+            &request(),
+            &[toy()],
+            &[grant(ToyGrantState::Active)],
+        );
+
+        let authorized = result.authorized.expect("authorized toy call");
+        assert_eq!(authorized.expires_at(), &effective_call.deadline);
     }
 
     #[test]

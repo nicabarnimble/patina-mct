@@ -67,9 +67,9 @@ impl MctProcessChildHarness {
         stdin_bytes: &[u8],
         ids: MctProcessChildInvocationIds,
     ) -> Result<MctProcessChildInvocationReport, MctProcessChildError> {
-        if authorized.policy_revision() != call.authority_context.policy_revision {
+        let Some(_admitted_effect) = authorized.admit_effect_for_call(call) else {
             return Ok(process_stale_authority_report(&authorized, call, ids));
-        }
+        };
 
         let started = process_observation(
             ids.started_observation_id.clone(),
@@ -429,6 +429,34 @@ mod tests {
             DecisionId::new("decision-child-process")
                 .expect("string ID literal/generated value must be non-empty")
         );
+    }
+
+    #[test]
+    fn process_harness_denies_mismatched_call_token_before_spawn() {
+        let harness = MctProcessChildHarness {
+            executable: PathBuf::from("/definitely/not/a/child"),
+            args: Vec::new(),
+            timeout: Duration::from_secs(2),
+            local_node_id: MctNodeId::new("mother-a")
+                .expect("string ID literal/generated value must be non-empty"),
+        };
+        let mut different_call = call();
+        different_call.call_id = CallId::new("call-process-different")
+            .expect("string ID literal/generated value must be non-empty");
+
+        let report = harness
+            .invoke_authorized_child(
+                authorized(),
+                &different_call,
+                "{\"input\":\"hi\"}",
+                ids("call-mismatch"),
+            )
+            .expect("mismatched token must deny before process spawn");
+
+        assert_eq!(report.result.outcome, ResultOutcome::Denied);
+        assert_eq!(report.result.route_taken, None);
+        assert_eq!(report.observations.len(), 1);
+        assert_eq!(report.observations[0].outcome, ObservationOutcome::Denied);
     }
 
     #[test]
