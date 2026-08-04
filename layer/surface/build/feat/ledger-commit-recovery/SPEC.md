@@ -41,6 +41,26 @@ exit_criteria:
     text: Review 2 law is valid and attributed, every implementation commit and the final phase pass workspace validation, and the phase flake log records the trigger-scheduler collision disposition.
     checked: true
     verify: allium check layer/allium && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh
+  - id: h2-authority-tenure-and-mutations
+    text: Every exclusive authority writer tenure commits a fresh entropy-backed epoch before mutation admission, and replay-complete mutation facts return typed outcomes with same-ID resolution.
+    checked: true
+    verify: Phase H2 proof steps 1-7 have landed file/line citations and assertions.
+  - id: h2-legacy-import
+    text: Existing Toy authority enters canonical history only through the one-time owner-gated import, with import-required and already-imported outcomes proved.
+    checked: true
+    verify: Phase H2 proof step 8 has landed file/line citations and assertions.
+  - id: h2-coherent-projection-proof
+    text: One authority-wide cursor coherently reaches the full ledger head and exposes an unconsumed typed D-G8 proof over source, identity, state, and projection hashes.
+    checked: true
+    verify: Phase H2 proof steps 9-11 have landed file/line citations and assertions.
+  - id: h2-rebuild-and-quarantine
+    text: Shadow rebuild is atomic and replay-equivalent, committed facts survive projection failure, and quarantine advances no prior projected truth.
+    checked: true
+    verify: Phase H2 proof steps 12-15 have landed file/line citations and assertions.
+  - id: h2-validation-and-fence
+    text: Every H2 implementation commit and close-out pass workspace tests, warnings-denied clippy, Tier 0/RustSec, and Allium while R2-L5/R2-L6 and grants slices 4-8 remain untouched.
+    checked: true
+    verify: allium check layer/allium && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh
 ---
 
 # feat: MCT ledger commit and recovery — Phase H
@@ -285,12 +305,12 @@ The full-ledger replay readiness seam remains accepted. The on-disk `MctObservat
 
 ## Scope and gate
 
-Phase H2 proposes and, only after operator ratification of this section, implements:
+Phase H2, after explicit operator ratification of Gate G1, implements:
 
 1. **R2-L3** — writer-tenure epoch establishment, canonical Toy catalog/grant mutation facts, typed mutation outcomes and same-ID resolution, and the one-time operator-gated import required by D-R2.3.
 2. **R2-L4** — full-ledger authority replay, coherent authority-state cursor publication, the D-G8 usable-projection proof, and replay-equivalent shadow rebuild.
 
-This schema proposal is Gate G1. No Phase H2 Rust or Cargo change may begin until the operator ratifies these permanent fact schemas. Any amendment is recorded as D-H2.n; D-R2.1 through D-R2.8 remain settled.
+This schema was Gate G1. The operator ratified these permanent fact schemas before Phase H2 Rust work began. Any amendment is recorded as D-H2.n; D-R2.1 through D-R2.8 remain settled.
 
 Gate G1 specifically ratifies four permanent choices made concrete below: the reserved inline `detail_ref` carrier, a non-resetting generation baseline across epochs, one replay-complete fact per ordinary mutation/import, and the H2/R2-L5 seam where H2 records startup provenance but R2-L5 remains responsible for enforcing D-R2.8's every-artifact virgin/operator gate at Mother startup.
 
@@ -299,6 +319,10 @@ Gate G1 specifically ratifies four permanent choices made concrete below: the re
 ### D-H2.1
 
 `mct-authority-fact-v1:` is a named constant at the carrier parse site. The `MctObservation.detail_ref` field documentation names this reserved inline canonical-authority payload semantics; all unreserved values remain opaque references. This documentation/constant amendment changes neither the entry field schema nor the Phase H2 fence.
+
+### Gate G1 disposition
+
+Ratified before Task B. D-H2.1 landed in `d257515`; no Rust or Cargo work preceded ratification. The operator accepted the inline carrier, non-resetting generation baseline, one-fact mutation/import shape, H2/R2-L5 startup seam, and SQLite/config legacy-import interpretation.
 
 ## Binding landed law
 
@@ -364,7 +388,7 @@ CanonicalAuthorityFactV1 {
 
 `fact_id` equals the containing observation's `observation_id`. Every `GrantsAuthorityIdentity` has exactly `mother_node_id`, `authority_epoch`, `generation`, and `source_authority_observation_id`. The containing observation is `BeforeEffect` and `NodeOperator`, has `subject_id = mother_node_id`, `resource_id = ledger_id`, and carries the resulting generation in `grants_revision`. Epoch establishment uses `LifecycleTransitionRecorded`/`Storage`; ordinary mutation uses `OperatorActionRecorded`/`Kernel`; import uses `OperatorActionRecorded`/`Operator`. Any disagreement makes authority replay fail closed without advancing or publishing a cursor; only the already-ratified R2-L1 ledger corruption classes place the ledger itself in quarantine.
 
-## Proposed epoch-establishment schema
+## Ratified epoch-establishment schema
 
 ```text
 EpochEstablishedFactV1 {
@@ -398,7 +422,7 @@ Rules:
 - `grant_state_hash` is the deterministic hash of the complete current Toy catalog/grant state before and after the epoch transition. Equality proves that epoch transition itself changed identity but not grant meaning.
 - The epoch fact is the first append made by the newly exclusive writer and must be acknowledged before that writer exposes its epoch or accepts an authority mutation. Failure or uncertainty poisons/fences the tenure under R2-L2.
 
-## Proposed canonical authority-mutation schema
+## Ratified canonical authority-mutation schema
 
 ```text
 AuthorityMutationFactV1 {
@@ -500,7 +524,7 @@ GrantShapingSourceV1 =
 
 These source records preserve why the structured catalog/grant values were shaped as written. They do not independently grant Child or Toy authority and do not expand the D-R2.7 projection scope.
 
-## Proposed typed mutation result and same-ID resolution
+## Ratified typed mutation result and same-ID resolution
 
 The control boundary returns the following tagged value; impossible field combinations are not represented:
 
@@ -543,7 +567,7 @@ Semantics:
 - A retry must carry the same `mutation_id` and intent. After exclusive reopen/full rescan: exactly one matching committed fact resolves as `resolved_existing_fact`; clean absence permits one append of that same intent; a different intent under the ID is `mutation_id_conflict`; residue/quarantine follows R2-L1/R2-L2 and cannot be guessed around with a new ID.
 - The legacy write occurs only after an acknowledged fact. Its failure cannot change the fact result back to rejection or unknown; it produces `committed_projection_pending`.
 
-## Proposed one-time operator import schema
+## Ratified one-time operator import schema
 
 ### Request
 
@@ -610,7 +634,7 @@ LegacyAuthorityImportFactV1 {
 
 The import is one fact and one generation advance. Its complete snapshot is replay authority; source hashes merely prove the operator-approved legacy inputs. Oversized or internally inconsistent legacy state rejects before append rather than being split into a partially canonical import. The containing observation is the recorded operator decision.
 
-## Proposed authority projection rows and coherent publication
+## Ratified authority projection rows and coherent publication
 
 R2-L4 adds one live authority projection and replay evidence. The observable cursor row is:
 
@@ -643,7 +667,7 @@ The live projection contains:
 
 Projected facts, current Toy rows, hashes, status, and cursor become visible in one SQLite transaction. Incremental replay consumes every validated ledger entry in sequence; non-authority entries update only the through-head fields and projection hash. A reader sees old facts with the old cursor or new facts with the new cursor, never a mixed generation. Shadow rebuild constructs and validates a complete candidate away from the live rows, then replaces facts and cursor in one publication transaction. A quarantined source publishes only typed `quarantined` status without advancing the prior through-head or replacing prior facts.
 
-## Proposed usable-projection proof
+## Ratified usable-projection proof
 
 R2-L4 exposes but does not consume:
 
@@ -707,3 +731,48 @@ R2-L3 and R2-L4 leave the Phase H fence only after Gate G1 ratification. The fol
 - No changes to the Phase H newline framing or `MctObservationLedgerEntry`/`MctObservation` field schema.
 
 If implementation requires any fenced reader or behavior, work stops and reports the design fork for a D-H2.n amendment.
+
+## Phase H2 close-out
+
+### Landed commits
+
+1. `6f62404 spec(ledger): propose Phase H2 epoch and mutation fact schemas`
+2. `d257515 spec(ledger): record D-H2.1 carrier semantics`
+3. `d1d8ce6 feat(ledger): establish authority epoch per writer tenure`
+4. `4f57175 feat(ledger): canonical authority mutation envelope with typed commit results`
+5. `535c3f9 feat(control): operator-gated import of grant state into canonical facts`
+6. `79aad8b feat(projection): authority-wide cursor with coherent publication`
+7. `ba047d9 feat(projection): usable-projection proof for D-G8`
+8. `09f6b06 feat(projection): shadow rebuild with replay equivalence`
+
+No implementation commit changed an authority-evaluation reader, resident grants guard, Toy effect evaluator, host adapter, hello/call wire value, R2-L5 startup plane, R2-L6 ordering boundary, or grants-authority slice 4-8 consumer.
+
+### Required proof citations and verbatim central assertions
+
+1. **Epoch before mutation admission** — `crates/mct-observation/src/lib.rs:3768`, central assertion at line 3778: `assert_eq!(entries, vec![tenure.entry.clone()]);`
+2. **Distinct entropy-backed tenures and restore** — `crates/mct-observation/src/lib.rs:3798`, central assertions beginning at line 3836: `assert_ne!(first_epoch, second_epoch);`, `assert_ne!(&first_epoch, restored_epoch);`, and `assert_ne!(&second_epoch, restored_epoch);`
+3. **Epoch replay from ledger bytes** — `crates/mct-observation/src/lib.rs:3843`, central assertion at line 3859: `assert_eq!(replayed.current_authority, Some(expected));`
+4. **Canonical fact before legacy write; replay-complete mutation** — `crates/mct-observation/src/lib.rs:3649`, assertion executed inside the legacy-write closure at line 3657: `assert_eq!(replay_authority_entries(&entries).unwrap().state, *state);`
+5. **Commit unknown suppresses legacy and same-ID retry deduplicates** — `crates/mct-observation/src/lib.rs:3674`, central assertions: `assert!(!legacy_called.get());` and `assert_eq!(replay.mutations.len(), 1);`
+6. **Rejected-before-commit has no canonical or legacy change** — `crates/mct-observation/src/lib.rs:3717`, central assertions at lines 3738-3739: `assert_eq!(std::fs::read(&path).unwrap(), before);` and `assert!(!legacy_called.get());`
+7. **Projection-pending remains a committed fact** — `crates/mct-observation/src/lib.rs:3744`, central assertions: `assert!(matches!(result, AuthorityMutationResultV1::CommittedProjectionPending { pending_reason: AuthorityProjectionPendingReasonV1::ProjectionFailed, .. }));` and `assert_eq!(replay.mutations.len(), 1);`
+8. **One-time owner-gated legacy import** — `crates/mct-daemon/src/daemon/control.rs:4121`, central assertions at lines 4171 and 4207: `assert_eq!(blocked["reason"], "import_required");` and `assert_eq!(second["reason"], "already_imported");`; replay additionally asserts `assert!(replay.imported);`.
+9. **Authority cursor reaches non-authority head atomically** — `crates/mct-daemon/src/state.rs:5993`, reader assertion at line 6024: `assert_eq!(visible.cursor, old.cursor);`; post-publication assertion begins at line 6031: `assert_eq!(new.cursor.through_sequence, new_entries.last().unwrap().local_sequence);`
+10. **Typed D-G8 proof** — `crates/mct-daemon/src/state.rs:6045`; the usable assertion is `assert_eq!(proof, UsableAuthorityProjectionProofV1::Usable { cursor: Box::new(cursor.clone()) });`, and mismatch assertions return exactly `Deny::WrongSourceMother`, `Deny::HeadSequenceMismatch`, `Deny::EpochMismatch`, and `Deny::ProjectionHashMismatch` at lines 6080, 6093, 6106, and 6124.
+11. **Epoch transition preserves grant meaning** — `crates/mct-daemon/src/state.rs:6131`, central assertions beginning at line 6161: `assert_eq!(after.state, before.state);` and `assert_ne!(after.cursor.grants_authority.authority_epoch, before.cursor.grants_authority.authority_epoch);`
+12. **Atomic shadow replacement** — `crates/mct-daemon/src/state.rs:6178`, central concurrent-reader assertion at line 6230: `assert_eq!(reader.authority_projection_snapshot()?.unwrap(), defective);`
+13. **Rebuild equals advancing replay** — `crates/mct-daemon/src/state.rs:6250`, central assertion at lines 6301-6304: `assert_eq!(incrementally_replayed.cursor.projection_hash, rebuilt.cursor.projection_hash);`
+14. **Projection failure cannot undo commitment** — `crates/mct-daemon/src/state.rs:6309`, central assertions: `assert!(matches!(result, AuthorityMutationResultV1::CommittedProjectionPending { .. }));` and, after catch-up at line 6375, `assert_eq!(caught_up.state, canonical.state);`
+15. **Quarantine advances no projection and denies proof** — `crates/mct-daemon/src/state.rs:6380`, central assertions beginning at line 6415: `assert_eq!(after.state, before.state);`, `assert_eq!(after.cursor.through_sequence, before.cursor.through_sequence);`, and the typed proof equals `UsableAuthorityProjectionProofV1::Denied { reason: AuthorityProjectionDenyReasonV1::LedgerQuarantined }`.
+
+The additional regression `crates/mct-daemon/src/state.rs:6438` proves an unknown reserved authority schema blocks publication while the structurally valid ledger remains non-quarantined and the prior projection remains byte-value equal.
+
+### Validation and flake disposition
+
+Each H2 implementation slice passed `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, and `./scripts/ci-tier0.sh`; the close-out rerun passed **460 tests with 1 ignored**, warnings-denied clippy, RustSec/Tier 0, and `allium check layer/allium`. No Phase H2 failure required the flake protocol and no non-reproducing failure was observed.
+
+### Final invariant disposition
+
+Track 3 reports **19 COVERED**, **0 LAW-LEADS-CODE**, and **8 DEFERRED** Review 2 invariants, plus a now-`COVERED` structural `MctProjectionCursor` row. H2 moved 9 R2-L3/R2-L4 invariants to `COVERED`. The remaining 8 stay deferred because their complete law requires an authority-evaluation proof consumer, D-R2.8 startup classification, or R2-L6 effect ordering; constructing a correct proof is not misreported as consuming it.
+
+The canonical carrier and newline framing preserve the existing `MctObservation` and `MctObservationLedgerEntry` field schemas. Unknown authority schemas fail projection without ledger quarantine. Quarantined ledgers retain the prior through-head/facts and publish only quarantined projection status. The active work session remains active and unarchived.

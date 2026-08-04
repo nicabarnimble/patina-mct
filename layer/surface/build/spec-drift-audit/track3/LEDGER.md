@@ -1,6 +1,6 @@
 # Contract obligation ledger
 
-Status date: 2026-07-12; W2 extension 2026-07-14; Daily-Driver Slice 2 extension 2026-07-15; artifact-acquisition extension 2026-07-16; trigger-runtime Part A extension 2026-07-21; grants-authority v0 Phase G extension 2026-08-02; ledger commit/recovery Phase H extension 2026-08-03
+Status date: 2026-07-12; W2 extension 2026-07-14; Daily-Driver Slice 2 extension 2026-07-15; artifact-acquisition extension 2026-07-16; trigger-runtime Part A extension 2026-07-21; grants-authority v0 Phase G extension 2026-08-02; ledger commit/recovery Phase H/H2 extension 2026-08-03
 
 Scope: complete named-invariant coverage for `mct-product-map.allium` and `mct-peer-ontology.allium`, plus bulk attribution of tool-derived structural obligations. The 2026-07-12 priority and full-inventory evidence is retained in place; the 2026-07-14 local-application-ingress invariants and W2-A remediation obligations extend it below.
 
@@ -15,7 +15,7 @@ Module names distinguish library tests from binary-local tests: `mct_daemon_bin`
 
 ## Ledger commit and recovery — Phase H / Review 2
 
-The ratified Review 2 law is captured in [ledger-commit-recovery](../../feat/ledger-commit-recovery/SPEC.md). Phase H Task B implements only R2-L1/R2-L2. All fifteen named proof steps have landed, so the ten ledger commit/recovery invariants are `COVERED`. Epoch, canonical authority facts, authority-wide projection freshness, and mutation/effect ordering remain `DEFERRED` to R2-L3..L6 and grants-authority slices 4-8.
+The ratified Review 2 law is captured in [ledger-commit-recovery](../../feat/ledger-commit-recovery/SPEC.md). Phase H implemented R2-L1/R2-L2; Phase H2 now implements the R2-L3/R2-L4 write, replay, projection, and proof-construction slices. The proof remains deliberately unconsumed: R2-L5 startup/read-path denial, R2-L6 mutation/effect ordering, and grants-authority slices 4-8 remain `DEFERRED`.
 
 ### Ledger commit and recovery — R2-L1/R2-L2 targets
 
@@ -32,36 +32,36 @@ The ratified Review 2 law is captured in [ledger-commit-recovery](../../feat/led
 | `OneWriterDefinesLocalOrder` | COVERED | Proof 12: `contending_writer_is_typed_and_byte_identical_without_recovery`; resident writer close now joins shutdown and trigger tests use unique temporary ledger paths without lock retries. |
 | `EntryEncodingCannotForgeFrameEnd` | COVERED | Proof 14: `escapable_entry_content_round_trips_without_forging_frame_end`. |
 
-### Authority epoch continuity — R2-L3/L4/L5 deferrals
+### Authority epoch continuity — Phase H2 disposition
 
 | Invariant | Current status | Phase disposition / evidence |
 |---|---|---|
-| `MctAuthorityEpochContinuity.EpochBeginsWithCanonicalFact` | DEFERRED | R2-L3 creates the canonical epoch fact; D-R2.8 virgin-Mother/operator gating is R2-L5. |
-| `WriterTenureUsesFreshEpoch` | DEFERRED | R2-L3 implements D-R2.1 after R2-L1/R2-L2 establish safe writer tenure. |
-| `EpochTransitionPreservesCurrentGrantMeaning` | DEFERRED | R2-L3/L4 must carry the grant set through epoch transition without changing its meaning. |
-| `RestoredHistoryCannotReuseAuthorityIdentity` | DEFERRED | R2-L3 names fresh authority after replacement, restoration, or reinitialization. |
-| `ProjectionEpochMustMatchCanonicalEpoch` | DEFERRED | R2-L4/L5 projection proof and authority denial. |
+| `MctAuthorityEpochContinuity.EpochBeginsWithCanonicalFact` | DEFERRED | Phase H2 proof 1 establishes the canonical epoch before mutation admission, but the invariant also gates authority evaluation/advertisement and D-R2.8 every-artifact virgin classification; those remain R2-L5. |
+| `WriterTenureUsesFreshEpoch` | COVERED | Phase H2 proofs 1-2: `mct_observation::tests::{fresh_authority_tenure_commits_epoch_before_mutation_admission,authority_tenures_and_byte_copied_restore_use_distinct_epochs}`. |
+| `EpochTransitionPreservesCurrentGrantMeaning` | COVERED | Phase H2 proof 11: `mct_daemon::state::tests::epoch_transition_preserves_projected_grant_meaning`. |
+| `RestoredHistoryCannotReuseAuthorityIdentity` | COVERED | Phase H2 proof 2 copies ledger/projection history and proves the next tenure receives a third distinct entropy-backed epoch. |
+| `ProjectionEpochMustMatchCanonicalEpoch` | DEFERRED | Phase H2 proof 10 constructs typed `epoch_mismatch`, but no authority reader consumes the proof until R2-L5/slice 5; stale projection therefore cannot yet be credited as denying every authority path. |
 
-### Canonical authority facts — R2-L3/L4 deferrals
-
-| Invariant | Current status | Phase disposition / evidence |
-|---|---|---|
-| `MctCanonicalAuthorityFacts.LedgerFactsAreCanonicalAuthority` | DEFERRED | R2-L3 canonical fact envelope and D-R2.3 import; slices 4-5 consume it. |
-| `MutationAndGenerationAdvanceAreOneFact` | DEFERRED | R2-L3 plus slice 4 names one indivisible canonical authority-shape mutation. |
-| `AuthorityFactIsReplayComplete` | DEFERRED | R2-L3 supplies the complete replay payload; R2-L4 proves reconstruction. |
-| `ConfigurationIsIntentNotAuthority` | DEFERRED | D-R2.3 one-time operator-gated import in R2-L3. |
-| `ProjectionFailureDoesNotUndoCommit` | DEFERRED | D-R2.5 typed mutation outcomes are R2-L3; coherent recovery/denial is R2-L4/L5. |
-
-### Authority-wide projection freshness — R2-L4/L5 deferrals
+### Canonical authority facts — Phase H2 disposition
 
 | Invariant | Current status | Phase disposition / evidence |
 |---|---|---|
-| `MctAuthorityProjectionFreshness.AuthorityCursorReachesCanonicalHead` | DEFERRED | R2-L4 authority-wide replay through the committed head, initially covering Toy catalog/grants and grant-shaping source facts per D-R2.7. |
-| `CursorBindsHeadHashAndAuthorityIdentity` | DEFERRED | R2-L4 coherent source Mother/ledger/head/authority proof. |
-| `ProjectionFactsAndCursorBecomeVisibleTogether` | DEFERRED | R2-L4 coherent projection publication. |
-| `EpochMismatchDenies` | DEFERRED | R2-L4 proof plus R2-L5 fail-closed provider. |
-| `RebuildEqualsReplay` | DEFERRED | R2-L4 incremental-versus-rebuild equivalence proof. |
-| `MctProjectionCursor` authority-state kind, source Mother, through-entry hash, and projection status | DEFERRED | R2-L4 structural projection implementation. Existing trigger/watch checkpoints remain domain diagnostics and cannot establish D-G8 freshness. |
+| `MctCanonicalAuthorityFacts.LedgerFactsAreCanonicalAuthority` | DEFERRED | Phase H2 lands the canonical envelope/replay source, but fenced authority-evaluation readers still use legacy projections. Slices 4-5 must consume canonical state before this global invariant is covered. |
+| `MutationAndGenerationAdvanceAreOneFact` | COVERED | Phase H2 proof 4: `mct_observation::tests::authority_mutation_fact_precedes_legacy_write_and_reconstructs_state`; proofs 5-7 cover unknown, rejected, and pending outcomes without a separately committable generation. |
+| `AuthorityFactIsReplayComplete` | COVERED | Phase H2 proofs 3-4 and 8 reconstruct epoch, mutation, and imported Toy state from structured canonical ledger bytes. |
+| `ConfigurationIsIntentNotAuthority` | DEFERRED | Proof 8 covers one-time owner-gated import and pre-import mutation refusal, but current evaluation readers remain fenced and legacy-backed until slices 4-5. |
+| `ProjectionFailureDoesNotUndoCommit` | DEFERRED | Proofs 7 and 14 cover permanent commitment, typed pending, and catch-up. The invariant's fail-closed authority-use clause remains unimplemented until R2-L5/slice 5 consumes the proof. |
+
+### Authority-wide projection freshness — Phase H2 disposition
+
+| Invariant | Current status | Phase disposition / evidence |
+|---|---|---|
+| `MctAuthorityProjectionFreshness.AuthorityCursorReachesCanonicalHead` | COVERED | Phase H2 proof 9: `mct_daemon::state::tests::authority_cursor_reaches_non_authority_head_with_coherent_publication`. |
+| `CursorBindsHeadHashAndAuthorityIdentity` | COVERED | Proofs 9-10 bind source Mother/ledger, committed sequence/hash, complete authority identity, state hash, and projection hash with typed mismatch reasons. |
+| `ProjectionFactsAndCursorBecomeVisibleTogether` | COVERED | Proofs 9 and 12 show concurrent readers observe old-old or new-new state/cursor during ordinary publication and shadow replacement. |
+| `EpochMismatchDenies` | DEFERRED | Proof 10 emits typed `epoch_mismatch`; fail-closed authority denial remains R2-L5/slice 5 because H2 intentionally adds no proof consumer. |
+| `RebuildEqualsReplay` | COVERED | Phase H2 proof 13: `mct_daemon::state::tests::clean_rebuild_and_incremental_replay_are_projection_equivalent`. |
+| `MctProjectionCursor` authority-state kind, source Mother, through-entry hash, and projection status | COVERED | Runtime schema v12 stores the authority-state cursor plus complete current Toy/fact rows; proofs 9, 12, and 15 cover current, replacement, and quarantined publication. Trigger/watch checkpoints remain non-authorizing domain diagnostics. |
 
 ### Mutation/effect ordering — R2-L6 and slices 7-8 deferrals
 
@@ -70,18 +70,18 @@ The ratified Review 2 law is captured in [ledger-commit-recovery](../../feat/led
 | `TwoPhaseRouting.MutationCommitAndEffectStartHaveOneOrder` | DEFERRED | R2-L6 supplies the ordering boundary; slices 7-8 consume it at Child and Toy effects. |
 | `ProjectionLagCannotOvertakeRevocation` | DEFERRED | R2-L4/L5 current projection proof plus R2-L6 and slices 7-8 effect admission. |
 
-### Phase H final disposition counts
+### Phase H2 disposition counts
 
-| Disposition | New invariants after Task B |
+| Disposition | Review 2 invariants after H2 |
 |---|---:|
-| COVERED | 10 |
+| COVERED | 19 |
 | LAW-LEADS-CODE | 0 |
-| DEFERRED to R2-L3..L6 / slices 4-8 | 17 |
+| DEFERRED to R2-L5/R2-L6 / slices 4-8 | 8 |
 | **Total new invariants** | **27** |
 
-The separate `MctProjectionCursor` structural row remains `DEFERRED` to R2-L4, preserving the reconciled **10 / 17 + 1 structural** partition.
+The separate `MctProjectionCursor` structural row is now `COVERED`. The 19 covered invariants comprise the original 10 R2-L1/R2-L2 rows plus 9 R2-L3/R2-L4 rows. Deferral is retained wherever the complete invariant requires an authority-evaluation consumer, D-R2.8 startup classification, or mutation/effect ordering; proof construction alone is not credited as fail-closed use.
 
-**Known seam:** authority readiness waits on full-ledger replay. Ledger growth is therefore a future authority-availability concern; Phase H does not add an alternate authority source, compaction path, or partial-replay freshness claim.
+**Known seam:** authority projection construction replays the full ledger. Ledger growth is therefore a future authority-availability concern; Phase H2 adds no alternate authority source, compaction path, or partial-replay freshness claim.
 
 ## Grants authority v0 — Phase G
 
@@ -143,18 +143,18 @@ The ratified Phase G law is captured in [grants-authority-v0](../../feat/grants-
 
 | Invariant | Current status | Phase disposition / evidence |
 |---|---|---|
-| `MctAuthorityProjectionFreshness.AuthorityProjectionIdentifiesCanonicalSource` | DEFERRED | Review 2 owns the proof mechanism; slices 4-5 consume it. |
-| `AuthorityProjectionCoversCurrentGeneration` | DEFERRED | Review 2 plus slices 4-5. |
-| `ProjectionVersionAndFactsAreCoherent` | DEFERRED | Review 2 must define coherent projection advancement/recovery. |
-| `UnprovableFreshnessDenies` | DEFERRED | Slice 5 fails closed when Review 2's freshness proof is unavailable. |
+| `MctAuthorityProjectionFreshness.AuthorityProjectionIdentifiesCanonicalSource` | COVERED | Phase H2 proofs 9-10 bind source Mother/ledger/head and complete grants-authority identity; slices 4-5 consume rather than redefine this proof. |
+| `AuthorityProjectionCoversCurrentGeneration` | DEFERRED | Phase H2 constructs the proof, but slices 4-5 must supply and consume current canonical generation at authority evaluation. |
+| `ProjectionVersionAndFactsAreCoherent` | COVERED | Phase H2 proofs 9 and 12 prove ordinary and shadow publication expose facts/state/cursor old-old or new-new in one SQLite transaction. |
+| `UnprovableFreshnessDenies` | DEFERRED | Slice 5 must consume the Phase H2 typed denial; proof construction alone changes no authority reader. |
 
 ### Phase G disposition counts
 
 | Disposition | New invariants after Task B |
 |---|---:|
-| COVERED | 8 |
+| COVERED | 10 |
 | LAW-LEADS-CODE, targeted by Task B | 0 |
-| DEFERRED to Review 2 / slices 4-8 | 23 |
+| DEFERRED to slices 4-8 | 21 |
 | **Total new invariants** | **31** |
 
 The strengthened pre-existing `TwoPhaseRouting.EffectBoundaryRevisionGuardIsDistinct` is tracked in its original routing row below and is no longer credited as covered by a test that supplies a synthetic current revision while the production provider copies grants revision from the call.
