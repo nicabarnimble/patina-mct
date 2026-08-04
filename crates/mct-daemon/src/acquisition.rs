@@ -12,7 +12,12 @@ use mct_kernel::{
     OperatorPointedAcquisitionState, OperatorPointedArtifactAcquisitionDecision, SourcePlane,
     Timestamp, evaluate_artifact_acquisition_authority,
 };
-use mct_observation::JsonlObservationLedger;
+use mct_observation::{
+    AuthorityProjectionDenyReasonV1, AuthorityProjectionExpectationV1,
+    AuthorityProjectionLedgerEvidenceV1, JsonlObservationLedger, MctObservationLedgerEntry,
+    ObservationLedgerError, UsableAuthorityProjectionProofV1, authority_state_hash,
+    replay_authority_entries,
+};
 use patina_sdk::manifest::ChildManifest as SdkChildManifest;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -74,6 +79,216 @@ pub struct MctStandingSourceLedgerProof {
     source: ArtifactSourceAuthority,
     record_digest: String,
     ledger_sequence: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
+pub enum StandingSourceAdmissionDenyReasonV1 {
+    AuthorityProjection(AuthorityProjectionDenyReasonV1),
+    LedgerUnavailable,
+    LedgerQuarantined,
+    AuthorityReplayBlocked,
+    SourceMissing,
+    SourceDigestMismatch,
+    SourceInactive,
+    SourceFactMissing,
+    SourceFactDuplicate,
+    SourceFactMismatch,
+    SourceChangedAfterProof,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum StandingSourceAdmissionV1 {
+    Usable {
+        authority_projection: UsableAuthorityProjectionProofV1,
+        source_authority_id: String,
+        source_record_digest: String,
+        source_fact_sequence: u64,
+        #[serde(skip)]
+        proof: Box<MctStandingSourceLedgerProof>,
+    },
+    Denied {
+        reason: StandingSourceAdmissionDenyReasonV1,
+    },
+}
+
+impl StandingSourceAdmissionV1 {
+    pub fn proof(&self) -> Option<&MctStandingSourceLedgerProof> {
+        match self {
+            Self::Usable { proof, .. } => Some(proof),
+            Self::Denied { .. } => None,
+        }
+    }
+
+    pub fn deny_reason(&self) -> Option<&StandingSourceAdmissionDenyReasonV1> {
+        match self {
+            Self::Usable { .. } => None,
+            Self::Denied { reason } => Some(reason),
+        }
+    }
+}
+
+fn correlate_standing_source(
+    state: &MctRuntimeStateStore,
+    entries: &[MctObservationLedgerEntry],
+    source_authority_id: &str,
+) -> std::result::Result<MctStandingSourceLedgerProof, StandingSourceAdmissionDenyReasonV1> {
+    let (source, projected_digest) = state
+        .source_authorities()
+        .map_err(|_| StandingSourceAdmissionDenyReasonV1::SourceMissing)?
+        .into_iter()
+        .find(|(source, _)| source.source_authority_id.as_str() == source_authority_id)
+        .ok_or(StandingSourceAdmissionDenyReasonV1::SourceMissing)?;
+    let record_digest = blake3::hash(
+        &serde_json::to_vec(&source)
+            .map_err(|_| StandingSourceAdmissionDenyReasonV1::SourceDigestMismatch)?,
+    )
+    .to_hex()
+    .to_string();
+    if projected_digest != record_digest {
+        return Err(StandingSourceAdmissionDenyReasonV1::SourceDigestMismatch);
+    }
+    if source.authority_state != ArtifactSourceAuthorityState::Active {
+        return Err(StandingSourceAdmissionDenyReasonV1::SourceInactive);
+    }
+    let matching = entries
+        .iter()
+        .filter(|entry| entry.observation.observation_id == source.authority_observation_id)
+        .collect::<Vec<_>>();
+    let entry = match matching.as_slice() {
+        [] => return Err(StandingSourceAdmissionDenyReasonV1::SourceFactMissing),
+        [entry] => *entry,
+        _ => return Err(StandingSourceAdmissionDenyReasonV1::SourceFactDuplicate),
+    };
+    let observation = &entry.observation;
+    let expected_message = format!("artifact source authority created digest={record_digest}");
+    if observation.kind != ObservationKind::OperatorActionRecorded
+        || observation.source_plane != SourcePlane::Operator
+        || observation.subject_id.as_deref() != Some(source.source_authority_id.as_str())
+        || observation.resource_id.as_deref() != Some(source.source_ref.as_str())
+        || observation.policy_revision != Some(source.policy_revision)
+        || observation.outcome != ObservationOutcome::Allowed
+        || observation.safe_message != expected_message
+        || observation.detail_ref.is_some()
+    {
+        return Err(StandingSourceAdmissionDenyReasonV1::SourceFactMismatch);
+    }
+    Ok(MctStandingSourceLedgerProof {
+        source,
+        record_digest,
+        ledger_sequence: entry.local_sequence,
+    })
+}
+
+fn require_usable_projection(
+    proof: UsableAuthorityProjectionProofV1,
+) -> std::result::Result<UsableAuthorityProjectionProofV1, StandingSourceAdmissionDenyReasonV1> {
+    match proof {
+        usable @ UsableAuthorityProjectionProofV1::Usable { .. } => Ok(usable),
+        UsableAuthorityProjectionProofV1::Denied { reason } => Err(
+            StandingSourceAdmissionDenyReasonV1::AuthorityProjection(reason),
+        ),
+    }
+}
+
+pub fn admit_standing_source(
+    state_path: &Path,
+    ledger_path: &Path,
+    source_authority_id: &str,
+) -> StandingSourceAdmissionV1 {
+    admit_standing_source_with_hook(state_path, ledger_path, source_authority_id, |_| {})
+}
+
+fn admit_standing_source_with_hook(
+    state_path: &Path,
+    ledger_path: &Path,
+    source_authority_id: &str,
+    after_proof: impl FnOnce(&MctRuntimeStateStore),
+) -> StandingSourceAdmissionV1 {
+    let denied = |reason| StandingSourceAdmissionV1::Denied { reason };
+    let entries =
+        match JsonlObservationLedger::open_read_only(ledger_path, "ledger-local", "local-mct")
+            .and_then(|reader| reader.entries())
+        {
+            Ok(entries) => entries,
+            Err(ObservationLedgerError::Quarantined { .. })
+            | Err(ObservationLedgerError::ForeignLineage { .. }) => {
+                return denied(StandingSourceAdmissionDenyReasonV1::LedgerQuarantined);
+            }
+            Err(_) => return denied(StandingSourceAdmissionDenyReasonV1::LedgerUnavailable),
+        };
+    let replay = match replay_authority_entries(&entries) {
+        Ok(replay) => replay,
+        Err(_) => return denied(StandingSourceAdmissionDenyReasonV1::AuthorityReplayBlocked),
+    };
+    let Some(head) = entries.last() else {
+        return denied(StandingSourceAdmissionDenyReasonV1::AuthorityReplayBlocked);
+    };
+    let Some(authority) = replay.current_authority.clone() else {
+        return denied(StandingSourceAdmissionDenyReasonV1::AuthorityReplayBlocked);
+    };
+    let state_hash = match authority_state_hash(&replay.state) {
+        Ok(hash) => hash,
+        Err(_) => return denied(StandingSourceAdmissionDenyReasonV1::AuthorityReplayBlocked),
+    };
+    let state = match MctRuntimeStateStore::open(state_path) {
+        Ok(state) => state,
+        Err(_) => {
+            return denied(StandingSourceAdmissionDenyReasonV1::AuthorityProjection(
+                AuthorityProjectionDenyReasonV1::ProjectionMissing,
+            ));
+        }
+    };
+    let expectation = AuthorityProjectionExpectationV1 {
+        source_mother_node_id: head.mother_node_id.clone(),
+        source_ledger_id: head.ledger_id.clone(),
+        through_sequence: head.local_sequence,
+        through_entry_hash: head.entry_hash.clone(),
+        grants_authority: authority,
+        authority_state_hash: state_hash,
+    };
+    if state.rebuild_authority_projection(&entries).is_err() {
+        return denied(StandingSourceAdmissionDenyReasonV1::AuthorityProjection(
+            AuthorityProjectionDenyReasonV1::ProjectionNotCurrent,
+        ));
+    }
+    let authority_projection = match state
+        .usable_authority_projection_proof(&AuthorityProjectionLedgerEvidenceV1::Validated(
+            expectation,
+        ))
+        .map_err(|_| {
+            StandingSourceAdmissionDenyReasonV1::AuthorityProjection(
+                AuthorityProjectionDenyReasonV1::ProjectionNotCurrent,
+            )
+        })
+        .and_then(require_usable_projection)
+    {
+        Ok(proof) => proof,
+        Err(reason) => return denied(reason),
+    };
+    let proof = match correlate_standing_source(&state, &entries, source_authority_id) {
+        Ok(proof) => proof,
+        Err(reason) => return denied(reason),
+    };
+    after_proof(&state);
+    let projected = state.source_authorities().ok().and_then(|sources| {
+        sources.into_iter().find(|(source, digest)| {
+            source.source_authority_id.as_str() == source_authority_id
+                && source == &proof.source
+                && digest == &proof.record_digest
+        })
+    });
+    if projected.is_none() {
+        return denied(StandingSourceAdmissionDenyReasonV1::SourceChangedAfterProof);
+    }
+    StandingSourceAdmissionV1::Usable {
+        authority_projection,
+        source_authority_id: proof.source.source_authority_id.to_string(),
+        source_record_digest: proof.record_digest.clone(),
+        source_fact_sequence: proof.ledger_sequence,
+        proof: Box::new(proof),
+    }
 }
 
 /// Validates one standing source against the hash-validated canonical observation ledger.
@@ -999,7 +1214,8 @@ allow = ["patina:fixture/control@0.1.0.run"]
         use mct_kernel::{MctObservation, ObservationTraceRef, ObservationVisibility, TraceId};
 
         let mut ledger =
-            JsonlObservationLedger::open(ledger_path, "ledger-local", "local-mct").unwrap();
+            JsonlObservationLedger::open_authority(ledger_path, "ledger-local", "local-mct")
+                .unwrap();
         ledger
             .append_batch_before_effect(
                 [MctObservation {
@@ -1064,6 +1280,226 @@ allow = ["patina:fixture/control@0.1.0.run"]
         )
         .unwrap_err();
         assert!(stage_error.to_string().contains("validated ledger proof"));
+    }
+
+    #[test]
+    fn standing_source_admission_requires_current_dg8_and_exact_source_before_read() {
+        let root = tempfile::tempdir().unwrap();
+        let mut request = raw_request(root.path(), None);
+        let source = standing_source(&request, "source-dg8", "obs-source-dg8");
+        let digest = blake3::hash(&serde_json::to_vec(&source).unwrap())
+            .to_hex()
+            .to_string();
+        MctRuntimeStateStore::open(&request.state_path)
+            .unwrap()
+            .upsert_source_authority(&source, &digest)
+            .unwrap();
+        let ledger_path = root.path().join("observations.jsonl");
+        write_standing_source_observation(
+            &source,
+            &ledger_path,
+            format!("artifact source authority created digest={digest}"),
+        );
+
+        let admission = admit_standing_source(
+            &request.state_path,
+            &ledger_path,
+            source.source_authority_id.as_str(),
+        );
+        assert!(
+            matches!(admission, StandingSourceAdmissionV1::Usable { .. }),
+            "exact canonical head coverage and source correlation must mint one typed admission"
+        );
+        request.standing_source_authority_id = Some(source.source_authority_id.to_string());
+        request.claimed_publisher = Some("fixture-publisher".into());
+        let report = stage_artifact_with_context_and_observer(
+            &request,
+            &new_artifact_attempt_context().unwrap(),
+            admission.proof(),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(report.acquisition_outcome, "acquired");
+
+        let denied_root = tempfile::tempdir().unwrap();
+        let denied_request = raw_request(denied_root.path(), None);
+        let denied_ledger = denied_root.path().join("observations.jsonl");
+        drop(
+            JsonlObservationLedger::open_authority(&denied_ledger, "ledger-local", "local-mct")
+                .unwrap(),
+        );
+        let denied =
+            admit_standing_source(&denied_request.state_path, &denied_ledger, "missing-source");
+        assert_eq!(
+            denied.deny_reason(),
+            Some(&StandingSourceAdmissionDenyReasonV1::SourceMissing)
+        );
+        assert!(!denied_request.children_dir.exists());
+
+        let changed_root = tempfile::tempdir().unwrap();
+        let changed_request = raw_request(changed_root.path(), None);
+        let changed_source =
+            standing_source(&changed_request, "source-changed", "obs-source-changed");
+        let changed_digest = blake3::hash(&serde_json::to_vec(&changed_source).unwrap())
+            .to_hex()
+            .to_string();
+        MctRuntimeStateStore::open(&changed_request.state_path)
+            .unwrap()
+            .upsert_source_authority(&changed_source, &changed_digest)
+            .unwrap();
+        let changed_ledger = changed_root.path().join("observations.jsonl");
+        write_standing_source_observation(
+            &changed_source,
+            &changed_ledger,
+            format!("artifact source authority created digest={changed_digest}"),
+        );
+        let changed = admit_standing_source_with_hook(
+            &changed_request.state_path,
+            &changed_ledger,
+            changed_source.source_authority_id.as_str(),
+            |state| {
+                let mut revoked = changed_source.clone();
+                revoked.authority_state = ArtifactSourceAuthorityState::Revoked;
+                revoked.authority_observation_id =
+                    ObservationId::new("obs-source-changed-revoked").unwrap();
+                let digest = blake3::hash(&serde_json::to_vec(&revoked).unwrap())
+                    .to_hex()
+                    .to_string();
+                state.upsert_source_authority(&revoked, &digest).unwrap();
+            },
+        );
+        assert_eq!(
+            changed.deny_reason(),
+            Some(&StandingSourceAdmissionDenyReasonV1::SourceChangedAfterProof),
+            "source change after D-G8 proof must deny before adapter start"
+        );
+        assert!(!changed_request.children_dir.exists());
+    }
+
+    #[test]
+    fn every_projection_denial_remains_typed_at_standing_source_admission() {
+        use AuthorityProjectionDenyReasonV1 as Deny;
+        let reasons = [
+            Deny::ProjectionMissing,
+            Deny::ProjectionNotCurrent,
+            Deny::WrongSourceMother,
+            Deny::WrongSourceLedger,
+            Deny::HeadSequenceMismatch,
+            Deny::HeadHashMismatch,
+            Deny::AuthorityMotherMismatch,
+            Deny::EpochMismatch,
+            Deny::GenerationMismatch,
+            Deny::SourceAuthorityObservationMismatch,
+            Deny::AuthorityStateHashMismatch,
+            Deny::ProjectionHashMismatch,
+            Deny::LedgerQuarantined,
+        ];
+        for reason in reasons {
+            assert_eq!(
+                require_usable_projection(UsableAuthorityProjectionProofV1::Denied { reason }),
+                Err(StandingSourceAdmissionDenyReasonV1::AuthorityProjection(
+                    reason
+                )),
+                "every D-G8 denial must stay typed before standing-source adapter start"
+            );
+        }
+    }
+
+    #[test]
+    fn every_source_correlation_denial_remains_typed_before_staging() {
+        let root = tempfile::tempdir().unwrap();
+        let request = raw_request(root.path(), None);
+        let source = standing_source(&request, "source-denial-matrix", "obs-source-denial-matrix");
+        let digest = blake3::hash(&serde_json::to_vec(&source).unwrap())
+            .to_hex()
+            .to_string();
+        let state = MctRuntimeStateStore::open(&request.state_path).unwrap();
+        state.upsert_source_authority(&source, &digest).unwrap();
+        let ledger_path = root.path().join("observations.jsonl");
+        write_standing_source_observation(
+            &source,
+            &ledger_path,
+            format!("artifact source authority created digest={digest}"),
+        );
+        let entries =
+            JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
+                .unwrap()
+                .entries()
+                .unwrap();
+        assert!(
+            correlate_standing_source(&state, &entries, source.source_authority_id.as_str())
+                .is_ok()
+        );
+
+        assert_eq!(
+            correlate_standing_source(&state, &entries, "missing-source"),
+            Err(StandingSourceAdmissionDenyReasonV1::SourceMissing)
+        );
+
+        rusqlite::Connection::open(&request.state_path)
+            .unwrap()
+            .execute(
+                "UPDATE artifact_source_authorities SET record_digest = ?1 WHERE source_authority_id = ?2",
+                rusqlite::params!["wrong-projected-digest", source.source_authority_id.as_str()],
+            )
+            .unwrap();
+        assert_eq!(
+            correlate_standing_source(&state, &entries, source.source_authority_id.as_str()),
+            Err(StandingSourceAdmissionDenyReasonV1::SourceDigestMismatch)
+        );
+        state.upsert_source_authority(&source, &digest).unwrap();
+
+        let mut inactive = source.clone();
+        inactive.authority_state = ArtifactSourceAuthorityState::Revoked;
+        let inactive_digest = blake3::hash(&serde_json::to_vec(&inactive).unwrap())
+            .to_hex()
+            .to_string();
+        state
+            .upsert_source_authority(&inactive, &inactive_digest)
+            .unwrap();
+        assert_eq!(
+            correlate_standing_source(&state, &entries, source.source_authority_id.as_str()),
+            Err(StandingSourceAdmissionDenyReasonV1::SourceInactive)
+        );
+
+        state.upsert_source_authority(&source, &digest).unwrap();
+        assert_eq!(
+            correlate_standing_source(&state, &[], source.source_authority_id.as_str()),
+            Err(StandingSourceAdmissionDenyReasonV1::SourceFactMissing)
+        );
+
+        let source_entry = entries
+            .iter()
+            .find(|entry| entry.observation.observation_id == source.authority_observation_id)
+            .unwrap()
+            .clone();
+        let mut duplicate_entries = entries.clone();
+        duplicate_entries.push(source_entry.clone());
+        assert_eq!(
+            correlate_standing_source(
+                &state,
+                &duplicate_entries,
+                source.source_authority_id.as_str()
+            ),
+            Err(StandingSourceAdmissionDenyReasonV1::SourceFactDuplicate)
+        );
+
+        let mut mismatched_entries = entries;
+        mismatched_entries
+            .iter_mut()
+            .find(|entry| entry.observation.observation_id == source.authority_observation_id)
+            .unwrap()
+            .observation
+            .safe_message = "mismatched source fact".into();
+        assert_eq!(
+            correlate_standing_source(
+                &state,
+                &mismatched_entries,
+                source.source_authority_id.as_str()
+            ),
+            Err(StandingSourceAdmissionDenyReasonV1::SourceFactMismatch)
+        );
+        assert!(!request.children_dir.exists());
     }
 
     #[test]

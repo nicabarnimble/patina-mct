@@ -1007,23 +1007,23 @@ fn artifact_stage_terminal_observations(
     }
 }
 
-fn artifact_stage_standing_source_proof(
+fn artifact_stage_standing_source_admission(
     request: &MctArtifactStageRequest,
     ledger_path: Option<&Path>,
-) -> Result<Option<MctStandingSourceLedgerProof>> {
+) -> Option<StandingSourceAdmissionV1> {
     request
         .standing_source_authority_id
         .as_deref()
         .map(|source_authority_id| {
-            let ledger_path = ledger_path
-                .context("standing artifact source requires an available resident ledger path")?;
-            verify_standing_source_ledger_correlation(
-                &request.state_path,
-                ledger_path,
-                source_authority_id,
+            ledger_path.map_or(
+                StandingSourceAdmissionV1::Denied {
+                    reason: StandingSourceAdmissionDenyReasonV1::LedgerUnavailable,
+                },
+                |ledger_path| {
+                    admit_standing_source(&request.state_path, ledger_path, source_authority_id)
+                },
             )
         })
-        .transpose()
 }
 
 pub(super) fn execute_offline_artifact_stage(
@@ -1042,11 +1042,20 @@ pub(super) fn execute_offline_artifact_stage(
         artifact_stage_decision_observations(request, &context),
         mct_daemon::current_timestamp_string(),
     )?;
-    let standing_source_proof = artifact_stage_standing_source_proof(request, Some(ledger_path))?;
+    let standing_source_admission =
+        artifact_stage_standing_source_admission(request, Some(ledger_path));
+    if let Some(StandingSourceAdmissionV1::Denied { reason }) = &standing_source_admission {
+        bail!(
+            "standing source admission denied: {}",
+            serde_json::to_string(reason)?
+        );
+    }
     match stage_artifact_with_context_and_observer(
         request,
         &context,
-        standing_source_proof.as_ref(),
+        standing_source_admission
+            .as_ref()
+            .and_then(StandingSourceAdmissionV1::proof),
         |report| {
             ledger
                 .append_batch_before_effect(
@@ -1286,21 +1295,20 @@ async fn execute_resident_artifact_stage(
             serde_json::json!({"error": "artifact acquisition authority was not durable"}),
         );
     }
-    let standing_source_proof = match artifact_stage_standing_source_proof(&request, ledger.path())
-    {
-        Ok(proof) => proof,
-        Err(_) => {
-            let _ = ledger
-                .append(artifact_stage_terminal_observations(
-                    &request, &context, None,
-                ))
-                .await;
-            return peer_mutation_response(
-                400,
-                serde_json::json!({"error": "standing artifact source ledger proof rejected"}),
-            );
-        }
-    };
+    let standing_source_admission =
+        artifact_stage_standing_source_admission(&request, ledger.path());
+    if let Some(StandingSourceAdmissionV1::Denied { .. }) = &standing_source_admission {
+        let _ = ledger
+            .append(artifact_stage_terminal_observations(
+                &request, &context, None,
+            ))
+            .await;
+        return peer_mutation_response(
+            409,
+            serde_json::to_value(standing_source_admission)
+                .expect("standing source denial serializes"),
+        );
+    }
     let stage_request = request.clone();
     let stage_context = context.clone();
     let stage_ledger = ledger.clone();
@@ -1309,7 +1317,9 @@ async fn execute_resident_artifact_stage(
         stage_artifact_with_context_and_observer(
             &stage_request,
             &stage_context,
-            standing_source_proof.as_ref(),
+            standing_source_admission
+                .as_ref()
+                .and_then(StandingSourceAdmissionV1::proof),
             |report| {
                 runtime.block_on(stage_ledger.append(artifact_stage_terminal_observations(
                     &stage_request,
@@ -1325,6 +1335,23 @@ async fn execute_resident_artifact_stage(
             200,
             serde_json::to_value(report).expect("artifact report serializes"),
         ),
+        Ok(Err(error))
+            if format!("{error:#}")
+                .contains("standing artifact source projection changed after ledger proof") =>
+        {
+            let _ = ledger
+                .append(artifact_stage_terminal_observations(
+                    &request, &context, None,
+                ))
+                .await;
+            peer_mutation_response(
+                409,
+                serde_json::to_value(StandingSourceAdmissionV1::Denied {
+                    reason: StandingSourceAdmissionDenyReasonV1::SourceChangedAfterProof,
+                })
+                .expect("standing source denial serializes"),
+            )
+        }
         Ok(Err(error))
             if format!("{error:#}")
                 .contains("terminal facts were not durable before publication") =>
@@ -3799,7 +3826,7 @@ listens = []
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         let handler = resident_observed_mutation_handler(
             config_path,
             children_dir.clone(),

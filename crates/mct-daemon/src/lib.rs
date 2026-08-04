@@ -36,7 +36,8 @@ pub use acquisition::fuzz_child_package_manifest;
 pub use acquisition::{
     MCT_CHILD_MANIFEST_MAX_BYTES, MCT_COMPONENT_ARTIFACT_MAX_BYTES,
     MCT_FILESYSTEM_ACQUISITION_ADAPTER, MctArtifactAcquisitionReport, MctArtifactAttemptContext,
-    MctArtifactStageRequest, MctStandingSourceLedgerProof, new_artifact_attempt_context,
+    MctArtifactStageRequest, MctStandingSourceLedgerProof, StandingSourceAdmissionDenyReasonV1,
+    StandingSourceAdmissionV1, admit_standing_source, new_artifact_attempt_context,
     stage_artifact_with_context, stage_artifact_with_context_and_observer,
     stage_operator_pointed_artifact, verify_standing_source_ledger_correlation,
 };
