@@ -282,12 +282,48 @@ pub struct AuthorityStateV1 {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthorityCanonicalFactRecordV1 {
+    pub fact_id: String,
+    pub fact_kind: String,
+    pub source_sequence: u64,
+    pub source_entry_hash: String,
+    pub canonical_payload: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthorityProjectionStatusV1 {
+    Rebuilding,
+    Current,
+    Stale,
+    Quarantined,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorityProjectionCursorV1 {
+    pub schema_version: u64,
+    pub projection_id: String,
+    pub projection_kind: String,
+    pub source_mother_node_id: String,
+    pub source_ledger_id: String,
+    pub through_sequence: u64,
+    pub through_observation_id: String,
+    pub through_entry_hash: String,
+    pub grants_authority: GrantsAuthorityIdentityV1,
+    pub authority_state_hash: String,
+    pub projection_hash: String,
+    pub projection_status: AuthorityProjectionStatusV1,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthorityReplayV1 {
     pub state: AuthorityStateV1,
     pub current_authority: Option<GrantsAuthorityIdentityV1>,
     pub imported: bool,
     pub import: Option<CommittedLegacyAuthorityImportV1>,
     pub mutations: BTreeMap<String, CommittedAuthorityMutationV1>,
+    pub facts: Vec<AuthorityCanonicalFactRecordV1>,
     pub canonical_fact_count: usize,
 }
 
@@ -1655,6 +1691,34 @@ pub fn authority_state_hash(state: &AuthorityStateV1) -> Result<String> {
         .to_string())
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorityProjectionHashInputV1 {
+    pub source_mother_node_id: String,
+    pub source_ledger_id: String,
+    pub through_sequence: u64,
+    pub through_observation_id: String,
+    pub through_entry_hash: String,
+    pub grants_authority: GrantsAuthorityIdentityV1,
+    pub authority_state_hash: String,
+    pub projection_status: AuthorityProjectionStatusV1,
+}
+
+pub fn authority_projection_hash(input: &AuthorityProjectionHashInputV1) -> Result<String> {
+    #[derive(Serialize)]
+    struct VersionedProjectionHashInput<'a> {
+        schema_version: u64,
+        input: &'a AuthorityProjectionHashInputV1,
+    }
+    Ok(
+        blake3::hash(&canonical_json_bytes(&VersionedProjectionHashInput {
+            schema_version: 1,
+            input,
+        })?)
+        .to_hex()
+        .to_string(),
+    )
+}
+
 pub fn replay_authority_entries(
     entries: &[MctObservationLedgerEntry],
 ) -> std::result::Result<AuthorityReplayV1, AuthorityReplayError> {
@@ -1664,6 +1728,7 @@ pub fn replay_authority_entries(
         imported: false,
         import: None,
         mutations: BTreeMap::new(),
+        facts: Vec::new(),
         canonical_fact_count: 0,
     };
     let mut used_epochs = BTreeSet::new();
@@ -1692,7 +1757,9 @@ pub fn replay_authority_entries(
                 detail: "fact_id does not match observation_id".into(),
             });
         }
-        match envelope.fact_kind.as_str() {
+        let fact_kind = envelope.fact_kind.clone();
+        let fact_id = envelope.fact_id.clone();
+        match fact_kind.as_str() {
             "epoch_established" => {
                 let fact: EpochEstablishedFactV1 =
                     serde_json::from_value(envelope.body).map_err(|error| {
@@ -1764,6 +1831,13 @@ pub fn replay_authority_entries(
                 });
             }
         }
+        replay.facts.push(AuthorityCanonicalFactRecordV1 {
+            fact_id,
+            fact_kind,
+            source_sequence: entry.local_sequence,
+            source_entry_hash: entry.entry_hash.clone(),
+            canonical_payload: payload.to_owned(),
+        });
     }
     Ok(replay)
 }
