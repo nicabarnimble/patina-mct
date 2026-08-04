@@ -324,6 +324,56 @@ where
     .await
 }
 
+fn resident_startup_paths(config: &ResidentMotherConfig) -> MctStartupPaths {
+    let root = config
+        .state_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let (supervisor_record, supervisor_plist, stdout_log, stderr_log) =
+        config.supervisor.as_ref().map_or_else(
+            || {
+                let plist = std::env::var_os("HOME").map_or_else(
+                    || root.join("Library/LaunchAgents/io.patina.mct.mother.plist"),
+                    |home| {
+                        PathBuf::from(home).join("Library/LaunchAgents/io.patina.mct.mother.plist")
+                    },
+                );
+                (
+                    root.join("supervisor.json"),
+                    plist,
+                    root.join("logs/mother.stdout.log"),
+                    root.join("logs/mother.stderr.log"),
+                )
+            },
+            |record| {
+                (
+                    root.join("supervisor.json"),
+                    record.plist_path.clone(),
+                    record.stdout_log_path.clone(),
+                    record.stderr_log_path.clone(),
+                )
+            },
+        );
+    let control_socket = match &config.control {
+        ResidentControlTransport::Uds(path) => path.clone(),
+        ResidentControlTransport::Http(_) => root.join("control.sock"),
+    };
+    MctStartupPaths::new(
+        root,
+        config.ledger_path.clone(),
+        config.state_path.clone(),
+        config.config_path.clone(),
+        config.identity_path.clone(),
+        config.children_dir.clone(),
+        control_socket,
+        supervisor_record,
+        supervisor_plist,
+        stdout_log,
+        stderr_log,
+    )
+}
+
 async fn run_resident_mother_with_trigger_runtime<S>(
     config: ResidentMotherConfig,
     shutdown: S,
@@ -338,7 +388,39 @@ where
         bail!("--max-connections must be greater than zero");
     }
 
-    let ledger = ResidentLedgerWriter::spawn(config.ledger_path.clone())?;
+    let startup_paths = resident_startup_paths(&config);
+    let startup = classify_authority_startup(&startup_paths, "ledger-local", "local-mct")
+        .context("classify Mother startup before opening authority storage")?;
+    #[cfg(test)]
+    let startup = if startup.startup_class == AuthorityStartupClassV1::OperatorGatedNonvirgin {
+        let request = mct_daemon::MctOperatorStartupGateRequestV1 {
+            schema: "mct-operator-startup-gate-request/v1".into(),
+            decision_id: format!("decision:test-startup:{}", startup.inventory.inventory_hash),
+            expected_mother_node_id: "local-mct".into(),
+            expected_ledger_id: "ledger-local".into(),
+            expected_inventory_hash: startup.inventory.inventory_hash.clone(),
+            confirmation: mct_daemon::MCT_OPERATOR_REINITIALIZATION_CONFIRMATION_V1.into(),
+        };
+        drop(mct_daemon::accept_operator_startup_gate(
+            &startup_paths,
+            "ledger-local",
+            "local-mct",
+            &request,
+            "os-uid:test-owner",
+            "os-uid:test-owner",
+        )?);
+        classify_authority_startup(&startup_paths, "ledger-local", "local-mct")
+            .context("reclassify test Mother after explicit startup gate")?
+    } else {
+        startup
+    };
+    if startup.startup_class == AuthorityStartupClassV1::OperatorGatedNonvirgin {
+        bail!("startup operator gate required before resident authority can become ready");
+    }
+    let ledger = ResidentLedgerWriter::spawn_authority(
+        config.ledger_path.clone(),
+        startup.tenure_evidence(None)?,
+    )?;
     let supervised_instance = match &config.supervisor {
         Some(record) => Some(begin_supervised_resident_instance(record, &ledger).await?),
         None => None,

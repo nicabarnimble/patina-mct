@@ -125,10 +125,12 @@ pub use release::{
     verify_and_extract_daemon_release_archive,
 };
 pub use startup::{
-    MctAuthorityStartupEvidenceV1, MctStartupArtifactClassV1, MctStartupArtifactEntryV1,
-    MctStartupArtifactFileTypeV1, MctStartupArtifactInventoryV1, MctStartupArtifactStateV1,
-    MctStartupClassificationErrorV1, MctStartupPaths, classify_authority_startup,
-    classify_startup_artifacts,
+    MCT_OPERATOR_REINITIALIZATION_CONFIRMATION_V1, MctAcceptedStartupGateV1,
+    MctAuthorityStartupEvidenceV1, MctOperatorStartupGateRequestV1, MctStartupArtifactClassV1,
+    MctStartupArtifactEntryV1, MctStartupArtifactFileTypeV1, MctStartupArtifactInventoryV1,
+    MctStartupArtifactStateV1, MctStartupClassificationErrorV1, MctStartupPaths,
+    accept_operator_startup_gate, classify_authority_startup, classify_startup_artifacts,
+    open_classified_authority,
 };
 pub use state::{
     ChildInvocationProvenance, MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER, MCT_IDEMPOTENCY_TTL_SECONDS,

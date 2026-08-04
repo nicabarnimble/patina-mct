@@ -2221,14 +2221,42 @@ pub(super) fn execute_offline_administrative_mutation(
     path: &str,
     body: &[u8],
 ) -> Result<serde_json::Value> {
-    let mut ledger =
-        JsonlObservationLedger::open_authority(ledger_path, "ledger-local", "local-mct")
-            .with_context(|| {
-                format!(
-                    "acquire exclusive observation ledger writer lock at {}",
-                    ledger_path.display()
-                )
-            })?;
+    let root = state_path
+        .parent()
+        .or_else(|| ledger_path.parent())
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let plist = std::env::var_os("HOME").map_or_else(
+        || root.join("Library/LaunchAgents/io.patina.mct.mother.plist"),
+        |home| PathBuf::from(home).join("Library/LaunchAgents/io.patina.mct.mother.plist"),
+    );
+    let startup_paths = MctStartupPaths::new(
+        root.clone(),
+        ledger_path.to_path_buf(),
+        state_path.to_path_buf(),
+        config_path.to_path_buf(),
+        root.join("identity/iroh-secret.hex"),
+        children_dir.to_path_buf(),
+        root.join("control.sock"),
+        root.join("supervisor.json"),
+        plist,
+        root.join("logs/mother.stdout.log"),
+        root.join("logs/mother.stderr.log"),
+    );
+    let startup = classify_authority_startup(&startup_paths, "ledger-local", "local-mct")
+        .context("classify offline Mother authority before opening writer")?;
+    let mut ledger = mct_daemon::open_classified_authority(
+        &startup_paths,
+        "ledger-local",
+        "local-mct",
+        &startup,
+    )
+    .with_context(|| {
+        format!(
+            "acquire explicit startup-authorized observation ledger writer lock at {}",
+            ledger_path.display()
+        )
+    })?;
     let prepared =
         prepare_administrative_mutation(config_path, children_dir, state_path, path, body)?;
     if let Some(request) = prepared.authority_mutation_request(0) {
@@ -3964,7 +3992,7 @@ listens = []
             .approve_and_assign_loaded_child(&child, MctOperatorChildScope::default())
             .unwrap();
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         let handler = resident_observed_mutation_handler(
             config_path.clone(),
             children_dir.clone(),
@@ -4074,6 +4102,22 @@ listens = []
         assert_eq!(status, 500);
         assert!(!state_path.exists());
 
+        {
+            let mut pre_h2 =
+                JsonlObservationLedger::open(&ledger_path, "ledger-local", "local-mct").unwrap();
+            pre_h2
+                .append_before_effect(
+                    MctObservation::informational(
+                        ObservationId::new("obs:test-pre-h2-admin").unwrap(),
+                        current_timestamp(),
+                        ObservationKind::LifecycleTransitionRecorded,
+                        TraceId::new("trace:test-pre-h2-admin").unwrap(),
+                        "test pre-H2 administrative continuity",
+                    ),
+                    current_timestamp_string(),
+                )
+                .unwrap();
+        }
         execute_offline_administrative_mutation(
             &config_path,
             &children_dir,
@@ -4143,7 +4187,7 @@ listens = []
         drop(legacy);
 
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         let handler = resident_observed_mutation_handler(
             config_path.clone(),
             children_dir.clone(),
