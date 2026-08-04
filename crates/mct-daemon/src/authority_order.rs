@@ -5,10 +5,11 @@
 
 use mct_observation::{
     AuthorityProjectionCursorV1, AuthorityProjectionDenyReasonV1, AuthorityProjectionExpectationV1,
-    UsableAuthorityProjectionProofV1,
+    AuthorityProjectionLedgerEvidenceV1, JsonlObservationLedger, UsableAuthorityProjectionProofV1,
+    authority_state_hash, replay_authority_entries,
 };
 use serde::{Deserialize, Serialize};
-use std::{marker::PhantomData, sync::Mutex};
+use std::{collections::BTreeMap, marker::PhantomData, sync::Mutex};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -49,10 +50,29 @@ pub enum MotherAuthorityAdmissionDenyV1 {
     ProjectionExpectationMismatch,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
+pub enum MotherAuthorityRecoveryDenyV1 {
+    NotFenced,
+    ExclusiveWriterUnavailable,
+    FreshWriterTenureRequired,
+    LedgerReplayBlocked,
+    MutationResolutionUnproven,
+    Projection(AuthorityProjectionDenyReasonV1),
+    ProjectionExpectationMismatch,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MutationResolutionRequirementV1 {
+    MustBeCommitted,
+    PresentOrAbsentAfterFullRescan,
+}
+
 #[derive(Debug)]
 struct MotherAuthorityOrderStateV1 {
     current_expectation: Option<AuthorityProjectionExpectationV1>,
     fenced: Option<MotherAuthorityFenceReasonV1>,
+    pending_mutation_resolutions: BTreeMap<String, MutationResolutionRequirementV1>,
 }
 
 #[derive(Debug)]
@@ -78,6 +98,7 @@ impl MotherAuthorityOrderV1 {
             state: Mutex::new(MotherAuthorityOrderStateV1 {
                 current_expectation: Some(initial_expectation),
                 fenced: None,
+                pending_mutation_resolutions: BTreeMap::new(),
             }),
         }
     }
@@ -87,6 +108,7 @@ impl MotherAuthorityOrderV1 {
             state: Mutex::new(MotherAuthorityOrderStateV1 {
                 current_expectation: None,
                 fenced: Some(MotherAuthorityFenceReasonV1::RescanUnresolved),
+                pending_mutation_resolutions: BTreeMap::new(),
             }),
         }
     }
@@ -122,28 +144,145 @@ impl MotherAuthorityOrderV1 {
             };
         }
         let outcome = commit_fn(intent);
+        let outcome_id_matches = match &outcome {
+            MotherAuthorityCommitOutcomeV1::Committed {
+                mutation_id: outcome_id,
+                ..
+            }
+            | MotherAuthorityCommitOutcomeV1::CommittedProjectionPending {
+                mutation_id: outcome_id,
+            }
+            | MotherAuthorityCommitOutcomeV1::CommitUnknown {
+                mutation_id: outcome_id,
+            }
+            | MotherAuthorityCommitOutcomeV1::WriterPoisoned {
+                mutation_id: outcome_id,
+            }
+            | MotherAuthorityCommitOutcomeV1::RejectedBeforeCommit {
+                mutation_id: outcome_id,
+            } => outcome_id == mutation_id,
+        };
         match &outcome {
             MotherAuthorityCommitOutcomeV1::Committed {
-                mutation_id: committed_id,
                 current_expectation,
-            } if committed_id == mutation_id => {
+                ..
+            } if outcome_id_matches => {
                 state.current_expectation = Some(current_expectation.clone());
             }
-            MotherAuthorityCommitOutcomeV1::CommittedProjectionPending { .. } => {
+            MotherAuthorityCommitOutcomeV1::CommittedProjectionPending { .. }
+                if outcome_id_matches =>
+            {
                 state.fenced = Some(MotherAuthorityFenceReasonV1::ProjectionLag);
+                state.pending_mutation_resolutions.insert(
+                    mutation_id.to_owned(),
+                    MutationResolutionRequirementV1::MustBeCommitted,
+                );
             }
-            MotherAuthorityCommitOutcomeV1::CommitUnknown { .. } => {
+            MotherAuthorityCommitOutcomeV1::CommitUnknown { .. } if outcome_id_matches => {
                 state.fenced = Some(MotherAuthorityFenceReasonV1::CommitUnknown);
+                state.pending_mutation_resolutions.insert(
+                    mutation_id.to_owned(),
+                    MutationResolutionRequirementV1::PresentOrAbsentAfterFullRescan,
+                );
             }
-            MotherAuthorityCommitOutcomeV1::WriterPoisoned { .. } => {
+            MotherAuthorityCommitOutcomeV1::WriterPoisoned { .. } if outcome_id_matches => {
                 state.fenced = Some(MotherAuthorityFenceReasonV1::WriterPoisoned);
+                state.pending_mutation_resolutions.insert(
+                    mutation_id.to_owned(),
+                    MutationResolutionRequirementV1::PresentOrAbsentAfterFullRescan,
+                );
             }
-            MotherAuthorityCommitOutcomeV1::RejectedBeforeCommit { .. } => {}
-            MotherAuthorityCommitOutcomeV1::Committed { .. } => {
+            MotherAuthorityCommitOutcomeV1::RejectedBeforeCommit { .. } if outcome_id_matches => {}
+            _ => {
+                // A callback that reports a different mutation id cannot establish what happened
+                // to the offered id. Preserve that offered id as uncertain and fail closed.
                 state.fenced = Some(MotherAuthorityFenceReasonV1::CommitUnknown);
+                state.pending_mutation_resolutions.insert(
+                    mutation_id.to_owned(),
+                    MutationResolutionRequirementV1::PresentOrAbsentAfterFullRescan,
+                );
             }
         }
         outcome
+    }
+
+    pub fn clear_fence_after_exclusive_rescan(
+        &self,
+        ledger: &JsonlObservationLedger,
+        state_store: &crate::MctRuntimeStateStore,
+    ) -> Result<AuthorityProjectionExpectationV1, MotherAuthorityRecoveryDenyV1> {
+        let mut state = self
+            .state
+            .lock()
+            .expect("Mother authority order mutex must not be poisoned");
+        if state.fenced.is_none() {
+            return Err(MotherAuthorityRecoveryDenyV1::NotFenced);
+        }
+        let tenure = ledger
+            .authority_tenure()
+            .filter(|_| !ledger.is_poisoned())
+            .ok_or(MotherAuthorityRecoveryDenyV1::ExclusiveWriterUnavailable)?;
+        if state.current_expectation.as_ref().is_some_and(|previous| {
+            previous.grants_authority.authority_epoch == tenure.fact.authority_epoch
+        }) {
+            return Err(MotherAuthorityRecoveryDenyV1::FreshWriterTenureRequired);
+        }
+        let entries = ledger
+            .entries()
+            .map_err(|_| MotherAuthorityRecoveryDenyV1::LedgerReplayBlocked)?;
+        let replay = replay_authority_entries(&entries)
+            .map_err(|_| MotherAuthorityRecoveryDenyV1::LedgerReplayBlocked)?;
+        // The boundary, not its caller, retains every offered id whose outcome needs recovery.
+        // A complete identity/sequence/hash-valid exclusive rescan resolves uncertainty to either
+        // one replayed canonical fact or absence. Acknowledged projection-pending commitment must
+        // specifically survive as a canonical fact.
+        for (mutation_id, requirement) in &state.pending_mutation_resolutions {
+            if *requirement == MutationResolutionRequirementV1::MustBeCommitted
+                && !replay.mutations.contains_key(mutation_id)
+            {
+                return Err(MotherAuthorityRecoveryDenyV1::MutationResolutionUnproven);
+            }
+        }
+        let head = entries
+            .last()
+            .ok_or(MotherAuthorityRecoveryDenyV1::LedgerReplayBlocked)?;
+        let authority = replay
+            .current_authority
+            .ok_or(MotherAuthorityRecoveryDenyV1::LedgerReplayBlocked)?;
+        if authority != tenure.fact.resulting_authority {
+            return Err(MotherAuthorityRecoveryDenyV1::LedgerReplayBlocked);
+        }
+        let expectation = AuthorityProjectionExpectationV1 {
+            source_mother_node_id: head.mother_node_id.clone(),
+            source_ledger_id: head.ledger_id.clone(),
+            through_sequence: head.local_sequence,
+            through_entry_hash: head.entry_hash.clone(),
+            grants_authority: authority,
+            authority_state_hash: authority_state_hash(&replay.state)
+                .map_err(|_| MotherAuthorityRecoveryDenyV1::LedgerReplayBlocked)?,
+        };
+        let proof = state_store
+            .usable_authority_projection_proof(&AuthorityProjectionLedgerEvidenceV1::Validated(
+                expectation.clone(),
+            ))
+            .map_err(|_| {
+                MotherAuthorityRecoveryDenyV1::Projection(
+                    AuthorityProjectionDenyReasonV1::ProjectionNotCurrent,
+                )
+            })?;
+        let cursor = match proof {
+            UsableAuthorityProjectionProofV1::Usable { cursor } => cursor,
+            UsableAuthorityProjectionProofV1::Denied { reason } => {
+                return Err(MotherAuthorityRecoveryDenyV1::Projection(reason));
+            }
+        };
+        if !cursor_matches_expectation(&cursor, &expectation) {
+            return Err(MotherAuthorityRecoveryDenyV1::ProjectionExpectationMismatch);
+        }
+        state.current_expectation = Some(expectation.clone());
+        state.fenced = None;
+        state.pending_mutation_resolutions.clear();
+        Ok(expectation)
     }
 
     pub fn admit_effect<R>(
@@ -202,9 +341,11 @@ fn cursor_matches_expectation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mct_kernel::ToyContractIdentity;
     use mct_observation::{
-        AuthorityProjectionHashInputV1, AuthorityProjectionStatusV1, GrantsAuthorityIdentityV1,
-        authority_projection_hash,
+        AuthorityChangeV1, AuthorityMutationRequestV1, AuthorityMutationResultV1,
+        AuthorityProjectionHashInputV1, AuthorityProjectionStatusV1, GrantShapingCommandKindV1,
+        GrantShapingSourceV1, GrantsAuthorityIdentityV1, authority_projection_hash,
     };
     use std::sync::{
         Arc,
@@ -225,6 +366,31 @@ mod tests {
                 source_authority_observation_id: format!("obs-authority-{generation}"),
             },
             authority_state_hash: format!("state-{generation}"),
+        }
+    }
+
+    fn mutation_request(mutation_id: &str) -> AuthorityMutationRequestV1 {
+        AuthorityMutationRequestV1 {
+            mutation_id: mutation_id.into(),
+            changes: vec![AuthorityChangeV1::ToyCatalogPut {
+                toy_id: "toy-ordering".into(),
+                contract: ToyContractIdentity {
+                    namespace: "mct:test".into(),
+                    interface_name: "ordering".into(),
+                    version: "1.0.0".into(),
+                    function_name: Some("run".into()),
+                    resource_name: None,
+                },
+                authority_bearing: true,
+                catalog_revision: 1,
+                admitted_by_observation_id: "obs:toy-ordering".into(),
+            }],
+            grant_shaping_sources: vec![GrantShapingSourceV1::OperatorDecision {
+                decision_id: format!("decision:{mutation_id}"),
+                authenticated_principal_ref: "os-uid:501".into(),
+                command_kind: GrantShapingCommandKindV1::CatalogChange,
+            }],
+            decided_at: "2026-08-04T00:00:00Z".into(),
         }
     }
 
@@ -258,6 +424,136 @@ mod tests {
         UsableAuthorityProjectionProofV1::Usable {
             cursor: Box::new(cursor),
         }
+    }
+
+    #[test]
+    fn uncertainty_and_projection_lag_fence_until_exclusive_reopen_and_exact_proof() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger_path = dir.path().join("observations.jsonl");
+        let state_path = dir.path().join("state.sqlite");
+        let mut ledger = mct_observation::JsonlObservationLedger::open_authority(
+            &ledger_path,
+            "ledger-local",
+            "local-mct",
+        )
+        .unwrap();
+        let entries = ledger.entries().unwrap();
+        let replay = mct_observation::replay_authority_entries(&entries).unwrap();
+        let head = entries.last().unwrap();
+        let initial = AuthorityProjectionExpectationV1 {
+            source_mother_node_id: head.mother_node_id.clone(),
+            source_ledger_id: head.ledger_id.clone(),
+            through_sequence: head.local_sequence,
+            through_entry_hash: head.entry_hash.clone(),
+            grants_authority: replay.current_authority.unwrap(),
+            authority_state_hash: mct_observation::authority_state_hash(&replay.state).unwrap(),
+        };
+        let state = crate::MctRuntimeStateStore::open(&state_path).unwrap();
+        state.rebuild_authority_projection(&entries).unwrap();
+        let order = MotherAuthorityOrderV1::new(initial.clone());
+        order.commit_mutation("pending-1", &(), |_| {
+            let committed = ledger
+                .execute_authority_mutation(mutation_request("pending-1"), |_| {
+                    Err("injected projection failure".into())
+                });
+            assert!(matches!(
+                committed,
+                AuthorityMutationResultV1::CommittedProjectionPending { .. }
+            ));
+            MotherAuthorityCommitOutcomeV1::CommittedProjectionPending {
+                mutation_id: "pending-1".into(),
+            }
+        });
+        let starts = AtomicUsize::new(0);
+        for _ in 0..3 {
+            assert_eq!(
+                order.admit_effect(
+                    &initial,
+                    || usable(&initial),
+                    |_| { starts.fetch_add(1, Ordering::SeqCst) }
+                ),
+                Err(MotherAuthorityAdmissionDenyV1::Fenced(
+                    MotherAuthorityFenceReasonV1::ProjectionLag
+                ))
+            );
+        }
+        assert_eq!(starts.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            order.clear_fence_after_exclusive_rescan(&ledger, &state),
+            Err(MotherAuthorityRecoveryDenyV1::FreshWriterTenureRequired)
+        );
+        drop(ledger);
+
+        let reopened = mct_observation::JsonlObservationLedger::open_authority(
+            &ledger_path,
+            "ledger-local",
+            "local-mct",
+        )
+        .unwrap();
+        let reopened_entries = reopened.entries().unwrap();
+        state
+            .rebuild_authority_projection(&reopened_entries)
+            .unwrap();
+        let recovered = order
+            .clear_fence_after_exclusive_rescan(&reopened, &state)
+            .unwrap();
+        assert!(!order.is_fenced());
+        assert_eq!(
+            order.admit_effect(
+                &recovered,
+                || {
+                    state
+                        .usable_authority_projection_proof(
+                            &AuthorityProjectionLedgerEvidenceV1::Validated(recovered.clone()),
+                        )
+                        .unwrap()
+                },
+                |_| starts.fetch_add(1, Ordering::SeqCst)
+            ),
+            Ok(0)
+        );
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+
+        for (outcome, reason) in [
+            (
+                MotherAuthorityCommitOutcomeV1::CommitUnknown {
+                    mutation_id: "unknown".into(),
+                },
+                MotherAuthorityFenceReasonV1::CommitUnknown,
+            ),
+            (
+                MotherAuthorityCommitOutcomeV1::WriterPoisoned {
+                    mutation_id: "poisoned".into(),
+                },
+                MotherAuthorityFenceReasonV1::WriterPoisoned,
+            ),
+        ] {
+            let boundary = MotherAuthorityOrderV1::new(initial.clone());
+            let id = match &outcome {
+                MotherAuthorityCommitOutcomeV1::CommitUnknown { mutation_id }
+                | MotherAuthorityCommitOutcomeV1::WriterPoisoned { mutation_id } => {
+                    mutation_id.clone()
+                }
+                _ => unreachable!(),
+            };
+            boundary.commit_mutation(&id, &(), |_| outcome);
+            assert_eq!(boundary.fence_reason(), Some(reason));
+            for _ in 0..2 {
+                assert_eq!(
+                    boundary.admit_effect(
+                        &initial,
+                        || usable(&initial),
+                        |_| { starts.fetch_add(1, Ordering::SeqCst) }
+                    ),
+                    Err(MotherAuthorityAdmissionDenyV1::Fenced(reason))
+                );
+            }
+        }
+        assert_eq!(
+            starts.load(Ordering::SeqCst),
+            1,
+            "uncertainty and poisoned-writer retries must start nothing"
+        );
     }
 
     #[test]
