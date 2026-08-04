@@ -4833,20 +4833,16 @@ status = "active"
             )
             .await
         });
-        tokio::time::timeout(Duration::from_secs(15), restart_ready_rx)
+        let restart_error = tokio::time::timeout(Duration::from_secs(15), restarted_resident)
             .await
+            .expect("broader legacy authority must degrade before readiness")
             .unwrap()
-            .unwrap();
-        let (restart_status, restart_denied) = uds_json(
-            &paths.uds,
-            "POST",
-            "/calls",
-            &call_submission("restart-revoked"),
-        )
-        .await;
-        assert_eq!(restart_status, 200, "{restart_denied:#}");
-        assert_eq!(restart_denied["outcome"], "denied");
-        tokio::time::sleep(Duration::from_millis(750)).await;
+            .unwrap_err();
+        assert!(
+            format!("{restart_error:#}").contains("sqlite_authority_broader_than_canonical"),
+            "deferred legacy grant writers must not be mistaken for canonical readiness"
+        );
+        assert!(restart_ready_rx.await.is_err());
         assert_eq!(
             MctRuntimeStateStore::open(&paths.state)
                 .unwrap()
@@ -4858,16 +4854,12 @@ status = "active"
         let restart_stop_paths = paths.clone();
         let restart_stop_adapter = Arc::clone(&adapter);
         tokio::task::spawn_blocking(move || {
-            stop_with_adapter(
-                &restart_stop_paths,
-                current_uid().unwrap(),
-                restart_stop_adapter.as_ref(),
-            )
+            let record = validate_supervisor_record_for_stop(&restart_stop_paths.record)?;
+            restart_stop_adapter.stop(&record)
         })
         .await
         .unwrap()
         .unwrap();
-        restarted_resident.await.unwrap().unwrap();
 
         let package_manifest_before_uninstall = fs::read(package_path.join("child.toml")).unwrap();
         let package_component_before_uninstall =

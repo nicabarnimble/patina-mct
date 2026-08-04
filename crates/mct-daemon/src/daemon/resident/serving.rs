@@ -585,6 +585,36 @@ where
             .await?
         }
     };
+    let startup_readiness = ledger
+        .finalize_startup(config.state_path.clone(), config.config_path.clone())
+        .await
+        .context("publish coherent authority startup projection")?;
+    if !startup_readiness.authority_ready {
+        #[cfg(test)]
+        bail!(
+            "startup authority remains degraded: {}",
+            startup_readiness.report.blocking_reasons.join(",")
+        );
+        #[cfg(not(test))]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            ledger.close().await;
+            let owner_uid = std::fs::symlink_metadata(&startup_paths.root)?.uid();
+            let plane = mct_daemon::MctIsolatedStartupPlaneV1::inspect(
+                startup_paths.clone(),
+                "ledger-local",
+                "local-mct",
+                owner_uid,
+            )?
+            .with_drift_report(startup_readiness.report);
+            return run_isolated_startup_plane(
+                plane,
+                startup_paths.control_socket.clone(),
+                shutdown,
+            )
+            .await;
+        }
+    }
     let secret_key_hex = load_or_create_node_secret_key_hex(&config.identity_path)?;
     let mut endpoint = MotherIrohEndpoint::bind(iroh_config(secret_key_hex, config.relay_default))
         .await

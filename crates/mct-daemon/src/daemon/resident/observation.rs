@@ -18,6 +18,13 @@ enum ResidentLedgerCommand {
         request: AuthorityMutationRequestV1,
         ack: tokio::sync::oneshot::Sender<AuthorityMutationResultV1>,
     },
+    FinalizeStartup {
+        state_path: PathBuf,
+        config_path: PathBuf,
+        ack: tokio::sync::oneshot::Sender<
+            std::result::Result<mct_daemon::MctStartupAuthorityReadinessV1, String>,
+        >,
+    },
     LegacyAuthorityImport {
         request: LegacyAuthorityImportRequestV1,
         authenticated_principal_ref: String,
@@ -70,6 +77,10 @@ impl ResidentLedgerWriter {
                             mutation_id: request.mutation_id,
                             reason: AuthorityMutationRejectionReasonV1::WriterPoisoned,
                         });
+                    }
+                    ResidentLedgerCommand::FinalizeStartup { ack, .. } => {
+                        task_fenced.store(true, Ordering::SeqCst);
+                        let _ = ack.send(Err("injected resident writer loss".into()));
                     }
                     ResidentLedgerCommand::LegacyAuthorityImport { request, ack, .. } => {
                         task_fenced.store(true, Ordering::SeqCst);
@@ -173,6 +184,19 @@ impl ResidentLedgerWriter {
                         };
                         let _ = ack.send(result);
                     }
+                    ResidentLedgerCommand::FinalizeStartup {
+                        state_path,
+                        config_path,
+                        ack,
+                    } => {
+                        let result = mct_daemon::finalize_authority_startup(
+                            &mut ledger,
+                            &state_path,
+                            &config_path,
+                        )
+                        .map_err(|error| error.to_string());
+                        let _ = ack.send(result);
+                    }
                     ResidentLedgerCommand::LegacyAuthorityImport {
                         request,
                         authenticated_principal_ref,
@@ -217,6 +241,28 @@ impl ResidentLedgerWriter {
 
     pub(crate) fn path(&self) -> Option<&Path> {
         self.path.as_deref().map(PathBuf::as_path)
+    }
+
+    pub(crate) async fn finalize_startup(
+        &self,
+        state_path: PathBuf,
+        config_path: PathBuf,
+    ) -> Result<mct_daemon::MctStartupAuthorityReadinessV1> {
+        if self.is_fenced() {
+            bail!("resident observation writer is fenced");
+        }
+        let (ack, rx) = tokio::sync::oneshot::channel();
+        self.sender
+            .send(ResidentLedgerCommand::FinalizeStartup {
+                state_path,
+                config_path,
+                ack,
+            })
+            .await
+            .context("send startup finalization to resident ledger writer")?;
+        rx.await
+            .context("receive resident startup finalization acknowledgement")?
+            .map_err(anyhow::Error::msg)
     }
 
     pub(crate) async fn commit_legacy_authority_import(

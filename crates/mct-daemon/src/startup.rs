@@ -1,14 +1,16 @@
 //! Disk-first startup evidence for Mother authority establishment.
 
+use anyhow::Context as _;
 use mct_kernel::{
     MctObservation, ObservationId, ObservationKind, ObservationOutcome, ObservationTraceRef,
     ObservationVisibility, SourcePlane, Timestamp, TraceId,
 };
 use mct_observation::{
-    AuthorityEpochPredecessorV1, AuthorityStartupClassV1, AuthorityStateV1,
-    AuthorityTenureStartupEvidenceV1, GrantsAuthorityIdentityV1, JsonlObservationLedger,
-    LedgerQuarantineStatus, LedgerRecoveryStatus, ObservationLedgerError, authority_state_hash,
-    replay_authority_entries,
+    AuthorityEpochPredecessorV1, AuthorityProjectionCursorV1, AuthorityProjectionDenyReasonV1,
+    AuthorityProjectionExpectationV1, AuthorityProjectionLedgerEvidenceV1, AuthorityStartupClassV1,
+    AuthorityStateV1, AuthorityTenureStartupEvidenceV1, GrantsAuthorityIdentityV1,
+    JsonlObservationLedger, LedgerQuarantineStatus, LedgerRecoveryStatus, ObservationLedgerError,
+    UsableAuthorityProjectionProofV1, authority_state_hash, replay_authority_entries,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -922,6 +924,7 @@ pub struct MctIsolatedStartupPlaneV1 {
     startup: Option<MctAuthorityStartupEvidenceV1>,
     inventory: MctStartupArtifactInventoryV1,
     ledger_forensics: Option<MctLedgerForensicReportV1>,
+    drift_report: Option<AuthorityDriftReportV1>,
 }
 
 impl MctIsolatedStartupPlaneV1 {
@@ -997,11 +1000,17 @@ impl MctIsolatedStartupPlaneV1 {
             startup,
             inventory,
             ledger_forensics,
+            drift_report: None,
         })
     }
 
     pub fn posture(&self) -> MctStartupPostureV1 {
         self.posture
+    }
+
+    pub fn with_drift_report(mut self, report: AuthorityDriftReportV1) -> Self {
+        self.drift_report = Some(report);
+        self
     }
 
     fn refusal(&self, safe_message: &str) -> MctStartupRefusalV1 {
@@ -1108,9 +1117,14 @@ impl MctIsolatedStartupPlaneV1 {
                     ),
                 }
             }
-            ("GET", "/drift") => MctStartupPlaneResponseV1::json(
-                200,
-                &serde_json::json!({"status": "unavailable_before_authority_replay"}),
+            ("GET", "/drift") => self.drift_report.as_ref().map_or_else(
+                || {
+                    MctStartupPlaneResponseV1::json(
+                        200,
+                        &serde_json::json!({"status": "unavailable_before_authority_replay"}),
+                    )
+                },
+                |report| MctStartupPlaneResponseV1::json(200, report),
             ),
             ("POST", "/startup/operator-gate")
                 if self.posture == MctStartupPostureV1::OperatorGateRequired =>
@@ -1297,6 +1311,373 @@ fn read_forensic_source_range(
         total_length: case.source_length,
         start,
         end,
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MctAuthorityProjectionDriftStatusV1 {
+    Missing,
+    Rebuilding,
+    Current,
+    Stale,
+    Quarantined,
+    Blocked,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MctLegacyAuthoritySourceV1 {
+    ConfigAuthorityIntent,
+    SqliteToyAuthority,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MctLegacyAuthorityComparisonV1 {
+    NoAuthorityIntent,
+    MatchesCanonical,
+    DiffersFromCanonical,
+    ImportRequired,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctLegacyAuthorityInputV1 {
+    pub source: MctLegacyAuthoritySourceV1,
+    pub normalized_hash: Option<String>,
+    pub comparison: MctLegacyAuthorityComparisonV1,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctCanonicalAuthorityDriftV1 {
+    pub mother_node_id: String,
+    pub ledger_id: String,
+    pub head_sequence: u64,
+    pub head_entry_hash: String,
+    pub grants_authority: GrantsAuthorityIdentityV1,
+    pub authority_state_hash: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctProjectionAuthorityDriftV1 {
+    pub status: MctAuthorityProjectionDriftStatusV1,
+    pub through_sequence: Option<u64>,
+    pub through_entry_hash: Option<String>,
+    pub projection_hash: Option<String>,
+    pub proof_denial: Option<AuthorityProjectionDenyReasonV1>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorityDriftReportV1 {
+    pub schema: String,
+    pub report_id: String,
+    pub observed_at: String,
+    pub startup_class: AuthorityStartupClassV1,
+    pub canonical: MctCanonicalAuthorityDriftV1,
+    pub projection: MctProjectionAuthorityDriftV1,
+    pub legacy_inputs: Vec<MctLegacyAuthorityInputV1>,
+    pub blocking_reasons: Vec<String>,
+    pub authority_ready: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MctStartupAuthorityReadinessV1 {
+    pub report: AuthorityDriftReportV1,
+    pub proof: UsableAuthorityProjectionProofV1,
+    pub authority_ready: bool,
+}
+
+impl MctStartupAuthorityReadinessV1 {
+    pub fn cursor(&self) -> Option<&AuthorityProjectionCursorV1> {
+        match &self.proof {
+            UsableAuthorityProjectionProofV1::Usable { cursor } => Some(cursor),
+            UsableAuthorityProjectionProofV1::Denied { .. } => None,
+        }
+    }
+}
+
+fn state_is_subset(candidate: &AuthorityStateV1, canonical: &AuthorityStateV1) -> bool {
+    candidate.toy_catalog.iter().all(|(id, value)| {
+        canonical
+            .toy_catalog
+            .get(id)
+            .is_some_and(|current| current == value)
+    }) && candidate.toy_grants.iter().all(|(id, value)| {
+        canonical
+            .toy_grants
+            .get(id)
+            .is_some_and(|current| current == value)
+    })
+}
+
+struct StartupObservationContext<'a> {
+    now: &'a str,
+    mother_node_id: &'a str,
+    ledger_id: &'a str,
+    generation: u64,
+}
+
+fn startup_observation(
+    context: &StartupObservationContext<'_>,
+    id: String,
+    kind: ObservationKind,
+    source_plane: SourcePlane,
+    safe_message: String,
+    detail_ref: String,
+) -> MctObservation {
+    MctObservation {
+        observation_id: ObservationId::new(id.clone()).expect("startup id is non-empty"),
+        observed_at: Timestamp::new(context.now.to_owned()).expect("system time is RFC3339"),
+        kind,
+        source_plane,
+        trace: ObservationTraceRef {
+            trace_id: TraceId::new(format!("trace:{id}")).expect("startup trace is non-empty"),
+            span_id: None,
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: None,
+        decision_id: None,
+        subject_id: Some(context.mother_node_id.to_owned()),
+        resource_id: Some(context.ledger_id.to_owned()),
+        policy_revision: None,
+        grants_revision: Some(context.generation),
+        outcome: ObservationOutcome::Completed,
+        visibility: ObservationVisibility::NodeOperator,
+        safe_message,
+        detail_ref: Some(detail_ref),
+    }
+}
+
+pub fn finalize_authority_startup(
+    ledger: &mut JsonlObservationLedger,
+    state_path: &Path,
+    config_path: &Path,
+) -> anyhow::Result<MctStartupAuthorityReadinessV1> {
+    let tenure_fact = ledger
+        .authority_tenure()
+        .context("startup finalization requires an established authority tenure")?
+        .fact
+        .clone();
+    let startup_class = tenure_fact.establishment.startup_class;
+    let generation = tenure_fact.resulting_authority.generation;
+    let mother_node_id = tenure_fact.mother_node_id.clone();
+    let ledger_id = tenure_fact.ledger_id.clone();
+    let pre_observation_entries = ledger.entries()?;
+    let pre_observation_replay = replay_authority_entries(&pre_observation_entries)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let canonical_hash = authority_state_hash(&pre_observation_replay.state)?;
+    let config_hash = authority_state_hash(&AuthorityStateV1::default())?;
+    let config_input = match fs::symlink_metadata(config_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => MctLegacyAuthorityInputV1 {
+            source: MctLegacyAuthoritySourceV1::ConfigAuthorityIntent,
+            normalized_hash: Some(config_hash.clone()),
+            comparison: MctLegacyAuthorityComparisonV1::NoAuthorityIntent,
+        },
+        Ok(metadata) if metadata.file_type().is_file() => {
+            match crate::MctDaemonConfigStore::new(config_path).load() {
+                Ok(_) => MctLegacyAuthorityInputV1 {
+                    source: MctLegacyAuthoritySourceV1::ConfigAuthorityIntent,
+                    normalized_hash: Some(config_hash.clone()),
+                    comparison: MctLegacyAuthorityComparisonV1::NoAuthorityIntent,
+                },
+                Err(_) => MctLegacyAuthorityInputV1 {
+                    source: MctLegacyAuthoritySourceV1::ConfigAuthorityIntent,
+                    normalized_hash: None,
+                    comparison: MctLegacyAuthorityComparisonV1::Unavailable,
+                },
+            }
+        }
+        _ => MctLegacyAuthorityInputV1 {
+            source: MctLegacyAuthoritySourceV1::ConfigAuthorityIntent,
+            normalized_hash: None,
+            comparison: MctLegacyAuthorityComparisonV1::Unavailable,
+        },
+    };
+
+    let state = crate::MctRuntimeStateStore::open(state_path)?;
+    let sqlite_authority = AuthorityStateV1 {
+        toy_catalog: state
+            .toy_contracts()?
+            .into_iter()
+            .map(|contract| (contract.toy_id.to_string(), contract))
+            .collect(),
+        toy_grants: state
+            .toy_grant_snapshots()?
+            .into_iter()
+            .map(|grant| (grant.grant_id.to_string(), grant))
+            .collect(),
+    };
+    let sqlite_hash = authority_state_hash(&sqlite_authority)?;
+    let sqlite_comparison = if !pre_observation_replay.imported
+        && pre_observation_replay.mutations.is_empty()
+        && (!sqlite_authority.toy_catalog.is_empty() || !sqlite_authority.toy_grants.is_empty())
+    {
+        MctLegacyAuthorityComparisonV1::ImportRequired
+    } else if sqlite_hash == canonical_hash {
+        MctLegacyAuthorityComparisonV1::MatchesCanonical
+    } else {
+        MctLegacyAuthorityComparisonV1::DiffersFromCanonical
+    };
+    let sqlite_input = MctLegacyAuthorityInputV1 {
+        source: MctLegacyAuthoritySourceV1::SqliteToyAuthority,
+        normalized_hash: Some(sqlite_hash),
+        comparison: sqlite_comparison,
+    };
+    let mut blocking_reasons = Vec::new();
+    if config_input.comparison == MctLegacyAuthorityComparisonV1::Unavailable {
+        blocking_reasons.push("config_authority_unavailable".into());
+    }
+    if sqlite_comparison == MctLegacyAuthorityComparisonV1::ImportRequired {
+        blocking_reasons.push("legacy_import_required".into());
+    } else if sqlite_comparison == MctLegacyAuthorityComparisonV1::DiffersFromCanonical
+        && !state_is_subset(&sqlite_authority, &pre_observation_replay.state)
+    {
+        blocking_reasons.push("sqlite_authority_broader_than_canonical".into());
+    }
+    blocking_reasons.sort();
+    blocking_reasons.dedup();
+
+    let now = jiff::Timestamp::now().to_string();
+    let report_id = format!(
+        "startup-drift:{}:{}",
+        tenure_fact.authority_epoch,
+        pre_observation_entries.len()
+    );
+    let normalized_inputs = serde_json::json!({
+        "schema": "mct-startup-posture/v1",
+        "startup_class": startup_class,
+        "report_id": report_id,
+        "config_authority_hash": config_input.normalized_hash,
+        "sqlite_authority_hash": sqlite_input.normalized_hash,
+        "canonical_authority_state_hash": canonical_hash,
+        "blocking_reasons": blocking_reasons,
+    });
+    let observation_context = StartupObservationContext {
+        now: &now,
+        mother_node_id: &mother_node_id,
+        ledger_id: &ledger_id,
+        generation,
+    };
+    ledger.append_batch_before_effect(
+        [
+            startup_observation(
+                &observation_context,
+                format!("obs:startup-posture:{}", tenure_fact.authority_epoch),
+                ObservationKind::LifecycleTransitionRecorded,
+                SourcePlane::Storage,
+                format!("Mother startup class {startup_class:?} recorded"),
+                format!(
+                    "mct-startup-posture-v1:{}",
+                    serde_json::to_string(&normalized_inputs)?
+                ),
+            ),
+            startup_observation(
+                &observation_context,
+                format!("obs:startup-drift:{}", tenure_fact.authority_epoch),
+                ObservationKind::NodeHealthReported,
+                SourcePlane::Storage,
+                format!(
+                    "authority drift evaluated report_id={report_id} authority_ready={} blocking={}",
+                    blocking_reasons.is_empty(),
+                    blocking_reasons.join(",")
+                ),
+                format!(
+                    "mct-authority-drift-v1:{}",
+                    serde_json::to_string(&normalized_inputs)?
+                ),
+            ),
+        ],
+        now.clone(),
+    )?;
+
+    let entries = ledger.entries()?;
+    let replay =
+        replay_authority_entries(&entries).map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let head = entries.last().context("startup ledger head disappeared")?;
+    let authority = replay
+        .current_authority
+        .clone()
+        .context("startup authority disappeared after observations")?;
+    let final_state_hash = authority_state_hash(&replay.state)?;
+    let expectation = AuthorityProjectionExpectationV1 {
+        source_mother_node_id: head.mother_node_id.clone(),
+        source_ledger_id: head.ledger_id.clone(),
+        through_sequence: head.local_sequence,
+        through_entry_hash: head.entry_hash.clone(),
+        grants_authority: authority.clone(),
+        authority_state_hash: final_state_hash.clone(),
+    };
+    let publish_result = state.rebuild_authority_projection(&entries);
+    let proof = state.usable_authority_projection_proof(
+        &AuthorityProjectionLedgerEvidenceV1::Validated(expectation),
+    )?;
+    let proof_denial = match &proof {
+        UsableAuthorityProjectionProofV1::Usable { .. } => None,
+        UsableAuthorityProjectionProofV1::Denied { reason } => Some(*reason),
+    };
+    if publish_result.is_err() && proof_denial.is_none() {
+        blocking_reasons.push("projection_publication_failed".into());
+    }
+    if let Some(reason) = proof_denial {
+        blocking_reasons.push(format!("projection_{reason:?}").to_lowercase());
+    }
+    blocking_reasons.sort();
+    blocking_reasons.dedup();
+    let snapshot = state.authority_projection_snapshot()?;
+    let projection = snapshot.as_ref().map_or(
+        MctProjectionAuthorityDriftV1 {
+            status: MctAuthorityProjectionDriftStatusV1::Missing,
+            through_sequence: None,
+            through_entry_hash: None,
+            projection_hash: None,
+            proof_denial,
+        },
+        |snapshot| MctProjectionAuthorityDriftV1 {
+            status: match snapshot.cursor.projection_status {
+                mct_observation::AuthorityProjectionStatusV1::Current => {
+                    MctAuthorityProjectionDriftStatusV1::Current
+                }
+                mct_observation::AuthorityProjectionStatusV1::Stale => {
+                    MctAuthorityProjectionDriftStatusV1::Stale
+                }
+                mct_observation::AuthorityProjectionStatusV1::Rebuilding => {
+                    MctAuthorityProjectionDriftStatusV1::Rebuilding
+                }
+                mct_observation::AuthorityProjectionStatusV1::Quarantined => {
+                    MctAuthorityProjectionDriftStatusV1::Quarantined
+                }
+            },
+            through_sequence: Some(snapshot.cursor.through_sequence),
+            through_entry_hash: Some(snapshot.cursor.through_entry_hash.clone()),
+            projection_hash: Some(snapshot.cursor.projection_hash.clone()),
+            proof_denial,
+        },
+    );
+    let authority_ready = proof_denial.is_none() && blocking_reasons.is_empty();
+    let report = AuthorityDriftReportV1 {
+        schema: "mct-authority-drift-report/v1".into(),
+        report_id,
+        observed_at: now,
+        startup_class,
+        canonical: MctCanonicalAuthorityDriftV1 {
+            mother_node_id,
+            ledger_id,
+            head_sequence: head.local_sequence,
+            head_entry_hash: head.entry_hash.clone(),
+            grants_authority: authority,
+            authority_state_hash: final_state_hash,
+        },
+        projection,
+        legacy_inputs: vec![config_input, sqlite_input],
+        blocking_reasons,
+        authority_ready,
+    };
+    Ok(MctStartupAuthorityReadinessV1 {
+        report,
+        proof,
+        authority_ready,
     })
 }
 
@@ -1703,6 +2084,116 @@ mod tests {
                 .refusal_kind(),
             Some(MctStartupRefusalKindV1::LedgerQuarantined),
             "operator gating can never adopt foreign lineage"
+        );
+    }
+
+    #[test]
+    fn startup_observations_are_projected_before_readiness_and_drift_never_repairs() {
+        let ready_dir = tempfile::tempdir().unwrap();
+        let ready_paths = paths(ready_dir.path());
+        let evidence = classify_authority_startup(&ready_paths, "ledger-a", "mother-a").unwrap();
+        let mut ledger =
+            open_classified_authority(&ready_paths, "ledger-a", "mother-a", &evidence).unwrap();
+        let ready =
+            finalize_authority_startup(&mut ledger, &ready_paths.state, &ready_paths.config)
+                .unwrap();
+        let entries = ledger.entries().unwrap();
+        let head = entries.last().unwrap();
+        assert!(
+            ready.authority_ready,
+            "matching canonical/projection/legacy inputs must become ready"
+        );
+        assert_eq!(ready.report.canonical.head_sequence, head.local_sequence);
+        assert_eq!(ready.report.canonical.head_entry_hash, head.entry_hash);
+        assert_eq!(
+            ready.cursor().unwrap().through_sequence,
+            head.local_sequence
+        );
+        assert_eq!(
+            entries[entries.len() - 2].observation.kind,
+            ObservationKind::LifecycleTransitionRecorded
+        );
+        assert_eq!(
+            entries[entries.len() - 1].observation.kind,
+            ObservationKind::NodeHealthReported
+        );
+        assert!(entries[entries.len() - 2..].iter().all(|entry| {
+            entry
+                .observation
+                .detail_ref
+                .as_deref()
+                .is_some_and(|detail| {
+                    !detail.starts_with(mct_observation::AUTHORITY_FACT_DETAIL_PREFIX)
+                })
+        }));
+        assert_eq!(
+            replay_authority_entries(&entries)
+                .unwrap()
+                .canonical_fact_count,
+            1,
+            "startup and drift observability must add no canonical fact kind"
+        );
+
+        drop(ledger);
+        let reopened_evidence =
+            classify_authority_startup(&ready_paths, "ledger-a", "mother-a").unwrap();
+        let mut reopened =
+            open_classified_authority(&ready_paths, "ledger-a", "mother-a", &reopened_evidence)
+                .unwrap();
+        let restarted =
+            finalize_authority_startup(&mut reopened, &ready_paths.state, &ready_paths.config)
+                .unwrap();
+        assert!(
+            restarted.authority_ready,
+            "ready posture must reconstruct across restart"
+        );
+
+        let drift_dir = tempfile::tempdir().unwrap();
+        let drift_paths = paths(drift_dir.path());
+        let evidence = classify_authority_startup(&drift_paths, "ledger-a", "mother-a").unwrap();
+        let mut drift_ledger =
+            open_classified_authority(&drift_paths, "ledger-a", "mother-a", &evidence).unwrap();
+        let state = crate::MctRuntimeStateStore::open(&drift_paths.state).unwrap();
+        let contract = mct_kernel::CanonicalToyContract {
+            toy_id: mct_kernel::ToyId::new("mct:test/drift").unwrap(),
+            contract: mct_kernel::ToyContractIdentity {
+                namespace: "mct:test".into(),
+                interface_name: "drift".into(),
+                version: "1.0.0".into(),
+                function_name: Some("read".into()),
+                resource_name: None,
+            },
+            authority_bearing: true,
+            catalog_revision: 1,
+            admitted_by_observation_id: ObservationId::new("obs:legacy-drift").unwrap(),
+        };
+        state.upsert_toy_contract(&contract).unwrap();
+        drop(state);
+        let drift =
+            finalize_authority_startup(&mut drift_ledger, &drift_paths.state, &drift_paths.config)
+                .unwrap();
+        assert!(
+            !drift.authority_ready,
+            "broader legacy SQLite authority must keep startup degraded"
+        );
+        assert!(
+            drift
+                .report
+                .blocking_reasons
+                .contains(&"legacy_import_required".into())
+        );
+        assert_eq!(
+            crate::MctRuntimeStateStore::open(&drift_paths.state)
+                .unwrap()
+                .toy_contracts()
+                .unwrap(),
+            vec![contract],
+            "drift reporting must not repair SQLite from canonical replay"
+        );
+        assert!(
+            !replay_authority_entries(&drift_ledger.entries().unwrap())
+                .unwrap()
+                .imported
         );
     }
 
