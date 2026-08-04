@@ -7,10 +7,16 @@ use mct_kernel::{
 use mct_observation::{
     AuthorityEpochPredecessorV1, AuthorityStartupClassV1, AuthorityStateV1,
     AuthorityTenureStartupEvidenceV1, GrantsAuthorityIdentityV1, JsonlObservationLedger,
-    ObservationLedgerError, authority_state_hash, replay_authority_entries,
+    LedgerQuarantineStatus, LedgerRecoveryStatus, ObservationLedgerError, authority_state_hash,
+    replay_authority_entries,
 };
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::{Read as _, Seek as _, SeekFrom},
+    path::{Path, PathBuf},
+};
 use thiserror::Error;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -793,10 +799,511 @@ pub fn accept_operator_startup_gate(
     Ok(ledger)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MctStartupPostureV1 {
+    OperatorGateRequired,
+    LedgerQuarantined,
+    AuthorityReplayBlocked,
+    StartupDegradedDeny,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MctStartupRefusalKindV1 {
+    StartupDegradedDeny,
+    LedgerQuarantined,
+    OperatorGateRequired,
+    AuthorityReplayBlocked,
+    ProjectionUnusable,
+    WriterFenced,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctStartupRefusalV1 {
+    pub schema: String,
+    pub kind: MctStartupRefusalKindV1,
+    pub startup_class: Option<AuthorityStartupClassV1>,
+    pub authority_ready: bool,
+    pub retryable: bool,
+    pub safe_message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctLedgerForensicReportV1 {
+    pub ledger_path: PathBuf,
+    pub ledger_id: String,
+    pub mother_node_id: String,
+    pub failure_class: String,
+    pub first_bad_sequence: Option<u64>,
+    pub first_bad_offset: Option<u64>,
+    pub expected: Option<String>,
+    pub observed: Option<String>,
+    pub forensic_root: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MctLedgerForensicCaseV1 {
+    pub case_id: String,
+    pub failure_class: String,
+    pub source_length: u64,
+    pub source_digest: String,
+    pub source_offset: Option<u64>,
+    pub prior_committed_sequence: Option<u64>,
+    pub prior_committed_hash: Option<String>,
+    pub decision_id: Option<String>,
+    pub recorded_at: Option<String>,
+    pub source_path: PathBuf,
+    pub record_path: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MctStartupPlaneResponseV1 {
+    status_code: u16,
+    content_type: String,
+    headers: BTreeMap<String, String>,
+    body: Vec<u8>,
+    refusal_kind: Option<MctStartupRefusalKindV1>,
+}
+
+impl MctStartupPlaneResponseV1 {
+    fn json(status_code: u16, value: &impl Serialize) -> Self {
+        Self {
+            status_code,
+            content_type: "application/json".into(),
+            headers: BTreeMap::new(),
+            body: serde_json::to_vec(value).unwrap_or_else(|_| b"null".to_vec()),
+            refusal_kind: None,
+        }
+    }
+
+    fn refusal(status_code: u16, refusal: MctStartupRefusalV1) -> Self {
+        let kind = refusal.kind;
+        let mut response = Self::json(status_code, &refusal);
+        response.refusal_kind = Some(kind);
+        response
+    }
+
+    pub fn status_code(&self) -> u16 {
+        self.status_code
+    }
+
+    pub fn content_type(&self) -> &str {
+        &self.content_type
+    }
+
+    pub fn body_bytes(&self) -> &[u8] {
+        &self.body
+    }
+
+    pub fn headers(&self) -> &BTreeMap<String, String> {
+        &self.headers
+    }
+
+    pub fn refusal_kind(&self) -> Option<MctStartupRefusalKindV1> {
+        self.refusal_kind
+    }
+
+    pub fn first_case_id(&self) -> Option<String> {
+        serde_json::from_slice::<Vec<MctLedgerForensicCaseV1>>(&self.body)
+            .ok()?
+            .first()
+            .map(|case| case.case_id.clone())
+    }
+}
+
+#[derive(Debug)]
+pub struct MctIsolatedStartupPlaneV1 {
+    paths: MctStartupPaths,
+    ledger_id: String,
+    mother_node_id: String,
+    expected_owner_uid: u32,
+    posture: MctStartupPostureV1,
+    startup: Option<MctAuthorityStartupEvidenceV1>,
+    inventory: MctStartupArtifactInventoryV1,
+    ledger_forensics: Option<MctLedgerForensicReportV1>,
+}
+
+impl MctIsolatedStartupPlaneV1 {
+    pub fn inspect(
+        paths: MctStartupPaths,
+        ledger_id: &str,
+        mother_node_id: &str,
+        expected_owner_uid: u32,
+    ) -> Result<Self, MctStartupClassificationErrorV1> {
+        let inventory = classify_startup_artifacts(&paths)
+            .map_err(|_| MctStartupClassificationErrorV1::DiskEvidenceUnavailable)?;
+        let (posture, startup, ledger_forensics) =
+            match classify_authority_startup(&paths, ledger_id, mother_node_id) {
+                Ok(startup)
+                    if startup.startup_class == AuthorityStartupClassV1::OperatorGatedNonvirgin =>
+                {
+                    (
+                        MctStartupPostureV1::OperatorGateRequired,
+                        Some(startup),
+                        None,
+                    )
+                }
+                Ok(startup) => (
+                    MctStartupPostureV1::StartupDegradedDeny,
+                    Some(startup),
+                    None,
+                ),
+                Err(MctStartupClassificationErrorV1::AuthorityReplayBlocked(_)) => {
+                    (MctStartupPostureV1::AuthorityReplayBlocked, None, None)
+                }
+                Err(MctStartupClassificationErrorV1::LedgerUnavailable(error)) => {
+                    match error {
+                        ObservationLedgerError::Quarantined { .. }
+                        | ObservationLedgerError::ForeignLineage { .. } => {}
+                        other => {
+                            return Err(MctStartupClassificationErrorV1::LedgerUnavailable(other));
+                        }
+                    }
+                    let preserved = match JsonlObservationLedger::open(
+                        &paths.ledger,
+                        ledger_id,
+                        mother_node_id,
+                    ) {
+                        Err(ObservationLedgerError::Quarantined { status })
+                        | Err(ObservationLedgerError::ForeignLineage { status }) => *status,
+                        Err(error) => {
+                            return Err(MctStartupClassificationErrorV1::LedgerUnavailable(error));
+                        }
+                        Ok(_) => {
+                            return Err(MctStartupClassificationErrorV1::AuthorityReplayBlocked(
+                                "ledger quarantine changed during exclusive rescan".into(),
+                            ));
+                        }
+                    };
+                    (
+                        MctStartupPostureV1::LedgerQuarantined,
+                        None,
+                        Some(MctLedgerForensicReportV1::from_status(
+                            ledger_id,
+                            mother_node_id,
+                            &preserved,
+                        )),
+                    )
+                }
+                Err(error) => return Err(error),
+            };
+        Ok(Self {
+            paths,
+            ledger_id: ledger_id.to_owned(),
+            mother_node_id: mother_node_id.to_owned(),
+            expected_owner_uid,
+            posture,
+            startup,
+            inventory,
+            ledger_forensics,
+        })
+    }
+
+    pub fn posture(&self) -> MctStartupPostureV1 {
+        self.posture
+    }
+
+    fn refusal(&self, safe_message: &str) -> MctStartupRefusalV1 {
+        let (kind, retryable) = match self.posture {
+            MctStartupPostureV1::OperatorGateRequired => {
+                (MctStartupRefusalKindV1::OperatorGateRequired, true)
+            }
+            MctStartupPostureV1::LedgerQuarantined => {
+                (MctStartupRefusalKindV1::LedgerQuarantined, false)
+            }
+            MctStartupPostureV1::AuthorityReplayBlocked => {
+                (MctStartupRefusalKindV1::AuthorityReplayBlocked, false)
+            }
+            MctStartupPostureV1::StartupDegradedDeny => {
+                (MctStartupRefusalKindV1::StartupDegradedDeny, true)
+            }
+        };
+        MctStartupRefusalV1 {
+            schema: "mct-startup-refusal/v1".into(),
+            kind,
+            startup_class: self.startup.as_ref().map(|value| value.startup_class),
+            authority_ready: false,
+            retryable,
+            safe_message: safe_message.into(),
+        }
+    }
+
+    pub fn handle(
+        &self,
+        peer_uid: u32,
+        method: &str,
+        path: &str,
+        body: &[u8],
+    ) -> MctStartupPlaneResponseV1 {
+        if peer_uid != self.expected_owner_uid {
+            return MctStartupPlaneResponseV1::json(
+                403,
+                &serde_json::json!({"error": "startup plane owner UID refused"}),
+            );
+        }
+        let path_without_query = path.split('?').next().unwrap_or(path);
+        match (method, path_without_query) {
+            ("GET", "/status") => MctStartupPlaneResponseV1::json(
+                200,
+                &serde_json::json!({
+                    "version": crate::version(),
+                    "health": "unhealthy",
+                    "readiness": "not_ready",
+                    "startup_posture": self.posture,
+                    "authority_ready": false,
+                    "iroh_endpoint": null,
+                }),
+            ),
+            ("GET", "/startup") => MctStartupPlaneResponseV1::json(
+                200,
+                &serde_json::json!({
+                    "startup_class": self.startup.as_ref().map(|value| value.startup_class),
+                    "startup_posture": self.posture,
+                    "authority_ready": false,
+                    "inventory": self.inventory,
+                }),
+            ),
+            ("GET", "/forensics/ledger") => self.ledger_forensics.as_ref().map_or_else(
+                || {
+                    MctStartupPlaneResponseV1::refusal(
+                        503,
+                        self.refusal("ledger forensic diagnostics are unavailable"),
+                    )
+                },
+                |report| MctStartupPlaneResponseV1::json(200, report),
+            ),
+            ("GET", "/forensics/cases") => match forensic_cases(&self.paths.ledger) {
+                Ok(cases) => MctStartupPlaneResponseV1::json(200, &cases),
+                Err(_) => MctStartupPlaneResponseV1::refusal(
+                    503,
+                    self.refusal("ledger forensic cases are unavailable"),
+                ),
+            },
+            ("GET", source_path)
+                if source_path.starts_with("/forensics/cases/")
+                    && source_path.ends_with("/source") =>
+            {
+                match read_forensic_source_range(&self.paths.ledger, path) {
+                    Ok(range) => MctStartupPlaneResponseV1 {
+                        status_code: 200,
+                        content_type: "application/octet-stream".into(),
+                        headers: BTreeMap::from([
+                            ("x-mct-source-digest".into(), range.digest),
+                            (
+                                "x-mct-source-total-length".into(),
+                                range.total_length.to_string(),
+                            ),
+                            (
+                                "x-mct-source-range".into(),
+                                format!("{}-{}", range.start, range.end),
+                            ),
+                        ]),
+                        body: range.bytes,
+                        refusal_kind: None,
+                    },
+                    Err(_) => MctStartupPlaneResponseV1::refusal(
+                        400,
+                        self.refusal("forensic source range was refused"),
+                    ),
+                }
+            }
+            ("GET", "/drift") => MctStartupPlaneResponseV1::json(
+                200,
+                &serde_json::json!({"status": "unavailable_before_authority_replay"}),
+            ),
+            ("POST", "/startup/operator-gate")
+                if self.posture == MctStartupPostureV1::OperatorGateRequired =>
+            {
+                let request: MctOperatorStartupGateRequestV1 = match serde_json::from_slice(body) {
+                    Ok(request) => request,
+                    Err(_) => {
+                        return MctStartupPlaneResponseV1::refusal(
+                            400,
+                            self.refusal("startup operator gate request was malformed"),
+                        );
+                    }
+                };
+                let principal = format!("os-uid:{peer_uid}");
+                match accept_operator_startup_gate(
+                    &self.paths,
+                    &self.ledger_id,
+                    &self.mother_node_id,
+                    &request,
+                    &principal,
+                    &principal,
+                ) {
+                    Ok(ledger) => {
+                        drop(ledger);
+                        MctStartupPlaneResponseV1::json(
+                            200,
+                            &serde_json::json!({
+                                "status": "accepted",
+                                "decision_id": request.decision_id,
+                                "restart_required": true,
+                            }),
+                        )
+                    }
+                    Err(_) => MctStartupPlaneResponseV1::refusal(
+                        409,
+                        self.refusal("startup operator gate was refused"),
+                    ),
+                }
+            }
+            _ => MctStartupPlaneResponseV1::refusal(
+                503,
+                self.refusal("startup posture denies this route"),
+            ),
+        }
+    }
+}
+
+impl MctLedgerForensicReportV1 {
+    fn from_status(ledger_id: &str, mother_node_id: &str, status: &LedgerQuarantineStatus) -> Self {
+        Self {
+            ledger_path: status.ledger_path.clone(),
+            ledger_id: ledger_id.to_owned(),
+            mother_node_id: mother_node_id.to_owned(),
+            failure_class: format!("{:?}", status.failure_class),
+            first_bad_sequence: status.first_bad_sequence,
+            first_bad_offset: Some(status.first_bad_offset),
+            expected: status.expected.clone(),
+            observed: status.observed.clone(),
+            forensic_root: mct_observation::forensic_root_path(&status.ledger_path),
+        }
+    }
+}
+
+fn forensic_cases(ledger_path: &Path) -> std::io::Result<Vec<MctLedgerForensicCaseV1>> {
+    let root = mct_observation::forensic_root_path(ledger_path);
+    let mut cases = Vec::new();
+    let children = match fs::read_dir(&root) {
+        Ok(children) => children,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(cases),
+        Err(error) => return Err(error),
+    };
+    for child in children {
+        let path = child?.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(case_id) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        let source_path = path.join("source.bin");
+        let record_path = path.join("record.json");
+        let source = fs::read(&source_path)?;
+        let record = fs::read(&record_path)?;
+        let mut case = MctLedgerForensicCaseV1 {
+            case_id,
+            failure_class: "unknown".into(),
+            source_length: source.len() as u64,
+            source_digest: blake3::hash(&source).to_hex().to_string(),
+            source_offset: None,
+            prior_committed_sequence: None,
+            prior_committed_hash: None,
+            decision_id: None,
+            recorded_at: None,
+            source_path,
+            record_path,
+        };
+        if let Ok(status) = serde_json::from_slice::<LedgerRecoveryStatus>(&record) {
+            case.failure_class = status.failure_class;
+            case.source_offset = Some(status.residue_offset);
+            case.prior_committed_sequence = status.last_committed_sequence;
+            case.prior_committed_hash = status.last_committed_hash;
+            case.decision_id = Some(status.recovery_decision_id);
+            case.recorded_at = Some(status.recovery_time);
+        } else if let Ok(status) = serde_json::from_slice::<LedgerQuarantineStatus>(&record) {
+            case.failure_class = format!("{:?}", status.failure_class);
+            case.source_offset = Some(status.first_bad_offset);
+            case.prior_committed_sequence = status
+                .first_bad_sequence
+                .and_then(|value| value.checked_sub(1));
+        } else {
+            continue;
+        }
+        cases.push(case);
+    }
+    cases.sort_by(|left, right| left.case_id.cmp(&right.case_id));
+    Ok(cases)
+}
+
+struct MctForensicSourceRange {
+    bytes: Vec<u8>,
+    digest: String,
+    total_length: u64,
+    start: u64,
+    end: u64,
+}
+
+fn read_forensic_source_range(
+    ledger_path: &Path,
+    request_path: &str,
+) -> std::io::Result<MctForensicSourceRange> {
+    const MAX_RANGE: u64 = 64 * 1024;
+    let (path, query) = request_path.split_once('?').ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "explicit range is required",
+        )
+    })?;
+    let case_id = path
+        .strip_prefix("/forensics/cases/")
+        .and_then(|path| path.strip_suffix("/source"))
+        .filter(|value| {
+            !value.is_empty()
+                && !value.contains('/')
+                && !value.contains('\\')
+                && *value != "."
+                && *value != ".."
+        })
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid case id"))?;
+    let mut start = None;
+    let mut end = None;
+    for pair in query.split('&') {
+        if let Some(value) = pair.strip_prefix("start=") {
+            start = value.parse::<u64>().ok();
+        } else if let Some(value) = pair.strip_prefix("end=") {
+            end = value.parse::<u64>().ok();
+        }
+    }
+    let (start, end) = start
+        .zip(end)
+        .filter(|(start, end)| start <= end && end - start <= MAX_RANGE)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid range"))?;
+    let cases = forensic_cases(ledger_path)?;
+    let case = cases
+        .iter()
+        .find(|case| case.case_id == case_id)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "case not found"))?;
+    if end > case.source_length {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "range exceeds source length",
+        ));
+    }
+    let mut file = fs::File::open(&case.source_path)?;
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = vec![0; (end - start) as usize];
+    file.read_exact(&mut bytes)?;
+    Ok(MctForensicSourceRange {
+        bytes,
+        digest: case.source_digest.clone(),
+        total_length: case.source_length,
+        start,
+        end,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use std::{fs, io::Write as _};
 
     fn paths(root: &Path) -> MctStartupPaths {
         MctStartupPaths::supervised(root, root.join("io.patina.mct.mother.plist"))
@@ -1062,6 +1569,141 @@ mod tests {
         ));
         let replay = replay_authority_entries(&current.entries().unwrap()).unwrap();
         assert_eq!(replay.import.unwrap().fact.import_id, "current-import");
+    }
+
+    #[test]
+    fn quarantine_plane_is_owner_only_read_only_and_preserves_exact_forensics() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        {
+            let mut ledger =
+                JsonlObservationLedger::open(&paths.ledger, "ledger-a", "mother-a").unwrap();
+            ledger
+                .append_before_effect(
+                    mct_kernel::MctObservation::informational(
+                        mct_kernel::ObservationId::new("obs:good").unwrap(),
+                        mct_kernel::Timestamp::new("2026-08-04T00:00:00Z").unwrap(),
+                        mct_kernel::ObservationKind::LifecycleTransitionRecorded,
+                        mct_kernel::TraceId::new("trace:good").unwrap(),
+                        "good predecessor",
+                    ),
+                    "2026-08-04T00:00:00Z",
+                )
+                .unwrap();
+        }
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&paths.ledger)
+            .unwrap()
+            .write_all(b"{terminated-corruption}\n")
+            .unwrap();
+        fs::write(&paths.state, b"prior-projection-truth").unwrap();
+        fs::create_dir_all(paths.identity.parent().unwrap()).unwrap();
+        fs::write(&paths.identity, b"identity-secret-material").unwrap();
+        fs::write(&paths.config, b"config-secret-material").unwrap();
+        fs::create_dir_all(paths.root.join("blobs/blake3/aa")).unwrap();
+        fs::write(
+            paths.root.join("blobs/blake3/aa/payload.blob"),
+            b"blob-payload-material",
+        )
+        .unwrap();
+        let ledger_before = fs::read(&paths.ledger).unwrap();
+        let projection_before = fs::read(&paths.state).unwrap();
+
+        let plane =
+            MctIsolatedStartupPlaneV1::inspect(paths.clone(), "ledger-a", "mother-a", 501).unwrap();
+        assert!(matches!(
+            plane.posture(),
+            MctStartupPostureV1::LedgerQuarantined
+        ));
+        assert_eq!(
+            plane
+                .handle(502, "GET", "/forensics/ledger", &[])
+                .status_code(),
+            403
+        );
+        let cases = plane.handle(501, "GET", "/forensics/cases", &[]);
+        let case_id = cases.first_case_id().unwrap();
+        let source = plane.handle(
+            501,
+            "GET",
+            &format!(
+                "/forensics/cases/{case_id}/source?start=0&end={}",
+                ledger_before.len()
+            ),
+            &[],
+        );
+        assert_eq!(source.body_bytes(), ledger_before);
+        assert_eq!(
+            source.headers().get("x-mct-source-total-length"),
+            Some(&ledger_before.len().to_string())
+        );
+        assert_eq!(
+            source.headers().get("x-mct-source-digest"),
+            Some(&blake3::hash(&ledger_before).to_hex().to_string())
+        );
+        assert_eq!(fs::read(&paths.ledger).unwrap(), ledger_before);
+        assert_eq!(fs::read(&paths.state).unwrap(), projection_before);
+        for response in [
+            plane.handle(501, "GET", "/status", &[]),
+            plane.handle(501, "GET", "/startup", &[]),
+            plane.handle(501, "GET", "/forensics/ledger", &[]),
+            cases,
+            plane.handle(501, "GET", "/drift", &[]),
+        ] {
+            let text = String::from_utf8_lossy(response.body_bytes());
+            assert!(!text.contains("identity-secret-material"));
+            assert!(!text.contains("config-secret-material"));
+            assert!(!text.contains("blob-payload-material"));
+            assert!(!text.contains("prior-projection-truth"));
+        }
+        for denied_path in [
+            "/startup/operator-gate",
+            "/calls",
+            "/toys/authorize-secret",
+            "/unknown-mutation",
+        ] {
+            assert_eq!(
+                plane.handle(501, "POST", denied_path, b"{}").refusal_kind(),
+                Some(MctStartupRefusalKindV1::LedgerQuarantined),
+                "quarantine must return one typed refusal for {denied_path}"
+            );
+        }
+    }
+
+    #[test]
+    fn foreign_lineage_enters_the_same_nonmutating_quarantine_plane() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        {
+            let mut foreign =
+                JsonlObservationLedger::open(&paths.ledger, "ledger-foreign", "mother-foreign")
+                    .unwrap();
+            foreign
+                .append_before_effect(
+                    mct_kernel::MctObservation::informational(
+                        mct_kernel::ObservationId::new("obs:foreign").unwrap(),
+                        mct_kernel::Timestamp::new("2026-08-04T00:00:00Z").unwrap(),
+                        mct_kernel::ObservationKind::LifecycleTransitionRecorded,
+                        mct_kernel::TraceId::new("trace:foreign").unwrap(),
+                        "foreign lineage",
+                    ),
+                    "2026-08-04T00:00:00Z",
+                )
+                .unwrap();
+        }
+        let before = fs::read(&paths.ledger).unwrap();
+        let plane =
+            MctIsolatedStartupPlaneV1::inspect(paths.clone(), "ledger-a", "mother-a", 501).unwrap();
+        assert_eq!(plane.posture(), MctStartupPostureV1::LedgerQuarantined);
+        assert_eq!(fs::read(&paths.ledger).unwrap(), before);
+        assert_eq!(
+            plane
+                .handle(501, "POST", "/startup/operator-gate", b"{}")
+                .refusal_kind(),
+            Some(MctStartupRefusalKindV1::LedgerQuarantined),
+            "operator gating can never adopt foreign lineage"
+        );
     }
 
     #[test]

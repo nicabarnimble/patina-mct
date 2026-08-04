@@ -374,6 +374,111 @@ fn resident_startup_paths(config: &ResidentMotherConfig) -> MctStartupPaths {
     )
 }
 
+#[cfg(all(unix, not(test)))]
+async fn run_isolated_startup_plane<S>(
+    plane: mct_daemon::MctIsolatedStartupPlaneV1,
+    socket_path: PathBuf,
+    shutdown: S,
+) -> Result<()>
+where
+    S: std::future::Future<Output = ()> + Send,
+{
+    use std::{fs, os::unix::fs::PermissionsExt as _};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    if let Some(parent) = socket_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create isolated startup UDS parent {}", parent.display()))?;
+    }
+    if socket_path.exists() {
+        if tokio::net::UnixStream::connect(&socket_path).await.is_ok() {
+            bail!("isolated startup UDS is already owned by an active listener");
+        }
+        fs::remove_file(&socket_path)
+            .with_context(|| format!("remove stale startup UDS {}", socket_path.display()))?;
+    }
+    let listener = UnixListener::bind(&socket_path)
+        .with_context(|| format!("bind isolated startup UDS {}", socket_path.display()))?;
+    fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))?;
+    tokio::pin!(shutdown);
+    loop {
+        let (mut stream, _) = tokio::select! {
+            accepted = listener.accept() => accepted.context("accept isolated startup UDS")?,
+            _ = &mut shutdown => break,
+        };
+        let peer_uid = stream
+            .peer_cred()
+            .context("authenticate isolated startup UDS peer")?
+            .uid();
+        let mut headers = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !headers.ends_with(b"\r\n\r\n") {
+            if headers.len() == 4096 {
+                bail!("isolated startup request headers exceed bounded budget");
+            }
+            if stream.read(&mut byte).await? == 0 {
+                bail!("isolated startup request ended before headers");
+            }
+            headers.push(byte[0]);
+        }
+        let request = String::from_utf8_lossy(&headers);
+        let mut line = request
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .split_whitespace();
+        let method = line.next().unwrap_or_default();
+        let path = line.next().unwrap_or_default();
+        let content_length = request
+            .lines()
+            .skip(1)
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .unwrap_or(0);
+        if content_length > 64 * 1024 {
+            bail!("isolated startup request body exceeds bounded budget");
+        }
+        let mut body = vec![0; content_length];
+        stream.read_exact(&mut body).await?;
+        let response = plane.handle(peer_uid, method, path, &body);
+        let reason = match response.status_code() {
+            200 => "OK",
+            400 => "Bad Request",
+            403 => "Forbidden",
+            404 => "Not Found",
+            409 => "Conflict",
+            _ => "Service Unavailable",
+        };
+        let extra_headers = response
+            .headers()
+            .iter()
+            .map(|(name, value)| format!("{name}: {value}\r\n"))
+            .collect::<String>();
+        let head = format!(
+            "HTTP/1.1 {} {}\r\ncontent-type: {}\r\ncontent-length: {}\r\n{}connection: close\r\n\r\n",
+            response.status_code(),
+            reason,
+            response.content_type(),
+            response.body_bytes().len(),
+            extra_headers,
+        );
+        stream.write_all(head.as_bytes()).await?;
+        stream.write_all(response.body_bytes()).await?;
+        let gate_accepted =
+            method == "POST" && path == "/startup/operator-gate" && response.status_code() == 200;
+        if gate_accepted {
+            break;
+        }
+    }
+    drop(listener);
+    let _ = fs::remove_file(&socket_path);
+    Ok(())
+}
+
 async fn run_resident_mother_with_trigger_runtime<S>(
     config: ResidentMotherConfig,
     shutdown: S,
@@ -389,8 +494,31 @@ where
     }
 
     let startup_paths = resident_startup_paths(&config);
-    let startup = classify_authority_startup(&startup_paths, "ledger-local", "local-mct")
-        .context("classify Mother startup before opening authority storage")?;
+    let startup_result = classify_authority_startup(&startup_paths, "ledger-local", "local-mct");
+    #[cfg(not(test))]
+    if startup_result.as_ref().map_or(true, |startup| {
+        startup.startup_class == AuthorityStartupClassV1::OperatorGatedNonvirgin
+    }) {
+        use std::os::unix::fs::MetadataExt as _;
+        let owner_uid = std::fs::symlink_metadata(&startup_paths.root)
+            .with_context(|| {
+                format!(
+                    "inspect isolated startup root owner {}",
+                    startup_paths.root.display()
+                )
+            })?
+            .uid();
+        let plane = mct_daemon::MctIsolatedStartupPlaneV1::inspect(
+            startup_paths.clone(),
+            "ledger-local",
+            "local-mct",
+            owner_uid,
+        )?;
+        return run_isolated_startup_plane(plane, startup_paths.control_socket.clone(), shutdown)
+            .await;
+    }
+    let startup =
+        startup_result.context("classify Mother startup before opening authority storage")?;
     #[cfg(test)]
     let startup = if startup.startup_class == AuthorityStartupClassV1::OperatorGatedNonvirgin {
         let request = mct_daemon::MctOperatorStartupGateRequestV1 {
