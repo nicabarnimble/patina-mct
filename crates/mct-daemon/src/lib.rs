@@ -126,9 +126,11 @@ pub use release::{
 };
 pub use startup::{
     MCT_OPERATOR_REINITIALIZATION_CONFIRMATION_V1, MctAcceptedStartupGateV1,
-    MctAuthorityStartupEvidenceV1, MctOperatorStartupGateRequestV1, MctStartupArtifactClassV1,
+    MctAuthorityStartupEvidenceV1, MctIsolatedStartupPlaneV1, MctLedgerForensicCaseV1,
+    MctLedgerForensicReportV1, MctOperatorStartupGateRequestV1, MctStartupArtifactClassV1,
     MctStartupArtifactEntryV1, MctStartupArtifactFileTypeV1, MctStartupArtifactInventoryV1,
     MctStartupArtifactStateV1, MctStartupClassificationErrorV1, MctStartupPaths,
+    MctStartupPlaneResponseV1, MctStartupPostureV1, MctStartupRefusalKindV1, MctStartupRefusalV1,
     accept_operator_startup_gate, classify_authority_startup, classify_startup_artifacts,
     open_classified_authority,
 };
