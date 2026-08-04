@@ -44,7 +44,11 @@ use mct_iroh::{
     write_new_node_secret_key_file,
 };
 use mct_kernel::*;
-use mct_observation::{DurabilityClass, ExportStatus, JsonlObservationLedger};
+use mct_observation::{
+    AuthorityChangeV1, AuthorityMutationRejectionReasonV1, AuthorityMutationRequestV1,
+    AuthorityMutationResultV1, DurabilityClass, ExportStatus, GrantShapingCommandKindV1,
+    GrantShapingSourceV1, JsonlObservationLedger,
+};
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},

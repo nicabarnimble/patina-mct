@@ -8,7 +8,8 @@
 use mct_kernel::{
     CallId, CanonicalToyContract, MctObservation, ObservationId, ObservationKind,
     ObservationOutcome, ObservationTraceRef, ObservationVisibility, SourcePlane, Timestamp,
-    ToyGrant, TraceId,
+    ToyContractIdentity, ToyGrant, ToyGrantConstraints, ToyGrantId, ToyGrantScope, ToyGrantState,
+    ToyGrantSubject, ToyId, TraceId,
 };
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
@@ -73,6 +74,159 @@ pub struct EpochEstablishedFactV1 {
     pub establishment: WriterTenureEstablishmentV1,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GrantShapingCommandKindV1 {
+    AuthorizeSlate,
+    AuthorizeSecret,
+    CatalogChange,
+    GrantChange,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "source_kind", rename_all = "snake_case")]
+pub enum GrantShapingSourceV1 {
+    OperatorDecision {
+        decision_id: String,
+        authenticated_principal_ref: String,
+        command_kind: GrantShapingCommandKindV1,
+    },
+    ChildApproval {
+        child_name: String,
+        artifact_id: String,
+        artifact_version: String,
+        authority_observation_id: String,
+    },
+    ChildAssignment {
+        assignment_id: String,
+        authority_observation_id: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "change_kind", rename_all = "snake_case")]
+pub enum AuthorityChangeV1 {
+    ToyCatalogPut {
+        toy_id: String,
+        contract: ToyContractIdentity,
+        authority_bearing: bool,
+        catalog_revision: u64,
+        admitted_by_observation_id: String,
+    },
+    ToyCatalogRemove {
+        toy_id: String,
+    },
+    ToyGrantPut {
+        grant_id: String,
+        toy_id: String,
+        subject: Box<ToyGrantSubject>,
+        scope: Box<ToyGrantScope>,
+        constraints: Box<ToyGrantConstraints>,
+        grant_state: ToyGrantState,
+        issuer_id: String,
+        policy_revision: u64,
+        source_grants_revision: u64,
+        authority_observation_id: String,
+    },
+    ToyGrantRemove {
+        grant_id: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorityStateReferenceV1 {
+    pub grants_authority: GrantsAuthorityIdentityV1,
+    pub authority_state_hash: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorityMutationFactV1 {
+    pub mutation_id: String,
+    pub mutation_intent_hash: String,
+    pub mother_node_id: String,
+    pub ledger_id: String,
+    pub authority_epoch: String,
+    pub prior_state: AuthorityStateReferenceV1,
+    pub changes: Vec<AuthorityChangeV1>,
+    pub grant_shaping_sources: Vec<GrantShapingSourceV1>,
+    pub resulting_state: AuthorityStateReferenceV1,
+    pub decided_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommittedAuthorityMutationV1 {
+    pub fact: AuthorityMutationFactV1,
+    pub entry_sequence: u64,
+    pub entry_hash: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorityMutationRequestV1 {
+    pub mutation_id: String,
+    pub changes: Vec<AuthorityChangeV1>,
+    pub grant_shaping_sources: Vec<GrantShapingSourceV1>,
+    pub decided_at: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthorityMutationResolutionV1 {
+    NewlyCommitted,
+    ResolvedExistingFact,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthorityProjectionPendingReasonV1 {
+    ProjectionNotAttempted,
+    ProjectionFailed,
+    ProjectionStale,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthorityMutationRejectionReasonV1 {
+    InvalidRequest,
+    ImportRequired,
+    AuthorityEpochUnavailable,
+    PriorStateMismatch,
+    MutationIdConflict,
+    WriterContended,
+    WriterPoisoned,
+    LegacySnapshotChanged,
+    AlreadyImported,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum AuthorityMutationResultV1 {
+    Committed {
+        mutation_id: String,
+        resolution: AuthorityMutationResolutionV1,
+        fact_sequence: u64,
+        fact_entry_hash: String,
+        grants_authority: GrantsAuthorityIdentityV1,
+        projection_hash: String,
+    },
+    CommittedProjectionPending {
+        mutation_id: String,
+        resolution: AuthorityMutationResolutionV1,
+        fact_sequence: u64,
+        fact_entry_hash: String,
+        grants_authority: GrantsAuthorityIdentityV1,
+        pending_reason: AuthorityProjectionPendingReasonV1,
+    },
+    CommitUnknown {
+        mutation_id: String,
+        attempted_intent_hash: String,
+        failure_stage: AppendFailureStage,
+    },
+    RejectedBeforeCommit {
+        mutation_id: String,
+        reason: AuthorityMutationRejectionReasonV1,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AuthorityStateV1 {
     pub toy_catalog: BTreeMap<String, CanonicalToyContract>,
@@ -84,6 +238,7 @@ pub struct AuthorityReplayV1 {
     pub state: AuthorityStateV1,
     pub current_authority: Option<GrantsAuthorityIdentityV1>,
     pub imported: bool,
+    pub mutations: BTreeMap<String, CommittedAuthorityMutationV1>,
     pub canonical_fact_count: usize,
 }
 
@@ -410,7 +565,7 @@ impl JsonlObservationLedger {
         mother_node_id: impl Into<String>,
     ) -> Result<Self> {
         let mut ledger = Self::open(path, ledger_id, mother_node_id)?;
-        ledger.establish_authority_epoch()?;
+        ledger.begin_authority_tenure()?;
         Ok(ledger)
     }
 
@@ -434,7 +589,10 @@ impl JsonlObservationLedger {
         self.authority_tenure.as_ref()
     }
 
-    fn establish_authority_epoch(&mut self) -> Result<()> {
+    pub fn begin_authority_tenure(&mut self) -> Result<()> {
+        if self.authority_tenure.is_some() {
+            return Ok(());
+        }
         let entries = self.entries()?;
         let replay = replay_authority_entries(&entries).map_err(|error| {
             ObservationLedgerError::AuthorityReplay {
@@ -516,6 +674,172 @@ impl JsonlObservationLedger {
             entry,
         });
         Ok(())
+    }
+
+    pub fn execute_authority_mutation<F>(
+        &mut self,
+        request: AuthorityMutationRequestV1,
+        legacy_projection_write: F,
+    ) -> AuthorityMutationResultV1
+    where
+        F: FnOnce(&AuthorityStateV1) -> std::result::Result<Option<String>, String>,
+    {
+        let mutation_id = request.mutation_id.clone();
+        if self.authority_tenure.is_none() {
+            return rejected_mutation(
+                mutation_id,
+                AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
+            );
+        }
+        if self.is_poisoned() {
+            return rejected_mutation(
+                mutation_id,
+                AuthorityMutationRejectionReasonV1::WriterPoisoned,
+            );
+        }
+        let intent_hash = match authority_mutation_intent_hash(&request) {
+            Ok(hash) => hash,
+            Err(_) => {
+                return rejected_mutation(
+                    mutation_id,
+                    AuthorityMutationRejectionReasonV1::InvalidRequest,
+                );
+            }
+        };
+        let entries = match self.entries() {
+            Ok(entries) => entries,
+            Err(_) => {
+                return rejected_mutation(
+                    mutation_id,
+                    AuthorityMutationRejectionReasonV1::PriorStateMismatch,
+                );
+            }
+        };
+        let replay = match replay_authority_entries(&entries) {
+            Ok(replay) => replay,
+            Err(_) => {
+                return rejected_mutation(
+                    mutation_id,
+                    AuthorityMutationRejectionReasonV1::PriorStateMismatch,
+                );
+            }
+        };
+        if let Some(existing) = replay.mutations.get(&request.mutation_id) {
+            if existing.fact.mutation_intent_hash != intent_hash {
+                return rejected_mutation(
+                    mutation_id,
+                    AuthorityMutationRejectionReasonV1::MutationIdConflict,
+                );
+            }
+            return finish_projected_mutation(
+                &existing.fact,
+                existing.entry_sequence,
+                existing.entry_hash.clone(),
+                AuthorityMutationResolutionV1::ResolvedExistingFact,
+                legacy_projection_write(&replay.state),
+            );
+        }
+        let Some(prior_authority) = replay.current_authority.clone() else {
+            return rejected_mutation(
+                mutation_id,
+                AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
+            );
+        };
+        let mut resulting_state = replay.state.clone();
+        if apply_authority_changes(&mut resulting_state, &request.changes).is_err() {
+            return rejected_mutation(
+                mutation_id,
+                AuthorityMutationRejectionReasonV1::InvalidRequest,
+            );
+        }
+        let prior_hash = match authority_state_hash(&replay.state) {
+            Ok(hash) => hash,
+            Err(_) => {
+                return rejected_mutation(
+                    mutation_id,
+                    AuthorityMutationRejectionReasonV1::PriorStateMismatch,
+                );
+            }
+        };
+        let resulting_hash = match authority_state_hash(&resulting_state) {
+            Ok(hash) => hash,
+            Err(_) => {
+                return rejected_mutation(
+                    mutation_id,
+                    AuthorityMutationRejectionReasonV1::InvalidRequest,
+                );
+            }
+        };
+        let Some(generation) = prior_authority.generation.checked_add(1) else {
+            return rejected_mutation(
+                mutation_id,
+                AuthorityMutationRejectionReasonV1::InvalidRequest,
+            );
+        };
+        let fact_id = format!("obs:authority-mutation:{}", request.mutation_id);
+        let resulting_authority = GrantsAuthorityIdentityV1 {
+            mother_node_id: self.mother_node_id.clone(),
+            authority_epoch: prior_authority.authority_epoch.clone(),
+            generation,
+            source_authority_observation_id: fact_id.clone(),
+        };
+        let fact = AuthorityMutationFactV1 {
+            mutation_id: request.mutation_id,
+            mutation_intent_hash: intent_hash.clone(),
+            mother_node_id: self.mother_node_id.clone(),
+            ledger_id: self.ledger_id.clone(),
+            authority_epoch: prior_authority.authority_epoch.clone(),
+            prior_state: AuthorityStateReferenceV1 {
+                grants_authority: prior_authority,
+                authority_state_hash: prior_hash,
+            },
+            changes: request.changes,
+            grant_shaping_sources: request.grant_shaping_sources,
+            resulting_state: AuthorityStateReferenceV1 {
+                grants_authority: resulting_authority.clone(),
+                authority_state_hash: resulting_hash,
+            },
+            decided_at: request.decided_at,
+        };
+        let detail_ref = match encode_authority_fact("authority_mutation", &fact_id, &fact) {
+            Ok(detail) => detail,
+            Err(_) => {
+                return rejected_mutation(
+                    mutation_id,
+                    AuthorityMutationRejectionReasonV1::InvalidRequest,
+                );
+            }
+        };
+        let observation = authority_mutation_observation(&fact_id, &fact, detail_ref);
+        let entry = match self.append_before_effect(observation, fact.decided_at.clone()) {
+            Ok(entry) => entry,
+            Err(ObservationLedgerError::AppendCommitUnknown { stage, .. }) => {
+                return AuthorityMutationResultV1::CommitUnknown {
+                    mutation_id,
+                    attempted_intent_hash: intent_hash,
+                    failure_stage: stage,
+                };
+            }
+            Err(ObservationLedgerError::WriterPoisoned { .. }) => {
+                return rejected_mutation(
+                    mutation_id,
+                    AuthorityMutationRejectionReasonV1::WriterPoisoned,
+                );
+            }
+            Err(_) => {
+                return rejected_mutation(
+                    mutation_id,
+                    AuthorityMutationRejectionReasonV1::InvalidRequest,
+                );
+            }
+        };
+        finish_projected_mutation(
+            &fact,
+            entry.local_sequence,
+            entry.entry_hash,
+            AuthorityMutationResolutionV1::NewlyCommitted,
+            legacy_projection_write(&resulting_state),
+        )
     }
 
     #[cfg(test)]
@@ -826,10 +1150,10 @@ fn canonical_json_bytes(value: &impl Serialize) -> Result<Vec<u8>> {
     })
 }
 
-fn encode_epoch_fact(fact_id: &str, fact: &EpochEstablishedFactV1) -> Result<String> {
+fn encode_authority_fact(fact_kind: &str, fact_id: &str, fact: &impl Serialize) -> Result<String> {
     let envelope = serde_json::json!({
         "schema": AUTHORITY_FACT_SCHEMA_V1,
-        "fact_kind": "epoch_established",
+        "fact_kind": fact_kind,
         "fact_id": fact_id,
         "body": fact,
     });
@@ -838,6 +1162,236 @@ fn encode_epoch_fact(fact_id: &str, fact: &EpochEstablishedFactV1) -> Result<Str
         "{AUTHORITY_FACT_DETAIL_PREFIX}{}",
         String::from_utf8(bytes).expect("JSON is UTF-8")
     ))
+}
+
+fn encode_epoch_fact(fact_id: &str, fact: &EpochEstablishedFactV1) -> Result<String> {
+    encode_authority_fact("epoch_established", fact_id, fact)
+}
+
+fn authority_mutation_intent_hash(request: &AuthorityMutationRequestV1) -> Result<String> {
+    if request.mutation_id.trim().is_empty()
+        || request.changes.is_empty()
+        || request.grant_shaping_sources.is_empty()
+        || Timestamp::new(request.decided_at.clone()).is_err()
+    {
+        return Err(ObservationLedgerError::AuthorityReplay {
+            detail: "authority mutation request is incomplete".into(),
+        });
+    }
+    let keys = request
+        .changes
+        .iter()
+        .map(authority_change_sort_key)
+        .collect::<Vec<_>>();
+    if keys.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(ObservationLedgerError::AuthorityReplay {
+            detail: "authority changes are not strictly canonically ordered".into(),
+        });
+    }
+    #[derive(Serialize)]
+    struct Intent<'a> {
+        changes: &'a [AuthorityChangeV1],
+        grant_shaping_sources: &'a [GrantShapingSourceV1],
+    }
+    Ok(blake3::hash(&canonical_json_bytes(&Intent {
+        changes: &request.changes,
+        grant_shaping_sources: &request.grant_shaping_sources,
+    })?)
+    .to_hex()
+    .to_string())
+}
+
+fn authority_change_sort_key(change: &AuthorityChangeV1) -> (&'static str, &str) {
+    match change {
+        AuthorityChangeV1::ToyCatalogPut { toy_id, .. } => ("toy_catalog_put", toy_id),
+        AuthorityChangeV1::ToyCatalogRemove { toy_id } => ("toy_catalog_remove", toy_id),
+        AuthorityChangeV1::ToyGrantPut { grant_id, .. } => ("toy_grant_put", grant_id),
+        AuthorityChangeV1::ToyGrantRemove { grant_id } => ("toy_grant_remove", grant_id),
+    }
+}
+
+pub fn apply_authority_changes(
+    state: &mut AuthorityStateV1,
+    changes: &[AuthorityChangeV1],
+) -> std::result::Result<(), AuthorityReplayError> {
+    for change in changes {
+        match change {
+            AuthorityChangeV1::ToyCatalogPut {
+                toy_id,
+                contract,
+                authority_bearing,
+                catalog_revision,
+                admitted_by_observation_id,
+            } => {
+                let toy_id_value = ToyId::new(toy_id.clone()).map_err(|error| {
+                    AuthorityReplayError::Incoherent {
+                        sequence: 0,
+                        detail: error.to_string(),
+                    }
+                })?;
+                let observation_id = ObservationId::new(admitted_by_observation_id.clone())
+                    .map_err(|error| AuthorityReplayError::Incoherent {
+                        sequence: 0,
+                        detail: error.to_string(),
+                    })?;
+                state.toy_catalog.insert(
+                    toy_id.clone(),
+                    CanonicalToyContract {
+                        toy_id: toy_id_value,
+                        contract: contract.clone(),
+                        authority_bearing: *authority_bearing,
+                        catalog_revision: *catalog_revision,
+                        admitted_by_observation_id: observation_id,
+                    },
+                );
+            }
+            AuthorityChangeV1::ToyCatalogRemove { toy_id } => {
+                if state.toy_catalog.remove(toy_id).is_none() {
+                    return Err(AuthorityReplayError::Incoherent {
+                        sequence: 0,
+                        detail: format!("cannot remove missing Toy catalog value '{toy_id}'"),
+                    });
+                }
+            }
+            AuthorityChangeV1::ToyGrantPut {
+                grant_id,
+                toy_id,
+                subject,
+                scope,
+                constraints,
+                grant_state,
+                issuer_id,
+                policy_revision,
+                source_grants_revision,
+                authority_observation_id,
+            } => {
+                if !state.toy_catalog.contains_key(toy_id)
+                    || scope.allowed_actions.is_empty()
+                    || scope
+                        .allowed_actions
+                        .windows(2)
+                        .any(|pair| pair[0] >= pair[1])
+                {
+                    return Err(AuthorityReplayError::Incoherent {
+                        sequence: 0,
+                        detail: "Toy grant references missing catalog or noncanonical actions"
+                            .into(),
+                    });
+                }
+                let grant = ToyGrant {
+                    grant_id: ToyGrantId::new(grant_id.clone()).map_err(|error| {
+                        AuthorityReplayError::Incoherent {
+                            sequence: 0,
+                            detail: error.to_string(),
+                        }
+                    })?,
+                    toy_id: ToyId::new(toy_id.clone()).map_err(|error| {
+                        AuthorityReplayError::Incoherent {
+                            sequence: 0,
+                            detail: error.to_string(),
+                        }
+                    })?,
+                    subject: subject.as_ref().clone(),
+                    scope: scope.as_ref().clone(),
+                    constraints: constraints.as_ref().clone(),
+                    grant_state: *grant_state,
+                    issuer_id: issuer_id.clone(),
+                    policy_revision: *policy_revision,
+                    grants_revision: *source_grants_revision,
+                    authority_observation_id: ObservationId::new(authority_observation_id.clone())
+                        .map_err(|error| AuthorityReplayError::Incoherent {
+                            sequence: 0,
+                            detail: error.to_string(),
+                        })?,
+                };
+                state.toy_grants.insert(grant_id.clone(), grant);
+            }
+            AuthorityChangeV1::ToyGrantRemove { grant_id } => {
+                if state.toy_grants.remove(grant_id).is_none() {
+                    return Err(AuthorityReplayError::Incoherent {
+                        sequence: 0,
+                        detail: format!("cannot remove missing Toy grant '{grant_id}'"),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn authority_mutation_observation(
+    fact_id: &str,
+    fact: &AuthorityMutationFactV1,
+    detail_ref: String,
+) -> MctObservation {
+    MctObservation {
+        observation_id: ObservationId::new(fact_id).expect("mutation fact id is non-empty"),
+        observed_at: Timestamp::new(fact.decided_at.clone()).expect("validated mutation time"),
+        kind: ObservationKind::OperatorActionRecorded,
+        source_plane: SourcePlane::Kernel,
+        trace: ObservationTraceRef {
+            trace_id: TraceId::new(format!("trace:authority-mutation:{}", fact.mutation_id))
+                .expect("mutation trace is non-empty"),
+            span_id: None,
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: None,
+        decision_id: None,
+        subject_id: Some(fact.mother_node_id.clone()),
+        resource_id: Some(fact.ledger_id.clone()),
+        policy_revision: None,
+        grants_revision: Some(fact.resulting_state.grants_authority.generation),
+        outcome: ObservationOutcome::Allowed,
+        visibility: ObservationVisibility::NodeOperator,
+        safe_message: "canonical authority mutation committed".into(),
+        detail_ref: Some(detail_ref),
+    }
+}
+
+fn rejected_mutation(
+    mutation_id: String,
+    reason: AuthorityMutationRejectionReasonV1,
+) -> AuthorityMutationResultV1 {
+    AuthorityMutationResultV1::RejectedBeforeCommit {
+        mutation_id,
+        reason,
+    }
+}
+
+fn finish_projected_mutation(
+    fact: &AuthorityMutationFactV1,
+    fact_sequence: u64,
+    fact_entry_hash: String,
+    resolution: AuthorityMutationResolutionV1,
+    projection: std::result::Result<Option<String>, String>,
+) -> AuthorityMutationResultV1 {
+    match projection {
+        Ok(Some(projection_hash)) => AuthorityMutationResultV1::Committed {
+            mutation_id: fact.mutation_id.clone(),
+            resolution,
+            fact_sequence,
+            fact_entry_hash,
+            grants_authority: fact.resulting_state.grants_authority.clone(),
+            projection_hash,
+        },
+        Ok(None) => AuthorityMutationResultV1::CommittedProjectionPending {
+            mutation_id: fact.mutation_id.clone(),
+            resolution,
+            fact_sequence,
+            fact_entry_hash,
+            grants_authority: fact.resulting_state.grants_authority.clone(),
+            pending_reason: AuthorityProjectionPendingReasonV1::ProjectionNotAttempted,
+        },
+        Err(_) => AuthorityMutationResultV1::CommittedProjectionPending {
+            mutation_id: fact.mutation_id.clone(),
+            resolution,
+            fact_sequence,
+            fact_entry_hash,
+            grants_authority: fact.resulting_state.grants_authority.clone(),
+            pending_reason: AuthorityProjectionPendingReasonV1::ProjectionFailed,
+        },
+    }
 }
 
 pub fn authority_state_hash(state: &AuthorityStateV1) -> Result<String> {
@@ -862,6 +1416,7 @@ pub fn replay_authority_entries(
         state: AuthorityStateV1::default(),
         current_authority: None,
         imported: false,
+        mutations: BTreeMap::new(),
         canonical_fact_count: 0,
     };
     let mut used_epochs = BTreeSet::new();
@@ -902,6 +1457,33 @@ pub fn replay_authority_entries(
                 validate_epoch_fact(entries, index, entry, &replay, &used_epochs, &fact)?;
                 used_epochs.insert(fact.authority_epoch.clone());
                 replay.current_authority = Some(fact.resulting_authority);
+                replay.canonical_fact_count += 1;
+            }
+            "authority_mutation" => {
+                let fact: AuthorityMutationFactV1 =
+                    serde_json::from_value(envelope.body).map_err(|error| {
+                        AuthorityReplayError::Malformed {
+                            sequence: entry.local_sequence,
+                            detail: error.to_string(),
+                        }
+                    })?;
+                let resulting_state = validate_authority_mutation_fact(entry, &replay, &fact)?;
+                if replay.mutations.contains_key(&fact.mutation_id) {
+                    return Err(AuthorityReplayError::Incoherent {
+                        sequence: entry.local_sequence,
+                        detail: "duplicate canonical authority mutation id".into(),
+                    });
+                }
+                replay.mutations.insert(
+                    fact.mutation_id.clone(),
+                    CommittedAuthorityMutationV1 {
+                        fact: fact.clone(),
+                        entry_sequence: entry.local_sequence,
+                        entry_hash: entry.entry_hash.clone(),
+                    },
+                );
+                replay.state = resulting_state;
+                replay.current_authority = Some(fact.resulting_state.grants_authority);
                 replay.canonical_fact_count += 1;
             }
             other => {
@@ -981,6 +1563,72 @@ fn validate_epoch_fact(
         return Err(incoherent("epoch resulting authority identity is invalid"));
     }
     Ok(())
+}
+
+fn validate_authority_mutation_fact(
+    entry: &MctObservationLedgerEntry,
+    replay: &AuthorityReplayV1,
+    fact: &AuthorityMutationFactV1,
+) -> std::result::Result<AuthorityStateV1, AuthorityReplayError> {
+    let incoherent = |detail: &str| AuthorityReplayError::Incoherent {
+        sequence: entry.local_sequence,
+        detail: detail.to_owned(),
+    };
+    let Some(prior_authority) = replay.current_authority.as_ref() else {
+        return Err(incoherent(
+            "authority mutation precedes epoch establishment",
+        ));
+    };
+    let request = AuthorityMutationRequestV1 {
+        mutation_id: fact.mutation_id.clone(),
+        changes: fact.changes.clone(),
+        grant_shaping_sources: fact.grant_shaping_sources.clone(),
+        decided_at: fact.decided_at.clone(),
+    };
+    let expected_intent =
+        authority_mutation_intent_hash(&request).map_err(|error| incoherent(&error.to_string()))?;
+    let prior_hash =
+        authority_state_hash(&replay.state).map_err(|error| incoherent(&error.to_string()))?;
+    let mut resulting_state = replay.state.clone();
+    apply_authority_changes(&mut resulting_state, &fact.changes).map_err(|error| {
+        AuthorityReplayError::Incoherent {
+            sequence: entry.local_sequence,
+            detail: error.to_string(),
+        }
+    })?;
+    let resulting_hash =
+        authority_state_hash(&resulting_state).map_err(|error| incoherent(&error.to_string()))?;
+    let expected_generation = prior_authority
+        .generation
+        .checked_add(1)
+        .ok_or_else(|| incoherent("authority generation overflow"))?;
+    let expected_identity = GrantsAuthorityIdentityV1 {
+        mother_node_id: entry.mother_node_id.clone(),
+        authority_epoch: prior_authority.authority_epoch.clone(),
+        generation: expected_generation,
+        source_authority_observation_id: entry.observation.observation_id.to_string(),
+    };
+    if entry.observation.kind != ObservationKind::OperatorActionRecorded
+        || entry.observation.source_plane != SourcePlane::Kernel
+        || entry.durability_class != DurabilityClass::BeforeEffect
+        || entry.observation.visibility != ObservationVisibility::NodeOperator
+        || entry.observation.subject_id.as_deref() != Some(entry.mother_node_id.as_str())
+        || entry.observation.resource_id.as_deref() != Some(entry.ledger_id.as_str())
+        || entry.observation.grants_revision != Some(expected_generation)
+        || fact.mother_node_id != entry.mother_node_id
+        || fact.ledger_id != entry.ledger_id
+        || fact.authority_epoch != prior_authority.authority_epoch
+        || fact.mutation_intent_hash != expected_intent
+        || fact.prior_state.grants_authority != *prior_authority
+        || fact.prior_state.authority_state_hash != prior_hash
+        || fact.resulting_state.grants_authority != expected_identity
+        || fact.resulting_state.authority_state_hash != resulting_hash
+    {
+        return Err(incoherent(
+            "authority mutation does not match replayed prior/resulting state",
+        ));
+    }
+    Ok(resulting_state)
 }
 
 pub fn forensic_root_path(ledger_path: &Path) -> PathBuf {
@@ -2496,6 +3144,183 @@ mod tests {
         ));
         assert_eq!(std::fs::read(&path).unwrap(), ledger_before);
         assert_eq!(forensic_tree(&path), forensics_before);
+    }
+
+    fn authority_mutation_request(id: &str) -> AuthorityMutationRequestV1 {
+        AuthorityMutationRequestV1 {
+            mutation_id: id.into(),
+            changes: vec![
+                AuthorityChangeV1::ToyCatalogPut {
+                    toy_id: "toy-a".into(),
+                    contract: ToyContractIdentity {
+                        namespace: "mct:test".into(),
+                        interface_name: "toy".into(),
+                        version: "1.0.0".into(),
+                        function_name: Some("run".into()),
+                        resource_name: None,
+                    },
+                    authority_bearing: true,
+                    catalog_revision: 1,
+                    admitted_by_observation_id: "obs:catalog:toy-a".into(),
+                },
+                AuthorityChangeV1::ToyGrantPut {
+                    grant_id: "grant-a".into(),
+                    toy_id: "toy-a".into(),
+                    subject: Box::new(ToyGrantSubject {
+                        child_name: "child-a".into(),
+                        artifact_id: "artifact-a".into(),
+                        artifact_version: "1.0.0".into(),
+                        assignment_id: None,
+                        caller_node_id: None,
+                    }),
+                    scope: Box::new(ToyGrantScope {
+                        vision_id: mct_kernel::VisionId::new("vision-a").unwrap(),
+                        node_id: None,
+                        project_id: None,
+                        data_classification: None,
+                        resource_id: Some("resource-a".into()),
+                        allowed_actions: vec!["run".into()],
+                    }),
+                    constraints: Box::new(ToyGrantConstraints {
+                        starts_at: None,
+                        expires_at: None,
+                        max_uses: None,
+                        max_duration_ms: None,
+                        locality_required: true,
+                    }),
+                    grant_state: ToyGrantState::Active,
+                    issuer_id: "mother-a".into(),
+                    policy_revision: 1,
+                    source_grants_revision: 1,
+                    authority_observation_id: "obs:grant:grant-a".into(),
+                },
+            ],
+            grant_shaping_sources: vec![GrantShapingSourceV1::OperatorDecision {
+                decision_id: format!("decision:{id}"),
+                authenticated_principal_ref: "os-uid:501".into(),
+                command_kind: GrantShapingCommandKindV1::GrantChange,
+            }],
+            decided_at: "2026-08-03T18:00:00Z".into(),
+        }
+    }
+
+    /// Phase H2 proof 4: canonical structured content commits before the legacy write and replays alone.
+    #[test]
+    fn authority_mutation_fact_precedes_legacy_write_and_reconstructs_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let mut ledger =
+            JsonlObservationLedger::open_authority(&path, "ledger-a", "mother-a").unwrap();
+        let result =
+            ledger.execute_authority_mutation(authority_mutation_request("mutation-4"), |state| {
+                let entries = read_ledger_entries(&path, "ledger-a", "mother-a").unwrap();
+                assert_eq!(replay_authority_entries(&entries).unwrap().state, *state);
+                Ok(Some("projection-hash-4".into()))
+            });
+        let entries = ledger.entries().unwrap();
+        let replay = replay_authority_entries(&entries).unwrap();
+
+        assert!(matches!(
+            result,
+            AuthorityMutationResultV1::Committed { .. }
+        ));
+        assert_eq!(replay.state.toy_catalog.len(), 1);
+        assert_eq!(replay.state.toy_grants.len(), 1);
+        assert_eq!(replay.current_authority.unwrap().generation, 1);
+    }
+
+    /// Phase H2 proof 5: uncertain commit suppresses legacy state and same-ID reopen resolves once.
+    #[test]
+    fn authority_commit_unknown_suppresses_legacy_and_same_id_retry_deduplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let request = authority_mutation_request("mutation-5");
+        let legacy_called = std::cell::Cell::new(false);
+        let mut ledger =
+            JsonlObservationLedger::open_authority(&path, "ledger-a", "mother-a").unwrap();
+        ledger.inject_append_fault_after_for_test(
+            0,
+            TestAppendFault::CompleteFrameAfterDurabilityAck,
+        );
+        let uncertain = ledger.execute_authority_mutation(request.clone(), |_| {
+            legacy_called.set(true);
+            Ok(Some("must-not-run".into()))
+        });
+        assert!(matches!(
+            uncertain,
+            AuthorityMutationResultV1::CommitUnknown { .. }
+        ));
+        assert!(!legacy_called.get());
+        drop(ledger);
+
+        let mut reopened =
+            JsonlObservationLedger::open_authority(&path, "ledger-a", "mother-a").unwrap();
+        let resolved = reopened.execute_authority_mutation(request, |_| {
+            legacy_called.set(true);
+            Ok(Some("projection-hash-5".into()))
+        });
+        let replay = replay_authority_entries(&reopened.entries().unwrap()).unwrap();
+
+        assert!(matches!(
+            resolved,
+            AuthorityMutationResultV1::Committed {
+                resolution: AuthorityMutationResolutionV1::ResolvedExistingFact,
+                ..
+            }
+        ));
+        assert!(legacy_called.get());
+        assert_eq!(replay.mutations.len(), 1);
+    }
+
+    /// Phase H2 proof 6: rejection before append leaves canonical and legacy state untouched.
+    #[test]
+    fn rejected_authority_mutation_changes_neither_ledger_facts_nor_legacy_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let mut ledger =
+            JsonlObservationLedger::open_authority(&path, "ledger-a", "mother-a").unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let legacy_called = std::cell::Cell::new(false);
+        let mut request = authority_mutation_request("mutation-6");
+        request.changes.clear();
+        let result = ledger.execute_authority_mutation(request, |_| {
+            legacy_called.set(true);
+            Ok(Some("must-not-run".into()))
+        });
+
+        assert!(matches!(
+            result,
+            AuthorityMutationResultV1::RejectedBeforeCommit {
+                reason: AuthorityMutationRejectionReasonV1::InvalidRequest,
+                ..
+            }
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(!legacy_called.get());
+    }
+
+    /// Phase H2 proof 7: canonical commitment survives a distinct projection failure result.
+    #[test]
+    fn committed_authority_fact_reports_projection_pending_distinctly() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let mut ledger =
+            JsonlObservationLedger::open_authority(&path, "ledger-a", "mother-a").unwrap();
+        let result = ledger
+            .execute_authority_mutation(authority_mutation_request("mutation-7"), |_| {
+                Err("injected projection failure".into())
+            });
+        let replay = replay_authority_entries(&ledger.entries().unwrap()).unwrap();
+
+        assert!(matches!(
+            result,
+            AuthorityMutationResultV1::CommittedProjectionPending {
+                pending_reason: AuthorityProjectionPendingReasonV1::ProjectionFailed,
+                ..
+            }
+        ));
+        assert_eq!(replay.mutations.len(), 1);
+        assert_eq!(replay.current_authority.unwrap().generation, 1);
     }
 
     /// Phase H2 proof 1: an authority writer exposes only an acknowledged epoch fact.

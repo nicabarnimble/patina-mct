@@ -1703,6 +1703,7 @@ pub(super) fn execute_offline_registry_mutation(
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ToyAuthorizeSlateRequest {
+    pub(super) mutation_id: String,
     pub(super) expected_config_path: PathBuf,
     pub(super) expected_children_dir: PathBuf,
     pub(super) expected_state_path: PathBuf,
@@ -1713,6 +1714,7 @@ pub(super) struct ToyAuthorizeSlateRequest {
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ToyAuthorizeSecretRequest {
+    pub(super) mutation_id: String,
     pub(super) expected_config_path: PathBuf,
     pub(super) expected_children_dir: PathBuf,
     pub(super) expected_state_path: PathBuf,
@@ -1730,6 +1732,7 @@ pub(super) struct PandoRecordRequest {
 #[derive(Clone, Debug)]
 enum PreparedAdministrativeMutation {
     ToyGrants {
+        mutation_id: String,
         state_path: PathBuf,
         child_name: String,
         contracts: Vec<CanonicalToyContract>,
@@ -1787,6 +1790,7 @@ fn prepare_administrative_mutation(
             let child =
                 require_current_child_authority(config_path, children_dir, &request.child_name)?;
             Ok(PreparedAdministrativeMutation::ToyGrants {
+                mutation_id: request.mutation_id,
                 state_path: state_path.to_path_buf(),
                 child_name: request.child_name,
                 contracts: slate_toy_contracts(),
@@ -1805,6 +1809,7 @@ fn prepare_administrative_mutation(
             let child =
                 require_current_child_authority(config_path, children_dir, &request.child_name)?;
             Ok(PreparedAdministrativeMutation::ToyGrants {
+                mutation_id: request.mutation_id,
                 state_path: state_path.to_path_buf(),
                 child_name: request.child_name,
                 contracts: vec![mct_secrets_toy_contract()],
@@ -1828,6 +1833,82 @@ fn prepare_administrative_mutation(
 }
 
 impl PreparedAdministrativeMutation {
+    fn authority_mutation_request(
+        &self,
+        authenticated_uid: u32,
+    ) -> Option<AuthorityMutationRequestV1> {
+        let Self::ToyGrants {
+            mutation_id,
+            child_name,
+            contracts,
+            grants,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let mut contracts = contracts.clone();
+        contracts.sort_by(|left, right| left.toy_id.cmp(&right.toy_id));
+        let mut grants = grants.clone();
+        grants.sort_by(|left, right| left.grant_id.cmp(&right.grant_id));
+        let mut changes = contracts
+            .into_iter()
+            .map(|contract| AuthorityChangeV1::ToyCatalogPut {
+                toy_id: contract.toy_id.to_string(),
+                contract: contract.contract,
+                authority_bearing: contract.authority_bearing,
+                catalog_revision: contract.catalog_revision,
+                admitted_by_observation_id: contract.admitted_by_observation_id.to_string(),
+            })
+            .collect::<Vec<_>>();
+        changes.extend(grants.iter().cloned().map(|grant| {
+            let mut scope = grant.scope;
+            scope.allowed_actions.sort();
+            scope.allowed_actions.dedup();
+            AuthorityChangeV1::ToyGrantPut {
+                grant_id: grant.grant_id.to_string(),
+                toy_id: grant.toy_id.to_string(),
+                subject: Box::new(grant.subject),
+                scope: Box::new(scope),
+                constraints: Box::new(grant.constraints),
+                grant_state: grant.grant_state,
+                issuer_id: grant.issuer_id,
+                policy_revision: grant.policy_revision,
+                source_grants_revision: grant.grants_revision,
+                authority_observation_id: grant.authority_observation_id.to_string(),
+            }
+        }));
+        let mut sources = vec![GrantShapingSourceV1::OperatorDecision {
+            decision_id: format!("decision:{mutation_id}"),
+            authenticated_principal_ref: format!("os-uid:{authenticated_uid}"),
+            command_kind: if grants.len() == 1 {
+                GrantShapingCommandKindV1::AuthorizeSecret
+            } else {
+                GrantShapingCommandKindV1::AuthorizeSlate
+            },
+        }];
+        if let Some(grant) = grants.first() {
+            sources.push(GrantShapingSourceV1::ChildApproval {
+                child_name: child_name.clone(),
+                artifact_id: grant.subject.artifact_id.clone(),
+                artifact_version: grant.subject.artifact_version.clone(),
+                authority_observation_id: grant.authority_observation_id.to_string(),
+            });
+            if let Some(assignment_id) = grant.subject.assignment_id.as_ref() {
+                sources.push(GrantShapingSourceV1::ChildAssignment {
+                    assignment_id: assignment_id.to_string(),
+                    authority_observation_id: grant.authority_observation_id.to_string(),
+                });
+            }
+        }
+        Some(AuthorityMutationRequestV1 {
+            mutation_id: mutation_id.clone(),
+            changes,
+            grant_shaping_sources: sources,
+            decided_at: mct_daemon::current_timestamp_string(),
+        })
+    }
+
     fn decision_observations(&self) -> Vec<MctObservation> {
         match self {
             Self::ToyGrants {
@@ -1886,6 +1967,7 @@ impl PreparedAdministrativeMutation {
                 child_name,
                 contracts,
                 grants,
+                ..
             } => {
                 let state = MctRuntimeStateStore::open(state_path)?;
                 for contract in contracts {
@@ -1909,7 +1991,7 @@ impl PreparedAdministrativeMutation {
 }
 
 async fn execute_resident_administrative_mutation(
-    _owner: mct_daemon::MctUdsAuthenticatedOwner,
+    owner: mct_daemon::MctUdsAuthenticatedOwner,
     config_path: &Path,
     children_dir: &Path,
     state_path: &Path,
@@ -1927,18 +2009,61 @@ async fn execute_resident_administrative_mutation(
                 );
             }
         };
-    if ledger
-        .append(prepared.decision_observations())
-        .await
-        .is_err()
-    {
-        return peer_mutation_response(
-            500,
-            serde_json::json!({"error": "administrative decision was not durable"}),
-        );
-    }
+    let authority_result = if let Some(request) = prepared.authority_mutation_request(owner.uid()) {
+        let result = match ledger.commit_authority_mutation(request).await {
+            Ok(result) => result,
+            Err(_) => {
+                return peer_mutation_response(
+                    500,
+                    serde_json::json!({"error": "administrative decision was not durable"}),
+                );
+            }
+        };
+        if !matches!(
+            result,
+            AuthorityMutationResultV1::Committed { .. }
+                | AuthorityMutationResultV1::CommittedProjectionPending { .. }
+        ) {
+            let status = match &result {
+                AuthorityMutationResultV1::CommitUnknown { .. }
+                | AuthorityMutationResultV1::RejectedBeforeCommit {
+                    reason:
+                        AuthorityMutationRejectionReasonV1::WriterPoisoned
+                        | AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
+                    ..
+                } => 500,
+                _ => 409,
+            };
+            return peer_mutation_response(
+                status,
+                serde_json::to_value(result).expect("authority result serializes"),
+            );
+        }
+        Some(result)
+    } else {
+        if ledger
+            .append(prepared.decision_observations())
+            .await
+            .is_err()
+        {
+            return peer_mutation_response(
+                500,
+                serde_json::json!({"error": "administrative decision was not durable"}),
+            );
+        }
+        None
+    };
     match prepared.apply() {
-        Ok(value) => peer_mutation_response(200, value),
+        Ok(mut value) => {
+            if let (Some(object), Some(mutation_result)) = (value.as_object_mut(), authority_result)
+            {
+                object.insert(
+                    "mutation_result".into(),
+                    serde_json::to_value(mutation_result).expect("authority result serializes"),
+                );
+            }
+            peer_mutation_response(200, value)
+        }
         Err(_) => {
             let _ = ledger.append(vec![prepared.failure_observation()]).await;
             peer_mutation_response(
@@ -1957,15 +2082,47 @@ pub(super) fn execute_offline_administrative_mutation(
     path: &str,
     body: &[u8],
 ) -> Result<serde_json::Value> {
-    let mut ledger = JsonlObservationLedger::open(ledger_path, "ledger-local", "local-mct")
-        .with_context(|| {
-            format!(
-                "acquire exclusive observation ledger writer lock at {}",
-                ledger_path.display()
-            )
-        })?;
+    let mut ledger =
+        JsonlObservationLedger::open_authority(ledger_path, "ledger-local", "local-mct")
+            .with_context(|| {
+                format!(
+                    "acquire exclusive observation ledger writer lock at {}",
+                    ledger_path.display()
+                )
+            })?;
     let prepared =
         prepare_administrative_mutation(config_path, children_dir, state_path, path, body)?;
+    if let Some(request) = prepared.authority_mutation_request(0) {
+        let mut legacy_value = None;
+        let mut legacy_error = None;
+        let result = ledger.execute_authority_mutation(request, |_| match prepared.apply() {
+            Ok(value) => {
+                legacy_value = Some(value);
+                Ok(None)
+            }
+            Err(error) => {
+                legacy_error = Some(error.to_string());
+                Err(error.to_string())
+            }
+        });
+        if let Some(error) = legacy_error {
+            bail!("canonical authority committed but legacy projection failed: {error}");
+        }
+        match result {
+            AuthorityMutationResultV1::Committed { .. }
+            | AuthorityMutationResultV1::CommittedProjectionPending { .. } => {
+                let mut value = legacy_value.unwrap_or_else(|| serde_json::json!({}));
+                if let Some(object) = value.as_object_mut() {
+                    object.insert(
+                        "mutation_result".into(),
+                        serde_json::to_value(result).expect("authority result serializes"),
+                    );
+                }
+                return Ok(value);
+            }
+            other => bail!("authority mutation did not commit: {other:?}"),
+        }
+    }
     ledger.append_batch_before_effect(
         prepared.decision_observations(),
         mct_daemon::current_timestamp_string(),
@@ -3660,6 +3817,7 @@ listens = []
             (
                 "/toys/authorize-slate",
                 serde_json::json!({
+                    "mutation_id": "test-authorize-slate",
                     "expected_config_path": config_path,
                     "expected_children_dir": children_dir,
                     "expected_state_path": state_path,
@@ -3670,6 +3828,7 @@ listens = []
             (
                 "/toys/authorize-secret",
                 serde_json::json!({
+                    "mutation_id": "test-authorize-secret",
                     "expected_config_path": config_path,
                     "expected_children_dir": children_dir,
                     "expected_state_path": state_path,
@@ -3705,7 +3864,8 @@ listens = []
         let state = MctRuntimeStateStore::open(&state_path).unwrap();
         assert_eq!(state.toy_grant_snapshots().unwrap().len(), 5);
         let ledger_text = std::fs::read_to_string(ledger_path).unwrap();
-        assert!(ledger_text.contains("toy_grant_allowed"));
+        assert!(ledger_text.contains(mct_observation::AUTHORITY_FACT_DETAIL_PREFIX));
+        assert!(ledger_text.contains("toy_grant_put"));
         assert!(ledger_text.contains("operator_action_recorded"));
         assert!(!ledger_text.contains("secret-value-material"));
     }
@@ -3737,6 +3897,7 @@ listens = []
             failed_ledger,
         );
         let request = ToyAuthorizeSecretRequest {
+            mutation_id: "test-failed-authorize-secret".into(),
             expected_config_path: config_path.clone(),
             expected_children_dir: children_dir.clone(),
             expected_state_path: state_path.clone(),

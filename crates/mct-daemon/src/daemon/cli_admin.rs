@@ -247,6 +247,11 @@ pub(super) fn run_toys_authorize_slate(mut args: Vec<String>) -> Result<()> {
         &socket_path,
         "/toys/authorize-slate",
         &ToyAuthorizeSlateRequest {
+            mutation_id: format!(
+                "toy-authorize-slate:{}:{}",
+                child_name,
+                mct_daemon::current_timestamp_string()
+            ),
             expected_config_path: config_path.clone(),
             expected_children_dir: children_dir.clone(),
             expected_state_path: state_path.clone(),
@@ -316,6 +321,11 @@ pub(super) fn run_toys_authorize_secret(mut args: Vec<String>) -> Result<()> {
         &socket_path,
         "/toys/authorize-secret",
         &ToyAuthorizeSecretRequest {
+            mutation_id: format!(
+                "toy-authorize-secret:{}:{}",
+                child_name,
+                mct_daemon::current_timestamp_string()
+            ),
             expected_config_path: config_path.clone(),
             expected_children_dir: children_dir.clone(),
             expected_state_path: state_path.clone(),
