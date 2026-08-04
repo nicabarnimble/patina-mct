@@ -5,14 +5,29 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use mct_kernel::*;
+use mct_observation::{
+    AuthorityCanonicalFactRecordV1, AuthorityProjectionCursorV1, AuthorityProjectionHashInputV1,
+    AuthorityProjectionStatusV1, AuthorityStateV1, MctObservationLedgerEntry,
+    authority_projection_hash, authority_state_hash, replay_authority_entries,
+};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 
 pub const MCT_IDEMPOTENCY_TTL_SECONDS: i64 = 12 * 60;
 pub const MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER: usize = 256;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthorityProjectionSnapshotV1 {
+    pub cursor: AuthorityProjectionCursorV1,
+    pub state: AuthorityStateV1,
+    pub facts: Vec<AuthorityCanonicalFactRecordV1>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MctRecordedCallReply {
@@ -747,6 +762,40 @@ impl MctRuntimeStateStore {
 
             CREATE INDEX IF NOT EXISTS idx_toy_grants_toy_state
             ON toy_grant_snapshots(toy_id, grant_state, grants_revision);
+
+            CREATE TABLE IF NOT EXISTS authority_projection_toy_catalog (
+                toy_id TEXT PRIMARY KEY,
+                value_json TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS authority_projection_toy_grants (
+                grant_id TEXT PRIMARY KEY,
+                value_json TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS authority_projection_facts (
+                source_sequence INTEGER PRIMARY KEY CHECK(source_sequence >= 0),
+                fact_id TEXT NOT NULL UNIQUE,
+                fact_kind TEXT NOT NULL,
+                source_entry_hash TEXT NOT NULL,
+                canonical_payload TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS authority_projection_cursor (
+                projection_id TEXT PRIMARY KEY,
+                schema_version INTEGER NOT NULL,
+                projection_kind TEXT NOT NULL CHECK(projection_kind = 'authority_state'),
+                source_mother_node_id TEXT NOT NULL,
+                source_ledger_id TEXT NOT NULL,
+                through_sequence INTEGER NOT NULL CHECK(through_sequence >= 0),
+                through_observation_id TEXT NOT NULL,
+                through_entry_hash TEXT NOT NULL,
+                grants_authority_json TEXT NOT NULL,
+                authority_state_hash TEXT NOT NULL,
+                projection_hash TEXT NOT NULL,
+                projection_status TEXT NOT NULL CHECK(projection_status IN ('rebuilding', 'current', 'stale', 'quarantined')),
+                updated_at TEXT NOT NULL
+            );
 
             CREATE TABLE IF NOT EXISTS call_trigger_authorities (
                 trigger_authority_id TEXT NOT NULL,
@@ -4078,6 +4127,208 @@ impl MctRuntimeStateStore {
             .context("read toy grant snapshots")
     }
 
+    pub fn publish_authority_projection(
+        &self,
+        entries: &[MctObservationLedgerEntry],
+    ) -> Result<AuthorityProjectionCursorV1> {
+        self.publish_authority_projection_with_hook(entries, || Ok(()))
+    }
+
+    fn publish_authority_projection_with_hook(
+        &self,
+        entries: &[MctObservationLedgerEntry],
+        before_commit: impl FnOnce() -> Result<()>,
+    ) -> Result<AuthorityProjectionCursorV1> {
+        let replay = replay_authority_entries(entries)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let authority = replay
+            .current_authority
+            .clone()
+            .context("authority projection requires an epoch fact")?;
+        let head = entries
+            .last()
+            .context("authority projection requires a committed head")?;
+        let state_hash = authority_state_hash(&replay.state)?;
+        let status = AuthorityProjectionStatusV1::Current;
+        let projection_hash = authority_projection_hash(&AuthorityProjectionHashInputV1 {
+            source_mother_node_id: head.mother_node_id.clone(),
+            source_ledger_id: head.ledger_id.clone(),
+            through_sequence: head.local_sequence,
+            through_observation_id: head.observation.observation_id.to_string(),
+            through_entry_hash: head.entry_hash.clone(),
+            grants_authority: authority.clone(),
+            authority_state_hash: state_hash.clone(),
+            projection_status: status,
+        })?;
+        let cursor = AuthorityProjectionCursorV1 {
+            schema_version: 1,
+            projection_id: "authority-state-v1".into(),
+            projection_kind: "authority_state".into(),
+            source_mother_node_id: head.mother_node_id.clone(),
+            source_ledger_id: head.ledger_id.clone(),
+            through_sequence: head.local_sequence,
+            through_observation_id: head.observation.observation_id.to_string(),
+            through_entry_hash: head.entry_hash.clone(),
+            grants_authority: authority,
+            authority_state_hash: state_hash,
+            projection_hash,
+            projection_status: status,
+            updated_at: current_timestamp_string(),
+        };
+        let transaction =
+            rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        transaction.execute("DELETE FROM authority_projection_toy_catalog", [])?;
+        transaction.execute("DELETE FROM authority_projection_toy_grants", [])?;
+        transaction.execute("DELETE FROM authority_projection_facts", [])?;
+        for contract in replay.state.toy_catalog.values() {
+            transaction.execute(
+                "INSERT INTO authority_projection_toy_catalog(toy_id, value_json) VALUES (?1, ?2)",
+                params![contract.toy_id.as_str(), json_string(contract)?],
+            )?;
+        }
+        for grant in replay.state.toy_grants.values() {
+            transaction.execute(
+                "INSERT INTO authority_projection_toy_grants(grant_id, value_json) VALUES (?1, ?2)",
+                params![grant.grant_id.as_str(), json_string(grant)?],
+            )?;
+        }
+        for fact in &replay.facts {
+            transaction.execute(
+                r#"
+                INSERT INTO authority_projection_facts(
+                    source_sequence, fact_id, fact_kind, source_entry_hash, canonical_payload
+                ) VALUES (?1, ?2, ?3, ?4, ?5)
+                "#,
+                params![
+                    fact.source_sequence as i64,
+                    fact.fact_id,
+                    fact.fact_kind,
+                    fact.source_entry_hash,
+                    fact.canonical_payload,
+                ],
+            )?;
+        }
+        transaction.execute(
+            r#"
+            INSERT INTO authority_projection_cursor(
+                projection_id, schema_version, projection_kind, source_mother_node_id,
+                source_ledger_id, through_sequence, through_observation_id,
+                through_entry_hash, grants_authority_json, authority_state_hash,
+                projection_hash, projection_status, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            ON CONFLICT(projection_id) DO UPDATE SET
+                schema_version = excluded.schema_version,
+                projection_kind = excluded.projection_kind,
+                source_mother_node_id = excluded.source_mother_node_id,
+                source_ledger_id = excluded.source_ledger_id,
+                through_sequence = excluded.through_sequence,
+                through_observation_id = excluded.through_observation_id,
+                through_entry_hash = excluded.through_entry_hash,
+                grants_authority_json = excluded.grants_authority_json,
+                authority_state_hash = excluded.authority_state_hash,
+                projection_hash = excluded.projection_hash,
+                projection_status = excluded.projection_status,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                cursor.projection_id,
+                cursor.schema_version as i64,
+                cursor.projection_kind,
+                cursor.source_mother_node_id,
+                cursor.source_ledger_id,
+                cursor.through_sequence as i64,
+                cursor.through_observation_id,
+                cursor.through_entry_hash,
+                json_string(&cursor.grants_authority)?,
+                cursor.authority_state_hash,
+                cursor.projection_hash,
+                "current",
+                cursor.updated_at,
+            ],
+        )?;
+        before_commit()?;
+        transaction.commit()?;
+        Ok(cursor)
+    }
+
+    pub fn authority_projection_snapshot(&self) -> Result<Option<AuthorityProjectionSnapshotV1>> {
+        let cursor = self
+            .conn
+            .query_row(
+                r#"
+                SELECT schema_version, projection_id, projection_kind, source_mother_node_id,
+                       source_ledger_id, through_sequence, through_observation_id,
+                       through_entry_hash, grants_authority_json, authority_state_hash,
+                       projection_hash, projection_status, updated_at
+                FROM authority_projection_cursor WHERE projection_id = 'authority-state-v1'
+                "#,
+                [],
+                authority_cursor_from_row,
+            )
+            .optional()?;
+        let Some(cursor) = cursor else {
+            return Ok(None);
+        };
+        let mut catalog = self.conn.prepare(
+            "SELECT toy_id, value_json FROM authority_projection_toy_catalog ORDER BY toy_id",
+        )?;
+        let toy_catalog = catalog
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .map(|row| {
+                let (id, json) = row?;
+                Ok((id, from_json_cell(&json)?))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        let mut grants = self.conn.prepare(
+            "SELECT grant_id, value_json FROM authority_projection_toy_grants ORDER BY grant_id",
+        )?;
+        let toy_grants = grants
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .map(|row| {
+                let (id, json) = row?;
+                Ok((id, from_json_cell(&json)?))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        let mut facts_stmt = self.conn.prepare(
+            r#"
+            SELECT fact_id, fact_kind, source_sequence, source_entry_hash, canonical_payload
+            FROM authority_projection_facts ORDER BY source_sequence
+            "#,
+        )?;
+        let facts = facts_stmt
+            .query_map([], |row| {
+                Ok(AuthorityCanonicalFactRecordV1 {
+                    fact_id: row.get(0)?,
+                    fact_kind: row.get(1)?,
+                    source_sequence: row.get::<_, i64>(2)?.max(0) as u64,
+                    source_entry_hash: row.get(3)?,
+                    canonical_payload: row.get(4)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(Some(AuthorityProjectionSnapshotV1 {
+            cursor,
+            state: AuthorityStateV1 {
+                toy_catalog,
+                toy_grants,
+            },
+            facts,
+        }))
+    }
+
+    #[cfg(test)]
+    fn publish_authority_projection_with_reader_hook(
+        &self,
+        entries: &[MctObservationLedgerEntry],
+        before_commit: impl FnOnce() -> Result<()>,
+    ) -> Result<AuthorityProjectionCursorV1> {
+        self.publish_authority_projection_with_hook(entries, before_commit)
+    }
+
     fn count(&self, table: &str, where_clause: Option<&str>) -> Result<u64> {
         if !is_known_count_table(table) {
             bail!("unknown count table '{table}'");
@@ -4654,6 +4905,39 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MctQueuedTaskRecor
         last_error: row.get(9)?,
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
+    })
+}
+
+fn authority_cursor_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<AuthorityProjectionCursorV1> {
+    let authority_json: String = row.get(8)?;
+    let status: String = row.get(11)?;
+    let projection_status = match status.as_str() {
+        "rebuilding" => AuthorityProjectionStatusV1::Rebuilding,
+        "current" => AuthorityProjectionStatusV1::Current,
+        "stale" => AuthorityProjectionStatusV1::Stale,
+        "quarantined" => AuthorityProjectionStatusV1::Quarantined,
+        other => {
+            return Err(to_sql_error(anyhow::anyhow!(
+                "unknown projection status '{other}'"
+            )));
+        }
+    };
+    Ok(AuthorityProjectionCursorV1 {
+        schema_version: row.get::<_, i64>(0)?.max(0) as u64,
+        projection_id: row.get(1)?,
+        projection_kind: row.get(2)?,
+        source_mother_node_id: row.get(3)?,
+        source_ledger_id: row.get(4)?,
+        through_sequence: row.get::<_, i64>(5)?.max(0) as u64,
+        through_observation_id: row.get(6)?,
+        through_entry_hash: row.get(7)?,
+        grants_authority: from_json_cell(&authority_json).map_err(to_sql_error)?,
+        authority_state_hash: row.get(9)?,
+        projection_hash: row.get(10)?,
+        projection_status,
+        updated_at: row.get(12)?,
     })
 }
 
@@ -5499,6 +5783,138 @@ mod tests {
             .unwrap();
         assert_eq!(persisted, vec![(1, "stopped".into()), (2, "ready".into())]);
         assert_eq!(store.summary().unwrap().ready_instances, 1);
+    }
+
+    fn authority_ledger_with_state(
+        path: &Path,
+        state: AuthorityStateV1,
+    ) -> mct_observation::JsonlObservationLedger {
+        let mut ledger = mct_observation::JsonlObservationLedger::open_authority(
+            path,
+            "ledger-local",
+            "local-mct",
+        )
+        .unwrap();
+        let state_hash = authority_state_hash(&state).unwrap();
+        let result = ledger.execute_legacy_authority_import(
+            mct_observation::LegacyAuthorityImportRequestV1 {
+                schema: "mct-legacy-authority-import-request/v1".into(),
+                import_id: "state-test-import".into(),
+                expected_mother_node_id: "local-mct".into(),
+                expected_ledger_id: "ledger-local".into(),
+                expected_config_authority_hash: authority_state_hash(&AuthorityStateV1::default())
+                    .unwrap(),
+                expected_sqlite_authority_hash: state_hash,
+                confirmation: mct_observation::LEGACY_AUTHORITY_IMPORT_CONFIRMATION_V1.into(),
+            },
+            "os-uid:501".into(),
+            state,
+            "2026-08-03T18:30:00Z".into(),
+        );
+        assert!(matches!(
+            result,
+            mct_observation::AuthorityMutationResultV1::CommittedProjectionPending { .. }
+        ));
+        ledger
+    }
+
+    /// Phase H2 proof 9: non-authority entries reach the cursor and publication is old-old/new-new.
+    #[test]
+    fn authority_cursor_reaches_non_authority_head_with_coherent_publication() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger_path = dir.path().join("observations.jsonl");
+        let state_path = dir.path().join("state.sqlite");
+        let mut authority_state = AuthorityStateV1::default();
+        authority_state
+            .toy_catalog
+            .insert("toy-state".into(), toy_contract(true));
+        authority_state
+            .toy_grants
+            .insert("grant-state".into(), toy_grant(ToyGrantState::Active));
+        let mut ledger = authority_ledger_with_state(&ledger_path, authority_state);
+        let store = MctRuntimeStateStore::open(&state_path).unwrap();
+        let old_entries = ledger.entries().unwrap();
+        store.publish_authority_projection(&old_entries).unwrap();
+        let old = store.authority_projection_snapshot().unwrap().unwrap();
+        let non_authority = MctObservation::informational(
+            ObservationId::new("obs-non-authority-head").unwrap(),
+            Timestamp::new("2026-08-03T18:31:00Z").unwrap(),
+            ObservationKind::NodeHealthReported,
+            TraceId::new("trace-non-authority-head").unwrap(),
+            "non-authority head",
+        );
+        ledger
+            .append_before_effect(non_authority, "2026-08-03T18:31:00Z")
+            .unwrap();
+        let new_entries = ledger.entries().unwrap();
+        let concurrent_reader = MctRuntimeStateStore::open(&state_path).unwrap();
+        store
+            .publish_authority_projection_with_reader_hook(&new_entries, || {
+                let visible = concurrent_reader.authority_projection_snapshot()?.unwrap();
+                assert_eq!(visible.cursor, old.cursor);
+                assert_eq!(visible.state, old.state);
+                Ok(())
+            })
+            .unwrap();
+        let new = store.authority_projection_snapshot().unwrap().unwrap();
+
+        assert_eq!(
+            new.cursor.through_sequence,
+            new_entries.last().unwrap().local_sequence
+        );
+        assert_eq!(
+            new.cursor.through_entry_hash,
+            new_entries.last().unwrap().entry_hash
+        );
+        assert_eq!(new.state, old.state);
+        assert_ne!(new.cursor.projection_hash, old.cursor.projection_hash);
+    }
+
+    /// Phase H2 proof 11: restart changes epoch identity without changing projected grant meaning.
+    #[test]
+    fn epoch_transition_preserves_projected_grant_meaning() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger_path = dir.path().join("observations.jsonl");
+        let state_path = dir.path().join("state.sqlite");
+        let mut authority_state = AuthorityStateV1::default();
+        authority_state
+            .toy_catalog
+            .insert("toy-state".into(), toy_contract(true));
+        authority_state
+            .toy_grants
+            .insert("grant-state".into(), toy_grant(ToyGrantState::Active));
+        let ledger = authority_ledger_with_state(&ledger_path, authority_state);
+        let store = MctRuntimeStateStore::open(&state_path).unwrap();
+        store
+            .publish_authority_projection(&ledger.entries().unwrap())
+            .unwrap();
+        let before = store.authority_projection_snapshot().unwrap().unwrap();
+        drop(ledger);
+
+        let reopened = mct_observation::JsonlObservationLedger::open_authority(
+            &ledger_path,
+            "ledger-local",
+            "local-mct",
+        )
+        .unwrap();
+        store
+            .publish_authority_projection(&reopened.entries().unwrap())
+            .unwrap();
+        let after = store.authority_projection_snapshot().unwrap().unwrap();
+
+        assert_eq!(after.state, before.state);
+        assert_eq!(
+            after.cursor.authority_state_hash,
+            before.cursor.authority_state_hash
+        );
+        assert_ne!(
+            after.cursor.grants_authority.authority_epoch,
+            before.cursor.grants_authority.authority_epoch
+        );
+        assert_ne!(
+            after.cursor.grants_authority,
+            before.cursor.grants_authority
+        );
     }
 
     #[test]
