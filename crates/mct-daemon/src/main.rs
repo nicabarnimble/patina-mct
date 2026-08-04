@@ -46,8 +46,10 @@ use mct_iroh::{
 use mct_kernel::*;
 use mct_observation::{
     AuthorityChangeV1, AuthorityMutationRejectionReasonV1, AuthorityMutationRequestV1,
-    AuthorityMutationResultV1, DurabilityClass, ExportStatus, GrantShapingCommandKindV1,
-    GrantShapingSourceV1, JsonlObservationLedger,
+    AuthorityMutationResultV1, AuthorityStateV1, DurabilityClass, ExportStatus,
+    GrantShapingCommandKindV1, GrantShapingSourceV1, JsonlObservationLedger,
+    LegacyAuthorityImportRequestV1, authority_state_hash, read_ledger_entries,
+    replay_authority_entries,
 };
 use std::{
     collections::BTreeSet,

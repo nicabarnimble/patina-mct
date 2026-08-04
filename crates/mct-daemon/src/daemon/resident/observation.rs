@@ -18,6 +18,13 @@ enum ResidentLedgerCommand {
         request: AuthorityMutationRequestV1,
         ack: tokio::sync::oneshot::Sender<AuthorityMutationResultV1>,
     },
+    LegacyAuthorityImport {
+        request: LegacyAuthorityImportRequestV1,
+        authenticated_principal_ref: String,
+        imported_state: AuthorityStateV1,
+        decided_at: String,
+        ack: tokio::sync::oneshot::Sender<AuthorityMutationResultV1>,
+    },
     Shutdown(tokio::sync::oneshot::Sender<()>),
 }
 
@@ -61,6 +68,13 @@ impl ResidentLedgerWriter {
                         task_fenced.store(true, Ordering::SeqCst);
                         let _ = ack.send(AuthorityMutationResultV1::RejectedBeforeCommit {
                             mutation_id: request.mutation_id,
+                            reason: AuthorityMutationRejectionReasonV1::WriterPoisoned,
+                        });
+                    }
+                    ResidentLedgerCommand::LegacyAuthorityImport { request, ack, .. } => {
+                        task_fenced.store(true, Ordering::SeqCst);
+                        let _ = ack.send(AuthorityMutationResultV1::RejectedBeforeCommit {
+                            mutation_id: request.import_id,
                             reason: AuthorityMutationRejectionReasonV1::WriterPoisoned,
                         });
                     }
@@ -133,6 +147,28 @@ impl ResidentLedgerWriter {
                         };
                         let _ = ack.send(result);
                     }
+                    ResidentLedgerCommand::LegacyAuthorityImport {
+                        request,
+                        authenticated_principal_ref,
+                        imported_state,
+                        decided_at,
+                        ack,
+                    } => {
+                        let result = match ledger.begin_authority_tenure() {
+                            Ok(()) => ledger.execute_legacy_authority_import(
+                                request,
+                                authenticated_principal_ref,
+                                imported_state,
+                                decided_at,
+                            ),
+                            Err(_) => AuthorityMutationResultV1::RejectedBeforeCommit {
+                                mutation_id: request.import_id,
+                                reason:
+                                    AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
+                            },
+                        };
+                        let _ = ack.send(result);
+                    }
                     ResidentLedgerCommand::Shutdown(ack) => {
                         let _ = ack.send(());
                         break;
@@ -154,6 +190,34 @@ impl ResidentLedgerWriter {
 
     pub(crate) fn path(&self) -> Option<&Path> {
         self.path.as_deref().map(PathBuf::as_path)
+    }
+
+    pub(crate) async fn commit_legacy_authority_import(
+        &self,
+        request: LegacyAuthorityImportRequestV1,
+        authenticated_principal_ref: String,
+        imported_state: AuthorityStateV1,
+        decided_at: String,
+    ) -> Result<AuthorityMutationResultV1> {
+        if self.is_fenced() {
+            return Ok(AuthorityMutationResultV1::RejectedBeforeCommit {
+                mutation_id: request.import_id,
+                reason: AuthorityMutationRejectionReasonV1::WriterPoisoned,
+            });
+        }
+        let (ack, rx) = tokio::sync::oneshot::channel();
+        self.sender
+            .send(ResidentLedgerCommand::LegacyAuthorityImport {
+                request,
+                authenticated_principal_ref,
+                imported_state,
+                decided_at,
+                ack,
+            })
+            .await
+            .context("send legacy authority import to resident ledger writer")?;
+        rx.await
+            .context("receive resident legacy authority import acknowledgement")
     }
 
     pub(crate) async fn commit_authority_mutation(
