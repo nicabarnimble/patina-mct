@@ -1,7 +1,12 @@
 //! Disk-first startup evidence for Mother authority establishment.
 
+use mct_kernel::{
+    MctObservation, ObservationId, ObservationKind, ObservationOutcome, ObservationTraceRef,
+    ObservationVisibility, SourcePlane, Timestamp, TraceId,
+};
 use mct_observation::{
-    AuthorityStartupClassV1, AuthorityStateV1, GrantsAuthorityIdentityV1, JsonlObservationLedger,
+    AuthorityEpochPredecessorV1, AuthorityStartupClassV1, AuthorityStateV1,
+    AuthorityTenureStartupEvidenceV1, GrantsAuthorityIdentityV1, JsonlObservationLedger,
     ObservationLedgerError, authority_state_hash, replay_authority_entries,
 };
 use serde::{Deserialize, Serialize};
@@ -64,6 +69,27 @@ pub struct MctStartupArtifactInventoryV1 {
     pub inventory_hash: String,
 }
 
+pub const MCT_OPERATOR_REINITIALIZATION_CONFIRMATION_V1: &str =
+    "reinitialize-missing-canonical-authority-v1";
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MctOperatorStartupGateRequestV1 {
+    pub schema: String,
+    pub decision_id: String,
+    pub expected_mother_node_id: String,
+    pub expected_ledger_id: String,
+    pub expected_inventory_hash: String,
+    pub confirmation: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MctAcceptedStartupGateV1 {
+    pub decision_id: String,
+    pub authenticated_principal_ref: String,
+    pub inventory_hash: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MctAuthorityStartupEvidenceV1 {
     pub startup_class: AuthorityStartupClassV1,
@@ -85,6 +111,60 @@ pub enum MctStartupClassificationErrorV1 {
     LedgerUnavailable(#[source] ObservationLedgerError),
     #[error("canonical authority replay is blocked: {0}")]
     AuthorityReplayBlocked(String),
+    #[error("startup operator gate is required")]
+    OperatorGateRequired,
+    #[error("startup operator gate was refused: {0}")]
+    OperatorGateRefused(String),
+}
+
+impl MctAuthorityStartupEvidenceV1 {
+    pub fn tenure_evidence(
+        &self,
+        gate: Option<&MctAcceptedStartupGateV1>,
+    ) -> Result<AuthorityTenureStartupEvidenceV1, MctStartupClassificationErrorV1> {
+        let expected_predecessor = match self.startup_class {
+            AuthorityStartupClassV1::Virgin => AuthorityEpochPredecessorV1::NoneForVirgin,
+            AuthorityStartupClassV1::OperatorGatedNonvirgin => {
+                AuthorityEpochPredecessorV1::NoneAfterOperatorReinitialization
+            }
+            AuthorityStartupClassV1::LegacyLedgerUpgrade
+            | AuthorityStartupClassV1::OrdinaryReopen => {
+                let (sequence, entry_hash) = self.validated_head.as_ref().ok_or_else(|| {
+                    MctStartupClassificationErrorV1::AuthorityReplayBlocked(
+                        "validated startup class has no canonical head".into(),
+                    )
+                })?;
+                AuthorityEpochPredecessorV1::ValidatedHead {
+                    sequence: *sequence,
+                    entry_hash: entry_hash.clone(),
+                }
+            }
+        };
+        let (operator_gate_decision_id, authenticated_principal_ref) =
+            if self.startup_class == AuthorityStartupClassV1::OperatorGatedNonvirgin {
+                let gate = gate.ok_or(MctStartupClassificationErrorV1::OperatorGateRequired)?;
+                if gate.inventory_hash != self.inventory.inventory_hash {
+                    return Err(MctStartupClassificationErrorV1::OperatorGateRefused(
+                        "operator gate inventory changed".into(),
+                    ));
+                }
+                (
+                    Some(gate.decision_id.clone()),
+                    Some(gate.authenticated_principal_ref.clone()),
+                )
+            } else {
+                (None, None)
+            };
+        Ok(AuthorityTenureStartupEvidenceV1 {
+            startup_class: self.startup_class,
+            expected_predecessor,
+            expected_prior_authority: self.prior_authority.clone(),
+            expected_authority_state_hash: self.authority_state_hash.clone(),
+            inventory_hash: self.inventory.inventory_hash.clone(),
+            operator_gate_decision_id,
+            authenticated_principal_ref,
+        })
+    }
 }
 
 impl MctStartupArtifactInventoryV1 {
@@ -575,6 +655,144 @@ pub fn classify_authority_startup(
     })
 }
 
+pub fn open_classified_authority(
+    paths: &MctStartupPaths,
+    ledger_id: &str,
+    mother_node_id: &str,
+    evidence: &MctAuthorityStartupEvidenceV1,
+) -> Result<JsonlObservationLedger, MctStartupClassificationErrorV1> {
+    if evidence.startup_class == AuthorityStartupClassV1::OperatorGatedNonvirgin {
+        return Err(MctStartupClassificationErrorV1::OperatorGateRequired);
+    }
+    JsonlObservationLedger::open_authority_with_startup(
+        &paths.ledger,
+        ledger_id,
+        mother_node_id,
+        evidence.tenure_evidence(None)?,
+    )
+    .map_err(MctStartupClassificationErrorV1::LedgerUnavailable)
+}
+
+pub fn accept_operator_startup_gate(
+    paths: &MctStartupPaths,
+    ledger_id: &str,
+    mother_node_id: &str,
+    request: &MctOperatorStartupGateRequestV1,
+    authenticated_principal_ref: &str,
+    required_owner_principal_ref: &str,
+) -> Result<JsonlObservationLedger, MctStartupClassificationErrorV1> {
+    let refuse =
+        |detail: &str| MctStartupClassificationErrorV1::OperatorGateRefused(detail.to_owned());
+    if authenticated_principal_ref != required_owner_principal_ref
+        || authenticated_principal_ref.trim().is_empty()
+    {
+        return Err(refuse(
+            "authenticated principal is not the service-root owner",
+        ));
+    }
+    if request.schema != "mct-operator-startup-gate-request/v1"
+        || request.decision_id.trim().is_empty()
+        || request.expected_mother_node_id != mother_node_id
+        || request.expected_ledger_id != ledger_id
+        || request.confirmation != MCT_OPERATOR_REINITIALIZATION_CONFIRMATION_V1
+    {
+        return Err(refuse(
+            "operator gate request is malformed or targets another authority",
+        ));
+    }
+    let evidence = classify_authority_startup(paths, ledger_id, mother_node_id)?;
+    if evidence.startup_class != AuthorityStartupClassV1::OperatorGatedNonvirgin {
+        return Err(refuse(
+            "operator gate is not legal in the current startup class",
+        ));
+    }
+    if request.expected_inventory_hash != evidence.inventory.inventory_hash {
+        return Err(refuse("operator gate inventory changed"));
+    }
+    let gate = MctAcceptedStartupGateV1 {
+        decision_id: request.decision_id.clone(),
+        authenticated_principal_ref: authenticated_principal_ref.to_owned(),
+        inventory_hash: evidence.inventory.inventory_hash.clone(),
+    };
+    let mut ledger = JsonlObservationLedger::open_authority_with_startup(
+        &paths.ledger,
+        ledger_id,
+        mother_node_id,
+        evidence.tenure_evidence(Some(&gate))?,
+    )
+    .map_err(MctStartupClassificationErrorV1::LedgerUnavailable)?;
+    let tenure = ledger
+        .authority_tenure()
+        .expect("explicit authority open exposes an acknowledged epoch");
+    let epoch_observation_id = tenure
+        .fact
+        .resulting_authority
+        .source_authority_observation_id
+        .clone();
+    let now = jiff::Timestamp::now().to_string();
+    let correlation = serde_json::json!({
+        "schema": "mct-startup-gate-correlation/v1",
+        "decision_id": gate.decision_id,
+        "authenticated_principal_ref": gate.authenticated_principal_ref,
+        "inventory_hash": gate.inventory_hash,
+        "epoch_observation_id": epoch_observation_id,
+        "startup_class": AuthorityStartupClassV1::OperatorGatedNonvirgin,
+    });
+    let make_observation =
+        |suffix: &str, kind: ObservationKind, source_plane: SourcePlane, message: &str| {
+            MctObservation {
+                observation_id: ObservationId::new(format!(
+                    "obs:startup-gate:{}:{suffix}",
+                    request.decision_id
+                ))
+                .expect("validated decision id makes a non-empty observation id"),
+                observed_at: Timestamp::new(now.clone()).expect("system time is RFC3339"),
+                kind,
+                source_plane,
+                trace: ObservationTraceRef {
+                    trace_id: TraceId::new(format!("trace:startup-gate:{}", request.decision_id))
+                        .expect("validated decision id makes a non-empty trace id"),
+                    span_id: None,
+                    parent_span_id: None,
+                    external_trace_id: None,
+                },
+                call_id: None,
+                decision_id: None,
+                subject_id: Some(authenticated_principal_ref.to_owned()),
+                resource_id: Some(ledger_id.to_owned()),
+                policy_revision: None,
+                grants_revision: Some(0),
+                outcome: ObservationOutcome::Completed,
+                visibility: ObservationVisibility::NodeOperator,
+                safe_message: message.into(),
+                detail_ref: Some(format!(
+                    "mct-startup-gate-v1:{}",
+                    serde_json::to_string(&correlation).expect("correlation JSON serializes")
+                )),
+            }
+        };
+    ledger
+        .append_batch_before_effect(
+            [
+                make_observation(
+                    "accepted",
+                    ObservationKind::OperatorActionRecorded,
+                    SourcePlane::Operator,
+                    "operator-gated canonical authority reinitialization accepted",
+                ),
+                make_observation(
+                    "startup",
+                    ObservationKind::LifecycleTransitionRecorded,
+                    SourcePlane::Storage,
+                    "operator-gated nonvirgin startup established",
+                ),
+            ],
+            now,
+        )
+        .map_err(MctStartupClassificationErrorV1::LedgerUnavailable)?;
+    Ok(ledger)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -587,6 +805,263 @@ mod tests {
     fn touch(path: &Path) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, []).unwrap();
+    }
+
+    #[test]
+    fn virgin_and_reopen_epoch_establishment_consumes_exact_startup_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let evidence = classify_authority_startup(&paths, "ledger-a", "mother-a").unwrap();
+        assert!(!paths.ledger.exists());
+        let first = open_classified_authority(&paths, "ledger-a", "mother-a", &evidence).unwrap();
+        let first_tenure = first.authority_tenure().unwrap();
+        assert_eq!(first_tenure.entry.local_sequence, 0);
+        assert_eq!(
+            first_tenure.fact.establishment.startup_class,
+            AuthorityStartupClassV1::Virgin
+        );
+        assert_eq!(
+            first_tenure.fact.predecessor,
+            AuthorityEpochPredecessorV1::NoneForVirgin
+        );
+        assert_eq!(first_tenure.fact.generation_baseline, 0);
+        assert!(first_tenure.fact.prior_authority.is_none());
+        let first_authority = first_tenure.fact.resulting_authority.clone();
+        let first_head = first.entries().unwrap().last().unwrap().clone();
+        drop(first);
+
+        let reopened_evidence = classify_authority_startup(&paths, "ledger-a", "mother-a").unwrap();
+        let reopened =
+            open_classified_authority(&paths, "ledger-a", "mother-a", &reopened_evidence).unwrap();
+        let fact = &reopened.authority_tenure().unwrap().fact;
+        assert_eq!(
+            fact.establishment.startup_class,
+            AuthorityStartupClassV1::OrdinaryReopen
+        );
+        assert_eq!(fact.prior_authority.as_ref(), Some(&first_authority));
+        assert_eq!(fact.generation_baseline, first_authority.generation);
+        assert_eq!(
+            fact.predecessor,
+            AuthorityEpochPredecessorV1::ValidatedHead {
+                sequence: first_head.local_sequence,
+                entry_hash: first_head.entry_hash,
+            },
+            "ordinary reopen must name the exact validated canonical head"
+        );
+        assert!(fact.establishment.operator_gate_decision_id.is_none());
+        assert!(fact.establishment.authenticated_principal_ref.is_none());
+    }
+
+    #[test]
+    fn operator_gate_refusals_are_prewrite_and_acceptance_embeds_authenticated_decision() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        touch(&paths.state);
+        let initial = classify_authority_startup(&paths, "ledger-a", "mother-a").unwrap();
+        assert_eq!(
+            initial.startup_class,
+            AuthorityStartupClassV1::OperatorGatedNonvirgin
+        );
+        let request = MctOperatorStartupGateRequestV1 {
+            schema: "mct-operator-startup-gate-request/v1".into(),
+            decision_id: "decision:gate-1".into(),
+            expected_mother_node_id: "mother-a".into(),
+            expected_ledger_id: "ledger-a".into(),
+            expected_inventory_hash: initial.inventory.inventory_hash.clone(),
+            confirmation: MCT_OPERATOR_REINITIALIZATION_CONFIRMATION_V1.into(),
+        };
+
+        let non_owner = accept_operator_startup_gate(
+            &paths,
+            "ledger-a",
+            "mother-a",
+            &request,
+            "os-uid:502",
+            "os-uid:501",
+        );
+        assert!(matches!(
+            non_owner,
+            Err(MctStartupClassificationErrorV1::OperatorGateRefused(_))
+        ));
+        assert!(!paths.ledger.exists());
+
+        let mut malformed = request.clone();
+        malformed.confirmation = "yes".into();
+        assert!(
+            accept_operator_startup_gate(
+                &paths,
+                "ledger-a",
+                "mother-a",
+                &malformed,
+                "os-uid:501",
+                "os-uid:501",
+            )
+            .is_err()
+        );
+        assert!(!paths.ledger.exists());
+
+        touch(&paths.config);
+        let stale = accept_operator_startup_gate(
+            &paths,
+            "ledger-a",
+            "mother-a",
+            &request,
+            "os-uid:501",
+            "os-uid:501",
+        );
+        assert!(matches!(
+            stale,
+            Err(MctStartupClassificationErrorV1::OperatorGateRefused(_))
+        ));
+        assert!(!paths.ledger.exists());
+
+        let current = classify_authority_startup(&paths, "ledger-a", "mother-a").unwrap();
+        let accepted_request = MctOperatorStartupGateRequestV1 {
+            expected_inventory_hash: current.inventory.inventory_hash,
+            ..request
+        };
+        let mut ledger = accept_operator_startup_gate(
+            &paths,
+            "ledger-a",
+            "mother-a",
+            &accepted_request,
+            "os-uid:501",
+            "os-uid:501",
+        )
+        .unwrap();
+        let entries = ledger.entries().unwrap();
+        let fact = &ledger.authority_tenure().unwrap().fact;
+        assert_eq!(entries[0], ledger.authority_tenure().unwrap().entry);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(
+            fact.establishment.startup_class,
+            AuthorityStartupClassV1::OperatorGatedNonvirgin
+        );
+        assert_eq!(
+            fact.predecessor,
+            AuthorityEpochPredecessorV1::NoneAfterOperatorReinitialization
+        );
+        assert_eq!(fact.generation_baseline, 0);
+        assert!(fact.prior_authority.is_none());
+        assert_eq!(
+            fact.establishment.operator_gate_decision_id.as_deref(),
+            Some("decision:gate-1")
+        );
+        assert_eq!(
+            fact.establishment.authenticated_principal_ref.as_deref(),
+            Some("os-uid:501")
+        );
+        assert!(entries[1..].iter().all(|entry| {
+            entry
+                .observation
+                .detail_ref
+                .as_deref()
+                .is_some_and(|detail| {
+                    detail.starts_with("mct-startup-gate-v1:")
+                        && !detail.starts_with(mct_observation::AUTHORITY_FACT_DETAIL_PREFIX)
+                })
+        }));
+
+        let empty_hash = authority_state_hash(&AuthorityStateV1::default()).unwrap();
+        let import_request = mct_observation::LegacyAuthorityImportRequestV1 {
+            schema: "mct-legacy-authority-import-request/v1".into(),
+            import_id: "reinitialized-import".into(),
+            expected_mother_node_id: "mother-a".into(),
+            expected_ledger_id: "ledger-a".into(),
+            expected_config_authority_hash: empty_hash.clone(),
+            expected_sqlite_authority_hash: empty_hash,
+            confirmation: mct_observation::LEGACY_AUTHORITY_IMPORT_CONFIRMATION_V1.into(),
+        };
+        let first_import = ledger.execute_legacy_authority_import(
+            import_request.clone(),
+            "os-uid:501".into(),
+            AuthorityStateV1::default(),
+            "2026-08-04T00:01:00Z".into(),
+        );
+        assert!(matches!(
+            first_import,
+            mct_observation::AuthorityMutationResultV1::CommittedProjectionPending { .. }
+        ));
+        let second_import = ledger.execute_legacy_authority_import(
+            mct_observation::LegacyAuthorityImportRequestV1 {
+                import_id: "reinitialized-import-2".into(),
+                ..import_request
+            },
+            "os-uid:501".into(),
+            AuthorityStateV1::default(),
+            "2026-08-04T00:02:00Z".into(),
+        );
+        assert!(matches!(
+            second_import,
+            mct_observation::AuthorityMutationResultV1::RejectedBeforeCommit {
+                reason: mct_observation::AuthorityMutationRejectionReasonV1::AlreadyImported,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn reinitialization_import_is_scoped_to_the_surviving_canonical_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let evidence = classify_authority_startup(&paths, "ledger-a", "mother-a").unwrap();
+        let mut abandoned =
+            open_classified_authority(&paths, "ledger-a", "mother-a", &evidence).unwrap();
+        let empty_hash = authority_state_hash(&AuthorityStateV1::default()).unwrap();
+        let import_request = |import_id: &str| mct_observation::LegacyAuthorityImportRequestV1 {
+            schema: "mct-legacy-authority-import-request/v1".into(),
+            import_id: import_id.into(),
+            expected_mother_node_id: "mother-a".into(),
+            expected_ledger_id: "ledger-a".into(),
+            expected_config_authority_hash: empty_hash.clone(),
+            expected_sqlite_authority_hash: empty_hash.clone(),
+            confirmation: mct_observation::LEGACY_AUTHORITY_IMPORT_CONFIRMATION_V1.into(),
+        };
+        assert!(matches!(
+            abandoned.execute_legacy_authority_import(
+                import_request("abandoned-import"),
+                "os-uid:501".into(),
+                AuthorityStateV1::default(),
+                "2026-08-04T00:01:00Z".into(),
+            ),
+            mct_observation::AuthorityMutationResultV1::CommittedProjectionPending { .. }
+        ));
+        drop(abandoned);
+        let abandoned_bytes = fs::read(&paths.ledger).unwrap();
+        assert!(String::from_utf8_lossy(&abandoned_bytes).contains("abandoned-import"));
+
+        fs::remove_file(&paths.ledger).unwrap();
+        touch(&paths.state);
+        let gated = classify_authority_startup(&paths, "ledger-a", "mother-a").unwrap();
+        let request = MctOperatorStartupGateRequestV1 {
+            schema: "mct-operator-startup-gate-request/v1".into(),
+            decision_id: "decision:new-history".into(),
+            expected_mother_node_id: "mother-a".into(),
+            expected_ledger_id: "ledger-a".into(),
+            expected_inventory_hash: gated.inventory.inventory_hash,
+            confirmation: MCT_OPERATOR_REINITIALIZATION_CONFIRMATION_V1.into(),
+        };
+        let mut current = accept_operator_startup_gate(
+            &paths,
+            "ledger-a",
+            "mother-a",
+            &request,
+            "os-uid:501",
+            "os-uid:501",
+        )
+        .unwrap();
+        let result = current.execute_legacy_authority_import(
+            import_request("current-import"),
+            "os-uid:501".into(),
+            AuthorityStateV1::default(),
+            "2026-08-04T00:02:00Z".into(),
+        );
+        assert!(matches!(
+            result,
+            mct_observation::AuthorityMutationResultV1::CommittedProjectionPending { .. }
+        ));
+        let replay = replay_authority_entries(&current.entries().unwrap()).unwrap();
+        assert_eq!(replay.import.unwrap().fact.import_id, "current-import");
     }
 
     #[test]

@@ -53,6 +53,17 @@ pub enum AuthorityStartupClassV1 {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorityTenureStartupEvidenceV1 {
+    pub startup_class: AuthorityStartupClassV1,
+    pub expected_predecessor: AuthorityEpochPredecessorV1,
+    pub expected_prior_authority: Option<GrantsAuthorityIdentityV1>,
+    pub expected_authority_state_hash: String,
+    pub inventory_hash: String,
+    pub operator_gate_decision_id: Option<String>,
+    pub authenticated_principal_ref: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WriterTenureEstablishmentV1 {
     pub started_at: String,
     pub startup_class: AuthorityStartupClassV1,
@@ -701,6 +712,17 @@ impl JsonlObservationLedger {
         Ok(ledger)
     }
 
+    pub fn open_authority_with_startup(
+        path: impl AsRef<Path>,
+        ledger_id: impl Into<String>,
+        mother_node_id: impl Into<String>,
+        startup: AuthorityTenureStartupEvidenceV1,
+    ) -> Result<Self> {
+        let mut ledger = Self::open(path, ledger_id, mother_node_id)?;
+        ledger.begin_authority_tenure_with_startup(startup)?;
+        Ok(ledger)
+    }
+
     pub fn open_read_only(
         path: impl AsRef<Path>,
         ledger_id: impl Into<String>,
@@ -747,6 +769,87 @@ impl JsonlObservationLedger {
         } else {
             AuthorityStartupClassV1::LegacyLedgerUpgrade
         };
+        let startup = AuthorityTenureStartupEvidenceV1 {
+            startup_class,
+            expected_predecessor: predecessor,
+            expected_prior_authority: replay.current_authority,
+            expected_authority_state_hash: authority_state_hash(&replay.state)?,
+            inventory_hash: "legacy-inferred-startup-evidence".into(),
+            operator_gate_decision_id: None,
+            authenticated_principal_ref: None,
+        };
+        self.begin_authority_tenure_with_startup(startup)
+    }
+
+    pub fn begin_authority_tenure_with_startup(
+        &mut self,
+        startup: AuthorityTenureStartupEvidenceV1,
+    ) -> Result<()> {
+        if self.authority_tenure.is_some() {
+            return Ok(());
+        }
+        let entries = self.entries()?;
+        let replay = replay_authority_entries(&entries).map_err(|error| {
+            ObservationLedgerError::AuthorityReplay {
+                detail: error.to_string(),
+            }
+        })?;
+        let actual_predecessor =
+            entries
+                .last()
+                .map_or(AuthorityEpochPredecessorV1::NoneForVirgin, |entry| {
+                    AuthorityEpochPredecessorV1::ValidatedHead {
+                        sequence: entry.local_sequence,
+                        entry_hash: entry.entry_hash.clone(),
+                    }
+                });
+        let no_operator_evidence = startup.operator_gate_decision_id.is_none()
+            && startup.authenticated_principal_ref.is_none();
+        let complete_operator_evidence = startup
+            .operator_gate_decision_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+            && startup
+                .authenticated_principal_ref
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty());
+        let startup_relation_valid = match startup.startup_class {
+            AuthorityStartupClassV1::Virgin => {
+                entries.is_empty()
+                    && replay.current_authority.is_none()
+                    && startup.expected_predecessor == AuthorityEpochPredecessorV1::NoneForVirgin
+                    && no_operator_evidence
+            }
+            AuthorityStartupClassV1::OperatorGatedNonvirgin => {
+                entries.is_empty()
+                    && replay.current_authority.is_none()
+                    && startup.expected_predecessor
+                        == AuthorityEpochPredecessorV1::NoneAfterOperatorReinitialization
+                    && complete_operator_evidence
+            }
+            AuthorityStartupClassV1::LegacyLedgerUpgrade => {
+                !entries.is_empty()
+                    && replay.current_authority.is_none()
+                    && startup.expected_predecessor == actual_predecessor
+                    && no_operator_evidence
+            }
+            AuthorityStartupClassV1::OrdinaryReopen => {
+                !entries.is_empty()
+                    && replay.current_authority.is_some()
+                    && startup.expected_predecessor == actual_predecessor
+                    && no_operator_evidence
+            }
+        };
+        let actual_state_hash = authority_state_hash(&replay.state)?;
+        if startup.inventory_hash.trim().is_empty()
+            || !startup_relation_valid
+            || startup.expected_prior_authority != replay.current_authority
+            || startup.expected_authority_state_hash != actual_state_hash
+        {
+            return Err(ObservationLedgerError::AuthorityReplay {
+                detail: "explicit startup evidence does not match exclusive ledger rescan".into(),
+            });
+        }
         let generation_baseline = replay
             .current_authority
             .as_ref()
@@ -764,16 +867,16 @@ impl JsonlObservationLedger {
             mother_node_id: self.mother_node_id.clone(),
             ledger_id: self.ledger_id.clone(),
             authority_epoch,
-            predecessor,
+            predecessor: startup.expected_predecessor,
             generation_baseline,
             prior_authority: replay.current_authority,
             resulting_authority,
             grant_state_hash: authority_state_hash(&replay.state)?,
             establishment: WriterTenureEstablishmentV1 {
                 started_at: started_at.clone(),
-                startup_class,
-                operator_gate_decision_id: None,
-                authenticated_principal_ref: None,
+                startup_class: startup.startup_class,
+                operator_gate_decision_id: startup.operator_gate_decision_id,
+                authenticated_principal_ref: startup.authenticated_principal_ref,
             },
         };
         let detail_ref = encode_epoch_fact(&fact_id, &fact)?;
@@ -3797,6 +3900,54 @@ mod tests {
     }
 
     #[test]
+    fn accepted_operator_reinitialization_embeds_gate_in_first_epoch_fact() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let evidence = AuthorityTenureStartupEvidenceV1 {
+            startup_class: AuthorityStartupClassV1::OperatorGatedNonvirgin,
+            expected_predecessor: AuthorityEpochPredecessorV1::NoneAfterOperatorReinitialization,
+            expected_prior_authority: None,
+            expected_authority_state_hash: authority_state_hash(&AuthorityStateV1::default())
+                .unwrap(),
+            inventory_hash: "inventory-hash".into(),
+            operator_gate_decision_id: Some("decision:reinitialize-1".into()),
+            authenticated_principal_ref: Some("os-uid:501".into()),
+        };
+        let ledger = JsonlObservationLedger::open_authority_with_startup(
+            &path, "ledger-a", "mother-a", evidence,
+        )
+        .unwrap();
+        let tenure = ledger.authority_tenure().unwrap();
+
+        assert_eq!(
+            tenure.entry.local_sequence, 0,
+            "the gated epoch fact must be the first append"
+        );
+        assert_eq!(
+            tenure.fact.predecessor,
+            AuthorityEpochPredecessorV1::NoneAfterOperatorReinitialization
+        );
+        assert_eq!(tenure.fact.generation_baseline, 0);
+        assert!(tenure.fact.prior_authority.is_none());
+        assert_eq!(
+            tenure
+                .fact
+                .establishment
+                .operator_gate_decision_id
+                .as_deref(),
+            Some("decision:reinitialize-1")
+        );
+        assert_eq!(
+            tenure
+                .fact
+                .establishment
+                .authenticated_principal_ref
+                .as_deref(),
+            Some("os-uid:501")
+        );
+    }
+
+    #[test]
     fn valid_nonempty_pre_h2_ledger_is_classified_as_legacy_upgrade() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("observations.jsonl");
@@ -3810,9 +3961,9 @@ mod tests {
                 .unwrap()
         };
 
-        let ledger = JsonlObservationLedger::open_authority(&path, "ledger-a", "mother-a")
+        let mut ledger = JsonlObservationLedger::open_authority(&path, "ledger-a", "mother-a")
             .expect("an intact pre-H2 chain is continuity evidence");
-        let fact = &ledger.authority_tenure().unwrap().fact;
+        let fact = ledger.authority_tenure().unwrap().fact.clone();
         assert_eq!(
             fact.establishment.startup_class,
             AuthorityStartupClassV1::LegacyLedgerUpgrade,
@@ -3827,6 +3978,29 @@ mod tests {
         );
         assert_eq!(fact.generation_baseline, 0);
         assert!(fact.prior_authority.is_none());
+
+        let empty_hash = authority_state_hash(&AuthorityStateV1::default()).unwrap();
+        let import = ledger.execute_legacy_authority_import(
+            LegacyAuthorityImportRequestV1 {
+                schema: "mct-legacy-authority-import-request/v1".into(),
+                import_id: "legacy-upgrade-import".into(),
+                expected_mother_node_id: "mother-a".into(),
+                expected_ledger_id: "ledger-a".into(),
+                expected_config_authority_hash: empty_hash.clone(),
+                expected_sqlite_authority_hash: empty_hash,
+                confirmation: LEGACY_AUTHORITY_IMPORT_CONFIRMATION_V1.into(),
+            },
+            "os-uid:501".into(),
+            AuthorityStateV1::default(),
+            "2026-08-04T00:01:00Z".into(),
+        );
+        assert!(
+            matches!(
+                import,
+                AuthorityMutationResultV1::CommittedProjectionPending { .. }
+            ),
+            "legacy_ledger_upgrade must permit the standard replay-derived import afterward"
+        );
     }
 
     /// Phase H2 proof 1: an authority writer exposes only an acknowledged epoch fact.

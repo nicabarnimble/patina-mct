@@ -106,8 +106,33 @@ impl ResidentLedgerWriter {
     }
 
     pub(crate) fn spawn(path: PathBuf) -> Result<Self> {
-        let mut ledger = JsonlObservationLedger::open(&path, "ledger-local", "local-mct")
+        let ledger = JsonlObservationLedger::open(&path, "ledger-local", "local-mct")
             .with_context(|| format!("open observation ledger {}", path.display()))?;
+        Self::spawn_opened(path, ledger)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn spawn_authority_for_test(path: PathBuf) -> Result<Self> {
+        let ledger = JsonlObservationLedger::open_authority(&path, "ledger-local", "local-mct")
+            .with_context(|| format!("open test authority ledger {}", path.display()))?;
+        Self::spawn_opened(path, ledger)
+    }
+
+    pub(crate) fn spawn_authority(
+        path: PathBuf,
+        startup: mct_observation::AuthorityTenureStartupEvidenceV1,
+    ) -> Result<Self> {
+        let ledger = JsonlObservationLedger::open_authority_with_startup(
+            &path,
+            "ledger-local",
+            "local-mct",
+            startup,
+        )
+        .with_context(|| format!("open authority observation ledger {}", path.display()))?;
+        Self::spawn_opened(path, ledger)
+    }
+
+    fn spawn_opened(path: PathBuf, mut ledger: JsonlObservationLedger) -> Result<Self> {
         let (sender, mut receiver) =
             tokio::sync::mpsc::channel::<ResidentLedgerCommand>(RESIDENT_LEDGER_QUEUE_CAPACITY);
         let task = tokio::task::spawn_blocking(move || {
@@ -137,13 +162,14 @@ impl ResidentLedgerWriter {
                         let _ = write.ack.send(result);
                     }
                     ResidentLedgerCommand::AuthorityMutation { request, ack } => {
-                        let result = match ledger.begin_authority_tenure() {
-                            Ok(()) => ledger.execute_authority_mutation(request, |_| Ok(None)),
-                            Err(_) => AuthorityMutationResultV1::RejectedBeforeCommit {
+                        let result = if ledger.authority_tenure().is_some() {
+                            ledger.execute_authority_mutation(request, |_| Ok(None))
+                        } else {
+                            AuthorityMutationResultV1::RejectedBeforeCommit {
                                 mutation_id: request.mutation_id,
                                 reason:
                                     AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
-                            },
+                            }
                         };
                         let _ = ack.send(result);
                     }
@@ -154,18 +180,19 @@ impl ResidentLedgerWriter {
                         decided_at,
                         ack,
                     } => {
-                        let result = match ledger.begin_authority_tenure() {
-                            Ok(()) => ledger.execute_legacy_authority_import(
+                        let result = if ledger.authority_tenure().is_some() {
+                            ledger.execute_legacy_authority_import(
                                 request,
                                 authenticated_principal_ref,
                                 imported_state,
                                 decided_at,
-                            ),
-                            Err(_) => AuthorityMutationResultV1::RejectedBeforeCommit {
+                            )
+                        } else {
+                            AuthorityMutationResultV1::RejectedBeforeCommit {
                                 mutation_id: request.import_id,
                                 reason:
                                     AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
-                            },
+                            }
                         };
                         let _ = ack.send(result);
                     }

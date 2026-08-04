@@ -1227,6 +1227,23 @@ listens = []
         MctDaemonConfigStore::new(&config_path)
             .approve_and_assign_loaded_child(child, MctOperatorChildScope::default())
             .unwrap();
+        let ledger_path = dir.path().join("observations.jsonl");
+        {
+            let mut pre_h2 =
+                JsonlObservationLedger::open(&ledger_path, "ledger-local", "local-mct").unwrap();
+            pre_h2
+                .append_before_effect(
+                    MctObservation::informational(
+                        ObservationId::new("obs:test-pre-h2-cli-admin").unwrap(),
+                        current_timestamp(),
+                        ObservationKind::LifecycleTransitionRecorded,
+                        TraceId::new("trace:test-pre-h2-cli-admin").unwrap(),
+                        "test pre-H2 CLI continuity",
+                    ),
+                    current_timestamp_string(),
+                )
+                .unwrap();
+        }
 
         run_toys_authorize_secret(vec![
             "resident-echo".into(),
@@ -1238,7 +1255,7 @@ listens = []
             "--state".into(),
             state_path.display().to_string(),
             "--ledger".into(),
-            dir.path().join("observations.jsonl").display().to_string(),
+            ledger_path.display().to_string(),
             "--uds".into(),
             dir.path().join("missing.sock").display().to_string(),
         ])
