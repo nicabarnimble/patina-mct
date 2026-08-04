@@ -4136,6 +4136,47 @@ impl MctRuntimeStateStore {
         self.publish_authority_projection_with_hook(entries, || Ok(()))
     }
 
+    pub fn rebuild_authority_projection(
+        &self,
+        entries: &[MctObservationLedgerEntry],
+    ) -> Result<AuthorityProjectionCursorV1> {
+        self.publish_authority_projection_with_hook(entries, || Ok(()))
+    }
+
+    pub fn mark_authority_projection_quarantined(&self) -> Result<AuthorityProjectionCursorV1> {
+        let mut cursor = self
+            .authority_projection_snapshot()?
+            .context("cannot mark a missing authority projection quarantined")?
+            .cursor;
+        cursor.projection_status = AuthorityProjectionStatusV1::Quarantined;
+        cursor.updated_at = current_timestamp_string();
+        cursor.projection_hash = authority_projection_hash(&AuthorityProjectionHashInputV1 {
+            source_mother_node_id: cursor.source_mother_node_id.clone(),
+            source_ledger_id: cursor.source_ledger_id.clone(),
+            through_sequence: cursor.through_sequence,
+            through_observation_id: cursor.through_observation_id.clone(),
+            through_entry_hash: cursor.through_entry_hash.clone(),
+            grants_authority: cursor.grants_authority.clone(),
+            authority_state_hash: cursor.authority_state_hash.clone(),
+            projection_status: cursor.projection_status,
+        })?;
+        let transaction =
+            rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
+            r#"
+            UPDATE authority_projection_cursor
+            SET projection_hash = ?1, projection_status = 'quarantined', updated_at = ?2
+            WHERE projection_id = 'authority-state-v1'
+            "#,
+            params![cursor.projection_hash, cursor.updated_at],
+        )?;
+        if changed != 1 {
+            bail!("authority projection cursor disappeared during quarantine publication");
+        }
+        transaction.commit()?;
+        Ok(cursor)
+    }
+
     fn publish_authority_projection_with_hook(
         &self,
         entries: &[MctObservationLedgerEntry],
@@ -4421,6 +4462,15 @@ impl MctRuntimeStateStore {
 
     #[cfg(test)]
     fn publish_authority_projection_with_reader_hook(
+        &self,
+        entries: &[MctObservationLedgerEntry],
+        before_commit: impl FnOnce() -> Result<()>,
+    ) -> Result<AuthorityProjectionCursorV1> {
+        self.publish_authority_projection_with_hook(entries, before_commit)
+    }
+
+    #[cfg(test)]
+    fn rebuild_authority_projection_with_reader_hook(
         &self,
         entries: &[MctObservationLedgerEntry],
         before_commit: impl FnOnce() -> Result<()>,
@@ -6120,6 +6170,321 @@ mod tests {
         assert_ne!(
             after.cursor.grants_authority,
             before.cursor.grants_authority
+        );
+    }
+
+    /// Phase H2 proof 12: every unusable live projection is replaced atomically from shadow.
+    #[test]
+    fn shadow_rebuild_replaces_stale_epoch_mismatched_and_hash_incoherent_projection_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger_path = dir.path().join("observations.jsonl");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger = authority_ledger_with_state(&ledger_path, AuthorityStateV1::default());
+        let entries = ledger.entries().unwrap();
+        let store = MctRuntimeStateStore::open(&state_path).unwrap();
+        store.publish_authority_projection(&entries).unwrap();
+
+        for defect in ["stale", "epoch", "state_hash"] {
+            store.rebuild_authority_projection(&entries).unwrap();
+            match defect {
+                "stale" => {
+                    store
+                        .conn
+                        .execute(
+                            "UPDATE authority_projection_cursor SET projection_status = 'stale'",
+                            [],
+                        )
+                        .unwrap();
+                }
+                "epoch" => {
+                    let mut authority = store
+                        .authority_projection_snapshot()
+                        .unwrap()
+                        .unwrap()
+                        .cursor
+                        .grants_authority;
+                    authority.authority_epoch = "mct-authority-epoch-v1:stale".into();
+                    store
+                        .conn
+                        .execute(
+                            "UPDATE authority_projection_cursor SET grants_authority_json = ?1",
+                            params![json_string(&authority).unwrap()],
+                        )
+                        .unwrap();
+                }
+                "state_hash" => {
+                    store
+                        .conn
+                        .execute(
+                            "UPDATE authority_projection_cursor SET authority_state_hash = 'wrong'",
+                            [],
+                        )
+                        .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let defective = store.authority_projection_snapshot().unwrap().unwrap();
+            let reader = MctRuntimeStateStore::open(&state_path).unwrap();
+            store
+                .rebuild_authority_projection_with_reader_hook(&entries, || {
+                    assert_eq!(reader.authority_projection_snapshot()?.unwrap(), defective);
+                    Ok(())
+                })
+                .unwrap();
+            let rebuilt = store.authority_projection_snapshot().unwrap().unwrap();
+            let expected = authority_projection_expectation(&entries);
+            assert_eq!(
+                rebuilt.cursor.projection_status,
+                AuthorityProjectionStatusV1::Current
+            );
+            assert_eq!(rebuilt.cursor.grants_authority, expected.grants_authority);
+            assert_eq!(
+                rebuilt.cursor.authority_state_hash,
+                expected.authority_state_hash
+            );
+        }
+    }
+
+    /// Phase H2 proof 13: clean shadow rebuild and advancing replay are byte-truth equivalent.
+    #[test]
+    fn clean_rebuild_and_incremental_replay_are_projection_equivalent() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger_path = dir.path().join("observations.jsonl");
+        let mut state = AuthorityStateV1::default();
+        state
+            .toy_catalog
+            .insert("toy-state".into(), toy_contract(true));
+        let mut ledger = authority_ledger_with_state(&ledger_path, state);
+        let prefix = ledger.entries().unwrap();
+        ledger
+            .append_before_effect(
+                MctObservation::informational(
+                    ObservationId::new("obs-replay-equivalence-head").unwrap(),
+                    Timestamp::new("2026-08-03T19:00:00Z").unwrap(),
+                    ObservationKind::NodeHealthReported,
+                    TraceId::new("trace-replay-equivalence-head").unwrap(),
+                    "advance canonical head",
+                ),
+                "2026-08-03T19:00:00Z",
+            )
+            .unwrap();
+        let complete = ledger.entries().unwrap();
+
+        let incremental =
+            MctRuntimeStateStore::open(dir.path().join("incremental.sqlite")).unwrap();
+        incremental.publish_authority_projection(&prefix).unwrap();
+        incremental.publish_authority_projection(&complete).unwrap();
+        let incrementally_replayed = incremental
+            .authority_projection_snapshot()
+            .unwrap()
+            .unwrap();
+
+        let rebuilt_store = MctRuntimeStateStore::open(dir.path().join("rebuilt.sqlite")).unwrap();
+        rebuilt_store
+            .rebuild_authority_projection(&complete)
+            .unwrap();
+        let rebuilt = rebuilt_store
+            .authority_projection_snapshot()
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(incrementally_replayed.facts, rebuilt.facts);
+        assert_eq!(incrementally_replayed.state, rebuilt.state);
+        assert_eq!(
+            incrementally_replayed.cursor.grants_authority,
+            rebuilt.cursor.grants_authority
+        );
+        assert_eq!(
+            incrementally_replayed.cursor.authority_state_hash,
+            rebuilt.cursor.authority_state_hash
+        );
+        assert_eq!(
+            incrementally_replayed.cursor.projection_hash,
+            rebuilt.cursor.projection_hash
+        );
+    }
+
+    /// Phase H2 proof 14: projection failure cannot undo a committed authority mutation.
+    #[test]
+    fn committed_mutation_projection_failure_catches_up_without_undo() {
+        use mct_observation::{
+            AuthorityChangeV1, AuthorityMutationRequestV1, AuthorityMutationResultV1,
+            GrantShapingCommandKindV1, GrantShapingSourceV1,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let ledger_path = dir.path().join("observations.jsonl");
+        let mut ledger = authority_ledger_with_state(&ledger_path, AuthorityStateV1::default());
+        let store = MctRuntimeStateStore::open(dir.path().join("state.sqlite")).unwrap();
+        let before_entries = ledger.entries().unwrap();
+        let before_cursor = store.publish_authority_projection(&before_entries).unwrap();
+        let result = ledger.execute_authority_mutation(
+            AuthorityMutationRequestV1 {
+                mutation_id: "mutation-projection-catchup".into(),
+                changes: vec![AuthorityChangeV1::ToyCatalogPut {
+                    toy_id: "toy-catchup".into(),
+                    contract: ToyContractIdentity {
+                        namespace: "patina".into(),
+                        interface_name: "catchup".into(),
+                        version: "0.1.0".into(),
+                        function_name: Some("run".into()),
+                        resource_name: None,
+                    },
+                    authority_bearing: true,
+                    catalog_revision: 1,
+                    admitted_by_observation_id: "obs-catchup-admission".into(),
+                }],
+                grant_shaping_sources: vec![GrantShapingSourceV1::OperatorDecision {
+                    decision_id: "decision-projection-catchup".into(),
+                    authenticated_principal_ref: "os-uid:501".into(),
+                    command_kind: GrantShapingCommandKindV1::CatalogChange,
+                }],
+                decided_at: "2026-08-03T19:10:00Z".into(),
+            },
+            |_| Err("injected projection outage".into()),
+        );
+        assert!(matches!(
+            result,
+            AuthorityMutationResultV1::CommittedProjectionPending { .. }
+        ));
+        let committed_entries = ledger.entries().unwrap();
+        let canonical = replay_authority_entries(&committed_entries).unwrap();
+        assert!(
+            canonical
+                .mutations
+                .contains_key("mutation-projection-catchup")
+        );
+        assert_eq!(
+            store
+                .authority_projection_snapshot()
+                .unwrap()
+                .unwrap()
+                .cursor
+                .through_sequence,
+            before_cursor.through_sequence
+        );
+
+        store
+            .publish_authority_projection(&committed_entries)
+            .unwrap();
+        let caught_up = store.authority_projection_snapshot().unwrap().unwrap();
+        assert_eq!(
+            caught_up.cursor.through_sequence,
+            committed_entries.last().unwrap().local_sequence
+        );
+        assert_eq!(caught_up.state, canonical.state);
+    }
+
+    /// Phase H2 proof 15: ledger quarantine preserves the prior projection and denies use.
+    #[test]
+    fn quarantined_ledger_refuses_projection_advancement_with_typed_status() {
+        use mct_observation::{
+            AuthorityProjectionDenyReasonV1, AuthorityProjectionLedgerEvidenceV1,
+            JsonlObservationLedger, ObservationLedgerError, UsableAuthorityProjectionProofV1,
+        };
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ledger_path = dir.path().join("observations.jsonl");
+        let ledger = authority_ledger_with_state(&ledger_path, AuthorityStateV1::default());
+        let entries = ledger.entries().unwrap();
+        let store = MctRuntimeStateStore::open(dir.path().join("state.sqlite")).unwrap();
+        store.publish_authority_projection(&entries).unwrap();
+        let before = store.authority_projection_snapshot().unwrap().unwrap();
+        drop(ledger);
+
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&ledger_path)
+            .unwrap();
+        file.write_all(b"terminated-malformed-frame\n").unwrap();
+        file.sync_data().unwrap();
+        let status =
+            match JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
+            {
+                Err(ObservationLedgerError::Quarantined { status }) => status,
+                other => panic!("expected ledger quarantine, got {other:?}"),
+            };
+        assert_eq!(
+            status.failure_class,
+            mct_observation::LedgerFailureClass::TerminatedMalformedFrame
+        );
+        let quarantined = store.mark_authority_projection_quarantined().unwrap();
+        let after = store.authority_projection_snapshot().unwrap().unwrap();
+
+        assert_eq!(after.state, before.state);
+        assert_eq!(after.facts, before.facts);
+        assert_eq!(
+            after.cursor.through_sequence,
+            before.cursor.through_sequence
+        );
+        assert_eq!(
+            quarantined.projection_status,
+            AuthorityProjectionStatusV1::Quarantined
+        );
+        assert_eq!(
+            store
+                .usable_authority_projection_proof(
+                    &AuthorityProjectionLedgerEvidenceV1::Quarantined
+                )
+                .unwrap(),
+            UsableAuthorityProjectionProofV1::Denied {
+                reason: AuthorityProjectionDenyReasonV1::LedgerQuarantined
+            }
+        );
+    }
+
+    #[test]
+    fn unknown_authority_schema_blocks_projection_without_ledger_quarantine() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger_path = dir.path().join("observations.jsonl");
+        let mut ledger = authority_ledger_with_state(&ledger_path, AuthorityStateV1::default());
+        let store = MctRuntimeStateStore::open(dir.path().join("state.sqlite")).unwrap();
+        store
+            .publish_authority_projection(&ledger.entries().unwrap())
+            .unwrap();
+        let before = store.authority_projection_snapshot().unwrap().unwrap();
+        let fact_id = "obs-unknown-authority-schema";
+        let mut observation = MctObservation::informational(
+            ObservationId::new(fact_id).unwrap(),
+            Timestamp::new("2026-08-03T19:20:00Z").unwrap(),
+            ObservationKind::OperatorActionRecorded,
+            TraceId::new("trace-unknown-authority-schema").unwrap(),
+            "future authority fact",
+        );
+        observation.detail_ref = Some(format!(
+            "{}{}",
+            mct_observation::AUTHORITY_FACT_DETAIL_PREFIX,
+            serde_json::json!({
+                "schema": "mct-authority-fact/v2",
+                "fact_kind": "future_authority_fact",
+                "fact_id": fact_id,
+                "body": {}
+            })
+        ));
+        ledger
+            .append_before_effect(observation, "2026-08-03T19:20:00Z")
+            .unwrap();
+
+        let error = store
+            .publish_authority_projection(&ledger.entries().unwrap())
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unknown canonical authority fact schema")
+        );
+        assert_eq!(
+            store.authority_projection_snapshot().unwrap().unwrap(),
+            before
+        );
+        assert!(
+            mct_observation::JsonlObservationLedger::open_read_only(
+                &ledger_path,
+                "ledger-local",
+                "local-mct"
+            )
+            .is_ok()
         );
     }
 
