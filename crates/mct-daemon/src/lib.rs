@@ -44,7 +44,7 @@ pub use acquisition::{
 };
 pub use authority_order::{
     MotherAuthorityAdmissionDenyV1, MotherAuthorityCommitOutcomeV1, MotherAuthorityFenceReasonV1,
-    MotherAuthorityOrderV1,
+    MotherAuthorityOrderV1, MotherAuthorityRecoveryDenyV1,
 };
 pub use blob_store::{
     MCT_BLOB_MAX_BYTES, MctLocalBlobStore, MctLocalBlobStoreError, content_addressed_blob_handle,
