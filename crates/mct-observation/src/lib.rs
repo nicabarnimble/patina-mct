@@ -168,6 +168,54 @@ pub struct AuthorityMutationRequestV1 {
     pub decided_at: String,
 }
 
+pub const LEGACY_AUTHORITY_IMPORT_CONFIRMATION_V1: &str =
+    "import-existing-toy-authority-as-canonical-v1";
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyAuthorityImportRequestV1 {
+    pub schema: String,
+    pub import_id: String,
+    pub expected_mother_node_id: String,
+    pub expected_ledger_id: String,
+    pub expected_config_authority_hash: String,
+    pub expected_sqlite_authority_hash: String,
+    pub confirmation: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyImportOperatorDecisionV1 {
+    pub decision_id: String,
+    pub authenticated_principal_ref: String,
+    pub confirmation: String,
+    pub decided_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyImportSourceEvidenceV1 {
+    pub config_authority_hash: String,
+    pub sqlite_authority_hash: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyAuthorityImportFactV1 {
+    pub import_id: String,
+    pub mother_node_id: String,
+    pub ledger_id: String,
+    pub authority_epoch: String,
+    pub operator_decision: LegacyImportOperatorDecisionV1,
+    pub source_evidence: LegacyImportSourceEvidenceV1,
+    pub imported_state: AuthorityStateV1,
+    pub prior_state: AuthorityStateReferenceV1,
+    pub resulting_state: AuthorityStateReferenceV1,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommittedLegacyAuthorityImportV1 {
+    pub fact: LegacyAuthorityImportFactV1,
+    pub entry_sequence: u64,
+    pub entry_hash: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthorityMutationResolutionV1 {
@@ -238,6 +286,7 @@ pub struct AuthorityReplayV1 {
     pub state: AuthorityStateV1,
     pub current_authority: Option<GrantsAuthorityIdentityV1>,
     pub imported: bool,
+    pub import: Option<CommittedLegacyAuthorityImportV1>,
     pub mutations: BTreeMap<String, CommittedAuthorityMutationV1>,
     pub canonical_fact_count: usize,
 }
@@ -842,6 +891,172 @@ impl JsonlObservationLedger {
         )
     }
 
+    pub fn execute_legacy_authority_import(
+        &mut self,
+        request: LegacyAuthorityImportRequestV1,
+        authenticated_principal_ref: String,
+        imported_state: AuthorityStateV1,
+        decided_at: String,
+    ) -> AuthorityMutationResultV1 {
+        let mutation_id = request.import_id.clone();
+        if self.authority_tenure.is_none() {
+            return rejected_mutation(
+                mutation_id,
+                AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
+            );
+        }
+        if request.schema != "mct-legacy-authority-import-request/v1"
+            || request.import_id.trim().is_empty()
+            || request.expected_mother_node_id != self.mother_node_id
+            || request.expected_ledger_id != self.ledger_id
+            || request.confirmation != LEGACY_AUTHORITY_IMPORT_CONFIRMATION_V1
+            || Timestamp::new(decided_at.clone()).is_err()
+        {
+            return rejected_mutation(
+                mutation_id,
+                AuthorityMutationRejectionReasonV1::InvalidRequest,
+            );
+        }
+        let entries = match self.entries() {
+            Ok(entries) => entries,
+            Err(_) => {
+                return rejected_mutation(
+                    mutation_id,
+                    AuthorityMutationRejectionReasonV1::PriorStateMismatch,
+                );
+            }
+        };
+        let replay = match replay_authority_entries(&entries) {
+            Ok(replay) => replay,
+            Err(_) => {
+                return rejected_mutation(
+                    mutation_id,
+                    AuthorityMutationRejectionReasonV1::PriorStateMismatch,
+                );
+            }
+        };
+        if replay.imported {
+            return rejected_mutation(
+                mutation_id,
+                AuthorityMutationRejectionReasonV1::AlreadyImported,
+            );
+        }
+        if !replay.mutations.is_empty() {
+            return rejected_mutation(
+                mutation_id,
+                AuthorityMutationRejectionReasonV1::PriorStateMismatch,
+            );
+        }
+        let Some(prior_authority) = replay.current_authority else {
+            return rejected_mutation(
+                mutation_id,
+                AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
+            );
+        };
+        let imported_hash = match authority_state_hash(&imported_state) {
+            Ok(hash) => hash,
+            Err(_) => {
+                return rejected_mutation(
+                    mutation_id,
+                    AuthorityMutationRejectionReasonV1::InvalidRequest,
+                );
+            }
+        };
+        if imported_hash != request.expected_sqlite_authority_hash {
+            return rejected_mutation(
+                mutation_id,
+                AuthorityMutationRejectionReasonV1::LegacySnapshotChanged,
+            );
+        }
+        let prior_hash = match authority_state_hash(&replay.state) {
+            Ok(hash) => hash,
+            Err(_) => {
+                return rejected_mutation(
+                    mutation_id,
+                    AuthorityMutationRejectionReasonV1::PriorStateMismatch,
+                );
+            }
+        };
+        let Some(generation) = prior_authority.generation.checked_add(1) else {
+            return rejected_mutation(
+                mutation_id,
+                AuthorityMutationRejectionReasonV1::InvalidRequest,
+            );
+        };
+        let fact_id = format!("obs:legacy-authority-import:{}", request.import_id);
+        let resulting_authority = GrantsAuthorityIdentityV1 {
+            mother_node_id: self.mother_node_id.clone(),
+            authority_epoch: prior_authority.authority_epoch.clone(),
+            generation,
+            source_authority_observation_id: fact_id.clone(),
+        };
+        let fact = LegacyAuthorityImportFactV1 {
+            import_id: request.import_id,
+            mother_node_id: self.mother_node_id.clone(),
+            ledger_id: self.ledger_id.clone(),
+            authority_epoch: prior_authority.authority_epoch.clone(),
+            operator_decision: LegacyImportOperatorDecisionV1 {
+                decision_id: format!("decision:{mutation_id}"),
+                authenticated_principal_ref,
+                confirmation: request.confirmation,
+                decided_at: decided_at.clone(),
+            },
+            source_evidence: LegacyImportSourceEvidenceV1 {
+                config_authority_hash: request.expected_config_authority_hash,
+                sqlite_authority_hash: request.expected_sqlite_authority_hash,
+            },
+            imported_state,
+            prior_state: AuthorityStateReferenceV1 {
+                grants_authority: prior_authority,
+                authority_state_hash: prior_hash,
+            },
+            resulting_state: AuthorityStateReferenceV1 {
+                grants_authority: resulting_authority.clone(),
+                authority_state_hash: imported_hash,
+            },
+        };
+        let detail_ref = match encode_authority_fact("legacy_authority_import", &fact_id, &fact) {
+            Ok(value) => value,
+            Err(_) => {
+                return rejected_mutation(
+                    mutation_id,
+                    AuthorityMutationRejectionReasonV1::InvalidRequest,
+                );
+            }
+        };
+        let observation = legacy_import_observation(&fact_id, &fact, detail_ref);
+        let entry = match self.append_before_effect(observation, decided_at) {
+            Ok(entry) => entry,
+            Err(ObservationLedgerError::AppendCommitUnknown { stage, .. }) => {
+                return AuthorityMutationResultV1::CommitUnknown {
+                    mutation_id,
+                    attempted_intent_hash: fact.resulting_state.authority_state_hash,
+                    failure_stage: stage,
+                };
+            }
+            Err(ObservationLedgerError::WriterPoisoned { .. }) => {
+                return rejected_mutation(
+                    mutation_id,
+                    AuthorityMutationRejectionReasonV1::WriterPoisoned,
+                );
+            }
+            Err(_) => {
+                return rejected_mutation(
+                    mutation_id,
+                    AuthorityMutationRejectionReasonV1::InvalidRequest,
+                );
+            }
+        };
+        AuthorityMutationResultV1::CommittedProjectionPending {
+            mutation_id,
+            resolution: AuthorityMutationResolutionV1::NewlyCommitted,
+            fact_sequence: entry.local_sequence,
+            fact_entry_hash: entry.entry_hash,
+            grants_authority: resulting_authority,
+            pending_reason: AuthorityProjectionPendingReasonV1::ProjectionNotAttempted,
+        }
+    }
+
     #[cfg(test)]
     fn inject_append_fault_after_for_test(
         &mut self,
@@ -1349,6 +1564,37 @@ fn authority_mutation_observation(
     }
 }
 
+fn legacy_import_observation(
+    fact_id: &str,
+    fact: &LegacyAuthorityImportFactV1,
+    detail_ref: String,
+) -> MctObservation {
+    MctObservation {
+        observation_id: ObservationId::new(fact_id).expect("import fact id is non-empty"),
+        observed_at: Timestamp::new(fact.operator_decision.decided_at.clone())
+            .expect("validated import decision time"),
+        kind: ObservationKind::OperatorActionRecorded,
+        source_plane: SourcePlane::Operator,
+        trace: ObservationTraceRef {
+            trace_id: TraceId::new(format!("trace:legacy-authority-import:{}", fact.import_id))
+                .expect("import trace is non-empty"),
+            span_id: None,
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: None,
+        decision_id: None,
+        subject_id: Some(fact.mother_node_id.clone()),
+        resource_id: Some(fact.ledger_id.clone()),
+        policy_revision: None,
+        grants_revision: Some(fact.resulting_state.grants_authority.generation),
+        outcome: ObservationOutcome::Allowed,
+        visibility: ObservationVisibility::NodeOperator,
+        safe_message: "legacy Toy authority imported as canonical".into(),
+        detail_ref: Some(detail_ref),
+    }
+}
+
 fn rejected_mutation(
     mutation_id: String,
     reason: AuthorityMutationRejectionReasonV1,
@@ -1416,6 +1662,7 @@ pub fn replay_authority_entries(
         state: AuthorityStateV1::default(),
         current_authority: None,
         imported: false,
+        import: None,
         mutations: BTreeMap::new(),
         canonical_fact_count: 0,
     };
@@ -1484,6 +1731,30 @@ pub fn replay_authority_entries(
                 );
                 replay.state = resulting_state;
                 replay.current_authority = Some(fact.resulting_state.grants_authority);
+                replay.canonical_fact_count += 1;
+            }
+            "legacy_authority_import" => {
+                let fact: LegacyAuthorityImportFactV1 = serde_json::from_value(envelope.body)
+                    .map_err(|error| AuthorityReplayError::Malformed {
+                        sequence: entry.local_sequence,
+                        detail: error.to_string(),
+                    })?;
+                validate_legacy_import_fact(entry, &replay, &fact)?;
+                if replay.imported || !replay.mutations.is_empty() {
+                    return Err(AuthorityReplayError::Incoherent {
+                        sequence: entry.local_sequence,
+                        detail: "legacy authority import is not one-time or precedes mutations"
+                            .into(),
+                    });
+                }
+                replay.state = fact.imported_state.clone();
+                replay.current_authority = Some(fact.resulting_state.grants_authority.clone());
+                replay.imported = true;
+                replay.import = Some(CommittedLegacyAuthorityImportV1 {
+                    fact,
+                    entry_sequence: entry.local_sequence,
+                    entry_hash: entry.entry_hash.clone(),
+                });
                 replay.canonical_fact_count += 1;
             }
             other => {
@@ -1561,6 +1832,56 @@ fn validate_epoch_fact(
     };
     if fact.resulting_authority != expected_identity {
         return Err(incoherent("epoch resulting authority identity is invalid"));
+    }
+    Ok(())
+}
+
+fn validate_legacy_import_fact(
+    entry: &MctObservationLedgerEntry,
+    replay: &AuthorityReplayV1,
+    fact: &LegacyAuthorityImportFactV1,
+) -> std::result::Result<(), AuthorityReplayError> {
+    let incoherent = |detail: &str| AuthorityReplayError::Incoherent {
+        sequence: entry.local_sequence,
+        detail: detail.to_owned(),
+    };
+    let Some(prior_authority) = replay.current_authority.as_ref() else {
+        return Err(incoherent("legacy import precedes epoch establishment"));
+    };
+    let prior_hash =
+        authority_state_hash(&replay.state).map_err(|error| incoherent(&error.to_string()))?;
+    let imported_hash = authority_state_hash(&fact.imported_state)
+        .map_err(|error| incoherent(&error.to_string()))?;
+    let expected_generation = prior_authority
+        .generation
+        .checked_add(1)
+        .ok_or_else(|| incoherent("authority generation overflow"))?;
+    let expected_identity = GrantsAuthorityIdentityV1 {
+        mother_node_id: entry.mother_node_id.clone(),
+        authority_epoch: prior_authority.authority_epoch.clone(),
+        generation: expected_generation,
+        source_authority_observation_id: entry.observation.observation_id.to_string(),
+    };
+    if entry.observation.kind != ObservationKind::OperatorActionRecorded
+        || entry.observation.source_plane != SourcePlane::Operator
+        || entry.durability_class != DurabilityClass::BeforeEffect
+        || entry.observation.visibility != ObservationVisibility::NodeOperator
+        || entry.observation.subject_id.as_deref() != Some(entry.mother_node_id.as_str())
+        || entry.observation.resource_id.as_deref() != Some(entry.ledger_id.as_str())
+        || entry.observation.grants_revision != Some(expected_generation)
+        || fact.mother_node_id != entry.mother_node_id
+        || fact.ledger_id != entry.ledger_id
+        || fact.authority_epoch != prior_authority.authority_epoch
+        || fact.operator_decision.confirmation != LEGACY_AUTHORITY_IMPORT_CONFIRMATION_V1
+        || fact.prior_state.grants_authority != *prior_authority
+        || fact.prior_state.authority_state_hash != prior_hash
+        || fact.resulting_state.grants_authority != expected_identity
+        || fact.resulting_state.authority_state_hash != imported_hash
+        || fact.source_evidence.sqlite_authority_hash != imported_hash
+    {
+        return Err(incoherent(
+            "legacy import does not match replayed prior/imported state",
+        ));
     }
     Ok(())
 }
