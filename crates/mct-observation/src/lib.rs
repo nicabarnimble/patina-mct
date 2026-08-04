@@ -19,6 +19,9 @@ use std::{
 };
 use thiserror::Error;
 
+/// Reserved `MctObservation.detail_ref` carrier for inline canonical authority facts.
+pub const AUTHORITY_FACT_DETAIL_PREFIX: &str = "mct-authority-fact-v1:";
+
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ObservationLedgerError {

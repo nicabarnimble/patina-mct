@@ -294,6 +294,12 @@ This schema proposal is Gate G1. No Phase H2 Rust or Cargo change may begin unti
 
 Gate G1 specifically ratifies four permanent choices made concrete below: the reserved inline `detail_ref` carrier, a non-resetting generation baseline across epochs, one replay-complete fact per ordinary mutation/import, and the H2/R2-L5 seam where H2 records startup provenance but R2-L5 remains responsible for enforcing D-R2.8's every-artifact virgin/operator gate at Mother startup.
 
+## Ratified Phase H2 amendment
+
+### D-H2.1
+
+`mct-authority-fact-v1:` is a named constant at the carrier parse site. The `MctObservation.detail_ref` field documentation names this reserved inline canonical-authority payload semantics; all unreserved values remain opaque references. This documentation/constant amendment changes neither the entry field schema nor the Phase H2 fence.
+
 ## Binding landed law
 
 The following already-landed Allium law is binding, not reopened by this proposal.
