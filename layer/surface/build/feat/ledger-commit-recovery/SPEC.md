@@ -395,7 +395,7 @@ EpochEstablishedFactV1 {
   mother_node_id: String,
   ledger_id: String,
   authority_epoch: String,
-  predecessor: none_for_virgin | validated_head {
+  predecessor: none_for_virgin | none_after_operator_reinitialization | validated_head {
     sequence: u64,
     entry_hash: String
   },
@@ -405,7 +405,7 @@ EpochEstablishedFactV1 {
   grant_state_hash: String,
   establishment: writer_tenure {
     started_at: Timestamp,
-    startup_class: virgin | ordinary_reopen | operator_gated_nonvirgin,
+    startup_class: virgin | ordinary_reopen | legacy_ledger_upgrade | operator_gated_nonvirgin,
     operator_gate_decision_id: String?,
     authenticated_principal_ref: String?
   }
@@ -417,8 +417,8 @@ Rules:
 - `authority_epoch` satisfies C4 and is fresh for every successfully acquired exclusive tenure.
 - `none_for_virgin` is legal only when the validated ledger has no prior entry and the D-R2.8 virgin predicate has been established by the later R2-L5 gate. H2 records the value but does not implement that startup gate.
 - `validated_head` exactly equals the sequence/hash immediately preceding this fact. A copied or restored ledger therefore names its copied head but receives a new entropy-derived epoch.
-- A virgin baseline is `0`. A non-virgin baseline equals the latest replayed generation; it never decreases or resets merely because the epoch changes.
-- `prior_authority` is absent only for a virgin ledger. `resulting_authority` names this Mother, the fresh epoch, `generation_baseline`, and this epoch fact's observation id.
+- The baseline is `0` exactly when canonical replay yields no prior authority. When canonical replay yields prior authority, the baseline equals its latest generation; within that surviving canonical history it never decreases or resets merely because the epoch changes.
+- `prior_authority` is absent exactly when canonical replay yields no prior authority, regardless of ledger emptiness. `resulting_authority` names this Mother, the fresh epoch, `generation_baseline`, and this epoch fact's observation id.
 - `grant_state_hash` is the deterministic hash of the complete current Toy catalog/grant state before and after the epoch transition. Equality proves that epoch transition itself changed identity but not grant meaning.
 - The epoch fact is the first append made by the newly exclusive writer and must be acknowledged before that writer exposes its epoch or accepts an authority mutation. Failure or uncertainty poisons/fences the tenure under R2-L2.
 
@@ -776,3 +776,379 @@ Each H2 implementation slice passed `cargo test --workspace`, `cargo clippy --wo
 Track 3 reports **19 COVERED**, **0 LAW-LEADS-CODE**, and **8 DEFERRED** Review 2 invariants, plus a now-`COVERED` structural `MctProjectionCursor` row. H2 moved 9 R2-L3/R2-L4 invariants to `COVERED`. The remaining 8 stay deferred because their complete law requires an authority-evaluation proof consumer, D-R2.8 startup classification, or R2-L6 effect ordering; constructing a correct proof is not misreported as consuming it.
 
 The canonical carrier and newline framing preserve the existing `MctObservation` and `MctObservationLedgerEntry` field schemas. Unknown authority schemas fail projection without ledger quarantine. Quarantined ledgers retain the prior through-head/facts and publish only quarantined projection status. The active work session remains active and unarchived.
+
+# Phase H3 — R2-L5/R2-L6 startup posture and ordering boundary
+
+> Startup proves what survived before it creates anything, canonical projection failure degrades to an owner-readable deny plane, and mutation commitment and protected-effect start receive one Mother-local order without prematurely routing any Child or Toy admission through it.
+
+## Scope and Gate G1
+
+Phase H3 is the final Review 2 implementation slice. After this design commit and a separate operator Gate G1 ratification, it may implement:
+
+1. **R2-L5** — disk-first startup classification, D-R2.8 virgin enforcement, authenticated operator-gated reinitialization, legacy-ledger upgrade, degraded-deny/quarantine posture, authority drift reporting, and the first narrowly sanctioned D-G8 proof consumer at standing-source artifact staging; and
+2. **R2-L6** — a Mother-local ordering boundary whose semantics are complete for later Child/Toy effect adoption, but which has no production effect consumer in this phase.
+
+The Phase H3 Step-0 baseline is merge-topology commit `be9be82`; close-out commit ranges use `be9be82..HEAD`. Gate G1 follows this SPEC-only commit and precedes every Rust or Cargo change.
+
+## Ratified Phase H3 amendments
+
+These amendments are settled and reproduced verbatim from operator adjudication.
+
+### D-H3.1
+
+prior_authority = None is legal exactly when canonical replay
+yields no prior authority — regardless of ledger emptiness. In every
+such case generation_baseline = 0 and canonical authority state is
+empty. Safety basis: old tokens die by EPOCH mismatch (fresh entropy);
+generation continuity is a within-surviving-canonical-history property.
+Reword SPEC:420 accordingly ("never decreases or resets merely because
+the epoch changes" applies within a surviving canonical history) and
+reword SPEC:421 to tie prior_authority absence to replay yielding no
+prior authority rather than to virginity. Legacy SQLite/config authority
+remains non-authoritative until the standard one-time import. When
+startup_class is operator_gated_nonvirgin, the epoch fact MUST record
+the authenticated operator decision id and principal — the currently
+hard-coded None values at lib.rs:773-774 become illegal for that class.
+
+### D-H3.2
+
+the predecessor field gains an explicit additive variant
+none_after_operator_reinitialization for the empty-ledger,
+operator-gated reinitialization case. none_for_virgin keeps its strict
+meaning: the D-R2.8 virgin conjunction only. Adding a variant is
+forward-safe — strict replay already rejects unknown variants
+fail-closed, and no shipped ledger carries v1 epoch facts a new variant
+could invalidate.
+
+### D-H3.3
+
+startup_class gains legacy_ledger_upgrade for the third case: a
+VALID non-empty ledger whose canonical replay yields no authority
+history (pre-H2 history receiving its first epoch fact). This class is
+AUTO-PERMITTED with predecessor = validated_head, prior_authority =
+None, generation_baseline = 0, and no operator gate: the intact hash
+chain is itself the continuity evidence — precisely the evidence the
+missing-ledger case lacks. operator_gated_nonvirgin is reserved for the
+empty/missing-ledger-with-prior-evidence case where continuity is
+unprovable. The full startup taxonomy is therefore: virgin |
+ordinary_reopen | legacy_ledger_upgrade | operator_gated_nonvirgin.
+
+### D-H3.4 (confirmation, no code gap)
+
+because the import gate is
+replay-derived, reinitialization and upgrade legitimately permit a fresh
+import under the standard gate and a fresh operator decision. The SPEC
+states this explicitly so "one-time" reads as
+one-time-per-canonical-history, never one-time-per-Mother-forever.
+
+## Amended epoch-establishment semantics
+
+The Phase H2 `EpochEstablishedFactV1` schema above is amended in place by D-H3.1 through D-H3.3. The complete predecessor/startup relation is:
+
+| Startup class | Predecessor | Replayed prior authority | Baseline | Operator evidence in epoch fact |
+|---|---|---|---:|---|
+| `virgin` | `none_for_virgin` | absent | 0 | absent |
+| `ordinary_reopen` | exact `validated_head` | present | latest replayed generation | absent |
+| `legacy_ledger_upgrade` | exact `validated_head` | absent | 0 | absent |
+| `operator_gated_nonvirgin` | `none_after_operator_reinitialization` | absent | 0 | authenticated decision id and principal, both present |
+
+`none_for_virgin` proves the full disk-derived virgin conjunction, not merely an empty ledger. `none_after_operator_reinitialization` proves that continuity was unavailable and an authenticated owner deliberately admitted a fresh canonical history. Neither variant may be inferred from configuration, SQLite, a projection, timestamps, or a missing read result.
+
+A tenure's epoch fact remains that tenure's first append. For operator-gated reinitialization the accepted decision is embedded in that first epoch fact; the corresponding ordinary operator/startup observation is appended only after the epoch acknowledgement. A pending, malformed, stale-evidence, unauthenticated, or refused gate creates no ledger and appends nothing, so it cannot manufacture the intact non-empty history needed for `legacy_ledger_upgrade`.
+
+When replay has no prior authority, the pre-epoch canonical state is empty and its deterministic hash is used. Legacy SQLite/config values cannot populate `prior_authority`, select a generation baseline, or shape the pre-epoch state. They become canonical only through the unchanged import schema after epoch establishment.
+
+The import predicate remains replay-derived: import is available exactly when the current canonical history has no import and no ordinary authority mutation claiming the legacy state. Reinitialization and legacy upgrade therefore each permit one fresh standard import decision; an import in an abandoned or non-surviving canonical history does not become a permanent per-Mother marker.
+
+## Disk-first D-R2.8 virgin predicate
+
+Startup classification occurs before opening/creating the ledger, SQLite, config, identity, UDS, logs, projection, or any staging directory. It uses `symlink_metadata`-equivalent presence inspection and never treats unreadable, ambiguous, symlinked, or special entries as absence. An inspection error yields `disk_evidence_unavailable` and degraded deny; it never yields virgin.
+
+Paths come from the selected supervised root and `SupervisorPaths`, or from the explicit standalone runtime paths and their documented derivations. A config or SQLite row is not allowed to redefine the path set being inspected. For a selected path outside the service root, that exact configured path, its known sidecars/temporary names, and its daemon-managed derived root are inspected as well.
+
+The virgin predicate is the conjunction that every durable artifact class below is absent:
+
+| Artifact class | Path/pattern inspected | Production source establishing that the daemon can write it |
+|---|---|---|
+| Canonical observation ledger | selected `ledger_path`; supervised `<root>/observations.jsonl` | `JsonlObservationLedger::open` / resident and lifecycle writers |
+| Ledger recovery forensics | sibling `<ledger filename>.forensics/`, including case directories, `source.bin`, diagnostic JSON, and interrupted temporary records | `mct_observation::forensic_root_path` and R2-L1 recovery |
+| Runtime SQLite | selected `state_path`; supervised `<root>/state.sqlite` | `MctRuntimeStateStore::open` |
+| SQLite durability sidecars | `<state_path>-wal`, `<state_path>-shm`, `<state_path>-journal`, and SQLite temporary siblings for that database | SQLite WAL/journal operation selected by `MctRuntimeStateStore::migrate` |
+| Daemon configuration | selected `config_path`; supervised `<root>/config.json` | `MctDaemonConfigStore::save` |
+| Interrupted config publication | `config_path.with_extension("json.tmp")` | `MctDaemonConfigStore::save` |
+| Recorded Mother identity | selected `identity_path`; supervised `<root>/identity/iroh-secret.hex`, plus a daemon-created `identity/` directory left before file creation | `load_or_create_node_secret_key_hex` / observed identity mutation |
+| Child/package catalog | selected `children_dir`; supervised `<root>/children`, including installed packages, manifests, components, SHA-256 sidecars, `checksums.txt`, and immutable `artifacts/sha256/*` packages | registry install and artifact acquisition |
+| Interrupted child acquisition/install | `<children_dir>/.acquiring/*`, `.installing-*`, `.replaced-*`, and any daemon-created partial package directories | acquisition and registry publication paths |
+| Content-addressed blobs | `<state parent>/blobs`, including `tmp/ingest-*.tmp` and `blake3/<prefix>/*.blob` | `MctLocalBlobStore::for_state_path` |
+| Daemon release store | `<state parent>/releases`, including `.acquiring/*`, copied archive sidecars, extracted staging trees, and immutable `sha256/*` releases | daemon release acquisition and supervised upgrade |
+| Supervisor lifecycle record | selected `<root>/supervisor.json` and staged `.supervisor.json.<pid>.tmp` siblings | `SupervisorPaths` and supervisor `atomic_write` |
+| Supervisor policy | `~/Library/LaunchAgents/io.patina.mct.mother.plist` for production, plus staged `.io.patina.mct.mother.plist.<pid>.tmp` siblings | `LaunchdSupervisorAdapter::publish_policy` |
+| Supervisor logs | `<root>/logs/`, `mother.stdout.log`, and `mother.stderr.log` | generated launchd policy and supervised lifecycle setup |
+| Other entries under daemon-managed roots | any otherwise unclassified entry below existing `identity/`, `children/`, `blobs/`, `releases/`, `logs/`, or ledger forensic roots | conservative catch-all for current/future daemon residue; unknown durable residue cannot prove virginity |
+
+A zero-length ledger or SQLite file is present evidence, not absence. A partially created managed directory is evidence even when its final file is missing. Exact forensic and staging residue is never deleted to make the conjunction pass.
+
+The selected service-root directory by itself may be an operator-created container and is not sufficient evidence only when it is empty and no daemon-managed metadata can be attributed to it. Any managed child directory or unclassified entry beneath it is evidence. External source trees, project/watch roots, operator-supplied executable paths, and arbitrary files written by a Child/Toy effect are not Mother-owned startup artifacts and are not traversed. A supervised executable becomes evidence only when it lives in the daemon-managed `releases/` store.
+
+`<root>/control.sock` is classified separately as transient runtime residue. It never proves virginity by itself because the daemon removes it on clean shutdown and a crash may leave its directory entry; an active listener or writer lock yields `writer_contended`/`already_running`, while a stale socket is reported and replaced only after the immutable disk classification snapshot is taken. The launchd in-memory loaded state is likewise operational evidence, not a substitute for disk evidence.
+
+The classifier returns an ordered, canonical `StartupArtifactInventoryV1` containing each inspected path, artifact class, `absent | present | unavailable | transient` result, file type when present, and a hash of the inventory. It does not include file contents or identity secret bytes.
+
+## Complete startup classification and posture
+
+`authority_ready` below means that Phase H3 may expose ordinary resident readiness and the sanctioned standing-source proof consumer. It does not claim that deferred route, resident-grants, Toy, host-adapter, or peer-wire readers have migrated to canonical authority.
+
+| Disk/ledger/projection state | Detection | Transition | Daemon posture | Authority readiness |
+|---|---|---|---|---|
+| Missing ledger; every durable artifact class absent | complete inventory; ledger `NotFound`; no transient active owner | create one exclusive writer; first append is fresh `virgin` epoch with `none_for_virgin`, empty state, baseline 0 | bootstrap, then ordinary service only after observations/projection complete | pending until current D-G8 proof; then ready |
+| Missing or empty ledger; any durable artifact present | complete inventory plus no canonical entry | expose owner-only gate; require exact inventory hash, explicit confirmation, unique decision id, and UDS-authenticated principal; accepted decision establishes `operator_gated_nonvirgin` with `none_after_operator_reinitialization` | degraded deny while pending/refused; no identity/config/state/import mutation before accepted epoch | not ready until accepted epoch, optional standard import/reconciliation, current projection, and no authority-bearing drift |
+| Valid non-empty ledger; canonical replay has no authority history | maximal validated non-empty head plus empty authority replay | auto-establish `legacy_ledger_upgrade` with `validated_head`, no operator gate, empty state, baseline 0 | upgrading; then ordinary service after projection/import posture resolves | pending, then ready; standard import is available under D-H3.4 |
+| Valid ledger; canonical replay has current authority | maximal validated head and current replay identity | establish `ordinary_reopen` with exact `validated_head` and replayed baseline/state | ordinary reopen | pending until projection reaches the post-startup head and proof is usable |
+| Unterminated final residue | R2-L1 scan under exclusive lock and completed forensic preservation | recover only by the already-ratified residue path, then reclassify the surviving ledger using the rows above | recovery, never early readiness | not ready during recovery |
+| Terminated corruption, identity/lineage failure, or chain discontinuity | typed R2-L1 quarantine/foreign-lineage result | preserve; do not truncate, adopt, replace, import, or establish epoch | isolated quarantine forensic plane | not ready |
+| Structurally valid ledger with unknown/reserved or incoherent authority schema | ledger scan valid but authority replay/projection rejects | retain ledger and prior projection; operator changes software/history only outside this phase | degraded deny, typed `authority_replay_blocked`; not falsely quarantined | not ready |
+| Writer contention, permission/I/O failure, or incomplete artifact inspection | typed contention/unavailability or any inventory `unavailable` | no recovery or mutation; supervisor retry remains ordinary policy | degraded deny when a safe owner UDS can be bound, otherwise fail-stop with typed startup result | not ready |
+| Epoch committed but projection absent, stale, wrong-epoch/hash, rebuilding, or behind any post-epoch startup observation | D-G8 expectation against current canonical replay/head | incremental catch-up or atomic shadow rebuild from validated history only | degraded deny until proof is usable | not ready until usable |
+| Replay-derived import required or authority-bearing config/legacy SQLite drift exists | canonical state plus normalized config/SQLite comparison | permit only the existing authenticated import when its standard predicate holds, or explicit ordinary reconciliation; never auto-import/overwrite | degraded deny with drift/gate report | not ready |
+| Epoch current; startup/gate/drift observations included in the projected head; D-G8 proof usable; no blocking drift | exact typed proof and report | publish readiness once, without a later append that would move the proven head | ordinary service | ready for the Phase H3-sanctioned consumer |
+
+Readiness publication never races ahead of the final startup observations: classification, accepted gate (if any), startup posture, and drift observations append first; projection then covers that resulting canonical head; the final usable proof is checked before network/Child/Toy or ordinary mutation surfaces are exposed. A later canonical mutation that returns `committed_projection_pending` immediately returns posture to degraded deny until coverage is restored. No cached prior readiness survives restart, epoch transition, quarantine, writer poisoning, or proof mismatch.
+
+### Authenticated operator gate
+
+The isolated owner UDS exposes `POST /startup/operator-gate` only in `operator_gate_required` posture. Its request names a unique decision id, the expected Mother/ledger ids, the exact `StartupArtifactInventoryV1` hash, and the confirmation `reinitialize-missing-canonical-authority-v1`. The principal comes only from UDS peer credentials. A changed inventory, active writer/listener, wrong identity, reused decision, malformed confirmation, or non-owner is a typed refusal and causes no durable write.
+
+An accepted request acquires the exclusive writer, rescans disk/ledger, and commits the epoch as the first append with both operator fields present. It then appends ordinary `OperatorActionRecorded` and `LifecycleTransitionRecorded` observations correlating the decision, inventory hash, resulting epoch observation id, and startup posture. The gate is not a new canonical authority fact kind and does not import legacy authority.
+
+## Isolated quarantine and degraded forensic plane
+
+The existing UDS path remains mode `0600`; in isolated posture every request, including reads, additionally requires peer credentials matching the service-root owner. The Iroh endpoint, TCP control endpoint, hello/call service, trigger scheduler, Child/Toy execution, and ordinary mutation handlers do not start.
+
+The read-only surface is closed and explicit:
+
+| Endpoint | Exposed content |
+|---|---|
+| `GET /status` | version, `unhealthy/not_ready`, startup posture, typed reason, and no advertised Iroh authority |
+| `GET /startup` | four-class result when classifiable, daemon posture, authority readiness, inventory hash, per-artifact presence classifications, gate state, and projection status |
+| `GET /forensics/ledger` | ledger path/id/Mother, scan class, maximal valid head sequence/hash, failure class, first bad offset/sequence, expected/observed diagnostics, and forensic root; never a repaired view |
+| `GET /forensics/cases` | retained case ids, decision/time, exact byte lengths/digests, source offsets, prior committed head, recovery/quarantine class, and local owner-only paths |
+| `GET /forensics/cases/{case_id}/source` | exact preserved bytes with explicit bounded byte-range requests and digest/total-length headers; no transformation and no automatic export |
+| `GET /drift` | the latest typed authority drift report below, without identity secrets, config secrets, blob payloads, or arbitrary SQLite rows |
+
+Every other GET, every call preflight, and every POST except the startup operator gate in its one legal posture returns:
+
+```text
+StartupRefusalV1 {
+  schema: "mct-startup-refusal/v1",
+  kind: startup_degraded_deny | ledger_quarantined | operator_gate_required |
+        authority_replay_blocked | projection_unusable | writer_fenced,
+  startup_class: virgin | ordinary_reopen | legacy_ledger_upgrade |
+                 operator_gated_nonvirgin | unclassified,
+  authority_ready: false,
+  retryable: bool,
+  safe_message: String
+}
+```
+
+Quarantine is not operator-gated reinitialization. The gate endpoint itself refuses in quarantine; H3 supplies no delete, truncate, adopt, replace, export, or repair operation. The forensics surface reads already-preserved evidence and performs no projection publication or ledger mutation.
+
+## Authority drift report and observations
+
+After epoch establishment and before final projection publication, startup computes:
+
+```text
+AuthorityDriftReportV1 {
+  schema: "mct-authority-drift-report/v1",
+  report_id: String,
+  observed_at: Timestamp,
+  startup_class: virgin | ordinary_reopen | legacy_ledger_upgrade |
+                 operator_gated_nonvirgin,
+  canonical: {
+    mother_node_id: String,
+    ledger_id: String,
+    head_sequence: u64,
+    head_entry_hash: String,
+    grants_authority: GrantsAuthorityIdentity,
+    authority_state_hash: String
+  },
+  projection: {
+    status: missing | rebuilding | current | stale | quarantined | blocked,
+    through_sequence: u64?,
+    through_entry_hash: String?,
+    projection_hash: String?,
+    proof_denial: AuthorityProjectionDenyReasonV1?
+  },
+  legacy_inputs: [{
+    source: config_authority_intent | sqlite_toy_authority,
+    normalized_hash: String?,
+    comparison: no_authority_intent | matches_canonical | differs_from_canonical |
+                import_required | unavailable
+  }],
+  blocking_reasons: [String, ...],
+  authority_ready: bool
+}
+```
+
+Hashes use the existing normalized legacy-import inputs and canonical authority-state hash; no `MAX()` aggregation or incidental SQLite/config representation enters the comparison. Config with no authority-shaping intent is `no_authority_intent`, not false drift. A usable proof cannot erase legacy drift, and matching legacy values cannot repair an unusable proof.
+
+Projection mismatch, unavailable authority-bearing input, unimported legacy state, or legacy SQLite/config authority that could still be read as broader than canonical is blocking until an explicit existing mutation/import/reconciliation path resolves it. Drift never creates authority, rewrites canonical history, auto-imports, or silently edits config/SQLite. Non-authority operational differences may be reported without becoming authority.
+
+A writable, non-quarantined startup appends ordinary observations using existing kinds only:
+
+- `LifecycleTransitionRecorded`/`Storage` records the selected startup class and posture;
+- `OperatorActionRecorded`/`Operator` records an accepted operator gate and its authenticated correlation; and
+- `NodeHealthReported`/`Storage` records `report_id`, `authority_ready`, blocking reason codes, canonical state hash, and normalized input hashes.
+
+These are ordinary observations, not `mct-authority-fact-v1` payloads and not new canonical fact kinds. They append before final projection catch-up. If the ledger is quarantined or unavailable, no observation is appended to it; the isolated status reports that recording was impossible rather than mutating forensic evidence.
+
+## Standing-source D-G8 migration
+
+The sole new production authority-proof consumer in H3 is standing-source artifact acquisition through offline/resident control staging. Operator-pointed acquisition is unchanged and cannot borrow the standing-source proof.
+
+`verify_standing_source_ledger_correlation` becomes one component of a typed standing-source admission, not the complete freshness proof. While the resident control mutation serialization guard is held (or while an offline exclusive writer is held), staging:
+
+1. appends its already-required pre-effect decision observations;
+2. catches the authority projection up through that resulting validated ledger head;
+3. constructs current `AuthorityProjectionLedgerEvidenceV1` from canonical replay and requires `UsableAuthorityProjectionProofV1::Usable`;
+4. performs the existing exact standing-source projection digest/state and unique ledger-observation correlation;
+5. rechecks that source projection against the admitted source proof; and only then
+6. evaluates standing source scope and permits the filesystem acquisition adapter to begin reading.
+
+The D-G8 check's linearization point is the standing-source trust evaluation under the existing control mutation guard. A canonical authority/source mutation cannot pass that guard between proof consumption and adapter-start handoff. An unrelated later ordinary observation does not retroactively undo an already-completed trust decision; a mutation committed before that decision necessarily makes the proof stale or changes the correlated source and denies.
+
+The typed result is:
+
+```text
+StandingSourceAdmissionV1 =
+  usable {
+    authority_projection: UsableAuthorityProjectionProofV1::usable,
+    source_authority_id: String,
+    source_record_digest: String,
+    source_fact_sequence: u64
+  }
+| denied {
+    reason: authority_projection(AuthorityProjectionDenyReasonV1) |
+            ledger_unavailable | ledger_quarantined | authority_replay_blocked |
+            source_missing | source_digest_mismatch | source_inactive |
+            source_fact_missing | source_fact_duplicate | source_fact_mismatch |
+            source_changed_after_proof
+  }
+```
+
+Every denied result occurs before source bytes are read, before staging/catalog paths are created, and before an adapter-start effect is admitted. Safe control responses preserve the typed reason without exposing source credentials or raw forensic bytes. This migration does not make standing-source records canonical Toy/grant facts and does not broaden D-R2.7 projection content.
+
+## Mother-local mutation/effect ordering boundary
+
+R2-L6 introduces one process-local boundary per executing Mother authority writer. It has two mutually ordered operations:
+
+```text
+MotherAuthorityOrderV1::commit_mutation(mutation_id, intent, commit_fn)
+MotherAuthorityOrderV1::admit_effect(expectation, proof_fn, start_fn)
+```
+
+`commit_mutation` owns the ordering position from before canonical append is offered until the result is classified. An acknowledged/recovered canonical fact linearizes at commitment. `rejected_before_commit` consumes no commitment position. `commit_unknown`, writer poisoning, or loss of exact rescan evidence sets the boundary to `fenced` before it releases its position.
+
+`admit_effect` acquires the same order, requires an unfenced writer, exact current canonical identity/state expectation, and a usable projection through the current canonical head. It hands an unforgeable, single-use admission directly to `start_fn` while still owning the order; only entry into the protected adapter's effect-start seam releases the order. It never returns a refreshable bearer token that can be stored and started later. Denial starts nothing.
+
+Consequences:
+
+- a revocation committed before admission is visible to the required current proof and denies;
+- admission handed to effect start before a later revocation has one earlier order position, so the already-started external effect is not retroactively undone;
+- `commit_unknown` and a poisoned writer fence all later admissions until close, exclusive reopen, full rescan, mutation-id resolution, and current projection proof;
+- acknowledged commitment with projection pending also fences admission: canonical state has advanced but freshness is unprovable;
+- projection lag can never be bypassed with the pre-mutation cursor, a bare generation, a caller echo, record digests, or cached permit; and
+- the boundary gives no cross-Mother order and invents no JSONL/SQLite transaction. Ledger commitment remains canonical before projection publication.
+
+`fenced` therefore means the boundary cannot prove which canonical authority state must govern a new effect start. It is fail-closed but not permanent: only the already-ratified reopen/rescan plus coherent projection transition clears it. A new mutation id, supervisor retry without rescan, or stale projection cannot clear it.
+
+H3 lands this API and adversarial tests but routes no production Child, Toy, route-evaluation, resident-grants, or host-adapter path through it. Grants slices 7 and 8 later adopt the same `admit_effect` handoff at their final Child and Toy adapter seams, and route all authority-shape commits through `commit_mutation`; they do not redesign token shape, add a second lock/order, or move projection checks into adapters.
+
+## Phase H3 implementation tasks
+
+### B1 — disk classifier and four startup classes
+
+Implement the immutable pre-write inventory, unavailable/ambiguous handling, four-class taxonomy, additive predecessor/startup variants, and replay validation for D-H3.1 through D-H3.3.
+
+### B2 — epoch establishment and operator-gated reinitialization
+
+Require explicit startup evidence at authority open, remove inference from ledger emptiness alone, authenticate the gate on the owner UDS, keep the epoch fact first, record operator fields for gated startup, and preserve replay-derived import semantics from D-H3.4.
+
+### B3 — degraded-deny/quarantine forensic plane
+
+Separate classification from full resident startup. Bind only the owner-authenticated UDS in non-ready postures, expose the closed read surface above, and return typed refusal for every other route without ledger/projection/config mutation.
+
+### B4 — coherent startup projection and drift posture
+
+Record ordinary startup/gate/drift observations before final catch-up, publish/rebuild from validated history, construct the final D-G8 proof, and expose readiness only when no blocking drift or proof denial remains.
+
+### B5 — sanctioned standing-source proof consumption
+
+Require typed D-G8 proof plus existing exact source correlation under the staging mutation guard, and prove every mismatch denies before source read, staging, catalog, or adapter effect.
+
+### C-1 — R2-L6 ordering primitive
+
+Implement the Mother-local commit/admission order, single-use start handoff, and typed fenced state without adding a production consumer.
+
+### C-2 — recovery/projection fence and future adoption seam
+
+Clear fencing only from exclusive reopen/full rescan plus current coherent projection; expose the exact future slices 7-8 integration seam and prove revocation-first, effect-start-first, uncertainty, and lag orders with test-only adapters.
+
+## Phase H3 required proof steps
+
+Each proof lands as a named failing test before its implementation. Close-out cites the landed file/line and quotes the verbatim central assertion.
+
+1. A truly virgin disk snapshot creates no artifact before classification, selects `virgin`, and commits a first epoch with `none_for_virgin`, absent prior authority, empty state, and baseline 0.
+2. A table-driven matrix proves each durable artifact class above, including SQLite sidecars, config temp, forensic/staging residue, blobs, releases, logs, record, and plist, independently prevents virgin classification; unavailable inspection also denies.
+3. Missing/empty ledger plus prior evidence exposes only the owner gate; pending, wrong-inventory, malformed, and non-owner decisions create no ledger or legacy effect.
+4. Accepted reinitialization commits the epoch first as `operator_gated_nonvirgin` with `none_after_operator_reinitialization`, baseline 0, empty state, decision id/principal, then records ordinary gate/startup observations.
+5. Ordinary reopen uses exact validated head, replayed prior authority/state/generation, a fresh epoch, and no operator fields.
+6. Reinitialized canonical history permits one standard import with a fresh operator decision; its second import is `already_imported`, while abandoned-history import evidence grants nothing.
+7. Terminated corruption/foreign lineage starts only the owner-authenticated forensic plane; ledger bytes and prior projection remain unchanged, and every call/mutation/gate route returns typed quarantine refusal.
+8. Forensic endpoints expose exact typed diagnostics and ranged preserved bytes to the owner, reject a non-owner, and disclose no identity secret, config secret, blob payload, or arbitrary SQLite row.
+9. Unknown authority schema and projection missing/stale/wrong-epoch/hash/quarantined statuses each withhold readiness without misclassifying a structurally valid ledger or advancing prior projection truth.
+10. Startup/gate/drift ordinary observations precede final projection publication; the readiness proof covers their exact final sequence/hash and no later readiness append invalidates it.
+11. Config/SQLite legacy drift produces the typed report and `NodeHealthReported` observation, performs no canonical/import/config/SQLite rewrite, and blocking authority drift keeps posture degraded.
+12. A fully matching canonical replay/projection and non-broader normalized legacy inputs yields a usable final proof and ready posture across restart.
+13. Standing-source staging with a usable D-G8 proof and exact source correlation reaches source read; operator-pointed staging neither requires nor can consume that proof.
+14. Every D-G8 deny reason and every source-correlation deny reason is returned typed before source bytes, staging paths, catalog rows, or adapter-start effects; source change after proof also denies.
+15. The test-only ordering seam proves both total orders: revocation commitment before admission starts no effect, while admission handoff before later revocation starts exactly once and is not retroactively undone.
+16. `commit_unknown`, poisoned writer, unresolved rescan, and committed projection lag each fence the ordering boundary; repeated admission attempts start nothing until exclusive rescan resolution and an exact current proof clear the fence.
+17. A valid non-empty pre-H2 ledger starts as `legacy_ledger_upgrade` with no operator gate, establishes its first epoch fact with `validated_head` predecessor and baseline 0, records the class in the fact, and permits the standard import afterward.
+
+## Phase-critical constraints C1-C5
+
+- **C1 — one sanctioned reader change.** Only standing-source acquisition/control staging becomes a production D-G8 proof consumer. No other authority reader changes.
+- **C2 — no ordering consumer yet.** The R2-L6 boundary is implemented and tested with test-only adapters, but no production effect or mutation path adopts it in H3.
+- **C3 — degraded deny over brick or fallback.** When safe local ownership can be established, unavailable authority exposes the isolated owner forensic/gate plane and denies authority; it never falls back to config, SQLite, caller values, stale projection, or guessed recovery.
+- **C4 — permanent schemas stay closed.** H3 adds no canonical authority fact kind and changes no `MctObservation`/`MctObservationLedgerEntry` field or newline framing. D-H3.2/D-H3.3 are the only additive v1 enum variants. Startup/drift/gate records are ordinary observations using existing kinds.
+- **C5 — no hidden authority transition.** Startup classification, accepted gating, drift, readiness denial, and projection catch-up are observable; quarantine/unavailable cases report inability to append rather than mutating evidence. Ledger commitment still precedes projection and any legacy write.
+
+## Updated deferral fence
+
+The following remain forbidden in Phase H3, including partial implementation:
+
+- No production consumer of `MotherAuthorityOrderV1`; grants-authority slices 7-8 remain separately gated.
+- No route-evaluation, resident-grants-guard, Toy grant/effect, process/WASM host-adapter, hello, or remote/local call authority-reader migration.
+- No grants-authority slice 4 authority-shape integration, slice 5 general local snapshot provider, slice 6 peer generation wire migration, or slices 7-8 effect consumption.
+- No peer wire/schema changes and no caller-carried authority value becoming local authority.
+- No new canonical fact kind, ledger entry field, observation field, frame format, compaction, truncation, automatic lineage adoption, or cross-file ACID claim.
+- No automatic config/SQLite import, drift repair, quarantine repair, forensic deletion/export, or legacy state precedence over canonical replay.
+- No broad artifact-source redesign, unattended registry sync, network acquisition adapter, or operator-pointed acquisition authority change.
+- No H1 process cleanup escalation, process-tree reap, capacity restoration, or supervisor restart/fail-stop implementation.
+
+The active session `20260724-223731-101286000` remains active and must not be archived or ended. Any implementation need beyond this fence stops for a D-H3.n amendment rather than improvising.
+
+## Validation and close-out plan
+
+Every implementation commit and final close-out must pass:
+
+```bash
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+./scripts/ci-tier0.sh
+allium check layer/allium
+```
+
+A failing test is rerun in isolation up to five times. A non-reproducing failure is retained verbatim in the Phase H3 flake log; a reproducing failure is fixed before proceeding.
+
+Close-out is reconstructed from disk using `be9be82..HEAD`: commit purpose, all seventeen test file/line citations and verbatim central assertions, per-commit and final validation transcripts, flake disposition, changed-reader audit, ordering-consumer audit, canonical-fact-kind/schema audit, Track 3 disposition, and the active session update. Gate G1 ratification is recorded before any Rust implementation commit.
