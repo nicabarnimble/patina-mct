@@ -6,9 +6,11 @@ use crate::{
 use anyhow::{Context, Result, bail};
 use mct_kernel::*;
 use mct_observation::{
-    AuthorityCanonicalFactRecordV1, AuthorityProjectionCursorV1, AuthorityProjectionHashInputV1,
+    AuthorityCanonicalFactRecordV1, AuthorityProjectionCursorV1, AuthorityProjectionDenyReasonV1,
+    AuthorityProjectionHashInputV1, AuthorityProjectionLedgerEvidenceV1,
     AuthorityProjectionStatusV1, AuthorityStateV1, MctObservationLedgerEntry,
-    authority_projection_hash, authority_state_hash, replay_authority_entries,
+    UsableAuthorityProjectionProofV1, authority_projection_hash, authority_state_hash,
+    replay_authority_entries,
 };
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -4251,6 +4253,103 @@ impl MctRuntimeStateStore {
         Ok(cursor)
     }
 
+    pub fn usable_authority_projection_proof(
+        &self,
+        evidence: &AuthorityProjectionLedgerEvidenceV1,
+    ) -> Result<UsableAuthorityProjectionProofV1> {
+        let AuthorityProjectionLedgerEvidenceV1::Validated(expected) = evidence else {
+            return Ok(denied_authority_projection(
+                AuthorityProjectionDenyReasonV1::LedgerQuarantined,
+            ));
+        };
+        let Some(snapshot) = self.authority_projection_snapshot()? else {
+            return Ok(denied_authority_projection(
+                AuthorityProjectionDenyReasonV1::ProjectionMissing,
+            ));
+        };
+        let cursor = &snapshot.cursor;
+        if cursor.schema_version != 1
+            || cursor.projection_id != "authority-state-v1"
+            || cursor.projection_kind != "authority_state"
+            || cursor.projection_status != AuthorityProjectionStatusV1::Current
+        {
+            return Ok(denied_authority_projection(
+                AuthorityProjectionDenyReasonV1::ProjectionNotCurrent,
+            ));
+        }
+        if cursor.source_mother_node_id != expected.source_mother_node_id {
+            return Ok(denied_authority_projection(
+                AuthorityProjectionDenyReasonV1::WrongSourceMother,
+            ));
+        }
+        if cursor.source_ledger_id != expected.source_ledger_id {
+            return Ok(denied_authority_projection(
+                AuthorityProjectionDenyReasonV1::WrongSourceLedger,
+            ));
+        }
+        if cursor.through_sequence != expected.through_sequence {
+            return Ok(denied_authority_projection(
+                AuthorityProjectionDenyReasonV1::HeadSequenceMismatch,
+            ));
+        }
+        if cursor.through_entry_hash != expected.through_entry_hash {
+            return Ok(denied_authority_projection(
+                AuthorityProjectionDenyReasonV1::HeadHashMismatch,
+            ));
+        }
+        if cursor.grants_authority.mother_node_id != expected.grants_authority.mother_node_id
+            || cursor.grants_authority.mother_node_id != cursor.source_mother_node_id
+        {
+            return Ok(denied_authority_projection(
+                AuthorityProjectionDenyReasonV1::AuthorityMotherMismatch,
+            ));
+        }
+        if cursor.grants_authority.authority_epoch != expected.grants_authority.authority_epoch {
+            return Ok(denied_authority_projection(
+                AuthorityProjectionDenyReasonV1::EpochMismatch,
+            ));
+        }
+        if cursor.grants_authority.generation != expected.grants_authority.generation {
+            return Ok(denied_authority_projection(
+                AuthorityProjectionDenyReasonV1::GenerationMismatch,
+            ));
+        }
+        if cursor.grants_authority.source_authority_observation_id
+            != expected.grants_authority.source_authority_observation_id
+        {
+            return Ok(denied_authority_projection(
+                AuthorityProjectionDenyReasonV1::SourceAuthorityObservationMismatch,
+            ));
+        }
+        let projected_state_hash = authority_state_hash(&snapshot.state)?;
+        if projected_state_hash != cursor.authority_state_hash
+            || projected_state_hash != expected.authority_state_hash
+        {
+            return Ok(denied_authority_projection(
+                AuthorityProjectionDenyReasonV1::AuthorityStateHashMismatch,
+            ));
+        }
+        let recomputed_projection_hash =
+            authority_projection_hash(&AuthorityProjectionHashInputV1 {
+                source_mother_node_id: cursor.source_mother_node_id.clone(),
+                source_ledger_id: cursor.source_ledger_id.clone(),
+                through_sequence: cursor.through_sequence,
+                through_observation_id: cursor.through_observation_id.clone(),
+                through_entry_hash: cursor.through_entry_hash.clone(),
+                grants_authority: cursor.grants_authority.clone(),
+                authority_state_hash: cursor.authority_state_hash.clone(),
+                projection_status: cursor.projection_status,
+            })?;
+        if recomputed_projection_hash != cursor.projection_hash {
+            return Ok(denied_authority_projection(
+                AuthorityProjectionDenyReasonV1::ProjectionHashMismatch,
+            ));
+        }
+        Ok(UsableAuthorityProjectionProofV1::Usable {
+            cursor: Box::new(snapshot.cursor),
+        })
+    }
+
     pub fn authority_projection_snapshot(&self) -> Result<Option<AuthorityProjectionSnapshotV1>> {
         let cursor = self
             .conn
@@ -4906,6 +5005,12 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MctQueuedTaskRecor
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
     })
+}
+
+fn denied_authority_projection(
+    reason: AuthorityProjectionDenyReasonV1,
+) -> UsableAuthorityProjectionProofV1 {
+    UsableAuthorityProjectionProofV1::Denied { reason }
 }
 
 fn authority_cursor_from_row(
@@ -5818,6 +5923,21 @@ mod tests {
         ledger
     }
 
+    fn authority_projection_expectation(
+        entries: &[MctObservationLedgerEntry],
+    ) -> mct_observation::AuthorityProjectionExpectationV1 {
+        let replay = replay_authority_entries(entries).unwrap();
+        let head = entries.last().unwrap();
+        mct_observation::AuthorityProjectionExpectationV1 {
+            source_mother_node_id: head.mother_node_id.clone(),
+            source_ledger_id: head.ledger_id.clone(),
+            through_sequence: head.local_sequence,
+            through_entry_hash: head.entry_hash.clone(),
+            grants_authority: replay.current_authority.unwrap(),
+            authority_state_hash: authority_state_hash(&replay.state).unwrap(),
+        }
+    }
+
     /// Phase H2 proof 9: non-authority entries reach the cursor and publication is old-old/new-new.
     #[test]
     fn authority_cursor_reaches_non_authority_head_with_coherent_publication() {
@@ -5868,6 +5988,92 @@ mod tests {
         );
         assert_eq!(new.state, old.state);
         assert_ne!(new.cursor.projection_hash, old.cursor.projection_hash);
+    }
+
+    /// Phase H2 proof 10: D-G8 proof passes only for complete canonical agreement.
+    #[test]
+    fn usable_authority_projection_proof_is_typed_for_every_mismatch() {
+        use mct_observation::{
+            AuthorityProjectionDenyReasonV1 as Deny, AuthorityProjectionLedgerEvidenceV1,
+            UsableAuthorityProjectionProofV1,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let ledger_path = dir.path().join("observations.jsonl");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger = authority_ledger_with_state(&ledger_path, AuthorityStateV1::default());
+        let entries = ledger.entries().unwrap();
+        let store = MctRuntimeStateStore::open(&state_path).unwrap();
+        let cursor = store.publish_authority_projection(&entries).unwrap();
+        let expected = authority_projection_expectation(&entries);
+        let proof = store
+            .usable_authority_projection_proof(&AuthorityProjectionLedgerEvidenceV1::Validated(
+                expected.clone(),
+            ))
+            .unwrap();
+        assert_eq!(
+            proof,
+            UsableAuthorityProjectionProofV1::Usable {
+                cursor: Box::new(cursor.clone())
+            }
+        );
+
+        let mut wrong_mother = expected.clone();
+        wrong_mother.source_mother_node_id = "other-mother".into();
+        assert_eq!(
+            store
+                .usable_authority_projection_proof(&AuthorityProjectionLedgerEvidenceV1::Validated(
+                    wrong_mother
+                ))
+                .unwrap(),
+            UsableAuthorityProjectionProofV1::Denied {
+                reason: Deny::WrongSourceMother
+            }
+        );
+
+        let mut stale_head = expected.clone();
+        stale_head.through_sequence += 1;
+        assert_eq!(
+            store
+                .usable_authority_projection_proof(&AuthorityProjectionLedgerEvidenceV1::Validated(
+                    stale_head
+                ))
+                .unwrap(),
+            UsableAuthorityProjectionProofV1::Denied {
+                reason: Deny::HeadSequenceMismatch
+            }
+        );
+
+        let mut wrong_epoch = expected.clone();
+        wrong_epoch.grants_authority.authority_epoch = "mct-authority-epoch-v1:wrong".into();
+        assert_eq!(
+            store
+                .usable_authority_projection_proof(&AuthorityProjectionLedgerEvidenceV1::Validated(
+                    wrong_epoch
+                ))
+                .unwrap(),
+            UsableAuthorityProjectionProofV1::Denied {
+                reason: Deny::EpochMismatch
+            }
+        );
+
+        store
+            .conn
+            .execute(
+                "UPDATE authority_projection_cursor SET projection_hash = 'wrong-hash'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .usable_authority_projection_proof(&AuthorityProjectionLedgerEvidenceV1::Validated(
+                    expected
+                ))
+                .unwrap(),
+            UsableAuthorityProjectionProofV1::Denied {
+                reason: Deny::ProjectionHashMismatch
+            }
+        );
     }
 
     /// Phase H2 proof 11: restart changes epoch identity without changing projected grant meaning.

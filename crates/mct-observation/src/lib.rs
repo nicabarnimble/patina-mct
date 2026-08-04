@@ -316,6 +316,51 @@ pub struct AuthorityProjectionCursorV1 {
     pub updated_at: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthorityProjectionDenyReasonV1 {
+    ProjectionMissing,
+    ProjectionNotCurrent,
+    WrongSourceMother,
+    WrongSourceLedger,
+    HeadSequenceMismatch,
+    HeadHashMismatch,
+    AuthorityMotherMismatch,
+    EpochMismatch,
+    GenerationMismatch,
+    SourceAuthorityObservationMismatch,
+    AuthorityStateHashMismatch,
+    ProjectionHashMismatch,
+    LedgerQuarantined,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorityProjectionExpectationV1 {
+    pub source_mother_node_id: String,
+    pub source_ledger_id: String,
+    pub through_sequence: u64,
+    pub through_entry_hash: String,
+    pub grants_authority: GrantsAuthorityIdentityV1,
+    pub authority_state_hash: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthorityProjectionLedgerEvidenceV1 {
+    Validated(AuthorityProjectionExpectationV1),
+    Quarantined,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum UsableAuthorityProjectionProofV1 {
+    Usable {
+        cursor: Box<AuthorityProjectionCursorV1>,
+    },
+    Denied {
+        reason: AuthorityProjectionDenyReasonV1,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthorityReplayV1 {
     pub state: AuthorityStateV1,
