@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod acquisition;
+mod authority_order;
 #[cfg(test)]
 mod authority_test_fixture;
 mod blob_store;
@@ -40,6 +41,10 @@ pub use acquisition::{
     StandingSourceAdmissionV1, admit_standing_source, new_artifact_attempt_context,
     stage_artifact_with_context, stage_artifact_with_context_and_observer,
     stage_operator_pointed_artifact, verify_standing_source_ledger_correlation,
+};
+pub use authority_order::{
+    MotherAuthorityAdmissionDenyV1, MotherAuthorityCommitOutcomeV1, MotherAuthorityFenceReasonV1,
+    MotherAuthorityOrderV1,
 };
 pub use blob_store::{
     MCT_BLOB_MAX_BYTES, MctLocalBlobStore, MctLocalBlobStoreError, content_addressed_blob_handle,
