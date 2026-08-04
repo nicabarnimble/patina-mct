@@ -6,13 +6,15 @@
 #![forbid(unsafe_code)]
 
 use mct_kernel::{
-    CallId, MctObservation, ObservationId, ObservationKind, ObservationOutcome,
-    ObservationTraceRef, ObservationVisibility, SourcePlane, Timestamp, TraceId,
+    CallId, CanonicalToyContract, MctObservation, ObservationId, ObservationKind,
+    ObservationOutcome, ObservationTraceRef, ObservationVisibility, SourcePlane, Timestamp,
+    ToyGrant, TraceId,
 };
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
@@ -21,6 +23,88 @@ use thiserror::Error;
 
 /// Reserved `MctObservation.detail_ref` carrier for inline canonical authority facts.
 pub const AUTHORITY_FACT_DETAIL_PREFIX: &str = "mct-authority-fact-v1:";
+const AUTHORITY_FACT_SCHEMA_V1: &str = "mct-authority-fact/v1";
+const AUTHORITY_EPOCH_PREFIX_V1: &str = "mct-authority-epoch-v1:";
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GrantsAuthorityIdentityV1 {
+    pub mother_node_id: String,
+    pub authority_epoch: String,
+    pub generation: u64,
+    pub source_authority_observation_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AuthorityEpochPredecessorV1 {
+    NoneForVirgin,
+    ValidatedHead { sequence: u64, entry_hash: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthorityStartupClassV1 {
+    Virgin,
+    OrdinaryReopen,
+    OperatorGatedNonvirgin,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WriterTenureEstablishmentV1 {
+    pub started_at: String,
+    pub startup_class: AuthorityStartupClassV1,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operator_gate_decision_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authenticated_principal_ref: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EpochEstablishedFactV1 {
+    pub mother_node_id: String,
+    pub ledger_id: String,
+    pub authority_epoch: String,
+    pub predecessor: AuthorityEpochPredecessorV1,
+    pub generation_baseline: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prior_authority: Option<GrantsAuthorityIdentityV1>,
+    pub resulting_authority: GrantsAuthorityIdentityV1,
+    pub grant_state_hash: String,
+    pub establishment: WriterTenureEstablishmentV1,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AuthorityStateV1 {
+    pub toy_catalog: BTreeMap<String, CanonicalToyContract>,
+    pub toy_grants: BTreeMap<String, ToyGrant>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthorityReplayV1 {
+    pub state: AuthorityStateV1,
+    pub current_authority: Option<GrantsAuthorityIdentityV1>,
+    pub imported: bool,
+    pub canonical_fact_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthorityWriterTenureV1 {
+    pub fact: EpochEstablishedFactV1,
+    pub entry: MctObservationLedgerEntry,
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AuthorityReplayError {
+    #[error("canonical authority fact JSON is malformed at sequence {sequence}: {detail}")]
+    Malformed { sequence: u64, detail: String },
+    #[error("unknown canonical authority fact schema '{schema}' at sequence {sequence}")]
+    UnknownSchema { sequence: u64, schema: String },
+    #[error("unknown canonical authority fact kind '{fact_kind}' at sequence {sequence}")]
+    UnknownFactKind { sequence: u64, fact_kind: String },
+    #[error("canonical authority fact is incoherent at sequence {sequence}: {detail}")]
+    Incoherent { sequence: u64, detail: String },
+}
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -83,6 +167,8 @@ pub enum ObservationLedgerError {
     },
     #[error("observation ledger writer is poisoned at {path}; close and reopen before appending")]
     WriterPoisoned { path: PathBuf },
+    #[error("canonical authority replay failed: {detail}")]
+    AuthorityReplay { detail: String },
     #[error(
         "observation ledger batch stopped after its acknowledged committed prefix: {outcome:?}"
     )]
@@ -218,6 +304,7 @@ pub struct JsonlObservationLedger {
     next_sequence: u64,
     previous_hash: Option<String>,
     recovery_status: Option<LedgerRecoveryStatus>,
+    authority_tenure: Option<AuthorityWriterTenureV1>,
     writer_state: LedgerWriterState,
     #[cfg(test)]
     append_fault: Option<ScheduledAppendFault>,
@@ -317,6 +404,16 @@ impl JsonlObservationLedger {
         )
     }
 
+    pub fn open_authority(
+        path: impl AsRef<Path>,
+        ledger_id: impl Into<String>,
+        mother_node_id: impl Into<String>,
+    ) -> Result<Self> {
+        let mut ledger = Self::open(path, ledger_id, mother_node_id)?;
+        ledger.establish_authority_epoch()?;
+        Ok(ledger)
+    }
+
     pub fn open_read_only(
         path: impl AsRef<Path>,
         ledger_id: impl Into<String>,
@@ -331,6 +428,94 @@ impl JsonlObservationLedger {
 
     pub fn is_poisoned(&self) -> bool {
         self.writer_state == LedgerWriterState::Poisoned
+    }
+
+    pub fn authority_tenure(&self) -> Option<&AuthorityWriterTenureV1> {
+        self.authority_tenure.as_ref()
+    }
+
+    fn establish_authority_epoch(&mut self) -> Result<()> {
+        let entries = self.entries()?;
+        let replay = replay_authority_entries(&entries).map_err(|error| {
+            ObservationLedgerError::AuthorityReplay {
+                detail: error.to_string(),
+            }
+        })?;
+        let predecessor =
+            entries
+                .last()
+                .map_or(AuthorityEpochPredecessorV1::NoneForVirgin, |entry| {
+                    AuthorityEpochPredecessorV1::ValidatedHead {
+                        sequence: entry.local_sequence,
+                        entry_hash: entry.entry_hash.clone(),
+                    }
+                });
+        let startup_class = if entries.is_empty() {
+            AuthorityStartupClassV1::Virgin
+        } else if replay.current_authority.is_some() {
+            AuthorityStartupClassV1::OrdinaryReopen
+        } else {
+            AuthorityStartupClassV1::OperatorGatedNonvirgin
+        };
+        let generation_baseline = replay
+            .current_authority
+            .as_ref()
+            .map_or(0, |identity| identity.generation);
+        let authority_epoch = fresh_authority_epoch()?;
+        let fact_id = format!("obs:authority-epoch:{authority_epoch}");
+        let resulting_authority = GrantsAuthorityIdentityV1 {
+            mother_node_id: self.mother_node_id.clone(),
+            authority_epoch: authority_epoch.clone(),
+            generation: generation_baseline,
+            source_authority_observation_id: fact_id.clone(),
+        };
+        let started_at = jiff::Timestamp::now().to_string();
+        let fact = EpochEstablishedFactV1 {
+            mother_node_id: self.mother_node_id.clone(),
+            ledger_id: self.ledger_id.clone(),
+            authority_epoch,
+            predecessor,
+            generation_baseline,
+            prior_authority: replay.current_authority,
+            resulting_authority,
+            grant_state_hash: authority_state_hash(&replay.state)?,
+            establishment: WriterTenureEstablishmentV1 {
+                started_at: started_at.clone(),
+                startup_class,
+                operator_gate_decision_id: None,
+                authenticated_principal_ref: None,
+            },
+        };
+        let detail_ref = encode_epoch_fact(&fact_id, &fact)?;
+        let observation = MctObservation {
+            observation_id: ObservationId::new(fact_id).expect("epoch fact id is non-empty"),
+            observed_at: Timestamp::new(started_at.clone()).expect("system time is RFC3339"),
+            kind: ObservationKind::LifecycleTransitionRecorded,
+            source_plane: SourcePlane::Storage,
+            trace: ObservationTraceRef {
+                trace_id: TraceId::new(format!("trace:authority-epoch:{}", fact.authority_epoch))
+                    .expect("epoch trace id is non-empty"),
+                span_id: None,
+                parent_span_id: None,
+                external_trace_id: None,
+            },
+            call_id: None,
+            decision_id: None,
+            subject_id: Some(self.mother_node_id.clone()),
+            resource_id: Some(self.ledger_id.clone()),
+            policy_revision: None,
+            grants_revision: Some(generation_baseline),
+            outcome: ObservationOutcome::Completed,
+            visibility: ObservationVisibility::NodeOperator,
+            safe_message: "authority writer tenure established".into(),
+            detail_ref: Some(detail_ref),
+        };
+        let entry = self.append_before_effect(observation, started_at)?;
+        self.authority_tenure = Some(AuthorityWriterTenureV1 {
+            fact: fact.clone(),
+            entry,
+        });
+        Ok(())
     }
 
     #[cfg(test)]
@@ -591,6 +776,213 @@ enum LedgerScan {
     ForeignLineage(LedgerQuarantineStatus),
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalAuthorityEnvelopeV1 {
+    schema: String,
+    fact_kind: String,
+    fact_id: String,
+    body: serde_json::Value,
+}
+
+fn fresh_authority_epoch() -> Result<String> {
+    let mut entropy = [0_u8; 32];
+    getrandom::fill(&mut entropy).map_err(|error| ObservationLedgerError::Io {
+        path: PathBuf::from("<authority-epoch-entropy>"),
+        source: std::io::Error::other(error.to_string()),
+    })?;
+    let mut encoded = String::with_capacity(AUTHORITY_EPOCH_PREFIX_V1.len() + 64);
+    encoded.push_str(AUTHORITY_EPOCH_PREFIX_V1);
+    for byte in entropy {
+        use std::fmt::Write as _;
+        write!(&mut encoded, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    Ok(encoded)
+}
+
+fn canonical_json_bytes(value: &impl Serialize) -> Result<Vec<u8>> {
+    fn canonicalize(value: serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(object) => {
+                let sorted = object
+                    .into_iter()
+                    .map(|(key, value)| (key, canonicalize(value)))
+                    .collect();
+                serde_json::Value::Object(sorted)
+            }
+            serde_json::Value::Array(values) => {
+                serde_json::Value::Array(values.into_iter().map(canonicalize).collect())
+            }
+            other => other,
+        }
+    }
+    let value = serde_json::to_value(value).map_err(|source| ObservationLedgerError::Json {
+        path: PathBuf::from("<canonical-authority-fact>"),
+        source,
+    })?;
+    serde_json::to_vec(&canonicalize(value)).map_err(|source| ObservationLedgerError::Json {
+        path: PathBuf::from("<canonical-authority-fact>"),
+        source,
+    })
+}
+
+fn encode_epoch_fact(fact_id: &str, fact: &EpochEstablishedFactV1) -> Result<String> {
+    let envelope = serde_json::json!({
+        "schema": AUTHORITY_FACT_SCHEMA_V1,
+        "fact_kind": "epoch_established",
+        "fact_id": fact_id,
+        "body": fact,
+    });
+    let bytes = canonical_json_bytes(&envelope)?;
+    Ok(format!(
+        "{AUTHORITY_FACT_DETAIL_PREFIX}{}",
+        String::from_utf8(bytes).expect("JSON is UTF-8")
+    ))
+}
+
+pub fn authority_state_hash(state: &AuthorityStateV1) -> Result<String> {
+    #[derive(Serialize)]
+    struct HashableAuthorityState<'a> {
+        toy_catalog: Vec<&'a CanonicalToyContract>,
+        toy_grants: Vec<&'a ToyGrant>,
+    }
+    let hashable = HashableAuthorityState {
+        toy_catalog: state.toy_catalog.values().collect(),
+        toy_grants: state.toy_grants.values().collect(),
+    };
+    Ok(blake3::hash(&canonical_json_bytes(&hashable)?)
+        .to_hex()
+        .to_string())
+}
+
+pub fn replay_authority_entries(
+    entries: &[MctObservationLedgerEntry],
+) -> std::result::Result<AuthorityReplayV1, AuthorityReplayError> {
+    let mut replay = AuthorityReplayV1 {
+        state: AuthorityStateV1::default(),
+        current_authority: None,
+        imported: false,
+        canonical_fact_count: 0,
+    };
+    let mut used_epochs = BTreeSet::new();
+
+    for (index, entry) in entries.iter().enumerate() {
+        let Some(detail) = entry.observation.detail_ref.as_deref() else {
+            continue;
+        };
+        let Some(payload) = detail.strip_prefix(AUTHORITY_FACT_DETAIL_PREFIX) else {
+            continue;
+        };
+        let envelope: CanonicalAuthorityEnvelopeV1 =
+            serde_json::from_str(payload).map_err(|error| AuthorityReplayError::Malformed {
+                sequence: entry.local_sequence,
+                detail: error.to_string(),
+            })?;
+        if envelope.schema != AUTHORITY_FACT_SCHEMA_V1 {
+            return Err(AuthorityReplayError::UnknownSchema {
+                sequence: entry.local_sequence,
+                schema: envelope.schema,
+            });
+        }
+        if envelope.fact_id != entry.observation.observation_id.as_str() {
+            return Err(AuthorityReplayError::Incoherent {
+                sequence: entry.local_sequence,
+                detail: "fact_id does not match observation_id".into(),
+            });
+        }
+        match envelope.fact_kind.as_str() {
+            "epoch_established" => {
+                let fact: EpochEstablishedFactV1 =
+                    serde_json::from_value(envelope.body).map_err(|error| {
+                        AuthorityReplayError::Malformed {
+                            sequence: entry.local_sequence,
+                            detail: error.to_string(),
+                        }
+                    })?;
+                validate_epoch_fact(entries, index, entry, &replay, &used_epochs, &fact)?;
+                used_epochs.insert(fact.authority_epoch.clone());
+                replay.current_authority = Some(fact.resulting_authority);
+                replay.canonical_fact_count += 1;
+            }
+            other => {
+                return Err(AuthorityReplayError::UnknownFactKind {
+                    sequence: entry.local_sequence,
+                    fact_kind: other.to_owned(),
+                });
+            }
+        }
+    }
+    Ok(replay)
+}
+
+fn validate_epoch_fact(
+    entries: &[MctObservationLedgerEntry],
+    index: usize,
+    entry: &MctObservationLedgerEntry,
+    replay: &AuthorityReplayV1,
+    used_epochs: &BTreeSet<String>,
+    fact: &EpochEstablishedFactV1,
+) -> std::result::Result<(), AuthorityReplayError> {
+    let incoherent = |detail: &str| AuthorityReplayError::Incoherent {
+        sequence: entry.local_sequence,
+        detail: detail.to_owned(),
+    };
+    let expected_predecessor =
+        index
+            .checked_sub(1)
+            .map_or(AuthorityEpochPredecessorV1::NoneForVirgin, |previous| {
+                AuthorityEpochPredecessorV1::ValidatedHead {
+                    sequence: entries[previous].local_sequence,
+                    entry_hash: entries[previous].entry_hash.clone(),
+                }
+            });
+    let expected_generation = replay
+        .current_authority
+        .as_ref()
+        .map_or(0, |identity| identity.generation);
+    let expected_hash =
+        authority_state_hash(&replay.state).map_err(|error| AuthorityReplayError::Incoherent {
+            sequence: entry.local_sequence,
+            detail: error.to_string(),
+        })?;
+    if entry.observation.kind != ObservationKind::LifecycleTransitionRecorded
+        || entry.observation.source_plane != SourcePlane::Storage
+        || entry.durability_class != DurabilityClass::BeforeEffect
+        || entry.observation.visibility != ObservationVisibility::NodeOperator
+        || entry.observation.subject_id.as_deref() != Some(entry.mother_node_id.as_str())
+        || entry.observation.resource_id.as_deref() != Some(entry.ledger_id.as_str())
+        || entry.observation.grants_revision != Some(fact.generation_baseline)
+    {
+        return Err(incoherent(
+            "epoch observation carrier fields do not match schema",
+        ));
+    }
+    if fact.mother_node_id != entry.mother_node_id
+        || fact.ledger_id != entry.ledger_id
+        || fact.predecessor != expected_predecessor
+        || fact.generation_baseline != expected_generation
+        || fact.prior_authority != replay.current_authority
+        || fact.grant_state_hash != expected_hash
+        || used_epochs.contains(&fact.authority_epoch)
+        || !fact.authority_epoch.starts_with(AUTHORITY_EPOCH_PREFIX_V1)
+        || fact.authority_epoch.len() != AUTHORITY_EPOCH_PREFIX_V1.len() + 64
+    {
+        return Err(incoherent(
+            "epoch body does not match replayed predecessor state",
+        ));
+    }
+    let expected_identity = GrantsAuthorityIdentityV1 {
+        mother_node_id: entry.mother_node_id.clone(),
+        authority_epoch: fact.authority_epoch.clone(),
+        generation: fact.generation_baseline,
+        source_authority_observation_id: entry.observation.observation_id.to_string(),
+    };
+    if fact.resulting_authority != expected_identity {
+        return Err(incoherent("epoch resulting authority identity is invalid"));
+    }
+    Ok(())
+}
+
 pub fn forensic_root_path(ledger_path: &Path) -> PathBuf {
     let file_name = ledger_path
         .file_name()
@@ -794,6 +1186,7 @@ fn open_with_recovery_hook(
         next_sequence: state.next_sequence,
         previous_hash: state.previous_hash,
         recovery_status,
+        authority_tenure: None,
         writer_state: LedgerWriterState::Ready,
         #[cfg(test)]
         append_fault: None,
@@ -2103,6 +2496,103 @@ mod tests {
         ));
         assert_eq!(std::fs::read(&path).unwrap(), ledger_before);
         assert_eq!(forensic_tree(&path), forensics_before);
+    }
+
+    /// Phase H2 proof 1: an authority writer exposes only an acknowledged epoch fact.
+    #[test]
+    fn fresh_authority_tenure_commits_epoch_before_mutation_admission() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+
+        let ledger = JsonlObservationLedger::open_authority(&path, "ledger-a", "mother-a")
+            .expect("fresh authority tenure must commit its epoch");
+        let tenure = ledger.authority_tenure().expect("epoch is exposed");
+        let entries = ledger.entries().unwrap();
+
+        assert_eq!(tenure.entry.local_sequence, 0);
+        assert_eq!(entries, vec![tenure.entry.clone()]);
+        assert_eq!(
+            tenure.fact.predecessor,
+            AuthorityEpochPredecessorV1::NoneForVirgin
+        );
+        assert_eq!(tenure.fact.generation_baseline, 0);
+        assert_eq!(
+            tenure.fact.resulting_authority.authority_epoch,
+            tenure.fact.authority_epoch
+        );
+        assert!(
+            tenure
+                .fact
+                .authority_epoch
+                .starts_with(AUTHORITY_EPOCH_PREFIX_V1)
+        );
+    }
+
+    /// Phase H2 proof 2: each tenure, including a byte-copied restore, receives fresh entropy identity.
+    #[test]
+    fn authority_tenures_and_byte_copied_restore_use_distinct_epochs() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.jsonl");
+        let first_epoch = {
+            let ledger =
+                JsonlObservationLedger::open_authority(&source, "ledger-a", "mother-a").unwrap();
+            ledger
+                .authority_tenure()
+                .unwrap()
+                .fact
+                .authority_epoch
+                .clone()
+        };
+        let second_epoch = {
+            let ledger =
+                JsonlObservationLedger::open_authority(&source, "ledger-a", "mother-a").unwrap();
+            ledger
+                .authority_tenure()
+                .unwrap()
+                .fact
+                .authority_epoch
+                .clone()
+        };
+        let restored = dir.path().join("restored.jsonl");
+        std::fs::copy(&source, &restored).unwrap();
+        std::fs::write(
+            dir.path().join("restored-projection.sqlite"),
+            b"byte-copied-projection",
+        )
+        .unwrap();
+        let restored_ledger =
+            JsonlObservationLedger::open_authority(&restored, "ledger-a", "mother-a").unwrap();
+        let restored_epoch = &restored_ledger
+            .authority_tenure()
+            .unwrap()
+            .fact
+            .authority_epoch;
+
+        assert_ne!(first_epoch, second_epoch);
+        assert_ne!(&first_epoch, restored_epoch);
+        assert_ne!(&second_epoch, restored_epoch);
+    }
+
+    /// Phase H2 proof 3: ledger bytes alone reproduce the complete current epoch identity.
+    #[test]
+    fn epoch_identity_is_replay_complete_from_ledger_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let expected = {
+            let ledger =
+                JsonlObservationLedger::open_authority(&path, "ledger-a", "mother-a").unwrap();
+            ledger
+                .authority_tenure()
+                .unwrap()
+                .fact
+                .resulting_authority
+                .clone()
+        };
+        let entries = read_ledger_entries(&path, "ledger-a", "mother-a").unwrap();
+        let replayed = replay_authority_entries(&entries).unwrap();
+
+        assert_eq!(replayed.current_authority, Some(expected));
+        assert_eq!(replayed.canonical_fact_count, 1);
     }
 
     #[test]
