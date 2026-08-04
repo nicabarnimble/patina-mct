@@ -245,7 +245,9 @@ pub struct MctObservation {
     pub visibility: ObservationVisibility,
     /// Audience-safe summary for projections.
     pub safe_message: String,
-    /// Opaque reference to privileged detail outside this record.
+    /// Privileged detail carrier. Values prefixed `mct-authority-fact-v1:` are inline,
+    /// replay-complete canonical authority payloads; every other value remains an opaque
+    /// reference whose contents do not establish authority.
     pub detail_ref: Option<String>,
 }
 
