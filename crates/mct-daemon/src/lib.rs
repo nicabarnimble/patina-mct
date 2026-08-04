@@ -23,6 +23,7 @@ mod metrics;
 mod process;
 mod registry;
 mod release;
+mod startup;
 mod state;
 mod status;
 mod supervisor;
@@ -122,6 +123,12 @@ pub use release::{
     VerifiedDaemonReleaseArchive, acquire_operator_file_daemon_release_offline,
     acquire_operator_file_daemon_release_with_observer, plan_daemon_release_source,
     verify_and_extract_daemon_release_archive,
+};
+pub use startup::{
+    MctAuthorityStartupEvidenceV1, MctStartupArtifactClassV1, MctStartupArtifactEntryV1,
+    MctStartupArtifactFileTypeV1, MctStartupArtifactInventoryV1, MctStartupArtifactStateV1,
+    MctStartupClassificationErrorV1, MctStartupPaths, classify_authority_startup,
+    classify_startup_artifacts,
 };
 pub use state::{
     ChildInvocationProvenance, MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER, MCT_IDEMPOTENCY_TTL_SECONDS,
