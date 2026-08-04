@@ -1953,46 +1953,26 @@ listens = []
         (shutdown_tx, server)
     }
 
-    async fn revoke_after_writer_release(
+    fn revoke_after_joined_shutdown(
         config_path: &Path,
         state_path: &Path,
         ledger_path: &Path,
         revoke: &crate::triggers::TriggerRevokeRequest,
     ) -> CallTriggerAuthority {
-        for _ in 0..100 {
-            match crate::triggers::execute_offline_trigger_mutation(
-                config_path,
-                state_path,
-                ledger_path,
-                501,
-                "/triggers/revoke",
-                &serde_json::to_vec(revoke).unwrap(),
-            ) {
-                Ok(authority) => return authority,
-                Err(error) => {
-                    let detail = format!("{error:#}");
-                    if detail.contains("already locked by another writer") {
-                        tokio::time::sleep(Duration::from_millis(10)).await;
-                    } else {
-                        panic!("offline trigger revocation failed: {detail}");
-                    }
-                }
-            }
-        }
-        panic!("resident observation writer did not release after shutdown");
+        crate::triggers::execute_offline_trigger_mutation(
+            config_path,
+            state_path,
+            ledger_path,
+            501,
+            "/triggers/revoke",
+            &serde_json::to_vec(revoke).unwrap(),
+        )
+        .expect("joined resident shutdown must release its ledger writer")
     }
 
-    async fn spawn_test_ledger_after_writer_release(path: &Path) -> ResidentLedgerWriter {
-        for _ in 0..100 {
-            match ResidentLedgerWriter::spawn(path.to_path_buf()) {
-                Ok(ledger) => return ledger,
-                Err(error) if format!("{error:#}").contains("already locked by another writer") => {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-                Err(error) => panic!("open test ledger writer failed: {error:#}"),
-            }
-        }
-        panic!("resident observation writer did not release after shutdown")
+    fn spawn_test_ledger_after_joined_shutdown(path: &Path) -> ResidentLedgerWriter {
+        ResidentLedgerWriter::spawn(path.to_path_buf())
+            .expect("joined resident writer shutdown must release its ledger lock")
     }
 
     async fn wait_for_trigger_disposition(
@@ -2029,7 +2009,7 @@ listens = []
         clock: Arc<ManualClock>,
         authority: &CallTriggerAuthority,
     ) -> (MctTriggerFiringRecord, MctTriggerPendingOccurrenceRecord) {
-        let ledger = spawn_test_ledger_after_writer_release(ledger_path).await;
+        let ledger = spawn_test_ledger_after_joined_shutdown(ledger_path);
         let scheduler = TriggerScheduler::new(
             paths.clone(),
             ledger.clone(),
@@ -2327,7 +2307,7 @@ listens = []
             expected_revision: 1,
         };
         let revoked =
-            revoke_after_writer_release(&config_path, &state_path, &ledger_path, &revoke).await;
+            revoke_after_joined_shutdown(&config_path, &state_path, &ledger_path, &revoke);
         assert_eq!(revoked.authority_state, CallTriggerAuthorityState::Revoked);
         let next_after_last_disposition = occurrence_at(&revoked, 3).unwrap().1;
         clock.set(next_after_last_disposition.as_str());
@@ -2651,7 +2631,7 @@ listens = []
         assert_eq!(created.missed_fire_policy, MissedFirePolicy::Skip);
         assert_eq!(created.overlap_policy, OverlapPolicy::Refuse);
 
-        let ledger = spawn_test_ledger_after_writer_release(&ledger_path).await;
+        let ledger = spawn_test_ledger_after_joined_shutdown(&ledger_path);
         let paths = ResidentRuntimePaths::new(
             config_path.clone(),
             children_dir.clone(),
@@ -2739,7 +2719,7 @@ listens = []
         assert_eq!(reconciled.summary().unwrap().active_trigger_firings, 0);
         drop(reconciled);
 
-        let recovered_ledger = spawn_test_ledger_after_writer_release(&ledger_path).await;
+        let recovered_ledger = spawn_test_ledger_after_joined_shutdown(&ledger_path);
         let mut recovered = TriggerScheduler::new(
             paths,
             recovered_ledger.clone(),

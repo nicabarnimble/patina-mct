@@ -171,8 +171,35 @@ contract TwoPhaseRouting {
         -- Authority is rechecked at execution time so expired grants, revoked peers, revoked children, or changed data policy cannot be bypassed by a stale routing decision.
 
     @invariant EffectBoundaryRevisionGuardIsDistinct
-        -- After route revalidation and immediately before a local child effect, current policy and
-        -- grant revisions must still match the revisions carried by the minted execution authority.
+        -- After route revalidation and immediately before a local Child effect, current policy and
+        -- grants authority are independently obtained from one coherent executing-Mother snapshot
+        -- and must match the minted execution authority. A value copied from the call, route token,
+        -- or capability being checked cannot establish currentness.
+
+    @invariant ExecutionTokenBindsExactCall
+        -- Execution authority names the exact call it admits; a token minted for another call
+        -- denies before a Child, Toy, runtime, or backend effect even when revisions are equal.
+
+    @invariant ExecutionTokenBindsSelectedChild
+        -- Execution authority names the selected Child identity and instance; another Child or
+        -- instance cannot consume it merely because call or revision facts match.
+
+    @invariant EffectAdmissionIsOrderedWithAuthorityMutation
+        -- Authority mutation and effect admission have one observable order. A revocation committed
+        -- before admission denies; a revocation committed after an external effect has started
+        -- cannot retroactively undo that already-started effect.
+
+    @invariant MutationCommitAndEffectStartHaveOneOrder
+        -- Canonical authority-mutation commitment and final protected-effect admission share one
+        -- executing-Mother order. An uncertain mutation commit admits no effect.
+
+    @invariant ProjectionLagCannotOvertakeRevocation
+        -- After a revocation fact commits, a stale projection cannot admit an effect while projection
+        -- recovery is incomplete or current canonical coverage is otherwise unprovable.
+
+    @invariant EffectPermitCannotRefreshItself
+        -- Stale effect authority denies without implicit refresh. Retry requires a complete new
+        -- authority evaluation and newly minted token.
 
     @invariant EffectBoundaryGuardCannotRepairStaleAuthority
         -- A revision mismatch denies before the child effect; the adapter cannot refresh, widen,
@@ -621,6 +648,7 @@ entity MctHelloResponse {
     hello_outcome: admitted | denied | retry_later | upgrade_required
     negotiated_protocol: MctProtocolVersion?
     accepted_alpns: List<String>
+    receiving_grants_authority: GrantsAuthorityIdentity?
     safe_message: String
     retry_after: Timestamp?
     response_observation_id: String
@@ -706,6 +734,10 @@ surface MctHelloResponseProjection {
         response.negotiated_protocol.major
         response.negotiated_protocol.minor
         response.accepted_alpns
+        response.receiving_grants_authority.mother_node_id
+        response.receiving_grants_authority.authority_epoch
+        response.receiving_grants_authority.generation
+        response.receiving_grants_authority.source_authority_observation_id
         response.safe_message
         response.retry_after
         response.response_observation_id
@@ -729,6 +761,22 @@ contract MctHelloProtocol {
 
     @invariant CapabilityViewIsNotGrant
         -- Capability advertisements during hello do not grant child, toy, thought, observation, or data authority.
+
+    @invariant PeerEchoOnlyDetectsStaleness
+        -- An admitted hello advertises the receiving Mother's grants-authority identity and a call
+        -- echoes it only for early stale rejection; the echo supplies no execution authority.
+
+    @invariant ForgedCurrentGenerationDoesNotGrantAuthority
+        -- Guessing or copying the receiver's current generation cannot authorize a peer, route,
+        -- Child, Toy, data movement, or effect without the receiver's complete local evaluation.
+
+    @invariant ReceiverAlwaysUsesLocalAuthority
+        -- The receiving Mother evaluates every call from her own coherent current authority state,
+        -- regardless of the revisions or grants-authority identity carried by the caller.
+
+    @invariant GenerationNamespaceMustMatchReceiver
+        -- A peer echo is current only when Mother identity, authority epoch, and generation exactly
+        -- match the receiving Mother's advertised local grants-authority identity.
 
     @invariant CallableSurfacesUseCompanionPublicationMeaning
         -- Each callable surface is interpreted through `CapabilityPublicationRelationship` as a
@@ -791,15 +839,44 @@ value PayloadMetadata {
     contains_secret_scoped_material: Boolean
 }
 
+value GrantsAuthorityIdentity {
+    mother_node_id: String
+    authority_epoch: String
+    generation: Integer
+    source_authority_observation_id: String
+}
+
 value AuthorityContextSnapshot {
     policy_revision: Integer
-    grants_revision: Integer
+    expected_receiver_grants_authority: GrantsAuthorityIdentity
     vision_policy_revision: Integer
+}
+
+value EffectiveCallDeadline {
+    caller_deadline: Timestamp
+    accepted_at: Timestamp
+    local_horizon_deadline: Timestamp
+    stricter_local_policy_deadline: Timestamp?
+    effective_deadline: Timestamp
+}
+
+value LocalExecutionAuthoritySnapshot {
+    executing_mother_node_id: String
+    policy_revision: Integer
+    grants_authority: GrantsAuthorityIdentity
+    vision_policy_revision: Integer
+    effective_deadline: EffectiveCallDeadline
+    source_authority_observation_id: String
 }
 
 value TraceContext {
     trace_id: String
     span_id: String
+}
+
+config {
+    max_call_horizon: Duration = 600.seconds
+    max_clock_uncertainty: Duration = 0.seconds
 }
 
 entity MctCall {
@@ -835,7 +912,10 @@ surface MctCallSubmission {
         call.payload_metadata.approximate_size_bytes
         call.payload_metadata.contains_secret_scoped_material
         call.authority_context.policy_revision
-        call.authority_context.grants_revision
+        call.authority_context.expected_receiver_grants_authority.mother_node_id
+        call.authority_context.expected_receiver_grants_authority.authority_epoch
+        call.authority_context.expected_receiver_grants_authority.generation
+        call.authority_context.expected_receiver_grants_authority.source_authority_observation_id
         call.authority_context.vision_policy_revision
         call.deadline
         call.trace_context.trace_id
@@ -863,6 +943,40 @@ contract MctCallAtomicity {
 
     @invariant PayloadMetadataPrecedesPayloadInspection
         -- Routing can evaluate classification and movement cost from metadata without requiring business payload deserialization.
+}
+
+contract MctCallAuthorityAndDeadline {
+    @invariant CallerAuthorityCannotBecomeLocalAuthorityByCopying
+        -- The call authority context is a caller-carried expectation snapshot. Copying any of its
+        -- values into another record cannot establish the executing Mother's current authority.
+
+    @invariant LocalExecutionSnapshotHasMotherProvenance
+        -- Execution authority identifies the executing Mother and is produced only from that
+        -- Mother's locally verifiable policy, grants, time, and canonical authority evidence.
+
+    @invariant LocalSnapshotIsCoherent
+        -- One local execution snapshot binds policy, grants authority, effective deadline, and
+        -- source evidence from one coherent authority state rather than independently mixed reads.
+
+    @invariant ExecutingMotherClockIsAuthoritative
+        -- The executing Mother's current clock governs call admission, effect admission, grant
+        -- windows, and token expiry; a caller's clock cannot extend local authority.
+
+    @invariant CallerDeadlineCannotExtendLocalHorizon
+        -- The effective deadline is the earliest of the caller deadline, acceptance plus the
+        -- configured maximum call horizon, and any stricter local policy bound.
+
+    @invariant ExpiredCallsDoNotBeginEffects
+        -- A call whose effective deadline is at or before the executing Mother's current time is
+        -- rejected before any Child, Toy, runtime, or backend effect begins.
+
+    @invariant TokenExpiryDoesNotExceedEffectiveDeadline
+        -- Every effect token and delegated capability expires no later than the call's effective
+        -- deadline, even when its underlying grant names a later expiry or no expiry.
+
+    @invariant ClockUncertaintyFailsClosedBeyondConfiguredTolerance
+        -- Clock uncertainty beyond the configured local tolerance denies protected effect
+        -- admission and never becomes positive grace for a caller-supplied deadline.
 }
 
 -- Decision: 2026-07-14 W1 disposition of REPORT-2 B6: a local application adapter
@@ -1737,7 +1851,7 @@ value MctCallProtocolAuthority {
     accepted_alpn: String
     endpoint_id: String
     policy_revision: Integer
-    grants_revision: Integer
+    expected_receiver_grants_authority: GrantsAuthorityIdentity
 }
 
 value MctCallPayloadHandle {
@@ -1811,7 +1925,10 @@ surface MctCallProtocolRequestProjection {
         request.authority.accepted_alpn
         request.authority.endpoint_id
         request.authority.policy_revision
-        request.authority.grants_revision
+        request.authority.expected_receiver_grants_authority.mother_node_id
+        request.authority.expected_receiver_grants_authority.authority_epoch
+        request.authority.expected_receiver_grants_authority.generation
+        request.authority.expected_receiver_grants_authority.source_authority_observation_id
         request.received_over.endpoint_id
         request.received_over.path_class
         request.call.call_id
@@ -2777,6 +2894,54 @@ contract MctLocalFirstObservationLedger {
         -- Export or projection failure affects export health and retry state, not the underlying observation truth.
 }
 
+contract MctLedgerCommitAndRecovery {
+    @invariant ValidatedSurvivingPrefixIsCanonical
+        -- Canonical ledger truth is the maximal surviving prefix of complete framed entries whose
+        -- source identity, local sequence, and hash lineage all validate.
+
+    @invariant CompleteUnacknowledgedFactsResolveByRecovery
+        -- A complete valid fact found in that surviving prefix is committed even when its caller did
+        -- not receive success. An uncertain authority mutation reports `commit_unknown`; retry with
+        -- the same mutation identity resolves it, while a new identity cannot guess around it.
+
+    @invariant UnterminatedTailIsResidue
+        -- Only one unterminated final frame may be classified as automatic crash residue. Its bytes
+        -- are never a fact even when they happen to decode as a complete entry value.
+
+    @invariant ResidueIsPreservedBeforeSetAside
+        -- Before residue is set aside, its exact bytes, source identity, offset and length, digest,
+        -- last committed head, failure class, recovery decision identity, and recovery time survive
+        -- under the Mother's private durable evidence indefinitely without automatic export.
+
+    @invariant CorruptionIsNeverSkipped
+        -- A terminated malformed frame, hash failure, sequence discontinuity, or foreign lineage is
+        -- preserved with diagnostic evidence and quarantines the ledger. It is never skipped,
+        -- truncated, renumbered, repaired, or automatically adopted. A quarantined Mother may expose
+        -- only the isolated owner-readable health and forensic plane; mutation and authority surfaces deny.
+
+    @invariant CommittedFactsAreNeverRewritten
+        -- Recovery may set aside proven uncommitted residue but never changes or rolls back a fact in
+        -- the committed validated prefix. A committed batch prefix remains canonical after later failure.
+
+    @invariant UncertainAppendPoisonsWriter
+        -- After an append can no longer prove whether offered bytes committed, that writer admits no
+        -- later append. Only close, exclusive reopen, and full rescan can resolve the fact as committed,
+        -- residue, or quarantine.
+
+    @invariant BeforeEffectRequiresAcknowledgedCommit
+        -- A protected effect does not begin when any required BeforeEffect fact has an unsuccessful
+        -- or uncertain acknowledgement, even if later recovery finds that fact committed.
+
+    @invariant OneWriterDefinesLocalOrder
+        -- Exactly one exclusive writer defines a ledger's local append order. Contention fails fast
+        -- and changes no ledger, projection, recovery state, or forensic artifact; ordinary supervisor
+        -- restart policy is the retry mechanism.
+
+    @invariant EntryEncodingCannotForgeFrameEnd
+        -- Serialized entry content cannot contain an unescaped frame terminator, so only the ledger's
+        -- framing boundary can terminate an entry.
+}
+
 -- Decision: MCT adopts the Clojure-style distinction between identity, immutable value, and state as a succession of values.
 -- Decision: Change in MCT is represented by appending new immutable facts or publishing new immutable snapshots, not by rewriting hidden mutable objects.
 -- Decision: Old facts remain true as evidence. Corrections, revocations, retries, supersessions, and status changes are represented as later facts that explain or replace current projections.
@@ -2822,11 +2987,15 @@ surface MctIdentityTimelineView {
 
 entity MctProjectionCursor {
     projection_id: String
-    projection_kind: route_cache | grant_table | child_readiness | node_health | trace_tree | metric_rollup | audit_view | telemetry_export
+    projection_kind: route_cache | grant_table | authority_state | child_readiness | node_health | trace_tree | metric_rollup | audit_view | telemetry_export
+    source_mother_node_id: String
     source_ledger_id: String
     through_sequence: Integer
     through_observation_id: String
+    through_entry_hash: String
+    grants_authority: GrantsAuthorityIdentity?
     projection_hash: String
+    projection_status: rebuilding | current | stale | quarantined
     updated_at: Timestamp
 }
 
@@ -2842,11 +3011,107 @@ surface MctProjectionStatus {
     exposes:
         projection.projection_id
         projection.projection_kind
+        projection.source_mother_node_id
         projection.source_ledger_id
         projection.through_sequence
         projection.through_observation_id
+        projection.through_entry_hash
+        projection.grants_authority.mother_node_id
+        projection.grants_authority.authority_epoch
+        projection.grants_authority.generation
+        projection.grants_authority.source_authority_observation_id
         projection.projection_hash
+        projection.projection_status
         projection.updated_at
+}
+
+contract MctAuthorityProjectionFreshness {
+    @invariant AuthorityProjectionIdentifiesCanonicalSource
+        -- A grant-authority projection identifies the executing Mother's canonical source ledger
+        -- and exact grants-authority identity from which its facts were derived.
+
+    @invariant AuthorityProjectionCoversCurrentGeneration
+        -- Authority evaluation may use a projection only when an authority-state cursor proves
+        -- coverage of the current canonical grants-authority generation rather than merely a formerly
+        -- valid generation. Domain cursors such as trigger or watch checkpoints are diagnostics for
+        -- their own replay and cannot serve as this authority proof.
+
+    @invariant ProjectionVersionAndFactsAreCoherent
+        -- The projected grant facts and the grants-authority identity exposed with them describe
+        -- one coherent projected state and cannot be assembled from different generations.
+
+    @invariant UnprovableFreshnessDenies
+        -- When current canonical generation coverage cannot be proved, authority evaluation denies
+        -- instead of treating cached, missing, or ambiguous projection state as current.
+
+    @invariant AuthorityCursorReachesCanonicalHead
+        -- A current authority-state projection proves it processed the canonical ledger through its
+        -- committed head, including entries that do not themselves change authority. The first such
+        -- projection covers Toy catalog and grants plus their grant-shaping source facts.
+
+    @invariant CursorBindsHeadHashAndAuthorityIdentity
+        -- Authority coverage binds the source Mother, source ledger, committed sequence and entry hash,
+        -- authority epoch, generation, and source authority observation as one proof.
+
+    @invariant ProjectionFactsAndCursorBecomeVisibleTogether
+        -- Authority facts, projection hash, projection status, and cursor describe one coherent visible
+        -- state; a new cursor cannot expose old facts and new facts cannot expose an old cursor.
+
+    @invariant EpochMismatchDenies
+        -- Projection facts from another authority epoch grant no authority even when their generation,
+        -- source sequence, or record digests happen to match.
+
+    @invariant RebuildEqualsReplay
+        -- Rebuilding from the same validated committed history produces the same authority facts,
+        -- authority identity, and projection hash as uninterrupted incremental replay.
+}
+
+contract MctAuthorityEpochContinuity {
+    @invariant EpochBeginsWithCanonicalFact
+        -- Authority evaluation and advertisement begin only after one committed canonical epoch fact
+        -- names the Mother, source ledger, predecessor head when known, and generation baseline. A
+        -- Mother is virgin only when every daemon-written durable artifact is absent; otherwise
+        -- initialization requires an operator gate.
+
+    @invariant WriterTenureUsesFreshEpoch
+        -- Every successful exclusive writer tenure establishes a fresh non-repeating authority epoch
+        -- before authority evaluation or advertisement becomes available.
+
+    @invariant EpochTransitionPreservesCurrentGrantMeaning
+        -- A writer-tenure epoch transition invalidates prior authority tokens without silently
+        -- widening, narrowing, creating, or removing the current grant set.
+
+    @invariant RestoredHistoryCannotReuseAuthorityIdentity
+        -- Ledger replacement, restoration, or reinitialization cannot make a previously used
+        -- Mother, authority epoch, and generation identity current again.
+
+    @invariant ProjectionEpochMustMatchCanonicalEpoch
+        -- Projection facts under an epoch other than the current canonical epoch grant no authority,
+        -- irrespective of matching generation or record values.
+}
+
+contract MctCanonicalAuthorityFacts {
+    @invariant LedgerFactsAreCanonicalAuthority
+        -- Current grant and catalog authority derives from committed canonical ledger facts rather
+        -- than configuration or projection records.
+
+    @invariant MutationAndGenerationAdvanceAreOneFact
+        -- One logical authority-shape mutation and its resulting generation advance are represented
+        -- by one committed canonical fact, never by independently committable authority changes.
+
+    @invariant AuthorityFactIsReplayComplete
+        -- A canonical authority fact carries enough structured meaning to reconstruct its resulting
+        -- authority state; a digest, safe message, or projection row alone is insufficient.
+
+    @invariant ConfigurationIsIntentNotAuthority
+        -- Configuration and existing projected grant state may request only a one-time operator-gated
+        -- import committed as canonical facts; disagreement with the ledger never grants, retains, or
+        -- revokes authority by itself.
+
+    @invariant ProjectionFailureDoesNotUndoCommit
+        -- A committed authority fact remains canonical when projection fails. Mutation results
+        -- distinguish `committed`, `committed_projection_pending`, `commit_unknown`, and
+        -- `rejected_before_commit`; authority use denies until coherent projection coverage returns.
 }
 
 contract MctImmutabilityModel {
@@ -3309,12 +3574,35 @@ contract MctChildComponentLifecycle {
 -- Decision: MCT uses a closed canonical toy catalog. Unknown, legacy, experimental, or convenience capability names are denied by default until explicitly admitted as canonical toy contracts.
 -- Decision: A manifest `need` is a request for host authority. It can inform review, planning, and fixture compatibility, but it never grants execution authority by itself.
 -- Decision: A `ToyGrant` is scoped by subject, canonical toy contract, Vision, Node, project/app, data/resource/action, issuer, policy revision, and time bounds.
--- Decision: Runtime toy execution requires an `AuthorizedToyCall` produced by grant evaluation for the current call, child assignment, artifact version, policy revision, and grant revision.
+-- Decision: Runtime toy execution requires an `AuthorizedToyCall` produced by grant evaluation for the current call, child assignment, artifact version, policy revision, and grants-authority identity.
 -- Decision: Grant evaluation is part of Phase 1 authority. The route planner may consume grant snapshots for speed, but it cannot create or expand grants.
 -- Decision: Expiration, revocation, supersession, and correction of grants are represented as later immutable observations/facts. Prior grant facts remain audit evidence.
 -- Decision: Grant snapshots may be compiled for hot paths, but the source of truth remains structured `ToyGrant` facts plus the observation ledger.
 -- Decision: Toy backend/runtime failures are adapter-effect outcomes, not authority decisions. They emit toy execution observations and may result in failed or timed-out `MctResult` values.
 -- Decision: Required fixture children such as `slate-manager@0.2.0`, `folder-watch-actor@0.1.0`, and `watch-null-sink@0.1.0` must work through explicit canonical toy grants, not through broad legacy capability expansion.
+
+contract MctGrantsAuthorityGeneration {
+    @invariant GrantGenerationIsMotherOwned
+        -- One grants-authority identity belongs to one executing Mother and is established only by
+        -- her canonical local authority facts and source observation.
+
+    @invariant GrantGenerationNeverRepeatsWithinEpoch
+        -- Generation increases monotonically and never repeats within one authority epoch;
+        -- replacement, restoration, or reinitialization requires a distinct epoch.
+
+    @invariant AuthorityChangingFactsAdvanceGeneration
+        -- Catalog admission or removal, grant creation, activation, revocation, supersession,
+        -- denial, and scope or constraint correction advance the generation.
+
+    @invariant ConsumptionStateIsALiveFact
+        -- Usage counters and metered limits are checked as current effect-time facts and do not
+        -- advance the authority-shape generation merely because authority was consumed.
+
+    @invariant TimeBoundsRemainLiveFacts
+        -- Time passing does not advance generation and never becomes safe through generation
+        -- equality; current time bounds are checked at effect admission, while a materialized
+        -- expiry authority fact advances generation.
+}
 
 value ToyContractIdentity {
     namespace: String
@@ -3357,6 +3645,15 @@ value ToyGrantConstraints {
     locality_required: Boolean
 }
 
+value AuthorizedToyEffectScope {
+    action: String
+    resource_id: String?
+    vision_id: String
+    node_id: String?
+    project_id: String?
+    data_classification: String?
+}
+
 entity ToyGrant {
     grant_id: String
     toy_id: String
@@ -3366,7 +3663,7 @@ entity ToyGrant {
     grant_state: requested | active | expired | revoked | superseded | denied
     issuer_id: String
     policy_revision: Integer
-    grants_revision: Integer
+    grants_authority: GrantsAuthorityIdentity
     authority_observation_id: String
 }
 
@@ -3380,7 +3677,7 @@ entity ToyGrantEvaluation {
     verdict: allowed | denied
     reason_code: active_grant | missing_grant | expired_grant | revoked_grant | wrong_scope | unknown_toy | policy_denied | stale_snapshot
     policy_revision: Integer
-    grants_revision: Integer
+    grants_authority: GrantsAuthorityIdentity
     observation_id: String
 }
 
@@ -3392,6 +3689,8 @@ entity AuthorizedToyCall {
     toy_id: String
     child_instance_id: String
     authority_decision_id: String
+    local_authority: LocalExecutionAuthoritySnapshot
+    effect_scope: AuthorizedToyEffectScope
     expires_at: Timestamp
 }
 
@@ -3457,7 +3756,10 @@ surface ToyGrantProjection {
         grant.grant_state
         grant.issuer_id
         grant.policy_revision
-        grant.grants_revision
+        grant.grants_authority.mother_node_id
+        grant.grants_authority.authority_epoch
+        grant.grants_authority.generation
+        grant.grants_authority.source_authority_observation_id
         grant.authority_observation_id
 }
 
@@ -3475,7 +3777,10 @@ surface ToyGrantEvaluationProjection {
         evaluation.verdict
         evaluation.reason_code
         evaluation.policy_revision
-        evaluation.grants_revision
+        evaluation.grants_authority.mother_node_id
+        evaluation.grants_authority.authority_epoch
+        evaluation.grants_authority.generation
+        evaluation.grants_authority.source_authority_observation_id
         evaluation.observation_id
 }
 
@@ -3491,6 +3796,21 @@ surface AuthorizedToyCallProjection {
         authorized.toy_id
         authorized.child_instance_id
         authorized.authority_decision_id
+        authorized.local_authority.executing_mother_node_id
+        authorized.local_authority.policy_revision
+        authorized.local_authority.grants_authority.mother_node_id
+        authorized.local_authority.grants_authority.authority_epoch
+        authorized.local_authority.grants_authority.generation
+        authorized.local_authority.grants_authority.source_authority_observation_id
+        authorized.local_authority.vision_policy_revision
+        authorized.local_authority.effective_deadline.effective_deadline
+        authorized.local_authority.source_authority_observation_id
+        authorized.effect_scope.action
+        authorized.effect_scope.resource_id
+        authorized.effect_scope.vision_id
+        authorized.effect_scope.node_id
+        authorized.effect_scope.project_id
+        authorized.effect_scope.data_classification
         authorized.expires_at
 }
 
@@ -3506,6 +3826,32 @@ contract MctToyGrantAuthority {
 
     @invariant EvaluationProducesAuthorizationToken
         -- Toy execution receives authority only through an `AuthorizedToyCall` produced by current grant evaluation.
+
+    @invariant ToyTokenBindsCallAndEffect
+        -- A Toy token binds the exact call, Child instance, canonical Toy, action, resource scope,
+        -- local authority identity, and effective deadline admitted by its evaluation.
+
+    @invariant EveryToyEffectRevalidatesCurrentAuthority
+        -- Every host-mediated Toy effect, and every delegated-capability admission, rechecks the
+        -- executing Mother's current grants authority before the protected effect begins.
+
+    @invariant ToyEffectChecksExactGrant
+        -- Effect admission requires the exact grant to remain active and to cover the token's
+        -- Child, Toy, action, resource, Vision, Node, project, and data scope.
+
+    @invariant ToyTokenExpiryIsEnforced
+        -- At or after token expiry the effect denies without invoking its backend; before expiry
+        -- still requires every other current authority check.
+
+    @invariant RevocationBeforeEffectAdmissionDenies
+        -- A revocation committed before Toy effect admission denies that effect and cannot be
+        -- bypassed by a token minted from an earlier grant snapshot.
+
+    @invariant DelegatedCapabilitiesHaveBoundedRevocationSemantics
+        -- Delegated capability admission performs the current checks once and binds an expiry no
+        -- later than the effective deadline. v0 authority changes block new delegations but do not
+        -- retroactively revoke an already-admitted delegation before that bounded expiry;
+        -- per-operation mediation and active revocation remain future law.
 
     @invariant RoutePlannerCannotGrantToys
         -- The planner may rank routes that survived grant checks but cannot create, widen, or infer toy grants.

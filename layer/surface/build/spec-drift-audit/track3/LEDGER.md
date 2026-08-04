@@ -1,6 +1,6 @@
 # Contract obligation ledger
 
-Status date: 2026-07-12; W2 extension 2026-07-14; Daily-Driver Slice 2 extension 2026-07-15; artifact-acquisition extension 2026-07-16; trigger-runtime Part A extension 2026-07-21
+Status date: 2026-07-12; W2 extension 2026-07-14; Daily-Driver Slice 2 extension 2026-07-15; artifact-acquisition extension 2026-07-16; trigger-runtime Part A extension 2026-07-21; grants-authority v0 Phase G extension 2026-08-02; ledger commit/recovery Phase H/H2 extension 2026-08-03
 
 Scope: complete named-invariant coverage for `mct-product-map.allium` and `mct-peer-ontology.allium`, plus bulk attribution of tool-derived structural obligations. The 2026-07-12 priority and full-inventory evidence is retained in place; the 2026-07-14 local-application-ingress invariants and W2-A remediation obligations extend it below.
 
@@ -12,6 +12,152 @@ Scope: complete named-invariant coverage for `mct-product-map.allium` and `mct-p
 - **DEFERRED** — the law explicitly assigns the behaviour to a named future scope; no current execution path exists to test.
 
 Module names distinguish library tests from binary-local tests: `mct_daemon_bin` denotes tests under `crates/mct-daemon/src/daemon/`.
+
+## Ledger commit and recovery — Phase H / Review 2
+
+The ratified Review 2 law is captured in [ledger-commit-recovery](../../feat/ledger-commit-recovery/SPEC.md). Phase H implemented R2-L1/R2-L2; Phase H2 now implements the R2-L3/R2-L4 write, replay, projection, and proof-construction slices. The proof remains deliberately unconsumed: R2-L5 startup/read-path denial, R2-L6 mutation/effect ordering, and grants-authority slices 4-8 remain `DEFERRED`.
+
+### Ledger commit and recovery — R2-L1/R2-L2 targets
+
+| Invariant | Current status | Phase disposition / evidence |
+|---|---|---|
+| `MctLedgerCommitAndRecovery.ValidatedSurvivingPrefixIsCanonical` | COVERED | Proofs 1-8: `mct_observation::tests::{crash_before_frame_bytes_reopens_at_previous_head,torn_unterminated_tail_is_preserved_and_recovered,terminated_malformed_frame_quarantines_and_preserves_entire_ledger,hash_break_quarantines_with_diagnostic_evidence,every_sequence_discontinuity_quarantines_without_repair,wrong_identity_is_typed_foreign_lineage_without_adoption,complete_unacknowledged_final_frame_is_committed_on_rescan}`. |
+| `CompleteUnacknowledgedFactsResolveByRecovery` | COVERED | Proofs 8 and 10: `complete_unacknowledged_final_frame_is_committed_on_rescan` and `poisoned_writer_reopen_resolves_all_three_commit_states`. Authority mutation-ID result semantics remain deferred to R2-L3. |
+| `UnterminatedTailIsResidue` | COVERED | Proofs 2-4: `torn_unterminated_tail_is_preserved_and_recovered`, `unparseable_unterminated_final_frame_is_residue`, and terminated-malformed quarantine. |
+| `ResidueIsPreservedBeforeSetAside` | COVERED | Proofs 2, 3, and 13: exact forensic preservation plus `interrupted_recovery_is_idempotent_at_every_preservation_stage`. |
+| `CorruptionIsNeverSkipped` | COVERED | Proofs 4-7: terminated malformed, hash, sequence, and foreign-lineage tests preserve without repair. The degraded read-only Mother plane remains deferred to R2-L5. |
+| `CommittedFactsAreNeverRewritten` | COVERED | Proofs 2, 4, 6, and 11: recovery leaves committed entries unchanged and `batch_failure_reports_and_preserves_acknowledged_committed_prefix` proves no rollback. |
+| `UncertainAppendPoisonsWriter` | COVERED | Proofs 9 and 10: `write_and_sync_uncertainty_poison_writer_without_later_file_changes` and three-way reopen resolution. |
+| `BeforeEffectRequiresAcknowledgedCommit` | COVERED | Proof 15: `mct_daemon_bin::resident::pipeline::tests::before_effect_append_failure_suppresses_child_effect`. |
+| `OneWriterDefinesLocalOrder` | COVERED | Proof 12: `contending_writer_is_typed_and_byte_identical_without_recovery`; resident writer close now joins shutdown and trigger tests use unique temporary ledger paths without lock retries. |
+| `EntryEncodingCannotForgeFrameEnd` | COVERED | Proof 14: `escapable_entry_content_round_trips_without_forging_frame_end`. |
+
+### Authority epoch continuity — Phase H2 disposition
+
+| Invariant | Current status | Phase disposition / evidence |
+|---|---|---|
+| `MctAuthorityEpochContinuity.EpochBeginsWithCanonicalFact` | DEFERRED | Phase H2 proof 1 establishes the canonical epoch before mutation admission, but the invariant also gates authority evaluation/advertisement and D-R2.8 every-artifact virgin classification; those remain R2-L5. |
+| `WriterTenureUsesFreshEpoch` | COVERED | Phase H2 proofs 1-2: `mct_observation::tests::{fresh_authority_tenure_commits_epoch_before_mutation_admission,authority_tenures_and_byte_copied_restore_use_distinct_epochs}`. |
+| `EpochTransitionPreservesCurrentGrantMeaning` | COVERED | Phase H2 proof 11: `mct_daemon::state::tests::epoch_transition_preserves_projected_grant_meaning`. |
+| `RestoredHistoryCannotReuseAuthorityIdentity` | COVERED | Phase H2 proof 2 copies ledger/projection history and proves the next tenure receives a third distinct entropy-backed epoch. |
+| `ProjectionEpochMustMatchCanonicalEpoch` | DEFERRED | Phase H2 proof 10 constructs typed `epoch_mismatch`, but no authority reader consumes the proof until R2-L5/slice 5; stale projection therefore cannot yet be credited as denying every authority path. |
+
+### Canonical authority facts — Phase H2 disposition
+
+| Invariant | Current status | Phase disposition / evidence |
+|---|---|---|
+| `MctCanonicalAuthorityFacts.LedgerFactsAreCanonicalAuthority` | DEFERRED | Phase H2 lands the canonical envelope/replay source, but fenced authority-evaluation readers still use legacy projections. Slices 4-5 must consume canonical state before this global invariant is covered. |
+| `MutationAndGenerationAdvanceAreOneFact` | COVERED | Phase H2 proof 4: `mct_observation::tests::authority_mutation_fact_precedes_legacy_write_and_reconstructs_state`; proofs 5-7 cover unknown, rejected, and pending outcomes without a separately committable generation. |
+| `AuthorityFactIsReplayComplete` | COVERED | Phase H2 proofs 3-4 and 8 reconstruct epoch, mutation, and imported Toy state from structured canonical ledger bytes. |
+| `ConfigurationIsIntentNotAuthority` | DEFERRED | Proof 8 covers one-time owner-gated import and pre-import mutation refusal, but current evaluation readers remain fenced and legacy-backed until slices 4-5. |
+| `ProjectionFailureDoesNotUndoCommit` | DEFERRED | Proofs 7 and 14 cover permanent commitment, typed pending, and catch-up. The invariant's fail-closed authority-use clause remains unimplemented until R2-L5/slice 5 consumes the proof. |
+
+### Authority-wide projection freshness — Phase H2 disposition
+
+| Invariant | Current status | Phase disposition / evidence |
+|---|---|---|
+| `MctAuthorityProjectionFreshness.AuthorityCursorReachesCanonicalHead` | COVERED | Phase H2 proof 9: `mct_daemon::state::tests::authority_cursor_reaches_non_authority_head_with_coherent_publication`. |
+| `CursorBindsHeadHashAndAuthorityIdentity` | COVERED | Proofs 9-10 bind source Mother/ledger, committed sequence/hash, complete authority identity, state hash, and projection hash with typed mismatch reasons. |
+| `ProjectionFactsAndCursorBecomeVisibleTogether` | COVERED | Proofs 9 and 12 show concurrent readers observe old-old or new-new state/cursor during ordinary publication and shadow replacement. |
+| `EpochMismatchDenies` | DEFERRED | Proof 10 emits typed `epoch_mismatch`; fail-closed authority denial remains R2-L5/slice 5 because H2 intentionally adds no proof consumer. |
+| `RebuildEqualsReplay` | COVERED | Phase H2 proof 13: `mct_daemon::state::tests::clean_rebuild_and_incremental_replay_are_projection_equivalent`. |
+| `MctProjectionCursor` authority-state kind, source Mother, through-entry hash, and projection status | COVERED | Runtime schema v12 stores the authority-state cursor plus complete current Toy/fact rows; proofs 9, 12, and 15 cover current, replacement, and quarantined publication. Trigger/watch checkpoints remain non-authorizing domain diagnostics. |
+
+### Mutation/effect ordering — R2-L6 and slices 7-8 deferrals
+
+| Invariant | Current status | Phase disposition / evidence |
+|---|---|---|
+| `TwoPhaseRouting.MutationCommitAndEffectStartHaveOneOrder` | DEFERRED | R2-L6 supplies the ordering boundary; slices 7-8 consume it at Child and Toy effects. |
+| `ProjectionLagCannotOvertakeRevocation` | DEFERRED | R2-L4/L5 current projection proof plus R2-L6 and slices 7-8 effect admission. |
+
+### Phase H2 disposition counts
+
+| Disposition | Review 2 invariants after H2 |
+|---|---:|
+| COVERED | 19 |
+| LAW-LEADS-CODE | 0 |
+| DEFERRED to R2-L5/R2-L6 / slices 4-8 | 8 |
+| **Total new invariants** | **27** |
+
+The separate `MctProjectionCursor` structural row is now `COVERED`. The 19 covered invariants comprise the original 10 R2-L1/R2-L2 rows plus 9 R2-L3/R2-L4 rows. Deferral is retained wherever the complete invariant requires an authority-evaluation consumer, D-R2.8 startup classification, or mutation/effect ordering; proof construction alone is not credited as fail-closed use.
+
+**Known seam:** authority projection construction replays the full ledger. Ledger growth is therefore a future authority-availability concern; Phase H2 adds no alternate authority source, compaction path, or partial-replay freshness claim.
+
+## Grants authority v0 — Phase G
+
+The ratified Phase G law is captured in [grants-authority-v0](../../feat/grants-authority-v0/SPEC.md). `LAW-LEADS-CODE` rows below are explicit Task B targets and become `COVERED` only after the named proof steps land. `DEFERRED` rows are fenced behind Review 2 and slices 4-8; Task B may not partially implement them.
+
+### Child effect admission
+
+| Invariant | Current status | Phase disposition / evidence |
+|---|---|---|
+| `TwoPhaseRouting.ExecutionTokenBindsExactCall` | COVERED | Phase G proof steps 1-3: `mct_daemon::process::tests::process_harness_denies_mismatched_call_token_before_spawn`; all three `mct_daemon::wasm::tests::{wit_runtime,s32_runtime,s32_toy_runtime}_denies_mismatched_child_token_before_component_load` paths; and `mct_daemon::toy::tests::toy_adapter_denies_mismatched_call_token_before_backend_call`. |
+| `ExecutionTokenBindsSelectedChild` | COVERED | `mct_kernel::route::tests::route_revalidation_denies_route_child_mismatch` proves a selected-route/Child mismatch mints no execution authority. |
+| `EffectAdmissionIsOrderedWithAuthorityMutation` | DEFERRED | Review 2 plus slices 7-8 must establish the current local snapshot and mutation/effect ordering boundary. |
+| `EffectPermitCannotRefreshItself` | DEFERRED | Slice 7 must deny stale locally sourced execution authority and require a complete new evaluation; Task B cannot repair the fenced grants guard. |
+
+### Peer echo and receiving-Mother authority
+
+| Invariant | Current status | Phase disposition / evidence |
+|---|---|---|
+| `MctHelloProtocol.PeerEchoOnlyDetectsStaleness` | DEFERRED | Slice 6 hello/call wire change after Review 2; echo is early rejection only. |
+| `ForgedCurrentGenerationDoesNotGrantAuthority` | DEFERRED | Slices 5-8 must compose local evaluation independently of the peer echo. |
+| `ReceiverAlwaysUsesLocalAuthority` | DEFERRED | Slice 5 local authority provider and snapshots, gated on Review 2. |
+| `GenerationNamespaceMustMatchReceiver` | DEFERRED | Slices 4 and 6 must land the namespaced identity and exact hello/call echo. |
+
+### Call provenance and deadline
+
+| Invariant | Current status | Phase disposition / evidence |
+|---|---|---|
+| `MctCallAuthorityAndDeadline.CallerAuthorityCannotBecomeLocalAuthorityByCopying` | DEFERRED | Slice 5 separates caller expectation from locally sourced execution authority after Review 2. |
+| `LocalExecutionSnapshotHasMotherProvenance` | DEFERRED | Slice 5 local authority provider and snapshot. |
+| `LocalSnapshotIsCoherent` | DEFERRED | Review 2 projection guarantee plus slices 4-5. |
+| `ExecutingMotherClockIsAuthoritative` | COVERED | `mct_daemon::toy::tests::toy_adapter_denies_token_at_expiry_without_backend_call`; `toy_adapter_allows_token_before_expiry`; `mct_daemon::config::tests::call_deadline_admission_clamps_ahead_rejects_behind_without_grace`. |
+| `CallerDeadlineCannotExtendLocalHorizon` | COVERED | `mct_daemon::wasm::tests::far_future_caller_deadline_clamps_wasm_epoch_wait_to_configured_horizon`; `mct_daemon::config::tests::call_deadline_admission_clamps_ahead_rejects_behind_without_grace` proves the configurable 600-second default and stricter local bound. |
+| `ExpiredCallsDoNotBeginEffects` | COVERED | `mct_daemon_bin::resident::pipeline::tests::resident_ingress_rejects_expired_call_before_child_effect` proves expiry precedes payload resolution and Child execution; the injected-clock config test proves no positive grace. |
+| `TokenExpiryDoesNotExceedEffectiveDeadline` | COVERED | `mct_kernel::toy::tests::toy_token_expiry_is_capped_by_effective_call_deadline` proves production token minting takes the earlier of grant and effective call deadlines. |
+| `ClockUncertaintyFailsClosedBeyondConfiguredTolerance` | COVERED | `mct_daemon::config::tests::call_deadline_admission_clamps_ahead_rejects_behind_without_grace` proves the configured zero-tolerance behavior: ahead clamps and behind expires. |
+
+### Grants-authority generation
+
+| Invariant | Current status | Phase disposition / evidence |
+|---|---|---|
+| `MctGrantsAuthorityGeneration.GrantGenerationIsMotherOwned` | DEFERRED | Review 2 gates slice 4 namespaced generation persistence. |
+| `GrantGenerationNeverRepeatsWithinEpoch` | DEFERRED | Review 2 must define replacement/restoration semantics before slice 4 stores authority epoch or generation. |
+| `AuthorityChangingFactsAdvanceGeneration` | DEFERRED | Slice 4 implements the D-G2 authority-shape mutation set after Review 2. |
+| `ConsumptionStateIsALiveFact` | DEFERRED | Slice 8 enforces consumption state at effect time without advancing authority shape. |
+| `TimeBoundsRemainLiveFacts` | DEFERRED | Slice 8 composes current time bounds with generation; Task B enforces token expiry only. |
+
+### Toy effect admission
+
+| Invariant | Current status | Phase disposition / evidence |
+|---|---|---|
+| `MctToyGrantAuthority.ToyTokenBindsCallAndEffect` | DEFERRED | Task B proof step 3 covers its exact-call edge through `ExecutionTokenBindsExactCall`; slice 8 must add complete action/resource/local-version effect scope. |
+| `EveryToyEffectRevalidatesCurrentAuthority` | DEFERRED | Slice 8 current local generation and grant evaluation, gated on Review 2. |
+| `ToyEffectChecksExactGrant` | DEFERRED | Slice 8 exact live grant state, scope, and consumption facts. |
+| `ToyTokenExpiryIsEnforced` | COVERED | `mct_daemon::toy::tests::toy_adapter_denies_token_at_expiry_without_backend_call`; `mct_daemon::toy::tests::toy_adapter_allows_token_before_expiry`. |
+| `RevocationBeforeEffectAdmissionDenies` | DEFERRED | Slice 8 current grant revalidation and effect-admission ordering. |
+| `DelegatedCapabilitiesHaveBoundedRevocationSemantics` | DEFERRED | Slice 8 must prove delegated admission is current and bounded; per-operation mediation and active revocation remain future law. |
+
+### Authority projection freshness
+
+| Invariant | Current status | Phase disposition / evidence |
+|---|---|---|
+| `MctAuthorityProjectionFreshness.AuthorityProjectionIdentifiesCanonicalSource` | COVERED | Phase H2 proofs 9-10 bind source Mother/ledger/head and complete grants-authority identity; slices 4-5 consume rather than redefine this proof. |
+| `AuthorityProjectionCoversCurrentGeneration` | DEFERRED | Phase H2 constructs the proof, but slices 4-5 must supply and consume current canonical generation at authority evaluation. |
+| `ProjectionVersionAndFactsAreCoherent` | COVERED | Phase H2 proofs 9 and 12 prove ordinary and shadow publication expose facts/state/cursor old-old or new-new in one SQLite transaction. |
+| `UnprovableFreshnessDenies` | DEFERRED | Slice 5 must consume the Phase H2 typed denial; proof construction alone changes no authority reader. |
+
+### Phase G disposition counts
+
+| Disposition | New invariants after Task B |
+|---|---:|
+| COVERED | 10 |
+| LAW-LEADS-CODE, targeted by Task B | 0 |
+| DEFERRED to slices 4-8 | 21 |
+| **Total new invariants** | **31** |
+
+The strengthened pre-existing `TwoPhaseRouting.EffectBoundaryRevisionGuardIsDistinct` is tracked in its original routing row below and is no longer credited as covered by a test that supplies a synthetic current revision while the production provider copies grants revision from the call.
 
 ## Tool-derived structural obligations
 
@@ -131,7 +277,7 @@ Allium 3.5.0 emits structural obligations only for the product map: 179 total (`
 | `OptimizationCannotGrantAuthority` | COVERED | `mct_daemon_bin::resident::decision::tests::resident_route_optimization_cannot_grant_authority` |
 | `DenyReasonsArePolicyReasons` | COVERED | `mct_daemon_bin::resident::decision::tests::resident_no_route_records_specific_elimination`; `mct_kernel::route::tests::candidate_elimination_reasons_expose_denial_class` |
 | `ExecutionRevalidatesAuthority` | COVERED | `mct_kernel::route::tests::route_revalidation_denies_stale_policy_before_execution`; `mct_daemon_bin::resident::forwarding::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello` |
-| `EffectBoundaryRevisionGuardIsDistinct` | COVERED | `mct_daemon_bin::resident::execution::tests::resident_route_revision_guard_denies_before_effect` |
+| `EffectBoundaryRevisionGuardIsDistinct` | LAW-LEADS-CODE | `mct_daemon_bin::resident::execution::tests::resident_route_revision_guard_denies_before_effect` proves the comparison branch only with a supplied differing snapshot; production `current_resident_route_revisions` copies grants revision from the call. Repair is fenced to slice 7 after Review 2 provides a coherent local snapshot. |
 | `EffectBoundaryGuardCannotRepairStaleAuthority` | COVERED | `mct_daemon_bin::resident::execution::tests::resident_route_revision_guard_denies_before_effect` |
 | `PeerEgressAndLocalChildEffectGuardsAreDistinct` | COVERED | `mct_daemon_bin::resident::forwarding::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello`; `mct_daemon_bin::resident::execution::tests::resident_route_revision_guard_denies_before_effect` |
 | `NoRouteDecision.DenyByDefault` | COVERED | `mct_kernel::route::tests::no_route_decision_denies_by_default_without_route_taken` |

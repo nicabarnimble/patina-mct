@@ -12,8 +12,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub const DEFAULT_MAX_CALL_HORIZON_SECONDS: u64 = 600;
+
+fn default_max_call_horizon_seconds() -> u64 {
+    DEFAULT_MAX_CALL_HORIZON_SECONDS
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MctDaemonConfig {
+    #[serde(default = "default_max_call_horizon_seconds")]
+    pub max_call_horizon_seconds: u64,
     #[serde(default)]
     pub local_identity: Option<MctLocalNodeIdentity>,
     #[serde(default)]
@@ -96,6 +104,18 @@ pub struct MctPeerAuthorityProjection {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MctDaemonConfigStore {
     path: PathBuf,
+}
+
+impl Default for MctDaemonConfig {
+    fn default() -> Self {
+        Self {
+            max_call_horizon_seconds: DEFAULT_MAX_CALL_HORIZON_SECONDS,
+            local_identity: None,
+            child_approvals: BTreeMap::new(),
+            child_assignments: BTreeMap::new(),
+            peers: BTreeMap::new(),
+        }
+    }
 }
 
 impl MctDaemonConfig {
@@ -605,10 +625,93 @@ pub fn current_timestamp() -> Timestamp {
     Timestamp::new(current_timestamp_string()).expect("jiff produced RFC3339 timestamp")
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MctCallDeadlineAdmission {
+    Admitted(Timestamp),
+    Expired,
+}
+
+pub fn admit_call_deadline(
+    caller_deadline: &Timestamp,
+    accepted_at: &Timestamp,
+    max_call_horizon_seconds: u64,
+    stricter_local_policy_deadline: Option<&Timestamp>,
+) -> Result<MctCallDeadlineAdmission> {
+    let accepted = accepted_at
+        .as_str()
+        .parse::<jiff::Timestamp>()
+        .context("parse executing Mother acceptance time")?;
+    let horizon_seconds = i64::try_from(max_call_horizon_seconds)
+        .context("maximum call horizon exceeds timestamp duration range")?;
+    let horizon = accepted
+        .checked_add(jiff::SignedDuration::from_secs(horizon_seconds))
+        .context("maximum call horizon exceeds timestamp range")?;
+    let horizon = Timestamp::new(horizon.to_string())?;
+
+    let mut effective = caller_deadline.clone().min(horizon);
+    if let Some(local_deadline) = stricter_local_policy_deadline {
+        effective = effective.min(local_deadline.clone());
+    }
+    if effective <= *accepted_at {
+        Ok(MctCallDeadlineAdmission::Expired)
+    } else {
+        Ok(MctCallDeadlineAdmission::Admitted(effective))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::children::{MctChildFileDigest, MctChildIngressMode, MctChildInstanceState};
+
+    #[test]
+    fn call_deadline_admission_clamps_ahead_rejects_behind_without_grace() {
+        assert_eq!(
+            MctDaemonConfig::default().max_call_horizon_seconds,
+            DEFAULT_MAX_CALL_HORIZON_SECONDS
+        );
+        let legacy_config: MctDaemonConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            legacy_config.max_call_horizon_seconds,
+            DEFAULT_MAX_CALL_HORIZON_SECONDS
+        );
+        let accepted_at = Timestamp::new("2026-08-02T12:00:00Z").unwrap();
+        let caller_ahead = Timestamp::new("2026-08-02T14:00:00Z").unwrap();
+        let caller_behind = Timestamp::new("2026-08-02T11:59:59Z").unwrap();
+        let stricter_local = Timestamp::new("2026-08-02T12:05:00Z").unwrap();
+
+        let ahead = admit_call_deadline(
+            &caller_ahead,
+            &accepted_at,
+            DEFAULT_MAX_CALL_HORIZON_SECONDS,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            ahead,
+            MctCallDeadlineAdmission::Admitted(Timestamp::new("2026-08-02T12:10:00Z").unwrap())
+        );
+        assert_eq!(
+            admit_call_deadline(
+                &caller_ahead,
+                &accepted_at,
+                DEFAULT_MAX_CALL_HORIZON_SECONDS,
+                Some(&stricter_local),
+            )
+            .unwrap(),
+            MctCallDeadlineAdmission::Admitted(stricter_local)
+        );
+        assert_eq!(
+            admit_call_deadline(
+                &caller_behind,
+                &accepted_at,
+                DEFAULT_MAX_CALL_HORIZON_SECONDS,
+                None,
+            )
+            .unwrap(),
+            MctCallDeadlineAdmission::Expired
+        );
+    }
 
     fn call() -> MctCall {
         MctCall {

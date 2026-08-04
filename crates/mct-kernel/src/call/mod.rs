@@ -778,6 +778,8 @@ pub enum CallProtocolReason {
     BindingExpired,
     /// Call authority snapshot is older than the admitted authority facts.
     PolicyRevisionStale,
+    /// Caller deadline was at or behind the executing Mother's acceptance time.
+    CallDeadlineExpired,
     /// Request shape could not become a valid semantic call.
     MalformedCall,
     /// Payload handle size disagrees with call payload metadata.
