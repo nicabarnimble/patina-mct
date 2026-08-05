@@ -7,6 +7,7 @@
 
 mod acquisition;
 mod authority_order;
+mod authority_snapshot;
 #[cfg(test)]
 mod authority_test_fixture;
 mod blob_store;
@@ -45,6 +46,10 @@ pub use acquisition::{
 pub use authority_order::{
     MotherAuthorityAdmissionDenyV1, MotherAuthorityCommitOutcomeV1, MotherAuthorityFenceReasonV1,
     MotherAuthorityOrderV1, MotherAuthorityRecoveryDenyV1,
+};
+pub use authority_snapshot::{
+    LocalExecutionAuthoritySnapshotDenyV1, local_execution_authority_snapshot,
+    local_execution_authority_snapshot_at,
 };
 pub use blob_store::{
     MCT_BLOB_MAX_BYTES, MctLocalBlobStore, MctLocalBlobStoreError, content_addressed_blob_handle,
