@@ -47,23 +47,23 @@ exit_criteria:
     verify: cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh
   - id: phase-i-envelope-completeness
     text: Every production mutation of the D-R2.7 Toy catalog/grant/Watch-scope authority commits exactly one canonical mutation/import fact and advances the namespaced generation exactly once.
-    checked: false
+    checked: true
     verify: Phase I proof steps 1-2 and 15-17 have landed test file and line citations.
   - id: phase-i-local-snapshot
     text: Route evaluation receives one Mother-owned local execution authority snapshot only after exact D-G8 proof, with canonical grants, labeled local policy provenance, Mother clock, and cursor provenance.
-    checked: false
+    checked: true
     verify: Phase I proof steps 3-4, 6-7, and 11-13 have landed test file and line citations.
   - id: phase-i-route-evaluation
     text: Resident route evaluation uses the local snapshot rather than caller-echoed revisions, records those echoes only as correlation evidence, and fails closed on unprovable freshness.
-    checked: false
+    checked: true
     verify: Phase I proof steps 5 and 8-10 have landed test file and line citations.
   - id: phase-i-deferral-fence
     text: Token minting revision sourcing, the resident effect guard, Child/Toy/WASM/process effect guards, hello/peer wire, idempotent replay, and MotherAuthorityOrderV1 production adoption remain unchanged.
-    checked: false
+    checked: true
     verify: Phase I proof step 14 plus the close-out changed-reader and call-site audits.
   - id: phase-i-validation
     text: Every Phase I implementation commit and the final close-out pass workspace tests, warnings-denied clippy, Tier 0/RustSec, Allium, and the grants-authority spec check.
-    checked: false
+    checked: true
     verify: cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh && allium check layer/allium
 ---
 
@@ -492,6 +492,58 @@ Each proof lands as a named test. Close-out cites its file/line and quotes the v
 15. Canonical replay of Watch grant and revoke facts, with ordinary `watch-observation-scope-v1:` observations absent, reconstructs a byte-equal `WatchObservationScope` and explicitly asserts every kernel field.
 16. Legacy import with existing SQLite Watch scopes includes them completely in `LegacyAuthorityImportFactV1.imported_state`, projection rebuild preserves them, and once-per-canonical-history behavior is unchanged.
 17. A structurally valid authority fact carrying an unknown `change_kind` fails closed for authority replay/projection without ledger quarantine or silent skipping.
+
+## Phase I close-out
+
+### Commit ledger
+
+| Commit | Purpose |
+|---|---|
+| `f6c5029` | Ratified the Phase I provider, reader inventory, consumer split, and 14-step proof plan. |
+| `92f62bf` | Added D-I.1's replay-complete Watch-authority requirement and stopped at the discovered schema fork. |
+| `b7a4d9a` | Preserved the active-session C4 stop without changing Rust or law. |
+| `ab4c87d` | Ratified D-I.2: complete Watch scope in additive `WatchScopePut` changes inside the existing fact kind. |
+| `44bec15` | Repaired all Watch bypasses, added schema v13 Watch projection/replay/import, and landed proofs 1-2 and 15-17. |
+| `29e9e9e` | Added the sealed proof-gated Mother-owned snapshot/provider and landed proofs 3-4, 6-7, 11, and 13. |
+| `d8234f2` | Migrated local/remote resident route evaluation and revalidation to the snapshot, including correlation-only caller echoes. |
+| `5d53d13` | Landed adversarial route, clock, revocation, no-vacuous-pass/no-spurious-deny, and deferral-fence proofs 5, 8-10, 12, and 14. |
+
+### Required proof citations
+
+| Step | Test citation | Verbatim central assertion(s) |
+|---:|---|---|
+| 1 | `crates/mct-daemon/src/daemon/control.rs:4144`, assertions at `:4347-4352` | `assert_eq!(after.current_authority.unwrap().generation, before_generation + 1, "{path}");` and `assert_eq!(after.canonical_fact_count, before_facts + 1, "{path}");` |
+| 2 | `crates/mct-daemon/src/daemon/control.rs:4374`, assertions at `:4549,4557` | `assert_ne!(status, 200, "{failure:?} {surface:?}: {response}");` and `assert_eq!(after, before, "{failure:?} {surface:?}");` |
+| 3 | `crates/mct-daemon/src/authority_snapshot.rs:434`, representative assertions at `:442,476-483` | `assert_eq!(snapshot.executing_mother_node_id(), "local-mct");` and exact projection entry/projection-hash equality. |
+| 4 | `crates/mct-daemon/src/authority_snapshot.rs:488`, assertion at `:497` | `assert_eq!(snapshot(&fixture), before);` for hostile zero/current/`u64::MAX` echoes. |
+| 5 | `crates/mct-daemon/src/daemon/resident/decision.rs:1281`, final assertion at `:1389` | `assert!(matches!(authorize_resident_child_from_snapshot(&snapshot_after, vec![child], &call).unwrap(), RouteDisposition::Denied { .. }));` |
+| 6 | `crates/mct-daemon/src/authority_snapshot.rs:503`, assertions at `:535-556` | Behind projection is exactly `HeadSequenceMismatch`; after rebuild, generation advances and the new catalog is visible. |
+| 7 | `crates/mct-daemon/src/authority_snapshot.rs:561`, assertions at `:568-599` | Old projection is exactly `EpochMismatch`; rebuild preserves grant meaning under the canonical epoch identity. |
+| 8 | `crates/mct-daemon/src/daemon/resident/decision.rs:1143`, assertions at `:1200-1201` | `assert_eq!(dispositions, vec!["local"; echoes.len()]);` and `assert_eq!(recorded_echoes, echoes);` |
+| 9 | `crates/mct-daemon/src/daemon/resident/decision.rs:1206`, assertion at `:1224` | `matches!(outcome, RouteDisposition::Local { .. })` with canonical generation 73 and caller echo 1. |
+| 10 | Local/grants `crates/mct-kernel/src/route.rs:1309`, assertions at `:1322-1355`; remote `crates/mct-daemon/src/daemon/resident/candidates.rs:752`; cursor/projection `crates/mct-daemon/src/state.rs:6152` | Independent policy/grants mismatches deny as `PolicyRevisionStale`/`GrantsRevisionStale`; matching independent values authorize; caller echo cannot erase stale peer policy; every D-G8 mismatch remains typed. |
+| 11 | `crates/mct-daemon/src/authority_snapshot.rs:603`, assertions at `:662-672` | Returned generation is pre or post only; catalog membership, grants identity, and cursor sequence agree exactly. |
+| 12 | `crates/mct-daemon/src/daemon/resident/decision.rs:1232`, assertion at `:1276` | `assert_eq!(outcomes, ["denied", "allowed", "denied"]);` across before-start, at-start, and at-expiry Mother times despite hostile echoes/deadline. |
+| 13 | `crates/mct-daemon/src/authority_snapshot.rs:700`, assertions at `:715-717` | Kernel source exposes neither caller-context nor caller-authority conversion and no copying conversion. |
+| 14 | `crates/mct-daemon/src/authority_order.rs:638`, representative assertions at `:645-677,700-703` | Protocol/effect/wire/replay source pins remain present and `production_consumers.is_empty()` for `MotherAuthorityOrderV1`. |
+| 15 | `crates/mct-observation/src/lib.rs:3878`, assertions at `:3929-3967` | No ordinary Watch-scope observation exists; replayed scope is byte-equal and every kernel field equals the revoked canonical value. |
+| 16 | `crates/mct-daemon/src/state.rs:6546`, assertions at `:6559-6598` | Imported state contains the complete scope, rebuild preserves it, and duplicate import is `AlreadyImported`. |
+| 17 | `crates/mct-daemon/src/state.rs:6657`, assertions at `:6721-6734` | Unknown `change_kind` names the error, leaves projection byte-value unchanged, and the structurally valid ledger remains readable. |
+
+### Close-out audits
+
+- **Changed readers:** Phase I changes canonical Watch mutation/projection paths, the new snapshot provider/types, resident local/remote route evaluation/revalidation, and test fixtures needed to open an authority ledger. It does not migrate effect-time consumers.
+- **Protected effect range:** `git diff --unified=0 b818550..HEAD` shows `daemon/resident/execution.rs` changes only in test setup; `execution.rs:92-146`, process/WASM/Toy adapters, token admission, and `call/internal.rs` have no production hunk.
+- **Ordering boundary:** source audit finds `MotherAuthorityOrderV1` only in `authority_order.rs` and the `lib.rs` re-export; all `commit_mutation()`/`admit_effect()` calls remain harness tests.
+- **Canonical carrier:** the only authority fact kinds remain `authority_mutation`, `legacy_authority_import`, and `epoch_established`; D-I.2 adds only `WatchScopePut` inside `authority_mutation`.
+- **Framing/schema fence:** `MctObservation`, `MctObservationLedgerEntry`, and newline-delimited framing are unchanged; SQLite advances only to schema v13 for the reconstructable Watch-scope projection.
+- **Honest disposition:** route-evaluation clauses are covered. Slice-6 peer-wire semantics and slices 7-8 token/effect ordering, live grant revalidation, and delegated-capability revocation remain `DEFERRED` in Track 3.
+
+### Validation and flake log
+
+Final Phase I validation passed `cargo test --workspace` (494 passed, 1 ignored), warnings-denied workspace clippy, Tier 0/RustSec, `allium check layer/allium`, `patina spec check grants-authority-v0 --json`, and `git diff --check`.
+
+One new proof initially reproduced a fixture error: `remote_policy_mismatch_denies_even_when_caller_echo_matches_stale_peer` returned `PeerNotAdmitted` because mutating the signed peer record invalidated its binding signature before reaching the policy comparison. The fixture was corrected to vary the independently sourced local policy instead; the isolated rerun and full suite passed. This was a deterministic test-construction defect, not a product flake. No Phase I non-reproducing failure was observed.
 
 ## Phase I deferral fence
 
