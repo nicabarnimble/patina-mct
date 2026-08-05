@@ -4503,6 +4503,40 @@ impl MctRuntimeStateStore {
     }
 
     #[cfg(test)]
+    pub(crate) fn replace_authority_projection_epoch_for_test(
+        &self,
+        authority_epoch: &str,
+    ) -> Result<()> {
+        let mut snapshot = self
+            .authority_projection_snapshot()?
+            .context("test projection must exist")?;
+        snapshot.cursor.grants_authority.authority_epoch = authority_epoch.to_owned();
+        snapshot.cursor.projection_hash =
+            authority_projection_hash(&AuthorityProjectionHashInputV1 {
+                source_mother_node_id: snapshot.cursor.source_mother_node_id.clone(),
+                source_ledger_id: snapshot.cursor.source_ledger_id.clone(),
+                through_sequence: snapshot.cursor.through_sequence,
+                through_observation_id: snapshot.cursor.through_observation_id.clone(),
+                through_entry_hash: snapshot.cursor.through_entry_hash.clone(),
+                grants_authority: snapshot.cursor.grants_authority.clone(),
+                authority_state_hash: snapshot.cursor.authority_state_hash.clone(),
+                projection_status: snapshot.cursor.projection_status,
+            })?;
+        self.conn.execute(
+            r#"
+            UPDATE authority_projection_cursor
+            SET grants_authority_json = ?1, projection_hash = ?2
+            WHERE projection_id = 'authority-state-v1'
+            "#,
+            params![
+                json_string(&snapshot.cursor.grants_authority)?,
+                snapshot.cursor.projection_hash,
+            ],
+        )?;
+        Ok(())
+    }
+
+    #[cfg(test)]
     fn publish_authority_projection_with_reader_hook(
         &self,
         entries: &[MctObservationLedgerEntry],

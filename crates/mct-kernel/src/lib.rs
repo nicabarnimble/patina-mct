@@ -8,6 +8,8 @@
 
 /// Artifact source, acquisition, and filesystem effect authority.
 pub mod artifact;
+/// Mother-owned, proof-gated local execution authority snapshots.
+pub mod authority;
 /// Call records, JSON edge validation, and call protocol admission decisions.
 pub mod call;
 /// Child artifact, approval, assignment, lifecycle, and invocation authority.
@@ -37,6 +39,15 @@ pub use artifact::{
     AuthorizedFilesystemArtifactAcquisition, FilesystemAcquisitionEffectAuthority,
     OperatorPointedAcquisitionState, OperatorPointedArtifactAcquisitionDecision,
     evaluate_artifact_acquisition_authority,
+};
+pub use authority::{
+    LocalAuthorityProjectionProvenanceV1, LocalCanonicalGrantsSnapshotV1,
+    LocalChildPolicyProvenanceV1, LocalChildPolicySnapshotV1, LocalExecutionAuthoritySnapshot,
+    LocalExecutionAuthoritySnapshotPartsV1, LocalGrantsAuthorityIdentityV1,
+    LocalMotherClockProvenanceV1, LocalMotherClockSnapshotV1, LocalPeerAuthorityRecordPartsV1,
+    LocalPeerAuthorityRecordV1, LocalPeerPolicyProvenanceV1, LocalPeerPolicySnapshotV1,
+    LocalRemoteCallableSurfacePartsV1, LocalRemoteCallableSurfaceV1,
+    assemble_local_execution_authority_snapshot,
 };
 pub use call::{
     AuthorityContextSnapshot, CallEvaluationContext, CallEvaluationIds, CallOrigin,
