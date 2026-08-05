@@ -9,7 +9,7 @@ use mct_kernel::{
     CallId, CanonicalToyContract, MctObservation, ObservationId, ObservationKind,
     ObservationOutcome, ObservationTraceRef, ObservationVisibility, SourcePlane, Timestamp,
     ToyContractIdentity, ToyGrant, ToyGrantConstraints, ToyGrantId, ToyGrantScope, ToyGrantState,
-    ToyGrantSubject, ToyId, TraceId,
+    ToyGrantSubject, ToyId, TraceId, WatchObservationScope, WatchObservationScopeState,
 };
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
@@ -143,6 +143,9 @@ pub enum AuthorityChangeV1 {
     },
     ToyGrantRemove {
         grant_id: String,
+    },
+    WatchScopePut {
+        scope: Box<WatchObservationScope>,
     },
 }
 
@@ -292,6 +295,8 @@ pub enum AuthorityMutationResultV1 {
 pub struct AuthorityStateV1 {
     pub toy_catalog: BTreeMap<String, CanonicalToyContract>,
     pub toy_grants: BTreeMap<String, ToyGrant>,
+    #[serde(default)]
+    pub watch_scopes: BTreeMap<String, WatchObservationScope>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1608,6 +1613,9 @@ fn authority_change_sort_key(change: &AuthorityChangeV1) -> (&'static str, &str)
         AuthorityChangeV1::ToyCatalogRemove { toy_id } => ("toy_catalog_remove", toy_id),
         AuthorityChangeV1::ToyGrantPut { grant_id, .. } => ("toy_grant_put", grant_id),
         AuthorityChangeV1::ToyGrantRemove { grant_id } => ("toy_grant_remove", grant_id),
+        AuthorityChangeV1::WatchScopePut { scope } => {
+            ("watch_scope_put", scope.watch_scope_id.as_str())
+        }
     }
 }
 
@@ -1714,6 +1722,43 @@ pub fn apply_authority_changes(
                         detail: format!("cannot remove missing Toy grant '{grant_id}'"),
                     });
                 }
+            }
+            AuthorityChangeV1::WatchScopePut { scope } => {
+                scope
+                    .validate()
+                    .map_err(|error| AuthorityReplayError::Incoherent {
+                        sequence: 0,
+                        detail: format!("invalid Watch scope: {error}"),
+                    })?;
+                let scope_id = scope.watch_scope_id.to_string();
+                match state.watch_scopes.get(&scope_id) {
+                    None => {
+                        if scope.scope_revision != 1
+                            || scope.authority_state != WatchObservationScopeState::Active
+                        {
+                            return Err(AuthorityReplayError::Incoherent {
+                                sequence: 0,
+                                detail: "first Watch scope put must be active revision one".into(),
+                            });
+                        }
+                    }
+                    Some(current) => {
+                        if current.authority_state != WatchObservationScopeState::Active {
+                            return Err(AuthorityReplayError::Incoherent {
+                                sequence: 0,
+                                detail: "terminal Watch scope cannot be revised or resurrected"
+                                    .into(),
+                            });
+                        }
+                        if current.scope_revision.checked_add(1) != Some(scope.scope_revision) {
+                            return Err(AuthorityReplayError::Incoherent {
+                                sequence: 0,
+                                detail: "Watch scope revision is not exactly prior plus one".into(),
+                            });
+                        }
+                    }
+                }
+                state.watch_scopes.insert(scope_id, scope.as_ref().clone());
             }
         }
     }
@@ -1826,15 +1871,32 @@ fn finish_projected_mutation(
     }
 }
 
+fn validate_watch_scope_state(state: &AuthorityStateV1) -> std::result::Result<(), String> {
+    for (scope_id, scope) in &state.watch_scopes {
+        if scope_id != scope.watch_scope_id.as_str() {
+            return Err("Watch scope map key does not match complete value identity".into());
+        }
+        scope
+            .validate()
+            .map_err(|error| format!("invalid Watch scope authority value: {error}"))?;
+    }
+    Ok(())
+}
+
 pub fn authority_state_hash(state: &AuthorityStateV1) -> Result<String> {
+    validate_watch_scope_state(state)
+        .map_err(|detail| ObservationLedgerError::AuthorityReplay { detail })?;
     #[derive(Serialize)]
     struct HashableAuthorityState<'a> {
         toy_catalog: Vec<&'a CanonicalToyContract>,
         toy_grants: Vec<&'a ToyGrant>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        watch_scopes: Vec<&'a WatchObservationScope>,
     }
     let hashable = HashableAuthorityState {
         toy_catalog: state.toy_catalog.values().collect(),
         toy_grants: state.toy_grants.values().collect(),
+        watch_scopes: state.watch_scopes.values().collect(),
     };
     Ok(blake3::hash(&canonical_json_bytes(&hashable)?)
         .to_hex()
@@ -2105,6 +2167,7 @@ fn validate_legacy_import_fact(
     };
     let prior_hash =
         authority_state_hash(&replay.state).map_err(|error| incoherent(&error.to_string()))?;
+    validate_watch_scope_state(&fact.imported_state).map_err(|error| incoherent(&error))?;
     let imported_hash = authority_state_hash(&fact.imported_state)
         .map_err(|error| incoherent(&error.to_string()))?;
     let expected_generation = prior_authority
@@ -3778,6 +3841,129 @@ mod tests {
             }],
             decided_at: "2026-08-03T18:00:00Z".into(),
         }
+    }
+
+    fn complete_watch_scope() -> mct_kernel::WatchObservationScope {
+        mct_kernel::WatchObservationScope {
+            watch_scope_id: mct_kernel::WatchObservationScopeId::new("scope-canonical").unwrap(),
+            observer_shape: mct_kernel::WatchObserverShape::ChildToy,
+            observer_ref: mct_kernel::WatchObserverRef {
+                child_name: "child-a".into(),
+                artifact_id: mct_kernel::ComponentArtifactId::new("artifact-a").unwrap(),
+                artifact_version: "1.0.0".into(),
+                assignment_id: mct_kernel::ChildAssignmentId::new("assignment-a").unwrap(),
+            },
+            scope_mode: mct_kernel::WatchScopeMode::Constrained,
+            canonical_root_ref: "file:///tmp/canonical-watch".into(),
+            traversal_scope: mct_kernel::WatchTraversalScope::Recursive,
+            event_classes: vec![
+                mct_kernel::WatchEventClass::Created,
+                mct_kernel::WatchEventClass::Modified,
+            ],
+            max_events_per_batch: 17,
+            coalescing_policy: mct_kernel::WatchCoalescingPolicy::LastPerPath,
+            starts_at: Timestamp::new("2026-08-05T12:00:00Z").unwrap(),
+            expires_at: Timestamp::new("2026-08-05T13:00:00Z").unwrap(),
+            scope_revision: 1,
+            policy_revision: 9,
+            authority_state: mct_kernel::WatchObservationScopeState::Active,
+            authority_observation_id: ObservationId::new("obs-watch-scope-canonical").unwrap(),
+            canonical_record_digest: String::new(),
+        }
+        .seal()
+    }
+
+    /// Phase I proof 15: every Watch-scope field is replayed from the canonical change alone.
+    #[test]
+    fn watch_scope_put_replays_complete_value_without_ordinary_observation() {
+        let scope = complete_watch_scope();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let mut ledger =
+            JsonlObservationLedger::open_authority(&path, "ledger-a", "mother-a").unwrap();
+        let result = ledger.execute_authority_mutation(
+            AuthorityMutationRequestV1 {
+                mutation_id: "watch-scope-complete".into(),
+                changes: vec![AuthorityChangeV1::WatchScopePut {
+                    scope: Box::new(scope.clone()),
+                }],
+                grant_shaping_sources: vec![GrantShapingSourceV1::OperatorDecision {
+                    decision_id: "decision-watch-scope-complete".into(),
+                    authenticated_principal_ref: "os-uid:501".into(),
+                    command_kind: GrantShapingCommandKindV1::GrantChange,
+                }],
+                decided_at: "2026-08-05T12:00:00Z".into(),
+            },
+            |_| Ok(None),
+        );
+        assert!(matches!(
+            result,
+            AuthorityMutationResultV1::CommittedProjectionPending { .. }
+        ));
+        let mut revoked = scope.clone();
+        revoked.scope_revision = 2;
+        revoked.authority_state = mct_kernel::WatchObservationScopeState::Revoked;
+        revoked.authority_observation_id =
+            ObservationId::new("obs-watch-scope-canonical-revoked").unwrap();
+        revoked = revoked.seal();
+        let revoke_result = ledger.execute_authority_mutation(
+            AuthorityMutationRequestV1 {
+                mutation_id: "watch-scope-revoke-complete".into(),
+                changes: vec![AuthorityChangeV1::WatchScopePut {
+                    scope: Box::new(revoked.clone()),
+                }],
+                grant_shaping_sources: vec![GrantShapingSourceV1::OperatorDecision {
+                    decision_id: "decision-watch-scope-revoke-complete".into(),
+                    authenticated_principal_ref: "os-uid:501".into(),
+                    command_kind: GrantShapingCommandKindV1::GrantChange,
+                }],
+                decided_at: "2026-08-05T12:01:00Z".into(),
+            },
+            |_| Ok(None),
+        );
+        assert!(matches!(
+            revoke_result,
+            AuthorityMutationResultV1::CommittedProjectionPending { .. }
+        ));
+        let entries = ledger.entries().unwrap();
+        assert!(!entries.iter().any(|entry| {
+            entry
+                .observation
+                .detail_ref
+                .as_deref()
+                .is_some_and(|detail| detail.starts_with("watch-observation-scope-v1:"))
+        }));
+        let replay = replay_authority_entries(&entries).unwrap();
+        let replayed = replay
+            .state
+            .watch_scopes
+            .get(scope.watch_scope_id.as_str())
+            .unwrap();
+        assert_eq!(
+            serde_json::to_vec(replayed).unwrap(),
+            serde_json::to_vec(&revoked).unwrap()
+        );
+        assert_eq!(replayed.observer_shape, revoked.observer_shape);
+        assert_eq!(replayed.observer_ref, revoked.observer_ref);
+        assert_eq!(replayed.scope_mode, revoked.scope_mode);
+        assert_eq!(replayed.canonical_root_ref, revoked.canonical_root_ref);
+        assert_eq!(replayed.traversal_scope, revoked.traversal_scope);
+        assert_eq!(replayed.event_classes, revoked.event_classes);
+        assert_eq!(replayed.max_events_per_batch, revoked.max_events_per_batch);
+        assert_eq!(replayed.coalescing_policy, revoked.coalescing_policy);
+        assert_eq!(replayed.starts_at, revoked.starts_at);
+        assert_eq!(replayed.expires_at, revoked.expires_at);
+        assert_eq!(replayed.scope_revision, revoked.scope_revision);
+        assert_eq!(replayed.policy_revision, revoked.policy_revision);
+        assert_eq!(replayed.authority_state, revoked.authority_state);
+        assert_eq!(
+            replayed.authority_observation_id,
+            revoked.authority_observation_id
+        );
+        assert_eq!(
+            replayed.canonical_record_digest,
+            revoked.canonical_record_digest
+        );
     }
 
     /// Phase H2 proof 4: canonical structured content commits before the legacy write and replays alone.

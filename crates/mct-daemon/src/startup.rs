@@ -1408,6 +1408,11 @@ fn state_is_subset(candidate: &AuthorityStateV1, canonical: &AuthorityStateV1) -
             .toy_grants
             .get(id)
             .is_some_and(|current| current == value)
+    }) && candidate.watch_scopes.iter().all(|(id, value)| {
+        canonical
+            .watch_scopes
+            .get(id)
+            .is_some_and(|current| current == value)
     })
 }
 
@@ -1508,11 +1513,18 @@ pub fn finalize_authority_startup(
             .into_iter()
             .map(|grant| (grant.grant_id.to_string(), grant))
             .collect(),
+        watch_scopes: state
+            .current_watch_observation_scopes()?
+            .into_iter()
+            .map(|scope| (scope.watch_scope_id.to_string(), scope))
+            .collect(),
     };
     let sqlite_hash = authority_state_hash(&sqlite_authority)?;
     let sqlite_comparison = if !pre_observation_replay.imported
         && pre_observation_replay.mutations.is_empty()
-        && (!sqlite_authority.toy_catalog.is_empty() || !sqlite_authority.toy_grants.is_empty())
+        && (!sqlite_authority.toy_catalog.is_empty()
+            || !sqlite_authority.toy_grants.is_empty()
+            || !sqlite_authority.watch_scopes.is_empty())
     {
         MctLegacyAuthorityComparisonV1::ImportRequired
     } else if sqlite_hash == canonical_hash {
