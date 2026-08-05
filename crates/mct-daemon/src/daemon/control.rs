@@ -2030,10 +2030,15 @@ fn legacy_authority_state(state_path: &Path) -> Result<AuthorityStateV1> {
             .into_iter()
             .map(|grant| (grant.grant_id.to_string(), grant))
             .collect(),
+        watch_scopes: state
+            .current_watch_observation_scopes()?
+            .into_iter()
+            .map(|scope| (scope.watch_scope_id.to_string(), scope))
+            .collect(),
     })
 }
 
-fn unimported_legacy_authority_requires_gate(
+pub(super) fn unimported_legacy_authority_requires_gate(
     state_path: &Path,
     ledger: &ResidentLedgerWriter,
 ) -> bool {
@@ -2043,7 +2048,8 @@ fn unimported_legacy_authority_requires_gate(
     let Ok(state) = legacy_authority_state(state_path) else {
         return true;
     };
-    if state.toy_catalog.is_empty() && state.toy_grants.is_empty() {
+    if state.toy_catalog.is_empty() && state.toy_grants.is_empty() && state.watch_scopes.is_empty()
+    {
         return false;
     }
     let Ok(entries) = read_ledger_entries(ledger_path, "ledger-local", "local-mct") else {
@@ -2290,7 +2296,9 @@ pub(super) fn execute_offline_administrative_mutation(
         let existing_legacy = legacy_authority_state(state_path)?;
         let replay = replay_authority_entries(&ledger.entries()?)
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        if (!existing_legacy.toy_catalog.is_empty() || !existing_legacy.toy_grants.is_empty())
+        if (!existing_legacy.toy_catalog.is_empty()
+            || !existing_legacy.toy_grants.is_empty()
+            || !existing_legacy.watch_scopes.is_empty())
             && !replay.imported
             && replay.mutations.is_empty()
         {
@@ -4082,6 +4090,468 @@ listens = []
         assert!(ledger_text.contains("toy_grant_put"));
         assert!(ledger_text.contains("operator_action_recorded"));
         assert!(!ledger_text.contains("secret-value-material"));
+    }
+
+    #[test]
+    fn legacy_authority_snapshot_reads_complete_current_watch_scope_from_sqlite() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("state.sqlite");
+        let scope = WatchObservationScope {
+            watch_scope_id: WatchObservationScopeId::new("scope-legacy-import").unwrap(),
+            observer_shape: WatchObserverShape::ChildToy,
+            observer_ref: WatchObserverRef {
+                child_name: "child-legacy".into(),
+                artifact_id: ComponentArtifactId::new("artifact-legacy").unwrap(),
+                artifact_version: "1.0.0".into(),
+                assignment_id: ChildAssignmentId::new("assignment-legacy").unwrap(),
+            },
+            scope_mode: WatchScopeMode::ExplicitBroad,
+            canonical_root_ref: "file:///tmp/legacy-watch".into(),
+            traversal_scope: WatchTraversalScope::Recursive,
+            event_classes: vec![WatchEventClass::Created, WatchEventClass::Deleted],
+            max_events_per_batch: 19,
+            coalescing_policy: WatchCoalescingPolicy::LastPerPath,
+            starts_at: Timestamp::new("2026-08-05T12:00:00Z").unwrap(),
+            expires_at: Timestamp::new("2026-08-05T13:00:00Z").unwrap(),
+            scope_revision: 1,
+            policy_revision: 3,
+            authority_state: WatchObservationScopeState::Active,
+            authority_observation_id: ObservationId::new("obs-legacy-watch").unwrap(),
+            canonical_record_digest: String::new(),
+        }
+        .seal();
+        MctRuntimeStateStore::open(&state_path)
+            .unwrap()
+            .insert_watch_observation_scope(&scope)
+            .unwrap();
+
+        let imported = legacy_authority_state(&state_path).unwrap();
+        assert_eq!(
+            imported.watch_scopes.get(scope.watch_scope_id.as_str()),
+            Some(&scope)
+        );
+    }
+
+    /// Phase I proof 1: every D-R2.7 mutation surface commits one fact and generation.
+    #[tokio::test]
+    async fn authority_mutation_surface_matrix_commits_exactly_one_fact_and_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let socket_path = dir.path().join("control.sock");
+        let watch_root = dir.path().join("watch-root");
+        std::fs::create_dir(&watch_root).unwrap();
+        write_resident_process_child(&children_dir);
+        let child =
+            load_children_from_dir(MctChildLoadOptions::new(&children_dir).strict_integrity())
+                .children
+                .into_iter()
+                .next()
+                .unwrap();
+        let config_store = MctDaemonConfigStore::new(&config_path);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity.hex"),
+            )
+            .unwrap();
+        config_store
+            .approve_and_assign_loaded_child(&child, MctOperatorChildScope::default())
+            .unwrap();
+        let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
+        let handler = resident_observed_mutation_handler(
+            config_path.clone(),
+            children_dir.clone(),
+            state_path.clone(),
+            ledger.clone(),
+        );
+        let empty_hash = authority_state_hash(&AuthorityStateV1::default()).unwrap();
+        let scope_id = WatchObservationScopeId::new("scope-phase-i-matrix").unwrap();
+        let mutations = vec![
+            (
+                "/authority/import-toy-state",
+                serde_json::to_value(LegacyAuthorityImportRequestV1 {
+                    schema: "mct-legacy-authority-import-request/v1".into(),
+                    import_id: "phase-i-import".into(),
+                    expected_mother_node_id: "local-mct".into(),
+                    expected_ledger_id: "ledger-local".into(),
+                    expected_config_authority_hash: empty_hash.clone(),
+                    expected_sqlite_authority_hash: empty_hash,
+                    confirmation: mct_observation::LEGACY_AUTHORITY_IMPORT_CONFIRMATION_V1.into(),
+                })
+                .unwrap(),
+            ),
+            (
+                "/toys/authorize-slate",
+                serde_json::json!({
+                    "mutation_id": "phase-i-slate",
+                    "expected_config_path": config_path,
+                    "expected_children_dir": children_dir,
+                    "expected_state_path": state_path,
+                    "child_name": "resident-echo",
+                    "project_root": dir.path()
+                }),
+            ),
+            (
+                "/toys/authorize-secret",
+                serde_json::json!({
+                    "mutation_id": "phase-i-secret",
+                    "expected_config_path": config_path,
+                    "expected_children_dir": children_dir,
+                    "expected_state_path": state_path,
+                    "child_name": "resident-echo",
+                    "secret_name": "phase-i-secret-name"
+                }),
+            ),
+            (
+                "/watch/grant",
+                serde_json::to_value(WatchGrantRequest {
+                    mutation_id: "phase-i-watch-grant".into(),
+                    expected_config_path: config_path.clone(),
+                    expected_children_dir: children_dir.clone(),
+                    expected_state_path: state_path.clone(),
+                    child_name: "resident-echo".into(),
+                    watch_scope_id: scope_id.clone(),
+                    canonical_root: watch_root.clone(),
+                    scope_mode: WatchScopeMode::Constrained,
+                    traversal_scope: WatchTraversalScope::Recursive,
+                    event_classes: vec![WatchEventClass::Created, WatchEventClass::Modified],
+                    max_events_per_batch: 32,
+                    coalescing_policy: WatchCoalescingPolicy::LastPerPath,
+                    starts_at: Timestamp::new("2026-08-05T12:00:00Z").unwrap(),
+                    expires_at: Timestamp::new("2026-08-05T13:00:00Z").unwrap(),
+                })
+                .unwrap(),
+            ),
+            (
+                "/watch/supporting-grant",
+                serde_json::to_value(SupportingToyGrantRequest {
+                    mutation_id: "phase-i-directory".into(),
+                    expected_config_path: config_path.clone(),
+                    expected_children_dir: children_dir.clone(),
+                    expected_state_path: state_path.clone(),
+                    child_name: "resident-echo".into(),
+                    expires_at: Timestamp::new("2026-08-05T13:00:00Z").unwrap(),
+                    grant: SupportingToyGrantKind::DirectoryRead {
+                        canonical_root: watch_root.clone(),
+                    },
+                })
+                .unwrap(),
+            ),
+            (
+                "/watch/supporting-grant",
+                serde_json::to_value(SupportingToyGrantRequest {
+                    mutation_id: "phase-i-keyvalue".into(),
+                    expected_config_path: config_path.clone(),
+                    expected_children_dir: children_dir.clone(),
+                    expected_state_path: state_path.clone(),
+                    child_name: "resident-echo".into(),
+                    expires_at: Timestamp::new("2026-08-05T13:00:00Z").unwrap(),
+                    grant: SupportingToyGrantKind::Keyvalue {
+                        bucket_name: "phase-i-bucket".into(),
+                    },
+                })
+                .unwrap(),
+            ),
+            (
+                "/watch/supporting-grant",
+                serde_json::to_value(SupportingToyGrantRequest {
+                    mutation_id: "phase-i-observe-log".into(),
+                    expected_config_path: config_path.clone(),
+                    expected_children_dir: children_dir.clone(),
+                    expected_state_path: state_path.clone(),
+                    child_name: "resident-echo".into(),
+                    expires_at: Timestamp::new("2026-08-05T13:00:00Z").unwrap(),
+                    grant: SupportingToyGrantKind::Observability {
+                        logging: true,
+                        measure: false,
+                    },
+                })
+                .unwrap(),
+            ),
+            (
+                "/watch/supporting-grant",
+                serde_json::to_value(SupportingToyGrantRequest {
+                    mutation_id: "phase-i-observe-measure".into(),
+                    expected_config_path: config_path.clone(),
+                    expected_children_dir: children_dir.clone(),
+                    expected_state_path: state_path.clone(),
+                    child_name: "resident-echo".into(),
+                    expires_at: Timestamp::new("2026-08-05T13:00:00Z").unwrap(),
+                    grant: SupportingToyGrantKind::Observability {
+                        logging: false,
+                        measure: true,
+                    },
+                })
+                .unwrap(),
+            ),
+            (
+                "/watch/supporting-grant",
+                serde_json::to_value(SupportingToyGrantRequest {
+                    mutation_id: "phase-i-observe-both".into(),
+                    expected_config_path: config_path.clone(),
+                    expected_children_dir: children_dir.clone(),
+                    expected_state_path: state_path.clone(),
+                    child_name: "resident-echo".into(),
+                    expires_at: Timestamp::new("2026-08-05T13:00:00Z").unwrap(),
+                    grant: SupportingToyGrantKind::Observability {
+                        logging: true,
+                        measure: true,
+                    },
+                })
+                .unwrap(),
+            ),
+            (
+                "/watch/revoke",
+                serde_json::to_value(WatchRevokeRequest {
+                    mutation_id: "phase-i-watch-revoke".into(),
+                    expected_config_path: config_path.clone(),
+                    expected_state_path: state_path.clone(),
+                    watch_scope_id: scope_id.clone(),
+                    expected_revision: 1,
+                })
+                .unwrap(),
+            ),
+        ];
+
+        for (path, body) in mutations {
+            let before = replay_authority_entries(
+                &read_ledger_entries(&ledger_path, "ledger-local", "local-mct").unwrap(),
+            )
+            .unwrap();
+            let before_generation = before.current_authority.unwrap().generation;
+            let before_facts = before.canonical_fact_count;
+            let (status, response) = post_mutation(
+                Arc::clone(&listener),
+                handler.clone(),
+                &socket_path,
+                path,
+                body,
+            )
+            .await;
+            assert_eq!(status, 200, "{path}: {response}");
+            let after = replay_authority_entries(
+                &read_ledger_entries(&ledger_path, "ledger-local", "local-mct").unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                after.current_authority.unwrap().generation,
+                before_generation + 1,
+                "{path}"
+            );
+            assert_eq!(after.canonical_fact_count, before_facts + 1, "{path}");
+        }
+        let replay = replay_authority_entries(
+            &read_ledger_entries(&ledger_path, "ledger-local", "local-mct").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(replay.current_authority.unwrap().generation, 10);
+        assert_eq!(
+            replay
+                .state
+                .watch_scopes
+                .get(scope_id.as_str())
+                .unwrap()
+                .authority_state,
+            WatchObservationScopeState::Revoked
+        );
+        drop(handler);
+        ledger.close().await;
+    }
+
+    /// Phase I proof 2: every Watch surface suppresses all legacy rows on commit failure.
+    #[tokio::test]
+    async fn watch_surfaces_leave_legacy_rows_unchanged_without_acknowledged_commit() {
+        #[derive(Clone, Copy, Debug)]
+        enum Failure {
+            Rejected,
+            CommitUnknown,
+            Poisoned,
+            Unavailable,
+        }
+        #[derive(Clone, Copy, Debug)]
+        enum Surface {
+            Grant,
+            DirectoryRead,
+            Keyvalue,
+            ObservabilityLogging,
+            ObservabilityMeasure,
+            ObservabilityBoth,
+            Revoke,
+        }
+
+        for failure in [
+            Failure::Rejected,
+            Failure::CommitUnknown,
+            Failure::Poisoned,
+            Failure::Unavailable,
+        ] {
+            for surface in [
+                Surface::Grant,
+                Surface::DirectoryRead,
+                Surface::Keyvalue,
+                Surface::ObservabilityLogging,
+                Surface::ObservabilityMeasure,
+                Surface::ObservabilityBoth,
+                Surface::Revoke,
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let config_path = dir.path().join("config.json");
+                let children_dir = dir.path().join("children");
+                let state_path = dir.path().join("state.sqlite");
+                let socket_path = dir.path().join("control.sock");
+                let watch_root = dir.path().join("watch-root");
+                std::fs::create_dir(&watch_root).unwrap();
+                write_resident_process_child(&children_dir);
+                let child = load_children_from_dir(
+                    MctChildLoadOptions::new(&children_dir).strict_integrity(),
+                )
+                .children
+                .into_iter()
+                .next()
+                .unwrap();
+                let config_store = MctDaemonConfigStore::new(&config_path);
+                config_store
+                    .ensure_local_identity(
+                        MctOperatorNodeScope::default(),
+                        dir.path().join("identity.hex"),
+                    )
+                    .unwrap();
+                config_store
+                    .approve_and_assign_loaded_child(&child, MctOperatorChildScope::default())
+                    .unwrap();
+                let scope_id = WatchObservationScopeId::new("scope-failed-watch").unwrap();
+                let grant_request = WatchGrantRequest {
+                    mutation_id: "failed-watch-grant".into(),
+                    expected_config_path: config_path.clone(),
+                    expected_children_dir: children_dir.clone(),
+                    expected_state_path: state_path.clone(),
+                    child_name: "resident-echo".into(),
+                    watch_scope_id: scope_id.clone(),
+                    canonical_root: watch_root.clone(),
+                    scope_mode: WatchScopeMode::Constrained,
+                    traversal_scope: WatchTraversalScope::Recursive,
+                    event_classes: vec![WatchEventClass::Created],
+                    max_events_per_batch: 8,
+                    coalescing_policy: WatchCoalescingPolicy::None,
+                    starts_at: Timestamp::new("2026-08-05T12:00:00Z").unwrap(),
+                    expires_at: Timestamp::new("2026-08-05T13:00:00Z").unwrap(),
+                };
+                if matches!(surface, Surface::Revoke) {
+                    let peer = mct_daemon::MctUdsPeerCredentials {
+                        uid: 501,
+                        gid: 20,
+                        pid: None,
+                    };
+                    let (scope, contract, grant) =
+                        build_scope_and_grant(&grant_request, &peer).unwrap();
+                    let state = MctRuntimeStateStore::open(&state_path).unwrap();
+                    state.upsert_toy_contract(&contract).unwrap();
+                    state.insert_watch_observation_scope(&scope).unwrap();
+                    state.upsert_toy_grant_snapshot(&grant).unwrap();
+                }
+                let (path, body) = match surface {
+                    Surface::Grant => (
+                        "/watch/grant",
+                        serde_json::to_value(&grant_request).unwrap(),
+                    ),
+                    Surface::Revoke => (
+                        "/watch/revoke",
+                        serde_json::to_value(WatchRevokeRequest {
+                            mutation_id: "failed-watch-revoke".into(),
+                            expected_config_path: config_path.clone(),
+                            expected_state_path: state_path.clone(),
+                            watch_scope_id: scope_id,
+                            expected_revision: 1,
+                        })
+                        .unwrap(),
+                    ),
+                    other => {
+                        let grant = match other {
+                            Surface::DirectoryRead => SupportingToyGrantKind::DirectoryRead {
+                                canonical_root: watch_root,
+                            },
+                            Surface::Keyvalue => SupportingToyGrantKind::Keyvalue {
+                                bucket_name: "failed-bucket".into(),
+                            },
+                            Surface::ObservabilityLogging => {
+                                SupportingToyGrantKind::Observability {
+                                    logging: true,
+                                    measure: false,
+                                }
+                            }
+                            Surface::ObservabilityMeasure => {
+                                SupportingToyGrantKind::Observability {
+                                    logging: false,
+                                    measure: true,
+                                }
+                            }
+                            Surface::ObservabilityBoth => SupportingToyGrantKind::Observability {
+                                logging: true,
+                                measure: true,
+                            },
+                            Surface::Grant | Surface::Revoke => unreachable!(),
+                        };
+                        (
+                            "/watch/supporting-grant",
+                            serde_json::to_value(SupportingToyGrantRequest {
+                                mutation_id: format!("failed-{surface:?}"),
+                                expected_config_path: config_path.clone(),
+                                expected_children_dir: children_dir.clone(),
+                                expected_state_path: state_path.clone(),
+                                child_name: "resident-echo".into(),
+                                expires_at: Timestamp::new("2026-08-05T13:00:00Z").unwrap(),
+                                grant,
+                            })
+                            .unwrap(),
+                        )
+                    }
+                };
+                let state = MctRuntimeStateStore::open(&state_path).unwrap();
+                let before = serde_json::to_vec(&(
+                    state.toy_contracts().unwrap(),
+                    state.toy_grant_snapshots().unwrap(),
+                    state.watch_observation_scopes().unwrap(),
+                ))
+                .unwrap();
+                drop(state);
+                let ledger = match failure {
+                    Failure::Rejected => ResidentLedgerWriter::authority_failure_for_test(
+                        TestAuthorityMutationFailure::Rejected,
+                    ),
+                    Failure::CommitUnknown => ResidentLedgerWriter::authority_failure_for_test(
+                        TestAuthorityMutationFailure::CommitUnknown,
+                    ),
+                    Failure::Poisoned => ResidentLedgerWriter::authority_failure_for_test(
+                        TestAuthorityMutationFailure::WriterPoisoned,
+                    ),
+                    Failure::Unavailable => ResidentLedgerWriter::failed_for_test(),
+                };
+                let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
+                let handler = resident_observed_mutation_handler(
+                    config_path,
+                    children_dir,
+                    state_path.clone(),
+                    ledger.clone(),
+                );
+                let (status, response) =
+                    post_mutation(listener, handler.clone(), &socket_path, path, body).await;
+                assert_ne!(status, 200, "{failure:?} {surface:?}: {response}");
+                let state = MctRuntimeStateStore::open(&state_path).unwrap();
+                let after = serde_json::to_vec(&(
+                    state.toy_contracts().unwrap(),
+                    state.toy_grant_snapshots().unwrap(),
+                    state.watch_observation_scopes().unwrap(),
+                ))
+                .unwrap();
+                assert_eq!(after, before, "{failure:?} {surface:?}");
+                drop(handler);
+                ledger.close().await;
+            }
+        }
     }
 
     #[tokio::test]

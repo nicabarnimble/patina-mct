@@ -13,6 +13,7 @@ pub(super) const MCT_PATINA_MEASURE_TOY_ID: &str = "toy:mct:patina-measure";
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct WatchGrantRequest {
+    pub(super) mutation_id: String,
     pub(super) expected_config_path: PathBuf,
     pub(super) expected_children_dir: PathBuf,
     pub(super) expected_state_path: PathBuf,
@@ -31,6 +32,7 @@ pub(super) struct WatchGrantRequest {
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct WatchRevokeRequest {
+    pub(super) mutation_id: String,
     pub(super) expected_config_path: PathBuf,
     pub(super) expected_state_path: PathBuf,
     pub(super) watch_scope_id: WatchObservationScopeId,
@@ -48,6 +50,7 @@ pub(super) enum SupportingToyGrantKind {
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SupportingToyGrantRequest {
+    pub(super) mutation_id: String,
     pub(super) expected_config_path: PathBuf,
     pub(super) expected_children_dir: PathBuf,
     pub(super) expected_state_path: PathBuf,
@@ -64,7 +67,7 @@ fn response(status_code: u16, body: serde_json::Value) -> MctControlPlaneRespons
     }
 }
 
-fn watch_toy_contract() -> CanonicalToyContract {
+pub(super) fn watch_toy_contract() -> CanonicalToyContract {
     CanonicalToyContract {
         toy_id: ToyId::new(MCT_WATCH_TOY_ID).expect("canonical Watch Toy id is non-empty"),
         contract: ToyContractIdentity {
@@ -176,7 +179,7 @@ fn current_watch_child(
     ))
 }
 
-fn build_scope_and_grant(
+pub(super) fn build_scope_and_grant(
     request: &WatchGrantRequest,
     peer: &MctUdsPeerCredentials,
 ) -> Result<(WatchObservationScope, CanonicalToyContract, ToyGrant)> {
@@ -441,6 +444,130 @@ fn grant_observation(grant: &ToyGrant) -> MctObservation {
     }
 }
 
+fn watch_authority_mutation_request(
+    mutation_id: &str,
+    authenticated_uid: u32,
+    scope: Option<&WatchObservationScope>,
+    contracts: &[CanonicalToyContract],
+    grants: &[ToyGrant],
+) -> AuthorityMutationRequestV1 {
+    let mut contracts = contracts.to_vec();
+    contracts.sort_by(|left, right| left.toy_id.cmp(&right.toy_id));
+    let mut grants = grants.to_vec();
+    grants.sort_by(|left, right| left.grant_id.cmp(&right.grant_id));
+    let mut changes = contracts
+        .into_iter()
+        .map(|contract| AuthorityChangeV1::ToyCatalogPut {
+            toy_id: contract.toy_id.to_string(),
+            contract: contract.contract,
+            authority_bearing: contract.authority_bearing,
+            catalog_revision: contract.catalog_revision,
+            admitted_by_observation_id: contract.admitted_by_observation_id.to_string(),
+        })
+        .collect::<Vec<_>>();
+    changes.extend(grants.iter().cloned().map(|grant| {
+        let mut grant_scope = grant.scope;
+        grant_scope.allowed_actions.sort();
+        grant_scope.allowed_actions.dedup();
+        AuthorityChangeV1::ToyGrantPut {
+            grant_id: grant.grant_id.to_string(),
+            toy_id: grant.toy_id.to_string(),
+            subject: Box::new(grant.subject),
+            scope: Box::new(grant_scope),
+            constraints: Box::new(grant.constraints),
+            grant_state: grant.grant_state,
+            issuer_id: grant.issuer_id,
+            policy_revision: grant.policy_revision,
+            source_grants_revision: grant.grants_revision,
+            authority_observation_id: grant.authority_observation_id.to_string(),
+        }
+    }));
+    if let Some(scope) = scope {
+        changes.push(AuthorityChangeV1::WatchScopePut {
+            scope: Box::new(scope.clone()),
+        });
+    }
+    let mut sources = vec![GrantShapingSourceV1::OperatorDecision {
+        decision_id: format!("decision:{mutation_id}"),
+        authenticated_principal_ref: format!("os-uid:{authenticated_uid}"),
+        command_kind: GrantShapingCommandKindV1::GrantChange,
+    }];
+    if let Some(grant) = grants.first() {
+        sources.push(GrantShapingSourceV1::ChildApproval {
+            child_name: grant.subject.child_name.clone(),
+            artifact_id: grant.subject.artifact_id.clone(),
+            artifact_version: grant.subject.artifact_version.clone(),
+            authority_observation_id: grant.authority_observation_id.to_string(),
+        });
+        if let Some(assignment_id) = grant.subject.assignment_id.as_ref() {
+            sources.push(GrantShapingSourceV1::ChildAssignment {
+                assignment_id: assignment_id.to_string(),
+                authority_observation_id: grant.authority_observation_id.to_string(),
+            });
+        }
+    }
+    AuthorityMutationRequestV1 {
+        mutation_id: mutation_id.to_owned(),
+        changes,
+        grant_shaping_sources: sources,
+        decided_at: mct_daemon::current_timestamp_string(),
+    }
+}
+
+async fn commit_watch_authority(
+    state_path: &Path,
+    ledger: &ResidentLedgerWriter,
+    request: AuthorityMutationRequestV1,
+    observations: Vec<MctObservation>,
+) -> std::result::Result<AuthorityMutationResultV1, MctControlPlaneResponse> {
+    if unimported_legacy_authority_requires_gate(state_path, ledger) {
+        return Err(response(
+            409,
+            serde_json::to_value(AuthorityMutationResultV1::RejectedBeforeCommit {
+                mutation_id: request.mutation_id,
+                reason: AuthorityMutationRejectionReasonV1::ImportRequired,
+            })
+            .expect("authority result serializes"),
+        ));
+    }
+    let result = ledger
+        .commit_authority_mutation(request)
+        .await
+        .map_err(|_| {
+            response(
+                500,
+                serde_json::json!({"error": "Watch authority unavailable"}),
+            )
+        })?;
+    if !matches!(
+        result,
+        AuthorityMutationResultV1::Committed { .. }
+            | AuthorityMutationResultV1::CommittedProjectionPending { .. }
+    ) {
+        let status = match result {
+            AuthorityMutationResultV1::CommitUnknown { .. }
+            | AuthorityMutationResultV1::RejectedBeforeCommit {
+                reason:
+                    AuthorityMutationRejectionReasonV1::WriterPoisoned
+                    | AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
+                ..
+            } => 500,
+            _ => 409,
+        };
+        return Err(response(
+            status,
+            serde_json::to_value(result).expect("authority result serializes"),
+        ));
+    }
+    if ledger.append(observations).await.is_err() {
+        return Err(response(
+            500,
+            serde_json::json!({"error": "Watch observability was not durable"}),
+        ));
+    }
+    Ok(result)
+}
+
 pub(super) async fn execute_resident_watch_mutation(
     owner: mct_daemon::MctUdsAuthenticatedOwner,
     configured_config_path: &Path,
@@ -480,26 +607,41 @@ pub(super) async fn execute_resident_watch_mutation(
                     );
                 }
             };
-            if ledger
-                .append(vec![
+            let authority_request = watch_authority_mutation_request(
+                &request.mutation_id,
+                owner.uid(),
+                Some(&scope),
+                std::slice::from_ref(&contract),
+                std::slice::from_ref(&grant),
+            );
+            let mutation_result = match commit_watch_authority(
+                configured_state_path,
+                ledger,
+                authority_request,
+                vec![
                     scope_observation(&scope, ObservationOutcome::Allowed),
                     grant_observation(&grant),
-                ])
-                .await
-                .is_err()
+                ],
+            )
+            .await
             {
-                return response(
-                    500,
-                    serde_json::json!({"error": "Watch authority was not durable"}),
-                );
-            }
+                Ok(result) => result,
+                Err(response) => return response,
+            };
             let projected = MctRuntimeStateStore::open(configured_state_path).and_then(|state| {
                 state.upsert_toy_contract(&contract)?;
                 state.insert_watch_observation_scope(&scope)?;
                 state.upsert_toy_grant_snapshot(&grant)
             });
             match projected {
-                Ok(()) => response(200, serde_json::json!({"scope": scope, "grant": grant})),
+                Ok(()) => response(
+                    200,
+                    serde_json::json!({
+                        "scope": scope,
+                        "grant": grant,
+                        "mutation_result": mutation_result
+                    }),
+                ),
                 Err(_) => response(
                     500,
                     serde_json::json!({"error": "Watch authority projection failed"}),
@@ -534,16 +676,24 @@ pub(super) async fn execute_resident_watch_mutation(
                     );
                 }
             };
-            if ledger
-                .append(grants.iter().map(grant_observation).collect())
-                .await
-                .is_err()
+            let authority_request = watch_authority_mutation_request(
+                &request.mutation_id,
+                owner.uid(),
+                None,
+                &contracts,
+                &grants,
+            );
+            let mutation_result = match commit_watch_authority(
+                configured_state_path,
+                ledger,
+                authority_request,
+                grants.iter().map(grant_observation).collect(),
+            )
+            .await
             {
-                return response(
-                    500,
-                    serde_json::json!({"error": "supporting Toy authority was not durable"}),
-                );
-            }
+                Ok(result) => result,
+                Err(response) => return response,
+            };
             let projected = MctRuntimeStateStore::open(configured_state_path).and_then(|state| {
                 for contract in &contracts {
                     state.upsert_toy_contract(contract)?;
@@ -556,7 +706,11 @@ pub(super) async fn execute_resident_watch_mutation(
             match projected {
                 Ok(()) => response(
                     200,
-                    serde_json::json!({"contracts": contracts, "grants": grants}),
+                    serde_json::json!({
+                        "contracts": contracts,
+                        "grants": grants,
+                        "mutation_result": mutation_result
+                    }),
                 ),
                 Err(_) => response(
                     500,
@@ -632,24 +786,39 @@ pub(super) async fn execute_resident_watch_mutation(
                 revoked.watch_scope_id, revoked.scope_revision
             ))
             .expect("Watch grant revoke observation id is non-empty");
-            if ledger
-                .append(vec![
+            let authority_request = watch_authority_mutation_request(
+                &request.mutation_id,
+                owner.uid(),
+                Some(&revoked),
+                &[],
+                std::slice::from_ref(&grant),
+            );
+            let mutation_result = match commit_watch_authority(
+                configured_state_path,
+                ledger,
+                authority_request,
+                vec![
                     scope_observation(&revoked, ObservationOutcome::Denied),
                     grant_observation(&grant),
-                ])
-                .await
-                .is_err()
+                ],
+            )
+            .await
             {
-                return response(
-                    500,
-                    serde_json::json!({"error": "Watch revocation was not durable"}),
-                );
-            }
+                Ok(result) => result,
+                Err(response) => return response,
+            };
             match state
                 .insert_watch_observation_scope(&revoked)
                 .and_then(|()| state.upsert_toy_grant_snapshot(&grant))
             {
-                Ok(()) => response(200, serde_json::json!({"scope": revoked, "grant": grant})),
+                Ok(()) => response(
+                    200,
+                    serde_json::json!({
+                        "scope": revoked,
+                        "grant": grant,
+                        "mutation_result": mutation_result
+                    }),
+                ),
                 Err(_) => response(
                     500,
                     serde_json::json!({"error": "Watch revocation projection failed"}),
@@ -790,6 +959,11 @@ pub(super) fn run_watch_toy_command(command: &str, mut args: Vec<String>) -> Res
                 &socket_path,
                 "/watch/grant",
                 &WatchGrantRequest {
+                    mutation_id: format!(
+                        "watch-grant:{}:{}",
+                        watch_scope_id,
+                        mct_daemon::current_timestamp_string()
+                    ),
                     expected_config_path: config_path,
                     expected_children_dir: children_dir,
                     expected_state_path: state_path,
@@ -821,6 +995,11 @@ pub(super) fn run_watch_toy_command(command: &str, mut args: Vec<String>) -> Res
                 &socket_path,
                 "/watch/revoke",
                 &WatchRevokeRequest {
+                    mutation_id: format!(
+                        "watch-revoke:{}:{}",
+                        watch_scope_id,
+                        mct_daemon::current_timestamp_string()
+                    ),
                     expected_config_path: config_path,
                     expected_state_path: state_path,
                     watch_scope_id,
@@ -863,6 +1042,10 @@ pub(super) fn run_watch_toy_command(command: &str, mut args: Vec<String>) -> Res
                 &socket_path,
                 "/watch/supporting-grant",
                 &SupportingToyGrantRequest {
+                    mutation_id: format!(
+                        "watch-supporting:{command}:{child_name}:{}",
+                        mct_daemon::current_timestamp_string()
+                    ),
                     expected_config_path: config_path,
                     expected_children_dir: children_dir,
                     expected_state_path: state_path,

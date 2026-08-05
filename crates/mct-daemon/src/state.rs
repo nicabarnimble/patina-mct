@@ -19,7 +19,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const SCHEMA_VERSION: i64 = 12;
+const SCHEMA_VERSION: i64 = 13;
 
 pub const MCT_IDEMPOTENCY_TTL_SECONDS: i64 = 12 * 60;
 pub const MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER: usize = 256;
@@ -775,6 +775,11 @@ impl MctRuntimeStateStore {
                 value_json TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS authority_projection_watch_scopes (
+                watch_scope_id TEXT PRIMARY KEY,
+                value_json TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS authority_projection_facts (
                 source_sequence INTEGER PRIMARY KEY CHECK(source_sequence >= 0),
                 fact_id TEXT NOT NULL UNIQUE,
@@ -1420,8 +1425,8 @@ impl MctRuntimeStateStore {
             }
             Some(current_json) => {
                 let current: WatchObservationScope = from_json_cell(&current_json)?;
-                if current.authority_state == WatchObservationScopeState::Revoked {
-                    bail!("revoked Watch scope id cannot be resurrected");
+                if current.authority_state != WatchObservationScopeState::Active {
+                    bail!("terminal Watch scope id cannot be revised or resurrected");
                 }
                 if scope.scope_revision != current.scope_revision + 1 {
                     bail!("Watch scope revision must exactly increment current revision");
@@ -1510,6 +1515,23 @@ impl MctRuntimeStateStore {
             r#"
             SELECT record_json FROM watch_observation_scopes
             ORDER BY watch_scope_id, scope_revision
+            "#,
+        )?;
+        stmt.query_map([], |row| row.get::<_, String>(0))?
+            .map(|json| {
+                let scope: WatchObservationScope = from_json_cell(&json?)?;
+                scope.validate().map_err(anyhow::Error::from)?;
+                Ok(scope)
+            })
+            .collect()
+    }
+
+    pub fn current_watch_observation_scopes(&self) -> Result<Vec<WatchObservationScope>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT record_json FROM watch_observation_scopes
+            WHERE is_current = 1
+            ORDER BY watch_scope_id
             "#,
         )?;
         stmt.query_map([], |row| row.get::<_, String>(0))?
@@ -4222,6 +4244,7 @@ impl MctRuntimeStateStore {
             rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         transaction.execute("DELETE FROM authority_projection_toy_catalog", [])?;
         transaction.execute("DELETE FROM authority_projection_toy_grants", [])?;
+        transaction.execute("DELETE FROM authority_projection_watch_scopes", [])?;
         transaction.execute("DELETE FROM authority_projection_facts", [])?;
         for contract in replay.state.toy_catalog.values() {
             transaction.execute(
@@ -4233,6 +4256,12 @@ impl MctRuntimeStateStore {
             transaction.execute(
                 "INSERT INTO authority_projection_toy_grants(grant_id, value_json) VALUES (?1, ?2)",
                 params![grant.grant_id.as_str(), json_string(grant)?],
+            )?;
+        }
+        for scope in replay.state.watch_scopes.values() {
+            transaction.execute(
+                "INSERT INTO authority_projection_watch_scopes(watch_scope_id, value_json) VALUES (?1, ?2)",
+                params![scope.watch_scope_id.as_str(), json_string(scope)?],
             )?;
         }
         for fact in &replay.facts {
@@ -4433,6 +4462,18 @@ impl MctRuntimeStateStore {
                 Ok((id, from_json_cell(&json)?))
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
+        let mut scopes = self.conn.prepare(
+            "SELECT watch_scope_id, value_json FROM authority_projection_watch_scopes ORDER BY watch_scope_id",
+        )?;
+        let watch_scopes = scopes
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .map(|row| {
+                let (id, json) = row?;
+                Ok((id, from_json_cell(&json)?))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
         let mut facts_stmt = self.conn.prepare(
             r#"
             SELECT fact_id, fact_kind, source_sequence, source_entry_hash, canonical_payload
@@ -4455,6 +4496,7 @@ impl MctRuntimeStateStore {
             state: AuthorityStateV1 {
                 toy_catalog,
                 toy_grants,
+                watch_scopes,
             },
             facts,
         }))
@@ -5940,6 +5982,37 @@ mod tests {
         assert_eq!(store.summary().unwrap().ready_instances, 1);
     }
 
+    fn canonical_watch_scope(
+        id: &str,
+        revision: u64,
+        state: WatchObservationScopeState,
+    ) -> WatchObservationScope {
+        WatchObservationScope {
+            watch_scope_id: WatchObservationScopeId::new(id).unwrap(),
+            observer_shape: WatchObserverShape::ChildToy,
+            observer_ref: WatchObserverRef {
+                child_name: "child-watch".into(),
+                artifact_id: ComponentArtifactId::new("artifact-watch").unwrap(),
+                artifact_version: "1.0.0".into(),
+                assignment_id: ChildAssignmentId::new("assignment-watch").unwrap(),
+            },
+            scope_mode: WatchScopeMode::Constrained,
+            canonical_root_ref: "file:///tmp/canonical-watch".into(),
+            traversal_scope: WatchTraversalScope::Recursive,
+            event_classes: vec![WatchEventClass::Created, WatchEventClass::Modified],
+            max_events_per_batch: 23,
+            coalescing_policy: WatchCoalescingPolicy::LastPerPath,
+            starts_at: Timestamp::new("2026-08-05T12:00:00Z").unwrap(),
+            expires_at: Timestamp::new("2026-08-05T13:00:00Z").unwrap(),
+            scope_revision: revision,
+            policy_revision: 7,
+            authority_state: state,
+            authority_observation_id: ObservationId::new(format!("obs-{id}-{revision}")).unwrap(),
+            canonical_record_digest: String::new(),
+        }
+        .seal()
+    }
+
     fn authority_ledger_with_state(
         path: &Path,
         state: AuthorityStateV1,
@@ -6434,6 +6507,63 @@ mod tests {
         );
     }
 
+    /// Phase I proof 16: pre-Phase-I Watch scopes import and rebuild completely once.
+    #[test]
+    fn legacy_import_includes_complete_watch_scopes_once_per_canonical_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let store = MctRuntimeStateStore::open(&state_path).unwrap();
+        let scope = canonical_watch_scope("scope-import", 1, WatchObservationScopeState::Active);
+        store.insert_watch_observation_scope(&scope).unwrap();
+        let mut imported_state = AuthorityStateV1::default();
+        imported_state
+            .watch_scopes
+            .insert(scope.watch_scope_id.to_string(), scope.clone());
+        let mut ledger = authority_ledger_with_state(&ledger_path, imported_state.clone());
+        let replay = replay_authority_entries(&ledger.entries().unwrap()).unwrap();
+        assert_eq!(
+            replay.import.as_ref().unwrap().fact.imported_state,
+            imported_state
+        );
+
+        store
+            .rebuild_authority_projection(&ledger.entries().unwrap())
+            .unwrap();
+        assert_eq!(
+            store
+                .authority_projection_snapshot()
+                .unwrap()
+                .unwrap()
+                .state
+                .watch_scopes
+                .get(scope.watch_scope_id.as_str()),
+            Some(&scope)
+        );
+        let duplicate = ledger.execute_legacy_authority_import(
+            mct_observation::LegacyAuthorityImportRequestV1 {
+                schema: "mct-legacy-authority-import-request/v1".into(),
+                import_id: "duplicate-import".into(),
+                expected_mother_node_id: "local-mct".into(),
+                expected_ledger_id: "ledger-local".into(),
+                expected_config_authority_hash: authority_state_hash(&AuthorityStateV1::default())
+                    .unwrap(),
+                expected_sqlite_authority_hash: authority_state_hash(&imported_state).unwrap(),
+                confirmation: mct_observation::LEGACY_AUTHORITY_IMPORT_CONFIRMATION_V1.into(),
+            },
+            "os-uid:501".into(),
+            imported_state,
+            "2026-08-05T12:01:00Z".into(),
+        );
+        assert!(matches!(
+            duplicate,
+            mct_observation::AuthorityMutationResultV1::RejectedBeforeCommit {
+                reason: mct_observation::AuthorityMutationRejectionReasonV1::AlreadyImported,
+                ..
+            }
+        ));
+    }
+
     #[test]
     fn unknown_authority_schema_blocks_projection_without_ledger_quarantine() {
         let dir = tempfile::tempdir().unwrap();
@@ -6478,6 +6608,88 @@ mod tests {
             store.authority_projection_snapshot().unwrap().unwrap(),
             before
         );
+        assert!(
+            mct_observation::JsonlObservationLedger::open_read_only(
+                &ledger_path,
+                "ledger-local",
+                "local-mct"
+            )
+            .is_ok()
+        );
+    }
+
+    /// Phase I proof 17: an unknown additive change blocks projection but not structural ledger use.
+    #[test]
+    fn unknown_authority_change_variant_blocks_projection_without_ledger_quarantine() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger_path = dir.path().join("observations.jsonl");
+        let mut ledger = authority_ledger_with_state(&ledger_path, AuthorityStateV1::default());
+        let store = MctRuntimeStateStore::open(dir.path().join("state.sqlite")).unwrap();
+        store
+            .publish_authority_projection(&ledger.entries().unwrap())
+            .unwrap();
+        let before = store.authority_projection_snapshot().unwrap().unwrap();
+        let replay = replay_authority_entries(&ledger.entries().unwrap()).unwrap();
+        let authority = replay.current_authority.unwrap();
+        let state_hash = authority_state_hash(&replay.state).unwrap();
+        let fact_id = "obs-unknown-authority-change";
+        let mut observation = MctObservation::informational(
+            ObservationId::new(fact_id).unwrap(),
+            Timestamp::new("2026-08-05T12:02:00Z").unwrap(),
+            ObservationKind::OperatorActionRecorded,
+            TraceId::new("trace-unknown-authority-change").unwrap(),
+            "future authority change",
+        );
+        observation.detail_ref = Some(format!(
+            "{}{}",
+            mct_observation::AUTHORITY_FACT_DETAIL_PREFIX,
+            serde_json::json!({
+                "schema": "mct-authority-fact/v1",
+                "fact_kind": "authority_mutation",
+                "fact_id": fact_id,
+                "body": {
+                    "mutation_id": "future-change",
+                    "mutation_intent_hash": "unreachable",
+                    "mother_node_id": "local-mct",
+                    "ledger_id": "ledger-local",
+                    "authority_epoch": authority.authority_epoch,
+                    "prior_state": {
+                        "grants_authority": authority,
+                        "authority_state_hash": state_hash
+                    },
+                    "changes": [{"change_kind": "future_scope_put", "value": {}}],
+                    "grant_shaping_sources": [{
+                        "source_kind": "operator_decision",
+                        "decision_id": "decision-future-change",
+                        "authenticated_principal_ref": "os-uid:501",
+                        "command_kind": "grant_change"
+                    }],
+                    "resulting_state": {
+                        "grants_authority": {
+                            "mother_node_id": "local-mct",
+                            "authority_epoch": "unused",
+                            "generation": 999,
+                            "source_authority_observation_id": fact_id
+                        },
+                        "authority_state_hash": "unused"
+                    },
+                    "decided_at": "2026-08-05T12:02:00Z"
+                }
+            })
+        ));
+        ledger
+            .append_before_effect(observation, "2026-08-05T12:02:00Z")
+            .unwrap();
+
+        let error = store
+            .publish_authority_projection(&ledger.entries().unwrap())
+            .unwrap_err();
+        assert!(error.to_string().contains("future_scope_put"));
+        assert_eq!(
+            store.authority_projection_snapshot().unwrap().unwrap(),
+            before
+        );
+        drop(ledger);
         assert!(
             mct_observation::JsonlObservationLedger::open_read_only(
                 &ledger_path,

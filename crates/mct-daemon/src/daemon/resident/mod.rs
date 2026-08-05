@@ -1,6 +1,8 @@
 use super::*;
 
 mod observation;
+#[cfg(test)]
+pub(crate) use observation::TestAuthorityMutationFailure;
 use observation::resident_endpoint_observation;
 pub(super) use observation::{ResidentLedgerWriter, resident_iroh_observation_sink};
 

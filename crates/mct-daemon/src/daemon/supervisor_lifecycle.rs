@@ -4480,6 +4480,7 @@ status = "active"
         }
 
         let watch_window = serde_json::json!({
+            "mutation_id": "fixture-watch-grant",
             "expected_config_path": paths.config,
             "expected_children_dir": paths.children,
             "expected_state_path": paths.state,
@@ -4499,7 +4500,7 @@ status = "active"
         assert_eq!(status, 200, "{watch_grant:#}");
         assert_eq!(watch_grant["scope"]["authority_state"], "active");
 
-        for grant in [
+        for (grant_index, grant) in [
             serde_json::json!({
                 "kind": "directory_read",
                 "canonical_root": watch_root
@@ -4513,8 +4514,12 @@ status = "active"
                 "logging": true,
                 "measure": true
             }),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let request = serde_json::json!({
+                "mutation_id": format!("fixture-watch-supporting-{grant_index}"),
                 "expected_config_path": paths.config,
                 "expected_children_dir": paths.children,
                 "expected_state_path": paths.state,
@@ -4527,6 +4532,7 @@ status = "active"
             assert_eq!(status, 200, "{granted:#}");
         }
         let sink_observability = serde_json::json!({
+            "mutation_id": "fixture-watch-sink-observability",
             "expected_config_path": paths.config,
             "expected_children_dir": paths.children,
             "expected_state_path": paths.state,
@@ -4687,6 +4693,7 @@ status = "active"
         assert_eq!(status, 200, "{revoked_trigger:#}");
         assert_eq!(revoked_trigger["authority_state"], "revoked");
         let revoke_watch = WatchRevokeRequest {
+            mutation_id: "fixture-watch-revoke".into(),
             expected_config_path: paths.config.clone(),
             expected_state_path: paths.state.clone(),
             watch_scope_id: WatchObservationScopeId::new("scope:fixture-watch").unwrap(),

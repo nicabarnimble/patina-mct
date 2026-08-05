@@ -35,6 +35,14 @@ enum ResidentLedgerCommand {
     Shutdown(tokio::sync::oneshot::Sender<()>),
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(crate) enum TestAuthorityMutationFailure {
+    Rejected,
+    CommitUnknown,
+    WriterPoisoned,
+}
+
 struct ResidentLedgerWrite {
     observations: Vec<MctObservation>,
     durability: DurabilityClass,
@@ -100,6 +108,69 @@ impl ResidentLedgerWriter {
             sender,
             fenced,
             path: Some(Arc::new(path)),
+            task: Arc::new(std::sync::Mutex::new(Some(task))),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn authority_failure_for_test(failure: TestAuthorityMutationFailure) -> Self {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<ResidentLedgerCommand>(8);
+        let fenced = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let task_fenced = Arc::clone(&fenced);
+        let task = tokio::task::spawn_blocking(move || {
+            while let Some(command) = receiver.blocking_recv() {
+                match command {
+                    ResidentLedgerCommand::AuthorityMutation { request, ack } => {
+                        let result = match failure {
+                            TestAuthorityMutationFailure::Rejected => {
+                                AuthorityMutationResultV1::RejectedBeforeCommit {
+                                    mutation_id: request.mutation_id,
+                                    reason: AuthorityMutationRejectionReasonV1::InvalidRequest,
+                                }
+                            }
+                            TestAuthorityMutationFailure::CommitUnknown => {
+                                task_fenced.store(true, Ordering::SeqCst);
+                                AuthorityMutationResultV1::CommitUnknown {
+                                    mutation_id: request.mutation_id,
+                                    attempted_intent_hash: "injected-unknown".into(),
+                                    failure_stage: mct_observation::AppendFailureStage::Durability,
+                                }
+                            }
+                            TestAuthorityMutationFailure::WriterPoisoned => {
+                                task_fenced.store(true, Ordering::SeqCst);
+                                AuthorityMutationResultV1::RejectedBeforeCommit {
+                                    mutation_id: request.mutation_id,
+                                    reason: AuthorityMutationRejectionReasonV1::WriterPoisoned,
+                                }
+                            }
+                        };
+                        let _ = ack.send(result);
+                    }
+                    ResidentLedgerCommand::Write(write) => {
+                        let _ = write
+                            .ack
+                            .send(Err("unexpected write after authority refusal".into()));
+                    }
+                    ResidentLedgerCommand::FinalizeStartup { ack, .. } => {
+                        let _ = ack.send(Err("scripted authority writer".into()));
+                    }
+                    ResidentLedgerCommand::LegacyAuthorityImport { request, ack, .. } => {
+                        let _ = ack.send(AuthorityMutationResultV1::RejectedBeforeCommit {
+                            mutation_id: request.import_id,
+                            reason: AuthorityMutationRejectionReasonV1::InvalidRequest,
+                        });
+                    }
+                    ResidentLedgerCommand::Shutdown(ack) => {
+                        let _ = ack.send(());
+                        break;
+                    }
+                }
+            }
+        });
+        Self {
+            sender,
+            fenced,
+            path: None,
             task: Arc::new(std::sync::Mutex::new(Some(task))),
         }
     }
