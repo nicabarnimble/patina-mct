@@ -1,6 +1,6 @@
 # Contract obligation ledger
 
-Status date: 2026-07-12; W2 extension 2026-07-14; Daily-Driver Slice 2 extension 2026-07-15; artifact-acquisition extension 2026-07-16; trigger-runtime Part A extension 2026-07-21; grants-authority v0 Phase G extension 2026-08-02; ledger commit/recovery Phase H/H2 extension 2026-08-03
+Status date: 2026-07-12; W2 extension 2026-07-14; Daily-Driver Slice 2 extension 2026-07-15; artifact-acquisition extension 2026-07-16; trigger-runtime Part A extension 2026-07-21; grants-authority v0 Phase G extension 2026-08-02; ledger commit/recovery Phase H/H2 extension 2026-08-03; Phase H3 extension 2026-08-05
 
 Scope: complete named-invariant coverage for `mct-product-map.allium` and `mct-peer-ontology.allium`, plus bulk attribution of tool-derived structural obligations. The 2026-07-12 priority and full-inventory evidence is retained in place; the 2026-07-14 local-application-ingress invariants and W2-A remediation obligations extend it below.
 
@@ -15,7 +15,7 @@ Module names distinguish library tests from binary-local tests: `mct_daemon_bin`
 
 ## Ledger commit and recovery — Phase H / Review 2
 
-The ratified Review 2 law is captured in [ledger-commit-recovery](../../feat/ledger-commit-recovery/SPEC.md). Phase H implemented R2-L1/R2-L2; Phase H2 now implements the R2-L3/R2-L4 write, replay, projection, and proof-construction slices. The proof remains deliberately unconsumed: R2-L5 startup/read-path denial, R2-L6 mutation/effect ordering, and grants-authority slices 4-8 remain `DEFERRED`.
+The ratified Review 2 law is captured in [ledger-commit-recovery](../../feat/ledger-commit-recovery/SPEC.md). Phase H implemented R2-L1/R2-L2; Phase H2 implemented R2-L3/R2-L4 write, replay, projection, and proof construction; Phase H3 implements R2-L5 startup posture, the standing-source-only D-G8 trust consumer, and the harness-only R2-L6 ordering seam. General route, resident-grants, Child, Toy, host-adapter, and peer-wire authority readers remain deferred to grants-authority slices 4-8; the ordering seam has no production consumer.
 
 ### Ledger commit and recovery — R2-L1/R2-L2 targets
 
@@ -25,22 +25,22 @@ The ratified Review 2 law is captured in [ledger-commit-recovery](../../feat/led
 | `CompleteUnacknowledgedFactsResolveByRecovery` | COVERED | Proofs 8 and 10: `complete_unacknowledged_final_frame_is_committed_on_rescan` and `poisoned_writer_reopen_resolves_all_three_commit_states`. Authority mutation-ID result semantics remain deferred to R2-L3. |
 | `UnterminatedTailIsResidue` | COVERED | Proofs 2-4: `torn_unterminated_tail_is_preserved_and_recovered`, `unparseable_unterminated_final_frame_is_residue`, and terminated-malformed quarantine. |
 | `ResidueIsPreservedBeforeSetAside` | COVERED | Proofs 2, 3, and 13: exact forensic preservation plus `interrupted_recovery_is_idempotent_at_every_preservation_stage`. |
-| `CorruptionIsNeverSkipped` | COVERED | Proofs 4-7: terminated malformed, hash, sequence, and foreign-lineage tests preserve without repair. The degraded read-only Mother plane remains deferred to R2-L5. |
+| `CorruptionIsNeverSkipped` | COVERED | R2-L1 proofs 4-7 preserve terminated malformed, hash, sequence, and foreign-lineage failures without repair; Phase H3 proofs 7-8 add the owner-only, read-only quarantine plane while keeping ledger bytes and prior projection unchanged. |
 | `CommittedFactsAreNeverRewritten` | COVERED | Proofs 2, 4, 6, and 11: recovery leaves committed entries unchanged and `batch_failure_reports_and_preserves_acknowledged_committed_prefix` proves no rollback. |
 | `UncertainAppendPoisonsWriter` | COVERED | Proofs 9 and 10: `write_and_sync_uncertainty_poison_writer_without_later_file_changes` and three-way reopen resolution. |
 | `BeforeEffectRequiresAcknowledgedCommit` | COVERED | Proof 15: `mct_daemon_bin::resident::pipeline::tests::before_effect_append_failure_suppresses_child_effect`. |
 | `OneWriterDefinesLocalOrder` | COVERED | Proof 12: `contending_writer_is_typed_and_byte_identical_without_recovery`; resident writer close now joins shutdown and trigger tests use unique temporary ledger paths without lock retries. |
 | `EntryEncodingCannotForgeFrameEnd` | COVERED | Proof 14: `escapable_entry_content_round_trips_without_forging_frame_end`. |
 
-### Authority epoch continuity — Phase H2 disposition
+### Authority epoch continuity — Phase H2/H3 disposition
 
 | Invariant | Current status | Phase disposition / evidence |
 |---|---|---|
-| `MctAuthorityEpochContinuity.EpochBeginsWithCanonicalFact` | DEFERRED | Phase H2 proof 1 establishes the canonical epoch before mutation admission, but the invariant also gates authority evaluation/advertisement and D-R2.8 every-artifact virgin classification; those remain R2-L5. |
+| `MctAuthorityEpochContinuity.EpochBeginsWithCanonicalFact` | COVERED | Phase H3 proofs 1-5 and 17 classify the immutable D-R2.8 disk inventory before creation, establish the correct first epoch for all four startup classes, and withhold ordinary resident readiness until startup observations and the exact post-epoch projection are current. |
 | `WriterTenureUsesFreshEpoch` | COVERED | Phase H2 proofs 1-2: `mct_observation::tests::{fresh_authority_tenure_commits_epoch_before_mutation_admission,authority_tenures_and_byte_copied_restore_use_distinct_epochs}`. |
 | `EpochTransitionPreservesCurrentGrantMeaning` | COVERED | Phase H2 proof 11: `mct_daemon::state::tests::epoch_transition_preserves_projected_grant_meaning`. |
 | `RestoredHistoryCannotReuseAuthorityIdentity` | COVERED | Phase H2 proof 2 copies ledger/projection history and proves the next tenure receives a third distinct entropy-backed epoch. |
-| `ProjectionEpochMustMatchCanonicalEpoch` | DEFERRED | Phase H2 proof 10 constructs typed `epoch_mismatch`, but no authority reader consumes the proof until R2-L5/slice 5; stale projection therefore cannot yet be credited as denying every authority path. |
+| `ProjectionEpochMustMatchCanonicalEpoch` | DEFERRED | Phase H3 startup readiness and standing-source staging consume typed `epoch_mismatch`, but general route, resident-grants, Child/Toy, and host-adapter readers remain unmigrated until grants-authority slices 5, 7, and 8. Partial consumption is not credited as the global invariant. |
 
 ### Canonical authority facts — Phase H2 disposition
 
@@ -50,7 +50,7 @@ The ratified Review 2 law is captured in [ledger-commit-recovery](../../feat/led
 | `MutationAndGenerationAdvanceAreOneFact` | COVERED | Phase H2 proof 4: `mct_observation::tests::authority_mutation_fact_precedes_legacy_write_and_reconstructs_state`; proofs 5-7 cover unknown, rejected, and pending outcomes without a separately committable generation. |
 | `AuthorityFactIsReplayComplete` | COVERED | Phase H2 proofs 3-4 and 8 reconstruct epoch, mutation, and imported Toy state from structured canonical ledger bytes. |
 | `ConfigurationIsIntentNotAuthority` | DEFERRED | Proof 8 covers one-time owner-gated import and pre-import mutation refusal, but current evaluation readers remain fenced and legacy-backed until slices 4-5. |
-| `ProjectionFailureDoesNotUndoCommit` | DEFERRED | Proofs 7 and 14 cover permanent commitment, typed pending, and catch-up. The invariant's fail-closed authority-use clause remains unimplemented until R2-L5/slice 5 consumes the proof. |
+| `ProjectionFailureDoesNotUndoCommit` | DEFERRED | H2 proofs 7 and 14 cover permanent commitment, typed pending, and catch-up; H3 startup and standing-source trust deny while proof is unusable. General authority-use paths remain deferred to slices 5, 7, and 8, so the complete invariant is not over-credited. |
 
 ### Authority-wide projection freshness — Phase H2 disposition
 
@@ -59,7 +59,7 @@ The ratified Review 2 law is captured in [ledger-commit-recovery](../../feat/led
 | `MctAuthorityProjectionFreshness.AuthorityCursorReachesCanonicalHead` | COVERED | Phase H2 proof 9: `mct_daemon::state::tests::authority_cursor_reaches_non_authority_head_with_coherent_publication`. |
 | `CursorBindsHeadHashAndAuthorityIdentity` | COVERED | Proofs 9-10 bind source Mother/ledger, committed sequence/hash, complete authority identity, state hash, and projection hash with typed mismatch reasons. |
 | `ProjectionFactsAndCursorBecomeVisibleTogether` | COVERED | Proofs 9 and 12 show concurrent readers observe old-old or new-new state/cursor during ordinary publication and shadow replacement. |
-| `EpochMismatchDenies` | DEFERRED | Proof 10 emits typed `epoch_mismatch`; fail-closed authority denial remains R2-L5/slice 5 because H2 intentionally adds no proof consumer. |
+| `EpochMismatchDenies` | DEFERRED | H2 proof 10 emits typed `epoch_mismatch`; H3 consumes it for startup readiness and standing-source trust. Remaining authority readers are still deferred to slices 5, 7, and 8. |
 | `RebuildEqualsReplay` | COVERED | Phase H2 proof 13: `mct_daemon::state::tests::clean_rebuild_and_incremental_replay_are_projection_equivalent`. |
 | `MctProjectionCursor` authority-state kind, source Mother, through-entry hash, and projection status | COVERED | Runtime schema v12 stores the authority-state cursor plus complete current Toy/fact rows; proofs 9, 12, and 15 cover current, replacement, and quarantined publication. Trigger/watch checkpoints remain non-authorizing domain diagnostics. |
 
@@ -67,19 +67,19 @@ The ratified Review 2 law is captured in [ledger-commit-recovery](../../feat/led
 
 | Invariant | Current status | Phase disposition / evidence |
 |---|---|---|
-| `TwoPhaseRouting.MutationCommitAndEffectStartHaveOneOrder` | DEFERRED | R2-L6 supplies the ordering boundary; slices 7-8 consume it at Child and Toy effects. |
-| `ProjectionLagCannotOvertakeRevocation` | DEFERRED | R2-L4/L5 current projection proof plus R2-L6 and slices 7-8 effect admission. |
+| `TwoPhaseRouting.MutationCommitAndEffectStartHaveOneOrder` | DEFERRED | Phase H3 proofs 15-16 establish the total-order and recovery semantics in a test-only `MotherAuthorityOrderV1`; no production mutation or effect path consumes it. Slices 7-8 must adopt it at Child and Toy effect seams before this observable invariant is covered. |
+| `ProjectionLagCannotOvertakeRevocation` | DEFERRED | Phase H3 proves the harness-only fence and exact recovery proof, but no production Child/Toy effect admission consumes the ordering boundary until slices 7-8. |
 
-### Phase H2 disposition counts
+### Phase H3 disposition counts
 
-| Disposition | Review 2 invariants after H2 |
+| Disposition | Review 2 invariants after H3 |
 |---|---:|
-| COVERED | 19 |
+| COVERED | 20 |
 | LAW-LEADS-CODE | 0 |
-| DEFERRED to R2-L5/R2-L6 / slices 4-8 | 8 |
+| DEFERRED to grants-authority slices 4-8 | 7 |
 | **Total new invariants** | **27** |
 
-The separate `MctProjectionCursor` structural row is now `COVERED`. The 19 covered invariants comprise the original 10 R2-L1/R2-L2 rows plus 9 R2-L3/R2-L4 rows. Deferral is retained wherever the complete invariant requires an authority-evaluation consumer, D-R2.8 startup classification, or mutation/effect ordering; proof construction alone is not credited as fail-closed use.
+The separate `MctProjectionCursor` structural row remains `COVERED`. H3 moves `EpochBeginsWithCanonicalFact` to `COVERED`; the other seven deferrals remain because their complete law requires general authority-reader migration or a production Child/Toy effect consumer. Startup proof consumption, one standing-source trust consumer, and a harness-only ordering API are not misreported as global authority/effect coverage.
 
 **Known seam:** authority projection construction replays the full ledger. Ledger growth is therefore a future authority-availability concern; Phase H2 adds no alternate authority source, compaction path, or partial-replay freshness claim.
 
