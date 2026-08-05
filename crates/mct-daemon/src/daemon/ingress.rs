@@ -1189,7 +1189,14 @@ listens = []
         let ledger_path = dir.path().join("observations.jsonl");
         write_resident_process_child(&children_dir);
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
-        MctDaemonConfigStore::new(&config_path)
+        let config_store = MctDaemonConfigStore::new(&config_path);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        config_store
             .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
             .unwrap();
 
@@ -1207,7 +1214,7 @@ listens = []
             jvm_bridge_protocol_request("patina:demo/control@0.1.0.run", "[]").unwrap();
         request.call.payload_metadata.size_bytes = payload.len() as u64;
         request.payload = handle;
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
 
         let result = execute_jvm_resident_call(
             ResidentRuntimePaths::new(config_path, children_dir, state_path),

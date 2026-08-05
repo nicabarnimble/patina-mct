@@ -3701,7 +3701,14 @@ listens = []
                 .into_iter()
                 .next()
                 .unwrap();
-        MctDaemonConfigStore::new(&config_path)
+        let config_store = MctDaemonConfigStore::new(&config_path);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        config_store
             .approve_and_assign_loaded_child(&child, MctOperatorChildScope::default())
             .unwrap();
         let paths = crate::resident::ResidentRuntimePaths::new(
@@ -3711,7 +3718,7 @@ listens = []
         );
         let call = resident_test_call(TraceId::new("trace-live-child-revoke").unwrap());
         let request = resident_test_protocol_request(call);
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         let before = crate::resident::execute_resident_call(
             paths.clone(),
             ledger.clone(),

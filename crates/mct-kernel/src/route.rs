@@ -1,4 +1,4 @@
-use crate::{call::*, child::*, id::*, toy::*};
+use crate::{authority::*, call::*, child::*, id::*, toy::*};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -567,6 +567,167 @@ pub fn revalidate_route_for_execution(
     }
 }
 
+/// Revalidates route-evaluation authority against one Mother-owned local snapshot.
+///
+/// Existing effect tokens retain their call-carried revision fields for the
+/// separately gated effect-admission migration; required Toy results here are
+/// evaluation-only and mint no effect token.
+pub fn revalidate_route_for_execution_with_snapshot(
+    call: &MctCall,
+    initial: &RouteDecision,
+    child: ChildCallAuthorityResult,
+    required_toys: Vec<ToyGrantEvaluation>,
+    snapshot: &LocalExecutionAuthoritySnapshot,
+    ids: RouteRevalidationIds,
+) -> RouteRevalidationResult {
+    let local_policy_revision = snapshot.policy_revision();
+    let local_grants_generation = snapshot.canonical_grants().grants_authority().generation();
+    let local_revisions = RouteEvaluationRevisions {
+        policy: local_policy_revision,
+        grants: local_grants_generation,
+    };
+    if initial.call_id != call.call_id {
+        return revalidation_denied_with_revisions(
+            call,
+            initial,
+            None,
+            ids,
+            RouteRevalidationReason::CallIdMismatch,
+            CandidateEliminationReason::RouteMismatch,
+            local_revisions,
+        );
+    }
+    let Some(selected_route) = initial.selected_route.as_ref() else {
+        return revalidation_denied_with_revisions(
+            call,
+            initial,
+            None,
+            ids,
+            RouteRevalidationReason::InitialDecisionNotSelected,
+            CandidateEliminationReason::CapabilityUnavailable,
+            local_revisions,
+        );
+    };
+    if initial.outcome != RouteDecisionOutcome::RouteSelected
+        || !initial_route_admitted_candidate(initial, selected_route)
+    {
+        return revalidation_denied_with_revisions(
+            call,
+            initial,
+            Some(selected_route.clone()),
+            ids,
+            RouteRevalidationReason::SelectedRouteNotAdmissible,
+            CandidateEliminationReason::CapabilityUnavailable,
+            local_revisions,
+        );
+    }
+    if child.evaluation.policy_revision != local_policy_revision {
+        return revalidation_denied_with_revisions(
+            call,
+            initial,
+            Some(selected_route.clone()),
+            ids,
+            RouteRevalidationReason::PolicyRevisionStale,
+            CandidateEliminationReason::PolicyRevisionStale,
+            local_revisions,
+        );
+    }
+    if child.evaluation.call_id != call.call_id || !child.is_allowed() {
+        return revalidation_denied_with_revisions(
+            call,
+            initial,
+            Some(selected_route.clone()),
+            ids,
+            RouteRevalidationReason::ChildAuthorityDenied,
+            CandidateEliminationReason::ChildNotApproved,
+            local_revisions,
+        );
+    }
+    let child_invocation = child
+        .authorized
+        .expect("allowed child authority has a token");
+    if let Some(child_id) = selected_route.child_id.as_ref()
+        && child_id.as_str() != child_invocation.child_name()
+    {
+        return revalidation_denied_with_revisions(
+            call,
+            initial,
+            Some(selected_route.clone()),
+            ids,
+            RouteRevalidationReason::SelectedChildMismatch,
+            CandidateEliminationReason::RouteMismatch,
+            local_revisions,
+        );
+    }
+    for toy in required_toys {
+        if toy.policy_revision != local_policy_revision {
+            return revalidation_denied_with_revisions(
+                call,
+                initial,
+                Some(selected_route.clone()),
+                ids,
+                RouteRevalidationReason::PolicyRevisionStale,
+                CandidateEliminationReason::PolicyRevisionStale,
+                local_revisions,
+            );
+        }
+        if toy.grants_revision != local_grants_generation {
+            return revalidation_denied_with_revisions(
+                call,
+                initial,
+                Some(selected_route.clone()),
+                ids,
+                RouteRevalidationReason::GrantsRevisionStale,
+                CandidateEliminationReason::GrantsRevisionStale,
+                local_revisions,
+            );
+        }
+        if toy.call_id != call.call_id || toy.verdict != ToyGrantVerdict::Allowed {
+            return revalidation_denied_with_revisions(
+                call,
+                initial,
+                Some(selected_route.clone()),
+                ids,
+                RouteRevalidationReason::ToyGrantDenied,
+                CandidateEliminationReason::ToyGrantMissing,
+                local_revisions,
+            );
+        }
+    }
+    let decision_id = ids.decision_id.clone();
+    let decision = RouteDecision {
+        decision_id: ids.decision_id,
+        call_id: call.call_id.clone(),
+        decision_kind: RouteDecisionKind::Revalidation,
+        initial_decision_id: Some(initial.decision_id.clone()),
+        authority_evaluations: vec![CandidateAuthorityEvaluation::admissible(
+            selected_route.clone(),
+            local_policy_revision,
+            local_grants_generation,
+        )],
+        selected_route: Some(selected_route.clone()),
+        outcome: RouteDecisionOutcome::RouteSelected,
+        no_route_reason: None,
+        safe_message: "route revalidated".into(),
+        observation_id: ids.observation_id,
+    };
+    RouteRevalidationResult {
+        decision,
+        reason: RouteRevalidationReason::Revalidated,
+        authorized: Some(AuthorizedRouteExecution {
+            authorized_route_execution_id: ids.authorized_route_execution_id,
+            call_id: call.call_id.clone(),
+            initial_decision_id: initial.decision_id.clone(),
+            revalidation_decision_id: decision_id,
+            route: selected_route.clone(),
+            child_invocation,
+            toy_calls: Vec::new(),
+            policy_revision: call.authority_context.policy_revision,
+            grants_revision: call.authority_context.grants_revision,
+        }),
+    }
+}
+
 fn initial_route_admitted_candidate(
     initial: &RouteDecision,
     selected_route: &CandidateRoute,
@@ -577,6 +738,12 @@ fn initial_route_admitted_candidate(
     })
 }
 
+#[derive(Clone, Copy)]
+struct RouteEvaluationRevisions {
+    policy: u64,
+    grants: u64,
+}
+
 fn revalidation_denied(
     call: &MctCall,
     initial: &RouteDecision,
@@ -585,14 +752,37 @@ fn revalidation_denied(
     reason: RouteRevalidationReason,
     elimination_reason: CandidateEliminationReason,
 ) -> RouteRevalidationResult {
+    revalidation_denied_with_revisions(
+        call,
+        initial,
+        selected_route,
+        ids,
+        reason,
+        elimination_reason,
+        RouteEvaluationRevisions {
+            policy: call.authority_context.policy_revision,
+            grants: call.authority_context.grants_revision,
+        },
+    )
+}
+
+fn revalidation_denied_with_revisions(
+    call: &MctCall,
+    initial: &RouteDecision,
+    selected_route: Option<CandidateRoute>,
+    ids: RouteRevalidationIds,
+    reason: RouteRevalidationReason,
+    elimination_reason: CandidateEliminationReason,
+    revisions: RouteEvaluationRevisions,
+) -> RouteRevalidationResult {
     let authority_evaluations = selected_route
         .clone()
         .map(|candidate| {
             vec![CandidateAuthorityEvaluation::eliminated(
                 candidate,
                 elimination_reason,
-                call.authority_context.policy_revision,
-                call.authority_context.grants_revision,
+                revisions.policy,
+                revisions.grants,
             )]
         })
         .unwrap_or_default();

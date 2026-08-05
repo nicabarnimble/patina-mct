@@ -585,6 +585,27 @@ pub fn evaluate_child_call_authority(
     assignments: &[ChildAssignment],
     instances: &[ChildInstance],
 ) -> ChildCallAuthorityResult {
+    evaluate_child_call_authority_with_policy(
+        call,
+        request,
+        artifacts,
+        approvals,
+        assignments,
+        instances,
+        call.authority_context.policy_revision,
+    )
+}
+
+/// Route-evaluation variant that receives the executing Mother's local policy revision.
+pub fn evaluate_child_call_authority_with_policy(
+    call: &MctCall,
+    request: &ChildCallAuthorityRequest,
+    artifacts: &[ComponentArtifact],
+    approvals: &[ChildApproval],
+    assignments: &[ChildAssignment],
+    instances: &[ChildInstance],
+    expected_policy_revision: u64,
+) -> ChildCallAuthorityResult {
     let Some(instance) = instances
         .iter()
         .find(|instance| instance.instance_id == request.instance_id)
@@ -598,7 +619,7 @@ pub fn evaluate_child_call_authority(
             None,
             None,
             None,
-            call.authority_context.policy_revision,
+            expected_policy_revision,
         );
     };
 
@@ -608,7 +629,7 @@ pub fn evaluate_child_call_authority(
             request,
             instance,
             ChildCallReasonCode::WrongNode,
-            call.authority_context.policy_revision,
+            expected_policy_revision,
         );
     }
 
@@ -618,7 +639,7 @@ pub fn evaluate_child_call_authority(
             request,
             instance,
             ChildCallReasonCode::InstanceNotReady,
-            call.authority_context.policy_revision,
+            expected_policy_revision,
         );
     }
 
@@ -631,7 +652,7 @@ pub fn evaluate_child_call_authority(
             request,
             instance,
             ChildCallReasonCode::MissingAssignment,
-            call.authority_context.policy_revision,
+            expected_policy_revision,
         );
     };
 
@@ -644,7 +665,7 @@ pub fn evaluate_child_call_authority(
             Some(assignment),
             None,
             None,
-            call.authority_context.policy_revision,
+            expected_policy_revision,
         );
     }
 
@@ -657,7 +678,7 @@ pub fn evaluate_child_call_authority(
             Some(assignment),
             None,
             None,
-            call.authority_context.policy_revision,
+            expected_policy_revision,
         );
     }
 
@@ -670,7 +691,7 @@ pub fn evaluate_child_call_authority(
             Some(assignment),
             None,
             None,
-            call.authority_context.policy_revision,
+            expected_policy_revision,
         );
     }
 
@@ -683,7 +704,7 @@ pub fn evaluate_child_call_authority(
             Some(assignment),
             None,
             None,
-            call.authority_context.policy_revision,
+            expected_policy_revision,
         );
     }
 
@@ -699,11 +720,11 @@ pub fn evaluate_child_call_authority(
             Some(assignment),
             None,
             None,
-            call.authority_context.policy_revision,
+            expected_policy_revision,
         );
     };
 
-    if approval.policy_revision != call.authority_context.policy_revision {
+    if approval.policy_revision != expected_policy_revision {
         return denied_with_context(
             call,
             request,

@@ -18,6 +18,10 @@ enum ResidentLedgerCommand {
         request: AuthorityMutationRequestV1,
         ack: tokio::sync::oneshot::Sender<AuthorityMutationResultV1>,
     },
+    PublishAuthorityProjection {
+        state_path: PathBuf,
+        ack: tokio::sync::oneshot::Sender<std::result::Result<(), String>>,
+    },
     FinalizeStartup {
         state_path: PathBuf,
         config_path: PathBuf,
@@ -86,6 +90,10 @@ impl ResidentLedgerWriter {
                             reason: AuthorityMutationRejectionReasonV1::WriterPoisoned,
                         });
                     }
+                    ResidentLedgerCommand::PublishAuthorityProjection { ack, .. } => {
+                        task_fenced.store(true, Ordering::SeqCst);
+                        let _ = ack.send(Err("injected resident writer loss".into()));
+                    }
                     ResidentLedgerCommand::FinalizeStartup { ack, .. } => {
                         task_fenced.store(true, Ordering::SeqCst);
                         let _ = ack.send(Err("injected resident writer loss".into()));
@@ -151,6 +159,9 @@ impl ResidentLedgerWriter {
                             .ack
                             .send(Err("unexpected write after authority refusal".into()));
                     }
+                    ResidentLedgerCommand::PublishAuthorityProjection { ack, .. } => {
+                        let _ = ack.send(Err("scripted authority writer".into()));
+                    }
                     ResidentLedgerCommand::FinalizeStartup { ack, .. } => {
                         let _ = ack.send(Err("scripted authority writer".into()));
                     }
@@ -195,19 +206,28 @@ impl ResidentLedgerWriter {
 
     #[cfg(test)]
     pub(crate) fn spawn_authority_for_test(path: PathBuf) -> Result<Self> {
-        let ledger = JsonlObservationLedger::open_authority(&path, "ledger-local", "local-mct")
+        Self::spawn_authority_with_identity_for_test(path, "local-mct")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn spawn_authority_with_identity_for_test(
+        path: PathBuf,
+        mother_node_id: &str,
+    ) -> Result<Self> {
+        let ledger = JsonlObservationLedger::open_authority(&path, "ledger-local", mother_node_id)
             .with_context(|| format!("open test authority ledger {}", path.display()))?;
         Self::spawn_opened(path, ledger)
     }
 
     pub(crate) fn spawn_authority(
         path: PathBuf,
+        mother_node_id: &str,
         startup: mct_observation::AuthorityTenureStartupEvidenceV1,
     ) -> Result<Self> {
         let ledger = JsonlObservationLedger::open_authority_with_startup(
             &path,
             "ledger-local",
-            "local-mct",
+            mother_node_id,
             startup,
         )
         .with_context(|| format!("open authority observation ledger {}", path.display()))?;
@@ -253,6 +273,19 @@ impl ResidentLedgerWriter {
                                     AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
                             }
                         };
+                        let _ = ack.send(result);
+                    }
+                    ResidentLedgerCommand::PublishAuthorityProjection { state_path, ack } => {
+                        let result = ledger
+                            .entries()
+                            .map_err(|error| error.to_string())
+                            .and_then(|entries| {
+                                MctRuntimeStateStore::open(&state_path)
+                                    .and_then(|state| {
+                                        state.publish_authority_projection(&entries).map(|_| ())
+                                    })
+                                    .map_err(|error| error.to_string())
+                            });
                         let _ = ack.send(result);
                     }
                     ResidentLedgerCommand::FinalizeStartup {
@@ -312,6 +345,20 @@ impl ResidentLedgerWriter {
 
     pub(crate) fn path(&self) -> Option<&Path> {
         self.path.as_deref().map(PathBuf::as_path)
+    }
+
+    pub(crate) async fn publish_authority_projection(&self, state_path: PathBuf) -> Result<()> {
+        if self.is_fenced() {
+            bail!("resident observation writer is fenced");
+        }
+        let (ack, rx) = tokio::sync::oneshot::channel();
+        self.sender
+            .send(ResidentLedgerCommand::PublishAuthorityProjection { state_path, ack })
+            .await
+            .context("send authority projection publication to resident ledger writer")?;
+        rx.await
+            .context("receive authority projection publication acknowledgement")?
+            .map_err(anyhow::Error::msg)
     }
 
     pub(crate) async fn finalize_startup(
