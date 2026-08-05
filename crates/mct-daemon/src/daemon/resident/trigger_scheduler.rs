@@ -1504,9 +1504,14 @@ fn detail_json<'a>(detail: &'a str, prefix: &str) -> Option<&'a str> {
     detail.strip_prefix(prefix)
 }
 
-pub(crate) fn reconcile_trigger_projection(state_path: &Path, ledger_path: &Path) -> Result<()> {
-    let entries = JsonlObservationLedger::open_read_only(ledger_path, "ledger-local", "local-mct")?
-        .entries()?;
+pub(crate) fn reconcile_trigger_projection(
+    state_path: &Path,
+    ledger_path: &Path,
+    mother_node_id: &str,
+) -> Result<()> {
+    let entries =
+        JsonlObservationLedger::open_read_only(ledger_path, "ledger-local", mother_node_id)?
+            .entries()?;
     let state = MctRuntimeStateStore::open(state_path)?;
     let mut seen_authorities = BTreeSet::new();
     let mut seen_occurrences = BTreeSet::new();
@@ -1971,7 +1976,7 @@ listens = []
     }
 
     fn spawn_test_ledger_after_joined_shutdown(path: &Path) -> ResidentLedgerWriter {
-        ResidentLedgerWriter::spawn(path.to_path_buf())
+        ResidentLedgerWriter::spawn_authority_for_test(path.to_path_buf())
             .expect("joined resident writer shutdown must release its ledger lock")
     }
 
@@ -2667,7 +2672,12 @@ listens = []
         }
         assert_eq!(
             std::fs::read_to_string(artifact.with_extension("wasm.count"))
-                .unwrap()
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "counting child did not run: {error}; ledger={}",
+                        std::fs::read_to_string(&ledger_path).unwrap_or_default()
+                    )
+                })
                 .trim(),
             "1"
         );
@@ -2712,7 +2722,7 @@ listens = []
             )
             .unwrap();
         drop(connection);
-        reconcile_trigger_projection(&state_path, &ledger_path).unwrap();
+        reconcile_trigger_projection(&state_path, &ledger_path, "local-mct").unwrap();
         let reconciled = MctRuntimeStateStore::open(&state_path).unwrap();
         assert_eq!(reconciled.call_trigger_authorities().unwrap().len(), 1);
         assert_eq!(reconciled.call_trigger_firings().unwrap().len(), 1);

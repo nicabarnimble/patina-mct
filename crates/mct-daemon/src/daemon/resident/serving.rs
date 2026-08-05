@@ -493,8 +493,16 @@ where
         bail!("--max-connections must be greater than zero");
     }
 
+    let config_store = MctDaemonConfigStore::new(&config.config_path);
+    let existing_config = config_store.load()?;
+    let mother_node_id = existing_config
+        .local_identity
+        .as_ref()
+        .map(|identity| identity.node_id.to_string())
+        .unwrap_or_else(|| "local-mct".into());
     let startup_paths = resident_startup_paths(&config);
-    let startup_result = classify_authority_startup(&startup_paths, "ledger-local", "local-mct");
+    let startup_result =
+        classify_authority_startup(&startup_paths, "ledger-local", &mother_node_id);
     #[cfg(not(test))]
     if startup_result.as_ref().map_or(true, |startup| {
         startup.startup_class == AuthorityStartupClassV1::OperatorGatedNonvirgin
@@ -511,7 +519,7 @@ where
         let plane = mct_daemon::MctIsolatedStartupPlaneV1::inspect(
             startup_paths.clone(),
             "ledger-local",
-            "local-mct",
+            &mother_node_id,
             owner_uid,
         )?;
         return run_isolated_startup_plane(plane, startup_paths.control_socket.clone(), shutdown)
@@ -524,7 +532,7 @@ where
         let request = mct_daemon::MctOperatorStartupGateRequestV1 {
             schema: "mct-operator-startup-gate-request/v1".into(),
             decision_id: format!("decision:test-startup:{}", startup.inventory.inventory_hash),
-            expected_mother_node_id: "local-mct".into(),
+            expected_mother_node_id: mother_node_id.clone(),
             expected_ledger_id: "ledger-local".into(),
             expected_inventory_hash: startup.inventory.inventory_hash.clone(),
             confirmation: mct_daemon::MCT_OPERATOR_REINITIALIZATION_CONFIRMATION_V1.into(),
@@ -532,12 +540,12 @@ where
         drop(mct_daemon::accept_operator_startup_gate(
             &startup_paths,
             "ledger-local",
-            "local-mct",
+            &mother_node_id,
             &request,
             "os-uid:test-owner",
             "os-uid:test-owner",
         )?);
-        classify_authority_startup(&startup_paths, "ledger-local", "local-mct")
+        classify_authority_startup(&startup_paths, "ledger-local", &mother_node_id)
             .context("reclassify test Mother after explicit startup gate")?
     } else {
         startup
@@ -547,14 +555,13 @@ where
     }
     let ledger = ResidentLedgerWriter::spawn_authority(
         config.ledger_path.clone(),
+        &mother_node_id,
         startup.tenure_evidence(None)?,
     )?;
     let supervised_instance = match &config.supervisor {
         Some(record) => Some(begin_supervised_resident_instance(record, &ledger).await?),
         None => None,
     };
-    let config_store = MctDaemonConfigStore::new(&config.config_path);
-    let existing_config = config_store.load()?;
     let identity_scope = existing_config
         .local_identity
         .as_ref()
@@ -603,7 +610,7 @@ where
             let plane = mct_daemon::MctIsolatedStartupPlaneV1::inspect(
                 startup_paths.clone(),
                 "ledger-local",
-                "local-mct",
+                &mother_node_id,
                 owner_uid,
             )?
             .with_drift_report(startup_readiness.report);
@@ -629,7 +636,7 @@ where
     }
     let ticket = endpoint.ticket();
     let load_report = load_children_from_dir(MctChildLoadOptions::new(config.children_dir.clone()));
-    reconcile_trigger_projection(&config.state_path, &config.ledger_path)
+    reconcile_trigger_projection(&config.state_path, &config.ledger_path, &mother_node_id)
         .context("reconcile trigger ledger projection before resident readiness")?;
     let state = MctRuntimeStateStore::open(&config.state_path)
         .with_context(|| format!("open runtime state {}", config.state_path.display()))?;

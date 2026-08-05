@@ -72,7 +72,8 @@ pub use child::{
     ChildIngressMode, ChildInstance, ChildInstanceState, ChildLifecycleTransition,
     ChildLifecycleTransitionReason, ComponentArtifact, ComponentRuntimeShape, ComponentWitExport,
     LifecycleExports, VerificationStatus, evaluate_child_call_authority,
-    is_allowed_instance_transition, transition_child_instance,
+    evaluate_child_call_authority_with_policy, is_allowed_instance_transition,
+    transition_child_instance,
 };
 pub use error::{InvalidFieldReason, MctKernelError, MctKernelResult};
 pub use id::{
@@ -108,13 +109,13 @@ pub use route::{
     CandidateEliminationClass, CandidateEliminationReason, CandidateRoute, NetworkPathClass,
     RouteDecision, RouteDecisionIds, RouteDecisionKind, RouteDecisionOutcome, RouteRevalidationIds,
     RouteRevalidationReason, RouteRevalidationResult, no_route_denied_result,
-    revalidate_route_for_execution,
+    revalidate_route_for_execution, revalidate_route_for_execution_with_snapshot,
 };
 pub use toy::{
     AuthorizedToyCall, CanonicalToyContract, ToyContractIdentity, ToyGrant, ToyGrantConstraints,
     ToyGrantEvaluation, ToyGrantEvaluationIds, ToyGrantEvaluationRequest, ToyGrantEvaluationResult,
     ToyGrantReasonCode, ToyGrantScope, ToyGrantState, ToyGrantSubject, ToyGrantVerdict,
-    evaluate_toy_grant_for_call,
+    evaluate_toy_grant_for_call, evaluate_toy_grant_for_route_snapshot,
 };
 pub use trigger::{
     CallTriggerAuthority, CallTriggerAuthorityState, CallTriggerClass,

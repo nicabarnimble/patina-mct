@@ -545,6 +545,159 @@ pub fn evaluate_toy_grant_for_call(
     )
 }
 
+/// Evaluates a required Toy for routing from one proof-gated local snapshot.
+///
+/// The canonical projection cursor proves grants generation; replayed legacy
+/// `ToyGrant.grants_revision` content is therefore not treated as generation.
+pub fn evaluate_toy_grant_for_route_snapshot(
+    call: &MctCall,
+    request: &ToyGrantEvaluationRequest,
+    catalog: &[CanonicalToyContract],
+    grants: &[ToyGrant],
+    local_policy_revision: u64,
+    local_grants_generation: u64,
+) -> ToyGrantEvaluation {
+    let Some(toy) = catalog.iter().find(|toy| toy.toy_id == request.toy_id) else {
+        return route_denied(
+            call,
+            request,
+            None,
+            ToyGrantReasonCode::UnknownToy,
+            local_policy_revision,
+            local_grants_generation,
+        );
+    };
+    if !toy.authority_bearing {
+        return route_denied(
+            call,
+            request,
+            None,
+            ToyGrantReasonCode::PolicyDenied,
+            local_policy_revision,
+            local_grants_generation,
+        );
+    }
+    let mut matching_wrong_state = None;
+    for grant in grants.iter().filter(|grant| grant.toy_id == request.toy_id) {
+        if !subject_matches(&grant.subject, &request.subject) {
+            continue;
+        }
+        if grant.policy_revision != local_policy_revision {
+            return route_denied(
+                call,
+                request,
+                Some(grant),
+                ToyGrantReasonCode::StaleSnapshot,
+                local_policy_revision,
+                local_grants_generation,
+            );
+        }
+        match grant.grant_state {
+            ToyGrantState::Active => {}
+            ToyGrantState::Expired => {
+                matching_wrong_state = Some((grant, ToyGrantReasonCode::ExpiredGrant));
+                continue;
+            }
+            ToyGrantState::Revoked | ToyGrantState::Superseded | ToyGrantState::Denied => {
+                matching_wrong_state = Some((grant, ToyGrantReasonCode::RevokedGrant));
+                continue;
+            }
+            ToyGrantState::Requested => {
+                matching_wrong_state = Some((grant, ToyGrantReasonCode::PolicyDenied));
+                continue;
+            }
+        }
+        if grant
+            .constraints
+            .starts_at
+            .as_ref()
+            .is_some_and(|starts_at| request.now < *starts_at)
+        {
+            return route_denied(
+                call,
+                request,
+                Some(grant),
+                ToyGrantReasonCode::PolicyDenied,
+                local_policy_revision,
+                local_grants_generation,
+            );
+        }
+        if grant
+            .constraints
+            .expires_at
+            .as_ref()
+            .is_some_and(|expires_at| request.now >= *expires_at)
+        {
+            return route_denied(
+                call,
+                request,
+                Some(grant),
+                ToyGrantReasonCode::ExpiredGrant,
+                local_policy_revision,
+                local_grants_generation,
+            );
+        }
+        if !scope_matches(&grant.scope, call, request) {
+            return route_denied(
+                call,
+                request,
+                Some(grant),
+                ToyGrantReasonCode::WrongScope,
+                local_policy_revision,
+                local_grants_generation,
+            );
+        }
+        return ToyGrantEvaluation {
+            evaluation_id: request.ids.evaluation_id.clone(),
+            call_id: call.call_id.clone(),
+            decision_id: request.ids.decision_id.clone(),
+            grant_id: Some(grant.grant_id.clone()),
+            toy_id: request.toy_id.clone(),
+            subject_child_name: request.subject.child_name.clone(),
+            verdict: ToyGrantVerdict::Allowed,
+            reason_code: ToyGrantReasonCode::ActiveGrant,
+            policy_revision: local_policy_revision,
+            grants_revision: local_grants_generation,
+            observation_id: request.ids.observation_id.clone(),
+        };
+    }
+    let (grant, reason) = matching_wrong_state.map_or(
+        (None, ToyGrantReasonCode::MissingGrant),
+        |(grant, reason)| (Some(grant), reason),
+    );
+    route_denied(
+        call,
+        request,
+        grant,
+        reason,
+        local_policy_revision,
+        local_grants_generation,
+    )
+}
+
+fn route_denied(
+    call: &MctCall,
+    request: &ToyGrantEvaluationRequest,
+    grant: Option<&ToyGrant>,
+    reason_code: ToyGrantReasonCode,
+    policy_revision: u64,
+    grants_revision: u64,
+) -> ToyGrantEvaluation {
+    ToyGrantEvaluation {
+        evaluation_id: request.ids.evaluation_id.clone(),
+        call_id: call.call_id.clone(),
+        decision_id: request.ids.decision_id.clone(),
+        grant_id: grant.map(|grant| grant.grant_id.clone()),
+        toy_id: request.toy_id.clone(),
+        subject_child_name: request.subject.child_name.clone(),
+        verdict: ToyGrantVerdict::Denied,
+        reason_code,
+        policy_revision,
+        grants_revision,
+        observation_id: request.ids.observation_id.clone(),
+    }
+}
+
 fn denied(
     call: &MctCall,
     request: &ToyGrantEvaluationRequest,

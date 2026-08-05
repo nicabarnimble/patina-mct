@@ -314,6 +314,19 @@ impl MctConfigChildAuthorityProjection {
         child_name: &str,
         call: &MctCall,
     ) -> ChildCallAuthorityResult {
+        self.authorize_child_for_call_with_policy(
+            child_name,
+            call,
+            call.authority_context.policy_revision,
+        )
+    }
+
+    pub fn authorize_child_for_call_with_policy(
+        &self,
+        child_name: &str,
+        call: &MctCall,
+        local_policy_revision: u64,
+    ) -> ChildCallAuthorityResult {
         let Some(instance) = self
             .instances
             .iter()
@@ -325,13 +338,14 @@ impl MctConfigChildAuthorityProjection {
                 node_id: self.local_node_id.clone(),
                 ids: child_authority_ids(child_name, call),
             };
-            return evaluate_child_call_authority(
+            return evaluate_child_call_authority_with_policy(
                 call,
                 &request,
                 &self.artifacts,
                 &self.approvals,
                 &self.assignments,
                 &self.instances,
+                local_policy_revision,
             );
         };
         let request = ChildCallAuthorityRequest {
@@ -339,13 +353,14 @@ impl MctConfigChildAuthorityProjection {
             node_id: self.local_node_id.clone(),
             ids: child_authority_ids(child_name, call),
         };
-        evaluate_child_call_authority(
+        evaluate_child_call_authority_with_policy(
             call,
             &request,
             &self.artifacts,
             &self.approvals,
             &self.assignments,
             &self.instances,
+            local_policy_revision,
         )
     }
 }

@@ -59,17 +59,28 @@ pub fn local_execution_authority_snapshot_at(
 ) -> Result<LocalExecutionAuthoritySnapshot, LocalExecutionAuthoritySnapshotDenyV1> {
     let evaluated_at =
         mother_time.map_err(|_| LocalExecutionAuthoritySnapshotDenyV1::MotherClockUnavailable)?;
-    let entries = JsonlObservationLedger::open_read_only(ledger_path, "ledger-local", "local-mct")
-        .and_then(|reader| reader.entries())
-        .map_err(|error| match error {
-            ObservationLedgerError::Quarantined { .. } => {
-                LocalExecutionAuthoritySnapshotDenyV1::LedgerQuarantined
-            }
-            ObservationLedgerError::ForeignLineage { .. } => {
-                LocalExecutionAuthoritySnapshotDenyV1::ForeignLineage
-            }
-            _ => LocalExecutionAuthoritySnapshotDenyV1::LedgerUnavailable,
-        })?;
+    let config = MctDaemonConfigStore::new(config_path)
+        .load()
+        .map_err(|_| LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?;
+    let identity = config
+        .local_identity
+        .as_ref()
+        .ok_or(LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?;
+    let entries = JsonlObservationLedger::open_read_only(
+        ledger_path,
+        "ledger-local",
+        identity.node_id.as_str(),
+    )
+    .and_then(|reader| reader.entries())
+    .map_err(|error| match error {
+        ObservationLedgerError::Quarantined { .. } => {
+            LocalExecutionAuthoritySnapshotDenyV1::LedgerQuarantined
+        }
+        ObservationLedgerError::ForeignLineage { .. } => {
+            LocalExecutionAuthoritySnapshotDenyV1::ForeignLineage
+        }
+        _ => LocalExecutionAuthoritySnapshotDenyV1::LedgerUnavailable,
+    })?;
     let replay = replay_authority_entries(&entries)
         .map_err(|_| LocalExecutionAuthoritySnapshotDenyV1::AuthorityReplayBlocked)?;
     let head = entries
@@ -128,13 +139,6 @@ pub fn local_execution_authority_snapshot_at(
         ));
     }
 
-    let config = MctDaemonConfigStore::new(config_path)
-        .load()
-        .map_err(|_| LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?;
-    let identity = config
-        .local_identity
-        .as_ref()
-        .ok_or(LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?;
     if identity.node_id.as_str() != proven_cursor.source_mother_node_id {
         return Err(LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable);
     }

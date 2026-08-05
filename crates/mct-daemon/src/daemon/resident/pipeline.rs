@@ -603,13 +603,24 @@ async fn execute_resident_call_after_payload(
     inline_payload: Option<Vec<u8>>,
     context: ResidentCallIngressContext,
 ) -> MctIrohCallHandlerResult {
-    let authorization = match authorize_resident_child(paths.clone(), request.call.clone()).await {
-        Ok(authorization) => authorization,
-        Err(error) => {
-            eprintln!("resident child authorization unavailable: {error}");
-            return MctIrohCallHandlerResult::failed("runtime unavailable");
-        }
+    let Some(ledger_path) = ledger.path().map(Path::to_path_buf) else {
+        return MctIrohCallHandlerResult::failed("runtime unavailable");
     };
+    if ledger
+        .publish_authority_projection(paths.state_path().to_path_buf())
+        .await
+        .is_err()
+    {
+        return MctIrohCallHandlerResult::failed("runtime unavailable");
+    }
+    let authorization =
+        match authorize_resident_child(paths.clone(), ledger_path, request.call.clone()).await {
+            Ok(authorization) => authorization,
+            Err(error) => {
+                eprintln!("resident child authorization unavailable: {error}");
+                return MctIrohCallHandlerResult::failed("runtime unavailable");
+            }
+        };
 
     match authorization {
         RouteDisposition::Denied {
@@ -1115,10 +1126,17 @@ listens = []
 
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
         assert_eq!(loaded.loaded, 1, "{loaded:?}");
-        MctDaemonConfigStore::new(&config_path)
+        let config_store = MctDaemonConfigStore::new(&config_path);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        config_store
             .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
             .unwrap();
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         let (mut request, payload) =
             jvm_bridge_protocol_request("patina:demo/control@0.1.0.run", r#"[{"from":"jvm"}]"#)
                 .unwrap();

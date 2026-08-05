@@ -81,28 +81,31 @@ pub(super) enum RouteDisposition {
 
 pub(super) async fn authorize_resident_child(
     paths: ResidentRuntimePaths,
+    ledger_path: PathBuf,
     call: MctCall,
 ) -> Result<RouteDisposition> {
-    tokio::task::spawn_blocking(move || authorize_resident_child_blocking(&paths, &call))
-        .await
-        .context("join resident child authorization")?
+    tokio::task::spawn_blocking(move || {
+        authorize_resident_child_blocking(&paths, &ledger_path, &call)
+    })
+    .await
+    .context("join resident child authorization")?
 }
 
 pub(super) fn authorize_resident_child_blocking(
     paths: &ResidentRuntimePaths,
+    ledger_path: &Path,
     call: &MctCall,
 ) -> Result<RouteDisposition> {
-    let config = MctDaemonConfigStore::new(paths.config_path()).load()?;
-    let state = MctRuntimeStateStore::open(paths.state_path())?;
+    let snapshot = mct_daemon::local_execution_authority_snapshot(
+        ledger_path,
+        paths.config_path(),
+        paths.children_dir(),
+        paths.state_path(),
+    )
+    .map_err(|deny| anyhow::anyhow!("local execution authority unavailable: {deny:?}"))?;
     let load_report =
         load_children_from_dir(MctChildLoadOptions::new(paths.children_dir().to_path_buf()));
-    authorize_resident_child_from_loaded_with_state(
-        &config,
-        Some(&state),
-        load_report.children,
-        call,
-        current_timestamp(),
-    )
+    authorize_resident_child_from_snapshot(&snapshot, load_report.children, call)
 }
 
 #[cfg(test)]
@@ -120,6 +123,7 @@ pub(super) fn authorize_resident_child_from_loaded(
     )
 }
 
+#[cfg(test)]
 pub(super) fn authorize_resident_child_from_loaded_with_state(
     config: &mct_daemon::MctDaemonConfig,
     state: Option<&MctRuntimeStateStore>,
@@ -127,39 +131,248 @@ pub(super) fn authorize_resident_child_from_loaded_with_state(
     call: &MctCall,
     now: Timestamp,
 ) -> Result<RouteDisposition> {
-    let scope = resident_child_scope(config);
-    let projection = config.authority_projection_for_loaded_children(children.iter(), scope);
+    let snapshot = resident_test_authority_snapshot(
+        config,
+        state,
+        &children,
+        now,
+        call.authority_context.grants_revision,
+    )?;
+    authorize_resident_child_from_snapshot(&snapshot, children, call)
+}
+
+#[cfg(test)]
+pub(super) fn resident_test_authority_snapshot(
+    config: &mct_daemon::MctDaemonConfig,
+    state: Option<&MctRuntimeStateStore>,
+    children: &[mct_daemon::MctLoadedChild],
+    evaluated_at: Timestamp,
+    grants_generation: u64,
+) -> Result<LocalExecutionAuthoritySnapshot> {
+    let authority_state = state
+        .and_then(|state| state.authority_projection_snapshot().ok().flatten())
+        .map(|snapshot| snapshot.state)
+        .unwrap_or_default();
+    resident_test_authority_snapshot_with_state(
+        config,
+        state,
+        children,
+        evaluated_at,
+        grants_generation,
+        authority_state,
+    )
+}
+
+#[cfg(test)]
+fn resident_test_authority_snapshot_with_state(
+    config: &mct_daemon::MctDaemonConfig,
+    runtime_state: Option<&MctRuntimeStateStore>,
+    children: &[mct_daemon::MctLoadedChild],
+    evaluated_at: Timestamp,
+    grants_generation: u64,
+    authority_state: AuthorityStateV1,
+) -> Result<LocalExecutionAuthoritySnapshot> {
+    let identity = config
+        .local_identity
+        .as_ref()
+        .context("test snapshot requires local identity")?;
+    let child_projection = config.authority_projection_for_loaded_children(
+        children.iter(),
+        mct_daemon::MctOperatorChildScope {
+            vision_id: identity.vision_id.clone(),
+            node_id: identity.node_id.clone(),
+            project_id: None,
+            policy_revision: identity.policy_revision,
+        },
+    );
+    let mut peer_records = Vec::new();
+    let mut callable_surfaces = Vec::new();
+    for peer in config.peers.values() {
+        let outbound_binding = peer
+            .outbound_binding
+            .as_ref()
+            .map(|outbound| mct_daemon::outbound_peer_binding_for_local(identity, peer, outbound))
+            .transpose()?;
+        peer_records.push(LocalPeerAuthorityRecordPartsV1 {
+            peer_node_id: peer.peer_node_id.clone(),
+            binding_id: peer.binding_id.clone(),
+            endpoint_id: peer.endpoint_id.clone(),
+            vision_id: peer.vision_id.clone(),
+            binding_state: peer.binding_state,
+            policy_revision: peer.policy_revision,
+            expires_at: peer.expires_at.clone(),
+            local_binding: peer.to_peer_binding(identity)?,
+            binding_signature_ref: peer.binding_signature_ref.clone(),
+            outbound_binding,
+            outbound_signature_ref: peer
+                .outbound_binding
+                .as_ref()
+                .map(|outbound| outbound.signature_ref.clone()),
+            ticket_available: peer.ticket.is_some(),
+            network_path: resident_peer_network_path(peer),
+        });
+        if let Some(state) = runtime_state {
+            callable_surfaces.extend(
+                state
+                    .remote_callable_surfaces(&peer.peer_node_id, &peer.vision_id)?
+                    .into_iter()
+                    .map(|surface| LocalRemoteCallableSurfacePartsV1 {
+                        peer_node_id: surface.peer_node_id,
+                        binding_id: surface.binding_id,
+                        endpoint_id: surface.endpoint_id,
+                        vision_id: surface.vision_id,
+                        publisher_policy_revision: surface.publisher_policy_revision,
+                        child_name: surface.child_name,
+                        operation_id: surface.operation_id,
+                        runtime_kind: surface.runtime_kind,
+                        surface_policy_revision: surface.surface_policy_revision,
+                        visibility: surface.visibility,
+                        received_at: surface.received_at,
+                        stale_at: surface.stale_at,
+                    }),
+            );
+        }
+    }
+    Ok(assemble_local_execution_authority_snapshot(
+        LocalExecutionAuthoritySnapshotPartsV1 {
+            executing_mother_node_id: identity.node_id.to_string(),
+            grants_authority_mother_node_id: identity.node_id.to_string(),
+            grants_authority_epoch: "mct-authority-epoch-v1:test".into(),
+            grants_authority_generation: grants_generation,
+            grants_authority_observation_id: "obs:test-authority".into(),
+            toy_catalog: authority_state.toy_catalog.into_values().collect(),
+            toy_grants: authority_state.toy_grants.into_values().collect(),
+            watch_scopes: authority_state.watch_scopes.into_values().collect(),
+            policy_revision: identity.policy_revision,
+            vision_policy_revision: identity.policy_revision,
+            child_local_node_id: child_projection.local_node_id,
+            child_vision_id: child_projection.vision_id,
+            child_artifacts: child_projection.artifacts,
+            child_approvals: child_projection.approvals,
+            child_assignments: child_projection.assignments,
+            child_instances: child_projection.instances,
+            peer_local_node_id: identity.node_id.clone(),
+            peer_local_vision_id: identity.vision_id.clone(),
+            peer_local_endpoint_id: identity.endpoint_id.clone(),
+            peer_records,
+            callable_surfaces,
+            evaluated_at,
+            projection_id: "authority-state-v1".into(),
+            projection_source_mother_node_id: identity.node_id.to_string(),
+            projection_source_ledger_id: "ledger-local".into(),
+            through_sequence: 0,
+            through_observation_id: "obs:test-authority".into(),
+            through_entry_hash: "test-entry-hash".into(),
+            authority_state_hash: "test-state-hash".into(),
+            projection_hash: "test-projection-hash".into(),
+        },
+    ))
+}
+
+fn resident_route_decision_observation(
+    call: &MctCall,
+    snapshot: &LocalExecutionAuthoritySnapshot,
+    decision: &RouteDecision,
+) -> MctObservation {
+    let mut observation = route_decision_observation(
+        call.trace_context.trace_id.clone(),
+        current_timestamp(),
+        decision,
+    );
+    let grants = snapshot.canonical_grants().grants_authority();
+    let projection = snapshot.projection();
+    observation.detail_ref = Some(format!(
+        "route-authority-correlation-v1:{}",
+        serde_json::json!({
+            "route_detail_ref": observation.detail_ref,
+            "caller_policy_revision_echo": call.authority_context.policy_revision,
+            "caller_grants_revision_echo": call.authority_context.grants_revision,
+            "caller_vision_policy_revision_echo": call.authority_context.vision_policy_revision,
+            "local_policy_revision": snapshot.policy_revision(),
+            "local_vision_policy_revision": snapshot.vision_policy_revision(),
+            "grants_authority_mother_node_id": grants.mother_node_id(),
+            "grants_authority_epoch": grants.authority_epoch(),
+            "grants_authority_generation": grants.generation(),
+            "projection_source_ledger_id": projection.source_ledger_id(),
+            "projection_through_sequence": projection.through_sequence(),
+            "projection_through_entry_hash": projection.through_entry_hash(),
+        })
+    ));
+    observation
+}
+
+pub(super) fn authorize_resident_child_from_snapshot(
+    snapshot: &LocalExecutionAuthoritySnapshot,
+    children: Vec<mct_daemon::MctLoadedChild>,
+    call: &MctCall,
+) -> Result<RouteDisposition> {
+    let child_policy = snapshot.child_policy();
+    let projection = MctConfigChildAuthorityProjection {
+        local_node_id: child_policy.local_node_id().clone(),
+        vision_id: child_policy.vision_id().clone(),
+        project_id: None,
+        policy_revision: child_policy.policy_revision(),
+        artifacts: child_policy.artifacts().to_vec(),
+        approvals: child_policy.approvals().to_vec(),
+        assignments: child_policy.assignments().to_vec(),
+        instances: child_policy.instances().to_vec(),
+    };
+    let generation = snapshot.canonical_grants().grants_authority().generation();
     let mut plans = Vec::new();
 
-    for child in children
-        .into_iter()
-        .filter(|child| resident_child_accepts_call(child, call))
-    {
-        let child_authority = projection.authorize_child_for_call(&child.name, call);
-        let candidate = resident_candidate_for_child(&projection, &child);
-        let authority = if child_authority.is_allowed() {
-            CandidateAuthorityEvaluation::admissible(
-                candidate.clone(),
-                child_authority.evaluation.policy_revision,
-                call.authority_context.grants_revision,
-            )
+    for child in children.into_iter().filter(|child| {
+        resident_child_accepts_call(child, call)
+            && child_policy
+                .artifacts()
+                .iter()
+                .any(|artifact| artifact.artifact_id.as_str() == child.artifact_id)
+    }) {
+        let child_authority = projection.authorize_child_for_call_with_policy(
+            &child.name,
+            call,
+            snapshot.policy_revision(),
+        );
+        let toy_authority = if child_authority.is_allowed() {
+            resident_required_toy_authority(snapshot, &child, &child_authority, call)
         } else {
-            CandidateAuthorityEvaluation::eliminated(
+            Vec::new()
+        };
+        let candidate = resident_candidate_for_child(&projection, &child);
+        let reason = if !child_authority.is_allowed() {
+            Some(child_elimination_reason(
+                child_authority.evaluation.reason_code,
+            ))
+        } else if toy_authority
+            .iter()
+            .any(|evaluation| evaluation.verdict != ToyGrantVerdict::Allowed)
+        {
+            Some(CandidateEliminationReason::ToyGrantMissing)
+        } else {
+            None
+        };
+        let authority = match reason {
+            Some(reason) => CandidateAuthorityEvaluation::eliminated(
                 candidate.clone(),
-                child_elimination_reason(child_authority.evaluation.reason_code),
-                child_authority.evaluation.policy_revision,
-                call.authority_context.grants_revision,
-            )
+                reason,
+                snapshot.policy_revision(),
+                generation,
+            ),
+            None => CandidateAuthorityEvaluation::admissible(
+                candidate.clone(),
+                snapshot.policy_revision(),
+                generation,
+            ),
         };
         plans.push(LocalCandidatePlan {
             child,
             candidate,
             authority,
             child_authority,
+            toy_authority,
         });
     }
 
-    let remote_plans = resident_remote_candidate_plans_for_call(config, state, call, now.clone())?;
+    let remote_plans = resident_remote_candidate_plans_for_call(snapshot, call)?;
     let mut observations = resident_candidate_observations(call, &plans);
     observations.extend(resident_remote_candidate_observations(call, &remote_plans));
     let mut authority_evaluations = plans
@@ -190,10 +403,8 @@ pub(super) fn authorize_resident_child_from_loaded_with_state(
             no_route_reason,
             resident_route_decision_ids("initial", call),
         );
-        observations.push(route_decision_observation(
-            call.trace_context.trace_id.clone(),
-            current_timestamp(),
-            &decision,
+        observations.push(resident_route_decision_observation(
+            call, snapshot, &decision,
         ));
         return Ok(RouteDisposition::Denied {
             decision: Box::new(decision),
@@ -215,13 +426,15 @@ pub(super) fn authorize_resident_child_from_loaded_with_state(
                 current_timestamp(),
                 &selected.child_authority.evaluation,
             ));
-            observations.push(route_decision_observation(
-                call.trace_context.trace_id.clone(),
-                current_timestamp(),
-                &initial,
+            observations.push(resident_route_decision_observation(
+                call, snapshot, &initial,
             ));
 
-            let revalidated_child = projection.authorize_child_for_call(&selected.child.name, call);
+            let revalidated_child = projection.authorize_child_for_call_with_policy(
+                &selected.child.name,
+                call,
+                snapshot.policy_revision(),
+            );
             let child_authority_observation_id =
                 revalidated_child.evaluation.observation_id.clone();
             observations.push(child_call_authority_observation(
@@ -229,16 +442,30 @@ pub(super) fn authorize_resident_child_from_loaded_with_state(
                 current_timestamp(),
                 &revalidated_child.evaluation,
             ));
-            let revalidation = revalidate_route_for_execution(
+            let revalidated_toys = resident_required_toy_authority(
+                snapshot,
+                &selected.child,
+                &revalidated_child,
+                call,
+            );
+            observations.extend(revalidated_toys.iter().map(|evaluation| {
+                toy_grant_evaluation_observation(
+                    call.trace_context.trace_id.clone(),
+                    current_timestamp(),
+                    evaluation,
+                )
+            }));
+            let revalidation = revalidate_route_for_execution_with_snapshot(
                 call,
                 &initial,
                 revalidated_child,
-                Vec::new(),
+                revalidated_toys,
+                snapshot,
                 resident_route_revalidation_ids(call),
             );
-            observations.push(route_decision_observation(
-                call.trace_context.trace_id.clone(),
-                current_timestamp(),
+            observations.push(resident_route_decision_observation(
+                call,
+                snapshot,
                 &revalidation.decision,
             ));
 
@@ -264,16 +491,130 @@ pub(super) fn authorize_resident_child_from_loaded_with_state(
                 authority_evaluations,
                 resident_route_decision_ids("initial", call),
             );
-            observations.push(route_decision_observation(
-                call.trace_context.trace_id.clone(),
-                current_timestamp(),
-                &initial,
+            observations.push(resident_route_decision_observation(
+                call, snapshot, &initial,
             ));
             Ok(RouteDisposition::Remote {
                 plan: Box::new(RemoteExecutionPlan::new(selected.candidate, initial)),
                 observations,
             })
         }
+    }
+}
+
+fn resident_required_toy_authority(
+    snapshot: &LocalExecutionAuthoritySnapshot,
+    child: &mct_daemon::MctLoadedChild,
+    child_authority: &ChildCallAuthorityResult,
+    call: &MctCall,
+) -> Vec<ToyGrantEvaluation> {
+    let Some(authorized_child) = child_authority.authorized.as_ref() else {
+        return Vec::new();
+    };
+    child
+        .requested_toys
+        .iter()
+        .map(|label| {
+            let matching_contracts = snapshot
+                .canonical_grants()
+                .toy_catalog()
+                .iter()
+                .filter(|contract| requested_toy_contract_matches(label, contract))
+                .collect::<Vec<_>>();
+            let selected_contract = matching_contracts.iter().copied().find(|contract| {
+                snapshot
+                    .canonical_grants()
+                    .toy_grants()
+                    .iter()
+                    .any(|grant| {
+                        grant.toy_id == contract.toy_id
+                            && grant.subject.child_name == child.name
+                            && grant.subject.artifact_id == child.artifact_id
+                    })
+            });
+            let toy_id = selected_contract
+                .or_else(|| matching_contracts.first().copied())
+                .map(|contract| contract.toy_id.clone())
+                .unwrap_or_else(|| {
+                    ToyId::new(format!("toy:required:{label}"))
+                        .expect("required Toy label is non-empty")
+                });
+            let matching_grant = snapshot
+                .canonical_grants()
+                .toy_grants()
+                .iter()
+                .find(|grant| {
+                    grant.toy_id == toy_id
+                        && grant.subject.child_name == child.name
+                        && grant.subject.artifact_id == child.artifact_id
+                });
+            let action = matching_grant
+                .and_then(|grant| grant.scope.allowed_actions.first())
+                .cloned()
+                .unwrap_or_else(|| "invoke".into());
+            let resource_id = matching_grant.and_then(|grant| grant.scope.resource_id.clone());
+            evaluate_toy_grant_for_route_snapshot(
+                call,
+                &ToyGrantEvaluationRequest {
+                    toy_id,
+                    subject: ToyGrantSubject {
+                        child_name: child.name.clone(),
+                        artifact_id: child.artifact_id.clone(),
+                        artifact_version: child.version.clone(),
+                        assignment_id: Some(authorized_child.assignment_id().clone()),
+                        caller_node_id: Some(call.caller.node_id.clone()),
+                    },
+                    child_instance_id: authorized_child.child_instance_id().clone(),
+                    action,
+                    resource_id,
+                    node_id: snapshot.child_policy().local_node_id().clone(),
+                    now: snapshot.mother_clock().evaluated_at().clone(),
+                    ids: ToyGrantEvaluationIds {
+                        evaluation_id: ToyGrantEvaluationId::new(format!(
+                            "toy-eval-route:{}:{label}",
+                            call.call_id
+                        ))
+                        .expect("route Toy evaluation id is non-empty"),
+                        decision_id: DecisionId::new(format!(
+                            "decision-toy-route:{}:{label}",
+                            call.call_id
+                        ))
+                        .expect("route Toy decision id is non-empty"),
+                        observation_id: ObservationId::new(format!(
+                            "obs-toy-route:{}:{label}",
+                            call.call_id
+                        ))
+                        .expect("route Toy observation id is non-empty"),
+                        authorized_toy_call_id: AuthorizedToyCallId::new(format!(
+                            "unused-route-toy:{}:{label}",
+                            call.call_id
+                        ))
+                        .expect("route-only Toy id is non-empty"),
+                    },
+                },
+                snapshot.canonical_grants().toy_catalog(),
+                snapshot.canonical_grants().toy_grants(),
+                snapshot.policy_revision(),
+                snapshot.canonical_grants().grants_authority().generation(),
+            )
+        })
+        .collect()
+}
+
+fn requested_toy_contract_matches(label: &str, contract: &CanonicalToyContract) -> bool {
+    match label {
+        "logging" => contract.contract.interface_name.contains("logging"),
+        "measure" => contract.contract.interface_name.contains("measure"),
+        "git" => contract.contract.interface_name.contains("git"),
+        "filesystem" => contract.contract.interface_name.contains("filesystem"),
+        "keyvalue" => contract.contract.interface_name.contains("keyvalue"),
+        // The bounded Watch observation grant is the authority behind the
+        // watch actor's messaging host import; no ambient messaging grant exists.
+        "messaging" => {
+            contract.contract.interface_name.contains("messaging")
+                || contract.toy_id.as_str() == MCT_WATCH_TOY_ID
+        }
+        other => contract.toy_id.as_str() == other,
     }
 }
 
@@ -661,10 +1002,17 @@ listens = []
             .iter()
             .find(|child| child.name == "resident-echo")
             .unwrap();
-        MctDaemonConfigStore::new(&config_path)
+        let config_store = MctDaemonConfigStore::new(&config_path);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity.hex"),
+            )
+            .unwrap();
+        config_store
             .approve_and_assign_loaded_child(process_child, MctOperatorChildScope::default())
             .unwrap();
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         let trace_id = TraceId::new("trace-route-optimization-cannot-grant")
             .expect("string ID literal/generated value must be non-empty");
         let request = resident_test_protocol_request(resident_test_call(trace_id));
@@ -702,7 +1050,13 @@ listens = []
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         write_resident_process_child(&children_dir);
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        MctDaemonConfigStore::new(&config_path)
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity.hex"),
+            )
+            .unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         let trace_id = TraceId::new("trace-route-no-route-specific")
             .expect("string ID literal/generated value must be non-empty");
         let request = resident_test_protocol_request(resident_test_call(trace_id));

@@ -1,5 +1,7 @@
 use anyhow::{Context, Result, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+#[cfg(test)]
+use mct_daemon::outbound_peer_binding_for_local;
 use mct_daemon::{
     ChildInvocationProvenance, DEFAULT_WASM_MEMORY_LIMIT_BYTES, DaemonReleaseArtifactV1,
     MCT_BLOB_MAX_BYTES, MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER, MCT_IDEMPOTENCY_TTL_SECONDS,
@@ -12,12 +14,12 @@ use mct_daemon::{
     MctDaemonReleaseAcquisitionRequest, MctDaemonStatus, MctIdempotencyReservation, MctLoadedChild,
     MctLocalBlobStoreError, MctLocalNodeIdentity, MctOperatorChildScope, MctOperatorNodeScope,
     MctOutboundPeerBindingPresentation, MctPeerAddressBookEntry, MctProcessChildHarness,
-    MctProcessChildInvocationIds, MctRecordedCallReply, MctRemoteCallableSurfaceRecord,
-    MctRemoteSurfaceRefresh, MctResidentStatus, MctRuntimeStateStore, MctStartupPaths,
-    MctToyAdapterRegistry, MctToyBackend, MctTriggerFiringRecord, MctTriggerOccurrenceDisposition,
-    MctTriggerOccurrenceRecord, MctTriggerPendingOccurrenceRecord, MctUdsControlCallHandler,
-    MctUdsControlCallPreflight, MctUdsPeerCredentials, MctVerifiedDaemonRelease, MctWasiHostConfig,
-    MctWasiPreopen, MctWasiPreopenAccess, MctWasmComponentInvocationIds, MctWasmComponentRuntime,
+    MctProcessChildInvocationIds, MctRecordedCallReply, MctRemoteSurfaceRefresh, MctResidentStatus,
+    MctRuntimeStateStore, MctStartupPaths, MctToyAdapterRegistry, MctToyBackend,
+    MctTriggerFiringRecord, MctTriggerOccurrenceDisposition, MctTriggerOccurrenceRecord,
+    MctTriggerPendingOccurrenceRecord, MctUdsControlCallHandler, MctUdsControlCallPreflight,
+    MctUdsPeerCredentials, MctVerifiedDaemonRelease, MctWasiHostConfig, MctWasiPreopen,
+    MctWasiPreopenAccess, MctWasmComponentInvocationIds, MctWasmComponentRuntime,
     MctWasmHostConfig, MctWitHostImportAdapters, MctWitKeyvalueHostAdapter,
     MctWitMessagingHostAdapter, MctWitProducedMessage, MctWitToyHostAdapter,
     MctWitWatchCallOutWireEvent, MctWitWatchMessageAdmission, StandingSourceAdmissionDenyReasonV1,
@@ -28,8 +30,8 @@ use mct_daemon::{
     current_timestamp_string, daemon_status, daemon_status_with_resident, default_config_path,
     default_state_path, hello_capability_view_from_federation_view, install_verified_child_package,
     load_children_from_dir, local_blob_store_for_state_path, mct_secrets_toy_contract,
-    new_artifact_attempt_context, outbound_peer_binding_for_local, plan_daemon_release_source,
-    record_composition_plan, reload_configured_child, serve_http_control_once_with_snapshot_result,
+    new_artifact_attempt_context, plan_daemon_release_source, record_composition_plan,
+    reload_configured_child, serve_http_control_once_with_snapshot_result,
     stage_artifact_with_context_and_observer, sync_child_registry_source, warmup_configured_child,
 };
 use mct_iroh::{

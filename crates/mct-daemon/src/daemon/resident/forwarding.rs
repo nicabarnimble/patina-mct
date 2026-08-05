@@ -106,13 +106,24 @@ pub(super) async fn execute_authorized_resident_remote_call(
     inline_payload: Option<Vec<u8>>,
     ledger: ResidentLedgerWriter,
 ) -> MctIrohCallHandlerResult {
-    let revalidation = match revalidate_resident_remote_route(&paths, &execution, &request.call) {
-        Ok(revalidation) => revalidation,
-        Err(error) => {
-            eprintln!("resident remote route revalidation failed: {error}");
-            return MctIrohCallHandlerResult::failed("runtime unavailable");
-        }
+    let Some(ledger_path) = ledger.path().map(Path::to_path_buf) else {
+        return MctIrohCallHandlerResult::failed("runtime unavailable");
     };
+    if ledger
+        .publish_authority_projection(paths.state_path().to_path_buf())
+        .await
+        .is_err()
+    {
+        return MctIrohCallHandlerResult::failed("runtime unavailable");
+    }
+    let revalidation =
+        match revalidate_resident_remote_route(&paths, &ledger_path, &execution, &request.call) {
+            Ok(revalidation) => revalidation,
+            Err(error) => {
+                eprintln!("resident remote route revalidation failed: {error}");
+                return MctIrohCallHandlerResult::failed("runtime unavailable");
+            }
+        };
     let revalidation_decision = match &revalidation {
         RemoteRevalidation::Authorized(authorized) => &authorized.decision,
         RemoteRevalidation::Denied(decision) => decision.as_ref(),
@@ -274,24 +285,33 @@ pub(super) async fn execute_authorized_resident_remote_call(
 
 fn revalidate_resident_remote_route(
     paths: &ResidentRuntimePaths,
+    ledger_path: &Path,
     execution: &RemoteExecutionPlan,
     call: &MctCall,
 ) -> Result<RemoteRevalidation> {
-    let config = MctDaemonConfigStore::new(paths.config_path()).load()?;
-    let Some(local_identity) = config.local_identity.clone() else {
-        return Ok(RemoteRevalidation::Denied(Box::new(
-            remote_revalidation_denied_decision(
-                call,
-                execution.initial_decision(),
-                execution.candidate().clone(),
-                CandidateEliminationReason::PeerNotAdmitted,
-            ),
-        )));
+    let snapshot = match mct_daemon::local_execution_authority_snapshot(
+        ledger_path,
+        paths.config_path(),
+        paths.children_dir(),
+        paths.state_path(),
+    ) {
+        Ok(snapshot) => snapshot,
+        Err(_) => {
+            return Ok(RemoteRevalidation::Denied(Box::new(
+                remote_revalidation_denied_decision(
+                    call,
+                    execution.initial_decision(),
+                    execution.candidate().clone(),
+                    CandidateEliminationReason::PeerNotAdmitted,
+                ),
+            )));
+        }
     };
-    let Some(peer) = config
-        .peers
-        .get(execution.candidate().node_id.as_str())
-        .cloned()
+    let Some(peer_authority) = snapshot
+        .peer_policy()
+        .peers()
+        .iter()
+        .find(|peer| peer.peer_node_id() == &execution.candidate().node_id)
     else {
         return Ok(RemoteRevalidation::Denied(Box::new(
             remote_revalidation_denied_decision(
@@ -302,19 +322,16 @@ fn revalidate_resident_remote_route(
             ),
         )));
     };
-    let state = MctRuntimeStateStore::open(paths.state_path())?;
-    let now = current_timestamp();
-    let operation_id = mct_daemon::operation_id_from_target(&call.target);
-    let surfaces = state.fresh_remote_callable_surfaces_for_operation(
-        &call.caller.vision_id,
-        &operation_id,
-        &now,
-    )?;
-    let Some(surface) = surfaces.into_iter().find(|surface| {
-        surface.peer_node_id == peer.peer_node_id
-            && resident_candidate_for_remote_surface(&peer, surface)
-                == execution.candidate().clone()
-    }) else {
+    let Some(surface) = snapshot
+        .peer_policy()
+        .callable_surfaces()
+        .iter()
+        .find(|surface| {
+            surface.peer_node_id() == peer_authority.peer_node_id()
+                && resident_candidate_for_snapshot_remote_surface(peer_authority, surface)
+                    == execution.candidate().clone()
+        })
+    else {
         return Ok(RemoteRevalidation::Denied(Box::new(
             remote_revalidation_denied_decision(
                 call,
@@ -324,14 +341,13 @@ fn revalidate_resident_remote_route(
             ),
         )));
     };
-    let candidate = resident_candidate_for_remote_surface(&peer, &surface);
+    let candidate = resident_candidate_for_snapshot_remote_surface(peer_authority, surface);
     let authority = resident_remote_candidate_authority(
-        &local_identity,
-        &peer,
-        &surface,
+        &snapshot,
+        peer_authority,
+        surface,
         candidate.clone(),
         call,
-        &now,
     )?;
     if authority.outcome != CandidateAuthorityOutcome::Admissible {
         return Ok(RemoteRevalidation::Denied(Box::new(
@@ -346,6 +362,38 @@ fn revalidate_resident_remote_route(
             ),
         )));
     }
+
+    let config = MctDaemonConfigStore::new(paths.config_path()).load()?;
+    let Some(local_identity) = config.local_identity.clone() else {
+        return Ok(RemoteRevalidation::Denied(Box::new(
+            remote_revalidation_denied_decision(
+                call,
+                execution.initial_decision(),
+                execution.candidate().clone(),
+                CandidateEliminationReason::PeerNotAdmitted,
+            ),
+        )));
+    };
+    let Some(peer) = config
+        .peers
+        .get(peer_authority.peer_node_id().as_str())
+        .filter(|peer| {
+            peer.binding_id == *peer_authority.binding_id()
+                && peer.endpoint_id == *peer_authority.endpoint_id()
+        })
+        .cloned()
+    else {
+        return Ok(RemoteRevalidation::Denied(Box::new(
+            remote_revalidation_denied_decision(
+                call,
+                execution.initial_decision(),
+                execution.candidate().clone(),
+                CandidateEliminationReason::PeerNotAdmitted,
+            ),
+        )));
+    };
+    let capability_view =
+        local_hello_capability_view_from_config(&config, paths.state_path(), paths.children_dir())?;
     let decision = remote_revalidation_decision(
         call,
         execution.initial_decision(),
@@ -358,8 +406,6 @@ fn revalidate_resident_remote_route(
         child_id: candidate.child_id,
         runtime_kind: candidate.runtime_kind,
     };
-    let capability_view =
-        local_hello_capability_view_from_config(&config, paths.state_path(), paths.children_dir())?;
     Ok(RemoteRevalidation::Authorized(Box::new(
         RevalidatedRemoteRoute {
             decision,
@@ -377,11 +423,17 @@ fn remote_revalidation_denied_decision(
     candidate: CandidateRoute,
     reason: CandidateEliminationReason,
 ) -> RouteDecision {
+    let (policy_revision, grants_revision) = initial
+        .authority_evaluations
+        .iter()
+        .find(|evaluation| evaluation.candidate == candidate)
+        .map(|evaluation| (evaluation.policy_revision, evaluation.grants_revision))
+        .unwrap_or((0, 0));
     let authority = CandidateAuthorityEvaluation::eliminated(
         candidate,
         reason,
-        call.authority_context.policy_revision,
-        call.authority_context.grants_revision,
+        policy_revision,
+        grants_revision,
     );
     remote_revalidation_decision(call, initial, None, reason, authority)
 }
@@ -1104,7 +1156,11 @@ listens = []
             size_bytes: payload.len() as u64,
             blake3_digest_hex: blake3_hex(&payload),
         };
-        let mother_a_ledger = ResidentLedgerWriter::spawn(mother_a_ledger_path.clone()).unwrap();
+        let mother_a_ledger = ResidentLedgerWriter::spawn_authority_with_identity_for_test(
+            mother_a_ledger_path.clone(),
+            "mother-a",
+        )
+        .unwrap();
         let call_reply = execute_resident_call(
             ResidentRuntimePaths::new(
                 mother_a_config_path,
@@ -1245,7 +1301,7 @@ listens = []
             panic!("fresh published executor should be selected before revocation");
         };
         let ledger_path = fixture._dir.path().join("forwarding-observations.jsonl");
-        let ledger = ResidentLedgerWriter::spawn(ledger_path).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path).unwrap();
         ledger.append(observations).await.unwrap();
         let result = execute_authorized_resident_remote_call(
             ResidentRuntimePaths::new(
@@ -1355,7 +1411,7 @@ listens = []
             ._dir
             .path()
             .join("cancelled-forwarding-observations.jsonl");
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         ledger.append(observations).await.unwrap();
         let result = execute_authorized_resident_remote_call(
             ResidentRuntimePaths::new(
@@ -1556,7 +1612,11 @@ listens = []
             })
             .unwrap();
 
-        let b_ledger = ResidentLedgerWriter::spawn(b_ledger_path.clone()).unwrap();
+        let b_ledger = ResidentLedgerWriter::spawn_authority_with_identity_for_test(
+            b_ledger_path.clone(),
+            "mother-b",
+        )
+        .unwrap();
         let b_handler_ledger = b_ledger.clone();
         let b_handler_config = b_config.clone();
         let b_handler_state_path = b_state_path.clone();
@@ -1635,7 +1695,11 @@ listens = []
         else {
             panic!("originating Mother should select its published remote executor")
         };
-        let a_ledger = ResidentLedgerWriter::spawn(a_ledger_path.clone()).unwrap();
+        let a_ledger = ResidentLedgerWriter::spawn_authority_with_identity_for_test(
+            a_ledger_path.clone(),
+            "mother-a",
+        )
+        .unwrap();
         a_ledger.append(observations).await.unwrap();
         let result = tokio::time::timeout(
             Duration::from_secs(5),
