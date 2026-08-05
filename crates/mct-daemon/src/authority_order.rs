@@ -632,4 +632,74 @@ mod tests {
             "effect-start-first must start exactly once and is not retroactively undone"
         );
     }
+
+    /// Phase I proof 14: slices 6-8 and the harness-only order seam stay fenced.
+    #[test]
+    fn phase_i_deferral_fence_pins_protocol_effect_wire_replay_and_ordering() {
+        let crate_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let read = |relative: &str| {
+            std::fs::read_to_string(crate_root.join(relative))
+                .unwrap_or_else(|error| panic!("read {relative}: {error}"))
+        };
+        let call_protocol = read("../mct-kernel/src/call/internal.rs");
+        assert!(call_protocol.contains(
+            "request.call.authority_context.policy_revision < request.authority.policy_revision"
+        ));
+        assert!(call_protocol.contains(
+            "request.call.authority_context.grants_revision < request.authority.grants_revision"
+        ));
+
+        let resident_effect = read("src/daemon/resident/execution.rs");
+        assert!(
+            resident_effect.contains("grants_revision: call.authority_context.grants_revision")
+        );
+        assert!(
+            resident_effect.contains(
+                "authorized_route.grants_revision() != current_revisions.grants_revision"
+            )
+        );
+        let child_token = read("../mct-kernel/src/child.rs");
+        assert!(
+            child_token.contains("self.policy_revision == call.authority_context.policy_revision")
+        );
+        let toy_token = read("../mct-kernel/src/toy.rs");
+        assert!(
+            toy_token.contains("self.grants_revision == call.authority_context.grants_revision")
+        );
+        assert!(read("src/process.rs").contains("authorized.admit_effect_for_call(call)"));
+        assert!(read("src/wasm.rs").contains("authorized.admit_effect_for_call(call)"));
+
+        let peer_wire = read("../mct-kernel/src/peer/mod.rs");
+        assert!(peer_wire.contains("pub struct MctHelloRequest"));
+        assert!(!peer_wire.contains("LocalExecutionAuthoritySnapshot"));
+        let replay = read("src/daemon/resident/idempotency.rs");
+        assert!(replay.contains("MctIdempotencyReason::ReplayCompleted"));
+        assert!(!replay.contains("LocalExecutionAuthoritySnapshot"));
+
+        fn rust_files(root: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(root).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    rust_files(&path, files);
+                } else if path.extension().is_some_and(|extension| extension == "rs") {
+                    files.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        rust_files(&crate_root.join("src"), &mut files);
+        let production_consumers = files
+            .into_iter()
+            .filter(|path| !path.ends_with("authority_order.rs") && !path.ends_with("lib.rs"))
+            .filter(|path| {
+                std::fs::read_to_string(path)
+                    .unwrap()
+                    .contains("MotherAuthorityOrderV1")
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            production_consumers.is_empty(),
+            "MotherAuthorityOrderV1 remains harness-only: {production_consumers:?}"
+        );
+    }
 }

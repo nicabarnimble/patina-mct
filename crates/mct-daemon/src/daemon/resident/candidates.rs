@@ -747,6 +747,33 @@ listens = []
         assert_eq!(plans[0].authority.reason, None);
     }
 
+    /// Phase I proof 10: remote policy compares peer facts to local snapshot policy.
+    #[test]
+    fn remote_policy_mismatch_denies_even_when_caller_echo_matches_stale_peer() {
+        let mut fixture = candidate_fixture();
+        fixture
+            .config
+            .local_identity
+            .as_mut()
+            .unwrap()
+            .policy_revision = 2;
+        fixture.call.authority_context.policy_revision = 1;
+
+        let plans = resident_remote_candidate_plans(
+            &fixture.config,
+            Some(&fixture.state),
+            &fixture.call,
+            Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(
+            plans[0].authority.reason,
+            Some(CandidateEliminationReason::PolicyRevisionStale),
+            "call echo 1 cannot make stale peer policy 1 equal local snapshot policy 2"
+        );
+    }
+
     /// Covers `PeerOperationalRoleDerivation.EligibleRouteCandidateDerivation`,
     /// `PeerRelationshipTaxonomy.RolesAreCurrentProjections`, and
     /// `BilateralExecutableRouting` by removing each current conjunct independently.

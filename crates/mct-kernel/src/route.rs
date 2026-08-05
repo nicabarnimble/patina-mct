@@ -1117,6 +1117,46 @@ mod tests {
         result
     }
 
+    fn local_snapshot(
+        policy_revision: u64,
+        grants_generation: u64,
+    ) -> LocalExecutionAuthoritySnapshot {
+        crate::assemble_local_execution_authority_snapshot(
+            crate::LocalExecutionAuthoritySnapshotPartsV1 {
+                executing_mother_node_id: "node-b".into(),
+                grants_authority_mother_node_id: "node-b".into(),
+                grants_authority_epoch: "mct-authority-epoch-v1:route-test".into(),
+                grants_authority_generation: grants_generation,
+                grants_authority_observation_id: "obs-route-authority".into(),
+                toy_catalog: Vec::new(),
+                toy_grants: Vec::new(),
+                watch_scopes: Vec::new(),
+                policy_revision,
+                vision_policy_revision: policy_revision,
+                child_local_node_id: MctNodeId::new("node-b").unwrap(),
+                child_vision_id: VisionId::new("vision-a").unwrap(),
+                child_artifacts: Vec::new(),
+                child_approvals: Vec::new(),
+                child_assignments: Vec::new(),
+                child_instances: Vec::new(),
+                peer_local_node_id: MctNodeId::new("node-b").unwrap(),
+                peer_local_vision_id: VisionId::new("vision-a").unwrap(),
+                peer_local_endpoint_id: EndpointIdText::new("endpoint-route-test").unwrap(),
+                peer_records: Vec::new(),
+                callable_surfaces: Vec::new(),
+                evaluated_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+                projection_id: "authority-state-v1".into(),
+                projection_source_mother_node_id: "node-b".into(),
+                projection_source_ledger_id: "ledger-route-test".into(),
+                through_sequence: 7,
+                through_observation_id: "obs-route-authority".into(),
+                through_entry_hash: "entry-route-authority".into(),
+                authority_state_hash: "state-route-authority".into(),
+                projection_hash: "projection-route-authority".into(),
+            },
+        )
+    }
+
     #[test]
     fn route_decision_records_selected_candidate_and_authority_evidence() {
         let selected = candidate("candidate-1", RuntimeKind::Process);
@@ -1262,6 +1302,58 @@ mod tests {
             Some(CandidateEliminationReason::ToyGrantMissing)
         );
         assert!(revalidation.authorized.is_none());
+    }
+
+    /// Phase I proof 10: each migrated comparison receives independent local evidence.
+    #[test]
+    fn migrated_revalidation_denies_independent_stale_policy_and_grants_identity() {
+        let call = call();
+        let selected = candidate("candidate-1", RuntimeKind::Process);
+        let initial = initial_selected_route(selected);
+
+        let stale_policy = revalidate_route_for_execution_with_snapshot(
+            &call,
+            &initial,
+            child_result(1, true, "child-echo"),
+            Vec::new(),
+            &local_snapshot(2, 7),
+            revalidation_ids(),
+        );
+        assert_eq!(
+            stale_policy.reason,
+            RouteRevalidationReason::PolicyRevisionStale
+        );
+
+        let child = child_result(1, true, "child-echo");
+        let mut stale_grant = toy_result(1, 1, true).evaluation;
+        stale_grant.grants_revision = 6;
+        let stale_grants = revalidate_route_for_execution_with_snapshot(
+            &call,
+            &initial,
+            child,
+            vec![stale_grant],
+            &local_snapshot(1, 7),
+            revalidation_ids(),
+        );
+        assert_eq!(
+            stale_grants.reason,
+            RouteRevalidationReason::GrantsRevisionStale
+        );
+
+        let mut current_grant = toy_result(1, 1, true).evaluation;
+        current_grant.grants_revision = 7;
+        let current = revalidate_route_for_execution_with_snapshot(
+            &call,
+            &initial,
+            child_result(1, true, "child-echo"),
+            vec![current_grant],
+            &local_snapshot(1, 7),
+            revalidation_ids(),
+        );
+        assert!(
+            current.is_authorized(),
+            "matching independently sourced local policy and generation must not spuriously deny"
+        );
     }
 
     #[test]

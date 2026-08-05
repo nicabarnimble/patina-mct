@@ -709,6 +709,65 @@ mod tests {
             instance_state: mct_daemon::MctChildInstanceState::Ready,
         }
     }
+    fn logging_authority_state(
+        child: &mct_daemon::MctLoadedChild,
+        grant_state: ToyGrantState,
+        starts_at: Option<Timestamp>,
+        expires_at: Option<Timestamp>,
+    ) -> AuthorityStateV1 {
+        let contract = CanonicalToyContract {
+            toy_id: ToyId::new("toy:test:logging").unwrap(),
+            contract: ToyContractIdentity {
+                namespace: "wasi".into(),
+                interface_name: "logging/logging".into(),
+                version: "0.1.0".into(),
+                function_name: Some("log".into()),
+                resource_name: None,
+            },
+            authority_bearing: true,
+            catalog_revision: 1,
+            admitted_by_observation_id: ObservationId::new("obs:test:logging-catalog").unwrap(),
+        };
+        let grant = ToyGrant {
+            grant_id: ToyGrantId::new("grant:test:logging").unwrap(),
+            toy_id: contract.toy_id.clone(),
+            subject: ToyGrantSubject {
+                child_name: child.name.clone(),
+                artifact_id: child.artifact_id.clone(),
+                artifact_version: child.version.clone(),
+                assignment_id: Some(
+                    ChildAssignmentId::new(format!("assignment:{}", child.name)).unwrap(),
+                ),
+                caller_node_id: Some(MctNodeId::new("local-mct").unwrap()),
+            },
+            scope: ToyGrantScope {
+                vision_id: VisionId::new("vision-local").unwrap(),
+                node_id: Some(MctNodeId::new("local-mct").unwrap()),
+                project_id: None,
+                data_classification: None,
+                resource_id: None,
+                allowed_actions: vec!["log".into()],
+            },
+            constraints: ToyGrantConstraints {
+                starts_at,
+                expires_at,
+                max_uses: None,
+                max_duration_ms: None,
+                locality_required: true,
+            },
+            grant_state,
+            issuer_id: "local-mct".into(),
+            policy_revision: 1,
+            grants_revision: 1,
+            authority_observation_id: ObservationId::new("obs:test:logging-grant").unwrap(),
+        };
+        AuthorityStateV1 {
+            toy_catalog: [(contract.toy_id.to_string(), contract)].into(),
+            toy_grants: [(grant.grant_id.to_string(), grant)].into(),
+            watch_scopes: Default::default(),
+        }
+    }
+
     fn resident_test_call(trace_id: TraceId) -> MctCall {
         let mut call = local_wasm_call(OperationTarget {
             namespace: "patina:demo".into(),
@@ -1077,6 +1136,260 @@ listens = []
         assert!(ledger_text.contains("candidate_eliminated"));
         assert!(ledger_text.contains("ChildNotApproved"));
         assert!(ledger_text.contains("no_route_recorded"));
+    }
+
+    /// Phase I proof 8: caller echoes are correlation evidence, never route authority.
+    #[tokio::test]
+    async fn caller_echo_matrix_keeps_route_decision_and_durably_records_each_echo() {
+        let fixture = decision_fixture();
+        let mut child = test_child();
+        child.requested_toys = vec!["logging".into()];
+        let snapshot = resident_test_authority_snapshot_with_state(
+            &fixture.config,
+            Some(&fixture.state),
+            std::slice::from_ref(&child),
+            Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
+            41,
+            logging_authority_state(&child, ToyGrantState::Active, None, None),
+        )
+        .unwrap();
+        let echoes = [0, 41, 42, u64::MAX];
+        let ledger_path = fixture._dir.path().join("echo-correlation.jsonl");
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
+        let mut dispositions = Vec::new();
+        for echo in echoes {
+            let mut call = fixture.call.clone();
+            call.authority_context = AuthorityContextSnapshot {
+                policy_revision: echo,
+                grants_revision: echo,
+                vision_policy_revision: echo,
+            };
+            let outcome =
+                authorize_resident_child_from_snapshot(&snapshot, vec![child.clone()], &call)
+                    .unwrap();
+            let (disposition, observations) = match outcome {
+                RouteDisposition::Local { observations, .. } => ("local", observations),
+                RouteDisposition::Remote { observations, .. } => ("remote", observations),
+                RouteDisposition::Denied { observations, .. } => ("denied", observations),
+            };
+            dispositions.push(disposition);
+            ledger.append(observations).await.unwrap();
+        }
+        ledger.close().await;
+
+        let entries =
+            JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
+                .unwrap()
+                .entries()
+                .unwrap();
+        let recorded_echoes = entries
+            .iter()
+            .filter(|entry| entry.observation.kind == ObservationKind::RouteSelected)
+            .map(|entry| {
+                let detail = entry.observation.detail_ref.as_deref().unwrap();
+                serde_json::from_str::<serde_json::Value>(
+                    detail
+                        .strip_prefix("route-authority-correlation-v1:")
+                        .unwrap(),
+                )
+                .unwrap()["caller_grants_revision_echo"]
+                    .as_u64()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(dispositions, vec!["local"; echoes.len()]);
+        assert_eq!(recorded_echoes, echoes);
+    }
+
+    /// Phase I proof 9: a legacy echo need not equal canonical generation to admit.
+    #[test]
+    fn current_snapshot_admits_correct_call_when_legacy_echo_differs_from_generation() {
+        let fixture = decision_fixture();
+        let mut child = test_child();
+        child.requested_toys = vec!["logging".into()];
+        let snapshot = resident_test_authority_snapshot_with_state(
+            &fixture.config,
+            Some(&fixture.state),
+            std::slice::from_ref(&child),
+            Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
+            73,
+            logging_authority_state(&child, ToyGrantState::Active, None, None),
+        )
+        .unwrap();
+        let mut call = fixture.call.clone();
+        call.authority_context.grants_revision = 1;
+
+        let outcome =
+            authorize_resident_child_from_snapshot(&snapshot, vec![child], &call).unwrap();
+        assert!(
+            matches!(outcome, RouteDisposition::Local { .. }),
+            "canonical generation 73 must admit independently of caller echo 1"
+        );
+    }
+
+    /// Phase I proof 12: only the captured Mother clock controls grant windows.
+    #[test]
+    fn route_grant_window_uses_snapshot_mother_clock_not_caller_deadline_or_echo() {
+        let fixture = decision_fixture();
+        let mut child = test_child();
+        child.requested_toys = vec!["logging".into()];
+        let starts_at = Timestamp::new("2026-07-09T12:00:00Z").unwrap();
+        let expires_at = Timestamp::new("2026-07-09T13:00:00Z").unwrap();
+        let authority_state = logging_authority_state(
+            &child,
+            ToyGrantState::Active,
+            Some(starts_at),
+            Some(expires_at),
+        );
+        let mut call = fixture.call.clone();
+        call.authority_context = AuthorityContextSnapshot {
+            policy_revision: u64::MAX,
+            grants_revision: u64::MAX,
+            vision_policy_revision: u64::MAX,
+        };
+        call.deadline = Timestamp::new("2099-01-01T00:00:00Z").unwrap();
+        let mut outcomes = Vec::new();
+        for evaluated_at in [
+            "2026-07-09T11:59:59Z",
+            "2026-07-09T12:00:00Z",
+            "2026-07-09T13:00:00Z",
+        ] {
+            let snapshot = resident_test_authority_snapshot_with_state(
+                &fixture.config,
+                Some(&fixture.state),
+                std::slice::from_ref(&child),
+                Timestamp::new(evaluated_at).unwrap(),
+                9,
+                authority_state.clone(),
+            )
+            .unwrap();
+            outcomes.push(
+                match authorize_resident_child_from_snapshot(&snapshot, vec![child.clone()], &call)
+                    .unwrap()
+                {
+                    RouteDisposition::Local { .. } => "allowed",
+                    RouteDisposition::Denied { .. } => "denied",
+                    RouteDisposition::Remote { .. } => "remote",
+                },
+            );
+        }
+        assert_eq!(outcomes, ["denied", "allowed", "denied"]);
+    }
+
+    /// Phase I proof 5: canonical revocation plus catch-up denies the next route.
+    #[test]
+    fn enveloped_required_toy_revocation_denies_next_route_regardless_of_echo() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger_path = dir.path().join("observations.jsonl");
+        let config_path = dir.path().join("config.json");
+        let state_path = dir.path().join("state.sqlite");
+        let children_dir = dir.path().join("children");
+        write_resident_process_child(&children_dir);
+        let manifest_path = children_dir.join("resident-echo").join("child.toml");
+        let manifest = std::fs::read_to_string(&manifest_path)
+            .unwrap()
+            .replace("toys = []", "toys = [\"logging\"]");
+        std::fs::write(&manifest_path, manifest.as_bytes()).unwrap();
+        write_sha256_sidecar(&manifest_path, manifest.as_bytes());
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        let child = loaded.children[0].clone();
+        let store = MctDaemonConfigStore::new(&config_path);
+        store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity.hex"),
+            )
+            .unwrap();
+        store
+            .approve_and_assign_loaded_child(&child, MctOperatorChildScope::default())
+            .unwrap();
+        let canonical_state = logging_authority_state(&child, ToyGrantState::Active, None, None);
+        let mut ledger =
+            JsonlObservationLedger::open_authority(&ledger_path, "ledger-local", "local-mct")
+                .unwrap();
+        let import = ledger.execute_legacy_authority_import(
+            LegacyAuthorityImportRequestV1 {
+                schema: "mct-legacy-authority-import-request/v1".into(),
+                import_id: "route-revocation-import".into(),
+                expected_mother_node_id: "local-mct".into(),
+                expected_ledger_id: "ledger-local".into(),
+                expected_config_authority_hash: authority_state_hash(&AuthorityStateV1::default())
+                    .unwrap(),
+                expected_sqlite_authority_hash: authority_state_hash(&canonical_state).unwrap(),
+                confirmation: mct_observation::LEGACY_AUTHORITY_IMPORT_CONFIRMATION_V1.into(),
+            },
+            "os-uid:501".into(),
+            canonical_state.clone(),
+            "2026-07-09T00:00:00Z".into(),
+        );
+        assert!(matches!(
+            import,
+            AuthorityMutationResultV1::CommittedProjectionPending { .. }
+        ));
+        let state = MctRuntimeStateStore::open(&state_path).unwrap();
+        state
+            .publish_authority_projection(&ledger.entries().unwrap())
+            .unwrap();
+        let snapshot_before = mct_daemon::local_execution_authority_snapshot_at(
+            &ledger_path,
+            &config_path,
+            &children_dir,
+            &state_path,
+            Ok(Timestamp::new("2026-07-09T00:01:00Z").unwrap()),
+        )
+        .unwrap();
+        let mut call = resident_test_call(TraceId::new("trace-envelope-revocation").unwrap());
+        call.authority_context.grants_revision = u64::MAX;
+        assert!(matches!(
+            authorize_resident_child_from_snapshot(&snapshot_before, vec![child.clone()], &call,)
+                .unwrap(),
+            RouteDisposition::Local { .. }
+        ));
+
+        let active_grant = canonical_state.toy_grants.values().next().unwrap();
+        let mutation = ledger.execute_authority_mutation(
+            AuthorityMutationRequestV1 {
+                mutation_id: "route-required-toy-revoke".into(),
+                changes: vec![AuthorityChangeV1::ToyGrantPut {
+                    grant_id: active_grant.grant_id.to_string(),
+                    toy_id: active_grant.toy_id.to_string(),
+                    subject: Box::new(active_grant.subject.clone()),
+                    scope: Box::new(active_grant.scope.clone()),
+                    constraints: Box::new(active_grant.constraints.clone()),
+                    grant_state: ToyGrantState::Revoked,
+                    issuer_id: active_grant.issuer_id.clone(),
+                    policy_revision: active_grant.policy_revision,
+                    source_grants_revision: active_grant.grants_revision + 1,
+                    authority_observation_id: "obs:test:logging-revoked".into(),
+                }],
+                grant_shaping_sources: vec![GrantShapingSourceV1::OperatorDecision {
+                    decision_id: "decision-route-required-toy-revoke".into(),
+                    authenticated_principal_ref: "os-uid:501".into(),
+                    command_kind: GrantShapingCommandKindV1::GrantChange,
+                }],
+                decided_at: "2026-07-09T00:02:00Z".into(),
+            },
+            |_| Ok(None),
+        );
+        assert!(matches!(
+            mutation,
+            AuthorityMutationResultV1::CommittedProjectionPending { .. }
+        ));
+        state
+            .rebuild_authority_projection(&ledger.entries().unwrap())
+            .unwrap();
+        let snapshot_after = mct_daemon::local_execution_authority_snapshot_at(
+            &ledger_path,
+            &config_path,
+            &children_dir,
+            &state_path,
+            Ok(Timestamp::new("2026-07-09T00:03:00Z").unwrap()),
+        )
+        .unwrap();
+        assert!(matches!(
+            authorize_resident_child_from_snapshot(&snapshot_after, vec![child], &call).unwrap(),
+            RouteDisposition::Denied { .. }
+        ));
     }
 
     #[test]
