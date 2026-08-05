@@ -46,9 +46,9 @@ exit_criteria:
     checked: true
     verify: cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh
   - id: phase-i-envelope-completeness
-    text: Every production mutation of the D-R2.7 Toy catalog/grant scope commits exactly one canonical mutation/import fact and advances the namespaced generation exactly once.
+    text: Every production mutation of the D-R2.7 Toy catalog/grant/Watch-scope authority commits exactly one canonical mutation/import fact and advances the namespaced generation exactly once.
     checked: false
-    verify: Phase I proof steps 1-2 have landed test file and line citations.
+    verify: Phase I proof steps 1-2 and 15-17 have landed test file and line citations.
   - id: phase-i-local-snapshot
     text: Route evaluation receives one Mother-owned local execution authority snapshot only after exact D-G8 proof, with canonical grants, labeled local policy provenance, Mother clock, and cursor provenance.
     checked: false
@@ -290,6 +290,20 @@ The Phase I baseline is `b818550`. This SPEC-only commit is Gate G1 and precedes
 
 The Watch-bypass repair may use the existing `toy_catalog_put` and `toy_grant_put` authority changes with no new canonical fact kind only if replay of the enveloped Watch grant, supporting-grant, and revoke facts reconstructs the complete projected state, including Watch observation scopes. Task B proof step 2 must assert that complete replay result. If the complete Watch scope genuinely rides inside the existing Toy contract/grant values, the test must identify and assert those exact fields. If the existing value schemas cannot carry the complete scope, this is a C4 fork: stop and report rather than shoehorning scope data into an unrelated field or leaving scope reconstruction to the legacy dual-write.
 
+Disk inspection established the C4 fork: `ToyCatalogPut` and `ToyGrantPut` cannot carry the complete `WatchObservationScope`, while the ordinary `watch-observation-scope-v1:` detail is observability rather than canonical authority state.
+
+### D-I.2 — canonical Watch-scope authority
+
+The existing `authority_mutation` fact kind gains the sanctioned additive `WatchScopePut` change variant carrying one complete validated `WatchObservationScope`. Put semantics preserve every kernel field and revision; revocation is a complete put with `authority_state = revoked`, matching the existing non-deleting projection behavior. There is no Watch-scope remove variant.
+
+`AuthorityStateV1` gains a stable-identity-ordered `watch_scopes` map. State hashing, mutation replay, projection publication/rebuild, and legacy import cover that map. Scope puts require complete record validation and exact prior-state/revision discipline: a first revision starts at one, a later revision is exactly current plus one, and a revoked or superseded current scope cannot be resurrected. A pre-Phase-I legacy import reads the complete SQLite Watch-scope history/current state into canonical authority; once-per-surviving-history import semantics do not change.
+
+Each `/watch/grant`, `/watch/supporting-grant`, or `/watch/revoke` request commits exactly one canonical fact containing all authority changes for that logical request and advances generation once. Watch grant/revoke facts contain their complete scope put plus Toy changes; supporting-grant facts contain all selected Toy changes and preserve the current scope set unchanged. The ordinary `watch-observation-scope-v1:` observation remains observability only and is never an authority-replay input.
+
+The canonical carrier remains `mct-authority-fact/v1`; D-I.2 adds no fact kind. Strict deserialization of an unknown authority change variant blocks authority projection/replay without quarantining the structurally valid ledger, matching the existing unknown authority-schema/fact-kind posture.
+
+As a D-I.2 consequence, D-R2.7's first authority-wide projection scope is now Toy catalog, Toy grants, their grant-shaping sources, and complete Watch observation scopes. This is the sole sanctioned exception to Phase I's no-new-change-variant and no-Watch-scope-canonicalization fences.
+
 ## Binding landed law
 
 The implementation treats the following landed law as binding, quoted verbatim rather than reinterpreted.
@@ -319,7 +333,8 @@ LocalExecutionAuthoritySnapshot {
   canonical_grants: {
     grants_authority: GrantsAuthorityIdentity,
     toy_catalog: [complete CanonicalToyContract, ...],
-    toy_grants: [complete ToyGrant, ...]
+    toy_grants: [complete ToyGrant, ...],
+    watch_scopes: [complete WatchObservationScope, ...]
   },
   policy: {
     policy_revision: u64,
@@ -352,7 +367,7 @@ LocalExecutionAuthoritySnapshot {
 
 The canonical arrays have stable-identity order and come from the same authority projection publication named by `projection`; `canonical_grants.grants_authority` exactly equals that cursor's complete namespaced identity. A projected `ToyGrant.grants_revision` is retained only as replayed legacy source content and is never compared with a call echo or substituted for `GrantsAuthorityIdentity`.
 
-The v0 composition decision is explicit: only Toy catalog/grants and their D-R2.7 grant-shaping source history are canonical. Policy, Child approval/assignment/instance, peer binding/proof, and callable-surface inputs remain Mother-local legacy projections with explicit provenance labels. Their inclusion does not canonicalize them, permit them to shape the canonical generation, or claim cross-store ACID. `LocalSnapshotIsCoherent` in Phase I means that the canonical portion and its complete cursor are one atomic projection publication, while each labeled policy portion is captured as one immutable input value and all portions are bound into one non-refreshable evaluation argument.
+The v0 composition decision is explicit: only Toy catalog/grants, complete Watch observation scopes, and their D-R2.7 grant-shaping source history are canonical. Policy, Child approval/assignment/instance, peer binding/proof, and callable-surface inputs remain Mother-local legacy projections with explicit provenance labels. Their inclusion does not canonicalize them, permit them to shape the canonical generation, or claim cross-store ACID. `LocalSnapshotIsCoherent` in Phase I means that the canonical portion and its complete cursor are one atomic projection publication, while each labeled policy portion is captured as one immutable input value and all portions are bound into one non-refreshable evaluation argument.
 
 The snapshot's fields are read-only outside its defining kernel module. There is no public constructor, `From`, or copying conversion from `AuthorityContextSnapshot`/`CallerAuthorityContext`; caller echo and local authority are different types. Token types do not gain a snapshot field in Phase I because their migration is fenced to slices 7-8.
 
@@ -402,7 +417,7 @@ Disk inspection covered `RESIDENT_MUTATION_ROUTES`, its handler dispatch, CLI co
 | offline `iroh identity` / resident-refused `POST /identity/ensure` | Mother identity/policy source | no canonical Toy/grant fact | Outside D-R2.7 and not a Phase I mutation target. |
 | `/lifecycle/fact`, `/blobs`, closed `/registry/install|sync`, `/artifacts/stage`, `/releases/acquire`, and `/pando/record` | lifecycle/data/evidence/composition, not grant authority shape | no canonical Toy/grant fact | Not authority-shape mutations for this phase. |
 
-There are no production Toy catalog/grant removals or general grant-correction endpoints beyond the complete `put`/revocation surfaces above. Test-only direct upserts in `startup.rs`, `state.rs`, and Watch unit fixtures are not production ingress. Task B may repair the three Watch route families through `AuthorityMutationRequestV1` only after D-I.1 proves that the existing `toy_catalog_put` and `toy_grant_put` values are replay-complete for every projected family, including Watch observation scopes. Inability to reconstruct that scope is the named C4 stop condition, not permission to invent a new fact kind or compatibility write.
+There are no production Toy catalog/grant removals or general grant-correction endpoints beyond the complete `put`/revocation surfaces above. Test-only direct upserts in `startup.rs`, `state.rs`, and Watch unit fixtures are not production ingress. D-I.1 established that the existing Toy values were not replay-complete; D-I.2 therefore sanctions `WatchScopePut` inside `AuthorityMutationRequestV1` while preserving the existing canonical fact kind. Task B repairs the three Watch route families with that complete value and never consumes the ordinary scope observation as authority.
 
 Exactly one logical request above may commit exactly one canonical import/mutation fact and therefore advances generation exactly once, even when it carries multiple catalog/grant changes. Its required noncanonical domain observations do not advance grants authority. `rejected_before_commit` and `commit_unknown` perform no legacy Toy write; acknowledged commitment precedes all legacy Watch/Toy projection writes; projection failure cannot undo the fact.
 
@@ -460,8 +475,8 @@ Land the coherence, concurrency, epoch, revocation, clock, provenance, negative,
 
 Each proof lands as a named test. Close-out cites its file/line and quotes the verbatim central assertion.
 
-1. A parameterized matrix over legacy import, authorize-Slate, authorize-secret, Watch grant, each supporting-grant variant, and Watch revoke proves exactly one canonical fact and exactly one generation advance per successful logical request.
-2. Every production D-R2.7 route refuses or leaves legacy Toy rows byte-value unchanged when canonical commitment is rejected, unknown, poisoned, or unavailable; no direct legacy-only production path is reachable. Replay assertions over the enveloped Watch grant, each supporting-grant variant, and Watch revoke must reconstruct the complete projected state, including every Watch observation-scope field, solely from the existing authority-change values; inability to do so is the D-I.1 C4 stop condition.
+1. A parameterized matrix over legacy import, authorize-Slate, authorize-secret, `/watch/grant`, every `/watch/supporting-grant` variant, and `/watch/revoke` proves exactly one canonical fact and exactly one generation advance per successful logical request.
+2. Every production D-R2.7 route, parameterized over `/watch/grant`, every `/watch/supporting-grant` variant, and `/watch/revoke`, refuses or leaves legacy Toy and Watch-scope rows byte-value unchanged when canonical commitment is rejected, unknown, poisoned, or unavailable; no direct legacy-only production path is reachable.
 3. Usable D-G8 proof constructs one snapshot whose executing Mother, complete grants identity/state, labeled Child/peer policy inputs, Mother time, and full cursor provenance match the exact source values.
 4. Hostile arbitrary call `authority_context` values cannot affect snapshot construction; the provider API accepts no call and yields the same snapshot as construction with no call in scope.
 5. End-to-end required-Toy revocation through the envelope, projection catch-up, and next resident route evaluation denies regardless of the call echo.
@@ -474,6 +489,9 @@ Each proof lands as a named test. Close-out cites its file/line and quotes the v
 12. Time-window route grant evaluation uses `snapshot.mother_clock.evaluated_at`; caller-controlled timestamps or echoes cannot move the allow/deny boundary.
 13. API-shape/constructor audit proves no public conversion or constructor exists from caller authority context to local execution snapshot and no provider parameter can carry it.
 14. Regression pins prove slice-6 protocol echo behavior, slice-7 token minting/vacuous resident guard and Child/process/WASM guards, slice-8 Toy effect guard, hello/peer wire serialization, idempotent replay, and the zero-production-consumer status of `MotherAuthorityOrderV1` are unchanged from `b818550`.
+15. Canonical replay of Watch grant and revoke facts, with ordinary `watch-observation-scope-v1:` observations absent, reconstructs a byte-equal `WatchObservationScope` and explicitly asserts every kernel field.
+16. Legacy import with existing SQLite Watch scopes includes them completely in `LegacyAuthorityImportFactV1.imported_state`, projection rebuild preserves them, and once-per-canonical-history behavior is unchanged.
+17. A structurally valid authority fact carrying an unknown `change_kind` fails closed for authority replay/projection without ledger quarantine or silent skipping.
 
 ## Phase I deferral fence
 
@@ -483,8 +501,8 @@ The following remain forbidden, including partial implementation:
 - No hello/call schema or peer-wire migration and no early protocol stale-rejection change; slice 6 owns them.
 - No idempotent replay authority migration.
 - No production consumer of `MotherAuthorityOrderV1`; slices 7-8 route commits and effect starts through it.
-- No new canonical fact kind, authority change variant, `MctObservation` field, `MctObservationLedgerEntry` field, or ledger framing change.
-- No canonicalization of policy, Child approval/assignment/instance, peer binding/proof/publication, trigger, Watch-scope, or artifact-source domains. They remain labeled local legacy inputs.
+- No new canonical fact kind, `MctObservation` field, `MctObservationLedgerEntry` field, or ledger framing change. D-I.2's additive `WatchScopePut` is the only sanctioned new authority change variant.
+- No canonicalization of policy, Child approval/assignment/instance, peer binding/proof/publication, trigger, or artifact-source domains. D-I.2 canonicalizes complete Watch scopes; all other named domains remain labeled local legacy inputs.
 - No evaluation fallback to config, legacy Toy tables, caller echoes, stale projection, bare generation, startup readiness cache, or record digest when D-G8 is unusable.
 - No effect-time revocation claim. Evaluation-level clauses may advance; global/effect-time clauses remain deferred to slices 7-8.
 
