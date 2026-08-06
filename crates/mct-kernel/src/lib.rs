@@ -112,10 +112,11 @@ pub use route::{
     revalidate_route_for_execution, revalidate_route_for_execution_with_snapshot,
 };
 pub use toy::{
-    AuthorizedToyCall, CanonicalToyContract, ToyContractIdentity, ToyGrant, ToyGrantConstraints,
-    ToyGrantEvaluation, ToyGrantEvaluationIds, ToyGrantEvaluationRequest, ToyGrantEvaluationResult,
-    ToyGrantReasonCode, ToyGrantScope, ToyGrantState, ToyGrantSubject, ToyGrantVerdict,
-    evaluate_toy_grant_for_call, evaluate_toy_grant_for_route_snapshot,
+    AuthorizedToyCall, CanonicalToyContract, ToyContractIdentity, ToyEffectAdmissionDenyV1,
+    ToyGrant, ToyGrantConstraints, ToyGrantEvaluation, ToyGrantEvaluationIds,
+    ToyGrantEvaluationRequest, ToyGrantEvaluationResult, ToyGrantReasonCode, ToyGrantScope,
+    ToyGrantState, ToyGrantSubject, ToyGrantVerdict, evaluate_toy_grant_for_call,
+    evaluate_toy_grant_for_route_snapshot, evaluate_toy_grant_for_snapshot,
 };
 pub use trigger::{
     CallTriggerAuthority, CallTriggerAuthorityState, CallTriggerClass,

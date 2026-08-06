@@ -1,7 +1,7 @@
 use crate::{
     children::{MctLoadedChild, operation_id_from_target},
     state::MctRuntimeStateStore,
-    toy::{MctToyAdapterOutcome, MctToyAdapterRegistry, MctToyCallIds},
+    toy::{MctToyAdapterOutcome, MctToyAdapterRegistry, MctToyCallIds, MctToyEffectAuthorityV1},
     wit_values::{lift_component_results_to_json, lower_typed_args_for_component},
 };
 use mct_kernel::*;
@@ -186,6 +186,7 @@ pub struct MctWitToyHostAdapter {
 #[derive(Debug)]
 pub struct MctWitHostImportAdapters {
     pub toy_registry: MctToyAdapterRegistry,
+    pub effect_authority: Option<MctToyEffectAuthorityV1>,
     pub logging: Option<MctWitToyHostAdapter>,
     pub measure: Option<MctWitToyHostAdapter>,
     pub git: Option<MctWitToyHostAdapter>,
@@ -209,16 +210,17 @@ pub struct MctWitMessagingHostAdapter {
     pub watch_admission: MctWitWatchMessageAdmission,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct MctWasiHostConfig {
     pub preopens: Vec<MctWasiPreopen>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct MctWasiPreopen {
     pub host_path: PathBuf,
     pub guest_path: String,
     pub access: MctWasiPreopenAccess,
+    pub authorized_toy_call: AuthorizedToyCall,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -246,6 +248,7 @@ impl MctWitHostImportAdapters {
     pub fn none() -> Self {
         Self {
             toy_registry: MctToyAdapterRegistry::new(),
+            effect_authority: None,
             logging: None,
             measure: None,
             git: None,
@@ -269,6 +272,7 @@ struct MctWasmHostState {
 
 struct MctWitHostState {
     toy_registry: MctToyAdapterRegistry,
+    effect_authority: Option<MctToyEffectAuthorityV1>,
     call: MctCall,
     toy_observations: Vec<MctObservation>,
     logging: Option<MctWitToyHostAdapter>,
@@ -315,14 +319,22 @@ impl MctWitHostState {
             started_at: adapter.observed_at.clone(),
             completed_at: adapter.observed_at.clone(),
         };
-        let executing_mother_now = crate::config::current_timestamp();
-        let mut report = self.toy_registry.call_authorized_toy_at(
-            &adapter.authorized_toy_call,
-            &self.call,
-            &executing_mother_now,
-            &input_json.to_string(),
-            ids,
-        );
+        let mut report = match self.effect_authority.as_ref() {
+            Some(authority) => self.toy_registry.call_authorized_toy_with_authority(
+                &adapter.authorized_toy_call,
+                &self.call,
+                authority,
+                &input_json.to_string(),
+                ids,
+            ),
+            None => self.toy_registry.call_authorized_toy_at(
+                &adapter.authorized_toy_call,
+                &self.call,
+                &crate::config::current_timestamp(),
+                &input_json.to_string(),
+                ids,
+            ),
+        };
         self.toy_observations.append(&mut report.observations);
         report
     }
@@ -330,6 +342,8 @@ impl MctWitHostState {
 
 fn build_wasi_ctx(
     config: Option<&MctWasiHostConfig>,
+    effect_authority: Option<&MctToyEffectAuthorityV1>,
+    call: &MctCall,
 ) -> Result<WasiCtx, MctWasmComponentRuntimeError> {
     let mut builder = WasiCtxBuilder::new();
     builder.allow_blocking_current_thread(true);
@@ -337,6 +351,38 @@ fn build_wasi_ctx(
         let mut guest_paths = BTreeSet::new();
         for preopen in &config.preopens {
             validate_wasi_preopen(preopen, &mut guest_paths)?;
+            match effect_authority {
+                Some(authority) => {
+                    let snapshot = authority.current_snapshot().map_err(|_| {
+                        MctWasmComponentRuntimeError::Configure(
+                            "WASI preopen authority unavailable".into(),
+                        )
+                    })?;
+                    preopen
+                        .authorized_toy_call
+                        .admit_effect_with_snapshot(call, &snapshot)
+                        .map_err(|reason| {
+                            MctWasmComponentRuntimeError::Configure(format!(
+                                "WASI preopen authority denied: {reason:?}"
+                            ))
+                        })?;
+                    authority.admit_order(&snapshot).map_err(|_| {
+                        MctWasmComponentRuntimeError::Configure(
+                            "WASI preopen authority order denied".into(),
+                        )
+                    })?;
+                }
+                None => {
+                    preopen
+                        .authorized_toy_call
+                        .admit_effect_for_call_at(call, &crate::config::current_timestamp())
+                        .ok_or_else(|| {
+                            MctWasmComponentRuntimeError::Configure(
+                                "WASI preopen legacy authority denied".into(),
+                            )
+                        })?;
+                }
+            }
             let (dir_perms, file_perms) = match preopen.access {
                 MctWasiPreopenAccess::ReadOnly => (DirPerms::READ, FilePerms::READ),
                 MctWasiPreopenAccess::ReadWrite => (DirPerms::all(), FilePerms::all()),
@@ -1128,11 +1174,16 @@ impl MctWasmComponentRuntime {
         )?;
         let mut linker = component::Linker::<MctWitHostState>::new(&self.engine);
         link_wit_host_import_adapters(&mut linker, &host_adapters)?;
-        let wasi_ctx = build_wasi_ctx(host_adapters.wasi.as_ref())?;
+        let wasi_ctx = build_wasi_ctx(
+            host_adapters.wasi.as_ref(),
+            host_adapters.effect_authority.as_ref(),
+            call,
+        )?;
         let mut store = Store::new(
             &self.engine,
             MctWitHostState {
                 toy_registry: host_adapters.toy_registry,
+                effect_authority: host_adapters.effect_authority,
                 call: call.clone(),
                 toy_observations: Vec::new(),
                 logging: host_adapters.logging,
@@ -2791,6 +2842,7 @@ mod tests {
         };
         MctWitHostImportAdapters {
             toy_registry,
+            effect_authority: None,
             logging: Some(adapter),
             measure: Some(MctWitToyHostAdapter {
                 authorized_toy_call: toy_authorized("wasm-measure"),
@@ -2922,6 +2974,7 @@ mod tests {
         );
         MctWitHostImportAdapters {
             toy_registry,
+            effect_authority: None,
             logging: None,
             measure: None,
             git: Some(MctWitToyHostAdapter {
@@ -3163,6 +3216,7 @@ mod tests {
             };
             MctWitHostImportAdapters {
                 toy_registry,
+                effect_authority: None,
                 logging: Some(adapter("watch-logging")),
                 measure: Some(adapter("watch-measure")),
                 git: None,
@@ -3189,6 +3243,7 @@ mod tests {
                         host_path: root.path().to_path_buf(),
                         guest_path: "/input".into(),
                         access: MctWasiPreopenAccess::ReadOnly,
+                        authorized_toy_call: adapter("watch-preopen").authorized_toy_call,
                     }],
                 }),
             }
@@ -3319,6 +3374,7 @@ mod tests {
                 }]),
                 MctWitHostImportAdapters {
                     toy_registry,
+                    effect_authority: None,
                     logging: Some(adapter("sink-logging")),
                     measure: Some(adapter("sink-measure")),
                     git: None,

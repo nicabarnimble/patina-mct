@@ -3,8 +3,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
+    fmt,
     path::{Component, Path, PathBuf},
     process::Command,
+    sync::Arc,
 };
 
 pub const MCT_SECRETS_TOY_ID: &str = "toy-secrets";
@@ -45,6 +47,52 @@ pub struct MctToyCallReport {
     pub output_json: Option<String>,
     pub safe_message: String,
     pub observations: Vec<MctObservation>,
+    pub authority_denial: Option<ToyEffectAdmissionDenyV1>,
+}
+
+type ToySnapshotProvider =
+    dyn Fn() -> Result<LocalExecutionAuthoritySnapshot, String> + Send + Sync;
+type ToyOrderAdmission =
+    dyn Fn(&LocalExecutionAuthoritySnapshot) -> Result<(), String> + Send + Sync;
+
+#[derive(Clone)]
+pub struct MctToyEffectAuthorityV1 {
+    snapshot: Arc<ToySnapshotProvider>,
+    admit_order: Arc<ToyOrderAdmission>,
+}
+
+impl fmt::Debug for MctToyEffectAuthorityV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MctToyEffectAuthorityV1")
+            .finish_non_exhaustive()
+    }
+}
+
+impl MctToyEffectAuthorityV1 {
+    pub fn new(
+        snapshot: impl Fn() -> Result<LocalExecutionAuthoritySnapshot, String> + Send + Sync + 'static,
+        admit_order: impl Fn(&LocalExecutionAuthoritySnapshot) -> Result<(), String>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        Self {
+            snapshot: Arc::new(snapshot),
+            admit_order: Arc::new(admit_order),
+        }
+    }
+
+    pub(crate) fn current_snapshot(&self) -> Result<LocalExecutionAuthoritySnapshot, String> {
+        (self.snapshot)()
+    }
+
+    pub(crate) fn admit_order(
+        &self,
+        snapshot: &LocalExecutionAuthoritySnapshot,
+    ) -> Result<(), String> {
+        (self.admit_order)(snapshot)
+    }
 }
 
 pub fn mct_secrets_toy_contract() -> CanonicalToyContract {
@@ -75,6 +123,42 @@ impl MctToyAdapterRegistry {
         self.backends.insert(toy_id, backend);
     }
 
+    pub fn call_authorized_toy_with_authority(
+        &self,
+        authorized: &AuthorizedToyCall,
+        call: &MctCall,
+        authority: &MctToyEffectAuthorityV1,
+        input_json: &str,
+        ids: MctToyCallIds,
+    ) -> MctToyCallReport {
+        let snapshot = match authority.current_snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(_) => {
+                return current_toy_authority_denial_report(
+                    authorized,
+                    call,
+                    ids,
+                    ToyEffectAdmissionDenyV1::LocalAuthorityUnavailable,
+                );
+            }
+        };
+        let _admitted_effect = match authorized.admit_effect_with_snapshot(call, &snapshot) {
+            Ok(admitted) => admitted,
+            Err(reason) => {
+                return current_toy_authority_denial_report(authorized, call, ids, reason);
+            }
+        };
+        if authority.admit_order(&snapshot).is_err() {
+            return current_toy_authority_denial_report(
+                authorized,
+                call,
+                ids,
+                ToyEffectAdmissionDenyV1::GrantsAuthorityMismatch,
+            );
+        }
+        self.call_admitted_toy(authorized, call, input_json, ids)
+    }
+
     pub fn call_authorized_toy_at(
         &self,
         authorized: &AuthorizedToyCall,
@@ -89,6 +173,16 @@ impl MctToyAdapterRegistry {
             return stale_toy_authority_report(authorized, call, ids);
         };
 
+        self.call_admitted_toy(authorized, call, input_json, ids)
+    }
+
+    fn call_admitted_toy(
+        &self,
+        authorized: &AuthorizedToyCall,
+        call: &MctCall,
+        input_json: &str,
+        ids: MctToyCallIds,
+    ) -> MctToyCallReport {
         let started = toy_observation(
             ids.started_observation_id,
             ids.started_at,
@@ -174,6 +268,7 @@ impl MctToyAdapterRegistry {
             output_json,
             safe_message,
             observations: vec![started, completed],
+            authority_denial: None,
         }
     }
 }
@@ -197,6 +292,31 @@ fn stale_toy_authority_report(
         output_json: None,
         safe_message: "toy call authority stale".into(),
         observations: vec![observation],
+        authority_denial: None,
+    }
+}
+
+fn current_toy_authority_denial_report(
+    authorized: &AuthorizedToyCall,
+    call: &MctCall,
+    ids: MctToyCallIds,
+    reason: ToyEffectAdmissionDenyV1,
+) -> MctToyCallReport {
+    let observation = toy_observation(
+        ids.started_observation_id,
+        ids.started_at,
+        ObservationKind::ToyCallFailed,
+        ObservationOutcome::Denied,
+        call,
+        authorized,
+        "toy call authority denied",
+    );
+    MctToyCallReport {
+        outcome: MctToyAdapterOutcome::Failed,
+        output_json: None,
+        safe_message: "toy call authority denied".into(),
+        observations: vec![observation],
+        authority_denial: Some(reason),
     }
 }
 
@@ -832,7 +952,7 @@ mod tests {
     }
 
     #[test]
-    fn toy_adapter_denies_stale_toy_capability_before_backend_call() {
+    fn caller_grants_echo_cannot_create_a_toy_authority_denial() {
         let registry = MctToyAdapterRegistry::new();
         let mut stale_call = call();
         stale_call.authority_context.grants_revision += 1;
@@ -846,10 +966,11 @@ mod tests {
         );
 
         assert_eq!(report.outcome, MctToyAdapterOutcome::Failed);
-        assert_eq!(report.safe_message, "toy call authority stale");
-        assert_eq!(report.observations.len(), 1);
-        assert_eq!(report.observations[0].outcome, ObservationOutcome::Denied);
-        assert_eq!(report.observations[0].kind, ObservationKind::ToyCallFailed);
+        assert_eq!(report.safe_message, "toy backend unavailable");
+        assert_eq!(report.authority_denial, None);
+        assert_eq!(report.observations.len(), 2);
+        assert_eq!(report.observations[0].outcome, ObservationOutcome::Started);
+        assert_eq!(report.observations[1].outcome, ObservationOutcome::Failed);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Resident local effect-boundary revision guard, child delivery, dispatch, and result projection.
 
 use super::*;
-use mct_daemon::MotherAuthorityAdmissionDenyV1;
+use mct_daemon::{MctToyEffectAuthorityV1, MotherAuthorityAdmissionDenyV1};
 
 #[derive(Debug)]
 struct PreparedChildExecution {
@@ -96,6 +96,7 @@ pub(super) fn execute_authorized_resident_child(
     request: MctCallProtocolRequest,
     inline_payload: Option<Vec<u8>>,
     effect_snapshot: LocalExecutionAuthoritySnapshot,
+    toy_effect_time_override: Option<Timestamp>,
     before_effect_ledger: Option<ResidentLedgerWriter>,
 ) -> Result<LocalExecutionReport> {
     let call = request.call.clone();
@@ -165,7 +166,9 @@ pub(super) fn execute_authorized_resident_child(
                 child_execution,
                 &request,
                 inline_payload.as_deref(),
-                paths.state_path(),
+                &paths,
+                &effect_snapshot,
+                toy_effect_time_override,
                 before_effect_ledger,
             )?
         }
@@ -254,7 +257,7 @@ fn execute_resident_process_child(
 }
 
 fn authorize_resident_watch_toy(
-    state: &MctRuntimeStateStore,
+    snapshot: &LocalExecutionAuthoritySnapshot,
     child: &mct_daemon::MctLoadedChild,
     authorized_child: &AuthorizedChildInvocation,
     call: &MctCall,
@@ -262,8 +265,7 @@ fn authorize_resident_watch_toy(
     action: &str,
     label: &str,
 ) -> std::result::Result<CliAuthorizedToy, CliToyAuthorizationError> {
-    let contracts = state.toy_contracts().map_err(cli_adapter_error)?;
-    let grants = state.toy_grant_snapshots().map_err(cli_adapter_error)?;
+    let grants = snapshot.canonical_grants().toy_grants();
     let toy_id = ToyId::new(toy_id).map_err(|error| cli_adapter_error(error.into()))?;
     let resource_id = grants
         .iter()
@@ -285,28 +287,63 @@ fn authorize_resident_watch_toy(
             safe_message: format!("current exact {label} Toy grant not found"),
             observations: Vec::new(),
         })?;
-    authorize_cli_toy(CliToyAuthorizationRequest {
-        child,
-        authorized_child,
-        call,
-        contracts: &contracts,
-        grants: &grants,
+    let request = ToyGrantEvaluationRequest {
         toy_id,
-        action,
+        subject: ToyGrantSubject {
+            child_name: child.name.clone(),
+            artifact_id: child.artifact_id.clone(),
+            artifact_version: child.version.clone(),
+            assignment_id: Some(authorized_child.assignment_id().clone()),
+            caller_node_id: Some(call.caller.node_id.clone()),
+        },
+        child_instance_id: authorized_child.child_instance_id().clone(),
+        action: action.into(),
         resource_id: Some(resource_id),
-        label,
+        node_id: snapshot.child_policy().local_node_id().clone(),
+        now: snapshot.mother_clock().evaluated_at().clone(),
+        ids: ToyGrantEvaluationIds {
+            evaluation_id: ToyGrantEvaluationId::new(format!("toy-eval-resident-{label}"))
+                .expect("resident Toy evaluation id is non-empty"),
+            decision_id: DecisionId::new(format!("decision-toy-resident-{label}"))
+                .expect("resident Toy decision id is non-empty"),
+            observation_id: ObservationId::new(format!("obs-toy-grant-resident-{label}"))
+                .expect("resident Toy observation id is non-empty"),
+            authorized_toy_call_id: AuthorizedToyCallId::new(format!(
+                "authorized-toy-resident-{label}"
+            ))
+            .expect("resident Toy token id is non-empty"),
+        },
+    };
+    let result = evaluate_toy_grant_for_snapshot(call, &request, snapshot);
+    let Some(authorized) = result.authorized else {
+        return Err(CliToyAuthorizationError {
+            safe_message: format!(
+                "current exact {label} Toy grant denied: {:?}",
+                result.evaluation.reason_code
+            ),
+            observations: vec![toy_grant_evaluation_observation(
+                call.trace_context.trace_id.clone(),
+                snapshot.mother_clock().evaluated_at().clone(),
+                &result.evaluation,
+            )],
+        });
+    };
+    Ok(CliAuthorizedToy {
+        evaluation: result.evaluation,
+        authorized,
     })
 }
 
 fn resident_watch_host_adapters(
-    state: &MctRuntimeStateStore,
+    runtime_state: &MctRuntimeStateStore,
+    state: &LocalExecutionAuthoritySnapshot,
     state_path: &Path,
     child: &mct_daemon::MctLoadedChild,
     authorized_child: &AuthorizedChildInvocation,
     call: &MctCall,
     imports: &BTreeSet<String>,
 ) -> std::result::Result<CliWitHostAdapterBuild, CliToyAuthorizationError> {
-    let scopes = state
+    let scopes = runtime_state
         .watch_observation_scopes()
         .map_err(cli_adapter_error)?;
     let scope = scopes
@@ -518,6 +555,7 @@ fn resident_watch_host_adapters(
     Ok(CliWitHostAdapterBuild {
         adapters: MctWitHostImportAdapters {
             toy_registry,
+            effect_authority: None,
             logging,
             measure,
             git: None,
@@ -528,6 +566,7 @@ fn resident_watch_host_adapters(
                     host_path: root,
                     guest_path: "/input".into(),
                     access: MctWasiPreopenAccess::ReadOnly,
+                    authorized_toy_call: content.authorized,
                 }],
             }),
         },
@@ -535,11 +574,48 @@ fn resident_watch_host_adapters(
     })
 }
 
+fn resident_toy_effect_authority(
+    paths: &ResidentRuntimePaths,
+    ledger: &ResidentLedgerWriter,
+    time_override: Option<Timestamp>,
+) -> Result<MctToyEffectAuthorityV1> {
+    let ledger_path = ledger
+        .path()
+        .map(Path::to_path_buf)
+        .context("resident Toy effect authority requires ledger path")?;
+    let snapshot_paths = paths.clone();
+    let snapshot_ledger = ledger.clone();
+    let order_paths = paths.clone();
+    let order_ledger = ledger.clone();
+    Ok(MctToyEffectAuthorityV1::new(
+        move || {
+            snapshot_ledger
+                .publish_authority_projection_blocking(snapshot_paths.state_path().to_path_buf())
+                .map_err(|error| error.to_string())?;
+            mct_daemon::local_execution_authority_snapshot_at(
+                &ledger_path,
+                snapshot_paths.config_path(),
+                snapshot_paths.children_dir(),
+                snapshot_paths.state_path(),
+                Ok(time_override.clone().unwrap_or_else(current_timestamp)),
+            )
+            .map_err(|error| format!("{error:?}"))
+        },
+        move |snapshot| {
+            order_ledger
+                .admit_effect(snapshot, order_paths.state_path())
+                .map_err(|error| format!("{error:?}"))
+        },
+    ))
+}
+
 fn execute_resident_wit_child(
     execution: PreparedChildExecution,
     request: &MctCallProtocolRequest,
     inline_payload: Option<&[u8]>,
-    state_path: &Path,
+    paths: &ResidentRuntimePaths,
+    effect_snapshot: &LocalExecutionAuthoritySnapshot,
+    toy_effect_time_override: Option<Timestamp>,
     before_effect_ledger: Option<ResidentLedgerWriter>,
 ) -> Result<LocalExecutionReport> {
     let call = &request.call;
@@ -559,7 +635,7 @@ fn execute_resident_wit_child(
     };
     let runtime = MctWasmComponentRuntime::new(default_wasm_host_config())?;
     let imports = runtime.discover_wit_imports(&execution.child.wasm_path)?;
-    let state = MctRuntimeStateStore::open(state_path)?;
+    let state = MctRuntimeStateStore::open(paths.state_path())?;
     let project_root = state
         .toy_grant_snapshots()?
         .into_iter()
@@ -576,7 +652,8 @@ fn execute_resident_wit_child(
     {
         resident_watch_host_adapters(
             &state,
-            state_path,
+            effect_snapshot,
+            paths.state_path(),
             &execution.child,
             &execution.authorized,
             call,
@@ -592,6 +669,7 @@ fn execute_resident_wit_child(
             project_root: project_root.as_deref(),
             guest_project: "/project",
             git_repo: project_root.as_deref(),
+            authority_snapshot: Some(effect_snapshot),
         })
     } {
         Ok(build) => build,
@@ -603,6 +681,12 @@ fn execute_resident_wit_child(
             ));
         }
     };
+    let mut adapter_build = adapter_build;
+    let effect_authority = before_effect_ledger
+        .as_ref()
+        .map(|ledger| resident_toy_effect_authority(paths, ledger, toy_effect_time_override))
+        .transpose()?;
+    adapter_build.adapters.effect_authority = effect_authority;
     let mut observations = adapter_build.observations;
     if let Some(ledger) = before_effect_ledger {
         tokio::runtime::Handle::current()
@@ -1268,6 +1352,7 @@ listens = []
             request,
             None,
             changed_snapshot,
+            None,
             None,
         )
         .unwrap();

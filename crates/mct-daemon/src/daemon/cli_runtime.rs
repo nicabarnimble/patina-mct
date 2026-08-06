@@ -662,6 +662,7 @@ pub(super) fn run_wasm_call_wit(mut args: Vec<String>) -> Result<()> {
         project_root: project_root.as_deref(),
         guest_project: &guest_project,
         git_repo: git_repo.as_deref(),
+        authority_snapshot: None,
     }) {
         Ok(build) => build,
         Err(error) => {
@@ -734,16 +735,23 @@ pub(super) struct CliWitAdapterRequest<'a> {
     pub(super) project_root: Option<&'a Path>,
     pub(super) guest_project: &'a str,
     pub(super) git_repo: Option<&'a Path>,
+    pub(super) authority_snapshot: Option<&'a LocalExecutionAuthoritySnapshot>,
 }
 
 pub(super) fn build_wit_host_adapters_for_cli_call(
     request: CliWitAdapterRequest<'_>,
 ) -> std::result::Result<CliWitHostAdapterBuild, CliToyAuthorizationError> {
-    let contracts = request.state.toy_contracts().map_err(cli_adapter_error)?;
-    let grants = request
-        .state
-        .toy_grant_snapshots()
-        .map_err(cli_adapter_error)?;
+    let contracts = match request.authority_snapshot {
+        Some(snapshot) => snapshot.canonical_grants().toy_catalog().to_vec(),
+        None => request.state.toy_contracts().map_err(cli_adapter_error)?,
+    };
+    let grants = match request.authority_snapshot {
+        Some(snapshot) => snapshot.canonical_grants().toy_grants().to_vec(),
+        None => request
+            .state
+            .toy_grant_snapshots()
+            .map_err(cli_adapter_error)?,
+    };
     let resource_id = request.project_root.map(|path| path.display().to_string());
     let mut observations = Vec::new();
     let mut toy_registry = MctToyAdapterRegistry::new();
@@ -774,6 +782,7 @@ pub(super) fn build_wit_host_adapters_for_cli_call(
             action: "invoke",
             resource_id: logging_resource_id,
             label: "logging",
+            authority_snapshot: request.authority_snapshot,
         })?;
         observations.push(toy_grant_evaluation_observation(
             request.call.trace_context.trace_id.clone(),
@@ -809,6 +818,7 @@ pub(super) fn build_wit_host_adapters_for_cli_call(
             action: "invoke",
             resource_id: measure_resource_id,
             label: "measure",
+            authority_snapshot: request.authority_snapshot,
         })?;
         observations.push(toy_grant_evaluation_observation(
             request.call.trace_context.trace_id.clone(),
@@ -841,6 +851,7 @@ pub(super) fn build_wit_host_adapters_for_cli_call(
             action: "invoke",
             resource_id: resource_id.clone(),
             label: "git",
+            authority_snapshot: request.authority_snapshot,
         })?;
         observations.push(toy_grant_evaluation_observation(
             request.call.trace_context.trace_id.clone(),
@@ -870,6 +881,7 @@ pub(super) fn build_wit_host_adapters_for_cli_call(
             action: "preopen-project-root",
             resource_id: resource_id.clone(),
             label: "filesystem",
+            authority_snapshot: request.authority_snapshot,
         })?;
         observations.push(toy_grant_evaluation_observation(
             request.call.trace_context.trace_id.clone(),
@@ -880,6 +892,7 @@ pub(super) fn build_wit_host_adapters_for_cli_call(
             host_path: project_root.to_path_buf(),
             guest_path: request.guest_project.to_owned(),
             access: MctWasiPreopenAccess::ReadWrite,
+            authorized_toy_call: authorized.authorized,
         });
     }
 
@@ -890,6 +903,7 @@ pub(super) fn build_wit_host_adapters_for_cli_call(
     Ok(CliWitHostAdapterBuild {
         adapters: MctWitHostImportAdapters {
             toy_registry,
+            effect_authority: None,
             logging,
             measure,
             git,
@@ -944,44 +958,58 @@ pub(super) struct CliToyAuthorizationRequest<'a> {
     pub(super) action: &'a str,
     pub(super) resource_id: Option<String>,
     pub(super) label: &'a str,
+    pub(super) authority_snapshot: Option<&'a LocalExecutionAuthoritySnapshot>,
 }
 
 pub(super) fn authorize_cli_toy(
     request: CliToyAuthorizationRequest<'_>,
 ) -> std::result::Result<CliAuthorizedToy, CliToyAuthorizationError> {
-    let result = evaluate_toy_grant_for_call(
-        request.call,
-        &ToyGrantEvaluationRequest {
-            toy_id: request.toy_id.clone(),
-            subject: ToyGrantSubject {
-                child_name: request.child.name.clone(),
-                artifact_id: request.child.artifact_id.clone(),
-                artifact_version: request.child.version.clone(),
-                assignment_id: Some(request.authorized_child.assignment_id().clone()),
-                caller_node_id: Some(request.call.caller.node_id.clone()),
-            },
-            child_instance_id: request.authorized_child.child_instance_id().clone(),
-            action: request.action.into(),
-            resource_id: request.resource_id,
-            node_id: request.call.caller.node_id.clone(),
-            now: current_timestamp(),
-            ids: ToyGrantEvaluationIds {
-                evaluation_id: ToyGrantEvaluationId::new(format!("toy-eval-cli-{}", request.label))
-                    .expect("string ID literal/generated value must be non-empty"),
-                decision_id: DecisionId::new(format!("decision-toy-cli-{}", request.label))
-                    .expect("string ID literal/generated value must be non-empty"),
-                observation_id: ObservationId::new(format!("obs-toy-grant-cli-{}", request.label))
-                    .expect("string ID literal/generated value must be non-empty"),
-                authorized_toy_call_id: AuthorizedToyCallId::new(format!(
-                    "authorized-toy-cli-{}",
-                    request.label
-                ))
-                .expect("string ID literal/generated value must be non-empty"),
-            },
+    let evaluation_request = ToyGrantEvaluationRequest {
+        toy_id: request.toy_id.clone(),
+        subject: ToyGrantSubject {
+            child_name: request.child.name.clone(),
+            artifact_id: request.child.artifact_id.clone(),
+            artifact_version: request.child.version.clone(),
+            assignment_id: Some(request.authorized_child.assignment_id().clone()),
+            caller_node_id: Some(request.call.caller.node_id.clone()),
         },
-        request.contracts,
-        request.grants,
-    );
+        child_instance_id: request.authorized_child.child_instance_id().clone(),
+        action: request.action.into(),
+        resource_id: request.resource_id,
+        node_id: request.authority_snapshot.map_or_else(
+            || request.call.caller.node_id.clone(),
+            |snapshot| snapshot.child_policy().local_node_id().clone(),
+        ),
+        now: request
+            .authority_snapshot
+            .map_or_else(current_timestamp, |snapshot| {
+                snapshot.mother_clock().evaluated_at().clone()
+            }),
+        ids: ToyGrantEvaluationIds {
+            evaluation_id: ToyGrantEvaluationId::new(format!("toy-eval-cli-{}", request.label))
+                .expect("string ID literal/generated value must be non-empty"),
+            decision_id: DecisionId::new(format!("decision-toy-cli-{}", request.label))
+                .expect("string ID literal/generated value must be non-empty"),
+            observation_id: ObservationId::new(format!("obs-toy-grant-cli-{}", request.label))
+                .expect("string ID literal/generated value must be non-empty"),
+            authorized_toy_call_id: AuthorizedToyCallId::new(format!(
+                "authorized-toy-cli-{}",
+                request.label
+            ))
+            .expect("string ID literal/generated value must be non-empty"),
+        },
+    };
+    let result = match request.authority_snapshot {
+        Some(snapshot) => {
+            evaluate_toy_grant_for_snapshot(request.call, &evaluation_request, snapshot)
+        }
+        None => evaluate_toy_grant_for_call(
+            request.call,
+            &evaluation_request,
+            request.contracts,
+            request.grants,
+        ),
+    };
     let Some(authorized) = result.authorized else {
         let observation = toy_grant_evaluation_observation(
             request.call.trace_context.trace_id.clone(),
@@ -1484,6 +1512,7 @@ mod tests {
             action: "read",
             resource_id: Some("resource-a".into()),
             label: "expired",
+            authority_snapshot: None,
         });
 
         let Err(error) = result else {
