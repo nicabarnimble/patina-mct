@@ -43,10 +43,10 @@ pub use artifact::{
 pub use authority::{
     LocalAuthorityProjectionProvenanceV1, LocalCanonicalGrantsSnapshotV1,
     LocalChildPolicyProvenanceV1, LocalChildPolicySnapshotV1, LocalExecutionAuthoritySnapshot,
-    LocalExecutionAuthoritySnapshotPartsV1, LocalGrantsAuthorityIdentityV1,
-    LocalMotherClockProvenanceV1, LocalMotherClockSnapshotV1, LocalPeerAuthorityRecordPartsV1,
-    LocalPeerAuthorityRecordV1, LocalPeerPolicyProvenanceV1, LocalPeerPolicySnapshotV1,
-    LocalRemoteCallableSurfacePartsV1, LocalRemoteCallableSurfaceV1,
+    LocalExecutionAuthoritySnapshotPartsV1, LocalExecutionAuthorityTokenV1,
+    LocalGrantsAuthorityIdentityV1, LocalMotherClockProvenanceV1, LocalMotherClockSnapshotV1,
+    LocalPeerAuthorityRecordPartsV1, LocalPeerAuthorityRecordV1, LocalPeerPolicyProvenanceV1,
+    LocalPeerPolicySnapshotV1, LocalRemoteCallableSurfacePartsV1, LocalRemoteCallableSurfaceV1,
     assemble_local_execution_authority_snapshot,
 };
 pub use call::{

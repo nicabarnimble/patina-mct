@@ -50,6 +50,32 @@ impl LocalGrantsAuthorityIdentityV1 {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalExecutionAuthorityTokenV1 {
+    grants_authority: LocalGrantsAuthorityIdentityV1,
+    policy_revision: u64,
+    vision_policy_revision: u64,
+    effective_deadline: Timestamp,
+}
+
+impl LocalExecutionAuthorityTokenV1 {
+    pub fn grants_authority(&self) -> &LocalGrantsAuthorityIdentityV1 {
+        &self.grants_authority
+    }
+
+    pub fn policy_revision(&self) -> u64 {
+        self.policy_revision
+    }
+
+    pub fn vision_policy_revision(&self) -> u64 {
+        self.vision_policy_revision
+    }
+
+    pub fn effective_deadline(&self) -> &Timestamp {
+        &self.effective_deadline
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalCanonicalGrantsSnapshotV1 {
     grants_authority: LocalGrantsAuthorityIdentityV1,
     toy_catalog: Vec<CanonicalToyContract>,
@@ -404,6 +430,18 @@ impl LocalExecutionAuthoritySnapshot {
 
     pub fn projection(&self) -> &LocalAuthorityProjectionProvenanceV1 {
         &self.projection
+    }
+
+    pub(crate) fn execution_authority(
+        &self,
+        effective_deadline: Timestamp,
+    ) -> LocalExecutionAuthorityTokenV1 {
+        LocalExecutionAuthorityTokenV1 {
+            grants_authority: self.canonical_grants.grants_authority.clone(),
+            policy_revision: self.policy_revision,
+            vision_policy_revision: self.vision_policy_revision,
+            effective_deadline,
+        }
     }
 }
 
