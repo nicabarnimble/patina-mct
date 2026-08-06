@@ -89,25 +89,12 @@ pub(super) fn resident_executed_on_observation(
     }
 }
 
-pub(super) fn current_resident_route_revisions(
-    paths: &ResidentRuntimePaths,
-    call: &MctCall,
-) -> Result<AuthorityContextSnapshot> {
-    let config = MctDaemonConfigStore::new(paths.config_path()).load()?;
-    let scope = resident_child_scope(&config);
-    Ok(AuthorityContextSnapshot {
-        policy_revision: scope.policy_revision,
-        grants_revision: call.authority_context.grants_revision,
-        vision_policy_revision: call.authority_context.vision_policy_revision,
-    })
-}
-
 pub(super) fn execute_authorized_resident_child(
     paths: ResidentRuntimePaths,
     execution: LocalExecutionPlan,
     request: MctCallProtocolRequest,
     inline_payload: Option<Vec<u8>>,
-    current_revisions: AuthorityContextSnapshot,
+    effect_snapshot: LocalExecutionAuthoritySnapshot,
     before_effect_ledger: Option<ResidentLedgerWriter>,
 ) -> Result<LocalExecutionReport> {
     let call = request.call.clone();
@@ -120,34 +107,19 @@ pub(super) fn execute_authorized_resident_child(
     };
     let runtime_kind = route_taken.runtime_kind;
     let run_id = run_id_for_call("resident", &call);
-
-    if authorized_route.policy_revision() != current_revisions.policy_revision {
-        let report = resident_route_revision_denial_report(
-            &call,
-            authorized_route.route(),
-            authorized_route.revalidation_decision_id().clone(),
-            CandidateEliminationReason::PolicyRevisionStale,
-            &current_revisions,
-            authorized_route.policy_revision(),
-            authorized_route.grants_revision(),
-        );
-        return Ok(report);
-    }
-    if authorized_route.grants_revision() != current_revisions.grants_revision {
-        let report = resident_route_revision_denial_report(
-            &call,
-            authorized_route.route(),
-            authorized_route.revalidation_decision_id().clone(),
-            CandidateEliminationReason::GrantsRevisionStale,
-            &current_revisions,
-            authorized_route.policy_revision(),
-            authorized_route.grants_revision(),
-        );
-        return Ok(report);
-    }
-
     let route_decision_id = authorized_route.revalidation_decision_id().clone();
+    let route_candidate = authorized_route.route().clone();
     let child_invocation = authorized_route.into_child_invocation();
+    if let Err(reason) = child_invocation.admit_effect_with_snapshot(&call, &effect_snapshot) {
+        return Ok(resident_child_effect_denial_report(
+            &call,
+            &route_candidate,
+            route_decision_id,
+            reason,
+            &effect_snapshot,
+            &child_invocation,
+        ));
+    }
     let child_execution = PreparedChildExecution {
         child,
         authorized: child_invocation,
@@ -682,14 +654,13 @@ pub(super) fn apply_inline_result_payload(
     Some(bytes)
 }
 
-pub(super) fn resident_route_revision_denial_report(
+pub(super) fn resident_child_effect_denial_report(
     call: &MctCall,
     route: &CandidateRoute,
     decision_id: DecisionId,
-    reason: CandidateEliminationReason,
-    current: &AuthorityContextSnapshot,
-    minted_policy_revision: u64,
-    minted_grants_revision: u64,
+    reason: ChildEffectAdmissionDenyV1,
+    current: &LocalExecutionAuthoritySnapshot,
+    authorized: &AuthorizedChildInvocation,
 ) -> LocalExecutionReport {
     let observation = MctObservation {
         observation_id: ObservationId::new(format!("obs-route-revision-denied:{}", call.call_id))
@@ -707,16 +678,19 @@ pub(super) fn resident_route_revision_denial_report(
         decision_id: Some(decision_id.clone()),
         subject_id: route.child_id.as_ref().map(ToString::to_string),
         resource_id: Some(route.candidate_id.clone()),
-        policy_revision: Some(current.policy_revision),
-        grants_revision: Some(current.grants_revision),
+        policy_revision: Some(current.policy_revision()),
+        grants_revision: Some(current.canonical_grants().grants_authority().generation()),
         outcome: ObservationOutcome::Denied,
         visibility: ObservationVisibility::InternalOnly,
         safe_message: "not authorized".into(),
         detail_ref: Some(format!(
-            "elimination_reason:{reason:?};denial_class:{};minted_policy_revision={minted_policy_revision};current_policy_revision={};minted_grants_revision={minted_grants_revision};current_grants_revision={}",
-            reason.denial_class().as_str(),
-            current.policy_revision,
-            current.grants_revision
+            "child_effect_authority_denial:{reason:?};minted_policy_revision={};current_policy_revision={};minted_grants_authority={:?};current_grants_authority={:?}",
+            authorized.policy_revision(),
+            current.policy_revision(),
+            authorized
+                .local_execution_authority()
+                .map(LocalExecutionAuthorityTokenV1::grants_authority),
+            current.canonical_grants().grants_authority(),
         )),
     };
     LocalExecutionReport {
@@ -734,7 +708,7 @@ pub(super) fn resident_route_revision_denial_report(
             },
             result_payload: MctCallPayloadHandle::Empty,
             requester_message: "not authorized".into(),
-            audit_ref: AuditRef::new(format!("audit-route-revision-denied:{}", call.call_id))
+            audit_ref: AuditRef::new(format!("audit-child-effect-denied:{}", call.call_id))
                 .expect("string ID literal/generated value must be non-empty"),
         },
         observations: vec![observation],
@@ -1255,24 +1229,28 @@ listens = []
                 .expect("string ID literal/generated value must be non-empty"),
         );
         let request = resident_test_protocol_request(call.clone());
+        let children = loaded.children;
         let RouteDisposition::Local {
             plan: authorized, ..
-        } = authorize_resident_child_from_loaded(&config, loaded.children, &call).unwrap()
+        } = authorize_resident_child_from_loaded(&config, children.clone(), &call).unwrap()
         else {
             panic!("approved child should authorize")
         };
-        let stale_revisions = AuthorityContextSnapshot {
-            policy_revision: call.authority_context.policy_revision + 1,
-            grants_revision: call.authority_context.grants_revision,
-            vision_policy_revision: call.authority_context.vision_policy_revision,
-        };
+        let changed_snapshot = resident_test_authority_snapshot(
+            &config,
+            None,
+            &children,
+            current_timestamp(),
+            call.authority_context.grants_revision + 1,
+        )
+        .unwrap();
 
         let report = execute_authorized_resident_child(
             ResidentRuntimePaths::new(config_path, children_dir, state_path),
             *authorized,
             request,
             None,
-            stale_revisions,
+            changed_snapshot,
             None,
         )
         .unwrap();
@@ -1281,8 +1259,8 @@ listens = []
         assert!(report.result.route_taken.is_none());
         assert!(!marker_path.exists());
         let text = serde_json::to_string(&report.observations).unwrap();
-        assert!(text.contains("PolicyRevisionStale"));
-        assert!(text.contains("minted_policy_revision"));
+        assert!(text.contains("GrantsAuthorityMismatch"));
+        assert!(text.contains("current_grants_authority"));
     }
 
     #[test]

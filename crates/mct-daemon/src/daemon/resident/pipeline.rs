@@ -360,6 +360,7 @@ async fn execute_watch_callouts(
             request,
             ResidentPayloadIngress::local(Some(target_payload)),
             current_timestamp(),
+            None,
             ResidentCallIngressContext::ChildCallOut {
                 parent_call_id: parent.call_id.clone(),
                 parent_firing_id: parent_firing_id.clone(),
@@ -513,6 +514,7 @@ pub(crate) async fn execute_resident_call_with_context(
         request,
         payload,
         current_timestamp(),
+        None,
         context,
     )
     .await
@@ -529,7 +531,16 @@ pub(super) async fn execute_resident_call_at(
     let Some(context) = ResidentCallIngressContext::ordinary(&request) else {
         return MctIrohCallHandlerResult::denied();
     };
-    execute_resident_call_at_with_context(paths, ledger, request, payload, now, context).await
+    execute_resident_call_at_with_context(
+        paths,
+        ledger,
+        request,
+        payload,
+        now.clone(),
+        Some(now),
+        context,
+    )
+    .await
 }
 
 async fn execute_resident_call_at_with_context(
@@ -538,6 +549,7 @@ async fn execute_resident_call_at_with_context(
     mut request: MctCallProtocolRequest,
     payload: ResidentPayloadIngress,
     now: Timestamp,
+    effect_time_override: Option<Timestamp>,
     context: ResidentCallIngressContext,
 ) -> MctIrohCallHandlerResult {
     if !context.matches_request(&request) {
@@ -590,7 +602,14 @@ async fn execute_resident_call_at_with_context(
         now,
         context.clone(),
         move || {
-            execute_resident_call_after_payload(paths, ledger, request, inline_payload, context)
+            execute_resident_call_after_payload(
+                paths,
+                ledger,
+                request,
+                inline_payload,
+                context,
+                effect_time_override.unwrap_or_else(current_timestamp),
+            )
         },
     )
     .await
@@ -602,6 +621,7 @@ async fn execute_resident_call_after_payload(
     request: MctCallProtocolRequest,
     inline_payload: Option<Vec<u8>>,
     context: ResidentCallIngressContext,
+    effect_time: Timestamp,
 ) -> MctIrohCallHandlerResult {
     let Some(ledger_path) = ledger.path().map(Path::to_path_buf) else {
         return MctIrohCallHandlerResult::failed("runtime unavailable");
@@ -614,7 +634,9 @@ async fn execute_resident_call_after_payload(
         return MctIrohCallHandlerResult::failed("runtime unavailable");
     }
     let authorization =
-        match authorize_resident_child(paths.clone(), ledger_path, request.call.clone()).await {
+        match authorize_resident_child(paths.clone(), ledger_path.clone(), request.call.clone())
+            .await
+        {
             Ok(authorization) => authorization,
             Err(error) => {
                 eprintln!("resident child authorization unavailable: {error}");
@@ -691,10 +713,23 @@ async fn execute_resident_call_after_payload(
                 return MctIrohCallHandlerResult::failed("observation ledger unavailable");
             }
 
-            let current_revisions = match current_resident_route_revisions(&paths, &request.call) {
-                Ok(revisions) => revisions,
+            if ledger
+                .publish_authority_projection(paths.state_path().to_path_buf())
+                .await
+                .is_err()
+            {
+                return MctIrohCallHandlerResult::failed("runtime unavailable");
+            }
+            let effect_snapshot = match mct_daemon::local_execution_authority_snapshot_at(
+                &ledger_path,
+                paths.config_path(),
+                paths.children_dir(),
+                paths.state_path(),
+                Ok(effect_time),
+            ) {
+                Ok(snapshot) => snapshot,
                 Err(error) => {
-                    eprintln!("resident route revision read failed: {error}");
+                    eprintln!("resident Child effect authority unavailable: {error:?}");
                     return MctIrohCallHandlerResult::failed("runtime unavailable");
                 }
             };
@@ -708,7 +743,7 @@ async fn execute_resident_call_after_payload(
                     *plan,
                     request,
                     inline_payload,
-                    current_revisions,
+                    effect_snapshot,
                     Some(before_effect_ledger),
                 )
             })

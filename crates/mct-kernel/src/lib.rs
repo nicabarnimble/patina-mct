@@ -69,11 +69,11 @@ pub use child::{
     ArtifactProvenanceStatus, AuthorizedChildInvocation, ChildApproval, ChildApprovalState,
     ChildAssignment, ChildAssignmentState, ChildCallAuthorityEvaluation, ChildCallAuthorityIds,
     ChildCallAuthorityRequest, ChildCallAuthorityResult, ChildCallReasonCode, ChildCallVerdict,
-    ChildIngressMode, ChildInstance, ChildInstanceState, ChildLifecycleTransition,
-    ChildLifecycleTransitionReason, ComponentArtifact, ComponentRuntimeShape, ComponentWitExport,
-    LifecycleExports, VerificationStatus, evaluate_child_call_authority,
-    evaluate_child_call_authority_with_policy, is_allowed_instance_transition,
-    transition_child_instance,
+    ChildEffectAdmissionDenyV1, ChildIngressMode, ChildInstance, ChildInstanceState,
+    ChildLifecycleTransition, ChildLifecycleTransitionReason, ComponentArtifact,
+    ComponentRuntimeShape, ComponentWitExport, LifecycleExports, VerificationStatus,
+    evaluate_child_call_authority, evaluate_child_call_authority_with_policy,
+    is_allowed_instance_transition, transition_child_instance,
 };
 pub use error::{InvalidFieldReason, MctKernelError, MctKernelResult};
 pub use id::{

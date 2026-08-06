@@ -4014,12 +4014,12 @@ mod tests {
     }
 
     #[test]
-    fn wasm_component_runtime_denies_stale_child_capability_before_load() {
+    fn caller_policy_echo_cannot_create_a_wasm_authority_denial() {
         let runtime = runtime();
         let mut stale_call = call();
         stale_call.authority_context.policy_revision += 1;
 
-        let report = runtime
+        let error = runtime
             .invoke_authorized_s32_export(
                 authorized(),
                 &stale_call,
@@ -4027,16 +4027,9 @@ mod tests {
                 "answer",
                 ids(),
             )
-            .unwrap();
+            .expect_err("caller policy echo cannot deny before the component load attempt");
 
-        assert_eq!(report.result.outcome, ResultOutcome::Denied);
-        assert_eq!(report.result.route_taken, None);
-        assert_eq!(report.observations.len(), 1);
-        assert_eq!(report.observations[0].outcome, ObservationOutcome::Denied);
-        assert_eq!(
-            report.observations[0].kind,
-            ObservationKind::RuntimeExecutionFailed
-        );
+        assert!(matches!(error, MctWasmComponentRuntimeError::Load { .. }));
     }
 
     #[test]

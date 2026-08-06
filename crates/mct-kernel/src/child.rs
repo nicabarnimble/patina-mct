@@ -1,4 +1,8 @@
-use crate::{authority::LocalExecutionAuthorityTokenV1, call::*, id::*};
+use crate::{
+    authority::{LocalExecutionAuthoritySnapshot, LocalExecutionAuthorityTokenV1},
+    call::*,
+    id::*,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -397,9 +401,29 @@ pub struct AuthorizedChildInvocation {
     local_execution_authority: Option<LocalExecutionAuthorityTokenV1>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// Typed reason current Child effect authority was denied.
+pub enum ChildEffectAdmissionDenyV1 {
+    /// The capability did not pass snapshot-sourced route minting.
+    LocalAuthorityUnavailable,
+    /// The supplied call was not the exact authorized call.
+    CallIdMismatch,
+    /// The effective deadline changed after minting.
+    EffectiveDeadlineMismatch,
+    /// Current local Child policy identity differs from minted authority.
+    PolicyAuthorityMismatch,
+    /// Current namespaced grants authority differs from minted authority.
+    GrantsAuthorityMismatch,
+    /// The executing Mother reached the exclusive deadline.
+    Expired,
+    /// Exact artifact, approval, assignment, or instance authority is no longer current.
+    ChildAuthorityMismatch,
+}
+
 #[derive(Debug)]
-/// Proof that a child invocation token is bound to the supplied call and its
-/// current policy revision at an effect-admission boundary.
+/// Proof that a child invocation token is bound to the supplied call and fresh
+/// executing-Mother authority at an effect-admission boundary.
 ///
 /// The constructor is private to [`AuthorizedChildInvocation::admit_effect_for_call`]
 /// so daemon effect paths cannot obtain this proof without performing both
@@ -424,12 +448,78 @@ impl AuthorizedChildInvocation {
         self
     }
 
-    /// Admits this token for an effect only when its exact call and policy
-    /// revision match the supplied call.
+    /// Admits this token against one fresh proof-gated executing-Mother snapshot.
+    pub fn admit_effect_with_snapshot<'a>(
+        &'a self,
+        call: &MctCall,
+        snapshot: &LocalExecutionAuthoritySnapshot,
+    ) -> Result<AdmittedChildEffect<'a>, ChildEffectAdmissionDenyV1> {
+        let authority = self
+            .local_execution_authority
+            .as_ref()
+            .ok_or(ChildEffectAdmissionDenyV1::LocalAuthorityUnavailable)?;
+        if self.call_id != call.call_id {
+            return Err(ChildEffectAdmissionDenyV1::CallIdMismatch);
+        }
+        if authority.effective_deadline() != &call.deadline {
+            return Err(ChildEffectAdmissionDenyV1::EffectiveDeadlineMismatch);
+        }
+        if authority.policy_revision() != snapshot.policy_revision()
+            || authority.vision_policy_revision() != snapshot.vision_policy_revision()
+        {
+            return Err(ChildEffectAdmissionDenyV1::PolicyAuthorityMismatch);
+        }
+        if authority.grants_authority() != snapshot.canonical_grants().grants_authority()
+            || authority.grants_authority().mother_node_id() != snapshot.executing_mother_node_id()
+        {
+            return Err(ChildEffectAdmissionDenyV1::GrantsAuthorityMismatch);
+        }
+        if snapshot.mother_clock().evaluated_at() >= authority.effective_deadline() {
+            return Err(ChildEffectAdmissionDenyV1::Expired);
+        }
+        let policy = snapshot.child_policy();
+        let Some(instance) = policy.instances().iter().find(|instance| {
+            instance.instance_id == self.child_instance_id
+                && instance.assignment_id == self.assignment_id
+                && instance.artifact_id == self.artifact_id
+                && instance.child_name == self.child_name
+                && instance.instance_state == ChildInstanceState::Ready
+        }) else {
+            return Err(ChildEffectAdmissionDenyV1::ChildAuthorityMismatch);
+        };
+        let Some(assignment) = policy.assignments().iter().find(|assignment| {
+            assignment.assignment_id == instance.assignment_id
+                && assignment.approval_id == self.approval_id
+                && assignment.artifact_id == self.artifact_id
+                && assignment.child_name == self.child_name
+                && assignment.assignment_state == ChildAssignmentState::Active
+        }) else {
+            return Err(ChildEffectAdmissionDenyV1::ChildAuthorityMismatch);
+        };
+        let Some(approval) = policy.approvals().iter().find(|approval| {
+            approval.approval_id == assignment.approval_id
+                && approval.artifact_id == self.artifact_id
+                && approval.child_name == self.child_name
+                && approval.approval_state == ChildApprovalState::Approved
+                && approval.policy_revision == snapshot.policy_revision()
+        }) else {
+            return Err(ChildEffectAdmissionDenyV1::ChildAuthorityMismatch);
+        };
+        if !policy.artifacts().iter().any(|artifact| {
+            artifact.artifact_id == approval.artifact_id
+                && artifact.child_name == self.child_name
+                && artifact.artifact_version == approval.artifact_version
+                && artifact.verification_status == VerificationStatus::Verified
+        }) {
+            return Err(ChildEffectAdmissionDenyV1::ChildAuthorityMismatch);
+        }
+        Ok(AdmittedChildEffect { authorized: self })
+    }
+
+    /// Legacy exact-call guard retained for non-resident compatibility surfaces.
+    /// It carries no local authority and must not be used by resident effects.
     pub fn admit_effect_for_call<'a>(&'a self, call: &MctCall) -> Option<AdmittedChildEffect<'a>> {
-        (self.call_id == call.call_id
-            && self.policy_revision == call.authority_context.policy_revision)
-            .then_some(AdmittedChildEffect { authorized: self })
+        (self.call_id == call.call_id).then_some(AdmittedChildEffect { authorized: self })
     }
 
     /// Returns the token identifier minted for this single child invocation.

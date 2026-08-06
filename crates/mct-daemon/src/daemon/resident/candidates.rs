@@ -30,19 +30,6 @@ impl<'a> ResidentRemoteCandidateSource<'a> {
     }
 }
 
-pub(super) fn resident_child_scope(config: &mct_daemon::MctDaemonConfig) -> MctOperatorChildScope {
-    config
-        .local_identity
-        .as_ref()
-        .map(|identity| MctOperatorChildScope {
-            vision_id: identity.vision_id.clone(),
-            node_id: identity.node_id.clone(),
-            project_id: None,
-            policy_revision: identity.policy_revision,
-        })
-        .unwrap_or_default()
-}
-
 pub(super) fn resident_candidate_for_child(
     projection: &MctConfigChildAuthorityProjection,
     child: &mct_daemon::MctLoadedChild,
