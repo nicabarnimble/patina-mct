@@ -89,6 +89,30 @@ exit_criteria:
     text: Every Phase J implementation commit and final close-out pass workspace tests, warnings-denied clippy, Tier 0/RustSec, Allium, grants-authority spec check, and diff check under the recorded flake protocol.
     checked: true
     verify: cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh && allium check layer/allium
+  - id: phase-k-hello-advertisement
+    text: An admitted hello advertises the receiving Mother's complete current proof-gated grants-authority identity; an unprovable receiver advertises no usable identity and refuses typed.
+    checked: false
+    verify: Phase K proof steps 1 and 8 have landed test file and line citations.
+  - id: phase-k-early-stale-rejection
+    text: Peer and local ingress compare the required complete expected receiver identity with a fresh local identity before route evaluation; mismatch is a typed temporal rejection with correlation evidence, while agreement grants nothing.
+    checked: false
+    verify: Phase K proof steps 2-5 have landed test file and line citations.
+  - id: phase-k-wire-and-internal-migration
+    text: The legacy call-carried grants_revision is replaced according to the ratified consumer inventory, forwarding echoes the admitted hello identity, and internal Child-originated calls source the local current identity rather than parent-carried values.
+    checked: false
+    verify: Phase K proof steps 6-7 and 9 have landed test file and line citations.
+  - id: phase-k-no-authority-widening
+    text: Matching, forged, absent, malformed, future, or stale expected receiver identities never skip or alter Phase I evaluation or Phase J effect admission; the peer echo can only reject earlier.
+    checked: false
+    verify: Phase K proof steps 3-5 and 10 have landed test file and line citations.
+  - id: phase-k-terminal-ledger
+    text: All four remaining grants-authority Track 3 rows and audit item M2d are terminal with cited production-path proofs and no grants-authority row remains non-terminal.
+    checked: false
+    verify: Phase K close-out ledger delta and audit disposition.
+  - id: phase-k-validation
+    text: Every Phase K implementation commit and final close-out pass workspace tests, warnings-denied clippy, Tier 0/RustSec, Allium, grants-authority spec check, and diff check under the recorded flake protocol.
+    checked: false
+    verify: cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh && allium check layer/allium
 ---
 
 # feat: MCT grants-authority v0 — Phase G
@@ -838,3 +862,250 @@ The final close-out additionally runs `allium check layer/allium`, `patina spec 
 Close-out is reconstructed from `6b179bf..HEAD`: commit purpose, all sixteen proof citations and verbatim assertions, complete pin retirement, full validation transcript, flake log even when empty, Track 3 terminal dispositions, M2a-M2d/M5 status, current caller- and Child-visible mid-execution and completed-replay behavior, and the active session update. Remaining board order is slice 6, then performance Phase 0 profiling on the covered revision and the ratified optimization sequence; Review 3 begins from the recorded caller- and Child-observable authority-response behavior under D-J.2.
 
 **Phase J Gate G1:** ratified. The Allium clarification and doctrine activation are the first Task B action; Rust work follows only under D-J.1, D-J.2, the sixteen required proofs, and the updated fence.
+
+# Phase K — slice 6 peer generation advertisement and echo
+
+> Hello advertises the receiving Mother's complete current grants-authority identity; a call echoes that identity only so the receiver can reject stale work before route evaluation.
+
+## Scope and gate
+
+Phase K implements the final grants-authority slice and only:
+
+1. advertises the receiver's proof-gated namespaced grants-authority identity in an admitted hello;
+2. requires each peer or local call to carry that complete identity as its expected receiver authority;
+3. rejects mismatch before route evaluation as typed temporal staleness with durable correlation evidence; and
+4. retires the legacy bare `grants_revision` call-echo semantics, including the fenced `call/internal.rs:223-224` comparison and parent-copied internal Child callouts.
+
+The Phase K baseline is `57c7ab0` on branch `patina`. D-G1 through D-G8, D-R2.1 through D-R2.8, D-H2.1, D-H3.1 through D-H3.4, D-I.1 through D-I.2, and D-J.1 through D-J.2 remain settled. Phase K sits strictly before the Phase I route-evaluation and Phase J effect-admission layers. A newly discovered genuine behavioral fork stops for an operator-supplied D-K.n amendment.
+
+Task A inventories and proposes the one wire/schema disposition below. No Rust or Allium edit may precede Gate G1 ratification.
+
+## Hello advertisement contract
+
+An admitted `mct/hello/0` response carries one opaque `GrantsAuthorityIdentity` with all four fields:
+
+```text
+receiving_grants_authority: {
+  mother_node_id,
+  authority_epoch,
+  generation,
+  source_authority_observation_id
+}
+```
+
+The value comes from a newly constructed `LocalExecutionAuthoritySnapshot` only after the current ledger head, canonical replay, authority projection, and exact D-G8 proof agree. It is not sourced from startup readiness, peer policy, configuration, a prior hello, or the caller. The advertised identity exactly equals `snapshot.canonical_grants.grants_authority` and names the receiving Mother.
+
+Hello peer-binding evaluation still runs first and remains independent authority. For a peer-binding-admissible hello, inability to construct the local execution snapshot because the projection is stale, rebuilding, missing, quarantined, foreign-lineage, replay-blocked, or otherwise unprovable changes the hello to the existing typed `retry_later`/`temporary_unavailable` degraded refusal. Such a response carries no `receiving_grants_authority` and no capability view. A structurally denied hello likewise advertises no identity. No response can contain a usable identity unless its hello outcome is `admitted` and the exact current proof succeeded.
+
+The hello identity is change-detection evidence, not a capability publication or grant. Advertising it grants no peer admission, route, Child, Toy, data, or effect authority.
+
+## Call echo and early-rejection contract
+
+The required echo is the full namespaced identity, never a bare or order-compared counter. Both the semantic call authority context and its peer protocol authority carry `expected_receiver_grants_authority: GrantsAuthorityIdentity`; they must be byte-value equal. There is no absent/legacy form and no default. JSON missing the field, carrying the former integer, or carrying malformed identity content is rejected as a typed malformed call at decode/validation before route evaluation.
+
+For a well-formed call, peer and local ingress construct a fresh proof-gated local snapshot and compare the expected identity with its complete current local identity before route evaluation, idempotency reservation/replay, payload-dependent Child work, or any Phase I/J authority consumer. Exact inequality in Mother, epoch, generation, or source authority observation produces:
+
+- `CallProtocolReason::ExpectedReceiverAuthorityStale`;
+- denied protocol evaluation with no route decision and no handler invocation;
+- caller-safe `CallProtocolRetryDirective::RefreshHello` on the peer/local response; and
+- the existing durable `CallDenied` lifecycle observation as correlation evidence, recording the complete expected and current identities without treating either as a grant.
+
+Failure to prove a current local identity produces the distinct typed `CallProtocolReason::ReceiverAuthorityUnavailable`, no route evaluation, and caller-safe `CallProtocolRetryDirective::RetryLater`. It never compares against stale projection state.
+
+Exact agreement has no positive result. It only permits execution to continue to the unchanged current peer-binding, payload, idempotency, Phase I route-evaluation, and Phase J effect-admission checks. It does not cache the snapshot as an effect permit, skip any evaluation, mint authority, refresh a token, or alter a later denial. The early gate may remove an outcome by rejecting sooner; it can never widen one.
+
+Peer forwarding copies the admitted hello response's complete receiver identity into both expected-identity positions of the newly constructed per-hop call. It never forwards the original call's expectation. Re-hello is the only refresh path after `RefreshHello`.
+
+## C5 legacy `grants_revision` consumer inventory and proposed disposition
+
+Disk inspection found two legacy call-carried bare fields, not one: `AuthorityContextSnapshot.grants_revision` and `MctCallProtocolAuthority.grants_revision`. The landed Allium model already represents both as `expected_receiver_grants_authority: GrantsAuthorityIdentity`. The Phase K proposal is immediate **replacement** of both Rust `u64` fields with one wire-serializable complete identity value in each provenance position. There is no deprecated alias, optional fallback, serde default, integer promotion, or compatibility reader.
+
+The similarly named `ToyGrant.grants_revision`, route/Toy evaluation generations, canonical authority-fact generation, projection cursor generation, and `MctObservation.grants_revision` are different established records; they are not renamed wholesale.
+
+| Consumer class and complete production sites | Current use | Proposed disposition and compatibility consequence |
+|---|---|---|
+| Semantic call/wire schema: `mct-kernel/src/call/mod.rs` (`AuthorityContextSnapshot`), `MctCall`, JSON call envelopes in `mct-iroh/src/serve.rs`, and every call constructor/fixture | Bare call-carried `u64` | **Replace.** Required `expected_receiver_grants_authority` object. Old/missing/integer JSON is malformed immediately; compile failures force every Rust constructor to choose an explicit complete identity. |
+| Peer protocol authority: `mct-kernel/src/call/mod.rs` (`MctCallProtocolAuthority`) and `call/internal.rs:223-224` | A second bare minimum revision and `<` comparison | **Replace.** Required complete expected identity, exact equality with the semantic call copy, then exact comparison with a separately supplied current local identity. Remove numeric ordering; wrong Mother/epoch/source with equal generation rejects. |
+| Hello response and peer forwarding: `mct-kernel/src/peer/mod.rs`, `mct-iroh/src/serve.rs`, `daemon/resident/serving.rs`, `daemon/resident/forwarding.rs`, and `daemon/ingress.rs` CLI peer call construction | Hello has no authority identity; forwarded call copies the original caller's grants number or fixture constant | **Replace.** Admitted response requires the current receiver identity; forwarding/CLI peer calls use that response value. Degraded hello carries none and no call is formed. No old peer is supported. |
+| Local UDS/JVM and local CLI ingress: `daemon/resident/local_ingress.rs` and `daemon/ingress.rs` | Submission/bridge JSON carries or fabricates a bare number; protocol authority copies it | **Replace.** External local submission shape requires the complete expected identity and verifies it against a fresh local snapshot. Mother-owned CLI/JVM construction reads the local current identity; it cannot fabricate `1`. Existing old JSON breaks deliberately under C3. |
+| Trigger and internal Child-originated construction: `daemon/resident/trigger_scheduler.rs` and `daemon/resident/pipeline.rs` | Trigger uses policy revision as grants revision; Child callout copies the parent's complete authority context | **Replace.** Each locally constructed call obtains the executing Mother's fresh current identity. A Child callout preserves call/trace lineage but does not inherit the parent's expected receiver identity. Unprovable local identity suppresses call construction typed. |
+| Route/evaluation correlation: `mct-kernel/src/route.rs`, `mct-kernel/src/toy.rs`, `daemon/authority_test_fixture.rs`, `resident/candidates.rs`, and `resident/decision.rs` | Legacy APIs/tests read the call number; Phase I production evaluation already ignores it for authority and records it as an echo | **Replace/reinterpret.** Production authority remains snapshot-only. Correlation reads use the complete expected identity; any legacy helper still comparing the call number is migrated or removed so agreement cannot admit or deny below the early gate. Test matrices mutate complete identity components, not numeric echoes. |
+| Process/WASM/Toy/supervisor/payload/execution observations: `process.rs`, `wasm.rs`, `toy.rs`, `supervisor.rs`, `resident/payload.rs`, `resident/execution.rs`, `resident/pipeline.rs`, and `resident/forwarding.rs` | Call-derived observations project the bare echoed number into `MctObservation.grants_revision` | **Reinterpret at this compatibility boundary.** Preserve the established observation schema; call-derived rows store `expected_receiver_grants_authority.generation` only as a lossy correlation projection. The complete expected/current identities for stale rejection are encoded in the existing non-authorizing correlation detail. Canonical fact and local evaluation observations keep their existing locally sourced generation meaning. |
+| Iroh lifecycle observations: `mct-iroh/src/serve.rs` (`MctIrohCallLifecycleFact`) | Lifecycle fact copies the call number into `MctObservation.grants_revision` | **Reinterpret** exactly as above. The stale `CallDenied` fact additionally retains complete expected/current identity correlation and the refresh directive through existing detail evidence; no new observation kind or canonical fact kind is added. |
+| Idempotency: `daemon/resident/idempotency.rs` | The idempotency observation copies the call number; the actual fingerprint is only canonical target, semantic call id, and payload digest | **Reinterpret observation; fingerprint unchanged.** The disk inventory contradicts the premise that `grants_revision` participates in the fingerprint. Phase K does not add it, does not redesign replay, and preserves D-J.2. Crucially, the fresh expected/current comparison occurs before reserve or replay. |
+| Tests and synthetic fixtures across `mct-kernel`, `mct-iroh`, and `mct-daemon` | Construct `AuthorityContextSnapshot { grants_revision: ... }` or assert old source pins | **Replace.** Fixtures use explicit complete identities; hostile tests vary absence/malformed wire bytes and Mother/epoch/generation/source components. The Phase J pin map is updated only for its named slice-6 residue. |
+
+`MctObservation.grants_revision` therefore coexists as an established lossy numeric projection, not as a deprecated authority source. No code may reconstruct a `GrantsAuthorityIdentity` from that field or compare it to establish currentness.
+
+## `call/internal.rs:223-224` and internal-call migration
+
+The old check:
+
+```text
+call.policy_revision < protocol.policy_revision
+or call.grants_revision < protocol.grants_revision
+```
+
+is retired. Peer policy revision remains governed by current binding revalidation. Grants staleness is replaced by one shared kernel decision that receives two provenance-distinct values: the caller's required complete expected identity and the receiver adapter's fresh proof-gated local identity. It decides exact match or one of the typed stale/unavailable refusals; it has no allow token and no access to route/effect evaluation.
+
+The peer protocol copies must agree exactly before comparison with local state. For local and Child-originated calls, the Mother constructs both copies from her own current snapshot at call construction and nevertheless performs the same fresh ingress comparison. Hostile parent-supplied identity cannot enter the child-originated call. If authority changes between construction and ingress, the internal call is early-rejected and reconstructed only by a complete new local call attempt.
+
+## Proposed Allium tend for Gate G1
+
+The existing value shapes and the four governing hello invariants already state the target identity and non-authorizing semantics. Phase K proposes exactly the following additions after ratification.
+
+### Exact hello and internal-construction decision edits
+
+```diff
+ -- Decision: `mct/hello/0` may advertise a policy-filtered capability view, but capability advertisement is not a grant. Child access, toy use, thought acceptance, and observation replication still require their own authority checks.
++-- Decision: An admitted hello advertises `receiving_grants_authority` only when the receiving
++-- Mother can prove her complete current namespaced authority identity. Stale, rebuilding,
++-- quarantined, missing, or otherwise unprovable receiver authority produces `retry_later` with
++-- no usable identity or capability view; a denied hello likewise advertises neither.
+```
+
+```diff
+ -- For Iroh arrivals, local-only evaluation follows from the submitted `mct/call/0` question under
+ -- companion contract `TerminalPeerCallSubmission`, not from an origin-specific permission gate.
++-- Decision: A Mother-internal call uses that Mother's proof-gated current grants-authority
++-- identity as its expected receiver identity when constructed. Parent-call or Child-supplied
++-- identity is correlation lineage only and is never copied into the new call as authority.
+```
+
+### Exact protocol value/surface edits
+
+```diff
+ entity MctCallProtocolEvaluation {
+     ...
+-    reason: hello_not_admitted | alpn_not_admitted | endpoint_mismatch | binding_revoked | binding_expired | policy_revision_stale | malformed_call | payload_metadata_mismatch | authority_denied | no_route | execution_failed | execution_timed_out | result_recorded | idempotency_key_reuse_mismatch | idempotency_budget_full | idempotency_in_progress | idempotency_replay_completed
++    reason: hello_not_admitted | alpn_not_admitted | endpoint_mismatch | binding_revoked | binding_expired | policy_revision_stale | expected_receiver_authority_stale | receiver_authority_unavailable | malformed_call | payload_metadata_mismatch | authority_denied | no_route | execution_failed | execution_timed_out | result_recorded | idempotency_key_reuse_mismatch | idempotency_budget_full | idempotency_in_progress | idempotency_replay_completed
++    retry_directive: none | refresh_hello | retry_later
+     safe_message: String
+     observation_id: String
+ }
+
+ entity MctCallProtocolReply {
+     ...
+     reply_outcome: success | denied | failed | timed_out | cancelled | malformed
++    retry_directive: none | refresh_hello | retry_later
+     safe_message: String
+     reply_observation_id: String
+ }
+```
+
+```diff
+ surface MctCallProtocolEvaluationProjection {
+     ...
+         evaluation.reason
++        evaluation.retry_directive
+         evaluation.safe_message
+         evaluation.observation_id
+ }
+
+ surface MctCallProtocolReplyProjection {
+     ...
+         reply.reply_outcome
++        reply.retry_directive
+         reply.safe_message
+         reply.reply_observation_id
+ }
+```
+
+The required directive is `none` for structural denial and every pre-existing terminal shape. `refresh_hello` is only the safe response to a well-formed expected/current identity mismatch; `retry_later` is only the safe response when current receiver authority cannot be proved. It does not change D-J.2 replay behavior.
+
+### Exact `MctCallProtocol` invariant edits
+
+```diff
+ contract MctCallProtocol {
+     ...
+     @invariant HelloDoesNotPreAuthorizeCall
+         -- Hello admission permits the peer to submit a call envelope, but each call still passes authority, routing, ToyGrant, child assignment, data policy, and revalidation checks.
++
++    @invariant ExpectedReceiverIdentityIsCompleteAndConsistent
++        -- The protocol-authority and semantic-call copies of expected receiver authority contain
++        -- the same complete Mother, epoch, generation, and source-observation identity. Missing,
++        -- malformed, or disagreeing copies are refused before route evaluation.
++
++    @invariant ReceiverIdentityComparisonPrecedesRoutingAndReplay
++        -- A well-formed expected identity is compared with freshly proved local receiver authority
++        -- before route evaluation or idempotent replay. Unprovable local authority retries later;
++        -- mismatch directs the caller to refresh hello.
++
++    @invariant EchoAgreementCannotAdmit
++        -- Expected/current identity agreement can only avoid the early stale rejection. It grants
++        -- no authority and skips no peer, route, Child, Toy, data, deadline, or effect evaluation.
++
++    @invariant StaleEchoIsDurablyCorrelated
++        -- Early stale rejection records the complete expected and current identities as correlation
++        -- evidence before returning its safe refresh directive; neither identity becomes a grant.
+```
+
+No entity lifecycle, peer ontology relationship, authority source, observation kind, canonical fact kind, or Review 3 replay semantic changes. `allium check layer/allium` must remain clean after the ratified tend.
+
+## Phase K implementation tasks
+
+### B1 — hello advertisement
+
+Add the wire identity value and source admitted hello responses from the current local snapshot. Bind snapshot unavailability to the existing degraded hello refusal and prove no usable identity/capability advertisement escapes.
+
+### B2 — echo and early rejection
+
+Require the complete expected identity at peer and local ingress, compare it with a fresh current identity before route evaluation/idempotency, emit typed retry direction and durable correlation evidence, and prove agreement has no positive authority effect.
+
+### B3 — retire legacy revision semantics
+
+Migrate every inventoried constructor, observation projection, forwarding path, legacy helper, and source pin. Internal Child callouts obtain current local identity rather than parent-carried authority. Preserve Phase I/J evaluation and effect behavior byte-for-behavior except for the new earlier rejection possibility.
+
+## Phase K required proof steps
+
+Each proof lands as a cited test. Close-out cites its file/line and quotes the verbatim central assertion.
+
+1. Hello advertises the current complete identity; after one canonical grant mutation and coherent projection publication, the next hello advertises the same namespace/epoch with generation advanced exactly once and the new source observation.
+2. A stale echoed identity is durably rejected as `ExpectedReceiverAuthorityStale` with `RefreshHello` before route evaluation or idempotency, complete expected/current correlation is retained, and re-hello plus retry succeeds.
+3. Matching expected identity grants nothing: with current echo but revoked underlying exact grant, unchanged Phase I/J local evaluation denies and no effect starts.
+4. Correct generation under the wrong Mother, wrong epoch, or wrong source authority observation is rejected typed before routing.
+5. Hostile echo matrix: absent field, former integer shape, malformed identity, absurd/future generation, and well-formed mismatch cannot widen an outcome; absent/malformed are typed malformed ingress and well-formed mismatches are typed temporal staleness.
+6. Two-Mother wire flow succeeds after hello; a receiver mutation between hello and call rejects early; re-hello returns the advanced identity and the retry succeeds.
+7. A pre-restart identity is early-rejected after a fresh writer-tenure epoch; re-hello recovers with the new epoch.
+8. Stale, rebuilding, missing, quarantined, foreign-lineage, or replay-blocked receiver authority produces no usable hello identity/capability view and calls refuse with the exact typed unavailable posture.
+9. Child-originated internal calls carry the constructing Mother's fresh identity in both positions; hostile parent values are absent from the constructed call, and post-construction mutation maps to the shared early-stale decision.
+10. All Phase I route-evaluation and Phase J effect-boundary proofs pass unchanged; matching echo never suppresses their local snapshot construction, exact-grant checks, or effect admission.
+
+## Expected terminal ledger and audit state
+
+At close-out the four remaining grants-authority Track 3 rows move from `DEFERRED` to `COVERED` with Phase K citations:
+
+- `MctHelloProtocol.PeerEchoOnlyDetectsStaleness`;
+- `ForgedCurrentGenerationDoesNotGrantAuthority`;
+- `ReceiverAlwaysUsesLocalAuthority`; and
+- `GenerationNamespaceMustMatchReceiver`.
+
+The grants-authority section must then read **31 COVERED / 0 LAW-LEADS-CODE / 0 DEFERRED**. Audit item M2d, peer-wire freshness echo, becomes closed. The original Review 1 grants-authority finding set is fully terminal if and only if those counts and M2a-M2d/M5 close-out claims are all backed by the ten landed proofs. D-J.2 Review 3 response semantics remain a separate board item, not a non-terminal grants-authority row.
+
+## Updated Phase K fence
+
+Phase K changes only hello/call identity advertisement, early stale/unavailable rejection, correlation evidence, and required constructor/schema migration. It must not add or change:
+
+- any Phase I route-evaluation authority input or decision;
+- any Phase J token, effect-admission, exact-grant, delegation, or `MotherAuthorityOrderV1` behavior;
+- completed idempotent replay or mid-execution caller-/Child-visible semantics under D-J.2;
+- performance profiling, caching, batching, group commit, or optimization;
+- canonical fact kinds, authority change variants, observation kinds, or ledger framing;
+- policy/Child/peer canonicalization, per-operation delegation mediation, or active recall; or
+- H1 process cleanup, reaping, capacity, or supervisor semantics.
+
+If implementation needs a new authority source, new observation/fact kind, compatibility mode, replay semantic, or positive echo permit, stop for D-K.n rather than broadening the slice.
+
+## Validation and Gate G1
+
+Every implementation commit and final close-out must pass:
+
+```bash
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+./scripts/ci-tier0.sh
+```
+
+The final close-out additionally runs `allium check layer/allium`, `patina spec check grants-authority-v0 --json`, and `git diff --check`. A failing test is rerun in isolation up to five times; a non-reproducing failure is retained verbatim in the Phase K flake log, while a reproducing failure is fixed before advancement.
+
+**Phase K Gate G1:** stop after committing this SPEC amendment. Report the SPEC diff, complete consumer inventory and proposed disposition, and exact proposed Allium tends. No Phase K Rust or Allium change may precede operator ratification.
