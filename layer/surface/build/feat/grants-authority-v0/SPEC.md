@@ -94,9 +94,9 @@ exit_criteria:
     checked: false
     verify: Phase K proof steps 1 and 8 have landed test file and line citations.
   - id: phase-k-early-stale-rejection
-    text: Peer and local ingress compare the required complete expected receiver identity with a fresh local identity before route evaluation; mismatch is a typed temporal rejection with correlation evidence, while agreement grants nothing.
+    text: Peer and local ingress first reject disagreeing expected-identity copies as malformed, then compare one consistent complete expected receiver identity with a fresh local identity before route evaluation; mismatch is a typed temporal rejection with correlation evidence, while agreement grants nothing.
     checked: false
-    verify: Phase K proof steps 2-5 have landed test file and line citations.
+    verify: Phase K proof steps 2-5 and 11 have landed test file and line citations.
   - id: phase-k-wire-and-internal-migration
     text: The legacy call-carried grants_revision is replaced according to the ratified consumer inventory, forwarding echoes the admitted hello identity, and internal Child-originated calls source the local current identity rather than parent-carried values.
     checked: false
@@ -878,7 +878,9 @@ Phase K implements the final grants-authority slice and only:
 
 The Phase K baseline is `57c7ab0` on branch `patina`. D-G1 through D-G8, D-R2.1 through D-R2.8, D-H2.1, D-H3.1 through D-H3.4, D-I.1 through D-I.2, and D-J.1 through D-J.2 remain settled. Phase K sits strictly before the Phase I route-evaluation and Phase J effect-admission layers. A newly discovered genuine behavioral fork stops for an operator-supplied D-K.n amendment.
 
-Task A inventories and proposes the one wire/schema disposition below. No Rust or Allium edit may precede Gate G1 ratification.
+- **D-K.1 — provenance-copy disagreement is malformedness:** the semantic-call and peer-protocol expected-receiver identities must agree completely before either is compared with current receiver authority. Disagreement rejects typed as malformed ingress, not temporal staleness; the receiver must not select, merge, or prefer either copy. Proof 11 establishes this ordering and classification.
+
+Task A inventories and proposes the one wire/schema disposition below. Gate G1 was ratified from disk at `d47a359`; the approved Allium tend and D-K.1 clarification are the first Task B action.
 
 ## Hello advertisement contract
 
@@ -1023,8 +1025,9 @@ The required directive is `none` for structural denial and every pre-existing te
 +
 +    @invariant ExpectedReceiverIdentityIsCompleteAndConsistent
 +        -- The protocol-authority and semantic-call copies of expected receiver authority contain
-+        -- the same complete Mother, epoch, generation, and source-observation identity. Missing,
-+        -- malformed, or disagreeing copies are refused before route evaluation.
++        -- the same complete Mother, epoch, generation, and source-observation identity. Missing
++        -- or malformed copies are refused, and disagreement is malformedness rejected before
++        -- either copy is compared with current receiver authority; neither copy is preferred.
 +
 +    @invariant ReceiverIdentityComparisonPrecedesRoutingAndReplay
 +        -- A well-formed expected identity is compared with freshly proved local receiver authority
@@ -1070,6 +1073,7 @@ Each proof lands as a cited test. Close-out cites its file/line and quotes the v
 8. Stale, rebuilding, missing, quarantined, foreign-lineage, or replay-blocked receiver authority produces no usable hello identity/capability view and calls refuse with the exact typed unavailable posture.
 9. Child-originated internal calls carry the constructing Mother's fresh identity in both positions; hostile parent values are absent from the constructed call, and post-construction mutation maps to the shared early-stale decision.
 10. All Phase I route-evaluation and Phase J effect-boundary proofs pass unchanged; matching echo never suppresses their local snapshot construction, exact-grant checks, or effect admission.
+11. A call whose semantic-call and peer-protocol expected-receiver identities disagree is rejected typed as malformed ingress before any comparison with current receiver identity; neither copy is selected, merged, or preferred.
 
 ## Expected terminal ledger and audit state
 
@@ -1080,7 +1084,7 @@ At close-out the four remaining grants-authority Track 3 rows move from `DEFERRE
 - `ReceiverAlwaysUsesLocalAuthority`; and
 - `GenerationNamespaceMustMatchReceiver`.
 
-The grants-authority section must then read **31 COVERED / 0 LAW-LEADS-CODE / 0 DEFERRED**. Audit item M2d, peer-wire freshness echo, becomes closed. The original Review 1 grants-authority finding set is fully terminal if and only if those counts and M2a-M2d/M5 close-out claims are all backed by the ten landed proofs. D-J.2 Review 3 response semantics remain a separate board item, not a non-terminal grants-authority row.
+The grants-authority section must then read **31 COVERED / 0 LAW-LEADS-CODE / 0 DEFERRED**. Audit item M2d, peer-wire freshness echo, becomes closed. The original Review 1 grants-authority finding set is fully terminal if and only if those counts and M2a-M2d/M5 close-out claims are all backed by the eleven landed proofs. D-J.2 Review 3 response semantics remain a separate board item, not a non-terminal grants-authority row.
 
 ## Updated Phase K fence
 
@@ -1108,4 +1112,4 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 The final close-out additionally runs `allium check layer/allium`, `patina spec check grants-authority-v0 --json`, and `git diff --check`. A failing test is rerun in isolation up to five times; a non-reproducing failure is retained verbatim in the Phase K flake log, while a reproducing failure is fixed before advancement.
 
-**Phase K Gate G1:** stop after committing this SPEC amendment. Report the SPEC diff, complete consumer inventory and proposed disposition, and exact proposed Allium tends. No Phase K Rust or Allium change may precede operator ratification.
+**Phase K Gate G1:** ratified from disk at `d47a359`. D-K.1 adds proof 11 and fixes provenance-copy disagreement as malformed ingress before current-identity comparison. Task B proceeds only under the eleven required proofs and the unchanged Phase K fence.
