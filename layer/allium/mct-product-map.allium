@@ -202,8 +202,9 @@ contract TwoPhaseRouting {
         -- authority evaluation and newly minted token.
 
     @invariant EffectBoundaryGuardCannotRepairStaleAuthority
-        -- A revision mismatch denies before the child effect; the adapter cannot refresh, widen,
-        -- or reinterpret the already-minted authority token as current.
+        -- A policy or namespaced grants-authority mismatch, exact-grant denial, expiry, or
+        -- unprovable currentness denies before the protected effect; no Child or Toy adapter can
+        -- refresh, widen, or reinterpret the already-minted authority token as current.
 
     @invariant PeerEgressAndLocalChildEffectGuardsAreDistinct
         -- Derived peer candidacy and its complete current-record authority are revalidated before

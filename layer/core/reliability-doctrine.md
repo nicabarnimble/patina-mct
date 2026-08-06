@@ -1,7 +1,7 @@
 ---
 id: reliability-doctrine
 layer: core
-status: proposed-for-ratification
+status: active
 created: 2026-08-06
 revised: 2026-08-06
 tags: [reliability, durability, authority, testing, operations]
@@ -13,7 +13,7 @@ ratification: phase-j-g1
 
 **Purpose:** Preserve the reliability law established by Phases G through I as a binding design constraint for every later MCT change.
 
-**Ratification:** This document is submitted at Phase J Gate G1 as operator-ratified doctrine, not aspirational guidance. On Gate G1 acceptance, `status` becomes `active`; changes thereafter require an explicit governed amendment.
+**Ratification:** The operator accepted this document as written at Phase J Gate G1. It is active doctrine, not aspirational guidance; changes require an explicit governed amendment.
 
 ## Commit Means Surviving Canonical Truth
 
