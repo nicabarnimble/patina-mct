@@ -65,6 +65,30 @@ exit_criteria:
     text: Every Phase I implementation commit and the final close-out pass workspace tests, warnings-denied clippy, Tier 0/RustSec, Allium, and the grants-authority spec check.
     checked: true
     verify: cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh && allium check layer/allium
+  - id: phase-j-local-minting
+    text: Route, Child, and Toy execution authority carries the complete grants-authority identity from the evaluating local snapshot, exact call/effect identity, and the effective deadline; caller echoes cannot influence minting.
+    checked: false
+    verify: Phase J proof steps 1 and 13 have landed test file and line citations.
+  - id: phase-j-child-effect-boundary
+    text: Resident process and all three WASM Child starts require a fresh proof-gated current read, exact token comparison, and one MotherAuthorityOrderV1 admission; stale, expired, fenced, or unprovable authority starts no adapter effect.
+    checked: false
+    verify: Phase J proof steps 2-6, 11-12, and 15 have landed test file and line citations.
+  - id: phase-j-toy-effect-boundary
+    text: Every Toy backend and delegated-capability admission revalidates current generation, exact grant state/scope, grant and token time bounds, and supported live consumption state before ordered effect start.
+    checked: false
+    verify: Phase J proof steps 7-10, 12-13, and 15 have landed test file and line citations.
+  - id: phase-j-production-order
+    text: Canonical control-plane authority mutations use MotherAuthorityOrderV1::commit_mutation and final Child/Toy adapter starts use its single-use admit_effect handoff without a second order or cross-file transaction claim.
+    checked: false
+    verify: Phase J proof steps 4-6 and 14-15 have landed test file and line citations.
+  - id: phase-j-pin-retirement
+    text: Every Phase I proof-14 pin is replaced by named Phase J behavior evidence or retained as an explicit slice-6 or Review-3 residue; no unrelated pin failure is accepted as cleanup.
+    checked: false
+    verify: Phase J pin-retirement map and proof step 14 are complete.
+  - id: phase-j-validation
+    text: Every Phase J implementation commit and final close-out pass workspace tests, warnings-denied clippy, Tier 0/RustSec, Allium, grants-authority spec check, and diff check under the recorded flake protocol.
+    checked: false
+    verify: cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh && allium check layer/allium
 ---
 
 # feat: MCT grants-authority v0 — Phase G
@@ -573,3 +597,175 @@ cargo clippy --workspace --all-targets -- -D warnings
 The final close-out also runs `allium check layer/allium`, `patina spec check grants-authority-v0 --json`, and `git diff --check`. A failing test is rerun in isolation up to five times; a non-reproducing failure is retained verbatim in the Phase I flake log, while a reproducing failure is fixed before advancement.
 
 **Gate G1:** stop after committing this SPEC amendment. Report the complete diff, mutation inventory, and comparison-site classification for operator ratification. No Phase I Rust change may precede that ratification.
+
+# Phase J — slices 7/8 effect-boundary authority
+
+> Execution authority is minted from the evaluating Mother snapshot, compared with a fresh proof-gated current read, and handed directly into the final Child or Toy effect start under the one existing Mother authority order.
+
+## Scope and gate
+
+Phase J retires the Phase I slice-7/8 pins and implements only:
+
+1. **slice 7** — locally sourced route/Child execution authority, replacement of the vacuous resident grants guard, and production adoption of the Mother-local mutation/effect order at process and all three WASM Child seams; and
+2. **slice 8** — current exact-grant Toy revalidation, ordered Toy backend/delegation admission, and the D-G7 bounded-delegation proof.
+
+The Phase J baseline is `6b179bf` on branch `patina`. D-G1 through D-G8, D-R2.1 through D-R2.8, D-H2.1, D-H3.1 through D-H3.4, and D-I.1 through D-I.2 remain settled. This design commit and the separate reliability-doctrine commit form Gate G1; no Phase J Rust or Allium edit may precede operator ratification. A newly discovered genuine behavioral fork stops for an operator-supplied D-J.n amendment.
+
+## Minted execution-authority contract
+
+The existing route, Child, and Toy authorization tokens remain non-cloneable executable authority values. Phase J completes their authority content rather than introducing a second token family:
+
+- every token names the exact `call_id` evaluated;
+- route and Child authority name the selected Child, instance, assignment, approval, artifact, and route decision already present in the successful evaluation;
+- Toy authority names the exact grant, canonical Toy, Child instance, action, resource, Vision, Node, project, and data scope admitted by evaluation;
+- each token carries the complete namespaced grants-authority identity — Mother node, authority epoch, generation, and source authority observation — copied only from the `LocalExecutionAuthoritySnapshot` used for that evaluation;
+- each token carries the locally admitted effective deadline; Toy token expiry is the earliest of exact grant expiry and that effective deadline, while Child authority expires at the effective deadline; and
+- policy identity is copied from the same local snapshot portion used by evaluation. `call.authority_context` remains immutable correlation evidence and is not a token authority source.
+
+The additive fields above do not redesign token lifecycle: successful kernel evaluation remains the only mint, adapters still consume the existing token types, and denial still mints no token. There is no constructor or conversion from caller authority context to locally minted execution authority.
+
+A Child effect admission compares exact call and selected-Child binding, local policy identity, complete grants-authority identity, and effective deadline against one fresh proof-gated read. A Toy effect admission composes those checks with exact current grant and effect scope. Any mismatch produces a typed denial before adapter effect; no guard repairs or refreshes the token. Retry re-enters the complete route/evaluation path and mints wholly new authority.
+
+## Effect-boundary integration points
+
+| Adapter family | Existing final seam | Phase J integration |
+|---|---|---|
+| Process Child | `MctProcessChildHarness::invoke_authorized_child_bytes`, immediately before `Command::spawn` | Fresh local snapshot and kernel Child admission precede `MotherAuthorityOrderV1::admit_effect`; its single-use handoff enters process spawn directly. Spawn is the ordered effect start; waiting/reaping is outside the authority order. |
+| WIT component Child | `MctWasmComponentRuntime::invoke_wit_export_after_contract_check`, before component load/runtime entry | The same fresh Child admission and one `admit_effect` handoff enter the WIT runtime adapter before component load. The order is released at adapter entry and is not held across component execution or nested Toy calls. |
+| s32 component Child | `MctWasmComponentRuntime::invoke_authorized_s32_export`, before component load/runtime entry | Same Child admission and direct single-use handoff; no policy-only call comparison remains. |
+| s32 component with Toy imports | `MctWasmComponentRuntime::invoke_authorized_s32_export_with_toy_imports`, before component load/runtime entry | Same Child admission and direct single-use handoff; nested Toy calls perform their own later ordered admissions. |
+| Toy backend | `MctToyAdapterRegistry::call_authorized_toy_at`, immediately before backend selection/invocation | The daemon supplies a fresh proof-gated snapshot to the kernel Toy revalidation. A successful exact-grant decision enters the selected backend only through one `admit_effect` handoff. |
+| WASI filesystem delegation | `build_wasi_ctx`, immediately before installing each authorized preopen | Delegation admission performs the same current exact-grant and ordered Toy handoff once. The admitted preopen is bounded by the token/effective deadline; later filesystem operations are not mediated in v0. |
+
+`admit_effect` remains the sole Mother-local order. Its production handoff linearizes effect start and releases the order when control enters the named adapter-start seam; it is never held for the complete Child execution and therefore cannot deadlock a nested Toy admission. It returns no refreshable permit that can be stored for later start.
+
+## Canonical mutation integration points
+
+Every control-plane commit that can change canonical grants authority enters the same `MotherAuthorityOrderV1::commit_mutation` position before bytes are offered:
+
+- resident `ResidentLedgerCommand::AuthorityMutation`, shared by administrative and Watch mutations;
+- resident `ResidentLedgerCommand::LegacyAuthorityImport`; and
+- the equivalent offline administrative mutation/import path while it owns the exclusive authority writer.
+
+The existing `JsonlObservationLedger::{execute_authority_mutation,execute_legacy_authority_import}` operations remain the canonical commit implementation. Phase J wraps them; it does not add a fact kind, change variant, ledger writer, mutation lock, or cross-file transaction. The ordering position remains owned until the result is classified and, for an acknowledged commit, projection publication is either proved current or classified pending. `commit_unknown`, writer poisoning, and committed projection lag fence later admissions under the existing H3 recovery law.
+
+An ordinary non-authority observation may advance the canonical head without changing authority identity/state. Effect admission still proves projection coverage through the actual current head; head advancement cannot be replaced by a cached readiness value. The ordering boundary compares the token's exact authority identity/state expectation while the D-G8 proof independently covers the current head.
+
+## Child effect-time checklist
+
+Immediately before process or WASM adapter start, the kernel decision requires:
+
+1. token `call_id` equals the supplied call;
+2. token Child/instance/artifact/assignment identity equals the selected loaded Child seam;
+3. token policy identity equals the fresh snapshot's labeled local Child policy;
+4. token complete grants-authority identity equals the fresh snapshot identity, including Mother and epoch;
+5. executing-Mother time is strictly before the token's effective deadline;
+6. the snapshot carries an exact usable D-G8 proof through the current canonical head; and
+7. `MotherAuthorityOrderV1` is unfenced and admits that exact expectation.
+
+Failure is a typed Child authority denial with no adapter invocation and no implicit refresh. The resident maps it through the existing denied result/observation path; Phase J does not invent new Child-visible wire semantics.
+
+## Toy effect-time checklist
+
+Immediately before every Toy backend or delegated-capability admission, one fresh snapshot and kernel decision require:
+
+1. the complete token grants-authority identity equals the fresh current identity;
+2. the token's exact `grant_id` is present in canonical current grants;
+3. that grant remains `active` and its complete subject matches the token's Child instance/artifact/assignment/caller restrictions;
+4. canonical Toy identity and authority-bearing catalog state remain current;
+5. action, resource, Vision, Node, project, data classification, and locality scope equal the token's admitted effect scope;
+6. the executing Mother's current time satisfies `starts_at <= now < grant.expires_at` where present;
+7. the executing Mother's current time is strictly before token expiry and effective deadline;
+8. any consumption-bearing limit is checked against a current live consumption fact without advancing authority-shape generation; and
+9. the exact D-G8 expectation is admitted by the unfenced Mother order.
+
+There is currently no production surface or live projection that creates/tracks consumption-bearing Toy grants: supported grant constructors set `max_uses = None`, and no usage-counter fact exists. Phase J's reachable consumption invariant is therefore explicit: `max_uses = None` needs no counter; a canonical/imported grant with `max_uses = Some(_)` denies as `consumption_state_unavailable` until separately specified live consumption state exists. It is never treated as unmetered. `max_duration_ms`, when present in future canonical data, may only narrow token/effect duration and cannot extend the effective deadline.
+
+Toy denial is typed and the backend is not invoked. A Toy denial arising during a running Child is exposed through the current host-adapter error/result path and recorded during close-out; Phase J does not define a new Child-facing error contract.
+
+## D-G7 v0 delegated-capability semantics
+
+Delegation admission is a Toy effect admission, not ambient configuration. A filesystem preopen is installed only after current exact-grant, time, D-G8, and ordered-admission checks. Its expiry is exactly bounded by the earlier of the grant/token bound and the effective call deadline.
+
+After admission, the delegated capability remains usable until that bound even if authority changes. The change denies every new delegation and every separately mediated Toy effect, but does not retroactively retract an already-installed preopen. Phase J adds no per-filesystem-operation mediation, active revocation, or background capability recall.
+
+## Phase I proof-14 pin retirement
+
+| Phase I pin | Phase J disposition |
+|---|---|
+| `call/internal.rs` policy/grants echo early rejection | **Retained — slice 6.** Peer-wire echo remains an early stale hint and is untouched. |
+| Resident `current_resident_route_revisions` copies grants/vision from the call | **Retired.** Removed; proofs 2-3, 12-13, and 15 require a fresh local snapshot and complete token identity. |
+| Authorized route token stamps policy/grants revisions from the call | **Retired.** Proof 1 requires snapshot identity for hostile, absent, and absurd echoes. |
+| `AuthorizedChildInvocation::admit_effect_for_call` compares token policy with the call | **Retired.** Proofs 2, 11, and 13 compare local token authority with a fresh local snapshot at all Child seams. |
+| Process harness calls only the legacy token/call guard | **Retired.** Proofs 2, 4-6, 12-13, and 15 cover current-state and ordered process admission. |
+| Three WASM paths call only the legacy token/call guard | **Retired.** Proofs 4-6, 11-13, and 15 cover current-state and ordered WIT/s32/s32+Toy admission. |
+| `AuthorizedToyCall::admit_effect_for_call_at` compares policy/grants with the call | **Retired.** Proofs 7-9, 12-13, and 15 cover fresh identity, exact grant, scope, and Mother time. |
+| `MotherAuthorityOrderV1` has no production consumer | **Retired.** Proofs 4-6 and 14-15 require resident/offline mutation and Child/Toy effect consumers. |
+| Hello request/response and peer wire carry no local snapshot | **Retained — slice 6.** No schema or serialization change in Phase J. |
+| Idempotent replay carries no local execution snapshot | **Retained — Review 3.** Replay performs no new external effect; whether a completed cached result becomes a new Child-visible denial after authority change is response-semantics work, not effect-start admission. |
+
+Any failure of the old pin test must correspond to one row above. The test is replaced by a positive source/behavior audit; broad deletion or unrelated source drift is a defect.
+
+## Allium tend proposal for Gate G1
+
+The current `EffectBoundaryRevisionGuardIsDistinct`, `EffectAdmissionIsOrderedWithAuthorityMutation`, `EffectPermitCannotRefreshItself`, `EveryToyEffectRevalidatesCurrentAuthority`, `ToyEffectChecksExactGrant`, and delegated-capability wording already states the Phase J observable law. One legacy-narrow phrase should be tended only after Gate G1 ratification.
+
+Exact proposed edit in `layer/allium/mct-product-map.allium`, contract `TwoPhaseRouting`, invariant `EffectBoundaryGuardCannotRepairStaleAuthority`:
+
+```diff
+-        -- A revision mismatch denies before the child effect; the adapter cannot refresh, widen,
+-        -- or reinterpret the already-minted authority token as current.
++        -- A policy or namespaced grants-authority mismatch, exact-grant denial, expiry, or
++        -- unprovable currentness denies before the protected effect; no Child or Toy adapter can
++        -- refresh, widen, or reinterpret the already-minted authority token as current.
+```
+
+This is clarification of ratified law, not a new behavior. No other Allium edit is proposed. `allium check layer/allium` must remain clean before and after the tend.
+
+## Phase J required proof steps
+
+Each proof lands as a named failing test before its implementation. Close-out cites the landed file/line and quotes the verbatim central assertion.
+
+1. Minted token authority identity equals the evaluation snapshot's for hostile, absent, and absurd call echoes alike.
+2. Production-shaped M2b kill test: authority revoked after route mint causes typed Child denial before adapter execution, with no synthetic current snapshot.
+3. An unrelated grant mutation after mint denies the next effect; retry performs a complete new evaluation and mints a new token without implicit refresh.
+4. A revocation committed before production Child admission denies; an effect-start handoff before revocation proceeds, and subsequent admissions deny.
+5. Poisoned writer and `commit_unknown` fence production Child admission until ratified recovery, then un-fence against the exact recovered state.
+6. Committed revocation with projection lag denies Child admission even when the stale projection would allow.
+7. Toy revocation after adapter construction denies at effect time and the backend is not invoked.
+8. Matching generation with an inactive or missing exact grant denies, proving the exact-grant belt independently of generation.
+9. Grant and token time bounds are checked at effect on the Mother clock; a token expiring during a running Child denies its next Toy effect.
+10. A delegated preopen admitted before authority change survives until bounded expiry; a new delegation after revocation denies; its expiry equals the effective-deadline clamp.
+11. All three WASM invocation paths compare token grants identity with a fresh current snapshot rather than policy-only/call-only authority.
+12. A token minted under a prior authority epoch denies at effect after restart.
+13. Hostile caller echoes cannot influence minting, revalidation, or admission at any Child, Toy, process, or WASM boundary.
+14. Every Phase I pinned site maps to a new proof or the explicit slice-6/Review-3 residue above; no pin retires without replacement evidence.
+15. A full resident call injects canonical revocation post-mint, post-adapter-construction, and mid-Child at the applicable boundaries; each path returns the correct typed denial and leaves its external effect marker absent.
+
+## Updated fence
+
+Phase J deliberately retires only the slice-7/8 rows named above. The following remain forbidden, including partial implementation:
+
+- no hello/call schema, peer-wire generation echo, or early protocol stale-rejection change; slice 6 owns them;
+- no new Child-visible semantics for a mid-execution Toy/authority denial and no completed-replay response redesign; Review 3 owns those observable response semantics;
+- no per-operation delegation mediation, active preopen revocation, or capability recall;
+- no performance cache, group commit, profiling instrumentation, or authority-path restructuring beyond the required integration;
+- no new canonical fact kind or authority change variant;
+- no second mutation/effect order, token family, writer, or cross-file transaction claim; and
+- no H1 process cleanup/reaping/capacity semantics.
+
+## Validation and close-out
+
+Every implementation commit and the final close-out must pass:
+
+```bash
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+./scripts/ci-tier0.sh
+```
+
+The final close-out additionally runs `allium check layer/allium`, `patina spec check grants-authority-v0 --json`, and `git diff --check`. A failing test is rerun in isolation up to five times; a non-reproducing failure is retained verbatim in the Phase J flake log, while a reproducing failure is fixed before advancement.
+
+Close-out is reconstructed from `6b179bf..HEAD`: commit purpose, all fifteen proof citations and verbatim assertions, complete pin retirement, full validation transcript, flake log even when empty, Track 3 terminal dispositions, M2a-M2d/M5 status, current Child-visible mid-execution denial behavior, and the active session update. Remaining board order is slice 6, then performance Phase 0 profiling on the covered revision and the ratified optimization sequence; Review 3 begins from the recorded Child-visible behavior.
+
+**Phase J Gate G1:** stop after the SPEC and reliability-doctrine commits. Report the SPEC diff, exact proposed Allium tend, doctrine draft, and complete pin-retirement map for operator ratification. No Rust or Allium change may precede ratification.
