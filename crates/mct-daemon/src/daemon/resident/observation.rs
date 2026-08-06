@@ -518,6 +518,19 @@ impl ResidentLedgerWriter {
         )
     }
 
+    pub(crate) fn publish_authority_projection_blocking(&self, state_path: PathBuf) -> Result<()> {
+        if self.is_fenced() {
+            bail!("resident observation writer is fenced");
+        }
+        let (ack, rx) = tokio::sync::oneshot::channel();
+        self.sender
+            .blocking_send(ResidentLedgerCommand::PublishAuthorityProjection { state_path, ack })
+            .context("send blocking authority projection publication")?;
+        rx.blocking_recv()
+            .context("receive blocking authority projection publication")?
+            .map_err(anyhow::Error::msg)
+    }
+
     pub(crate) async fn publish_authority_projection(&self, state_path: PathBuf) -> Result<()> {
         if self.is_fenced() {
             bail!("resident observation writer is fenced");

@@ -608,7 +608,7 @@ async fn execute_resident_call_at_with_context(
                 request,
                 inline_payload,
                 context,
-                effect_time_override.unwrap_or_else(current_timestamp),
+                effect_time_override,
             )
         },
     )
@@ -621,7 +621,7 @@ async fn execute_resident_call_after_payload(
     request: MctCallProtocolRequest,
     inline_payload: Option<Vec<u8>>,
     context: ResidentCallIngressContext,
-    effect_time: Timestamp,
+    effect_time_override: Option<Timestamp>,
 ) -> MctIrohCallHandlerResult {
     let Some(ledger_path) = ledger.path().map(Path::to_path_buf) else {
         return MctIrohCallHandlerResult::failed("runtime unavailable");
@@ -725,7 +725,9 @@ async fn execute_resident_call_after_payload(
                 paths.config_path(),
                 paths.children_dir(),
                 paths.state_path(),
-                Ok(effect_time),
+                Ok(effect_time_override
+                    .clone()
+                    .unwrap_or_else(current_timestamp)),
             ) {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
@@ -744,6 +746,7 @@ async fn execute_resident_call_after_payload(
                     request,
                     inline_payload,
                     effect_snapshot,
+                    effect_time_override,
                     Some(before_effect_ledger),
                 )
             })

@@ -720,9 +720,8 @@ mod tests {
             "authority.grants_authority() != snapshot.canonical_grants().grants_authority()"
         ));
         let toy_token = read("../mct-kernel/src/toy.rs");
-        assert!(
-            toy_token.contains("self.grants_revision == call.authority_context.grants_revision")
-        );
+        assert!(toy_token.contains("admit_effect_with_snapshot"));
+        assert!(toy_token.contains("ConsumptionStateUnavailable"));
         assert!(read("src/process.rs").contains("authorized.admit_effect_for_call(call)"));
         assert!(read("src/wasm.rs").contains("authorized.admit_effect_for_call(call)"));
 
