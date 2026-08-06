@@ -59,33 +59,33 @@ The ratified Review 2 law is captured in [ledger-commit-recovery](../../feat/led
 | `MctAuthorityProjectionFreshness.AuthorityCursorReachesCanonicalHead` | COVERED | Phase H2 proof 9: `mct_daemon::state::tests::authority_cursor_reaches_non_authority_head_with_coherent_publication`. |
 | `CursorBindsHeadHashAndAuthorityIdentity` | COVERED | Proofs 9-10 bind source Mother/ledger, committed sequence/hash, complete authority identity, state hash, and projection hash with typed mismatch reasons. |
 | `ProjectionFactsAndCursorBecomeVisibleTogether` | COVERED | Proofs 9 and 12 show concurrent readers observe old-old or new-new state/cursor during ordinary publication and shadow replacement. |
-| `EpochMismatchDenies` | DEFERRED | H2 proof 10 emits typed `epoch_mismatch`; H3 consumes it for startup readiness and standing-source trust. Remaining authority readers are still deferred to slices 5, 7, and 8. |
+| `EpochMismatchDenies` | COVERED | H2 proof 10 emits typed `epoch_mismatch`; H3 consumes it for startup/standing-source trust, Phase I for route evaluation, and Phase J proof 12 for Child/Toy effect admission after restart. |
 | `RebuildEqualsReplay` | COVERED | Phase H2 proof 13: `mct_daemon::state::tests::clean_rebuild_and_incremental_replay_are_projection_equivalent`. |
 | `MctProjectionCursor` authority-state kind, source Mother, through-entry hash, and projection status | COVERED | Runtime schema v12 stores the authority-state cursor plus complete current Toy/fact rows; proofs 9, 12, and 15 cover current, replacement, and quarantined publication. Trigger/watch checkpoints remain non-authorizing domain diagnostics. |
 
-### Mutation/effect ordering — R2-L6 and slices 7-8 deferrals
+### Mutation/effect ordering — R2-L6 production disposition
 
 | Invariant | Current status | Phase disposition / evidence |
 |---|---|---|
-| `TwoPhaseRouting.MutationCommitAndEffectStartHaveOneOrder` | DEFERRED | Phase H3 proofs 15-16 establish the total-order and recovery semantics in a test-only `MotherAuthorityOrderV1`; no production mutation or effect path consumes it. Slices 7-8 must adopt it at Child and Toy effect seams before this observable invariant is covered. |
-| `ProjectionLagCannotOvertakeRevocation` | DEFERRED | Phase H3 proves the harness-only fence and exact recovery proof, but no production Child/Toy effect admission consumes the ordering boundary until slices 7-8. |
+| `TwoPhaseRouting.MutationCommitAndEffectStartHaveOneOrder` | COVERED | Phase H3 established the seam; Phase J proofs 4-6 and 14-15 adopt that same `MotherAuthorityOrderV1` for resident/offline mutation and Child/Toy/delegation starts. |
+| `ProjectionLagCannotOvertakeRevocation` | COVERED | Phase J production admission consumes the H3 fence and exact recovery proof; projection-pending, commit-unknown, and poisoned states start no protected effect. |
 
-### Phase H3 disposition counts
+### Phase J Review 2 disposition counts
 
-| Disposition | Review 2 invariants after H3 |
+| Disposition | Review 2 invariants after Phase J |
 |---|---:|
-| COVERED | 20 |
+| COVERED | 23 |
 | LAW-LEADS-CODE | 0 |
-| DEFERRED to grants-authority slices 4-8 | 7 |
+| DEFERRED | 4 |
 | **Total new invariants** | **27** |
 
-The separate `MctProjectionCursor` structural row remains `COVERED`. H3 moves `EpochBeginsWithCanonicalFact` to `COVERED`; the other seven deferrals remain because their complete law requires general authority-reader migration or a production Child/Toy effect consumer. Startup proof consumption, one standing-source trust consumer, and a harness-only ordering API are not misreported as global authority/effect coverage.
+The separate `MctProjectionCursor` structural row remains `COVERED`. Phase J closes the three authority-reader/production-order deferrals targeted by slices 7-8; the remaining four Review 2 deferrals retain their separately named future scope.
 
 **Known seam:** authority projection construction replays the full ledger. Ledger growth is therefore a future authority-availability concern; Phase H2 adds no alternate authority source, compaction path, or partial-replay freshness claim.
 
 ## Grants authority v0 — Phase G
 
-The ratified Phase G and Phase I law is captured in [grants-authority-v0](../../feat/grants-authority-v0/SPEC.md). Phase I canonicalizes the complete D-R2.7 Toy/grant/Watch-scope state, adds a proof-gated Mother-owned snapshot, and migrates resident route evaluation. Rows whose complete law reaches token or effect admission remain honestly `DEFERRED` to slices 7-8; route-level proof is not over-credited as effect-time coverage. Phase J Gate G1 ratified D-J.1 and recorded D-J.2 before implementation.
+The ratified Phase G, Phase I, and Phase J law is captured in [grants-authority-v0](../../feat/grants-authority-v0/SPEC.md). Phase I canonicalizes complete D-R2.7 state and migrates resident route evaluation. Phase J carries that Mother-owned authority through Child/Toy effect admission, adopts the single production mutation/effect order, enforces exact live Toy grants and bounded delegation, and retains only the explicit slice-6 peer-wire and Review-3 response-semantics fences.
 
 ### Review 3 authority-response scope recorded by D-J.2
 
@@ -100,25 +100,25 @@ The ratified Phase G and Phase I law is captured in [grants-authority-v0](../../
 |---|---|---|
 | `TwoPhaseRouting.ExecutionTokenBindsExactCall` | COVERED | Phase G proof steps 1-3: `mct_daemon::process::tests::process_harness_denies_mismatched_call_token_before_spawn`; all three `mct_daemon::wasm::tests::{wit_runtime,s32_runtime,s32_toy_runtime}_denies_mismatched_child_token_before_component_load` paths; and `mct_daemon::toy::tests::toy_adapter_denies_mismatched_call_token_before_backend_call`. |
 | `ExecutionTokenBindsSelectedChild` | COVERED | `mct_kernel::route::tests::route_revalidation_denies_route_child_mismatch` proves a selected-route/Child mismatch mints no execution authority. |
-| `EffectAdmissionIsOrderedWithAuthorityMutation` | DEFERRED | Phase H3 provides the harness-only order boundary; slices 7-8 must adopt it at production Child/Toy effect seams. |
-| `EffectPermitCannotRefreshItself` | DEFERRED | Phase I requires a fresh proof-gated snapshot for each route evaluation, but slice 7 must carry that locally sourced authority through effect admission and require a complete new evaluation after denial. |
+| `EffectAdmissionIsOrderedWithAuthorityMutation` | COVERED | Phase J proofs 4-6 and 14-15: resident/offline authority mutations and Child/Toy/preopen starts consume the one `MotherAuthorityOrderV1`; `revocation_first_denies_while_effect_start_first_runs_exactly_once`. |
+| `EffectPermitCannotRefreshItself` | COVERED | `full_resident_post_mint_mutation_denies_then_retry_remints` proves stale authority denies without a process marker and only a complete retry mints current authority. |
 
 ### Peer echo and receiving-Mother authority
 
 | Invariant | Current status | Phase disposition / evidence |
 |---|---|---|
 | `MctHelloProtocol.PeerEchoOnlyDetectsStaleness` | DEFERRED | Slice 6 hello/call wire change after Review 2; echo is early rejection only. |
-| `ForgedCurrentGenerationDoesNotGrantAuthority` | DEFERRED | Phase I proofs 4, 8, and 9 cover resident route evaluation; slice 6 peer-wire correlation and slices 7-8 effect admission remain. |
-| `ReceiverAlwaysUsesLocalAuthority` | DEFERRED | Phase I migrates resident local/remote route evaluation and revalidation; slices 7-8 must replace the pinned legacy token/effect inputs before the global invariant is covered. |
+| `ForgedCurrentGenerationDoesNotGrantAuthority` | DEFERRED | Phase I and Phase J cover resident route/effect evaluation; slice 6 still owns the complete peer-wire echo/correlation contract. |
+| `ReceiverAlwaysUsesLocalAuthority` | DEFERRED | Phase I and Phase J establish local route/effect authority; slice 6 still owns hello/call wire evolution and the receiving-boundary echo contract. |
 | `GenerationNamespaceMustMatchReceiver` | DEFERRED | The local namespaced identity is canonical and consumed in Phase I; exact hello/call echo remains a slice-6 wire change. |
 
 ### Call provenance and deadline
 
 | Invariant | Current status | Phase disposition / evidence |
 |---|---|---|
-| `MctCallAuthorityAndDeadline.CallerAuthorityCannotBecomeLocalAuthorityByCopying` | DEFERRED | Phase I proofs 4, 8, 9, and 13 prove separation at snapshot construction and route evaluation; the pinned slice-7 resident effect guard still copies the call's grants echo and prevents global coverage. |
-| `LocalExecutionSnapshotHasMotherProvenance` | COVERED | Phase I proofs 3-4 and 13: `authority_snapshot::tests::usable_dg8_proof_constructs_snapshot_with_exact_sources`, `arbitrary_call_authority_echoes_cannot_change_snapshot_construction`, and `snapshot_provider_api_accepts_only_mother_owned_sources`. |
-| `LocalSnapshotIsCoherent` | DEFERRED | Phase I proves coherent grants/policy/time/cursor capture for route evaluation, but the Allium invariant also binds the effective deadline through execution authority; slices 7-8 remain. |
+| `MctCallAuthorityAndDeadline.CallerAuthorityCannotBecomeLocalAuthorityByCopying` | COVERED | Phase J proofs 1 and 13: route/Child/Toy mint and effect checks use snapshot authority; hostile absent/zero/absurd call echoes cannot grant or create a local authority denial. Slice-6 echoes remain correlation/early-rejection evidence only. |
+| `LocalExecutionSnapshotHasMotherProvenance` | COVERED | Phase I proofs 3-4 and 13 plus Phase J proof 1: snapshot construction and every executable token retain exact executing-Mother provenance. |
+| `LocalSnapshotIsCoherent` | COVERED | Phase J execution tokens copy policy, namespaced grants identity, exact effect binding, and effective deadline from one snapshot; fresh effect admission compares that complete authority without repair. |
 | `ExecutingMotherClockIsAuthoritative` | COVERED | `mct_daemon::toy::tests::toy_adapter_denies_token_at_expiry_without_backend_call`; `toy_adapter_allows_token_before_expiry`; `mct_daemon::config::tests::call_deadline_admission_clamps_ahead_rejects_behind_without_grace`. |
 | `CallerDeadlineCannotExtendLocalHorizon` | COVERED | `mct_daemon::wasm::tests::far_future_caller_deadline_clamps_wasm_epoch_wait_to_configured_horizon`; `mct_daemon::config::tests::call_deadline_admission_clamps_ahead_rejects_behind_without_grace` proves the configurable 600-second default and stricter local bound. |
 | `ExpiredCallsDoNotBeginEffects` | COVERED | `mct_daemon_bin::resident::pipeline::tests::resident_ingress_rejects_expired_call_before_child_effect` proves expiry precedes payload resolution and Child execution; the injected-clock config test proves no positive grace. |
@@ -132,39 +132,39 @@ The ratified Phase G and Phase I law is captured in [grants-authority-v0](../../
 | `MctGrantsAuthorityGeneration.GrantGenerationIsMotherOwned` | COVERED | Phase H2 established the namespaced Mother/epoch/generation identity; Phase I proof 3 consumes that exact identity from the executing Mother's canonical ledger and projection. |
 | `GrantGenerationNeverRepeatsWithinEpoch` | COVERED | Phase H/H2 epoch-tenure and replay proofs establish monotonic generation within an entropy-backed epoch; Phase I proof 1 covers every current D-R2.7 mutation family exactly once. |
 | `AuthorityChangingFactsAdvanceGeneration` | COVERED | Phase I proof 1 parameterizes legacy import, Slate, secret, Watch grant, every supporting grant, and Watch revoke, asserting one canonical fact and one generation advance per logical request. D-I.2 includes complete Watch scope in that same fact. |
-| `ConsumptionStateIsALiveFact` | DEFERRED | Slice 8 enforces consumption state at effect time without advancing authority shape. |
-| `TimeBoundsRemainLiveFacts` | DEFERRED | Slice 8 composes current time bounds with generation; Task B enforces token expiry only. |
+| `ConsumptionStateIsALiveFact` | COVERED | D-J.1 and proof 16: `max_uses = Some(1)` returns typed `ConsumptionStateUnavailable`; `None` admits. No shape generation or fictional counter substitutes for live state. |
+| `TimeBoundsRemainLiveFacts` | COVERED | Phase J proofs 9-10 re-read Mother time at each Toy/delegation admission; at-expiry denies the next effect while max duration and effective deadline only narrow authority. |
 
 ### Toy effect admission
 
 | Invariant | Current status | Phase disposition / evidence |
 |---|---|---|
-| `MctToyGrantAuthority.ToyTokenBindsCallAndEffect` | DEFERRED | Task B proof step 3 covers its exact-call edge through `ExecutionTokenBindsExactCall`; slice 8 must add complete action/resource/local-version effect scope. |
-| `EveryToyEffectRevalidatesCurrentAuthority` | DEFERRED | Slice 8 current local generation and grant evaluation, gated on Review 2. |
-| `ToyEffectChecksExactGrant` | DEFERRED | Slice 8 exact live grant state, scope, and consumption facts. |
-| `ToyTokenExpiryIsEnforced` | COVERED | `mct_daemon::toy::tests::toy_adapter_denies_token_at_expiry_without_backend_call`; `mct_daemon::toy::tests::toy_adapter_allows_token_before_expiry`. |
-| `RevocationBeforeEffectAdmissionDenies` | DEFERRED | Slice 8 current grant revalidation and effect-admission ordering. |
-| `DelegatedCapabilitiesHaveBoundedRevocationSemantics` | DEFERRED | Slice 8 must prove delegated admission is current and bounded; per-operation mediation and active revocation remain future law. |
+| `MctToyGrantAuthority.ToyTokenBindsCallAndEffect` | COVERED | Phase J proofs 7-8 and 13 bind exact canonical Toy/grant, Child subject, action, resource, Vision, Node, project, and data scope to snapshot-minted authority. |
+| `EveryToyEffectRevalidatesCurrentAuthority` | COVERED | `current_toy_revocation_denies_before_order_and_echo_backend` and `token_expiring_during_child_denies_the_next_toy_backend_effect` prove a fresh snapshot precedes each backend start. |
+| `ToyEffectChecksExactGrant` | COVERED | `toy_revocation_and_missing_exact_grant_deny_at_effect_time` independently denies inactive, missing, and same-generation changed exact grants; proof 16 covers unsupported consumption. |
+| `ToyTokenExpiryIsEnforced` | COVERED | Existing Phase G before/at-expiry proofs plus Phase J's fresh Mother-clock `token_expiring_during_child_denies_the_next_toy_backend_effect`. |
+| `RevocationBeforeEffectAdmissionDenies` | COVERED | Phase J proofs 4, 7-8, and 15 leave process/Toy effect markers absent when revocation wins admission order. |
+| `DelegatedCapabilitiesHaveBoundedRevocationSemantics` | COVERED | `delegated_preopen_survives_revocation_while_new_delegation_denies` proves effective-deadline clamping, one admitted preopen, and denial of a new post-revocation delegation. No per-operation mediation or active recall was added. |
 
 ### Authority projection freshness
 
 | Invariant | Current status | Phase disposition / evidence |
 |---|---|---|
 | `MctAuthorityProjectionFreshness.AuthorityProjectionIdentifiesCanonicalSource` | COVERED | Phase H2 proofs 9-10 bind source Mother/ledger/head and complete grants-authority identity; slices 4-5 consume rather than redefine this proof. |
-| `AuthorityProjectionCoversCurrentGeneration` | DEFERRED | Phase I proofs 3, 5-7, 10-12 consume exact current coverage for resident route evaluation; Child/Toy effect admission remains fenced to slices 7-8, so the global invariant is not over-credited. |
+| `AuthorityProjectionCoversCurrentGeneration` | COVERED | Phase I establishes D-G8 route reads; Phase J proofs 2-9 and 12-15 consume a fresh exact projection at Child, Toy, and delegation effect admission. |
 | `ProjectionVersionAndFactsAreCoherent` | COVERED | Phase H2 proofs 9 and 12 prove ordinary and shadow publication expose facts/state/cursor old-old or new-new in one SQLite transaction. |
-| `UnprovableFreshnessDenies` | DEFERRED | Phase I route evaluation now consumes typed D-G8 denial and has no fallback; the global row remains deferred because slice-7/8 effect readers still use their explicitly pinned legacy guards. |
+| `UnprovableFreshnessDenies` | COVERED | Phase J proofs 5-6 fence poisoned/unknown/lagging authority and require exclusive reopen plus exact recovered projection before any later effect start. |
 
-### Phase I disposition counts
+### Phase J disposition counts
 
-| Disposition | New invariants after Phase I |
+| Disposition | New invariants after Phase J |
 |---|---:|
-| COVERED | 14 |
-| LAW-LEADS-CODE, targeted by Phase I | 0 |
-| DEFERRED to slices 6-8 | 17 |
+| COVERED | 27 |
+| LAW-LEADS-CODE | 0 |
+| DEFERRED to slice 6 | 4 |
 | **Total new invariants** | **31** |
 
-Phase I does not claim effect-time revocation. `TwoPhaseRouting.EffectBoundaryRevisionGuardIsDistinct`, `EffectAdmissionIsOrderedWithAuthorityMutation`, global current-authority consumption, and Toy live-fact enforcement remain deferred to slices 7-8. `MctHelloProtocol.PeerEchoOnlyDetectsStaleness` and namespaced peer-wire matching remain deferred to slice 6. The proof-14 source audit pins those seams and confirms `MotherAuthorityOrderV1` still has zero production consumers.
+Phase J closes slices 7-8 without over-claiming slice 6: hello/call schema and namespaced peer-wire echo semantics remain deferred. D-J.2 separately keeps caller-/Child-observable mid-execution and completed-replay response semantics in Review 3. The proof-14 source audit verifies every retired production pin and both explicit residues.
 
 ## Tool-derived structural obligations
 

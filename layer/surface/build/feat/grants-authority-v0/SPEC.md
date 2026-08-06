@@ -67,27 +67,27 @@ exit_criteria:
     verify: cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh && allium check layer/allium
   - id: phase-j-local-minting
     text: Route, Child, and Toy execution authority carries the complete grants-authority identity from the evaluating local snapshot, exact call/effect identity, and the effective deadline; caller echoes cannot influence minting.
-    checked: false
+    checked: true
     verify: Phase J proof steps 1 and 13 have landed test file and line citations.
   - id: phase-j-child-effect-boundary
     text: Resident process and all three WASM Child starts require a fresh proof-gated current read, exact token comparison, and one MotherAuthorityOrderV1 admission; stale, expired, fenced, or unprovable authority starts no adapter effect.
-    checked: false
+    checked: true
     verify: Phase J proof steps 2-6, 11-12, and 15 have landed test file and line citations.
   - id: phase-j-toy-effect-boundary
     text: Every Toy backend and delegated-capability admission revalidates current generation, exact grant state/scope, grant and token time bounds, and supported live consumption state before ordered effect start.
-    checked: false
+    checked: true
     verify: Phase J proof steps 7-10, 12-13, and 15-16 have landed test file and line citations.
   - id: phase-j-production-order
     text: Canonical control-plane authority mutations use MotherAuthorityOrderV1::commit_mutation and final Child/Toy adapter starts use its single-use admit_effect handoff without a second order or cross-file transaction claim.
-    checked: false
+    checked: true
     verify: Phase J proof steps 4-6 and 14-15 have landed test file and line citations.
   - id: phase-j-pin-retirement
     text: Every Phase I proof-14 pin is replaced by named Phase J behavior evidence or retained as an explicit slice-6 or Review-3 residue; no unrelated pin failure is accepted as cleanup.
-    checked: false
+    checked: true
     verify: Phase J pin-retirement map and proof step 14 are complete.
   - id: phase-j-validation
     text: Every Phase J implementation commit and final close-out pass workspace tests, warnings-denied clippy, Tier 0/RustSec, Allium, grants-authority spec check, and diff check under the recorded flake protocol.
-    checked: false
+    checked: true
     verify: cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh && allium check layer/allium
 ---
 
@@ -747,6 +747,69 @@ Each proof lands as a named failing test before its implementation. Close-out ci
 14. Every Phase I pinned site maps to a new proof or the explicit slice-6/Review-3 residue above; no pin retires without replacement evidence.
 15. A full resident call injects canonical revocation post-mint, post-adapter-construction, and mid-Child at the applicable boundaries; each path returns the correct typed denial and leaves its external effect marker absent.
 16. An otherwise-current Toy grant with `max_uses = Some(1)` denies at effect admission as typed `consumption_state_unavailable`, while the otherwise-identical grant with `max_uses = None` admits.
+
+## Phase J close-out
+
+Phase J is complete on `1fa116f`. The implementation range from baseline `6b179bf` is:
+
+| Commit | Purpose |
+|---|---|
+| `fa87ed3` | Ratified effect-boundary design, proof plan, and pin-retirement map. |
+| `b1779cd` | Added the reliability doctrine later activated by Gate G1. |
+| `b46a54a` | Applied the approved Allium tend, activated the doctrine, and recorded D-J.1/D-J.2. |
+| `47e2d3a` | Minted route/Child execution authority only from the evaluating local snapshot. |
+| `2b5aa2b` | Replaced the resident call-echo guard with fresh snapshot Child admission. |
+| `befddeb` | Adopted the one Mother mutation/effect order in resident and offline production paths. |
+| `214677f` | Added fresh exact Toy/backend/delegation revalidation and bounded token duration. |
+| `1fa116f` | Closed exact-grant, backend-marker, Mother-clock, delegation, ordered-handoff, and full-resident adversarial evidence. |
+
+Named tests were written and exercised against the target seam before each worktree slice was accepted; implementation and its now-green proof landed together. No intentionally red commit was retained. The deterministic idempotency clock defect and the warnings-denied `too_many_arguments` finding reproduced, were repaired, and are not flakes.
+
+### Sixteen proof citations
+
+| # | Landed evidence | Verbatim central assertion |
+|---:|---|---|
+| 1 | `crates/mct-kernel/src/route.rs:1373` — `snapshot_sourced_execution_tokens_ignore_hostile_caller_echoes` | `assert_eq!(child_authority, route_authority);` |
+| 2 | `crates/mct-daemon/src/daemon/resident/execution.rs:1302` — `full_resident_post_mint_mutation_denies_then_retry_remints` | `assert!(!marker_path.exists(), "stale token starts no process effect");` |
+| 3 | Same full-resident test, lines 1366-1384 | `assert!(marker_path.exists(), "retry re-evaluates and mints wholly new current authority");` |
+| 4 | `crates/mct-daemon/src/authority_order.rs:623` — `revocation_first_denies_while_effect_start_first_runs_exactly_once` | `assert_eq!(starts.load(Ordering::SeqCst), 0, "revocation-first must start no effect");` |
+| 5 | `crates/mct-daemon/src/authority_order.rs:493` — `uncertainty_and_projection_lag_fence_until_exclusive_reopen_and_exact_proof` | `assert_eq!(boundary.fence_reason(), Some(reason));` |
+| 6 | Same fence/projection test, lines 530-578 | `assert_eq!(starts.load(Ordering::SeqCst), 1);` only after fresh-tenure rescan and exact projection proof. |
+| 7 | `crates/mct-daemon/src/toy.rs:1132` — `current_toy_revocation_denies_before_order_and_echo_backend` | `assert_eq!(report.output_json, None, "denied Echo backend emits no marker");` |
+| 8 | `crates/mct-kernel/src/toy.rs:1406` — `toy_revocation_and_missing_exact_grant_deny_at_effect_time` | `ToyEffectAdmissionDenyV1::ExactGrantMismatch, "matching generation cannot hide a changed exact canonical grant"` |
+| 9 | `crates/mct-daemon/src/toy.rs:1080` — `token_expiring_during_child_denies_the_next_toy_backend_effect` | `assert_eq!(second.authority_denial, Some(ToyEffectAdmissionDenyV1::TokenExpired));` |
+| 10 | `crates/mct-daemon/src/wasm.rs:3656` — `delegated_preopen_survives_revocation_while_new_delegation_denies` | `assert_eq!(ordered_starts.load(Ordering::SeqCst), 1, "revoked new delegation never reaches ordered preopen installation");` |
+| 11 | `crates/mct-daemon/src/authority_order.rs:701` — `phase_j_pin_retirement_maps_each_old_seam_to_proof_or_named_residue`, composed with the common resident fresh Child guard | `assert!(resident_effect.contains("admit_effect_with_snapshot(&call, &effect_snapshot)"));` |
+| 12 | `crates/mct-kernel/src/toy.rs:1449` — `toy_effect_uses_mother_time_and_rejects_prior_epoch` | `ToyEffectAdmissionDenyV1::GrantsAuthorityMismatch` for the restarted epoch. |
+| 13 | `crates/mct-kernel/src/toy.rs:1482` and `crates/mct-kernel/src/route.rs:1373` | `assert!(token.admit_effect_with_snapshot(&hostile, &snapshot).is_ok());` |
+| 14 | `crates/mct-daemon/src/authority_order.rs:701` — positive source/behavior pin map | `assert!(!resident_effect.contains("current_resident_route_revisions"));` while slice-6 and Review-3 residues remain asserted. |
+| 15 | Full-resident proof at `execution.rs:1302`, post-construction Toy proof at `toy.rs:1132`, and running-Child expiry proof at `toy.rs:1080` | Each denial leaves its external marker/output absent; the full resident ledger contains `GrantsAuthorityMismatch`. |
+| 16 | `crates/mct-kernel/src/toy.rs:1507` — `consumption_bearing_grant_denies_while_unbounded_grant_admits` | `assert_eq!(denied.unwrap_err(), ToyEffectAdmissionDenyV1::ConsumptionStateUnavailable);` |
+
+### Pin retirement and audit status
+
+The proof-14 test positively maps every Phase I pin. Resident call-derived revision copying is gone; route/Child/Toy tokens carry local snapshot authority; fresh Child/Toy admission and `MotherAuthorityOrderV1` have production consumers; exact Toy catalog/grant/time/consumption checks precede backend/preopen start. The only retained authority pins are the slice-6 hello/call peer-wire echo shape and the D-J.2 Review-3 completed-replay/response-semantics shape.
+
+Audit disposition is therefore: M2a local authority provenance **closed**; M2b stale Child effect guard **closed** by the full-resident kill/retry proof; M2c current exact Toy authority **closed**; M2d peer-wire freshness echo **retained for slice 6**, not over-claimed by Phase J; M5 exact call/effect binding and bounded deadline enforcement **closed**. No Phase J claim adds immediate recall of already-admitted delegation.
+
+### Current response behavior recorded for Review 3
+
+A stale Child token denied before adapter start currently produces the existing denied result/observation shape with no `route_taken`. A Toy denial during a running Child currently follows the existing host-adapter error/result and close-out observation path; Phase J adds no new Child-visible response contract. A completed idempotent replay performs no new protected effect and currently replays the stored completed response without a local execution snapshot. D-J.2 leaves the meaning of those mid-execution and replayed responses to Review 3.
+
+### Validation and flake log
+
+Final Phase J validation passed:
+
+- `cargo test --workspace`: **504 passed, 1 ignored, 0 failed**;
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean;
+- `./scripts/ci-tier0.sh`: release/version/notes, RustSec, workspace tests, and Allium clean;
+- `allium check layer/allium`: all three specifications clean;
+- `patina spec check grants-authority-v0 --json`: all criteria pass after this close-out;
+- `git diff --check`: clean.
+
+Phase J flake log: **empty**. No non-reproducing failure invoked the five-rerun protocol. The earlier pre-Phase-J trigger ledger-lock collision remains preserved in its originating phase record and is not reclassified here.
+
+Track 3 now records the thirteen slices-7/8 invariants moved from `DEFERRED` to `COVERED`: **27 COVERED / 0 LAW-LEADS-CODE / 4 DEFERRED** within the 31 grants-authority invariants. The four deferrals are slice-6 peer-wire law. Review-3 response semantics remain separately recorded under D-J.2.
 
 ## Updated fence
 
