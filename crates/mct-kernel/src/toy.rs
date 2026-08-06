@@ -239,6 +239,10 @@ pub struct AuthorizedToyCall {
     grants_revision: u64,
     /// Complete executing-Mother authority for snapshot-evaluated Toy effects.
     local_execution_authority: Option<LocalExecutionAuthorityTokenV1>,
+    /// Exact canonical Toy catalog record used to mint this token.
+    canonical_toy: CanonicalToyContract,
+    /// Exact canonical grant record used to mint this token.
+    canonical_grant: ToyGrant,
     /// Exact subject admitted by evaluation.
     subject: ToyGrantSubject,
     /// Exact action admitted by evaluation.
@@ -334,13 +338,14 @@ impl AuthorizedToyCall {
         if now >= &self.expires_at || now >= authority.effective_deadline() {
             return Err(ToyEffectAdmissionDenyV1::TokenExpired);
         }
-        if !snapshot
+        let current_toy = snapshot
             .canonical_grants()
             .toy_catalog()
             .iter()
-            .any(|toy| toy.toy_id == self.toy_id && toy.authority_bearing)
-        {
-            return Err(ToyEffectAdmissionDenyV1::UnknownToy);
+            .find(|toy| toy.toy_id == self.toy_id && toy.authority_bearing)
+            .ok_or(ToyEffectAdmissionDenyV1::UnknownToy)?;
+        if current_toy != &self.canonical_toy {
+            return Err(ToyEffectAdmissionDenyV1::ExactGrantMismatch);
         }
         let grant = snapshot
             .canonical_grants()
@@ -351,7 +356,8 @@ impl AuthorizedToyCall {
         if grant.grant_state != ToyGrantState::Active {
             return Err(ToyEffectAdmissionDenyV1::InactiveGrant);
         }
-        if grant.toy_id != self.toy_id
+        if grant != &self.canonical_grant
+            || grant.toy_id != self.toy_id
             || grant.policy_revision != snapshot.policy_revision()
             || !subject_matches(&grant.subject, &self.subject)
             || grant.scope.vision_id != self.vision_id
@@ -671,6 +677,8 @@ pub fn evaluate_toy_grant_for_call(
             policy_revision: grant.policy_revision,
             grants_revision: grant.grants_revision,
             local_execution_authority: None,
+            canonical_toy: toy.clone(),
+            canonical_grant: grant.clone(),
             subject: request.subject.clone(),
             action: request.action.clone(),
             node_id: request.node_id.clone(),
@@ -745,6 +753,17 @@ pub fn evaluate_toy_grant_for_snapshot(
             authorized: None,
         };
     };
+    let Some(toy) = snapshot
+        .canonical_grants()
+        .toy_catalog()
+        .iter()
+        .find(|toy| toy.toy_id == request.toy_id)
+    else {
+        return ToyGrantEvaluationResult {
+            evaluation,
+            authorized: None,
+        };
+    };
     let Some(expires_at) = toy_token_expiry(call, request, grant) else {
         return ToyGrantEvaluationResult {
             evaluation: route_denied(
@@ -771,6 +790,8 @@ pub fn evaluate_toy_grant_for_snapshot(
         policy_revision,
         grants_revision: grants_generation,
         local_execution_authority: Some(snapshot.execution_authority(call.deadline.clone())),
+        canonical_toy: toy.clone(),
+        canonical_grant: grant.clone(),
         subject: request.subject.clone(),
         action: request.action.clone(),
         node_id: request.node_id.clone(),
@@ -1406,6 +1427,20 @@ mod tests {
                 .admit_effect_with_snapshot(&call(), &missing_snapshot)
                 .unwrap_err(),
             ToyEffectAdmissionDenyV1::MissingExactGrant
+        );
+
+        let mut same_generation_changed_scope = grant(ToyGrantState::Active);
+        same_generation_changed_scope
+            .scope
+            .allowed_actions
+            .push("widened".into());
+        let changed_scope_snapshot = snapshot_with_grant(same_generation_changed_scope);
+        assert_eq!(
+            token
+                .admit_effect_with_snapshot(&call(), &changed_scope_snapshot)
+                .unwrap_err(),
+            ToyEffectAdmissionDenyV1::ExactGrantMismatch,
+            "matching generation cannot hide a changed exact canonical grant"
         );
     }
 

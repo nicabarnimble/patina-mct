@@ -351,6 +351,10 @@ fn build_wasi_ctx(
         let mut guest_paths = BTreeSet::new();
         for preopen in &config.preopens {
             validate_wasi_preopen(preopen, &mut guest_paths)?;
+            let (dir_perms, file_perms) = match preopen.access {
+                MctWasiPreopenAccess::ReadOnly => (DirPerms::READ, FilePerms::READ),
+                MctWasiPreopenAccess::ReadWrite => (DirPerms::all(), FilePerms::all()),
+            };
             match effect_authority {
                 Some(authority) => {
                     let snapshot = authority.current_snapshot().map_err(|_| {
@@ -366,11 +370,15 @@ fn build_wasi_ctx(
                                 "WASI preopen authority denied: {reason:?}"
                             ))
                         })?;
-                    authority.admit_order(&snapshot).map_err(|_| {
-                        MctWasmComponentRuntimeError::Configure(
-                            "WASI preopen authority order denied".into(),
-                        )
-                    })?;
+                    authority
+                        .admit_order(&snapshot, || {
+                            install_wasi_preopen(&mut builder, preopen, dir_perms, file_perms)
+                        })
+                        .map_err(|_| {
+                            MctWasmComponentRuntimeError::Configure(
+                                "WASI preopen authority order denied".into(),
+                            )
+                        })??;
                 }
                 None => {
                     preopen
@@ -381,29 +389,35 @@ fn build_wasi_ctx(
                                 "WASI preopen legacy authority denied".into(),
                             )
                         })?;
+                    install_wasi_preopen(&mut builder, preopen, dir_perms, file_perms)?;
                 }
             }
-            let (dir_perms, file_perms) = match preopen.access {
-                MctWasiPreopenAccess::ReadOnly => (DirPerms::READ, FilePerms::READ),
-                MctWasiPreopenAccess::ReadWrite => (DirPerms::all(), FilePerms::all()),
-            };
-            builder
-                .preopened_dir(
-                    &preopen.host_path,
-                    &preopen.guest_path,
-                    dir_perms,
-                    file_perms,
-                )
-                .map_err(|error| {
-                    MctWasmComponentRuntimeError::Configure(format!(
-                        "configure WASI preopen '{}'=>'{}': {error}",
-                        preopen.host_path.display(),
-                        preopen.guest_path
-                    ))
-                })?;
         }
     }
     Ok(builder.build())
+}
+
+fn install_wasi_preopen(
+    builder: &mut WasiCtxBuilder,
+    preopen: &MctWasiPreopen,
+    dir_perms: DirPerms,
+    file_perms: FilePerms,
+) -> Result<(), MctWasmComponentRuntimeError> {
+    builder
+        .preopened_dir(
+            &preopen.host_path,
+            &preopen.guest_path,
+            dir_perms,
+            file_perms,
+        )
+        .map_err(|error| {
+            MctWasmComponentRuntimeError::Configure(format!(
+                "configure WASI preopen '{}'=>'{}': {error}",
+                preopen.host_path.display(),
+                preopen.guest_path
+            ))
+        })?;
+    Ok(())
 }
 
 fn validate_wasi_preopen(
@@ -2528,7 +2542,13 @@ fn wasm_observation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use std::{
+        fs,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
 
     fn runtime() -> MctWasmComponentRuntime {
         MctWasmComponentRuntime::new(MctWasmHostConfig {
@@ -2601,6 +2621,115 @@ mod tests {
             "use",
             stem,
         )
+    }
+
+    fn delegation_snapshot(
+        call: &MctCall,
+        grant_state: ToyGrantState,
+    ) -> LocalExecutionAuthoritySnapshot {
+        let toy_id = ToyId::new("toy-filesystem").unwrap();
+        let subject = ToyGrantSubject {
+            child_name: "child-delegation".into(),
+            artifact_id: "artifact-delegation".into(),
+            artifact_version: "0.1.0".into(),
+            assignment_id: None,
+            caller_node_id: Some(call.caller.node_id.clone()),
+        };
+        let catalog = CanonicalToyContract {
+            toy_id: toy_id.clone(),
+            contract: ToyContractIdentity {
+                namespace: "wasi".into(),
+                interface_name: "filesystem/preopens".into(),
+                version: "0.2.3".into(),
+                function_name: Some("preopen-project-root".into()),
+                resource_name: None,
+            },
+            authority_bearing: true,
+            catalog_revision: 1,
+            admitted_by_observation_id: ObservationId::new("obs-delegation-catalog").unwrap(),
+        };
+        let grant = ToyGrant {
+            grant_id: ToyGrantId::new("grant-delegation").unwrap(),
+            toy_id,
+            subject,
+            scope: ToyGrantScope {
+                vision_id: call.caller.vision_id.clone(),
+                node_id: Some(call.caller.node_id.clone()),
+                project_id: call.caller.project_id.clone(),
+                data_classification: Some(call.payload_metadata.data_classification.clone()),
+                resource_id: Some("delegated-root".into()),
+                allowed_actions: vec!["preopen-project-root".into()],
+            },
+            constraints: ToyGrantConstraints {
+                starts_at: None,
+                expires_at: None,
+                max_uses: None,
+                max_duration_ms: None,
+                locality_required: true,
+            },
+            grant_state,
+            issuer_id: "issuer-delegation".into(),
+            policy_revision: 1,
+            grants_revision: 1,
+            authority_observation_id: ObservationId::new("obs-delegation-grant").unwrap(),
+        };
+        assemble_local_execution_authority_snapshot(LocalExecutionAuthoritySnapshotPartsV1 {
+            executing_mother_node_id: "mother-a".into(),
+            grants_authority_mother_node_id: "mother-a".into(),
+            grants_authority_epoch: "mct-authority-epoch-v1:delegation".into(),
+            grants_authority_generation: 1,
+            grants_authority_observation_id: "obs-delegation-authority".into(),
+            toy_catalog: vec![catalog],
+            toy_grants: vec![grant],
+            watch_scopes: Vec::new(),
+            policy_revision: 1,
+            vision_policy_revision: 1,
+            child_local_node_id: call.caller.node_id.clone(),
+            child_vision_id: call.caller.vision_id.clone(),
+            child_artifacts: Vec::new(),
+            child_approvals: Vec::new(),
+            child_assignments: Vec::new(),
+            child_instances: Vec::new(),
+            peer_local_node_id: call.caller.node_id.clone(),
+            peer_local_vision_id: call.caller.vision_id.clone(),
+            peer_local_endpoint_id: EndpointIdText::new("endpoint-delegation").unwrap(),
+            peer_records: Vec::new(),
+            callable_surfaces: Vec::new(),
+            evaluated_at: crate::config::current_timestamp(),
+            projection_id: "authority-state-v1".into(),
+            projection_source_mother_node_id: "mother-a".into(),
+            projection_source_ledger_id: "ledger-delegation".into(),
+            through_sequence: 1,
+            through_observation_id: "obs-delegation-authority".into(),
+            through_entry_hash: "entry-delegation".into(),
+            authority_state_hash: "state-delegation".into(),
+            projection_hash: "projection-delegation".into(),
+        })
+    }
+
+    fn delegation_authorized(
+        call: &MctCall,
+        snapshot: &LocalExecutionAuthoritySnapshot,
+    ) -> AuthorizedToyCall {
+        let grant = &snapshot.canonical_grants().toy_grants()[0];
+        let request = ToyGrantEvaluationRequest {
+            toy_id: grant.toy_id.clone(),
+            subject: grant.subject.clone(),
+            child_instance_id: ChildInstanceId::new("instance-delegation").unwrap(),
+            action: "preopen-project-root".into(),
+            resource_id: Some("delegated-root".into()),
+            node_id: call.caller.node_id.clone(),
+            now: snapshot.mother_clock().evaluated_at().clone(),
+            ids: ToyGrantEvaluationIds {
+                evaluation_id: ToyGrantEvaluationId::new("eval-delegation").unwrap(),
+                decision_id: DecisionId::new("decision-delegation").unwrap(),
+                observation_id: ObservationId::new("obs-delegation-eval").unwrap(),
+                authorized_toy_call_id: AuthorizedToyCallId::new("auth-delegation").unwrap(),
+            },
+        };
+        evaluate_toy_grant_for_snapshot(call, &request, snapshot)
+            .authorized
+            .expect("active exact delegation grant mints authority")
     }
 
     fn toy_ids() -> MctToyCallIds {
@@ -3520,6 +3649,55 @@ mod tests {
 
         assert_eq!(report.output_json, serde_json::json!({"results": [14]}));
         assert_eq!(report.result.outcome, ResultOutcome::Success);
+    }
+
+    /// Phase J proof 10: admitted delegation is retained; subsequent delegation revalidates.
+    #[test]
+    fn delegated_preopen_survives_revocation_while_new_delegation_denies() {
+        let root = tempfile::tempdir().unwrap();
+        let call = call();
+        let active = delegation_snapshot(&call, ToyGrantState::Active);
+        let authorized = delegation_authorized(&call, &active);
+        assert_eq!(
+            authorized.expires_at(),
+            &call.deadline,
+            "delegation expiry is clamped to the effective call deadline"
+        );
+        let current = Arc::new(Mutex::new(active));
+        let snapshots = Arc::clone(&current);
+        let ordered_starts = Arc::new(AtomicUsize::new(0));
+        let counted_starts = Arc::clone(&ordered_starts);
+        let authority = MctToyEffectAuthorityV1::new(
+            move || Ok(snapshots.lock().unwrap().clone()),
+            move |_, start| {
+                counted_starts.fetch_add(1, Ordering::SeqCst);
+                start();
+                Ok(())
+            },
+        );
+        let config = MctWasiHostConfig {
+            preopens: vec![MctWasiPreopen {
+                host_path: root.path().to_path_buf(),
+                guest_path: "/delegated".into(),
+                access: MctWasiPreopenAccess::ReadOnly,
+                authorized_toy_call: authorized,
+            }],
+        };
+
+        let admitted_context = build_wasi_ctx(Some(&config), Some(&authority), &call)
+            .expect("current delegation installs one preopen");
+        *current.lock().unwrap() = delegation_snapshot(&call, ToyGrantState::Revoked);
+        let Err(denied) = build_wasi_ctx(Some(&config), Some(&authority), &call) else {
+            panic!("revoked new delegation must deny");
+        };
+
+        assert!(denied.to_string().contains("InactiveGrant"));
+        assert_eq!(
+            ordered_starts.load(Ordering::SeqCst),
+            1,
+            "revoked new delegation never reaches ordered preopen installation"
+        );
+        drop(admitted_context);
     }
 
     #[test]

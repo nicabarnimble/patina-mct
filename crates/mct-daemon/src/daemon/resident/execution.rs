@@ -601,9 +601,9 @@ fn resident_toy_effect_authority(
             )
             .map_err(|error| format!("{error:?}"))
         },
-        move |snapshot| {
+        move |snapshot, start| {
             order_ledger
-                .admit_effect(snapshot, order_paths.state_path())
+                .admit_effect_start(snapshot, order_paths.state_path(), start)
                 .map_err(|error| format!("{error:?}"))
         },
     ))
@@ -1295,6 +1295,97 @@ listens = []
             }),
             "{trace_entries:?}"
         );
+    }
+
+    /// Phase J proofs 3 and 15: full resident post-mint mutation denies without refresh.
+    #[tokio::test]
+    async fn full_resident_post_mint_mutation_denies_then_retry_remints() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let marker_path = dir.path().join("executed-marker");
+        write_resident_process_child_script(
+            &children_dir,
+            "resident-echo",
+            format!(
+                "#!/bin/sh\necho executed > {}\nprintf '{{\"ok\":true}}'\n",
+                marker_path.display()
+            )
+            .as_bytes(),
+        );
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        let config_store = MctDaemonConfigStore::new(&config_path);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        config_store
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
+        let paths = ResidentRuntimePaths::new(
+            config_path.clone(),
+            children_dir.clone(),
+            state_path.clone(),
+        );
+        let first_call = resident_test_call(TraceId::new("trace-post-mint-denial").unwrap());
+        let first = execute_resident_call_with_post_mint_mutation(
+            paths.clone(),
+            ledger.clone(),
+            resident_test_protocol_request(first_call),
+            ResidentPayloadIngress::remote(None),
+            AuthorityMutationRequestV1 {
+                mutation_id: "phase-j-post-mint-unrelated-grant-change".into(),
+                changes: vec![AuthorityChangeV1::ToyCatalogPut {
+                    toy_id: "toy-unrelated-phase-j".into(),
+                    contract: ToyContractIdentity {
+                        namespace: "patina".into(),
+                        interface_name: "unrelated".into(),
+                        version: "0.1.0".into(),
+                        function_name: Some("observe".into()),
+                        resource_name: None,
+                    },
+                    authority_bearing: true,
+                    catalog_revision: 1,
+                    admitted_by_observation_id: "obs-phase-j-post-mint-change".into(),
+                }],
+                grant_shaping_sources: vec![GrantShapingSourceV1::OperatorDecision {
+                    decision_id: "decision-phase-j-post-mint-change".into(),
+                    authenticated_principal_ref: "test:phase-j".into(),
+                    command_kind: GrantShapingCommandKindV1::CatalogChange,
+                }],
+                decided_at: current_timestamp_string(),
+            },
+        )
+        .await;
+
+        assert_eq!(first.outcome, CallProtocolOutcome::Denied);
+        assert!(
+            !marker_path.exists(),
+            "stale token starts no process effect"
+        );
+
+        let retry_call = resident_test_call(TraceId::new("trace-post-mint-retry").unwrap());
+        let retry = execute_resident_call(
+            paths,
+            ledger.clone(),
+            resident_test_protocol_request(retry_call),
+            ResidentPayloadIngress::remote(None),
+        )
+        .await;
+        assert_eq!(retry.outcome, CallProtocolOutcome::Completed);
+        assert!(
+            marker_path.exists(),
+            "retry re-evaluates and mints wholly new current authority"
+        );
+        ledger.close().await;
+
+        let ledger_text = std::fs::read_to_string(ledger_path).unwrap();
+        assert!(ledger_text.contains("GrantsAuthorityMismatch"));
     }
 
     #[test]

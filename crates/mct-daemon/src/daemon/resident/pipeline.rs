@@ -360,7 +360,7 @@ async fn execute_watch_callouts(
             request,
             ResidentPayloadIngress::local(Some(target_payload)),
             current_timestamp(),
-            None,
+            ResidentExecutionOverrides::default(),
             ResidentCallIngressContext::ChildCallOut {
                 parent_call_id: parent.call_id.clone(),
                 parent_firing_id: parent_firing_id.clone(),
@@ -514,7 +514,7 @@ pub(crate) async fn execute_resident_call_with_context(
         request,
         payload,
         current_timestamp(),
-        None,
+        ResidentExecutionOverrides::default(),
         context,
     )
     .await
@@ -537,10 +537,45 @@ pub(super) async fn execute_resident_call_at(
         request,
         payload,
         now.clone(),
-        Some(now),
+        ResidentExecutionOverrides {
+            effect_time: Some(now),
+            post_mint_mutation: None,
+        },
         context,
     )
     .await
+}
+
+#[cfg(test)]
+pub(super) async fn execute_resident_call_with_post_mint_mutation(
+    paths: ResidentRuntimePaths,
+    ledger: ResidentLedgerWriter,
+    request: MctCallProtocolRequest,
+    payload: ResidentPayloadIngress,
+    mutation: AuthorityMutationRequestV1,
+) -> MctIrohCallHandlerResult {
+    let Some(context) = ResidentCallIngressContext::ordinary(&request) else {
+        return MctIrohCallHandlerResult::denied();
+    };
+    execute_resident_call_at_with_context(
+        paths,
+        ledger,
+        request,
+        payload,
+        current_timestamp(),
+        ResidentExecutionOverrides {
+            effect_time: None,
+            post_mint_mutation: Some(mutation),
+        },
+        context,
+    )
+    .await
+}
+
+#[derive(Default)]
+struct ResidentExecutionOverrides {
+    effect_time: Option<Timestamp>,
+    post_mint_mutation: Option<AuthorityMutationRequestV1>,
 }
 
 async fn execute_resident_call_at_with_context(
@@ -549,7 +584,7 @@ async fn execute_resident_call_at_with_context(
     mut request: MctCallProtocolRequest,
     payload: ResidentPayloadIngress,
     now: Timestamp,
-    effect_time_override: Option<Timestamp>,
+    overrides: ResidentExecutionOverrides,
     context: ResidentCallIngressContext,
 ) -> MctIrohCallHandlerResult {
     if !context.matches_request(&request) {
@@ -608,7 +643,8 @@ async fn execute_resident_call_at_with_context(
                 request,
                 inline_payload,
                 context,
-                effect_time_override,
+                overrides.effect_time,
+                overrides.post_mint_mutation,
             )
         },
     )
@@ -622,6 +658,7 @@ async fn execute_resident_call_after_payload(
     inline_payload: Option<Vec<u8>>,
     context: ResidentCallIngressContext,
     effect_time_override: Option<Timestamp>,
+    post_mint_mutation: Option<AuthorityMutationRequestV1>,
 ) -> MctIrohCallHandlerResult {
     let Some(ledger_path) = ledger.path().map(Path::to_path_buf) else {
         return MctIrohCallHandlerResult::failed("runtime unavailable");
@@ -713,6 +750,14 @@ async fn execute_resident_call_after_payload(
                 return MctIrohCallHandlerResult::failed("observation ledger unavailable");
             }
 
+            if let Some(mutation) = post_mint_mutation {
+                let mutation = ledger
+                    .commit_authority_mutation(mutation, paths.state_path().to_path_buf())
+                    .await;
+                if !matches!(mutation, Ok(AuthorityMutationResultV1::Committed { .. })) {
+                    return MctIrohCallHandlerResult::failed("test authority mutation unavailable");
+                }
+            }
             if ledger
                 .publish_authority_projection(paths.state_path().to_path_buf())
                 .await

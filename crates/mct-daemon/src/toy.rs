@@ -53,7 +53,7 @@ pub struct MctToyCallReport {
 type ToySnapshotProvider =
     dyn Fn() -> Result<LocalExecutionAuthoritySnapshot, String> + Send + Sync;
 type ToyOrderAdmission =
-    dyn Fn(&LocalExecutionAuthoritySnapshot) -> Result<(), String> + Send + Sync;
+    dyn Fn(&LocalExecutionAuthoritySnapshot, &mut dyn FnMut()) -> Result<(), String> + Send + Sync;
 
 #[derive(Clone)]
 pub struct MctToyEffectAuthorityV1 {
@@ -72,7 +72,7 @@ impl fmt::Debug for MctToyEffectAuthorityV1 {
 impl MctToyEffectAuthorityV1 {
     pub fn new(
         snapshot: impl Fn() -> Result<LocalExecutionAuthoritySnapshot, String> + Send + Sync + 'static,
-        admit_order: impl Fn(&LocalExecutionAuthoritySnapshot) -> Result<(), String>
+        admit_order: impl Fn(&LocalExecutionAuthoritySnapshot, &mut dyn FnMut()) -> Result<(), String>
         + Send
         + Sync
         + 'static,
@@ -87,11 +87,23 @@ impl MctToyEffectAuthorityV1 {
         (self.snapshot)()
     }
 
-    pub(crate) fn admit_order(
+    pub(crate) fn admit_order<R>(
         &self,
         snapshot: &LocalExecutionAuthoritySnapshot,
-    ) -> Result<(), String> {
-        (self.admit_order)(snapshot)
+        start: impl FnOnce() -> R,
+    ) -> Result<R, String> {
+        let mut start = Some(start);
+        let mut result = None;
+        let mut duplicate_handoff = false;
+        let mut handoff = || match start.take() {
+            Some(start) => result = Some(start()),
+            None => duplicate_handoff = true,
+        };
+        (self.admit_order)(snapshot, &mut handoff)?;
+        if duplicate_handoff {
+            return Err("Mother authority order invoked effect handoff more than once".into());
+        }
+        result.ok_or_else(|| "Mother authority order did not invoke effect handoff".into())
     }
 }
 
@@ -148,15 +160,18 @@ impl MctToyAdapterRegistry {
                 return current_toy_authority_denial_report(authorized, call, ids, reason);
             }
         };
-        if authority.admit_order(&snapshot).is_err() {
-            return current_toy_authority_denial_report(
+        let denial_ids = ids.clone();
+        match authority.admit_order(&snapshot, || {
+            self.call_admitted_toy(authorized, call, input_json, ids)
+        }) {
+            Ok(report) => report,
+            Err(_) => current_toy_authority_denial_report(
                 authorized,
                 call,
-                ids,
+                denial_ids,
                 ToyEffectAdmissionDenyV1::GrantsAuthorityMismatch,
-            );
+            ),
         }
-        self.call_admitted_toy(authorized, call, input_json, ids)
     }
 
     pub fn call_authorized_toy_at(
@@ -762,6 +777,7 @@ fn toy_observation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn call() -> MctCall {
         MctCall {
@@ -814,6 +830,114 @@ mod tests {
 
     fn effect_time() -> Timestamp {
         Timestamp::new("2026-05-31T00:00:30Z").unwrap()
+    }
+
+    fn snapshot_toy_authority(
+        state: ToyGrantState,
+        evaluated_at: &str,
+    ) -> LocalExecutionAuthoritySnapshot {
+        let call = call();
+        let toy_id = ToyId::new("toy-echo").unwrap();
+        let subject = ToyGrantSubject {
+            child_name: "child-adapter".into(),
+            artifact_id: "artifact-adapter".into(),
+            artifact_version: "0.1.0".into(),
+            assignment_id: None,
+            caller_node_id: Some(call.caller.node_id.clone()),
+        };
+        let catalog = CanonicalToyContract {
+            toy_id: toy_id.clone(),
+            contract: ToyContractIdentity {
+                namespace: "mct".into(),
+                interface_name: "toy-adapter".into(),
+                version: "0.1.0".into(),
+                function_name: Some("use".into()),
+                resource_name: None,
+            },
+            authority_bearing: true,
+            catalog_revision: 1,
+            admitted_by_observation_id: ObservationId::new("obs-toy-catalog-adapter").unwrap(),
+        };
+        let grant = ToyGrant {
+            grant_id: ToyGrantId::new("grant-toy-adapter").unwrap(),
+            toy_id,
+            subject,
+            scope: ToyGrantScope {
+                vision_id: call.caller.vision_id.clone(),
+                node_id: Some(call.caller.node_id.clone()),
+                project_id: call.caller.project_id.clone(),
+                data_classification: Some(call.payload_metadata.data_classification.clone()),
+                resource_id: None,
+                allowed_actions: vec!["use".into()],
+            },
+            constraints: ToyGrantConstraints {
+                starts_at: None,
+                expires_at: Some(call.deadline.clone()),
+                max_uses: None,
+                max_duration_ms: None,
+                locality_required: true,
+            },
+            grant_state: state,
+            issuer_id: "issuer-adapter".into(),
+            policy_revision: 1,
+            grants_revision: 2,
+            authority_observation_id: ObservationId::new("obs-toy-grant-adapter").unwrap(),
+        };
+        assemble_local_execution_authority_snapshot(LocalExecutionAuthoritySnapshotPartsV1 {
+            executing_mother_node_id: "mother-a".into(),
+            grants_authority_mother_node_id: "mother-a".into(),
+            grants_authority_epoch: "mct-authority-epoch-v1:adapter".into(),
+            grants_authority_generation: 2,
+            grants_authority_observation_id: "obs-toy-authority-adapter".into(),
+            toy_catalog: vec![catalog],
+            toy_grants: vec![grant],
+            watch_scopes: Vec::new(),
+            policy_revision: 1,
+            vision_policy_revision: 1,
+            child_local_node_id: call.caller.node_id.clone(),
+            child_vision_id: call.caller.vision_id.clone(),
+            child_artifacts: Vec::new(),
+            child_approvals: Vec::new(),
+            child_assignments: Vec::new(),
+            child_instances: Vec::new(),
+            peer_local_node_id: call.caller.node_id.clone(),
+            peer_local_vision_id: call.caller.vision_id.clone(),
+            peer_local_endpoint_id: EndpointIdText::new("endpoint-adapter").unwrap(),
+            peer_records: Vec::new(),
+            callable_surfaces: Vec::new(),
+            evaluated_at: Timestamp::new(evaluated_at).unwrap(),
+            projection_id: "authority-state-v1".into(),
+            projection_source_mother_node_id: "mother-a".into(),
+            projection_source_ledger_id: "ledger-adapter".into(),
+            through_sequence: 2,
+            through_observation_id: "obs-toy-authority-adapter".into(),
+            through_entry_hash: "entry-toy-authority-adapter".into(),
+            authority_state_hash: "state-toy-authority-adapter".into(),
+            projection_hash: "projection-toy-authority-adapter".into(),
+        })
+    }
+
+    fn snapshot_authorized_toy(snapshot: &LocalExecutionAuthoritySnapshot) -> AuthorizedToyCall {
+        let call = call();
+        let request = ToyGrantEvaluationRequest {
+            toy_id: ToyId::new("toy-echo").unwrap(),
+            subject: snapshot.canonical_grants().toy_grants()[0].subject.clone(),
+            child_instance_id: ChildInstanceId::new("instance-toy-adapter").unwrap(),
+            action: "use".into(),
+            resource_id: None,
+            node_id: call.caller.node_id.clone(),
+            now: snapshot.mother_clock().evaluated_at().clone(),
+            ids: ToyGrantEvaluationIds {
+                evaluation_id: ToyGrantEvaluationId::new("eval-toy-adapter-current").unwrap(),
+                decision_id: DecisionId::new("decision-toy-adapter-current").unwrap(),
+                observation_id: ObservationId::new("obs-toy-adapter-current").unwrap(),
+                authorized_toy_call_id: AuthorizedToyCallId::new("auth-toy-adapter-current")
+                    .unwrap(),
+            },
+        };
+        evaluate_toy_grant_for_snapshot(&call, &request, snapshot)
+            .authorized
+            .expect("active local snapshot mints exact Toy authority")
     }
 
     fn ids(stem: &str) -> MctToyCallIds {
@@ -949,6 +1073,98 @@ mod tests {
         assert_eq!(report.output_json, None);
         assert_eq!(report.observations.len(), 1);
         assert_eq!(report.observations[0].outcome, ObservationOutcome::Denied);
+    }
+
+    /// Phase J proof 9: a running Child's later Toy call observes Mother-clock expiry.
+    #[test]
+    fn token_expiring_during_child_denies_the_next_toy_backend_effect() {
+        let minted_snapshot = snapshot_toy_authority(ToyGrantState::Active, "2026-05-31T00:00:30Z");
+        let authorized = snapshot_authorized_toy(&minted_snapshot);
+        let before_expiry = snapshot_toy_authority(ToyGrantState::Active, "2026-05-31T00:00:59Z");
+        let at_expiry = snapshot_toy_authority(ToyGrantState::Active, "2026-05-31T00:01:00Z");
+        let reads = Arc::new(AtomicUsize::new(0));
+        let snapshot_reads = Arc::clone(&reads);
+        let ordered_starts = Arc::new(AtomicUsize::new(0));
+        let counted_starts = Arc::clone(&ordered_starts);
+        let authority = MctToyEffectAuthorityV1::new(
+            move || {
+                if snapshot_reads.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Ok(before_expiry.clone())
+                } else {
+                    Ok(at_expiry.clone())
+                }
+            },
+            move |_, start| {
+                counted_starts.fetch_add(1, Ordering::SeqCst);
+                start();
+                Ok(())
+            },
+        );
+        let mut registry = MctToyAdapterRegistry::new();
+        registry.register(ToyId::new("toy-echo").unwrap(), MctToyBackend::EchoJson);
+
+        let first = registry.call_authorized_toy_with_authority(
+            &authorized,
+            &call(),
+            &authority,
+            "{\"first_effect\":true}",
+            ids("toy-before-expiry"),
+        );
+        let second = registry.call_authorized_toy_with_authority(
+            &authorized,
+            &call(),
+            &authority,
+            "{\"must_not_echo\":true}",
+            ids("toy-at-expiry"),
+        );
+
+        assert_eq!(first.output_json, Some("{\"first_effect\":true}".into()));
+        assert_eq!(
+            second.authority_denial,
+            Some(ToyEffectAdmissionDenyV1::TokenExpired)
+        );
+        assert_eq!(second.output_json, None);
+        assert_eq!(ordered_starts.load(Ordering::SeqCst), 1);
+    }
+
+    /// Phase J proof 7: post-construction revocation denies before order or backend entry.
+    #[test]
+    fn current_toy_revocation_denies_before_order_and_echo_backend() {
+        let minted_snapshot = snapshot_toy_authority(ToyGrantState::Active, "2026-05-31T00:00:30Z");
+        let authorized = snapshot_authorized_toy(&minted_snapshot);
+        let revoked_snapshot =
+            snapshot_toy_authority(ToyGrantState::Revoked, "2026-05-31T00:00:31Z");
+        let order_starts = Arc::new(AtomicUsize::new(0));
+        let counted_starts = Arc::clone(&order_starts);
+        let authority = MctToyEffectAuthorityV1::new(
+            move || Ok(revoked_snapshot.clone()),
+            move |_, start| {
+                counted_starts.fetch_add(1, Ordering::SeqCst);
+                start();
+                Ok(())
+            },
+        );
+        let mut registry = MctToyAdapterRegistry::new();
+        registry.register(ToyId::new("toy-echo").unwrap(), MctToyBackend::EchoJson);
+
+        let report = registry.call_authorized_toy_with_authority(
+            &authorized,
+            &call(),
+            &authority,
+            "{\"backend_effect_marker\":true}",
+            ids("toy-current-revoked"),
+        );
+
+        assert_eq!(
+            report.authority_denial,
+            Some(ToyEffectAdmissionDenyV1::InactiveGrant)
+        );
+        assert_eq!(
+            report.output_json, None,
+            "denied Echo backend emits no marker"
+        );
+        assert_eq!(report.observations.len(), 1, "backend never records start");
+        assert_eq!(order_starts.load(Ordering::SeqCst), 0);
     }
 
     #[test]
