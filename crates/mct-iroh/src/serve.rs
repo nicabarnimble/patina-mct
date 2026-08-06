@@ -36,6 +36,22 @@ pub const MCT_CALL_FRAME_READ_BUDGET_BYTES: usize = 96 * 1024;
 
 const MAX_REMEMBERED_HELLOS: usize = 1024;
 
+fn single_connection_receiver_authority() -> Option<GrantsAuthorityIdentity> {
+    #[cfg(test)]
+    {
+        Some(GrantsAuthorityIdentity {
+            mother_node_id: "mother-test".into(),
+            authority_epoch: "epoch-test".into(),
+            generation: 1,
+            source_authority_observation_id: "obs-authority-test".into(),
+        })
+    }
+    #[cfg(not(test))]
+    {
+        None
+    }
+}
+
 /// Mutable state for serving MCT protocols over one Mother-owned endpoint.
 ///
 /// Decision and observation IDs minted from this state include a random prefix
@@ -231,6 +247,7 @@ mod tests {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)] // Complete hello/call reports remain inspectable by value.
 pub enum MctIrohServedProtocol {
     Hello {
         request: MctHelloRequest,
@@ -450,6 +467,54 @@ impl fmt::Debug for MctIrohObservationSink {
     }
 }
 
+type ReceiverAuthorityFuture =
+    Pin<Box<dyn Future<Output = Option<GrantsAuthorityIdentity>> + Send + 'static>>;
+type ReceiverAuthorityCallback = dyn Fn() -> ReceiverAuthorityFuture + Send + Sync + 'static;
+
+/// Fresh receiver-authority source consulted independently for each hello and call.
+#[derive(Clone)]
+pub struct MctIrohReceiverAuthorityProvider {
+    callback: Arc<ReceiverAuthorityCallback>,
+}
+
+impl MctIrohReceiverAuthorityProvider {
+    /// Creates a provider whose callback returns a proof-gated current identity or `None`.
+    pub fn new<F, Fut>(callback: F) -> Self
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Option<GrantsAuthorityIdentity>> + Send + 'static,
+    {
+        Self {
+            callback: Arc::new(move || Box::pin(callback())),
+        }
+    }
+
+    /// Creates a provider that returns one fixed proven identity.
+    pub fn fixed(identity: GrantsAuthorityIdentity) -> Self {
+        Self::new(move || {
+            let identity = identity.clone();
+            async move { Some(identity) }
+        })
+    }
+
+    /// Creates a provider that always fails closed as temporarily unavailable.
+    pub fn unavailable() -> Self {
+        Self::new(|| async { None })
+    }
+
+    async fn current(&self) -> Option<GrantsAuthorityIdentity> {
+        (self.callback)().await
+    }
+}
+
+impl fmt::Debug for MctIrohReceiverAuthorityProvider {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MctIrohReceiverAuthorityProvider")
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct MctIrohConcurrentServeConfig {
     pub max_concurrent_connections: usize,
@@ -457,6 +522,7 @@ pub struct MctIrohConcurrentServeConfig {
     pub events: Option<mpsc::Sender<MctIrohServeEvent>>,
     pub require_binding_signature: bool,
     pub capability_view: Option<MctHelloCapabilityView>,
+    pub receiver_authority_provider: MctIrohReceiverAuthorityProvider,
     pub observation_sink: MctIrohObservationSink,
 }
 
@@ -468,8 +534,29 @@ impl MctIrohConcurrentServeConfig {
             events: None,
             require_binding_signature: false,
             capability_view: None,
+            receiver_authority_provider: {
+                #[cfg(test)]
+                {
+                    MctIrohReceiverAuthorityProvider::fixed(GrantsAuthorityIdentity {
+                        mother_node_id: "mother-test".into(),
+                        authority_epoch: "epoch-test".into(),
+                        generation: 1,
+                        source_authority_observation_id: "obs-authority-test".into(),
+                    })
+                }
+                #[cfg(not(test))]
+                {
+                    MctIrohReceiverAuthorityProvider::unavailable()
+                }
+            },
             observation_sink,
         }
+    }
+
+    /// Uses a fixed proven receiver identity, primarily for closed test fixtures.
+    pub fn with_fixed_receiver_authority(mut self, identity: GrantsAuthorityIdentity) -> Self {
+        self.receiver_authority_provider = MctIrohReceiverAuthorityProvider::fixed(identity);
+        self
     }
 }
 
@@ -1175,6 +1262,7 @@ impl MotherIrohEndpoint {
         let issuer_endpoint_id = self.snapshot().endpoint_id;
         let require_binding_signature = config.require_binding_signature;
         let capability_view = config.capability_view.clone();
+        let receiver_authority_provider = config.receiver_authority_provider.clone();
         let observation_sink = config.observation_sink.clone();
         let state = Arc::new(Mutex::new(state));
         let semaphore = Arc::new(Semaphore::new(config.max_concurrent_connections));
@@ -1212,6 +1300,7 @@ impl MotherIrohEndpoint {
             let issuer_endpoint_id = issuer_endpoint_id.clone();
             let active_tasks = Arc::clone(&active_tasks);
             let capability_view = capability_view.clone();
+            let receiver_authority_provider = receiver_authority_provider.clone();
             let observation_sink = observation_sink.clone();
             let task_error_tx = task_error_tx.clone();
             active_tasks.fetch_add(1, Ordering::SeqCst);
@@ -1364,12 +1453,21 @@ impl MotherIrohEndpoint {
                                     evaluation,
                                 );
                             }
+                            let receiver_authority = if evaluation.is_admitted() {
+                                receiver_authority_provider.current().await
+                            } else {
+                                None
+                            };
+                            if evaluation.is_admitted() && receiver_authority.is_none() {
+                                evaluation.refuse_receiver_authority_unavailable();
+                            }
                             let mut response = hello_response(
                                 format!("reply-iroh-hello-{}", state.next_suffix()),
                                 &evaluation,
                                 state.next_observation_id("hello-reply"),
                             );
                             if evaluation.is_admitted() {
+                                response.receiving_grants_authority = receiver_authority;
                                 response.capability_view = capability_view.clone();
                             }
                             let response_bytes =
@@ -1867,7 +1965,7 @@ impl MotherIrohEndpoint {
                     request.received_over.alpn = MCT_HELLO_ALPN.into();
                     request.received_over.connection_side = ConnectionSide::Incoming;
 
-                    let evaluation = evaluate_hello(
+                    let mut evaluation = evaluate_hello(
                         &request,
                         bindings,
                         &HelloPolicy::default(),
@@ -1879,6 +1977,10 @@ impl MotherIrohEndpoint {
                             now,
                         },
                     );
+                    let receiver_authority = single_connection_receiver_authority();
+                    if evaluation.is_admitted() && receiver_authority.is_none() {
+                        evaluation.refuse_receiver_authority_unavailable();
+                    }
                     observation_sink
                         .record(MctIrohObservationBatch {
                             durability: MctIrohObservationDurability::BeforeEffect,
@@ -1893,11 +1995,14 @@ impl MotherIrohEndpoint {
                             source,
                         })?;
                     state.remember_hello(remote_endpoint_id.clone(), evaluation.clone());
-                    let response = hello_response(
+                    let mut response = hello_response(
                         format!("reply-iroh-hello-{}", state.next_suffix()),
                         &evaluation,
                         state.next_observation_id("hello-reply"),
                     );
+                    if evaluation.is_admitted() {
+                        response.receiving_grants_authority = receiver_authority;
+                    }
                     let response_bytes = serde_json::to_vec(&response).map_err(|source| {
                         MotherIrohEndpointError::ProtocolJson {
                             action: "encode mct/hello/0 response",

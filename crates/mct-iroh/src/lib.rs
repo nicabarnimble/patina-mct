@@ -30,8 +30,8 @@ pub use serve::{
     MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES, MctIrohCallHandlerResult, MctIrohCallLifecycleFact,
     MctIrohCallLifecycleStage, MctIrohCallPayloadReply, MctIrohConcurrentServeConfig,
     MctIrohObservationBatch, MctIrohObservationDurability, MctIrohObservationFact,
-    MctIrohObservationSink, MctIrohPeerCallReport, MctIrohServeEvent, MctIrohServeState,
-    MctIrohServedProtocol,
+    MctIrohObservationSink, MctIrohPeerCallReport, MctIrohReceiverAuthorityProvider,
+    MctIrohServeEvent, MctIrohServeState, MctIrohServedProtocol,
 };
 
 /// Returns the crate version for health and smoke tests.
@@ -194,6 +194,53 @@ mod tests {
 
         server.close().await;
         client.close().await;
+    }
+
+    #[tokio::test]
+    async fn unavailable_receiver_authority_degrades_hello_without_identity_or_capability() {
+        let server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let server_ticket = server.ticket();
+        let client_endpoint_id = client.snapshot().endpoint_id;
+        let binding = test_peer_binding(&client_endpoint_id);
+        let capability_view = MctHelloCapabilityView {
+            node_id: MctNodeId::new("mother-server").unwrap(),
+            vision_id: VisionId::new("vision-a").unwrap(),
+            published_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+            policy_revision: 1,
+            supported_alpns: vec![MCT_CALL_ALPN.into()],
+            supported_wit_worlds: Vec::new(),
+            supported_observation_modes: Vec::new(),
+            callable_surfaces: Vec::new(),
+            capability_view_ref: None,
+        };
+        let serve_task = tokio::spawn(async move {
+            server
+                .serve_concurrent_with_call_handler(
+                    MctIrohServeState::new(),
+                    vec![binding],
+                    MctIrohConcurrentServeConfig {
+                        capability_view: Some(capability_view),
+                        receiver_authority_provider: MctIrohReceiverAuthorityProvider::unavailable(
+                        ),
+                        ..MctIrohConcurrentServeConfig::new(test_observation_sink().clone())
+                    },
+                    || Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
+                    |_, _, _| async { panic!("degraded hello cannot reach the call handler") },
+                )
+                .await
+        });
+
+        let trace_id = TraceId::new("trace-unavailable-receiver-authority").unwrap();
+        let hello = test_hello_request(&client_endpoint_id, &trace_id);
+        let response = client.send_hello(&server_ticket, &hello).await.unwrap();
+        assert_eq!(response.hello_outcome, HelloOutcome::RetryLater);
+        assert_eq!(response.safe_message, "retry later");
+        assert!(response.receiving_grants_authority.is_none());
+        assert!(response.capability_view.is_none());
+
+        client.close().await;
+        serve_task.abort();
     }
 
     #[tokio::test]
@@ -1465,6 +1512,7 @@ mod tests {
             hello_outcome: HelloOutcome::Admitted,
             negotiated_protocol: None,
             accepted_alpns: vec![MCT_CALL_ALPN.into()],
+            receiving_grants_authority: None,
             safe_message: "admitted".into(),
             retry_after: None,
             capability_view: None,

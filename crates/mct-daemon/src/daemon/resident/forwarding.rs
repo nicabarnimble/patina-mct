@@ -1256,6 +1256,7 @@ listens = []
                     MctIrohConcurrentServeConfig {
                         events: Some(events),
                         require_binding_signature: true,
+                        receiver_authority_provider: test_receiver_authority_provider(),
                         ..MctIrohConcurrentServeConfig::new(test_iroh_observation_sink())
                     },
                     current_timestamp,
@@ -1384,6 +1385,7 @@ listens = []
                     vec![executor_binding],
                     MctIrohConcurrentServeConfig {
                         require_binding_signature: true,
+                        receiver_authority_provider: test_receiver_authority_provider(),
                         ..MctIrohConcurrentServeConfig::new(test_iroh_observation_sink())
                     },
                     current_timestamp,
@@ -1630,6 +1632,7 @@ listens = []
                     MctIrohConcurrentServeConfig {
                         require_binding_signature: true,
                         capability_view: Some(b_view),
+                        receiver_authority_provider: test_receiver_authority_provider(),
                         ..MctIrohConcurrentServeConfig::new(test_iroh_observation_sink())
                     },
                     current_timestamp,
@@ -1754,6 +1757,7 @@ listens = []
             hello_outcome: HelloOutcome::Admitted,
             negotiated_protocol: Some(HelloPolicy::default().protocol),
             accepted_alpns: vec![MCT_CALL_ALPN.into()],
+            receiving_grants_authority: None,
             safe_message: "admitted".into(),
             retry_after: None,
             capability_view: None,

@@ -823,7 +823,10 @@ mod tests {
                 .serve_concurrent_with_call_handler(
                     MctIrohServeState::new(),
                     vec![binding],
-                    MctIrohConcurrentServeConfig::new(observation_sink),
+                    MctIrohConcurrentServeConfig {
+                        receiver_authority_provider: test_receiver_authority_provider(),
+                        ..MctIrohConcurrentServeConfig::new(observation_sink)
+                    },
                     || Timestamp::new("2026-07-09T00:00:02Z").unwrap(),
                     |_, _, _| async { MctIrohCallHandlerResult::accepted_for_routing(None) },
                 )
