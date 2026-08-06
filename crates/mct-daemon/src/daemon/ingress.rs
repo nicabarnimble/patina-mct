@@ -1301,9 +1301,12 @@ listens = []
                 .serve_concurrent_with_call_handler(
                     MctIrohServeState::new(),
                     vec![binding],
-                    MctIrohConcurrentServeConfig::new(MctIrohObservationSink::new(|_| async {
-                        Ok::<(), std::io::Error>(())
-                    })),
+                    MctIrohConcurrentServeConfig {
+                        receiver_authority_provider: test_receiver_authority_provider(),
+                        ..MctIrohConcurrentServeConfig::new(MctIrohObservationSink::new(
+                            |_| async { Ok::<(), std::io::Error>(()) },
+                        ))
+                    },
                     current_timestamp,
                     move |_, _, _| {
                         let observed = JsonlObservationLedger::open_read_only(
@@ -1373,7 +1376,7 @@ listens = []
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn standalone_serve_process_persists_hello_and_call_lifecycle() {
+    async fn standalone_serve_process_without_canonical_authority_degrades_hello() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.json");
         let identity_path = dir.path().join("identity.hex");
@@ -1435,58 +1438,10 @@ listens = []
             None,
         );
         let hello_response = client.send_hello(&ticket, &hello).await.unwrap();
-        assert_eq!(hello_response.hello_outcome, HelloOutcome::Admitted);
-        let call = cli_call_request(
-            &client_endpoint_id,
-            &binding_id,
-            &node_id,
-            &vision_id,
-            &trace_id,
-            OperationTarget {
-                namespace: "patina:demo".into(),
-                interface_name: "control@0.1.0".into(),
-                function_name: "run".into(),
-            },
-            &hello_response,
-        );
-        let reply = client.send_call(&ticket, &call).await.unwrap();
-        assert_eq!(reply.reply_outcome, CallProtocolReplyOutcome::Success);
-        let replay = client.send_call(&ticket, &call).await.unwrap();
-        assert_eq!(replay.reply_outcome, reply.reply_outcome);
-        assert_eq!(replay.safe_message, reply.safe_message);
-        assert_eq!(replay.result_ref, reply.result_ref);
-        assert_eq!(replay.result_payload, reply.result_payload);
-        assert_eq!(
-            MctRuntimeStateStore::open(&state_path)
-                .unwrap()
-                .summary()
-                .unwrap()
-                .runs,
-            1
-        );
-
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let has_reply = JsonlObservationLedger::open_read_only(
-                    &ledger_path,
-                    "ledger-local",
-                    "local-mct",
-                )
-                .ok()
-                .and_then(|reader| reader.entries().ok())
-                .is_some_and(|entries| {
-                    entries
-                        .iter()
-                        .any(|entry| entry.observation.kind == ObservationKind::PeerCallReplied)
-                });
-                if has_reply {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
+        assert_eq!(hello_response.hello_outcome, HelloOutcome::RetryLater);
+        assert_eq!(hello_response.safe_message, "retry later");
+        assert!(hello_response.receiving_grants_authority.is_none());
+        assert!(hello_response.capability_view.is_none());
         serve_task.abort();
         client.close().await;
 
@@ -1496,36 +1451,19 @@ listens = []
                 .entries()
                 .unwrap();
         assert!(entries.iter().any(|entry| {
-            entry.observation.kind == ObservationKind::PeerAdmitted
+            entry.observation.kind == ObservationKind::PeerRejected
                 && entry.durability_class == DurabilityClass::BeforeEffect
         }));
-        let lifecycle = entries
-            .iter()
-            .filter_map(|entry| match entry.observation.kind {
+        assert!(!entries.iter().any(|entry| {
+            matches!(
+                entry.observation.kind,
                 ObservationKind::PeerCallReceived
-                | ObservationKind::CallConstructed
-                | ObservationKind::CallAuthorized
-                | ObservationKind::ResultRecorded
-                | ObservationKind::PeerCallReplied => Some(entry.observation.kind),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            lifecycle,
-            vec![
-                ObservationKind::PeerCallReceived,
-                ObservationKind::CallConstructed,
-                ObservationKind::CallAuthorized,
-                ObservationKind::ResultRecorded,
-                ObservationKind::PeerCallReplied,
-                ObservationKind::PeerCallReceived,
-                ObservationKind::CallConstructed,
-                ObservationKind::CallAuthorized,
-                ObservationKind::ResultRecorded,
-                ObservationKind::ResultRecorded,
-                ObservationKind::PeerCallReplied,
-            ]
-        );
+                    | ObservationKind::CallConstructed
+                    | ObservationKind::CallAuthorized
+                    | ObservationKind::ResultRecorded
+                    | ObservationKind::PeerCallReplied
+            )
+        }));
         let secret_key_material = std::fs::read_to_string(identity_path).unwrap();
         let ledger_text = std::fs::read_to_string(ledger_path).unwrap();
         assert!(!ledger_text.contains(secret_key_material.trim()));

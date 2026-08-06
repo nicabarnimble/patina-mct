@@ -1,5 +1,5 @@
 use crate::{
-    call::RuntimeKind,
+    call::{GrantsAuthorityIdentity, RuntimeKind},
     error::{MctKernelResult, ensure_non_blank},
     id::*,
 };
@@ -372,6 +372,8 @@ pub struct MctHelloResponse {
     pub negotiated_protocol: Option<MctProtocolVersion>,
     /// ALPNs admitted for later protocols.
     pub accepted_alpns: Vec<String>,
+    /// Current receiver authority identity, present only for a proof-gated admission.
+    pub receiving_grants_authority: Option<GrantsAuthorityIdentity>,
     /// Safe message derived from [`SafeHelloReason`].
     pub safe_message: String,
     /// Optional retry time for retry-later responses.
@@ -502,6 +504,24 @@ pub fn evaluate_hello(
 }
 
 impl MctHelloAdmissionEvaluation {
+    /// Converts an otherwise-admitted hello into the closed temporary posture used when
+    /// the receiving Mother cannot prove current grants authority.
+    pub fn refuse_receiver_authority_unavailable(&mut self) {
+        if !self.is_admitted() {
+            return;
+        }
+        self.peer_admission_decision_id = None;
+        self.selected_binding_id = None;
+        self.selected_node_id = None;
+        self.selected_vision_id = None;
+        self.selected_policy_revision = None;
+        self.negotiated_protocol = None;
+        self.accepted_alpns.clear();
+        self.hello_outcome = HelloOutcome::RetryLater;
+        self.reason = HelloReason::TemporaryUnavailable;
+        self.safe_reason = SafeHelloReason::RetryLater;
+    }
+
     /// Returns true only when the evaluation grants hello admission.
     pub fn is_admitted(&self) -> bool {
         self.hello_outcome == HelloOutcome::Admitted
@@ -536,6 +556,7 @@ pub fn hello_response(
         hello_outcome: evaluation.hello_outcome,
         negotiated_protocol: evaluation.negotiated_protocol.clone(),
         accepted_alpns: evaluation.accepted_alpns.clone(),
+        receiving_grants_authority: None,
         safe_message: safe_message.into(),
         retry_after: None,
         capability_view: None,

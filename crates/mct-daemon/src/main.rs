@@ -37,12 +37,12 @@ use mct_daemon::{
 use mct_iroh::{
     MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES, MctIrohCallHandlerResult, MctIrohCallPayloadReply,
     MctIrohConcurrentServeConfig, MctIrohObservationBatch, MctIrohObservationDurability,
-    MctIrohObservationSink, MctIrohServeEvent, MctIrohServeState, MctIrohServedProtocol,
-    MctPeerBindingSignatureVerification, MotherIrohEndpoint, MotherIrohEndpointConfig,
-    MotherIrohEndpointError, MotherIrohEndpointSnapshot, MotherIrohEndpointTicket,
-    MotherIrohRelayMode, endpoint_id_for_secret_key_hex, generate_node_secret_key_hex,
-    load_or_create_node_secret_key_hex, verify_peer_binding_signature_ref,
-    write_new_node_secret_key_file,
+    MctIrohObservationSink, MctIrohReceiverAuthorityProvider, MctIrohServeEvent, MctIrohServeState,
+    MctIrohServedProtocol, MctPeerBindingSignatureVerification, MotherIrohEndpoint,
+    MotherIrohEndpointConfig, MotherIrohEndpointError, MotherIrohEndpointSnapshot,
+    MotherIrohEndpointTicket, MotherIrohRelayMode, endpoint_id_for_secret_key_hex,
+    generate_node_secret_key_hex, load_or_create_node_secret_key_hex,
+    verify_peer_binding_signature_ref, write_new_node_secret_key_file,
 };
 use mct_kernel::*;
 use mct_observation::{
@@ -65,6 +65,16 @@ use tokio::{net::TcpListener, sync::broadcast};
 
 #[cfg(unix)]
 use tokio::net::UnixListener;
+
+#[cfg(test)]
+fn test_receiver_authority_provider() -> MctIrohReceiverAuthorityProvider {
+    MctIrohReceiverAuthorityProvider::fixed(GrantsAuthorityIdentity {
+        mother_node_id: "local-mct".into(),
+        authority_epoch: "epoch-test".into(),
+        generation: 1,
+        source_authority_observation_id: "obs-authority-test".into(),
+    })
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {

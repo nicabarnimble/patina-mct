@@ -102,6 +102,59 @@ impl PayloadMetadata {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Complete namespaced grants-authority identity advertised by a receiving Mother.
+///
+/// This wire value is caller-carried change-detection evidence only. It never
+/// establishes local execution or effect authority.
+pub struct GrantsAuthorityIdentity {
+    /// Mother whose canonical authority lineage produced this identity.
+    pub mother_node_id: String,
+    /// Fresh writer-tenure epoch within that Mother's authority lineage.
+    pub authority_epoch: String,
+    /// Global canonical authority generation within the epoch.
+    pub generation: u64,
+    /// Canonical authority observation that established this generation.
+    pub source_authority_observation_id: String,
+}
+
+impl GrantsAuthorityIdentity {
+    /// Validates that every namespaced identity component is present.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MctKernelError::InvalidField`] when a required string is blank.
+    pub fn validate(&self) -> MctKernelResult<()> {
+        ensure_non_blank(
+            "GrantsAuthorityIdentity",
+            "mother_node_id",
+            &self.mother_node_id,
+        )?;
+        ensure_non_blank(
+            "GrantsAuthorityIdentity",
+            "authority_epoch",
+            &self.authority_epoch,
+        )?;
+        ensure_non_blank(
+            "GrantsAuthorityIdentity",
+            "source_authority_observation_id",
+            &self.source_authority_observation_id,
+        )?;
+        Ok(())
+    }
+}
+
+impl From<&crate::authority::LocalGrantsAuthorityIdentityV1> for GrantsAuthorityIdentity {
+    fn from(value: &crate::authority::LocalGrantsAuthorityIdentityV1) -> Self {
+        Self {
+            mother_node_id: value.mother_node_id().into(),
+            authority_epoch: value.authority_epoch().into(),
+            generation: value.generation(),
+            source_authority_observation_id: value.source_authority_observation_id().into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Revision numbers of authority inputs observed when the call was formed.
 ///
 /// Protocol evaluation rejects calls whose call-side policy or grants revision

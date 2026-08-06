@@ -737,6 +737,28 @@ where
         config.state_path.clone(),
     );
     let execution_ledger = ledger.clone();
+    let receiver_authority_paths = (
+        config.ledger_path.clone(),
+        config.config_path.clone(),
+        config.children_dir.clone(),
+        config.state_path.clone(),
+    );
+    let receiver_authority_ledger = ledger.clone();
+    let receiver_authority_provider = MctIrohReceiverAuthorityProvider::new(move || {
+        let paths = receiver_authority_paths.clone();
+        let ledger = receiver_authority_ledger.clone();
+        async move {
+            ledger
+                .publish_authority_projection(paths.3.clone())
+                .await
+                .ok()?;
+            mct_daemon::local_execution_authority_snapshot(&paths.0, &paths.1, &paths.2, &paths.3)
+                .ok()
+                .map(|snapshot| {
+                    GrantsAuthorityIdentity::from(snapshot.canonical_grants().grants_authority())
+                })
+        }
+    });
     let observation_sink = resident_iroh_observation_sink(ledger.clone());
     let serve_result = tokio::select! {
         result = endpoint.serve_concurrent_with_binding_provider(
@@ -746,6 +768,7 @@ where
                 events: Some(events),
                 require_binding_signature: true,
                 capability_view: Some(hello_capability_view),
+                receiver_authority_provider,
                 ..MctIrohConcurrentServeConfig::new(observation_sink)
             },
             current_timestamp,
@@ -1740,7 +1763,14 @@ listens = []
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
+        let control_socket = socket_path.clone();
         let children_dir = dir.path().join("children");
+        let authority_paths = (
+            ledger_path.clone(),
+            config_path.clone(),
+            children_dir.clone(),
+            state_path.clone(),
+        );
         write_resident_process_child(&children_dir);
 
         let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
@@ -1818,6 +1848,30 @@ listens = []
         );
         let hello_response = client.send_hello(&ticket, &hello).await.unwrap();
         assert_eq!(hello_response.hello_outcome, HelloOutcome::Admitted);
+        let canonical_authority = replay_authority_entries(
+            &JsonlObservationLedger::open_read_only(
+                &authority_paths.0,
+                "ledger-local",
+                "local-mct",
+            )
+            .unwrap()
+            .entries()
+            .unwrap(),
+        )
+        .unwrap()
+        .current_authority
+        .unwrap();
+        let first_authority = GrantsAuthorityIdentity {
+            mother_node_id: canonical_authority.mother_node_id,
+            authority_epoch: canonical_authority.authority_epoch,
+            generation: canonical_authority.generation,
+            source_authority_observation_id: canonical_authority.source_authority_observation_id,
+        };
+        assert_eq!(
+            hello_response.receiving_grants_authority,
+            Some(first_authority.clone()),
+            "admitted hello advertises exactly the fresh proof-gated local identity"
+        );
         let capability_view = hello_response
             .capability_view
             .expect("resident hello response publishes capability view");
@@ -1832,6 +1886,55 @@ listens = []
                 && surface.operation_id == "patina:demo/control@0.1.0.run"
                 && surface.visibility == "vision_scoped"
         }));
+
+        let mutation = serde_json::to_vec(&serde_json::json!({
+            "mutation_id": "phase-k-hello-generation-advance",
+            "expected_config_path": authority_paths.1,
+            "expected_children_dir": authority_paths.2,
+            "expected_state_path": authority_paths.3,
+            "child_name": "resident-echo",
+            "secret_name": "phase-k-secret"
+        }))
+        .unwrap();
+        let request = [
+            format!(
+                "POST /toys/authorize-secret HTTP/1.1\r\nHost: local\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                mutation.len()
+            )
+            .into_bytes(),
+            mutation,
+        ]
+        .concat();
+        let (status, response) = resident_uds_request(&control_socket, request).await;
+        assert_eq!(status, 200, "{response}");
+
+        let next_hello = cli_hello_request(
+            &client_endpoint_id,
+            &binding_id,
+            &client_node_id,
+            &vision_id,
+            &trace_id,
+            store.load().unwrap().peers["mother-client"]
+                .binding_signature_ref
+                .clone(),
+        );
+        let next_response = client.send_hello(&ticket, &next_hello).await.unwrap();
+        let next_authority = next_response
+            .receiving_grants_authority
+            .expect("post-mutation hello advertises current authority");
+        assert_eq!(
+            next_authority.mother_node_id,
+            first_authority.mother_node_id
+        );
+        assert_eq!(
+            next_authority.authority_epoch,
+            first_authority.authority_epoch
+        );
+        assert_eq!(next_authority.generation, first_authority.generation + 1);
+        assert_ne!(
+            next_authority.source_authority_observation_id,
+            first_authority.source_authority_observation_id
+        );
 
         let _ = shutdown_tx.send(());
         tokio::time::timeout(Duration::from_secs(10), resident)
