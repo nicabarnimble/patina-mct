@@ -91,27 +91,27 @@ exit_criteria:
     verify: cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh && allium check layer/allium
   - id: phase-k-hello-advertisement
     text: An admitted hello advertises the receiving Mother's complete current proof-gated grants-authority identity; an unprovable receiver advertises no usable identity and refuses typed.
-    checked: false
+    checked: true
     verify: Phase K proof steps 1 and 8 have landed test file and line citations.
   - id: phase-k-early-stale-rejection
     text: Peer and local ingress first reject disagreeing expected-identity copies as malformed, then compare one consistent complete expected receiver identity with a fresh local identity before route evaluation; mismatch is a typed temporal rejection with correlation evidence, while agreement grants nothing.
-    checked: false
+    checked: true
     verify: Phase K proof steps 2-5 and 11 have landed test file and line citations.
   - id: phase-k-wire-and-internal-migration
     text: The legacy call-carried grants_revision is replaced according to the ratified consumer inventory, forwarding echoes the admitted hello identity, and internal Child-originated calls source the local current identity rather than parent-carried values.
-    checked: false
+    checked: true
     verify: Phase K proof steps 6-7 and 9 have landed test file and line citations.
   - id: phase-k-no-authority-widening
     text: Matching, forged, absent, malformed, future, or stale expected receiver identities never skip or alter Phase I evaluation or Phase J effect admission; the peer echo can only reject earlier.
-    checked: false
+    checked: true
     verify: Phase K proof steps 3-5 and 10 have landed test file and line citations.
   - id: phase-k-terminal-ledger
     text: All four remaining grants-authority Track 3 rows and audit item M2d are terminal with cited production-path proofs and no grants-authority row remains non-terminal.
-    checked: false
+    checked: true
     verify: Phase K close-out ledger delta and audit disposition.
   - id: phase-k-validation
     text: Every Phase K implementation commit and final close-out pass workspace tests, warnings-denied clippy, Tier 0/RustSec, Allium, grants-authority spec check, and diff check under the recorded flake protocol.
-    checked: false
+    checked: true
     verify: cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh && allium check layer/allium
 ---
 
@@ -1113,3 +1113,33 @@ cargo clippy --workspace --all-targets -- -D warnings
 The final close-out additionally runs `allium check layer/allium`, `patina spec check grants-authority-v0 --json`, and `git diff --check`. A failing test is rerun in isolation up to five times; a non-reproducing failure is retained verbatim in the Phase K flake log, while a reproducing failure is fixed before advancement.
 
 **Phase K Gate G1:** ratified from disk at `d47a359`. D-K.1 adds proof 11 and fixes provenance-copy disagreement as malformed ingress before current-identity comparison. Task B proceeds only under the eleven required proofs and the unchanged Phase K fence.
+
+## Phase K close-out evidence
+
+Implementation landed in `9eecaed` (proof-gated hello advertisement) and `7983479` (complete echo schema, early rejection, internal/per-hop construction, legacy retirement, and proofs). The eleven proof obligations are cited below; line numbers are from `7983479` plus the close-out worktree.
+
+| Proof | Landed evidence and central assertion |
+|---:|---|
+| 1 | `crates/mct-daemon/src/daemon/resident/serving.rs:1765` — `resident_hello_publishes_federation_callable_surface`: `assert_eq!(next_authority.generation, first_authority.generation + 1)` while Mother/epoch remain equal and source observation changes. |
+| 2 | `crates/mct-daemon/src/daemon/resident/pipeline.rs:1429` and `crates/mct-iroh/src/lib.rs:1377` — stale ingress retains expected/current source observations and `refresh_hello` before route/idempotency; re-hello then yields `assert_eq!(execution_count.load(Ordering::SeqCst), 1)`. |
+| 3 | `crates/mct-daemon/src/toy.rs:1136` — `current_toy_revocation_denies_before_order_and_echo_backend`: matching call correlation cannot overcome current exact-grant revocation and the backend marker remains absent. |
+| 4 | `crates/mct-kernel/src/call/mod.rs:1394` — wrong Mother, epoch, source, and future generation each assert `ExpectedReceiverAuthorityStale`, `RefreshHello`, and no route decision. |
+| 5 | `crates/mct-kernel/src/call/mod.rs:1451` plus proof 4 — absent, former-integer, and malformed wire forms fail decode/validation; every complete mismatch remains typed temporal staleness. |
+| 6 | `crates/mct-iroh/src/lib.rs:1377` — the two-Mother wire test succeeds after hello, rejects a post-hello receiver mutation without invoking the handler, and succeeds exactly once after re-hello. |
+| 7 | `crates/mct-iroh/src/lib.rs:1386` — a fresh writer-tenure epoch rejects the pre-restart identity with `RefreshHello`; re-hello advertises the new epoch and retry succeeds once. |
+| 8 | `crates/mct-iroh/src/lib.rs:210`, `crates/mct-daemon/src/authority_snapshot.rs:505`, `:563`, and startup quarantine/foreign-lineage proofs — every inability to construct the proof-gated snapshot collapses to admitted-neither `RetryLater`, with `receiving_grants_authority.is_none()` and `capability_view.is_none()`; stale/epoch conditions recover only after explicit coherent publication/rebuild. |
+| 9 | `crates/mct-daemon/src/daemon/resident/pipeline.rs:1398` — the Child callout constructor asserts both copies equal the constructing Mother's current identity and differ from the hostile parent value; proof 4 supplies the shared post-construction stale decision. |
+| 10 | `crates/mct-daemon/src/authority_order.rs:701` and the complete workspace suite — the source audit retires bare call-revision comparisons and preserves all Phase I snapshot and Phase J effect-admission seams; the unchanged route/Toy/effect proofs remain green. |
+| 11 | `crates/mct-kernel/src/call/mod.rs:1369` — with current identity alternately equal to either disagreeing copy, both evaluations assert `Malformed`, `MalformedCall`, retry `None`, and no route decision, proving neither copy is selected or preferred. |
+
+B3 retirement is complete: both call-carried bare `grants_revision` fields are gone, old/missing/integer wire forms have no compatibility reader, forwarding derives both copies from the admitted per-hop hello, local/trigger/Child construction uses proof-gated local identity, and `MctObservation.grants_revision` remains only the explicitly retained lossy correlation projection. The idempotency fingerprint and D-J.2 replay semantics are unchanged.
+
+Track 3 is terminal for this finding family at **31 COVERED / 0 LAW-LEADS-CODE / 0 DEFERRED**. Audit disposition is M2a **closed**, M2b **closed**, M2c **closed**, M2d **closed**, and M5 **closed**. This completes the original Review 1 grants-authority finding set; Review 3 response behavior remains separately scoped by D-J.2.
+
+### Validation and flake log
+
+Both Phase K implementation commits passed workspace tests, warnings-denied Clippy, Tier 0/RustSec, Allium, and diff checking before advancement. Final implementation validation passed 513 tests with 1 ignored (175/1 daemon library, 155 daemon binary, 3 release archive, 2 WASM limits, 39 Iroh, 104 kernel, and 35 observation), with warnings-denied Clippy and Tier 0/RustSec clean. Final close-out also runs Allium, spec check, and diff check.
+
+Phase K flake log: **empty**. The legacy Toy fixture expectation, authority-test fixture alignment, source-pin formatting, and Clippy argument-count findings reproduced deterministically and were repaired before advancement; none invoked the non-reproducing five-rerun protocol.
+
+Phase K is complete. The next grants-adjacent work is only the separately fenced D-J.2 Review 3 behavior; H1 process cleanup and performance profiling remain independent board items.

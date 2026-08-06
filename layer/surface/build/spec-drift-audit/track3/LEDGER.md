@@ -1,6 +1,6 @@
 # Contract obligation ledger
 
-Status date: 2026-07-12; W2 extension 2026-07-14; Daily-Driver Slice 2 extension 2026-07-15; artifact-acquisition extension 2026-07-16; trigger-runtime Part A extension 2026-07-21; grants-authority v0 Phase G extension 2026-08-02; ledger commit/recovery Phase H/H2 extension 2026-08-03; Phase H3 extension 2026-08-05; Phase J Gate G1 extension 2026-08-06
+Status date: 2026-07-12; W2 extension 2026-07-14; Daily-Driver Slice 2 extension 2026-07-15; artifact-acquisition extension 2026-07-16; trigger-runtime Part A extension 2026-07-21; grants-authority v0 Phase G extension 2026-08-02; ledger commit/recovery Phase H/H2 extension 2026-08-03; Phase H3 extension 2026-08-05; Phase J Gate G1 extension 2026-08-06; Phase K close-out 2026-08-06
 
 Scope: complete named-invariant coverage for `mct-product-map.allium` and `mct-peer-ontology.allium`, plus bulk attribution of tool-derived structural obligations. The 2026-07-12 priority and full-inventory evidence is retained in place; the 2026-07-14 local-application-ingress invariants and W2-A remediation obligations extend it below.
 
@@ -85,7 +85,7 @@ The separate `MctProjectionCursor` structural row remains `COVERED`. Phase J clo
 
 ## Grants authority v0 — Phase G
 
-The ratified Phase G, Phase I, and Phase J law is captured in [grants-authority-v0](../../feat/grants-authority-v0/SPEC.md). Phase I canonicalizes complete D-R2.7 state and migrates resident route evaluation. Phase J carries that Mother-owned authority through Child/Toy effect admission, adopts the single production mutation/effect order, enforces exact live Toy grants and bounded delegation, and retains only the explicit slice-6 peer-wire and Review-3 response-semantics fences.
+The ratified Phase G, Phase I, Phase J, and Phase K law is captured in [grants-authority-v0](../../feat/grants-authority-v0/SPEC.md). Phase I canonicalizes complete D-R2.7 state and migrates resident route evaluation. Phase J carries that Mother-owned authority through Child/Toy effect admission, adopts the single production mutation/effect order, and enforces exact live Toy grants and bounded delegation. Phase K closes slice 6 with proof-gated hello advertisement, complete per-hop receiver-identity echoes, and pre-routing stale/unavailable rejection. Only Review-3 response semantics remain separately fenced.
 
 ### Review 3 authority-response scope recorded by D-J.2
 
@@ -107,10 +107,10 @@ The ratified Phase G, Phase I, and Phase J law is captured in [grants-authority-
 
 | Invariant | Current status | Phase disposition / evidence |
 |---|---|---|
-| `MctHelloProtocol.PeerEchoOnlyDetectsStaleness` | DEFERRED | Slice 6 hello/call wire change after Review 2; echo is early rejection only. |
-| `ForgedCurrentGenerationDoesNotGrantAuthority` | DEFERRED | Phase I and Phase J cover resident route/effect evaluation; slice 6 still owns the complete peer-wire echo/correlation contract. |
-| `ReceiverAlwaysUsesLocalAuthority` | DEFERRED | Phase I and Phase J establish local route/effect authority; slice 6 still owns hello/call wire evolution and the receiving-boundary echo contract. |
-| `GenerationNamespaceMustMatchReceiver` | DEFERRED | The local namespaced identity is canonical and consumed in Phase I; exact hello/call echo remains a slice-6 wire change. |
+| `MctHelloProtocol.PeerEchoOnlyDetectsStaleness` | COVERED | Phase K proofs 1-2 and 6-8: `resident_hello_publishes_federation_callable_surface`, `stale_receiver_echo_is_durable_before_route_or_idempotency_work`, `two_mother_receiver_mutation_rejects_stale_call_until_rehello`, `fresh_writer_epoch_rejects_pre_restart_identity_until_rehello`, and `unavailable_receiver_authority_degrades_hello_without_identity_or_capability`. Echo agreement has no positive authority result. |
+| `ForgedCurrentGenerationDoesNotGrantAuthority` | COVERED | Phase K proofs 3-5 and 10: `complete_receiver_identity_mismatch_matrix_refreshes_hello`, `receiver_identity_wire_has_no_legacy_absent_integer_or_malformed_form`, `current_toy_revocation_denies_before_order_and_echo_backend`, and the unchanged Phase I/J suite prove forged, malformed, or matching echoes cannot widen authority. |
+| `ReceiverAlwaysUsesLocalAuthority` | COVERED | Phase K proofs 1-3, 6, and 9: hello/call providers construct fresh proof-gated local identities; `child_callout_uses_constructing_mother_identity_not_hostile_parent_identity` and `forwarded_envelope_clears_upstream_user_identity` prove internal/per-hop construction does not copy upstream authority. |
+| `GenerationNamespaceMustMatchReceiver` | COVERED | Phase K proofs 4, 7, and 11: complete Mother/epoch/generation/source mismatches refresh hello, a fresh tenure epoch rejects the prior identity, and disagreeing semantic/protocol copies are malformed before current comparison. |
 
 ### Call provenance and deadline
 
@@ -155,16 +155,16 @@ The ratified Phase G, Phase I, and Phase J law is captured in [grants-authority-
 | `ProjectionVersionAndFactsAreCoherent` | COVERED | Phase H2 proofs 9 and 12 prove ordinary and shadow publication expose facts/state/cursor old-old or new-new in one SQLite transaction. |
 | `UnprovableFreshnessDenies` | COVERED | Phase J proofs 5-6 fence poisoned/unknown/lagging authority and require exclusive reopen plus exact recovered projection before any later effect start. |
 
-### Phase J disposition counts
+### Phase K terminal disposition counts
 
-| Disposition | New invariants after Phase J |
+| Disposition | New invariants after Phase K |
 |---|---:|
-| COVERED | 27 |
+| COVERED | 31 |
 | LAW-LEADS-CODE | 0 |
-| DEFERRED to slice 6 | 4 |
+| DEFERRED | 0 |
 | **Total new invariants** | **31** |
 
-Phase J closes slices 7-8 without over-claiming slice 6: hello/call schema and namespaced peer-wire echo semantics remain deferred. D-J.2 separately keeps caller-/Child-observable mid-execution and completed-replay response semantics in Review 3. The proof-14 source audit verifies every retired production pin and both explicit residues.
+Phase K closes the final slice-6 hello/call schema and namespaced peer-wire echo obligations without changing D-J.2. Caller-/Child-observable mid-execution and completed-replay response semantics remain a separate Review 3 scope, not a grants-authority deferral.
 
 ## Tool-derived structural obligations
 
