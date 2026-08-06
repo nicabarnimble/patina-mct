@@ -1205,7 +1205,12 @@ listens = []
             },
             "authority_context": {
                 "policy_revision": 1,
-                "grants_revision": 1,
+                "expected_receiver_grants_authority": {
+                    "mother_node_id": "local-mct",
+                    "authority_epoch": "epoch-test",
+                    "generation": 1,
+                    "source_authority_observation_id": "obs-authority-test-1"
+                },
                 "vision_policy_revision": 1
             },
             "deadline": "2099-01-01T00:00:00Z",
@@ -1665,7 +1670,8 @@ listens = []
                 function_name: "run".into(),
             },
             &hello_response,
-        );
+        )
+        .unwrap();
         let reply = client.send_call(&ticket, &call).await.unwrap();
         assert_eq!(reply.reply_outcome, CallProtocolReplyOutcome::Success);
         assert!(reply.route_taken.is_some());
@@ -2141,7 +2147,8 @@ listens = []
                 function_name: "run".into(),
             },
             &hello_response,
-        );
+        )
+        .unwrap();
         call.call.call_id = CallId::new("call-resident-payload-e2e")
             .expect("string ID literal/generated value must be non-empty");
         call.call.payload_metadata.size_bytes = payload.len() as u64;

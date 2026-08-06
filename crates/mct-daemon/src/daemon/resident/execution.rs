@@ -73,7 +73,11 @@ pub(super) fn resident_executed_on_observation(
             route.node_id, route.runtime_kind
         )),
         policy_revision: Some(call.authority_context.policy_revision),
-        grants_revision: Some(call.authority_context.grants_revision),
+        grants_revision: Some(
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation,
+        ),
         outcome: match outcome {
             ResultOutcome::Success => ObservationOutcome::Completed,
             ResultOutcome::Denied => ObservationOutcome::Denied,
@@ -661,7 +665,6 @@ fn execute_resident_wit_child(
         )
     } else {
         build_wit_host_adapters_for_cli_call(CliWitAdapterRequest {
-            state: &state,
             child: &execution.child,
             authorized_child: &execution.authorized,
             call,
@@ -669,7 +672,7 @@ fn execute_resident_wit_child(
             project_root: project_root.as_deref(),
             guest_project: "/project",
             git_repo: project_root.as_deref(),
-            authority_snapshot: Some(effect_snapshot),
+            authority_snapshot: effect_snapshot,
         })
     } {
         Ok(build) => build,
@@ -854,7 +857,11 @@ fn resident_toy_authority_denial_report(
         subject_id: None,
         resource_id: Some("required-toy-authority".into()),
         policy_revision: Some(call.authority_context.policy_revision),
-        grants_revision: Some(call.authority_context.grants_revision),
+        grants_revision: Some(
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation,
+        ),
         outcome: ObservationOutcome::Denied,
         visibility: ObservationVisibility::InternalOnly,
         safe_message: "not authorized".into(),
@@ -912,7 +919,11 @@ pub(super) fn resident_delivery_failure_report(
         subject_id: None,
         resource_id: Some(format!("{:?}", reason)),
         policy_revision: Some(call.authority_context.policy_revision),
-        grants_revision: Some(call.authority_context.grants_revision),
+        grants_revision: Some(
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation,
+        ),
         outcome: ObservationOutcome::Failed,
         visibility: ObservationVisibility::InternalOnly,
         safe_message: safe_message.into(),
@@ -986,11 +997,14 @@ mod tests {
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 
     fn resident_test_call(trace_id: TraceId) -> MctCall {
-        let mut call = local_wasm_call(OperationTarget {
-            namespace: "patina:demo".into(),
-            interface_name: "control@0.1.0".into(),
-            function_name: "run".into(),
-        });
+        let mut call = local_wasm_call(
+            OperationTarget {
+                namespace: "patina:demo".into(),
+                interface_name: "control@0.1.0".into(),
+                function_name: "run".into(),
+            },
+            test_grants_authority_identity(1),
+        );
         call.call_id = CallId::new("call-resident-wit")
             .expect("string ID literal/generated value must be non-empty");
         call.trace_context.trace_id = trace_id;
@@ -1012,7 +1026,7 @@ mod tests {
                 endpoint_id: EndpointIdText::new("endpoint-resident-wit")
                     .expect("string ID literal/generated value must be non-empty"),
                 policy_revision: 1,
-                grants_revision: 1,
+                expected_receiver_grants_authority: test_grants_authority_identity(1),
             },
             received_over: IrohConnectionPresentation {
                 endpoint_id: EndpointIdText::new("endpoint-resident-wit")
@@ -1433,7 +1447,10 @@ listens = []
             None,
             &children,
             current_timestamp(),
-            call.authority_context.grants_revision + 1,
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation
+                + 1,
         )
         .unwrap();
 
@@ -1538,6 +1555,7 @@ listens = []
             result_payload: MctCallPayloadHandle::Empty,
             route_taken: None,
             reply_outcome: CallProtocolReplyOutcome::Cancelled,
+            retry_directive: CallProtocolRetryDirective::None,
             safe_message: "cancelled".into(),
             reply_observation_id: ObservationId::new("obs-reply-cancelled-route")
                 .expect("string ID literal/generated value must be non-empty"),

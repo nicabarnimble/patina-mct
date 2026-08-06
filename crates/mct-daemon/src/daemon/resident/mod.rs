@@ -46,6 +46,7 @@ mod forwarding;
 use forwarding::*;
 
 mod pipeline;
+use pipeline::fresh_resident_receiver_identity;
 pub(super) use pipeline::{
     ResidentCallIngressContext, ResidentRuntimePaths, execute_resident_call,
     execute_resident_call_with_context,

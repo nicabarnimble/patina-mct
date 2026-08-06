@@ -31,7 +31,11 @@ fn resident_forwarded_call_sent_observation(
         subject_id: Some(forwarded_from.to_string()),
         resource_id: Some(candidate.candidate_id.clone()),
         policy_revision: Some(call.authority_context.policy_revision),
-        grants_revision: Some(call.authority_context.grants_revision),
+        grants_revision: Some(
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation,
+        ),
         outcome: ObservationOutcome::Started,
         visibility: ObservationVisibility::InternalOnly,
         safe_message: "forwarding call to remote Mother".into(),
@@ -75,7 +79,11 @@ fn resident_remote_reply_observation(
         subject_id: Some(forwarded_to.to_string()),
         resource_id: Some(candidate.candidate_id.clone()),
         policy_revision: Some(call.authority_context.policy_revision),
-        grants_revision: Some(call.authority_context.grants_revision),
+        grants_revision: Some(
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation,
+        ),
         outcome,
         visibility: ObservationVisibility::InternalOnly,
         safe_message: reply.safe_message.clone(),
@@ -212,6 +220,7 @@ pub(super) async fn execute_authorized_resident_remote_call(
         eprintln!("resident remote hello response surface refresh failed: {error}");
     }
     if hello_response.hello_outcome != HelloOutcome::Admitted
+        || hello_response.receiving_grants_authority.is_none()
         || !hello_response
             .accepted_alpns
             .iter()
@@ -517,6 +526,10 @@ fn resident_forwarded_call_request(
     hello: &MctHelloResponse,
     inline_payload: Option<&[u8]>,
 ) -> MctCallProtocolRequest {
+    let expected_receiver_grants_authority = hello
+        .receiving_grants_authority
+        .as_ref()
+        .expect("forwarded call requires an admitted hello receiver identity");
     let mut call = original.call.clone();
     call.caller = CallerIdentity {
         node_id: local_identity.node_id.clone(),
@@ -525,6 +538,8 @@ fn resident_forwarded_call_request(
         project_id: original.call.caller.project_id.clone(),
     };
     call.origin = CallOrigin::Iroh;
+    call.authority_context.expected_receiver_grants_authority =
+        expected_receiver_grants_authority.clone();
     let payload =
         forwarded_request_payload_handle(&original.payload, &call.call_id, inline_payload);
     MctCallProtocolRequest {
@@ -537,7 +552,7 @@ fn resident_forwarded_call_request(
             accepted_alpn: MCT_CALL_ALPN.into(),
             endpoint_id: endpoint_id.clone(),
             policy_revision: outbound_binding.policy_revision,
-            grants_revision: original.call.authority_context.grants_revision,
+            expected_receiver_grants_authority: expected_receiver_grants_authority.clone(),
         },
         received_over: IrohConnectionPresentation {
             endpoint_id: endpoint_id.clone(),
@@ -672,11 +687,14 @@ mod tests {
         }
     }
     fn resident_test_call(trace_id: TraceId) -> MctCall {
-        let mut call = local_wasm_call(OperationTarget {
-            namespace: "patina:demo".into(),
-            interface_name: "control@0.1.0".into(),
-            function_name: "run".into(),
-        });
+        let mut call = local_wasm_call(
+            OperationTarget {
+                namespace: "patina:demo".into(),
+                interface_name: "control@0.1.0".into(),
+                function_name: "run".into(),
+            },
+            test_grants_authority_identity(1),
+        );
         call.call_id = CallId::new("call-resident-wit")
             .expect("string ID literal/generated value must be non-empty");
         call.trace_context.trace_id = trace_id;
@@ -698,7 +716,7 @@ mod tests {
                 endpoint_id: EndpointIdText::new("endpoint-resident-wit")
                     .expect("string ID literal/generated value must be non-empty"),
                 policy_revision: 1,
-                grants_revision: 1,
+                expected_receiver_grants_authority: test_grants_authority_identity(1),
             },
             received_over: IrohConnectionPresentation {
                 endpoint_id: EndpointIdText::new("endpoint-resident-wit")
@@ -743,6 +761,7 @@ mod tests {
                 result_payload: MctCallPayloadHandle::Empty,
                 route_taken: None,
                 reply_outcome,
+                retry_directive: CallProtocolRetryDirective::None,
                 safe_message: safe_message.into(),
                 reply_observation_id: ObservationId::new("obs-reply-remote-fixture")
                     .expect("string ID literal/generated value must be non-empty"),
@@ -1750,6 +1769,7 @@ listens = []
         let outbound = peer.outbound_binding.as_ref().unwrap();
         let mut original = resident_test_protocol_request(fixture.call.clone());
         original.call.caller.user_id = Some(UserId::new("upstream-user").unwrap());
+        let expected_receiver_grants_authority = test_grants_authority_identity(1);
         let hello = MctHelloResponse {
             response_id: "response-forwarded-identity".into(),
             request_id: "hello-forwarded-identity".into(),
@@ -1757,7 +1777,7 @@ listens = []
             hello_outcome: HelloOutcome::Admitted,
             negotiated_protocol: Some(HelloPolicy::default().protocol),
             accepted_alpns: vec![MCT_CALL_ALPN.into()],
-            receiving_grants_authority: None,
+            receiving_grants_authority: Some(expected_receiver_grants_authority.clone()),
             safe_message: "admitted".into(),
             retry_after: None,
             capability_view: None,

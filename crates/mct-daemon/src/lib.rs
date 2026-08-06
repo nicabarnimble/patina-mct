@@ -33,6 +33,16 @@ mod toy;
 mod wasm;
 mod wit_values;
 
+#[cfg(test)]
+fn test_grants_authority_identity(generation: u64) -> mct_kernel::GrantsAuthorityIdentity {
+    mct_kernel::GrantsAuthorityIdentity {
+        mother_node_id: "local-mct".into(),
+        authority_epoch: "epoch-test".into(),
+        generation,
+        source_authority_observation_id: format!("obs-authority-test-{generation}"),
+    }
+}
+
 #[cfg(feature = "fuzzing")]
 pub use acquisition::fuzz_child_package_manifest;
 pub use acquisition::{

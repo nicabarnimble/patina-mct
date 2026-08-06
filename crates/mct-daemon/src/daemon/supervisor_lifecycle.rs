@@ -4002,7 +4002,12 @@ mod tests {
                 },
                 "authority_context": {
                     "policy_revision": 1,
-                    "grants_revision": 1,
+                    "expected_receiver_grants_authority": {
+                    "mother_node_id": "local-mct",
+                    "authority_epoch": "epoch-test",
+                    "generation": 1,
+                    "source_authority_observation_id": "obs-authority-test-1"
+                },
                     "vision_policy_revision": 1
                 },
                 "deadline": "2099-01-01T00:00:00Z",
@@ -4039,7 +4044,12 @@ mod tests {
                 },
                 "authority_context": {
                     "policy_revision": 1,
-                    "grants_revision": 1,
+                    "expected_receiver_grants_authority": {
+                    "mother_node_id": "local-mct",
+                    "authority_epoch": "epoch-test",
+                    "generation": 1,
+                    "source_authority_observation_id": "obs-authority-test-1"
+                },
                     "vision_policy_revision": 1
                 },
                 "deadline": "2099-01-01T00:00:00Z",

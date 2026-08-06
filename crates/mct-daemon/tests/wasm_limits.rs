@@ -39,7 +39,12 @@ fn call(deadline: Timestamp) -> MctCall {
         },
         authority_context: AuthorityContextSnapshot {
             policy_revision: 1,
-            grants_revision: 1,
+            expected_receiver_grants_authority: GrantsAuthorityIdentity {
+                mother_node_id: "local-mct".into(),
+                authority_epoch: "epoch-test".into(),
+                generation: 1,
+                source_authority_observation_id: "obs-authority-test".into(),
+            },
             vision_policy_revision: 1,
         },
         deadline,

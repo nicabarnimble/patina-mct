@@ -696,7 +696,7 @@ mod tests {
         );
     }
 
-    /// Phase J proof 14: retired pins have production replacements; slice 6 and Review 3 remain.
+    /// Phase K proof 10: Phase J replacements remain and the slice-6 echo pin is retired.
     #[test]
     fn phase_j_pin_retirement_maps_each_old_seam_to_proof_or_named_residue() {
         let crate_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -708,9 +708,12 @@ mod tests {
         assert!(call_protocol.contains(
             "request.call.authority_context.policy_revision < request.authority.policy_revision"
         ));
-        assert!(call_protocol.contains(
-            "request.call.authority_context.grants_revision < request.authority.grants_revision"
-        ));
+        assert!(call_protocol.contains("ExpectedReceiverAuthorityStale"));
+        assert!(call_protocol.contains("ReceiverAuthorityUnavailable"));
+        assert!(call_protocol.contains("expected_receiver_grants_authority"));
+        assert!(call_protocol.contains("request.authority.expected_receiver_grants_authority"));
+        assert!(!call_protocol.contains("request.authority.grants_revision"));
+        assert!(!call_protocol.contains("< request.authority.expected_receiver_grants_authority"));
 
         let resident_effect = read("src/daemon/resident/execution.rs");
         assert!(resident_effect.contains("admit_effect_with_snapshot(&call, &effect_snapshot)"));
@@ -731,7 +734,10 @@ mod tests {
 
         let peer_wire = read("../mct-kernel/src/peer/mod.rs");
         assert!(peer_wire.contains("pub struct MctHelloRequest"));
+        assert!(peer_wire.contains("receiving_grants_authority"));
         assert!(!peer_wire.contains("LocalExecutionAuthoritySnapshot"));
+        let cli_runtime = read("src/daemon/cli_runtime.rs");
+        assert!(!cli_runtime.contains("evaluate_toy_grant_for_call"));
         let replay = read("src/daemon/resident/idempotency.rs");
         assert!(replay.contains("MctIdempotencyReason::ReplayCompleted"));
         assert!(!replay.contains("LocalExecutionAuthoritySnapshot"));

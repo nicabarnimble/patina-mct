@@ -311,7 +311,11 @@ fn supervisor_observation(
         subject_id: Some(authorized.child_name().to_owned()),
         resource_id: Some(authorized.child_instance_id().to_string()),
         policy_revision: Some(call.authority_context.policy_revision),
-        grants_revision: Some(call.authority_context.grants_revision),
+        grants_revision: Some(
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation,
+        ),
         outcome,
         visibility: ObservationVisibility::InternalOnly,
         safe_message: safe_message.into(),
@@ -355,7 +359,7 @@ mod tests {
             },
             authority_context: AuthorityContextSnapshot {
                 policy_revision: 1,
-                grants_revision: 1,
+                expected_receiver_grants_authority: crate::test_grants_authority_identity(1),
                 vision_policy_revision: 1,
             },
             deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),

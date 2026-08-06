@@ -51,8 +51,8 @@ pub use authority::{
 };
 pub use call::{
     AuthorityContextSnapshot, CallEvaluationContext, CallEvaluationIds, CallOrigin,
-    CallProtocolOutcome, CallProtocolReason, CallProtocolReplyOutcome, CallerIdentity,
-    ExecutionSummary, GrantsAuthorityIdentity, MctCall, MctCallPayloadHandle,
+    CallProtocolOutcome, CallProtocolReason, CallProtocolReplyOutcome, CallProtocolRetryDirective,
+    CallerIdentity, ExecutionSummary, GrantsAuthorityIdentity, MctCall, MctCallPayloadHandle,
     MctCallProtocolAuthority, MctCallProtocolEvaluation, MctCallProtocolReply,
     MctCallProtocolRequest, MctIdempotencyDecision, MctIdempotencyEntryState,
     MctIdempotencyFingerprint, MctIdempotencyReason, MctIdempotencyStoredEntry,

@@ -136,7 +136,9 @@ pub(super) fn authorize_resident_child_from_loaded_with_state(
         state,
         &children,
         now,
-        call.authority_context.grants_revision,
+        call.authority_context
+            .expected_receiver_grants_authority
+            .generation,
     )?;
     authorize_resident_child_from_snapshot(&snapshot, children, call)
 }
@@ -286,7 +288,7 @@ fn resident_route_decision_observation(
         serde_json::json!({
             "route_detail_ref": observation.detail_ref,
             "caller_policy_revision_echo": call.authority_context.policy_revision,
-            "caller_grants_revision_echo": call.authority_context.grants_revision,
+            "caller_grants_revision_echo": call.authority_context.expected_receiver_grants_authority.generation,
             "caller_vision_policy_revision_echo": call.authority_context.vision_policy_revision,
             "local_policy_revision": snapshot.policy_revision(),
             "local_vision_policy_revision": snapshot.vision_policy_revision(),
@@ -769,11 +771,14 @@ mod tests {
     }
 
     fn resident_test_call(trace_id: TraceId) -> MctCall {
-        let mut call = local_wasm_call(OperationTarget {
-            namespace: "patina:demo".into(),
-            interface_name: "control@0.1.0".into(),
-            function_name: "run".into(),
-        });
+        let mut call = local_wasm_call(
+            OperationTarget {
+                namespace: "patina:demo".into(),
+                interface_name: "control@0.1.0".into(),
+                function_name: "run".into(),
+            },
+            test_grants_authority_identity(1),
+        );
         call.call_id = CallId::new("call-resident-wit")
             .expect("string ID literal/generated value must be non-empty");
         call.trace_context.trace_id = trace_id;
@@ -795,7 +800,7 @@ mod tests {
                 endpoint_id: EndpointIdText::new("endpoint-resident-wit")
                     .expect("string ID literal/generated value must be non-empty"),
                 policy_revision: 1,
-                grants_revision: 1,
+                expected_receiver_grants_authority: test_grants_authority_identity(1),
             },
             received_over: IrohConnectionPresentation {
                 endpoint_id: EndpointIdText::new("endpoint-resident-wit")
@@ -1161,7 +1166,7 @@ listens = []
             let mut call = fixture.call.clone();
             call.authority_context = AuthorityContextSnapshot {
                 policy_revision: echo,
-                grants_revision: echo,
+                expected_receiver_grants_authority: test_grants_authority_identity(echo),
                 vision_policy_revision: echo,
             };
             let outcome =
@@ -1217,7 +1222,9 @@ listens = []
         )
         .unwrap();
         let mut call = fixture.call.clone();
-        call.authority_context.grants_revision = 1;
+        call.authority_context
+            .expected_receiver_grants_authority
+            .generation = 1;
 
         let outcome =
             authorize_resident_child_from_snapshot(&snapshot, vec![child], &call).unwrap();
@@ -1244,7 +1251,7 @@ listens = []
         let mut call = fixture.call.clone();
         call.authority_context = AuthorityContextSnapshot {
             policy_revision: u64::MAX,
-            grants_revision: u64::MAX,
+            expected_receiver_grants_authority: test_grants_authority_identity(u64::MAX),
             vision_policy_revision: u64::MAX,
         };
         call.deadline = Timestamp::new("2099-01-01T00:00:00Z").unwrap();
@@ -1339,7 +1346,9 @@ listens = []
         )
         .unwrap();
         let mut call = resident_test_call(TraceId::new("trace-envelope-revocation").unwrap());
-        call.authority_context.grants_revision = u64::MAX;
+        call.authority_context
+            .expected_receiver_grants_authority
+            .generation = u64::MAX;
         assert!(matches!(
             authorize_resident_child_from_snapshot(&snapshot_before, vec![child.clone()], &call,)
                 .unwrap(),

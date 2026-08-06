@@ -287,6 +287,7 @@ pub struct MctIrohCallHandlerResult {
     pub route_taken: Option<RouteTaken>,
     pub outcome: CallProtocolOutcome,
     pub protocol_reason: Option<CallProtocolReason>,
+    pub retry_directive: CallProtocolRetryDirective,
     pub safe_message: String,
 }
 
@@ -335,6 +336,7 @@ pub struct MctIrohCallLifecycleFact {
     pub grants_revision: Option<u64>,
     pub outcome: ObservationOutcome,
     pub safe_message: String,
+    pub detail_ref: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -404,7 +406,7 @@ impl MctIrohObservationFact {
                     outcome: fact.outcome,
                     visibility: ObservationVisibility::InternalOnly,
                     safe_message: fact.safe_message.clone(),
-                    detail_ref: None,
+                    detail_ref: fact.detail_ref.clone(),
                 }
             }
         }
@@ -576,9 +578,16 @@ fn call_lifecycle_fact(
         decision_id,
         observation_id,
         policy_revision: Some(request.call.authority_context.policy_revision),
-        grants_revision: Some(request.call.authority_context.grants_revision),
+        grants_revision: Some(
+            request
+                .call
+                .authority_context
+                .expected_receiver_grants_authority
+                .generation,
+        ),
         outcome,
         safe_message: safe_message.into(),
+        detail_ref: None,
     })
 }
 
@@ -603,6 +612,7 @@ fn malformed_call_lifecycle_fact(
         } else {
             "malformed request".into()
         },
+        detail_ref: None,
     })
 }
 
@@ -630,6 +640,7 @@ fn malformed_request_evaluation(
         result_ref: None,
         outcome: CallProtocolOutcome::Malformed,
         reason: CallProtocolReason::MalformedCall,
+        retry_directive: CallProtocolRetryDirective::None,
         safe_message: "malformed request".into(),
         observation_id: state.next_observation_id("call-malformed"),
     }
@@ -649,6 +660,7 @@ fn malformed_call_evaluation_and_reply(
         result_ref: None,
         outcome: CallProtocolOutcome::Malformed,
         reason: CallProtocolReason::MalformedCall,
+        retry_directive: CallProtocolRetryDirective::None,
         safe_message: "malformed request".into(),
         observation_id: state.next_observation_id("call-malformed"),
     };
@@ -706,6 +718,7 @@ fn call_constructed_fact(
 fn call_authority_fact(
     request: &MctCallProtocolRequest,
     evaluation: &MctCallProtocolEvaluation,
+    current_receiver_authority: Option<&GrantsAuthorityIdentity>,
 ) -> MctIrohObservationFact {
     let (stage, outcome) = if evaluation.is_accepted_for_routing() {
         (
@@ -718,14 +731,28 @@ fn call_authority_fact(
             ObservationOutcome::Denied,
         )
     };
-    call_lifecycle_fact(
+    let mut fact = call_lifecycle_fact(
         stage,
         request,
         Some(evaluation.decision_id.clone()),
         evaluation.observation_id.clone(),
         outcome,
         evaluation.safe_message.clone(),
-    )
+    );
+    if evaluation.reason == CallProtocolReason::ExpectedReceiverAuthorityStale
+        && let MctIrohObservationFact::CallLifecycle(fact) = &mut fact
+    {
+        fact.detail_ref = Some(
+            serde_json::json!({
+                "expected_semantic": request.call.authority_context.expected_receiver_grants_authority,
+                "expected_protocol": request.authority.expected_receiver_grants_authority,
+                "current_receiver": current_receiver_authority,
+                "retry_directive": evaluation.retry_directive,
+            })
+            .to_string(),
+        );
+    }
+    fact
 }
 
 fn call_result_fact(
@@ -797,6 +824,7 @@ impl MctIrohCallHandlerResult {
             route_taken: None,
             outcome: CallProtocolOutcome::AcceptedForRouting,
             protocol_reason: None,
+            retry_directive: CallProtocolRetryDirective::None,
             safe_message: "accepted for routing".into(),
         }
     }
@@ -810,6 +838,7 @@ impl MctIrohCallHandlerResult {
             route_taken: None,
             outcome: CallProtocolOutcome::Completed,
             protocol_reason: None,
+            retry_directive: CallProtocolRetryDirective::None,
             safe_message: "call completed".into(),
         }
     }
@@ -827,6 +856,7 @@ impl MctIrohCallHandlerResult {
             route_taken: None,
             outcome: CallProtocolOutcome::Completed,
             protocol_reason: None,
+            retry_directive: CallProtocolRetryDirective::None,
             safe_message: "call completed".into(),
         }
     }
@@ -840,6 +870,7 @@ impl MctIrohCallHandlerResult {
             route_taken: None,
             outcome: CallProtocolOutcome::Failed,
             protocol_reason: None,
+            retry_directive: CallProtocolRetryDirective::None,
             safe_message: safe_message.into(),
         }
     }
@@ -853,7 +884,22 @@ impl MctIrohCallHandlerResult {
             route_taken: None,
             outcome: CallProtocolOutcome::Denied,
             protocol_reason: None,
+            retry_directive: CallProtocolRetryDirective::None,
             safe_message: "not authorized".into(),
+        }
+    }
+
+    pub fn malformed() -> Self {
+        Self {
+            result_ref: None,
+            result_payload: MctCallPayloadHandle::Empty,
+            inline_result_payload: None,
+            route_decision_id: None,
+            route_taken: None,
+            outcome: CallProtocolOutcome::Malformed,
+            protocol_reason: Some(CallProtocolReason::MalformedCall),
+            retry_directive: CallProtocolRetryDirective::None,
+            safe_message: "malformed call".into(),
         }
     }
 
@@ -866,6 +912,7 @@ impl MctIrohCallHandlerResult {
             route_taken: None,
             outcome: CallProtocolOutcome::TimedOut,
             protocol_reason: None,
+            retry_directive: CallProtocolRetryDirective::None,
             safe_message: "call timed out".into(),
         }
     }
@@ -879,12 +926,27 @@ impl MctIrohCallHandlerResult {
             route_taken: None,
             outcome: CallProtocolOutcome::Cancelled,
             protocol_reason: None,
+            retry_directive: CallProtocolRetryDirective::None,
             safe_message: safe_message.into(),
         }
     }
 
     pub fn with_protocol_reason(mut self, reason: CallProtocolReason) -> Self {
         self.protocol_reason = Some(reason);
+        self.retry_directive = match reason {
+            CallProtocolReason::ExpectedReceiverAuthorityStale => {
+                CallProtocolRetryDirective::RefreshHello
+            }
+            CallProtocolReason::ReceiverAuthorityUnavailable => {
+                CallProtocolRetryDirective::RetryLater
+            }
+            _ => CallProtocolRetryDirective::None,
+        };
+        self
+    }
+
+    pub fn with_safe_message(mut self, safe_message: impl Into<String>) -> Self {
+        self.safe_message = safe_message.into();
         self
     }
 
@@ -1115,6 +1177,7 @@ fn payload_malformed_evaluation(
         result_ref: None,
         outcome: CallProtocolOutcome::Malformed,
         reason,
+        retry_directive: CallProtocolRetryDirective::None,
         safe_message: safe_message.into(),
         observation_id: state.next_observation_id("call-payload"),
     }
@@ -1566,6 +1629,17 @@ impl MotherIrohEndpoint {
                                             MCT_INLINE_PAYLOAD_MAX_BYTES as u64,
                                         )
                                     });
+                                    let current_receiver_grants_authority =
+                                        if validation_failed
+                                            || payload_decision.as_ref().is_some_and(|decision| {
+                                                decision.outcome
+                                                    != PayloadIntegrityOutcome::Matched
+                                            })
+                                        {
+                                            None
+                                        } else {
+                                            receiver_authority_provider.current().await
+                                        };
                                     let mut state_guard = state.lock().await;
                                     let constructed_observation_id =
                                         state_guard.next_observation_id("call-constructed");
@@ -1601,6 +1675,8 @@ impl MotherIrohEndpoint {
                                                         .next_observation_id("call"),
                                                 },
                                                 current_peer_authority,
+                                                current_receiver_grants_authority:
+                                                    current_receiver_grants_authority.clone(),
                                                 now: now(),
                                             },
                                         )
@@ -1621,7 +1697,11 @@ impl MotherIrohEndpoint {
                                                 &request,
                                                 constructed_observation_id,
                                             ),
-                                            call_authority_fact(&request, &evaluation),
+                                            call_authority_fact(
+                                                &request,
+                                                &evaluation,
+                                                current_receiver_grants_authority.as_ref(),
+                                            ),
                                         ]
                                     };
                                     observation_sink
@@ -1656,6 +1736,7 @@ impl MotherIrohEndpoint {
                                         if let Some(reason) = handled.protocol_reason {
                                             evaluation.reason = reason;
                                         }
+                                        evaluation.retry_directive = handled.retry_directive;
                                         evaluation.safe_message = handled.safe_message.clone();
                                         evaluation.route_decision_id =
                                             handled.route_decision_id.clone();
@@ -2124,6 +2205,8 @@ impl MotherIrohEndpoint {
                                     bindings: bindings.to_vec(),
                                     policy_revision: HelloPolicy::default().current_policy_revision,
                                 },
+                                current_receiver_grants_authority:
+                                    single_connection_receiver_authority(),
                                 now: now.clone(),
                             },
                         )
@@ -2147,7 +2230,11 @@ impl MotherIrohEndpoint {
                         vec![
                             call_received_fact(&request),
                             call_constructed_fact(&request, constructed_observation_id),
-                            call_authority_fact(&request, &evaluation),
+                            call_authority_fact(
+                                &request,
+                                &evaluation,
+                                single_connection_receiver_authority().as_ref(),
+                            ),
                         ]
                     };
                     observation_sink
@@ -2174,6 +2261,7 @@ impl MotherIrohEndpoint {
                         if let Some(reason) = handled.protocol_reason {
                             evaluation.reason = reason;
                         }
+                        evaluation.retry_directive = handled.retry_directive;
                         evaluation.safe_message = handled.safe_message.clone();
                         evaluation.route_decision_id = handled.route_decision_id.clone();
                     }

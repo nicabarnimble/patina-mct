@@ -491,7 +491,9 @@ mod tests {
         for (policy_revision, grants_revision) in [(0, 0), (1, 1), (u64::MAX, u64::MAX)] {
             let _hostile_echo = mct_kernel::AuthorityContextSnapshot {
                 policy_revision,
-                grants_revision,
+                expected_receiver_grants_authority: crate::test_grants_authority_identity(
+                    grants_revision,
+                ),
                 vision_policy_revision: u64::MAX - policy_revision,
             };
             assert_eq!(snapshot(&fixture), before);

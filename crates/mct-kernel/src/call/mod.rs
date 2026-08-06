@@ -155,15 +155,12 @@ impl From<&crate::authority::LocalGrantsAuthorityIdentityV1> for GrantsAuthority
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Revision numbers of authority inputs observed when the call was formed.
-///
-/// Protocol evaluation rejects calls whose call-side policy or grants revision
-/// is older than the authority asserted by the admitted hello.
+/// Caller-carried authority expectations observed when the call was formed.
 pub struct AuthorityContextSnapshot {
     /// Node-wide policy revision included in the call authority snapshot.
     pub policy_revision: u64,
-    /// Toy-grant catalog revision included in the call authority snapshot.
-    pub grants_revision: u64,
+    /// Complete receiving-Mother identity expected by the call constructor.
+    pub expected_receiver_grants_authority: GrantsAuthorityIdentity,
     /// Vision-specific policy revision visible to routing decisions.
     pub vision_policy_revision: u64,
 }
@@ -228,7 +225,7 @@ pub struct MctCall {
     pub target: OperationTarget,
     /// Payload summary used by policy and route selection.
     pub payload_metadata: PayloadMetadata,
-    /// Policy and grants revisions that accompanied call construction.
+    /// Policy revision and complete receiver expectation accompanying construction.
     pub authority_context: AuthorityContextSnapshot,
     /// Adapter-supplied deadline for completing the call.
     pub deadline: Timestamp,
@@ -273,6 +270,9 @@ impl MctCall {
         self.caller.validate()?;
         self.target.validate()?;
         self.payload_metadata.validate()?;
+        self.authority_context
+            .expected_receiver_grants_authority
+            .validate()?;
         ensure_non_blank("MctCall", "deadline", self.deadline.as_str())?;
         self.trace_context.validate()?;
         Ok(())
@@ -379,8 +379,8 @@ pub struct MctCallProtocolAuthority {
     pub endpoint_id: EndpointIdText,
     /// Minimum policy revision the call snapshot must cover.
     pub policy_revision: u64,
-    /// Minimum grants revision the call snapshot must cover.
-    pub grants_revision: u64,
+    /// Complete receiver authority identity copied from the admitted hello.
+    pub expected_receiver_grants_authority: GrantsAuthorityIdentity,
 }
 
 impl MctCallProtocolAuthority {
@@ -396,7 +396,7 @@ impl MctCallProtocolAuthority {
             "accepted_alpn",
             &self.accepted_alpn,
         )?;
-        Ok(())
+        self.expected_receiver_grants_authority.validate()
     }
 }
 
@@ -829,8 +829,12 @@ pub enum CallProtocolReason {
     BindingRevoked,
     /// Peer binding expired before call routing.
     BindingExpired,
-    /// Call authority snapshot is older than the admitted authority facts.
+    /// Call policy revision is older than current peer authority.
     PolicyRevisionStale,
+    /// Complete expected receiver identity does not match current local authority.
+    ExpectedReceiverAuthorityStale,
+    /// Current receiver authority cannot be proved coherently.
+    ReceiverAuthorityUnavailable,
     /// Caller deadline was at or behind the executing Mother's acceptance time.
     CallDeadlineExpired,
     /// Request shape could not become a valid semantic call.
@@ -879,6 +883,18 @@ pub enum CallProtocolReason {
     ResultRecorded,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// Caller-safe retry direction for a call protocol response.
+pub enum CallProtocolRetryDirective {
+    /// No authority-refresh action applies to this terminal shape.
+    None,
+    /// Repeat hello to obtain the receiver's current authority identity.
+    RefreshHello,
+    /// Retry later because current receiver authority is unavailable.
+    RetryLater,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Decision produced by `mct/call/0` authority evaluation.
 ///
@@ -899,6 +915,8 @@ pub struct MctCallProtocolEvaluation {
     pub outcome: CallProtocolOutcome,
     /// Typed reason retained for audit and observation projection.
     pub reason: CallProtocolReason,
+    /// Caller-safe authority refresh direction, or [`CallProtocolRetryDirective::None`].
+    pub retry_directive: CallProtocolRetryDirective,
     /// Caller-safe message that must not disclose privileged policy detail.
     pub safe_message: String,
     /// Observation that records this evaluation.
@@ -956,6 +974,8 @@ pub struct MctCallProtocolReply {
     pub route_taken: Option<RouteTaken>,
     /// Caller-facing outcome class.
     pub reply_outcome: CallProtocolReplyOutcome,
+    /// Caller-safe authority refresh direction copied from the evaluation.
+    pub retry_directive: CallProtocolRetryDirective,
     /// Caller-safe message derived from the evaluation or execution path.
     pub safe_message: String,
     /// Observation recording emission of this reply.
@@ -1005,6 +1025,8 @@ pub struct CallEvaluationContext {
     pub ids: CallEvaluationIds,
     /// Current peer bindings and local policy revision.
     pub current_peer_authority: crate::peer::MctPeerAuthoritySnapshot,
+    /// Fresh proof-gated receiver identity, absent only when local authority is unavailable.
+    pub current_receiver_grants_authority: Option<GrantsAuthorityIdentity>,
     /// Validated current time used for binding expiry checks.
     pub now: Timestamp,
 }
@@ -1166,8 +1188,19 @@ pub fn call_reply_from_evaluation_with_result_payload_and_route(
         result_payload,
         route_taken,
         reply_outcome,
+        retry_directive: evaluation.retry_directive,
         safe_message: evaluation.safe_message.clone(),
         reply_observation_id,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_grants_authority_identity(generation: u64) -> GrantsAuthorityIdentity {
+    GrantsAuthorityIdentity {
+        mother_node_id: "mother-test".into(),
+        authority_epoch: "epoch-test".into(),
+        generation,
+        source_authority_observation_id: format!("obs-authority-test-{generation}"),
     }
 }
 
@@ -1204,7 +1237,7 @@ mod tests {
             },
             authority_context: AuthorityContextSnapshot {
                 policy_revision: 1,
-                grants_revision: 1,
+                expected_receiver_grants_authority: test_grants_authority_identity(1),
                 vision_policy_revision: 1,
             },
             deadline: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
@@ -1267,7 +1300,7 @@ mod tests {
                 endpoint_id: EndpointIdText::new("endpoint-a")
                     .expect("string ID literal/generated value must be non-empty"),
                 policy_revision: 1,
-                grants_revision: 1,
+                expected_receiver_grants_authority: test_grants_authority_identity(1),
             },
             received_over: IrohConnectionPresentation {
                 endpoint_id: EndpointIdText::new("endpoint-a")
@@ -1327,8 +1360,127 @@ mod tests {
                 }],
                 policy_revision: 1,
             },
+            current_receiver_grants_authority: Some(test_grants_authority_identity(1)),
             now: Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
         }
+    }
+
+    #[test]
+    fn disagreeing_receiver_identity_copies_are_malformed_before_current_comparison() {
+        let mut request = protocol_request();
+        request
+            .authority
+            .expected_receiver_grants_authority
+            .authority_epoch = "epoch-protocol-copy".into();
+        let semantic_copy = request
+            .call
+            .authority_context
+            .expected_receiver_grants_authority
+            .clone();
+        let protocol_copy = request.authority.expected_receiver_grants_authority.clone();
+
+        for current in [semantic_copy, protocol_copy] {
+            let mut context = eval_ids();
+            context.current_receiver_grants_authority = Some(current);
+            let evaluation = evaluate_call_protocol(&request, &admitted_hello(), context);
+            assert_eq!(evaluation.outcome, CallProtocolOutcome::Malformed);
+            assert_eq!(evaluation.reason, CallProtocolReason::MalformedCall);
+            assert_eq!(evaluation.retry_directive, CallProtocolRetryDirective::None);
+            assert!(evaluation.route_decision_id.is_none());
+        }
+    }
+
+    #[test]
+    fn complete_receiver_identity_mismatch_matrix_refreshes_hello() {
+        let current = test_grants_authority_identity(1);
+        let mut wrong_mother = current.clone();
+        wrong_mother.mother_node_id = "mother-foreign".into();
+        let mut wrong_epoch = current.clone();
+        wrong_epoch.authority_epoch = "epoch-prior".into();
+        let mut wrong_source = current.clone();
+        wrong_source.source_authority_observation_id = "obs-authority-other".into();
+        let mut future_generation = current.clone();
+        future_generation.generation = u64::MAX;
+
+        for expected in [wrong_mother, wrong_epoch, wrong_source, future_generation] {
+            let mut request = protocol_request();
+            request
+                .call
+                .authority_context
+                .expected_receiver_grants_authority = expected.clone();
+            request.authority.expected_receiver_grants_authority = expected;
+            let evaluation = evaluate_call_protocol(&request, &admitted_hello(), eval_ids());
+            assert_eq!(evaluation.outcome, CallProtocolOutcome::Denied);
+            assert_eq!(
+                evaluation.reason,
+                CallProtocolReason::ExpectedReceiverAuthorityStale
+            );
+            assert_eq!(
+                evaluation.retry_directive,
+                CallProtocolRetryDirective::RefreshHello
+            );
+            assert!(evaluation.route_decision_id.is_none());
+        }
+    }
+
+    #[test]
+    fn unavailable_receiver_identity_retries_and_matching_echo_grants_nothing() {
+        let mut unavailable = eval_ids();
+        unavailable.current_receiver_grants_authority = None;
+        let evaluation =
+            evaluate_call_protocol(&protocol_request(), &admitted_hello(), unavailable);
+        assert_eq!(
+            evaluation.reason,
+            CallProtocolReason::ReceiverAuthorityUnavailable
+        );
+        assert_eq!(
+            evaluation.retry_directive,
+            CallProtocolRetryDirective::RetryLater
+        );
+        assert!(evaluation.route_decision_id.is_none());
+
+        let mut revoked = eval_ids();
+        revoked.current_peer_authority.bindings[0].binding_state = BindingState::Revoked;
+        let evaluation = evaluate_call_protocol(&protocol_request(), &admitted_hello(), revoked);
+        assert_eq!(evaluation.reason, CallProtocolReason::BindingRevoked);
+        assert_eq!(evaluation.retry_directive, CallProtocolRetryDirective::None);
+        assert!(evaluation.route_decision_id.is_none());
+    }
+
+    #[test]
+    fn receiver_identity_wire_has_no_legacy_absent_integer_or_malformed_form() {
+        let request = protocol_request();
+
+        let mut absent = serde_json::to_value(&request).unwrap();
+        absent["authority"]
+            .as_object_mut()
+            .unwrap()
+            .remove("expected_receiver_grants_authority");
+        absent["call"]["authority_context"]
+            .as_object_mut()
+            .unwrap()
+            .remove("expected_receiver_grants_authority");
+        assert!(decode_call_protocol_request_json(&serde_json::to_vec(&absent).unwrap()).is_err());
+
+        let mut integer = serde_json::to_value(&request).unwrap();
+        integer["authority"]["expected_receiver_grants_authority"] = serde_json::json!(1);
+        integer["call"]["authority_context"]["expected_receiver_grants_authority"] =
+            serde_json::json!(1);
+        assert!(decode_call_protocol_request_json(&serde_json::to_vec(&integer).unwrap()).is_err());
+
+        let mut malformed = serde_json::to_value(&request).unwrap();
+        malformed["authority"]["expected_receiver_grants_authority"]["authority_epoch"] =
+            serde_json::json!(" ");
+        malformed["call"]["authority_context"]["expected_receiver_grants_authority"]["authority_epoch"] =
+            serde_json::json!(" ");
+        assert!(matches!(
+            decode_call_protocol_request_json(&serde_json::to_vec(&malformed).unwrap()),
+            Err(MctKernelError::InvalidField {
+                record: "GrantsAuthorityIdentity",
+                field: "authority_epoch",
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -1923,6 +2075,7 @@ mod tests {
             result_payload: MctCallPayloadHandle::Empty,
             route_taken: Some(route_taken.clone()),
             reply_outcome: CallProtocolReplyOutcome::Cancelled,
+            retry_directive: CallProtocolRetryDirective::None,
             safe_message: "cancelled".into(),
             reply_observation_id: ObservationId::new("obs-reply-cancelled-route")
                 .expect("string ID literal/generated value must be non-empty"),

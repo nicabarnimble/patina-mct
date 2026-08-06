@@ -109,7 +109,9 @@ fn resident_remote_candidate_plans(
         state,
         &[],
         now,
-        call.authority_context.grants_revision,
+        call.authority_context
+            .expected_receiver_grants_authority
+            .generation,
     )?;
     let source = ResidentRemoteCandidateSource::for_call(call)
         .context("test call must have a local origin to source remote candidates")?;
@@ -453,11 +455,14 @@ mod tests {
         }
     }
     fn resident_test_call(trace_id: TraceId) -> MctCall {
-        let mut call = local_wasm_call(OperationTarget {
-            namespace: "patina:demo".into(),
-            interface_name: "control@0.1.0".into(),
-            function_name: "run".into(),
-        });
+        let mut call = local_wasm_call(
+            OperationTarget {
+                namespace: "patina:demo".into(),
+                interface_name: "control@0.1.0".into(),
+                function_name: "run".into(),
+            },
+            test_grants_authority_identity(1),
+        );
         call.call_id = CallId::new("call-resident-wit")
             .expect("string ID literal/generated value must be non-empty");
         call.trace_context.trace_id = trace_id;
