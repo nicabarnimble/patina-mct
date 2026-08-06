@@ -1,6 +1,14 @@
 //! Resident observation persistence and Iroh durability adaptation.
 
 use super::*;
+use mct_daemon::{
+    MotherAuthorityAdmissionDenyV1, MotherAuthorityCommitOutcomeV1, MotherAuthorityOrderV1,
+    authority_expectation_from_ledger, authority_expectation_from_snapshot,
+};
+use mct_observation::{
+    AuthorityProjectionDenyReasonV1, AuthorityProjectionLedgerEvidenceV1,
+    UsableAuthorityProjectionProofV1,
+};
 
 const RESIDENT_LEDGER_QUEUE_CAPACITY: usize = 256;
 
@@ -10,12 +18,14 @@ pub(crate) struct ResidentLedgerWriter {
     fenced: Arc<std::sync::atomic::AtomicBool>,
     path: Option<Arc<PathBuf>>,
     task: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    authority_order: Arc<MotherAuthorityOrderV1>,
 }
 
 enum ResidentLedgerCommand {
     Write(ResidentLedgerWrite),
     AuthorityMutation {
         request: AuthorityMutationRequestV1,
+        state_path: PathBuf,
         ack: tokio::sync::oneshot::Sender<AuthorityMutationResultV1>,
     },
     PublishAuthorityProjection {
@@ -34,6 +44,7 @@ enum ResidentLedgerCommand {
         authenticated_principal_ref: String,
         imported_state: AuthorityStateV1,
         decided_at: String,
+        state_path: PathBuf,
         ack: tokio::sync::oneshot::Sender<AuthorityMutationResultV1>,
     },
     Shutdown(tokio::sync::oneshot::Sender<()>),
@@ -51,6 +62,90 @@ struct ResidentLedgerWrite {
     observations: Vec<MctObservation>,
     durability: DurabilityClass,
     ack: tokio::sync::oneshot::Sender<std::result::Result<(), String>>,
+}
+
+fn publish_committed_authority_result(
+    ledger: &JsonlObservationLedger,
+    state_path: &Path,
+    result: AuthorityMutationResultV1,
+) -> AuthorityMutationResultV1 {
+    let AuthorityMutationResultV1::CommittedProjectionPending {
+        mutation_id,
+        resolution,
+        fact_sequence,
+        fact_entry_hash,
+        grants_authority,
+        ..
+    } = result
+    else {
+        return result;
+    };
+    let publication = ledger
+        .entries()
+        .map_err(|error| error.to_string())
+        .and_then(|entries| {
+            MctRuntimeStateStore::open(state_path)
+                .and_then(|state| state.publish_authority_projection(&entries))
+                .map_err(|error| error.to_string())
+        });
+    match publication {
+        Ok(cursor) => AuthorityMutationResultV1::Committed {
+            mutation_id,
+            resolution,
+            fact_sequence,
+            fact_entry_hash,
+            grants_authority,
+            projection_hash: cursor.projection_hash,
+        },
+        Err(_) => AuthorityMutationResultV1::CommittedProjectionPending {
+            mutation_id,
+            resolution,
+            fact_sequence,
+            fact_entry_hash,
+            grants_authority,
+            pending_reason: mct_observation::AuthorityProjectionPendingReasonV1::ProjectionFailed,
+        },
+    }
+}
+
+fn order_outcome_for_result(
+    ledger: &JsonlObservationLedger,
+    result: &AuthorityMutationResultV1,
+) -> MotherAuthorityCommitOutcomeV1 {
+    match result {
+        AuthorityMutationResultV1::Committed { mutation_id, .. } => {
+            match authority_expectation_from_ledger(ledger) {
+                Ok(current_expectation) => MotherAuthorityCommitOutcomeV1::Committed {
+                    mutation_id: mutation_id.clone(),
+                    current_expectation,
+                },
+                Err(_) => MotherAuthorityCommitOutcomeV1::CommittedProjectionPending {
+                    mutation_id: mutation_id.clone(),
+                },
+            }
+        }
+        AuthorityMutationResultV1::CommittedProjectionPending { mutation_id, .. } => {
+            MotherAuthorityCommitOutcomeV1::CommittedProjectionPending {
+                mutation_id: mutation_id.clone(),
+            }
+        }
+        AuthorityMutationResultV1::CommitUnknown { mutation_id, .. } => {
+            MotherAuthorityCommitOutcomeV1::CommitUnknown {
+                mutation_id: mutation_id.clone(),
+            }
+        }
+        AuthorityMutationResultV1::RejectedBeforeCommit {
+            mutation_id,
+            reason: AuthorityMutationRejectionReasonV1::WriterPoisoned,
+        } => MotherAuthorityCommitOutcomeV1::WriterPoisoned {
+            mutation_id: mutation_id.clone(),
+        },
+        AuthorityMutationResultV1::RejectedBeforeCommit { mutation_id, .. } => {
+            MotherAuthorityCommitOutcomeV1::RejectedBeforeCommit {
+                mutation_id: mutation_id.clone(),
+            }
+        }
+    }
 }
 
 impl ResidentLedgerWriter {
@@ -83,7 +178,7 @@ impl ResidentLedgerWriter {
                         completed += 1;
                         let _ = write.ack.send(result);
                     }
-                    ResidentLedgerCommand::AuthorityMutation { request, ack } => {
+                    ResidentLedgerCommand::AuthorityMutation { request, ack, .. } => {
                         task_fenced.store(true, Ordering::SeqCst);
                         let _ = ack.send(AuthorityMutationResultV1::RejectedBeforeCommit {
                             mutation_id: request.mutation_id,
@@ -117,6 +212,7 @@ impl ResidentLedgerWriter {
             fenced,
             path: Some(Arc::new(path)),
             task: Arc::new(std::sync::Mutex::new(Some(task))),
+            authority_order: Arc::new(MotherAuthorityOrderV1::unavailable()),
         }
     }
 
@@ -128,7 +224,7 @@ impl ResidentLedgerWriter {
         let task = tokio::task::spawn_blocking(move || {
             while let Some(command) = receiver.blocking_recv() {
                 match command {
-                    ResidentLedgerCommand::AuthorityMutation { request, ack } => {
+                    ResidentLedgerCommand::AuthorityMutation { request, ack, .. } => {
                         let result = match failure {
                             TestAuthorityMutationFailure::Rejected => {
                                 AuthorityMutationResultV1::RejectedBeforeCommit {
@@ -183,6 +279,7 @@ impl ResidentLedgerWriter {
             fenced,
             path: None,
             task: Arc::new(std::sync::Mutex::new(Some(task))),
+            authority_order: Arc::new(MotherAuthorityOrderV1::unavailable()),
         }
     }
 
@@ -195,6 +292,7 @@ impl ResidentLedgerWriter {
             fenced: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             path: None,
             task: Arc::new(std::sync::Mutex::new(None)),
+            authority_order: Arc::new(MotherAuthorityOrderV1::unavailable()),
         }
     }
 
@@ -235,6 +333,8 @@ impl ResidentLedgerWriter {
     }
 
     fn spawn_opened(path: PathBuf, mut ledger: JsonlObservationLedger) -> Result<Self> {
+        let authority_order = Arc::new(MotherAuthorityOrderV1::from_ledger(&ledger));
+        let task_authority_order = Arc::clone(&authority_order);
         let (sender, mut receiver) =
             tokio::sync::mpsc::channel::<ResidentLedgerCommand>(RESIDENT_LEDGER_QUEUE_CAPACITY);
         let task = tokio::task::spawn_blocking(move || {
@@ -263,16 +363,44 @@ impl ResidentLedgerWriter {
                             .map_err(|error| error.to_string());
                         let _ = write.ack.send(result);
                     }
-                    ResidentLedgerCommand::AuthorityMutation { request, ack } => {
-                        let result = if ledger.authority_tenure().is_some() {
-                            ledger.execute_authority_mutation(request, |_| Ok(None))
-                        } else {
+                    ResidentLedgerCommand::AuthorityMutation {
+                        request,
+                        state_path,
+                        ack,
+                    } => {
+                        let mutation_id = request.mutation_id.clone();
+                        let mut committed_result = None;
+                        task_authority_order.commit_mutation(
+                            &mutation_id,
+                            &request,
+                            |ordered_request| {
+                                let result = if ledger.authority_tenure().is_some() {
+                                    let result = ledger.execute_authority_mutation(
+                                        ordered_request.clone(),
+                                        |_| Ok(None),
+                                    );
+                                    publish_committed_authority_result(
+                                        &ledger,
+                                        &state_path,
+                                        result,
+                                    )
+                                } else {
+                                    AuthorityMutationResultV1::RejectedBeforeCommit {
+                                        mutation_id: ordered_request.mutation_id.clone(),
+                                        reason: AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
+                                    }
+                                };
+                                let outcome = order_outcome_for_result(&ledger, &result);
+                                committed_result = Some(result);
+                                outcome
+                            },
+                        );
+                        let result = committed_result.unwrap_or(
                             AuthorityMutationResultV1::RejectedBeforeCommit {
-                                mutation_id: request.mutation_id,
-                                reason:
-                                    AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
-                            }
-                        };
+                                mutation_id,
+                                reason: AuthorityMutationRejectionReasonV1::WriterPoisoned,
+                            },
+                        );
                         let _ = ack.send(result);
                     }
                     ResidentLedgerCommand::PublishAuthorityProjection { state_path, ack } => {
@@ -306,22 +434,36 @@ impl ResidentLedgerWriter {
                         authenticated_principal_ref,
                         imported_state,
                         decided_at,
+                        state_path,
                         ack,
                     } => {
-                        let result = if ledger.authority_tenure().is_some() {
-                            ledger.execute_legacy_authority_import(
-                                request,
-                                authenticated_principal_ref,
-                                imported_state,
-                                decided_at,
-                            )
-                        } else {
+                        let mutation_id = request.import_id.clone();
+                        let mut committed_result = None;
+                        task_authority_order.commit_mutation(&mutation_id, &(), |_| {
+                            let result = if ledger.authority_tenure().is_some() {
+                                let result = ledger.execute_legacy_authority_import(
+                                    request,
+                                    authenticated_principal_ref,
+                                    imported_state,
+                                    decided_at,
+                                );
+                                publish_committed_authority_result(&ledger, &state_path, result)
+                            } else {
+                                AuthorityMutationResultV1::RejectedBeforeCommit {
+                                    mutation_id: mutation_id.clone(),
+                                    reason: AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
+                                }
+                            };
+                            let outcome = order_outcome_for_result(&ledger, &result);
+                            committed_result = Some(result);
+                            outcome
+                        });
+                        let result = committed_result.unwrap_or(
                             AuthorityMutationResultV1::RejectedBeforeCommit {
-                                mutation_id: request.import_id,
-                                reason:
-                                    AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
-                            }
-                        };
+                                mutation_id,
+                                reason: AuthorityMutationRejectionReasonV1::WriterPoisoned,
+                            },
+                        );
                         let _ = ack.send(result);
                     }
                     ResidentLedgerCommand::Shutdown(ack) => {
@@ -336,6 +478,7 @@ impl ResidentLedgerWriter {
             fenced: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             path: Some(Arc::new(path)),
             task: Arc::new(std::sync::Mutex::new(Some(task))),
+            authority_order,
         })
     }
 
@@ -345,6 +488,34 @@ impl ResidentLedgerWriter {
 
     pub(crate) fn path(&self) -> Option<&Path> {
         self.path.as_deref().map(PathBuf::as_path)
+    }
+
+    pub(crate) fn admit_effect(
+        &self,
+        snapshot: &LocalExecutionAuthoritySnapshot,
+        state_path: &Path,
+    ) -> std::result::Result<(), MotherAuthorityAdmissionDenyV1> {
+        let expectation = authority_expectation_from_snapshot(snapshot);
+        self.authority_order.admit_effect(
+            &expectation,
+            || {
+                MctRuntimeStateStore::open(state_path)
+                    .ok()
+                    .and_then(|state| {
+                        state
+                            .usable_authority_projection_proof(
+                                &AuthorityProjectionLedgerEvidenceV1::Validated(
+                                    expectation.clone(),
+                                ),
+                            )
+                            .ok()
+                    })
+                    .unwrap_or(UsableAuthorityProjectionProofV1::Denied {
+                        reason: AuthorityProjectionDenyReasonV1::ProjectionNotCurrent,
+                    })
+            },
+            |_| (),
+        )
     }
 
     pub(crate) async fn publish_authority_projection(&self, state_path: PathBuf) -> Result<()> {
@@ -389,6 +560,7 @@ impl ResidentLedgerWriter {
         authenticated_principal_ref: String,
         imported_state: AuthorityStateV1,
         decided_at: String,
+        state_path: PathBuf,
     ) -> Result<AuthorityMutationResultV1> {
         if self.is_fenced() {
             return Ok(AuthorityMutationResultV1::RejectedBeforeCommit {
@@ -403,6 +575,7 @@ impl ResidentLedgerWriter {
                 authenticated_principal_ref,
                 imported_state,
                 decided_at,
+                state_path,
                 ack,
             })
             .await
@@ -414,6 +587,7 @@ impl ResidentLedgerWriter {
     pub(crate) async fn commit_authority_mutation(
         &self,
         request: AuthorityMutationRequestV1,
+        state_path: PathBuf,
     ) -> Result<AuthorityMutationResultV1> {
         if self.is_fenced() {
             return Ok(AuthorityMutationResultV1::RejectedBeforeCommit {
@@ -423,7 +597,11 @@ impl ResidentLedgerWriter {
         }
         let (ack, rx) = tokio::sync::oneshot::channel();
         self.sender
-            .send(ResidentLedgerCommand::AuthorityMutation { request, ack })
+            .send(ResidentLedgerCommand::AuthorityMutation {
+                request,
+                state_path,
+                ack,
+            })
             .await
             .context("send authority mutation to resident ledger writer")?;
         rx.await

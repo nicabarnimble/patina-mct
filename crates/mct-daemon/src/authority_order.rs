@@ -3,6 +3,7 @@
 //! Phase H3 intentionally gives this primitive no production consumer. Grants slices 7 and 8
 //! can later adopt the same synchronous handoff at their final adapter-start seams.
 
+use mct_kernel::LocalExecutionAuthoritySnapshot;
 use mct_observation::{
     AuthorityProjectionCursorV1, AuthorityProjectionDenyReasonV1, AuthorityProjectionExpectationV1,
     AuthorityProjectionLedgerEvidenceV1, JsonlObservationLedger, UsableAuthorityProjectionProofV1,
@@ -101,6 +102,11 @@ impl MotherAuthorityOrderV1 {
                 pending_mutation_resolutions: BTreeMap::new(),
             }),
         }
+    }
+
+    #[doc(hidden)]
+    pub fn from_ledger(ledger: &JsonlObservationLedger) -> Self {
+        authority_expectation_from_ledger(ledger).map_or_else(|_| Self::unavailable(), Self::new)
     }
 
     pub fn unavailable() -> Self {
@@ -302,7 +308,7 @@ impl MotherAuthorityOrderV1 {
             .current_expectation
             .as_ref()
             .ok_or(MotherAuthorityAdmissionDenyV1::AuthorityStateUnavailable)?;
-        if current != expectation {
+        if !same_authority_state(current, expectation) {
             return Err(MotherAuthorityAdmissionDenyV1::ExactAuthorityStateMismatch);
         }
         let proof = proof_fn();
@@ -323,6 +329,63 @@ impl MotherAuthorityOrderV1 {
         // non-cloneable admission cannot become a refreshable bearer for a later start.
         Ok(start_fn(admission))
     }
+}
+
+#[doc(hidden)]
+pub fn authority_expectation_from_snapshot(
+    snapshot: &LocalExecutionAuthoritySnapshot,
+) -> AuthorityProjectionExpectationV1 {
+    let grants = snapshot.canonical_grants().grants_authority();
+    let projection = snapshot.projection();
+    AuthorityProjectionExpectationV1 {
+        source_mother_node_id: projection.source_mother_node_id().to_owned(),
+        source_ledger_id: projection.source_ledger_id().to_owned(),
+        through_sequence: projection.through_sequence(),
+        through_entry_hash: projection.through_entry_hash().to_owned(),
+        grants_authority: mct_observation::GrantsAuthorityIdentityV1 {
+            mother_node_id: grants.mother_node_id().to_owned(),
+            authority_epoch: grants.authority_epoch().to_owned(),
+            generation: grants.generation(),
+            source_authority_observation_id: grants.source_authority_observation_id().to_owned(),
+        },
+        authority_state_hash: projection.authority_state_hash().to_owned(),
+    }
+}
+
+#[doc(hidden)]
+pub fn authority_expectation_from_ledger(
+    ledger: &JsonlObservationLedger,
+) -> Result<AuthorityProjectionExpectationV1, MotherAuthorityRecoveryDenyV1> {
+    let entries = ledger
+        .entries()
+        .map_err(|_| MotherAuthorityRecoveryDenyV1::LedgerReplayBlocked)?;
+    let head = entries
+        .last()
+        .ok_or(MotherAuthorityRecoveryDenyV1::LedgerReplayBlocked)?;
+    let replay = replay_authority_entries(&entries)
+        .map_err(|_| MotherAuthorityRecoveryDenyV1::LedgerReplayBlocked)?;
+    let grants_authority = replay
+        .current_authority
+        .ok_or(MotherAuthorityRecoveryDenyV1::LedgerReplayBlocked)?;
+    Ok(AuthorityProjectionExpectationV1 {
+        source_mother_node_id: head.mother_node_id.clone(),
+        source_ledger_id: head.ledger_id.clone(),
+        through_sequence: head.local_sequence,
+        through_entry_hash: head.entry_hash.clone(),
+        grants_authority,
+        authority_state_hash: authority_state_hash(&replay.state)
+            .map_err(|_| MotherAuthorityRecoveryDenyV1::LedgerReplayBlocked)?,
+    })
+}
+
+fn same_authority_state(
+    left: &AuthorityProjectionExpectationV1,
+    right: &AuthorityProjectionExpectationV1,
+) -> bool {
+    left.source_mother_node_id == right.source_mother_node_id
+        && left.source_ledger_id == right.source_ledger_id
+        && left.grants_authority == right.grants_authority
+        && left.authority_state_hash == right.authority_state_hash
 }
 
 fn cursor_matches_expectation(
@@ -633,9 +696,9 @@ mod tests {
         );
     }
 
-    /// Phase I proof 14: slices 6-8 and the harness-only order seam stay fenced.
+    /// Phase J proof 14: retired pins have production replacements; slice 6 and Review 3 remain.
     #[test]
-    fn phase_i_deferral_fence_pins_protocol_effect_wire_replay_and_ordering() {
+    fn phase_j_pin_retirement_maps_each_old_seam_to_proof_or_named_residue() {
         let crate_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let read = |relative: &str| {
             std::fs::read_to_string(crate_root.join(relative))
@@ -670,30 +733,12 @@ mod tests {
         assert!(replay.contains("MctIdempotencyReason::ReplayCompleted"));
         assert!(!replay.contains("LocalExecutionAuthoritySnapshot"));
 
-        fn rust_files(root: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
-            for entry in std::fs::read_dir(root).unwrap() {
-                let path = entry.unwrap().path();
-                if path.is_dir() {
-                    rust_files(&path, files);
-                } else if path.extension().is_some_and(|extension| extension == "rs") {
-                    files.push(path);
-                }
-            }
-        }
-        let mut files = Vec::new();
-        rust_files(&crate_root.join("src"), &mut files);
-        let production_consumers = files
-            .into_iter()
-            .filter(|path| !path.ends_with("authority_order.rs") && !path.ends_with("lib.rs"))
-            .filter(|path| {
-                std::fs::read_to_string(path)
-                    .unwrap()
-                    .contains("MotherAuthorityOrderV1")
-            })
-            .collect::<Vec<_>>();
-        assert!(
-            production_consumers.is_empty(),
-            "MotherAuthorityOrderV1 remains harness-only: {production_consumers:?}"
-        );
+        let resident_writer = read("src/daemon/resident/observation.rs");
+        assert!(resident_writer.contains("authority_order: Arc<MotherAuthorityOrderV1>"));
+        assert!(resident_writer.contains("task_authority_order.commit_mutation"));
+        assert!(resident_writer.contains("self.authority_order.admit_effect"));
+        let offline_control = read("src/daemon/control.rs");
+        assert!(offline_control.contains("authority_order.commit_mutation"));
+        assert!(resident_effect.contains("ledger.admit_effect(&effect_snapshot"));
     }
 }

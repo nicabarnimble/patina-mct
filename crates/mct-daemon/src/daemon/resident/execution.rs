@@ -1,6 +1,7 @@
 //! Resident local effect-boundary revision guard, child delivery, dispatch, and result projection.
 
 use super::*;
+use mct_daemon::MotherAuthorityAdmissionDenyV1;
 
 #[derive(Debug)]
 struct PreparedChildExecution {
@@ -115,7 +116,7 @@ pub(super) fn execute_authorized_resident_child(
             &call,
             &route_candidate,
             route_decision_id,
-            reason,
+            &format!("{reason:?}"),
             &effect_snapshot,
             &child_invocation,
         ));
@@ -138,6 +139,22 @@ pub(super) fn execute_authorized_resident_child(
         Some(&provenance),
         mct_daemon::current_timestamp_string(),
     )?;
+
+    let order_admission = before_effect_ledger
+        .as_ref()
+        .ok_or(MotherAuthorityAdmissionDenyV1::AuthorityStateUnavailable);
+    if let Err(reason) =
+        order_admission.and_then(|ledger| ledger.admit_effect(&effect_snapshot, paths.state_path()))
+    {
+        return Ok(resident_child_effect_denial_report(
+            &call,
+            &route_candidate,
+            child_execution.route_decision_id.clone(),
+            &format!("MotherAuthorityOrder:{reason:?}"),
+            &effect_snapshot,
+            &child_execution.authorized,
+        ));
+    }
 
     let mut report = match child_execution.child.ingress_mode {
         mct_daemon::MctChildIngressMode::Handle => {
@@ -658,7 +675,7 @@ pub(super) fn resident_child_effect_denial_report(
     call: &MctCall,
     route: &CandidateRoute,
     decision_id: DecisionId,
-    reason: ChildEffectAdmissionDenyV1,
+    reason: &str,
     current: &LocalExecutionAuthoritySnapshot,
     authorized: &AuthorizedChildInvocation,
 ) -> LocalExecutionReport {
@@ -684,7 +701,7 @@ pub(super) fn resident_child_effect_denial_report(
         visibility: ObservationVisibility::InternalOnly,
         safe_message: "not authorized".into(),
         detail_ref: Some(format!(
-            "child_effect_authority_denial:{reason:?};minted_policy_revision={};current_policy_revision={};minted_grants_authority={:?};current_grants_authority={:?}",
+            "child_effect_authority_denial:{reason};minted_policy_revision={};current_policy_revision={};minted_grants_authority={:?};current_grants_authority={:?}",
             authorized.policy_revision(),
             current.policy_revision(),
             authorized
