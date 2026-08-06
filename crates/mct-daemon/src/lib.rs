@@ -45,7 +45,8 @@ pub use acquisition::{
 };
 pub use authority_order::{
     MotherAuthorityAdmissionDenyV1, MotherAuthorityCommitOutcomeV1, MotherAuthorityFenceReasonV1,
-    MotherAuthorityOrderV1, MotherAuthorityRecoveryDenyV1,
+    MotherAuthorityOrderV1, MotherAuthorityRecoveryDenyV1, authority_expectation_from_ledger,
+    authority_expectation_from_snapshot,
 };
 pub use authority_snapshot::{
     LocalExecutionAuthoritySnapshotDenyV1, local_execution_authority_snapshot,

@@ -1,4 +1,7 @@
 use super::*;
+use mct_daemon::{
+    MotherAuthorityCommitOutcomeV1, MotherAuthorityOrderV1, authority_expectation_from_ledger,
+};
 
 const PEER_MUTATION_BODY_MAX_BYTES: usize = 64 * 1024;
 const RESIDENT_UDS_CONNECTION_LIMIT: usize = 64;
@@ -2120,6 +2123,7 @@ async fn execute_resident_authority_import(
             format!("os-uid:{}", owner.uid()),
             imported_state,
             mct_daemon::current_timestamp_string(),
+            state_path.to_path_buf(),
         )
         .await
     {
@@ -2182,7 +2186,10 @@ async fn execute_resident_administrative_mutation(
         );
     }
     let authority_result = if let Some(request) = prepared.authority_mutation_request(owner.uid()) {
-        let result = match ledger.commit_authority_mutation(request).await {
+        let result = match ledger
+            .commit_authority_mutation(request, state_path.to_path_buf())
+            .await
+        {
             Ok(result) => result,
             Err(_) => {
                 return peer_mutation_response(
@@ -2304,17 +2311,64 @@ pub(super) fn execute_offline_administrative_mutation(
         {
             bail!("authority mutation requires operator-gated legacy import");
         }
+        let authority_order = MotherAuthorityOrderV1::from_ledger(&ledger);
+        let mutation_id = request.mutation_id.clone();
         let mut legacy_value = None;
         let mut legacy_error = None;
-        let result = ledger.execute_authority_mutation(request, |_| match prepared.apply() {
-            Ok(value) => {
-                legacy_value = Some(value);
-                Ok(None)
-            }
-            Err(error) => {
-                legacy_error = Some(error.to_string());
-                Err(error.to_string())
-            }
+        let mut ordered_result = None;
+        authority_order.commit_mutation(&mutation_id, &request, |ordered_request| {
+            let result = ledger.execute_authority_mutation(ordered_request.clone(), |_| {
+                match prepared.apply() {
+                    Ok(value) => {
+                        legacy_value = Some(value);
+                        Ok(None)
+                    }
+                    Err(error) => {
+                        legacy_error = Some(error.to_string());
+                        Err(error.to_string())
+                    }
+                }
+            });
+            let outcome = match &result {
+                AuthorityMutationResultV1::Committed { mutation_id, .. } => {
+                    match authority_expectation_from_ledger(&ledger) {
+                        Ok(current_expectation) => MotherAuthorityCommitOutcomeV1::Committed {
+                            mutation_id: mutation_id.clone(),
+                            current_expectation,
+                        },
+                        Err(_) => MotherAuthorityCommitOutcomeV1::CommittedProjectionPending {
+                            mutation_id: mutation_id.clone(),
+                        },
+                    }
+                }
+                AuthorityMutationResultV1::CommittedProjectionPending { mutation_id, .. } => {
+                    MotherAuthorityCommitOutcomeV1::CommittedProjectionPending {
+                        mutation_id: mutation_id.clone(),
+                    }
+                }
+                AuthorityMutationResultV1::CommitUnknown { mutation_id, .. } => {
+                    MotherAuthorityCommitOutcomeV1::CommitUnknown {
+                        mutation_id: mutation_id.clone(),
+                    }
+                }
+                AuthorityMutationResultV1::RejectedBeforeCommit {
+                    mutation_id,
+                    reason: AuthorityMutationRejectionReasonV1::WriterPoisoned,
+                } => MotherAuthorityCommitOutcomeV1::WriterPoisoned {
+                    mutation_id: mutation_id.clone(),
+                },
+                AuthorityMutationResultV1::RejectedBeforeCommit { mutation_id, .. } => {
+                    MotherAuthorityCommitOutcomeV1::RejectedBeforeCommit {
+                        mutation_id: mutation_id.clone(),
+                    }
+                }
+            };
+            ordered_result = Some(result);
+            outcome
+        });
+        let result = ordered_result.unwrap_or(AuthorityMutationResultV1::RejectedBeforeCommit {
+            mutation_id,
+            reason: AuthorityMutationRejectionReasonV1::WriterPoisoned,
         });
         if let Some(error) = legacy_error {
             bail!("canonical authority committed but legacy projection failed: {error}");
@@ -4740,7 +4794,7 @@ listens = []
         .await;
         assert_eq!(import_status, 200, "{imported}");
         let imported: serde_json::Value = serde_json::from_str(&imported).unwrap();
-        assert_eq!(imported["status"], "committed_projection_pending");
+        assert_eq!(imported["status"], "committed");
 
         let (second_status, second) = post_mutation(
             Arc::clone(&listener),

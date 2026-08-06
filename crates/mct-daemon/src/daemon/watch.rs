@@ -531,7 +531,7 @@ async fn commit_watch_authority(
         ));
     }
     let result = ledger
-        .commit_authority_mutation(request)
+        .commit_authority_mutation(request, state_path.to_path_buf())
         .await
         .map_err(|_| {
             response(
