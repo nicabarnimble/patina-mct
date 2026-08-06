@@ -76,7 +76,7 @@ exit_criteria:
   - id: phase-j-toy-effect-boundary
     text: Every Toy backend and delegated-capability admission revalidates current generation, exact grant state/scope, grant and token time bounds, and supported live consumption state before ordered effect start.
     checked: false
-    verify: Phase J proof steps 7-10, 12-13, and 15 have landed test file and line citations.
+    verify: Phase J proof steps 7-10, 12-13, and 15-16 have landed test file and line citations.
   - id: phase-j-production-order
     text: Canonical control-plane authority mutations use MotherAuthorityOrderV1::commit_mutation and final Child/Toy adapter starts use its single-use admit_effect handoff without a second order or cross-file transaction claim.
     checked: false
@@ -609,7 +609,12 @@ Phase J retires the Phase I slice-7/8 pins and implements only:
 1. **slice 7** — locally sourced route/Child execution authority, replacement of the vacuous resident grants guard, and production adoption of the Mother-local mutation/effect order at process and all three WASM Child seams; and
 2. **slice 8** — current exact-grant Toy revalidation, ordered Toy backend/delegation admission, and the D-G7 bounded-delegation proof.
 
-The Phase J baseline is `6b179bf` on branch `patina`. D-G1 through D-G8, D-R2.1 through D-R2.8, D-H2.1, D-H3.1 through D-H3.4, and D-I.1 through D-I.2 remain settled. This design commit and the separate reliability-doctrine commit form Gate G1; no Phase J Rust or Allium edit may precede operator ratification. A newly discovered genuine behavioral fork stops for an operator-supplied D-J.n amendment.
+The Phase J baseline is `6b179bf` on branch `patina`. D-G1 through D-G8, D-R2.1 through D-R2.8, D-H2.1, D-H3.1 through D-H3.4, D-I.1 through D-I.2, and D-J.1 remain settled. D-J.2 records later scope without authorizing Phase J implementation. Gate G1 was operator-ratified after disk verification of `fa87ed3` and `b1779cd`; Phase J implementation may proceed under this design and the active reliability doctrine. A newly discovered genuine behavioral fork stops for an operator-supplied D-J.n amendment.
+
+### Gate G1 decisions
+
+- **D-J.1 — unsupported consumption state denies:** a Toy grant carrying `max_uses = Some(_)` denies at effect admission with typed `consumption_state_unavailable` until a separately specified live consumption fact exists. Proof 16 distinguishes that denial from an otherwise-identical `max_uses = None` admission. This closes a latent silently unenforced constraint; it is not merely scope documentation.
+- **D-J.2 — Review 3 authority-response scope:** the retained idempotent-replay pin concerns what a replayed response means after authority changes, not process supervision. Review 3 owns the caller- and Child-observable semantics of authority change during and after execution, including completed replay and mid-execution denial. Phase J records the observed current shape and designs neither response semantic.
 
 ## Minted execution-authority contract
 
@@ -679,7 +684,7 @@ Immediately before every Toy backend or delegated-capability admission, one fres
 8. any consumption-bearing limit is checked against a current live consumption fact without advancing authority-shape generation; and
 9. the exact D-G8 expectation is admitted by the unfenced Mother order.
 
-There is currently no production surface or live projection that creates/tracks consumption-bearing Toy grants: supported grant constructors set `max_uses = None`, and no usage-counter fact exists. Phase J's reachable consumption invariant is therefore explicit: `max_uses = None` needs no counter; a canonical/imported grant with `max_uses = Some(_)` denies as `consumption_state_unavailable` until separately specified live consumption state exists. It is never treated as unmetered. `max_duration_ms`, when present in future canonical data, may only narrow token/effect duration and cannot extend the effective deadline.
+There is currently no production surface or live projection that creates/tracks consumption-bearing Toy grants: supported grant constructors set `max_uses = None`, and no usage-counter fact exists. Under D-J.1, `max_uses = None` needs no counter, while a canonical/imported grant with `max_uses = Some(_)` denies at effect admission as typed `consumption_state_unavailable` until separately specified live consumption state exists. It is never treated as unmetered. `max_duration_ms`, when present in future canonical data, may only narrow token/effect duration and cannot extend the effective deadline.
 
 Toy denial is typed and the backend is not invoked. A Toy denial arising during a running Child is exposed through the current host-adapter error/result path and recorded during close-out; Phase J does not define a new Child-facing error contract.
 
@@ -702,15 +707,15 @@ After admission, the delegated capability remains usable until that bound even i
 | `AuthorizedToyCall::admit_effect_for_call_at` compares policy/grants with the call | **Retired.** Proofs 7-9, 12-13, and 15 cover fresh identity, exact grant, scope, and Mother time. |
 | `MotherAuthorityOrderV1` has no production consumer | **Retired.** Proofs 4-6 and 14-15 require resident/offline mutation and Child/Toy effect consumers. |
 | Hello request/response and peer wire carry no local snapshot | **Retained — slice 6.** No schema or serialization change in Phase J. |
-| Idempotent replay carries no local execution snapshot | **Retained — Review 3.** Replay performs no new external effect; whether a completed cached result becomes a new Child-visible denial after authority change is response-semantics work, not effect-start admission. |
+| Idempotent replay carries no local execution snapshot | **Retained — Review 3 under D-J.2.** Replay performs no new external effect. What a completed replayed response means after authority changes is an authority-semantics question within the caller- and Child-observable semantics of authority change during and after execution; it is not process supervision or Phase J effect-start admission. |
 
 Any failure of the old pin test must correspond to one row above. The test is replaced by a positive source/behavior audit; broad deletion or unrelated source drift is a defect.
 
-## Allium tend proposal for Gate G1
+## Gate G1 Allium tend
 
-The current `EffectBoundaryRevisionGuardIsDistinct`, `EffectAdmissionIsOrderedWithAuthorityMutation`, `EffectPermitCannotRefreshItself`, `EveryToyEffectRevalidatesCurrentAuthority`, `ToyEffectChecksExactGrant`, and delegated-capability wording already states the Phase J observable law. One legacy-narrow phrase should be tended only after Gate G1 ratification.
+The current `EffectBoundaryRevisionGuardIsDistinct`, `EffectAdmissionIsOrderedWithAuthorityMutation`, `EffectPermitCannotRefreshItself`, `EveryToyEffectRevalidatesCurrentAuthority`, `ToyEffectChecksExactGrant`, and delegated-capability wording already states the Phase J observable law. Gate G1 approved one clarification of the legacy-narrow phrase.
 
-Exact proposed edit in `layer/allium/mct-product-map.allium`, contract `TwoPhaseRouting`, invariant `EffectBoundaryGuardCannotRepairStaleAuthority`:
+Applied edit in `layer/allium/mct-product-map.allium`, contract `TwoPhaseRouting`, invariant `EffectBoundaryGuardCannotRepairStaleAuthority`:
 
 ```diff
 -        -- A revision mismatch denies before the child effect; the adapter cannot refresh, widen,
@@ -720,7 +725,7 @@ Exact proposed edit in `layer/allium/mct-product-map.allium`, contract `TwoPhase
 +        -- refresh, widen, or reinterpret the already-minted authority token as current.
 ```
 
-This is clarification of ratified law, not a new behavior. No other Allium edit is proposed. `allium check layer/allium` must remain clean before and after the tend.
+This is clarification of ratified law, not a new behavior. No other Allium edit is authorized. `allium check layer/allium` was clean before and after the tend.
 
 ## Phase J required proof steps
 
@@ -741,13 +746,14 @@ Each proof lands as a named failing test before its implementation. Close-out ci
 13. Hostile caller echoes cannot influence minting, revalidation, or admission at any Child, Toy, process, or WASM boundary.
 14. Every Phase I pinned site maps to a new proof or the explicit slice-6/Review-3 residue above; no pin retires without replacement evidence.
 15. A full resident call injects canonical revocation post-mint, post-adapter-construction, and mid-Child at the applicable boundaries; each path returns the correct typed denial and leaves its external effect marker absent.
+16. An otherwise-current Toy grant with `max_uses = Some(1)` denies at effect admission as typed `consumption_state_unavailable`, while the otherwise-identical grant with `max_uses = None` admits.
 
 ## Updated fence
 
 Phase J deliberately retires only the slice-7/8 rows named above. The following remain forbidden, including partial implementation:
 
 - no hello/call schema, peer-wire generation echo, or early protocol stale-rejection change; slice 6 owns them;
-- no new Child-visible semantics for a mid-execution Toy/authority denial and no completed-replay response redesign; Review 3 owns those observable response semantics;
+- no new caller- or Child-visible semantics for authority change during or after execution: Review 3 owns mid-execution Toy/authority denial and completed-replay response semantics under D-J.2;
 - no per-operation delegation mediation, active preopen revocation, or capability recall;
 - no performance cache, group commit, profiling instrumentation, or authority-path restructuring beyond the required integration;
 - no new canonical fact kind or authority change variant;
@@ -766,6 +772,6 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 The final close-out additionally runs `allium check layer/allium`, `patina spec check grants-authority-v0 --json`, and `git diff --check`. A failing test is rerun in isolation up to five times; a non-reproducing failure is retained verbatim in the Phase J flake log, while a reproducing failure is fixed before advancement.
 
-Close-out is reconstructed from `6b179bf..HEAD`: commit purpose, all fifteen proof citations and verbatim assertions, complete pin retirement, full validation transcript, flake log even when empty, Track 3 terminal dispositions, M2a-M2d/M5 status, current Child-visible mid-execution denial behavior, and the active session update. Remaining board order is slice 6, then performance Phase 0 profiling on the covered revision and the ratified optimization sequence; Review 3 begins from the recorded Child-visible behavior.
+Close-out is reconstructed from `6b179bf..HEAD`: commit purpose, all sixteen proof citations and verbatim assertions, complete pin retirement, full validation transcript, flake log even when empty, Track 3 terminal dispositions, M2a-M2d/M5 status, current caller- and Child-visible mid-execution and completed-replay behavior, and the active session update. Remaining board order is slice 6, then performance Phase 0 profiling on the covered revision and the ratified optimization sequence; Review 3 begins from the recorded caller- and Child-observable authority-response behavior under D-J.2.
 
-**Phase J Gate G1:** stop after the SPEC and reliability-doctrine commits. Report the SPEC diff, exact proposed Allium tend, doctrine draft, and complete pin-retirement map for operator ratification. No Rust or Allium change may precede ratification.
+**Phase J Gate G1:** ratified. The Allium clarification and doctrine activation are the first Task B action; Rust work follows only under D-J.1, D-J.2, the sixteen required proofs, and the updated fence.

@@ -1,6 +1,6 @@
 # Contract obligation ledger
 
-Status date: 2026-07-12; W2 extension 2026-07-14; Daily-Driver Slice 2 extension 2026-07-15; artifact-acquisition extension 2026-07-16; trigger-runtime Part A extension 2026-07-21; grants-authority v0 Phase G extension 2026-08-02; ledger commit/recovery Phase H/H2 extension 2026-08-03; Phase H3 extension 2026-08-05
+Status date: 2026-07-12; W2 extension 2026-07-14; Daily-Driver Slice 2 extension 2026-07-15; artifact-acquisition extension 2026-07-16; trigger-runtime Part A extension 2026-07-21; grants-authority v0 Phase G extension 2026-08-02; ledger commit/recovery Phase H/H2 extension 2026-08-03; Phase H3 extension 2026-08-05; Phase J Gate G1 extension 2026-08-06
 
 Scope: complete named-invariant coverage for `mct-product-map.allium` and `mct-peer-ontology.allium`, plus bulk attribution of tool-derived structural obligations. The 2026-07-12 priority and full-inventory evidence is retained in place; the 2026-07-14 local-application-ingress invariants and W2-A remediation obligations extend it below.
 
@@ -85,7 +85,14 @@ The separate `MctProjectionCursor` structural row remains `COVERED`. H3 moves `E
 
 ## Grants authority v0 — Phase G
 
-The ratified Phase G and Phase I law is captured in [grants-authority-v0](../../feat/grants-authority-v0/SPEC.md). Phase I canonicalizes the complete D-R2.7 Toy/grant/Watch-scope state, adds a proof-gated Mother-owned snapshot, and migrates resident route evaluation. Rows whose complete law reaches token or effect admission remain honestly `DEFERRED` to slices 7-8; route-level proof is not over-credited as effect-time coverage.
+The ratified Phase G and Phase I law is captured in [grants-authority-v0](../../feat/grants-authority-v0/SPEC.md). Phase I canonicalizes the complete D-R2.7 Toy/grant/Watch-scope state, adds a proof-gated Mother-owned snapshot, and migrates resident route evaluation. Rows whose complete law reaches token or effect admission remain honestly `DEFERRED` to slices 7-8; route-level proof is not over-credited as effect-time coverage. Phase J Gate G1 ratified D-J.1 and recorded D-J.2 before implementation.
+
+### Review 3 authority-response scope recorded by D-J.2
+
+| Scope item | Current status | Phase disposition / evidence |
+|---|---|---|
+| Caller- and Child-observable semantics of authority change during execution | DEFERRED | Phase J records the current mid-execution Toy/authority denial shape but does not design a new Child-visible result. Review 3 owns that authority-response contract; it is not H1 process supervision. |
+| Caller- and Child-observable semantics of authority change after execution, including completed idempotent replay | DEFERRED | The retained Phase I replay pin is explicit Review 3 authority semantics. Existing peer-binding checks before replay do not decide what a completed response means after local grants authority changes. Phase J performs no replay redesign. |
 
 ### Child effect admission
 
