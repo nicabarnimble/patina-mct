@@ -733,10 +733,8 @@ pub fn revalidate_route_for_execution_with_snapshot(
             route: selected_route.clone(),
             child_invocation,
             toy_calls: Vec::new(),
-            // Legacy revision accessors remain correlation-only until Task B2 removes the
-            // resident call-echo guard. Executable authority is the snapshot-bound value below.
-            policy_revision: call.authority_context.policy_revision,
-            grants_revision: call.authority_context.grants_revision,
+            policy_revision: local_policy_revision,
+            grants_revision: local_grants_generation,
             local_execution_authority: Some(local_execution_authority),
         }),
     }

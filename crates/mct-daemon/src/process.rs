@@ -460,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn process_harness_denies_stale_child_capability_before_spawn() {
+    fn caller_policy_echo_cannot_create_a_process_authority_denial() {
         let harness = MctProcessChildHarness {
             executable: PathBuf::from("/definitely/not/a/child"),
             args: Vec::new(),
@@ -471,23 +471,16 @@ mod tests {
         let mut stale_call = call();
         stale_call.authority_context.policy_revision += 1;
 
-        let report = harness
+        let error = harness
             .invoke_authorized_child(
                 authorized(),
                 &stale_call,
                 "{\"input\":\"hi\"}",
                 ids("stale"),
             )
-            .unwrap();
+            .expect_err("caller policy echo cannot deny before the adapter spawn attempt");
 
-        assert_eq!(report.result.outcome, ResultOutcome::Denied);
-        assert_eq!(report.result.route_taken, None);
-        assert_eq!(report.observations.len(), 1);
-        assert_eq!(report.observations[0].outcome, ObservationOutcome::Denied);
-        assert_eq!(
-            report.observations[0].kind,
-            ObservationKind::RuntimeExecutionFailed
-        );
+        assert!(matches!(error, MctProcessChildError::Spawn { .. }));
     }
 
     #[test]

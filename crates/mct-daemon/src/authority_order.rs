@@ -650,18 +650,12 @@ mod tests {
         ));
 
         let resident_effect = read("src/daemon/resident/execution.rs");
-        assert!(
-            resident_effect.contains("grants_revision: call.authority_context.grants_revision")
-        );
-        assert!(
-            resident_effect.contains(
-                "authorized_route.grants_revision() != current_revisions.grants_revision"
-            )
-        );
+        assert!(resident_effect.contains("admit_effect_with_snapshot(&call, &effect_snapshot)"));
+        assert!(!resident_effect.contains("current_resident_route_revisions"));
         let child_token = read("../mct-kernel/src/child.rs");
-        assert!(
-            child_token.contains("self.policy_revision == call.authority_context.policy_revision")
-        );
+        assert!(child_token.contains(
+            "authority.grants_authority() != snapshot.canonical_grants().grants_authority()"
+        ));
         let toy_token = read("../mct-kernel/src/toy.rs");
         assert!(
             toy_token.contains("self.grants_revision == call.authority_context.grants_revision")
