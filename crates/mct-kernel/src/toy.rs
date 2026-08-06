@@ -532,7 +532,7 @@ impl ToyGrantEvaluationResult {
 ///
 /// Authority facts are the call snapshot, toy request, canonical catalog, and
 /// current grants. It allows only cataloged authority-bearing toys with an
-/// active grant whose subject, scope, action, revisions, and time window match.
+/// active grant whose subject, scope, action, policy revision, and time window match.
 /// Every missing, stale, revoked, expired, or mismatched fact returns a denied
 /// evaluation and no [`AuthorizedToyCall`].
 pub fn evaluate_toy_grant_for_call(
@@ -548,7 +548,9 @@ pub fn evaluate_toy_grant_for_call(
             None,
             ToyGrantReasonCode::UnknownToy,
             call.authority_context.policy_revision,
-            call.authority_context.grants_revision,
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation,
         );
     };
 
@@ -559,7 +561,9 @@ pub fn evaluate_toy_grant_for_call(
             None,
             ToyGrantReasonCode::PolicyDenied,
             call.authority_context.policy_revision,
-            call.authority_context.grants_revision,
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation,
         );
     }
 
@@ -569,9 +573,7 @@ pub fn evaluate_toy_grant_for_call(
             continue;
         }
 
-        if grant.policy_revision != call.authority_context.policy_revision
-            || grant.grants_revision != call.authority_context.grants_revision
-        {
+        if grant.policy_revision != call.authority_context.policy_revision {
             return denied(
                 call,
                 request,
@@ -710,7 +712,9 @@ pub fn evaluate_toy_grant_for_call(
         None,
         ToyGrantReasonCode::MissingGrant,
         call.authority_context.policy_revision,
-        call.authority_context.grants_revision,
+        call.authority_context
+            .expected_receiver_grants_authority
+            .generation,
     )
 }
 
@@ -1065,7 +1069,7 @@ mod tests {
             },
             authority_context: AuthorityContextSnapshot {
                 policy_revision: 3,
-                grants_revision: 7,
+                expected_receiver_grants_authority: crate::call::test_grants_authority_identity(7),
                 vision_policy_revision: 11,
             },
             deadline: Timestamp::new("2026-05-31T00:10:00Z").unwrap(),
@@ -1338,16 +1342,16 @@ mod tests {
     }
 
     #[test]
-    fn stale_grant_revision_denies_without_authorization() {
-        let mut stale = grant(ToyGrantState::Active);
-        stale.grants_revision = 6;
-        let result = evaluate_toy_grant_for_call(&call(), &request(), &[toy()], &[stale]);
+    fn call_echo_generation_cannot_create_a_legacy_toy_denial() {
+        let mut current = grant(ToyGrantState::Active);
+        current.grants_revision = 6;
+        let result = evaluate_toy_grant_for_call(&call(), &request(), &[toy()], &[current]);
 
         assert_eq!(
             result.evaluation.reason_code,
-            ToyGrantReasonCode::StaleSnapshot
+            ToyGrantReasonCode::ActiveGrant
         );
-        assert!(result.authorized.is_none());
+        assert!(result.authorized.is_some());
     }
 
     fn snapshot_with(
@@ -1484,7 +1488,10 @@ mod tests {
         for (policy, grants, vision) in [(0, 0, 0), (u64::MAX, u64::MAX - 1, 42)] {
             let mut hostile = call();
             hostile.authority_context.policy_revision = policy;
-            hostile.authority_context.grants_revision = grants;
+            hostile
+                .authority_context
+                .expected_receiver_grants_authority
+                .generation = grants;
             hostile.authority_context.vision_policy_revision = vision;
             let token = evaluate_toy_grant_for_snapshot(&hostile, &request(), &snapshot)
                 .authorized

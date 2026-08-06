@@ -1168,6 +1168,7 @@ fn trigger_protocol_request(
     firing: &MctTriggerFiringRecord,
     idempotency_key: String,
     endpoint_id: EndpointIdText,
+    expected_receiver_grants_authority: GrantsAuthorityIdentity,
 ) -> Result<MctCallProtocolRequest> {
     let size_bytes = match &authority.payload_constraint {
         MctCallPayloadHandle::ContentAddressedBlob { size_bytes, .. } => *size_bytes,
@@ -1187,7 +1188,7 @@ fn trigger_protocol_request(
         },
         authority_context: AuthorityContextSnapshot {
             policy_revision: authority.policy_revision,
-            grants_revision: authority.policy_revision,
+            expected_receiver_grants_authority: expected_receiver_grants_authority.clone(),
             vision_policy_revision: authority.policy_revision,
         },
         deadline: Timestamp::new(deadline.to_string())?,
@@ -1213,7 +1214,7 @@ fn trigger_protocol_request(
             accepted_alpn: "mct/trigger-call/0".into(),
             endpoint_id: endpoint_id.clone(),
             policy_revision: authority.policy_revision,
-            grants_revision: authority.policy_revision,
+            expected_receiver_grants_authority,
         },
         received_over: IrohConnectionPresentation {
             endpoint_id,
@@ -1343,6 +1344,8 @@ async fn deny_trigger_firing_before_execution(
     let state = MctRuntimeStateStore::open(paths.state_path())?;
     let run_id = format!("run-trigger-denied:{}", firing.call_id);
     if state.get_run(&run_id)?.is_none() {
+        let expected_receiver_grants_authority =
+            fresh_resident_receiver_identity(paths, ledger).await?;
         let request = trigger_protocol_request(
             authority,
             firing,
@@ -1356,6 +1359,7 @@ async fn deny_trigger_firing_before_execution(
                 .local_identity
                 .context("trigger denial identity unavailable")?
                 .endpoint_id,
+            expected_receiver_grants_authority,
         )?;
         state.insert_run_started(
             &run_id,
@@ -1457,8 +1461,15 @@ async fn execute_trigger_firing(
     let identity = config
         .local_identity
         .context("trigger execution identity unavailable")?;
-    let request =
-        trigger_protocol_request(&authority, &firing, idempotency_key, identity.endpoint_id)?;
+    let expected_receiver_grants_authority =
+        fresh_resident_receiver_identity(&paths, &ledger).await?;
+    let request = trigger_protocol_request(
+        &authority,
+        &firing,
+        idempotency_key,
+        identity.endpoint_id,
+        expected_receiver_grants_authority,
+    )?;
     request.validate().map_err(anyhow::Error::from)?;
     let result = execute_resident_call_with_context(
         paths.clone(),
@@ -2392,7 +2403,12 @@ listens = []
             },
             "authority_context": {
                 "policy_revision": 1,
-                "grants_revision": 1,
+                "expected_receiver_grants_authority": {
+                    "mother_node_id": "local-mct",
+                    "authority_epoch": "epoch-test",
+                    "generation": 1,
+                    "source_authority_observation_id": "obs-authority-test-1"
+                },
                 "vision_policy_revision": 1
             },
             "deadline": add_millis(&clock.now(), 60_000),

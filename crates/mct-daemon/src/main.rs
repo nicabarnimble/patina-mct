@@ -67,13 +67,18 @@ use tokio::{net::TcpListener, sync::broadcast};
 use tokio::net::UnixListener;
 
 #[cfg(test)]
-fn test_receiver_authority_provider() -> MctIrohReceiverAuthorityProvider {
-    MctIrohReceiverAuthorityProvider::fixed(GrantsAuthorityIdentity {
+fn test_grants_authority_identity(generation: u64) -> GrantsAuthorityIdentity {
+    GrantsAuthorityIdentity {
         mother_node_id: "local-mct".into(),
         authority_epoch: "epoch-test".into(),
-        generation: 1,
-        source_authority_observation_id: "obs-authority-test".into(),
-    })
+        generation,
+        source_authority_observation_id: format!("obs-authority-test-{generation}"),
+    }
+}
+
+#[cfg(test)]
+fn test_receiver_authority_provider() -> MctIrohReceiverAuthorityProvider {
+    MctIrohReceiverAuthorityProvider::fixed(test_grants_authority_identity(1))
 }
 
 #[tokio::main]

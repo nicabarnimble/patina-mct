@@ -763,7 +763,11 @@ fn toy_observation(
         subject_id: Some(authorized.child_instance_id().to_string()),
         resource_id: Some(authorized.toy_id().to_string()),
         policy_revision: Some(call.authority_context.policy_revision),
-        grants_revision: Some(call.authority_context.grants_revision),
+        grants_revision: Some(
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation,
+        ),
         outcome,
         visibility: ObservationVisibility::InternalOnly,
         safe_message: safe_message.into(),
@@ -803,7 +807,7 @@ mod tests {
             },
             authority_context: AuthorityContextSnapshot {
                 policy_revision: 1,
-                grants_revision: 2,
+                expected_receiver_grants_authority: crate::test_grants_authority_identity(2),
                 vision_policy_revision: 1,
             },
             deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
@@ -1171,7 +1175,10 @@ mod tests {
     fn caller_grants_echo_cannot_create_a_toy_authority_denial() {
         let registry = MctToyAdapterRegistry::new();
         let mut stale_call = call();
-        stale_call.authority_context.grants_revision += 1;
+        stale_call
+            .authority_context
+            .expected_receiver_grants_authority
+            .generation += 1;
 
         let report = registry.call_authorized_toy_at(
             &authorized("toy-echo"),
@@ -1294,7 +1301,10 @@ mod tests {
             grant_state: ToyGrantState::Active,
             issuer_id: "issuer".into(),
             policy_revision: call.authority_context.policy_revision,
-            grants_revision: call.authority_context.grants_revision,
+            grants_revision: call
+                .authority_context
+                .expected_receiver_grants_authority
+                .generation,
             authority_observation_id: ObservationId::new("obs-secret-grant")
                 .expect("string ID literal/generated value must be non-empty"),
         };

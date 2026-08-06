@@ -165,7 +165,10 @@ pub(crate) fn authorized_toy_for_call(
         grant_state: ToyGrantState::Active,
         issuer_id: format!("issuer-{stem}"),
         policy_revision: call.authority_context.policy_revision,
-        grants_revision: call.authority_context.grants_revision,
+        grants_revision: call
+            .authority_context
+            .expected_receiver_grants_authority
+            .generation,
         authority_observation_id: ObservationId::new(format!("obs-toy-grant-{stem}"))
             .expect("generated observation id must be non-empty"),
     };

@@ -186,13 +186,17 @@ async fn serve_two_local_connections(
                     },
                 );
                 state.lock().await.last_hello = Some(evaluation.clone());
-                serde_json::to_vec(&hello_response(
+                let mut response = hello_response(
                     "reply-iroh-hello",
                     &evaluation,
                     ObservationId::new("obs-iroh-hello-reply")
                         .expect("string ID literal/generated value must be non-empty"),
-                ))
-                .context("encode mct/hello/0 response")?
+                );
+                if evaluation.is_admitted() {
+                    response.receiving_grants_authority =
+                        Some(crate::test_grants_authority_identity());
+                }
+                serde_json::to_vec(&response).context("encode mct/hello/0 response")?
             }
             bytes if bytes == MCT_CALL_ALPN.as_bytes() => {
                 let request: MctCallProtocolRequest =
@@ -217,6 +221,9 @@ async fn serve_two_local_connections(
                             bindings: bindings.clone(),
                             policy_revision: HelloPolicy::default().current_policy_revision,
                         },
+                        current_receiver_grants_authority: Some(
+                            crate::test_grants_authority_identity(),
+                        ),
                         now: Timestamp::new("2026-05-31T00:00:01Z").unwrap(),
                     },
                 );
@@ -356,6 +363,10 @@ fn local_call_request(
     trace_id: &TraceId,
     hello: &MctHelloResponse,
 ) -> MctCallProtocolRequest {
+    let expected_receiver_grants_authority = hello
+        .receiving_grants_authority
+        .clone()
+        .unwrap_or_else(crate::test_grants_authority_identity);
     let call = MctCall {
         call_id: CallId::new("call-local-iroh-echo")
             .expect("string ID literal/generated value must be non-empty"),
@@ -379,7 +390,7 @@ fn local_call_request(
         },
         authority_context: AuthorityContextSnapshot {
             policy_revision: 1,
-            grants_revision: 1,
+            expected_receiver_grants_authority: expected_receiver_grants_authority.clone(),
             vision_policy_revision: 1,
         },
         deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
@@ -403,7 +414,7 @@ fn local_call_request(
             accepted_alpn: MCT_CALL_ALPN.into(),
             endpoint_id: endpoint_id.clone(),
             policy_revision: 1,
-            grants_revision: 1,
+            expected_receiver_grants_authority,
         },
         received_over: IrohConnectionPresentation {
             endpoint_id: endpoint_id.clone(),

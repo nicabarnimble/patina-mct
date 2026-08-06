@@ -505,16 +505,6 @@ pub fn revalidate_route_for_execution(
                 CandidateEliminationReason::PolicyRevisionStale,
             );
         }
-        if toy.evaluation.grants_revision != call.authority_context.grants_revision {
-            return revalidation_denied(
-                call,
-                initial,
-                Some(selected_route.clone()),
-                ids,
-                RouteRevalidationReason::GrantsRevisionStale,
-                CandidateEliminationReason::GrantsRevisionStale,
-            );
-        }
         if toy.evaluation.call_id != call.call_id || !toy.is_allowed() {
             return revalidation_denied(
                 call,
@@ -547,7 +537,9 @@ pub fn revalidate_route_for_execution(
         authority_evaluations: vec![CandidateAuthorityEvaluation::admissible(
             selected_route.clone(),
             call.authority_context.policy_revision,
-            call.authority_context.grants_revision,
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation,
         )],
         selected_route: Some(selected_route.clone()),
         outcome: RouteDecisionOutcome::RouteSelected,
@@ -564,7 +556,10 @@ pub fn revalidate_route_for_execution(
         child_invocation,
         toy_calls: authorized_toys,
         policy_revision: call.authority_context.policy_revision,
-        grants_revision: call.authority_context.grants_revision,
+        grants_revision: call
+            .authority_context
+            .expected_receiver_grants_authority
+            .generation,
         local_execution_authority: None,
     };
 
@@ -773,7 +768,10 @@ fn revalidation_denied(
         elimination_reason,
         RouteEvaluationRevisions {
             policy: call.authority_context.policy_revision,
-            grants: call.authority_context.grants_revision,
+            grants: call
+                .authority_context
+                .expected_receiver_grants_authority
+                .generation,
         },
     )
 }
@@ -871,7 +869,7 @@ mod tests {
             },
             authority_context: AuthorityContextSnapshot {
                 policy_revision: 1,
-                grants_revision: 1,
+                expected_receiver_grants_authority: crate::call::test_grants_authority_identity(1),
                 vision_policy_revision: 1,
             },
             deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
@@ -1046,7 +1044,10 @@ mod tests {
     ) -> ToyGrantEvaluationResult {
         let mut authority_call = call();
         authority_call.authority_context.policy_revision = policy_revision;
-        authority_call.authority_context.grants_revision = grants_revision;
+        authority_call
+            .authority_context
+            .expected_receiver_grants_authority
+            .generation = grants_revision;
         let toy_id =
             ToyId::new("toy-echo").expect("string ID literal/generated value must be non-empty");
         let subject = ToyGrantSubject {
@@ -1378,7 +1379,10 @@ mod tests {
         ] {
             let mut hostile = call();
             hostile.authority_context.policy_revision = policy_echo;
-            hostile.authority_context.grants_revision = grants_echo;
+            hostile
+                .authority_context
+                .expected_receiver_grants_authority
+                .generation = grants_echo;
             hostile.authority_context.vision_policy_revision = vision_echo;
             let selected = candidate("candidate-1", RuntimeKind::Process);
             let initial = initial_selected_route(selected);
