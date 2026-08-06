@@ -495,6 +495,15 @@ impl ResidentLedgerWriter {
         snapshot: &LocalExecutionAuthoritySnapshot,
         state_path: &Path,
     ) -> std::result::Result<(), MotherAuthorityAdmissionDenyV1> {
+        self.admit_effect_start(snapshot, state_path, &mut || {})
+    }
+
+    pub(crate) fn admit_effect_start(
+        &self,
+        snapshot: &LocalExecutionAuthoritySnapshot,
+        state_path: &Path,
+        start: &mut dyn FnMut(),
+    ) -> std::result::Result<(), MotherAuthorityAdmissionDenyV1> {
         let expectation = authority_expectation_from_snapshot(snapshot);
         self.authority_order.admit_effect(
             &expectation,
@@ -514,7 +523,7 @@ impl ResidentLedgerWriter {
                         reason: AuthorityProjectionDenyReasonV1::ProjectionNotCurrent,
                     })
             },
-            |_| (),
+            |_| start(),
         )
     }
 

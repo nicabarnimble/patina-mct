@@ -722,8 +722,12 @@ mod tests {
         let toy_token = read("../mct-kernel/src/toy.rs");
         assert!(toy_token.contains("admit_effect_with_snapshot"));
         assert!(toy_token.contains("ConsumptionStateUnavailable"));
+        let toy_adapter = read("src/toy.rs");
+        assert!(toy_adapter.contains("authority.admit_order(&snapshot, ||"));
+        let wasm_adapter = read("src/wasm.rs");
+        assert!(wasm_adapter.contains("install_wasi_preopen(&mut builder"));
         assert!(read("src/process.rs").contains("authorized.admit_effect_for_call(call)"));
-        assert!(read("src/wasm.rs").contains("authorized.admit_effect_for_call(call)"));
+        assert!(wasm_adapter.contains("authorized.admit_effect_for_call(call)"));
 
         let peer_wire = read("../mct-kernel/src/peer/mod.rs");
         assert!(peer_wire.contains("pub struct MctHelloRequest"));
@@ -736,6 +740,7 @@ mod tests {
         assert!(resident_writer.contains("authority_order: Arc<MotherAuthorityOrderV1>"));
         assert!(resident_writer.contains("task_authority_order.commit_mutation"));
         assert!(resident_writer.contains("self.authority_order.admit_effect"));
+        assert!(resident_writer.contains("admit_effect_start"));
         let offline_control = read("src/daemon/control.rs");
         assert!(offline_control.contains("authority_order.commit_mutation"));
         assert!(resident_effect.contains("ledger.admit_effect(&effect_snapshot"));
