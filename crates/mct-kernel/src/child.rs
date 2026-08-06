@@ -1,4 +1,4 @@
-use crate::{call::*, id::*};
+use crate::{authority::LocalExecutionAuthorityTokenV1, call::*, id::*};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -393,6 +393,8 @@ pub struct AuthorizedChildInvocation {
     authority_decision_id: DecisionId,
     /// Policy revision under which this capability was minted.
     policy_revision: u64,
+    /// Complete executing-Mother authority bound during snapshot route revalidation.
+    local_execution_authority: Option<LocalExecutionAuthorityTokenV1>,
 }
 
 #[derive(Debug)]
@@ -414,6 +416,14 @@ impl AdmittedChildEffect<'_> {
 }
 
 impl AuthorizedChildInvocation {
+    pub(crate) fn bind_local_execution_authority(
+        mut self,
+        authority: LocalExecutionAuthorityTokenV1,
+    ) -> Self {
+        self.local_execution_authority = Some(authority);
+        self
+    }
+
     /// Admits this token for an effect only when its exact call and policy
     /// revision match the supplied call.
     pub fn admit_effect_for_call<'a>(&'a self, call: &MctCall) -> Option<AdmittedChildEffect<'a>> {
@@ -470,6 +480,11 @@ impl AuthorizedChildInvocation {
     /// Returns the policy revision under which this capability was minted.
     pub fn policy_revision(&self) -> u64 {
         self.policy_revision
+    }
+
+    /// Returns complete local authority when this token passed snapshot route revalidation.
+    pub fn local_execution_authority(&self) -> Option<&LocalExecutionAuthorityTokenV1> {
+        self.local_execution_authority.as_ref()
     }
 }
 
@@ -865,6 +880,7 @@ pub fn evaluate_child_call_authority_with_policy(
         child_name: instance.child_name.clone(),
         authority_decision_id: evaluation.decision_id.clone(),
         policy_revision: evaluation.policy_revision,
+        local_execution_authority: None,
     };
 
     ChildCallAuthorityResult {

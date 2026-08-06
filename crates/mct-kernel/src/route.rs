@@ -241,6 +241,8 @@ pub struct AuthorizedRouteExecution {
     policy_revision: u64,
     /// Grants revision under which this capability was minted.
     grants_revision: u64,
+    /// Complete executing-Mother authority for snapshot-revalidated production routes.
+    local_execution_authority: Option<LocalExecutionAuthorityTokenV1>,
 }
 
 impl AuthorizedRouteExecution {
@@ -292,6 +294,11 @@ impl AuthorizedRouteExecution {
     /// Returns the grants revision under which this capability was minted.
     pub fn grants_revision(&self) -> u64 {
         self.grants_revision
+    }
+
+    /// Returns complete local authority when this route was snapshot-revalidated.
+    pub fn local_execution_authority(&self) -> Option<&LocalExecutionAuthorityTokenV1> {
+        self.local_execution_authority.as_ref()
     }
 }
 
@@ -558,6 +565,7 @@ pub fn revalidate_route_for_execution(
         toy_calls: authorized_toys,
         policy_revision: call.authority_context.policy_revision,
         grants_revision: call.authority_context.grants_revision,
+        local_execution_authority: None,
     };
 
     RouteRevalidationResult {
@@ -694,6 +702,9 @@ pub fn revalidate_route_for_execution_with_snapshot(
             );
         }
     }
+    let local_execution_authority = snapshot.execution_authority(call.deadline.clone());
+    let child_invocation =
+        child_invocation.bind_local_execution_authority(local_execution_authority.clone());
     let decision_id = ids.decision_id.clone();
     let decision = RouteDecision {
         decision_id: ids.decision_id,
@@ -722,8 +733,11 @@ pub fn revalidate_route_for_execution_with_snapshot(
             route: selected_route.clone(),
             child_invocation,
             toy_calls: Vec::new(),
+            // Legacy revision accessors remain correlation-only until Task B2 removes the
+            // resident call-echo guard. Executable authority is the snapshot-bound value below.
             policy_revision: call.authority_context.policy_revision,
             grants_revision: call.authority_context.grants_revision,
+            local_execution_authority: Some(local_execution_authority),
         }),
     }
 }
@@ -1354,6 +1368,48 @@ mod tests {
             current.is_authorized(),
             "matching independently sourced local policy and generation must not spuriously deny"
         );
+    }
+
+    /// Phase J proof 1: executable authority is minted only from the local snapshot.
+    #[test]
+    fn snapshot_sourced_execution_tokens_ignore_hostile_caller_echoes() {
+        for (policy_echo, grants_echo, vision_echo) in [
+            (0, 0, 0),
+            (u64::MAX, u64::MAX - 1, u64::MAX - 2),
+            (41, 42, 43),
+        ] {
+            let mut hostile = call();
+            hostile.authority_context.policy_revision = policy_echo;
+            hostile.authority_context.grants_revision = grants_echo;
+            hostile.authority_context.vision_policy_revision = vision_echo;
+            let selected = candidate("candidate-1", RuntimeKind::Process);
+            let initial = initial_selected_route(selected);
+            let result = revalidate_route_for_execution_with_snapshot(
+                &hostile,
+                &initial,
+                child_result(1, true, "child-echo"),
+                Vec::new(),
+                &local_snapshot(1, 7),
+                revalidation_ids(),
+            );
+            let route = result.authorized.expect("snapshot-authorized route");
+            let route_authority = route
+                .local_execution_authority()
+                .expect("snapshot-bound route authority");
+            let child_authority = route
+                .child_invocation()
+                .local_execution_authority()
+                .expect("route-bound child authority");
+
+            assert_eq!(route_authority.policy_revision(), 1);
+            assert_eq!(
+                route_authority.grants_authority().mother_node_id(),
+                "node-b"
+            );
+            assert_eq!(route_authority.grants_authority().generation(), 7);
+            assert_eq!(child_authority, route_authority);
+            assert_eq!(route_authority.effective_deadline(), &hostile.deadline);
+        }
     }
 
     #[test]
