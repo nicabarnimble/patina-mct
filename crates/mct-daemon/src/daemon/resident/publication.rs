@@ -337,6 +337,7 @@ mod tests {
             hello_outcome: HelloOutcome::Admitted,
             negotiated_protocol: Some(HelloPolicy::default().protocol),
             accepted_alpns: vec![MCT_CALL_ALPN.into()],
+            receiving_grants_authority: None,
             safe_message: "admitted".into(),
             retry_after: None,
             capability_view: Some(view),

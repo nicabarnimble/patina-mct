@@ -155,6 +155,7 @@ pub(super) fn evaluate_call_protocol_internal(
     let CallEvaluationContext {
         ids,
         current_peer_authority,
+        current_receiver_grants_authority,
         now,
     } = context;
 
@@ -220,14 +221,43 @@ pub(super) fn evaluate_call_protocol_internal(
         return denied(request, ids, reason, "not authorized");
     }
 
-    if request.call.authority_context.policy_revision < request.authority.policy_revision
-        || request.call.authority_context.grants_revision < request.authority.grants_revision
-    {
+    if request.call.authority_context.policy_revision < request.authority.policy_revision {
         return denied(
             request,
             ids,
             CallProtocolReason::PolicyRevisionStale,
             "not authorized",
+        );
+    }
+
+    if request
+        .call
+        .authority_context
+        .expected_receiver_grants_authority
+        != request.authority.expected_receiver_grants_authority
+    {
+        return denied(
+            request,
+            ids,
+            CallProtocolReason::MalformedCall,
+            "malformed call",
+        );
+    }
+
+    let Some(current_receiver_grants_authority) = current_receiver_grants_authority else {
+        return denied(
+            request,
+            ids,
+            CallProtocolReason::ReceiverAuthorityUnavailable,
+            "receiver authority unavailable; retry later",
+        );
+    };
+    if request.authority.expected_receiver_grants_authority != current_receiver_grants_authority {
+        return denied(
+            request,
+            ids,
+            CallProtocolReason::ExpectedReceiverAuthorityStale,
+            "receiver authority changed; refresh hello",
         );
     }
 
@@ -248,6 +278,7 @@ pub(super) fn evaluate_call_protocol_internal(
         result_ref: None,
         outcome: CallProtocolOutcome::AcceptedForRouting,
         reason: CallProtocolReason::ResultRecorded,
+        retry_directive: CallProtocolRetryDirective::None,
         safe_message: "accepted for routing".into(),
         observation_id: ids.observation_id,
     }
@@ -342,6 +373,15 @@ fn denied(
             _ => CallProtocolOutcome::Denied,
         },
         reason,
+        retry_directive: match reason {
+            CallProtocolReason::ExpectedReceiverAuthorityStale => {
+                CallProtocolRetryDirective::RefreshHello
+            }
+            CallProtocolReason::ReceiverAuthorityUnavailable => {
+                CallProtocolRetryDirective::RetryLater
+            }
+            _ => CallProtocolRetryDirective::None,
+        },
         safe_message: safe_message.into(),
         observation_id: ids.observation_id,
     }

@@ -1,6 +1,9 @@
 use super::*;
 
-pub(super) fn local_wasm_call(target: OperationTarget) -> MctCall {
+pub(super) fn local_wasm_call(
+    target: OperationTarget,
+    expected_receiver_grants_authority: GrantsAuthorityIdentity,
+) -> MctCall {
     MctCall {
         call_id: CallId::new("call-cli-wasm")
             .expect("string ID literal/generated value must be non-empty"),
@@ -20,7 +23,7 @@ pub(super) fn local_wasm_call(target: OperationTarget) -> MctCall {
         },
         authority_context: AuthorityContextSnapshot {
             policy_revision: 1,
-            grants_revision: 1,
+            expected_receiver_grants_authority,
             vision_policy_revision: 1,
         },
         deadline: current_timestamp_after(DEFAULT_CLI_CALL_DEADLINE),
@@ -34,7 +37,11 @@ pub(super) fn local_wasm_call(target: OperationTarget) -> MctCall {
     }
 }
 
-pub(super) fn local_process_call(target: OperationTarget, payload_size_bytes: u64) -> MctCall {
+pub(super) fn local_process_call(
+    target: OperationTarget,
+    payload_size_bytes: u64,
+    expected_receiver_grants_authority: GrantsAuthorityIdentity,
+) -> MctCall {
     MctCall {
         call_id: CallId::new("call-cli-process")
             .expect("string ID literal/generated value must be non-empty"),
@@ -54,7 +61,7 @@ pub(super) fn local_process_call(target: OperationTarget, payload_size_bytes: u6
         },
         authority_context: AuthorityContextSnapshot {
             policy_revision: 1,
-            grants_revision: 1,
+            expected_receiver_grants_authority,
             vision_policy_revision: 1,
         },
         deadline: current_timestamp_after(DEFAULT_CLI_CALL_DEADLINE),
@@ -66,6 +73,24 @@ pub(super) fn local_process_call(target: OperationTarget, payload_size_bytes: u6
         },
         origin: CallOrigin::ProcessHarness,
     }
+}
+
+pub(super) fn proof_gated_receiver_identity(
+    ledger_path: &Path,
+    config_path: &Path,
+    children_dir: &Path,
+    state_path: &Path,
+) -> Result<GrantsAuthorityIdentity> {
+    let snapshot = mct_daemon::local_execution_authority_snapshot(
+        ledger_path,
+        config_path,
+        children_dir,
+        state_path,
+    )
+    .map_err(|reason| anyhow::anyhow!("local receiver authority unavailable: {reason:?}"))?;
+    Ok(GrantsAuthorityIdentity::from(
+        snapshot.canonical_grants().grants_authority(),
+    ))
 }
 
 pub(super) async fn run_jvm(mut args: Vec<String>) -> Result<()> {
@@ -98,7 +123,13 @@ pub(super) async fn run_jvm_call_json(mut args: Vec<String>) -> Result<()> {
     }
     let operation_id = args.remove(0);
     let args_json = args.remove(0);
-    let (request, payload) = jvm_bridge_protocol_request(&operation_id, &args_json)?;
+    let expected_receiver_grants_authority =
+        proof_gated_receiver_identity(&ledger_path, &config_path, &children_dir, &state_path)?;
+    let (request, payload) = jvm_bridge_protocol_request(
+        &operation_id,
+        &args_json,
+        expected_receiver_grants_authority,
+    )?;
     let ledger = ResidentLedgerWriter::spawn(ledger_path.clone())?;
     let result = execute_jvm_resident_call(
         ResidentRuntimePaths::new(config_path, children_dir, state_path),
@@ -141,6 +172,7 @@ async fn execute_jvm_resident_call(
 pub(super) fn jvm_bridge_protocol_request(
     operation_id: &str,
     args_json: &str,
+    expected_receiver_grants_authority: GrantsAuthorityIdentity,
 ) -> Result<(MctCallProtocolRequest, Vec<u8>)> {
     let payload_value: serde_json::Value = serde_json::from_str(args_json)
         .context("parse JVM bridge args JSON; expected a JSON array or object")?;
@@ -176,7 +208,7 @@ pub(super) fn jvm_bridge_protocol_request(
         },
         authority_context: AuthorityContextSnapshot {
             policy_revision: 1,
-            grants_revision: 1,
+            expected_receiver_grants_authority: expected_receiver_grants_authority.clone(),
             vision_policy_revision: 1,
         },
         deadline: current_timestamp_after(DEFAULT_CLI_CALL_DEADLINE),
@@ -196,7 +228,7 @@ pub(super) fn jvm_bridge_protocol_request(
                 endpoint_id: EndpointIdText::new("local-jvm-bridge")
                     .expect("string ID literal/generated value must be non-empty"),
                 policy_revision: call.authority_context.policy_revision,
-                grants_revision: call.authority_context.grants_revision,
+                expected_receiver_grants_authority,
             },
             received_over: IrohConnectionPresentation {
                 endpoint_id: EndpointIdText::new("local-jvm-bridge")
@@ -733,7 +765,7 @@ pub(super) async fn call_iroh(mut args: Vec<String>) -> Result<()> {
         &trace_id,
         target,
         &hello_response,
-    );
+    )?;
     record_operator_pointed_egress(
         &ledger_path,
         &call_request,
@@ -817,7 +849,7 @@ pub(super) async fn call_iroh_peer(mut args: Vec<String>) -> Result<()> {
         &trace_id,
         target,
         &hello_response,
-    );
+    )?;
     record_operator_pointed_egress(&ledger_path, &call_request, peer_node_id.to_string())?;
     let call_reply = endpoint.send_call(&peer_ticket, &call_request).await?;
     println!("{}", serde_json::to_string_pretty(&call_reply)?);
@@ -892,7 +924,11 @@ pub(super) fn cli_call_request(
     trace_id: &TraceId,
     target: OperationTarget,
     hello: &MctHelloResponse,
-) -> MctCallProtocolRequest {
+) -> Result<MctCallProtocolRequest> {
+    let expected_receiver_grants_authority = hello
+        .receiving_grants_authority
+        .clone()
+        .context("admitted hello omitted receiving grants authority")?;
     let call = MctCall {
         call_id: CallId::new("call-cli-iroh")
             .expect("string ID literal/generated value must be non-empty"),
@@ -910,7 +946,7 @@ pub(super) fn cli_call_request(
         },
         authority_context: AuthorityContextSnapshot {
             policy_revision: 1,
-            grants_revision: 1,
+            expected_receiver_grants_authority: expected_receiver_grants_authority.clone(),
             vision_policy_revision: 1,
         },
         deadline: current_timestamp_after(DEFAULT_CLI_CALL_DEADLINE),
@@ -922,7 +958,7 @@ pub(super) fn cli_call_request(
         origin: CallOrigin::Iroh,
     };
 
-    MctCallProtocolRequest {
+    Ok(MctCallProtocolRequest {
         protocol_request_id: ProtocolRequestId::new("proto-cli-call")
             .expect("string ID literal/generated value must be non-empty"),
         authority: MctCallProtocolAuthority {
@@ -932,7 +968,7 @@ pub(super) fn cli_call_request(
             accepted_alpn: MCT_CALL_ALPN.into(),
             endpoint_id: endpoint_id.clone(),
             policy_revision: 1,
-            grants_revision: 1,
+            expected_receiver_grants_authority,
         },
         received_over: IrohConnectionPresentation {
             endpoint_id: endpoint_id.clone(),
@@ -947,7 +983,7 @@ pub(super) fn cli_call_request(
         idempotency_key: Some("idem-cli-call".into()),
         received_observation_id: ObservationId::new("obs-cli-call-received")
             .expect("string ID literal/generated value must be non-empty"),
-    }
+    })
 }
 
 pub(super) fn load_configured_child_projection(
@@ -1189,7 +1225,14 @@ listens = []
         let ledger_path = dir.path().join("observations.jsonl");
         write_resident_process_child(&children_dir);
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
-        MctDaemonConfigStore::new(&config_path)
+        let config_store = MctDaemonConfigStore::new(&config_path);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        config_store
             .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
             .unwrap();
 
@@ -1203,11 +1246,15 @@ listens = []
                 std::io::Cursor::new(&payload),
             )
             .unwrap();
-        let (mut request, _) =
-            jvm_bridge_protocol_request("patina:demo/control@0.1.0.run", "[]").unwrap();
+        let (mut request, _) = jvm_bridge_protocol_request(
+            "patina:demo/control@0.1.0.run",
+            "[]",
+            test_grants_authority_identity(1),
+        )
+        .unwrap();
         request.call.payload_metadata.size_bytes = payload.len() as u64;
         request.payload = handle;
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
 
         let result = execute_jvm_resident_call(
             ResidentRuntimePaths::new(config_path, children_dir, state_path),
@@ -1294,9 +1341,12 @@ listens = []
                 .serve_concurrent_with_call_handler(
                     MctIrohServeState::new(),
                     vec![binding],
-                    MctIrohConcurrentServeConfig::new(MctIrohObservationSink::new(|_| async {
-                        Ok::<(), std::io::Error>(())
-                    })),
+                    MctIrohConcurrentServeConfig {
+                        receiver_authority_provider: test_receiver_authority_provider(),
+                        ..MctIrohConcurrentServeConfig::new(MctIrohObservationSink::new(
+                            |_| async { Ok::<(), std::io::Error>(()) },
+                        ))
+                    },
                     current_timestamp,
                     move |_, _, _| {
                         let observed = JsonlObservationLedger::open_read_only(
@@ -1366,7 +1416,7 @@ listens = []
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn standalone_serve_process_persists_hello_and_call_lifecycle() {
+    async fn standalone_serve_process_without_canonical_authority_degrades_hello() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.json");
         let identity_path = dir.path().join("identity.hex");
@@ -1428,58 +1478,10 @@ listens = []
             None,
         );
         let hello_response = client.send_hello(&ticket, &hello).await.unwrap();
-        assert_eq!(hello_response.hello_outcome, HelloOutcome::Admitted);
-        let call = cli_call_request(
-            &client_endpoint_id,
-            &binding_id,
-            &node_id,
-            &vision_id,
-            &trace_id,
-            OperationTarget {
-                namespace: "patina:demo".into(),
-                interface_name: "control@0.1.0".into(),
-                function_name: "run".into(),
-            },
-            &hello_response,
-        );
-        let reply = client.send_call(&ticket, &call).await.unwrap();
-        assert_eq!(reply.reply_outcome, CallProtocolReplyOutcome::Success);
-        let replay = client.send_call(&ticket, &call).await.unwrap();
-        assert_eq!(replay.reply_outcome, reply.reply_outcome);
-        assert_eq!(replay.safe_message, reply.safe_message);
-        assert_eq!(replay.result_ref, reply.result_ref);
-        assert_eq!(replay.result_payload, reply.result_payload);
-        assert_eq!(
-            MctRuntimeStateStore::open(&state_path)
-                .unwrap()
-                .summary()
-                .unwrap()
-                .runs,
-            1
-        );
-
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let has_reply = JsonlObservationLedger::open_read_only(
-                    &ledger_path,
-                    "ledger-local",
-                    "local-mct",
-                )
-                .ok()
-                .and_then(|reader| reader.entries().ok())
-                .is_some_and(|entries| {
-                    entries
-                        .iter()
-                        .any(|entry| entry.observation.kind == ObservationKind::PeerCallReplied)
-                });
-                if has_reply {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
+        assert_eq!(hello_response.hello_outcome, HelloOutcome::RetryLater);
+        assert_eq!(hello_response.safe_message, "retry later");
+        assert!(hello_response.receiving_grants_authority.is_none());
+        assert!(hello_response.capability_view.is_none());
         serve_task.abort();
         client.close().await;
 
@@ -1489,36 +1491,19 @@ listens = []
                 .entries()
                 .unwrap();
         assert!(entries.iter().any(|entry| {
-            entry.observation.kind == ObservationKind::PeerAdmitted
+            entry.observation.kind == ObservationKind::PeerRejected
                 && entry.durability_class == DurabilityClass::BeforeEffect
         }));
-        let lifecycle = entries
-            .iter()
-            .filter_map(|entry| match entry.observation.kind {
+        assert!(!entries.iter().any(|entry| {
+            matches!(
+                entry.observation.kind,
                 ObservationKind::PeerCallReceived
-                | ObservationKind::CallConstructed
-                | ObservationKind::CallAuthorized
-                | ObservationKind::ResultRecorded
-                | ObservationKind::PeerCallReplied => Some(entry.observation.kind),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            lifecycle,
-            vec![
-                ObservationKind::PeerCallReceived,
-                ObservationKind::CallConstructed,
-                ObservationKind::CallAuthorized,
-                ObservationKind::ResultRecorded,
-                ObservationKind::PeerCallReplied,
-                ObservationKind::PeerCallReceived,
-                ObservationKind::CallConstructed,
-                ObservationKind::CallAuthorized,
-                ObservationKind::ResultRecorded,
-                ObservationKind::ResultRecorded,
-                ObservationKind::PeerCallReplied,
-            ]
-        );
+                    | ObservationKind::CallConstructed
+                    | ObservationKind::CallAuthorized
+                    | ObservationKind::ResultRecorded
+                    | ObservationKind::PeerCallReplied
+            )
+        }));
         let secret_key_material = std::fs::read_to_string(identity_path).unwrap();
         let ledger_text = std::fs::read_to_string(ledger_path).unwrap();
         assert!(!ledger_text.contains(secret_key_material.trim()));

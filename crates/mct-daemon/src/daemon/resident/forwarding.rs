@@ -31,7 +31,11 @@ fn resident_forwarded_call_sent_observation(
         subject_id: Some(forwarded_from.to_string()),
         resource_id: Some(candidate.candidate_id.clone()),
         policy_revision: Some(call.authority_context.policy_revision),
-        grants_revision: Some(call.authority_context.grants_revision),
+        grants_revision: Some(
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation,
+        ),
         outcome: ObservationOutcome::Started,
         visibility: ObservationVisibility::InternalOnly,
         safe_message: "forwarding call to remote Mother".into(),
@@ -75,7 +79,11 @@ fn resident_remote_reply_observation(
         subject_id: Some(forwarded_to.to_string()),
         resource_id: Some(candidate.candidate_id.clone()),
         policy_revision: Some(call.authority_context.policy_revision),
-        grants_revision: Some(call.authority_context.grants_revision),
+        grants_revision: Some(
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation,
+        ),
         outcome,
         visibility: ObservationVisibility::InternalOnly,
         safe_message: reply.safe_message.clone(),
@@ -106,13 +114,24 @@ pub(super) async fn execute_authorized_resident_remote_call(
     inline_payload: Option<Vec<u8>>,
     ledger: ResidentLedgerWriter,
 ) -> MctIrohCallHandlerResult {
-    let revalidation = match revalidate_resident_remote_route(&paths, &execution, &request.call) {
-        Ok(revalidation) => revalidation,
-        Err(error) => {
-            eprintln!("resident remote route revalidation failed: {error}");
-            return MctIrohCallHandlerResult::failed("runtime unavailable");
-        }
+    let Some(ledger_path) = ledger.path().map(Path::to_path_buf) else {
+        return MctIrohCallHandlerResult::failed("runtime unavailable");
     };
+    if ledger
+        .publish_authority_projection(paths.state_path().to_path_buf())
+        .await
+        .is_err()
+    {
+        return MctIrohCallHandlerResult::failed("runtime unavailable");
+    }
+    let revalidation =
+        match revalidate_resident_remote_route(&paths, &ledger_path, &execution, &request.call) {
+            Ok(revalidation) => revalidation,
+            Err(error) => {
+                eprintln!("resident remote route revalidation failed: {error}");
+                return MctIrohCallHandlerResult::failed("runtime unavailable");
+            }
+        };
     let revalidation_decision = match &revalidation {
         RemoteRevalidation::Authorized(authorized) => &authorized.decision,
         RemoteRevalidation::Denied(decision) => decision.as_ref(),
@@ -201,6 +220,7 @@ pub(super) async fn execute_authorized_resident_remote_call(
         eprintln!("resident remote hello response surface refresh failed: {error}");
     }
     if hello_response.hello_outcome != HelloOutcome::Admitted
+        || hello_response.receiving_grants_authority.is_none()
         || !hello_response
             .accepted_alpns
             .iter()
@@ -274,24 +294,33 @@ pub(super) async fn execute_authorized_resident_remote_call(
 
 fn revalidate_resident_remote_route(
     paths: &ResidentRuntimePaths,
+    ledger_path: &Path,
     execution: &RemoteExecutionPlan,
     call: &MctCall,
 ) -> Result<RemoteRevalidation> {
-    let config = MctDaemonConfigStore::new(paths.config_path()).load()?;
-    let Some(local_identity) = config.local_identity.clone() else {
-        return Ok(RemoteRevalidation::Denied(Box::new(
-            remote_revalidation_denied_decision(
-                call,
-                execution.initial_decision(),
-                execution.candidate().clone(),
-                CandidateEliminationReason::PeerNotAdmitted,
-            ),
-        )));
+    let snapshot = match mct_daemon::local_execution_authority_snapshot(
+        ledger_path,
+        paths.config_path(),
+        paths.children_dir(),
+        paths.state_path(),
+    ) {
+        Ok(snapshot) => snapshot,
+        Err(_) => {
+            return Ok(RemoteRevalidation::Denied(Box::new(
+                remote_revalidation_denied_decision(
+                    call,
+                    execution.initial_decision(),
+                    execution.candidate().clone(),
+                    CandidateEliminationReason::PeerNotAdmitted,
+                ),
+            )));
+        }
     };
-    let Some(peer) = config
-        .peers
-        .get(execution.candidate().node_id.as_str())
-        .cloned()
+    let Some(peer_authority) = snapshot
+        .peer_policy()
+        .peers()
+        .iter()
+        .find(|peer| peer.peer_node_id() == &execution.candidate().node_id)
     else {
         return Ok(RemoteRevalidation::Denied(Box::new(
             remote_revalidation_denied_decision(
@@ -302,19 +331,16 @@ fn revalidate_resident_remote_route(
             ),
         )));
     };
-    let state = MctRuntimeStateStore::open(paths.state_path())?;
-    let now = current_timestamp();
-    let operation_id = mct_daemon::operation_id_from_target(&call.target);
-    let surfaces = state.fresh_remote_callable_surfaces_for_operation(
-        &call.caller.vision_id,
-        &operation_id,
-        &now,
-    )?;
-    let Some(surface) = surfaces.into_iter().find(|surface| {
-        surface.peer_node_id == peer.peer_node_id
-            && resident_candidate_for_remote_surface(&peer, surface)
-                == execution.candidate().clone()
-    }) else {
+    let Some(surface) = snapshot
+        .peer_policy()
+        .callable_surfaces()
+        .iter()
+        .find(|surface| {
+            surface.peer_node_id() == peer_authority.peer_node_id()
+                && resident_candidate_for_snapshot_remote_surface(peer_authority, surface)
+                    == execution.candidate().clone()
+        })
+    else {
         return Ok(RemoteRevalidation::Denied(Box::new(
             remote_revalidation_denied_decision(
                 call,
@@ -324,14 +350,13 @@ fn revalidate_resident_remote_route(
             ),
         )));
     };
-    let candidate = resident_candidate_for_remote_surface(&peer, &surface);
+    let candidate = resident_candidate_for_snapshot_remote_surface(peer_authority, surface);
     let authority = resident_remote_candidate_authority(
-        &local_identity,
-        &peer,
-        &surface,
+        &snapshot,
+        peer_authority,
+        surface,
         candidate.clone(),
         call,
-        &now,
     )?;
     if authority.outcome != CandidateAuthorityOutcome::Admissible {
         return Ok(RemoteRevalidation::Denied(Box::new(
@@ -346,6 +371,38 @@ fn revalidate_resident_remote_route(
             ),
         )));
     }
+
+    let config = MctDaemonConfigStore::new(paths.config_path()).load()?;
+    let Some(local_identity) = config.local_identity.clone() else {
+        return Ok(RemoteRevalidation::Denied(Box::new(
+            remote_revalidation_denied_decision(
+                call,
+                execution.initial_decision(),
+                execution.candidate().clone(),
+                CandidateEliminationReason::PeerNotAdmitted,
+            ),
+        )));
+    };
+    let Some(peer) = config
+        .peers
+        .get(peer_authority.peer_node_id().as_str())
+        .filter(|peer| {
+            peer.binding_id == *peer_authority.binding_id()
+                && peer.endpoint_id == *peer_authority.endpoint_id()
+        })
+        .cloned()
+    else {
+        return Ok(RemoteRevalidation::Denied(Box::new(
+            remote_revalidation_denied_decision(
+                call,
+                execution.initial_decision(),
+                execution.candidate().clone(),
+                CandidateEliminationReason::PeerNotAdmitted,
+            ),
+        )));
+    };
+    let capability_view =
+        local_hello_capability_view_from_config(&config, paths.state_path(), paths.children_dir())?;
     let decision = remote_revalidation_decision(
         call,
         execution.initial_decision(),
@@ -358,8 +415,6 @@ fn revalidate_resident_remote_route(
         child_id: candidate.child_id,
         runtime_kind: candidate.runtime_kind,
     };
-    let capability_view =
-        local_hello_capability_view_from_config(&config, paths.state_path(), paths.children_dir())?;
     Ok(RemoteRevalidation::Authorized(Box::new(
         RevalidatedRemoteRoute {
             decision,
@@ -377,11 +432,17 @@ fn remote_revalidation_denied_decision(
     candidate: CandidateRoute,
     reason: CandidateEliminationReason,
 ) -> RouteDecision {
+    let (policy_revision, grants_revision) = initial
+        .authority_evaluations
+        .iter()
+        .find(|evaluation| evaluation.candidate == candidate)
+        .map(|evaluation| (evaluation.policy_revision, evaluation.grants_revision))
+        .unwrap_or((0, 0));
     let authority = CandidateAuthorityEvaluation::eliminated(
         candidate,
         reason,
-        call.authority_context.policy_revision,
-        call.authority_context.grants_revision,
+        policy_revision,
+        grants_revision,
     );
     remote_revalidation_decision(call, initial, None, reason, authority)
 }
@@ -465,6 +526,10 @@ fn resident_forwarded_call_request(
     hello: &MctHelloResponse,
     inline_payload: Option<&[u8]>,
 ) -> MctCallProtocolRequest {
+    let expected_receiver_grants_authority = hello
+        .receiving_grants_authority
+        .as_ref()
+        .expect("forwarded call requires an admitted hello receiver identity");
     let mut call = original.call.clone();
     call.caller = CallerIdentity {
         node_id: local_identity.node_id.clone(),
@@ -473,6 +538,8 @@ fn resident_forwarded_call_request(
         project_id: original.call.caller.project_id.clone(),
     };
     call.origin = CallOrigin::Iroh;
+    call.authority_context.expected_receiver_grants_authority =
+        expected_receiver_grants_authority.clone();
     let payload =
         forwarded_request_payload_handle(&original.payload, &call.call_id, inline_payload);
     MctCallProtocolRequest {
@@ -485,7 +552,7 @@ fn resident_forwarded_call_request(
             accepted_alpn: MCT_CALL_ALPN.into(),
             endpoint_id: endpoint_id.clone(),
             policy_revision: outbound_binding.policy_revision,
-            grants_revision: original.call.authority_context.grants_revision,
+            expected_receiver_grants_authority: expected_receiver_grants_authority.clone(),
         },
         received_over: IrohConnectionPresentation {
             endpoint_id: endpoint_id.clone(),
@@ -620,11 +687,14 @@ mod tests {
         }
     }
     fn resident_test_call(trace_id: TraceId) -> MctCall {
-        let mut call = local_wasm_call(OperationTarget {
-            namespace: "patina:demo".into(),
-            interface_name: "control@0.1.0".into(),
-            function_name: "run".into(),
-        });
+        let mut call = local_wasm_call(
+            OperationTarget {
+                namespace: "patina:demo".into(),
+                interface_name: "control@0.1.0".into(),
+                function_name: "run".into(),
+            },
+            test_grants_authority_identity(1),
+        );
         call.call_id = CallId::new("call-resident-wit")
             .expect("string ID literal/generated value must be non-empty");
         call.trace_context.trace_id = trace_id;
@@ -646,7 +716,7 @@ mod tests {
                 endpoint_id: EndpointIdText::new("endpoint-resident-wit")
                     .expect("string ID literal/generated value must be non-empty"),
                 policy_revision: 1,
-                grants_revision: 1,
+                expected_receiver_grants_authority: test_grants_authority_identity(1),
             },
             received_over: IrohConnectionPresentation {
                 endpoint_id: EndpointIdText::new("endpoint-resident-wit")
@@ -691,6 +761,7 @@ mod tests {
                 result_payload: MctCallPayloadHandle::Empty,
                 route_taken: None,
                 reply_outcome,
+                retry_directive: CallProtocolRetryDirective::None,
                 safe_message: safe_message.into(),
                 reply_observation_id: ObservationId::new("obs-reply-remote-fixture")
                     .expect("string ID literal/generated value must be non-empty"),
@@ -1104,7 +1175,11 @@ listens = []
             size_bytes: payload.len() as u64,
             blake3_digest_hex: blake3_hex(&payload),
         };
-        let mother_a_ledger = ResidentLedgerWriter::spawn(mother_a_ledger_path.clone()).unwrap();
+        let mother_a_ledger = ResidentLedgerWriter::spawn_authority_with_identity_for_test(
+            mother_a_ledger_path.clone(),
+            "mother-a",
+        )
+        .unwrap();
         let call_reply = execute_resident_call(
             ResidentRuntimePaths::new(
                 mother_a_config_path,
@@ -1200,6 +1275,7 @@ listens = []
                     MctIrohConcurrentServeConfig {
                         events: Some(events),
                         require_binding_signature: true,
+                        receiver_authority_provider: test_receiver_authority_provider(),
                         ..MctIrohConcurrentServeConfig::new(test_iroh_observation_sink())
                     },
                     current_timestamp,
@@ -1245,7 +1321,7 @@ listens = []
             panic!("fresh published executor should be selected before revocation");
         };
         let ledger_path = fixture._dir.path().join("forwarding-observations.jsonl");
-        let ledger = ResidentLedgerWriter::spawn(ledger_path).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path).unwrap();
         ledger.append(observations).await.unwrap();
         let result = execute_authorized_resident_remote_call(
             ResidentRuntimePaths::new(
@@ -1328,6 +1404,7 @@ listens = []
                     vec![executor_binding],
                     MctIrohConcurrentServeConfig {
                         require_binding_signature: true,
+                        receiver_authority_provider: test_receiver_authority_provider(),
                         ..MctIrohConcurrentServeConfig::new(test_iroh_observation_sink())
                     },
                     current_timestamp,
@@ -1355,7 +1432,7 @@ listens = []
             ._dir
             .path()
             .join("cancelled-forwarding-observations.jsonl");
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         ledger.append(observations).await.unwrap();
         let result = execute_authorized_resident_remote_call(
             ResidentRuntimePaths::new(
@@ -1556,7 +1633,11 @@ listens = []
             })
             .unwrap();
 
-        let b_ledger = ResidentLedgerWriter::spawn(b_ledger_path.clone()).unwrap();
+        let b_ledger = ResidentLedgerWriter::spawn_authority_with_identity_for_test(
+            b_ledger_path.clone(),
+            "mother-b",
+        )
+        .unwrap();
         let b_handler_ledger = b_ledger.clone();
         let b_handler_config = b_config.clone();
         let b_handler_state_path = b_state_path.clone();
@@ -1570,6 +1651,7 @@ listens = []
                     MctIrohConcurrentServeConfig {
                         require_binding_signature: true,
                         capability_view: Some(b_view),
+                        receiver_authority_provider: test_receiver_authority_provider(),
                         ..MctIrohConcurrentServeConfig::new(test_iroh_observation_sink())
                     },
                     current_timestamp,
@@ -1635,7 +1717,11 @@ listens = []
         else {
             panic!("originating Mother should select its published remote executor")
         };
-        let a_ledger = ResidentLedgerWriter::spawn(a_ledger_path.clone()).unwrap();
+        let a_ledger = ResidentLedgerWriter::spawn_authority_with_identity_for_test(
+            a_ledger_path.clone(),
+            "mother-a",
+        )
+        .unwrap();
         a_ledger.append(observations).await.unwrap();
         let result = tokio::time::timeout(
             Duration::from_secs(5),
@@ -1683,6 +1769,7 @@ listens = []
         let outbound = peer.outbound_binding.as_ref().unwrap();
         let mut original = resident_test_protocol_request(fixture.call.clone());
         original.call.caller.user_id = Some(UserId::new("upstream-user").unwrap());
+        let expected_receiver_grants_authority = test_grants_authority_identity(1);
         let hello = MctHelloResponse {
             response_id: "response-forwarded-identity".into(),
             request_id: "hello-forwarded-identity".into(),
@@ -1690,6 +1777,7 @@ listens = []
             hello_outcome: HelloOutcome::Admitted,
             negotiated_protocol: Some(HelloPolicy::default().protocol),
             accepted_alpns: vec![MCT_CALL_ALPN.into()],
+            receiving_grants_authority: Some(expected_receiver_grants_authority.clone()),
             safe_message: "admitted".into(),
             retry_after: None,
             capability_view: None,

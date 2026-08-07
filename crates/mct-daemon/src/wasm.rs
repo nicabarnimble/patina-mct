@@ -1,7 +1,7 @@
 use crate::{
     children::{MctLoadedChild, operation_id_from_target},
     state::MctRuntimeStateStore,
-    toy::{MctToyAdapterOutcome, MctToyAdapterRegistry, MctToyCallIds},
+    toy::{MctToyAdapterOutcome, MctToyAdapterRegistry, MctToyCallIds, MctToyEffectAuthorityV1},
     wit_values::{lift_component_results_to_json, lower_typed_args_for_component},
 };
 use mct_kernel::*;
@@ -186,6 +186,7 @@ pub struct MctWitToyHostAdapter {
 #[derive(Debug)]
 pub struct MctWitHostImportAdapters {
     pub toy_registry: MctToyAdapterRegistry,
+    pub effect_authority: Option<MctToyEffectAuthorityV1>,
     pub logging: Option<MctWitToyHostAdapter>,
     pub measure: Option<MctWitToyHostAdapter>,
     pub git: Option<MctWitToyHostAdapter>,
@@ -209,16 +210,17 @@ pub struct MctWitMessagingHostAdapter {
     pub watch_admission: MctWitWatchMessageAdmission,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct MctWasiHostConfig {
     pub preopens: Vec<MctWasiPreopen>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct MctWasiPreopen {
     pub host_path: PathBuf,
     pub guest_path: String,
     pub access: MctWasiPreopenAccess,
+    pub authorized_toy_call: AuthorizedToyCall,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -246,6 +248,7 @@ impl MctWitHostImportAdapters {
     pub fn none() -> Self {
         Self {
             toy_registry: MctToyAdapterRegistry::new(),
+            effect_authority: None,
             logging: None,
             measure: None,
             git: None,
@@ -269,6 +272,7 @@ struct MctWasmHostState {
 
 struct MctWitHostState {
     toy_registry: MctToyAdapterRegistry,
+    effect_authority: Option<MctToyEffectAuthorityV1>,
     call: MctCall,
     toy_observations: Vec<MctObservation>,
     logging: Option<MctWitToyHostAdapter>,
@@ -315,14 +319,22 @@ impl MctWitHostState {
             started_at: adapter.observed_at.clone(),
             completed_at: adapter.observed_at.clone(),
         };
-        let executing_mother_now = crate::config::current_timestamp();
-        let mut report = self.toy_registry.call_authorized_toy_at(
-            &adapter.authorized_toy_call,
-            &self.call,
-            &executing_mother_now,
-            &input_json.to_string(),
-            ids,
-        );
+        let mut report = match self.effect_authority.as_ref() {
+            Some(authority) => self.toy_registry.call_authorized_toy_with_authority(
+                &adapter.authorized_toy_call,
+                &self.call,
+                authority,
+                &input_json.to_string(),
+                ids,
+            ),
+            None => self.toy_registry.call_authorized_toy_at(
+                &adapter.authorized_toy_call,
+                &self.call,
+                &crate::config::current_timestamp(),
+                &input_json.to_string(),
+                ids,
+            ),
+        };
         self.toy_observations.append(&mut report.observations);
         report
     }
@@ -330,6 +342,8 @@ impl MctWitHostState {
 
 fn build_wasi_ctx(
     config: Option<&MctWasiHostConfig>,
+    effect_authority: Option<&MctToyEffectAuthorityV1>,
+    call: &MctCall,
 ) -> Result<WasiCtx, MctWasmComponentRuntimeError> {
     let mut builder = WasiCtxBuilder::new();
     builder.allow_blocking_current_thread(true);
@@ -341,23 +355,69 @@ fn build_wasi_ctx(
                 MctWasiPreopenAccess::ReadOnly => (DirPerms::READ, FilePerms::READ),
                 MctWasiPreopenAccess::ReadWrite => (DirPerms::all(), FilePerms::all()),
             };
-            builder
-                .preopened_dir(
-                    &preopen.host_path,
-                    &preopen.guest_path,
-                    dir_perms,
-                    file_perms,
-                )
-                .map_err(|error| {
-                    MctWasmComponentRuntimeError::Configure(format!(
-                        "configure WASI preopen '{}'=>'{}': {error}",
-                        preopen.host_path.display(),
-                        preopen.guest_path
-                    ))
-                })?;
+            match effect_authority {
+                Some(authority) => {
+                    let snapshot = authority.current_snapshot().map_err(|_| {
+                        MctWasmComponentRuntimeError::Configure(
+                            "WASI preopen authority unavailable".into(),
+                        )
+                    })?;
+                    preopen
+                        .authorized_toy_call
+                        .admit_effect_with_snapshot(call, &snapshot)
+                        .map_err(|reason| {
+                            MctWasmComponentRuntimeError::Configure(format!(
+                                "WASI preopen authority denied: {reason:?}"
+                            ))
+                        })?;
+                    authority
+                        .admit_order(&snapshot, || {
+                            install_wasi_preopen(&mut builder, preopen, dir_perms, file_perms)
+                        })
+                        .map_err(|_| {
+                            MctWasmComponentRuntimeError::Configure(
+                                "WASI preopen authority order denied".into(),
+                            )
+                        })??;
+                }
+                None => {
+                    preopen
+                        .authorized_toy_call
+                        .admit_effect_for_call_at(call, &crate::config::current_timestamp())
+                        .ok_or_else(|| {
+                            MctWasmComponentRuntimeError::Configure(
+                                "WASI preopen legacy authority denied".into(),
+                            )
+                        })?;
+                    install_wasi_preopen(&mut builder, preopen, dir_perms, file_perms)?;
+                }
+            }
         }
     }
     Ok(builder.build())
+}
+
+fn install_wasi_preopen(
+    builder: &mut WasiCtxBuilder,
+    preopen: &MctWasiPreopen,
+    dir_perms: DirPerms,
+    file_perms: FilePerms,
+) -> Result<(), MctWasmComponentRuntimeError> {
+    builder
+        .preopened_dir(
+            &preopen.host_path,
+            &preopen.guest_path,
+            dir_perms,
+            file_perms,
+        )
+        .map_err(|error| {
+            MctWasmComponentRuntimeError::Configure(format!(
+                "configure WASI preopen '{}'=>'{}': {error}",
+                preopen.host_path.display(),
+                preopen.guest_path
+            ))
+        })?;
+    Ok(())
 }
 
 fn validate_wasi_preopen(
@@ -537,7 +597,11 @@ pub fn wasm_component_runtime_error_observation(
             subject_id: Some(authorized.child_name().to_owned()),
             resource_id: Some(resource_id),
             policy_revision: Some(call.authority_context.policy_revision),
-            grants_revision: Some(call.authority_context.grants_revision),
+            grants_revision: Some(
+                call.authority_context
+                    .expected_receiver_grants_authority
+                    .generation,
+            ),
             detail_ref: Some(detail_ref),
         },
     ))
@@ -1128,11 +1192,16 @@ impl MctWasmComponentRuntime {
         )?;
         let mut linker = component::Linker::<MctWitHostState>::new(&self.engine);
         link_wit_host_import_adapters(&mut linker, &host_adapters)?;
-        let wasi_ctx = build_wasi_ctx(host_adapters.wasi.as_ref())?;
+        let wasi_ctx = build_wasi_ctx(
+            host_adapters.wasi.as_ref(),
+            host_adapters.effect_authority.as_ref(),
+            call,
+        )?;
         let mut store = Store::new(
             &self.engine,
             MctWitHostState {
                 toy_registry: host_adapters.toy_registry,
+                effect_authority: host_adapters.effect_authority,
                 call: call.clone(),
                 toy_observations: Vec::new(),
                 logging: host_adapters.logging,
@@ -2463,7 +2532,11 @@ fn wasm_observation(
         subject_id: Some(authorized.child_name().to_owned()),
         resource_id: Some(authorized.child_instance_id().to_string()),
         policy_revision: Some(call.authority_context.policy_revision),
-        grants_revision: Some(call.authority_context.grants_revision),
+        grants_revision: Some(
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation,
+        ),
         outcome,
         visibility: ObservationVisibility::InternalOnly,
         safe_message: safe_message.into(),
@@ -2477,7 +2550,13 @@ fn wasm_observation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use std::{
+        fs,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
 
     fn runtime() -> MctWasmComponentRuntime {
         MctWasmComponentRuntime::new(MctWasmHostConfig {
@@ -2517,7 +2596,7 @@ mod tests {
             },
             authority_context: AuthorityContextSnapshot {
                 policy_revision: 1,
-                grants_revision: 1,
+                expected_receiver_grants_authority: crate::test_grants_authority_identity(1),
                 vision_policy_revision: 1,
             },
             deadline: test_deadline(),
@@ -2550,6 +2629,115 @@ mod tests {
             "use",
             stem,
         )
+    }
+
+    fn delegation_snapshot(
+        call: &MctCall,
+        grant_state: ToyGrantState,
+    ) -> LocalExecutionAuthoritySnapshot {
+        let toy_id = ToyId::new("toy-filesystem").unwrap();
+        let subject = ToyGrantSubject {
+            child_name: "child-delegation".into(),
+            artifact_id: "artifact-delegation".into(),
+            artifact_version: "0.1.0".into(),
+            assignment_id: None,
+            caller_node_id: Some(call.caller.node_id.clone()),
+        };
+        let catalog = CanonicalToyContract {
+            toy_id: toy_id.clone(),
+            contract: ToyContractIdentity {
+                namespace: "wasi".into(),
+                interface_name: "filesystem/preopens".into(),
+                version: "0.2.3".into(),
+                function_name: Some("preopen-project-root".into()),
+                resource_name: None,
+            },
+            authority_bearing: true,
+            catalog_revision: 1,
+            admitted_by_observation_id: ObservationId::new("obs-delegation-catalog").unwrap(),
+        };
+        let grant = ToyGrant {
+            grant_id: ToyGrantId::new("grant-delegation").unwrap(),
+            toy_id,
+            subject,
+            scope: ToyGrantScope {
+                vision_id: call.caller.vision_id.clone(),
+                node_id: Some(call.caller.node_id.clone()),
+                project_id: call.caller.project_id.clone(),
+                data_classification: Some(call.payload_metadata.data_classification.clone()),
+                resource_id: Some("delegated-root".into()),
+                allowed_actions: vec!["preopen-project-root".into()],
+            },
+            constraints: ToyGrantConstraints {
+                starts_at: None,
+                expires_at: None,
+                max_uses: None,
+                max_duration_ms: None,
+                locality_required: true,
+            },
+            grant_state,
+            issuer_id: "issuer-delegation".into(),
+            policy_revision: 1,
+            grants_revision: 1,
+            authority_observation_id: ObservationId::new("obs-delegation-grant").unwrap(),
+        };
+        assemble_local_execution_authority_snapshot(LocalExecutionAuthoritySnapshotPartsV1 {
+            executing_mother_node_id: "mother-a".into(),
+            grants_authority_mother_node_id: "mother-a".into(),
+            grants_authority_epoch: "mct-authority-epoch-v1:delegation".into(),
+            grants_authority_generation: 1,
+            grants_authority_observation_id: "obs-delegation-authority".into(),
+            toy_catalog: vec![catalog],
+            toy_grants: vec![grant],
+            watch_scopes: Vec::new(),
+            policy_revision: 1,
+            vision_policy_revision: 1,
+            child_local_node_id: call.caller.node_id.clone(),
+            child_vision_id: call.caller.vision_id.clone(),
+            child_artifacts: Vec::new(),
+            child_approvals: Vec::new(),
+            child_assignments: Vec::new(),
+            child_instances: Vec::new(),
+            peer_local_node_id: call.caller.node_id.clone(),
+            peer_local_vision_id: call.caller.vision_id.clone(),
+            peer_local_endpoint_id: EndpointIdText::new("endpoint-delegation").unwrap(),
+            peer_records: Vec::new(),
+            callable_surfaces: Vec::new(),
+            evaluated_at: crate::config::current_timestamp(),
+            projection_id: "authority-state-v1".into(),
+            projection_source_mother_node_id: "mother-a".into(),
+            projection_source_ledger_id: "ledger-delegation".into(),
+            through_sequence: 1,
+            through_observation_id: "obs-delegation-authority".into(),
+            through_entry_hash: "entry-delegation".into(),
+            authority_state_hash: "state-delegation".into(),
+            projection_hash: "projection-delegation".into(),
+        })
+    }
+
+    fn delegation_authorized(
+        call: &MctCall,
+        snapshot: &LocalExecutionAuthoritySnapshot,
+    ) -> AuthorizedToyCall {
+        let grant = &snapshot.canonical_grants().toy_grants()[0];
+        let request = ToyGrantEvaluationRequest {
+            toy_id: grant.toy_id.clone(),
+            subject: grant.subject.clone(),
+            child_instance_id: ChildInstanceId::new("instance-delegation").unwrap(),
+            action: "preopen-project-root".into(),
+            resource_id: Some("delegated-root".into()),
+            node_id: call.caller.node_id.clone(),
+            now: snapshot.mother_clock().evaluated_at().clone(),
+            ids: ToyGrantEvaluationIds {
+                evaluation_id: ToyGrantEvaluationId::new("eval-delegation").unwrap(),
+                decision_id: DecisionId::new("decision-delegation").unwrap(),
+                observation_id: ObservationId::new("obs-delegation-eval").unwrap(),
+                authorized_toy_call_id: AuthorizedToyCallId::new("auth-delegation").unwrap(),
+            },
+        };
+        evaluate_toy_grant_for_snapshot(call, &request, snapshot)
+            .authorized
+            .expect("active exact delegation grant mints authority")
     }
 
     fn toy_ids() -> MctToyCallIds {
@@ -2791,6 +2979,7 @@ mod tests {
         };
         MctWitHostImportAdapters {
             toy_registry,
+            effect_authority: None,
             logging: Some(adapter),
             measure: Some(MctWitToyHostAdapter {
                 authorized_toy_call: toy_authorized("wasm-measure"),
@@ -2922,6 +3111,7 @@ mod tests {
         );
         MctWitHostImportAdapters {
             toy_registry,
+            effect_authority: None,
             logging: None,
             measure: None,
             git: Some(MctWitToyHostAdapter {
@@ -3163,6 +3353,7 @@ mod tests {
             };
             MctWitHostImportAdapters {
                 toy_registry,
+                effect_authority: None,
                 logging: Some(adapter("watch-logging")),
                 measure: Some(adapter("watch-measure")),
                 git: None,
@@ -3189,6 +3380,7 @@ mod tests {
                         host_path: root.path().to_path_buf(),
                         guest_path: "/input".into(),
                         access: MctWasiPreopenAccess::ReadOnly,
+                        authorized_toy_call: adapter("watch-preopen").authorized_toy_call,
                     }],
                 }),
             }
@@ -3319,6 +3511,7 @@ mod tests {
                 }]),
                 MctWitHostImportAdapters {
                     toy_registry,
+                    effect_authority: None,
                     logging: Some(adapter("sink-logging")),
                     measure: Some(adapter("sink-measure")),
                     git: None,
@@ -3464,6 +3657,55 @@ mod tests {
 
         assert_eq!(report.output_json, serde_json::json!({"results": [14]}));
         assert_eq!(report.result.outcome, ResultOutcome::Success);
+    }
+
+    /// Phase J proof 10: admitted delegation is retained; subsequent delegation revalidates.
+    #[test]
+    fn delegated_preopen_survives_revocation_while_new_delegation_denies() {
+        let root = tempfile::tempdir().unwrap();
+        let call = call();
+        let active = delegation_snapshot(&call, ToyGrantState::Active);
+        let authorized = delegation_authorized(&call, &active);
+        assert_eq!(
+            authorized.expires_at(),
+            &call.deadline,
+            "delegation expiry is clamped to the effective call deadline"
+        );
+        let current = Arc::new(Mutex::new(active));
+        let snapshots = Arc::clone(&current);
+        let ordered_starts = Arc::new(AtomicUsize::new(0));
+        let counted_starts = Arc::clone(&ordered_starts);
+        let authority = MctToyEffectAuthorityV1::new(
+            move || Ok(snapshots.lock().unwrap().clone()),
+            move |_, start| {
+                counted_starts.fetch_add(1, Ordering::SeqCst);
+                start();
+                Ok(())
+            },
+        );
+        let config = MctWasiHostConfig {
+            preopens: vec![MctWasiPreopen {
+                host_path: root.path().to_path_buf(),
+                guest_path: "/delegated".into(),
+                access: MctWasiPreopenAccess::ReadOnly,
+                authorized_toy_call: authorized,
+            }],
+        };
+
+        let admitted_context = build_wasi_ctx(Some(&config), Some(&authority), &call)
+            .expect("current delegation installs one preopen");
+        *current.lock().unwrap() = delegation_snapshot(&call, ToyGrantState::Revoked);
+        let Err(denied) = build_wasi_ctx(Some(&config), Some(&authority), &call) else {
+            panic!("revoked new delegation must deny");
+        };
+
+        assert!(denied.to_string().contains("InactiveGrant"));
+        assert_eq!(
+            ordered_starts.load(Ordering::SeqCst),
+            1,
+            "revoked new delegation never reaches ordered preopen installation"
+        );
+        drop(admitted_context);
     }
 
     #[test]
@@ -4014,12 +4256,12 @@ mod tests {
     }
 
     #[test]
-    fn wasm_component_runtime_denies_stale_child_capability_before_load() {
+    fn caller_policy_echo_cannot_create_a_wasm_authority_denial() {
         let runtime = runtime();
         let mut stale_call = call();
         stale_call.authority_context.policy_revision += 1;
 
-        let report = runtime
+        let error = runtime
             .invoke_authorized_s32_export(
                 authorized(),
                 &stale_call,
@@ -4027,16 +4269,9 @@ mod tests {
                 "answer",
                 ids(),
             )
-            .unwrap();
+            .expect_err("caller policy echo cannot deny before the component load attempt");
 
-        assert_eq!(report.result.outcome, ResultOutcome::Denied);
-        assert_eq!(report.result.route_taken, None);
-        assert_eq!(report.observations.len(), 1);
-        assert_eq!(report.observations[0].outcome, ObservationOutcome::Denied);
-        assert_eq!(
-            report.observations[0].kind,
-            ObservationKind::RuntimeExecutionFailed
-        );
+        assert!(matches!(error, MctWasmComponentRuntimeError::Load { .. }));
     }
 
     #[test]

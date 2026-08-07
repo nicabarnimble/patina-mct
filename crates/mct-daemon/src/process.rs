@@ -293,7 +293,11 @@ fn process_observation(
         subject_id: Some(authorized.child_name().to_owned()),
         resource_id: Some(authorized.child_instance_id().to_string()),
         policy_revision: Some(call.authority_context.policy_revision),
-        grants_revision: Some(call.authority_context.grants_revision),
+        grants_revision: Some(
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation,
+        ),
         outcome,
         visibility: ObservationVisibility::InternalOnly,
         safe_message: safe_message.into(),
@@ -336,7 +340,7 @@ mod tests {
             },
             authority_context: AuthorityContextSnapshot {
                 policy_revision: 1,
-                grants_revision: 1,
+                expected_receiver_grants_authority: crate::test_grants_authority_identity(1),
                 vision_policy_revision: 1,
             },
             deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
@@ -460,7 +464,7 @@ mod tests {
     }
 
     #[test]
-    fn process_harness_denies_stale_child_capability_before_spawn() {
+    fn caller_policy_echo_cannot_create_a_process_authority_denial() {
         let harness = MctProcessChildHarness {
             executable: PathBuf::from("/definitely/not/a/child"),
             args: Vec::new(),
@@ -471,23 +475,16 @@ mod tests {
         let mut stale_call = call();
         stale_call.authority_context.policy_revision += 1;
 
-        let report = harness
+        let error = harness
             .invoke_authorized_child(
                 authorized(),
                 &stale_call,
                 "{\"input\":\"hi\"}",
                 ids("stale"),
             )
-            .unwrap();
+            .expect_err("caller policy echo cannot deny before the adapter spawn attempt");
 
-        assert_eq!(report.result.outcome, ResultOutcome::Denied);
-        assert_eq!(report.result.route_taken, None);
-        assert_eq!(report.observations.len(), 1);
-        assert_eq!(report.observations[0].outcome, ObservationOutcome::Denied);
-        assert_eq!(
-            report.observations[0].kind,
-            ObservationKind::RuntimeExecutionFailed
-        );
+        assert!(matches!(error, MctProcessChildError::Spawn { .. }));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! Resident local effect-boundary revision guard, child delivery, dispatch, and result projection.
 
 use super::*;
+use mct_daemon::{MctToyEffectAuthorityV1, MotherAuthorityAdmissionDenyV1};
 
 #[derive(Debug)]
 struct PreparedChildExecution {
@@ -72,7 +73,11 @@ pub(super) fn resident_executed_on_observation(
             route.node_id, route.runtime_kind
         )),
         policy_revision: Some(call.authority_context.policy_revision),
-        grants_revision: Some(call.authority_context.grants_revision),
+        grants_revision: Some(
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation,
+        ),
         outcome: match outcome {
             ResultOutcome::Success => ObservationOutcome::Completed,
             ResultOutcome::Denied => ObservationOutcome::Denied,
@@ -89,25 +94,13 @@ pub(super) fn resident_executed_on_observation(
     }
 }
 
-pub(super) fn current_resident_route_revisions(
-    paths: &ResidentRuntimePaths,
-    call: &MctCall,
-) -> Result<AuthorityContextSnapshot> {
-    let config = MctDaemonConfigStore::new(paths.config_path()).load()?;
-    let scope = resident_child_scope(&config);
-    Ok(AuthorityContextSnapshot {
-        policy_revision: scope.policy_revision,
-        grants_revision: call.authority_context.grants_revision,
-        vision_policy_revision: call.authority_context.vision_policy_revision,
-    })
-}
-
 pub(super) fn execute_authorized_resident_child(
     paths: ResidentRuntimePaths,
     execution: LocalExecutionPlan,
     request: MctCallProtocolRequest,
     inline_payload: Option<Vec<u8>>,
-    current_revisions: AuthorityContextSnapshot,
+    effect_snapshot: LocalExecutionAuthoritySnapshot,
+    toy_effect_time_override: Option<Timestamp>,
     before_effect_ledger: Option<ResidentLedgerWriter>,
 ) -> Result<LocalExecutionReport> {
     let call = request.call.clone();
@@ -120,34 +113,19 @@ pub(super) fn execute_authorized_resident_child(
     };
     let runtime_kind = route_taken.runtime_kind;
     let run_id = run_id_for_call("resident", &call);
-
-    if authorized_route.policy_revision() != current_revisions.policy_revision {
-        let report = resident_route_revision_denial_report(
-            &call,
-            authorized_route.route(),
-            authorized_route.revalidation_decision_id().clone(),
-            CandidateEliminationReason::PolicyRevisionStale,
-            &current_revisions,
-            authorized_route.policy_revision(),
-            authorized_route.grants_revision(),
-        );
-        return Ok(report);
-    }
-    if authorized_route.grants_revision() != current_revisions.grants_revision {
-        let report = resident_route_revision_denial_report(
-            &call,
-            authorized_route.route(),
-            authorized_route.revalidation_decision_id().clone(),
-            CandidateEliminationReason::GrantsRevisionStale,
-            &current_revisions,
-            authorized_route.policy_revision(),
-            authorized_route.grants_revision(),
-        );
-        return Ok(report);
-    }
-
     let route_decision_id = authorized_route.revalidation_decision_id().clone();
+    let route_candidate = authorized_route.route().clone();
     let child_invocation = authorized_route.into_child_invocation();
+    if let Err(reason) = child_invocation.admit_effect_with_snapshot(&call, &effect_snapshot) {
+        return Ok(resident_child_effect_denial_report(
+            &call,
+            &route_candidate,
+            route_decision_id,
+            &format!("{reason:?}"),
+            &effect_snapshot,
+            &child_invocation,
+        ));
+    }
     let child_execution = PreparedChildExecution {
         child,
         authorized: child_invocation,
@@ -167,6 +145,22 @@ pub(super) fn execute_authorized_resident_child(
         mct_daemon::current_timestamp_string(),
     )?;
 
+    let order_admission = before_effect_ledger
+        .as_ref()
+        .ok_or(MotherAuthorityAdmissionDenyV1::AuthorityStateUnavailable);
+    if let Err(reason) =
+        order_admission.and_then(|ledger| ledger.admit_effect(&effect_snapshot, paths.state_path()))
+    {
+        return Ok(resident_child_effect_denial_report(
+            &call,
+            &route_candidate,
+            child_execution.route_decision_id.clone(),
+            &format!("MotherAuthorityOrder:{reason:?}"),
+            &effect_snapshot,
+            &child_execution.authorized,
+        ));
+    }
+
     let mut report = match child_execution.child.ingress_mode {
         mct_daemon::MctChildIngressMode::Handle => {
             execute_resident_process_child(child_execution, &request, inline_payload.as_deref())?
@@ -176,7 +170,9 @@ pub(super) fn execute_authorized_resident_child(
                 child_execution,
                 &request,
                 inline_payload.as_deref(),
-                paths.state_path(),
+                &paths,
+                &effect_snapshot,
+                toy_effect_time_override,
                 before_effect_ledger,
             )?
         }
@@ -265,7 +261,7 @@ fn execute_resident_process_child(
 }
 
 fn authorize_resident_watch_toy(
-    state: &MctRuntimeStateStore,
+    snapshot: &LocalExecutionAuthoritySnapshot,
     child: &mct_daemon::MctLoadedChild,
     authorized_child: &AuthorizedChildInvocation,
     call: &MctCall,
@@ -273,8 +269,7 @@ fn authorize_resident_watch_toy(
     action: &str,
     label: &str,
 ) -> std::result::Result<CliAuthorizedToy, CliToyAuthorizationError> {
-    let contracts = state.toy_contracts().map_err(cli_adapter_error)?;
-    let grants = state.toy_grant_snapshots().map_err(cli_adapter_error)?;
+    let grants = snapshot.canonical_grants().toy_grants();
     let toy_id = ToyId::new(toy_id).map_err(|error| cli_adapter_error(error.into()))?;
     let resource_id = grants
         .iter()
@@ -296,28 +291,63 @@ fn authorize_resident_watch_toy(
             safe_message: format!("current exact {label} Toy grant not found"),
             observations: Vec::new(),
         })?;
-    authorize_cli_toy(CliToyAuthorizationRequest {
-        child,
-        authorized_child,
-        call,
-        contracts: &contracts,
-        grants: &grants,
+    let request = ToyGrantEvaluationRequest {
         toy_id,
-        action,
+        subject: ToyGrantSubject {
+            child_name: child.name.clone(),
+            artifact_id: child.artifact_id.clone(),
+            artifact_version: child.version.clone(),
+            assignment_id: Some(authorized_child.assignment_id().clone()),
+            caller_node_id: Some(call.caller.node_id.clone()),
+        },
+        child_instance_id: authorized_child.child_instance_id().clone(),
+        action: action.into(),
         resource_id: Some(resource_id),
-        label,
+        node_id: snapshot.child_policy().local_node_id().clone(),
+        now: snapshot.mother_clock().evaluated_at().clone(),
+        ids: ToyGrantEvaluationIds {
+            evaluation_id: ToyGrantEvaluationId::new(format!("toy-eval-resident-{label}"))
+                .expect("resident Toy evaluation id is non-empty"),
+            decision_id: DecisionId::new(format!("decision-toy-resident-{label}"))
+                .expect("resident Toy decision id is non-empty"),
+            observation_id: ObservationId::new(format!("obs-toy-grant-resident-{label}"))
+                .expect("resident Toy observation id is non-empty"),
+            authorized_toy_call_id: AuthorizedToyCallId::new(format!(
+                "authorized-toy-resident-{label}"
+            ))
+            .expect("resident Toy token id is non-empty"),
+        },
+    };
+    let result = evaluate_toy_grant_for_snapshot(call, &request, snapshot);
+    let Some(authorized) = result.authorized else {
+        return Err(CliToyAuthorizationError {
+            safe_message: format!(
+                "current exact {label} Toy grant denied: {:?}",
+                result.evaluation.reason_code
+            ),
+            observations: vec![toy_grant_evaluation_observation(
+                call.trace_context.trace_id.clone(),
+                snapshot.mother_clock().evaluated_at().clone(),
+                &result.evaluation,
+            )],
+        });
+    };
+    Ok(CliAuthorizedToy {
+        evaluation: result.evaluation,
+        authorized,
     })
 }
 
 fn resident_watch_host_adapters(
-    state: &MctRuntimeStateStore,
+    runtime_state: &MctRuntimeStateStore,
+    state: &LocalExecutionAuthoritySnapshot,
     state_path: &Path,
     child: &mct_daemon::MctLoadedChild,
     authorized_child: &AuthorizedChildInvocation,
     call: &MctCall,
     imports: &BTreeSet<String>,
 ) -> std::result::Result<CliWitHostAdapterBuild, CliToyAuthorizationError> {
-    let scopes = state
+    let scopes = runtime_state
         .watch_observation_scopes()
         .map_err(cli_adapter_error)?;
     let scope = scopes
@@ -529,6 +559,7 @@ fn resident_watch_host_adapters(
     Ok(CliWitHostAdapterBuild {
         adapters: MctWitHostImportAdapters {
             toy_registry,
+            effect_authority: None,
             logging,
             measure,
             git: None,
@@ -539,6 +570,7 @@ fn resident_watch_host_adapters(
                     host_path: root,
                     guest_path: "/input".into(),
                     access: MctWasiPreopenAccess::ReadOnly,
+                    authorized_toy_call: content.authorized,
                 }],
             }),
         },
@@ -546,11 +578,48 @@ fn resident_watch_host_adapters(
     })
 }
 
+fn resident_toy_effect_authority(
+    paths: &ResidentRuntimePaths,
+    ledger: &ResidentLedgerWriter,
+    time_override: Option<Timestamp>,
+) -> Result<MctToyEffectAuthorityV1> {
+    let ledger_path = ledger
+        .path()
+        .map(Path::to_path_buf)
+        .context("resident Toy effect authority requires ledger path")?;
+    let snapshot_paths = paths.clone();
+    let snapshot_ledger = ledger.clone();
+    let order_paths = paths.clone();
+    let order_ledger = ledger.clone();
+    Ok(MctToyEffectAuthorityV1::new(
+        move || {
+            snapshot_ledger
+                .publish_authority_projection_blocking(snapshot_paths.state_path().to_path_buf())
+                .map_err(|error| error.to_string())?;
+            mct_daemon::local_execution_authority_snapshot_at(
+                &ledger_path,
+                snapshot_paths.config_path(),
+                snapshot_paths.children_dir(),
+                snapshot_paths.state_path(),
+                Ok(time_override.clone().unwrap_or_else(current_timestamp)),
+            )
+            .map_err(|error| format!("{error:?}"))
+        },
+        move |snapshot, start| {
+            order_ledger
+                .admit_effect_start(snapshot, order_paths.state_path(), start)
+                .map_err(|error| format!("{error:?}"))
+        },
+    ))
+}
+
 fn execute_resident_wit_child(
     execution: PreparedChildExecution,
     request: &MctCallProtocolRequest,
     inline_payload: Option<&[u8]>,
-    state_path: &Path,
+    paths: &ResidentRuntimePaths,
+    effect_snapshot: &LocalExecutionAuthoritySnapshot,
+    toy_effect_time_override: Option<Timestamp>,
     before_effect_ledger: Option<ResidentLedgerWriter>,
 ) -> Result<LocalExecutionReport> {
     let call = &request.call;
@@ -570,7 +639,7 @@ fn execute_resident_wit_child(
     };
     let runtime = MctWasmComponentRuntime::new(default_wasm_host_config())?;
     let imports = runtime.discover_wit_imports(&execution.child.wasm_path)?;
-    let state = MctRuntimeStateStore::open(state_path)?;
+    let state = MctRuntimeStateStore::open(paths.state_path())?;
     let project_root = state
         .toy_grant_snapshots()?
         .into_iter()
@@ -587,7 +656,8 @@ fn execute_resident_wit_child(
     {
         resident_watch_host_adapters(
             &state,
-            state_path,
+            effect_snapshot,
+            paths.state_path(),
             &execution.child,
             &execution.authorized,
             call,
@@ -595,7 +665,6 @@ fn execute_resident_wit_child(
         )
     } else {
         build_wit_host_adapters_for_cli_call(CliWitAdapterRequest {
-            state: &state,
             child: &execution.child,
             authorized_child: &execution.authorized,
             call,
@@ -603,6 +672,7 @@ fn execute_resident_wit_child(
             project_root: project_root.as_deref(),
             guest_project: "/project",
             git_repo: project_root.as_deref(),
+            authority_snapshot: effect_snapshot,
         })
     } {
         Ok(build) => build,
@@ -614,6 +684,12 @@ fn execute_resident_wit_child(
             ));
         }
     };
+    let mut adapter_build = adapter_build;
+    let effect_authority = before_effect_ledger
+        .as_ref()
+        .map(|ledger| resident_toy_effect_authority(paths, ledger, toy_effect_time_override))
+        .transpose()?;
+    adapter_build.adapters.effect_authority = effect_authority;
     let mut observations = adapter_build.observations;
     if let Some(ledger) = before_effect_ledger {
         tokio::runtime::Handle::current()
@@ -682,14 +758,13 @@ pub(super) fn apply_inline_result_payload(
     Some(bytes)
 }
 
-pub(super) fn resident_route_revision_denial_report(
+pub(super) fn resident_child_effect_denial_report(
     call: &MctCall,
     route: &CandidateRoute,
     decision_id: DecisionId,
-    reason: CandidateEliminationReason,
-    current: &AuthorityContextSnapshot,
-    minted_policy_revision: u64,
-    minted_grants_revision: u64,
+    reason: &str,
+    current: &LocalExecutionAuthoritySnapshot,
+    authorized: &AuthorizedChildInvocation,
 ) -> LocalExecutionReport {
     let observation = MctObservation {
         observation_id: ObservationId::new(format!("obs-route-revision-denied:{}", call.call_id))
@@ -707,16 +782,19 @@ pub(super) fn resident_route_revision_denial_report(
         decision_id: Some(decision_id.clone()),
         subject_id: route.child_id.as_ref().map(ToString::to_string),
         resource_id: Some(route.candidate_id.clone()),
-        policy_revision: Some(current.policy_revision),
-        grants_revision: Some(current.grants_revision),
+        policy_revision: Some(current.policy_revision()),
+        grants_revision: Some(current.canonical_grants().grants_authority().generation()),
         outcome: ObservationOutcome::Denied,
         visibility: ObservationVisibility::InternalOnly,
         safe_message: "not authorized".into(),
         detail_ref: Some(format!(
-            "elimination_reason:{reason:?};denial_class:{};minted_policy_revision={minted_policy_revision};current_policy_revision={};minted_grants_revision={minted_grants_revision};current_grants_revision={}",
-            reason.denial_class().as_str(),
-            current.policy_revision,
-            current.grants_revision
+            "child_effect_authority_denial:{reason};minted_policy_revision={};current_policy_revision={};minted_grants_authority={:?};current_grants_authority={:?}",
+            authorized.policy_revision(),
+            current.policy_revision(),
+            authorized
+                .local_execution_authority()
+                .map(LocalExecutionAuthorityTokenV1::grants_authority),
+            current.canonical_grants().grants_authority(),
         )),
     };
     LocalExecutionReport {
@@ -734,7 +812,7 @@ pub(super) fn resident_route_revision_denial_report(
             },
             result_payload: MctCallPayloadHandle::Empty,
             requester_message: "not authorized".into(),
-            audit_ref: AuditRef::new(format!("audit-route-revision-denied:{}", call.call_id))
+            audit_ref: AuditRef::new(format!("audit-child-effect-denied:{}", call.call_id))
                 .expect("string ID literal/generated value must be non-empty"),
         },
         observations: vec![observation],
@@ -779,7 +857,11 @@ fn resident_toy_authority_denial_report(
         subject_id: None,
         resource_id: Some("required-toy-authority".into()),
         policy_revision: Some(call.authority_context.policy_revision),
-        grants_revision: Some(call.authority_context.grants_revision),
+        grants_revision: Some(
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation,
+        ),
         outcome: ObservationOutcome::Denied,
         visibility: ObservationVisibility::InternalOnly,
         safe_message: "not authorized".into(),
@@ -837,7 +919,11 @@ pub(super) fn resident_delivery_failure_report(
         subject_id: None,
         resource_id: Some(format!("{:?}", reason)),
         policy_revision: Some(call.authority_context.policy_revision),
-        grants_revision: Some(call.authority_context.grants_revision),
+        grants_revision: Some(
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation,
+        ),
         outcome: ObservationOutcome::Failed,
         visibility: ObservationVisibility::InternalOnly,
         safe_message: safe_message.into(),
@@ -911,11 +997,14 @@ mod tests {
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 
     fn resident_test_call(trace_id: TraceId) -> MctCall {
-        let mut call = local_wasm_call(OperationTarget {
-            namespace: "patina:demo".into(),
-            interface_name: "control@0.1.0".into(),
-            function_name: "run".into(),
-        });
+        let mut call = local_wasm_call(
+            OperationTarget {
+                namespace: "patina:demo".into(),
+                interface_name: "control@0.1.0".into(),
+                function_name: "run".into(),
+            },
+            test_grants_authority_identity(1),
+        );
         call.call_id = CallId::new("call-resident-wit")
             .expect("string ID literal/generated value must be non-empty");
         call.trace_context.trace_id = trace_id;
@@ -937,7 +1026,7 @@ mod tests {
                 endpoint_id: EndpointIdText::new("endpoint-resident-wit")
                     .expect("string ID literal/generated value must be non-empty"),
                 policy_revision: 1,
-                grants_revision: 1,
+                expected_receiver_grants_authority: test_grants_authority_identity(1),
             },
             received_over: IrohConnectionPresentation {
                 endpoint_id: EndpointIdText::new("endpoint-resident-wit")
@@ -1056,10 +1145,17 @@ listens = []
 
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
         assert_eq!(loaded.loaded, 1, "{loaded:?}");
-        MctDaemonConfigStore::new(&config_path)
+        let config_store = MctDaemonConfigStore::new(&config_path);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        config_store
             .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
             .unwrap();
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         let trace_id = TraceId::new("trace-resident-process-payload")
             .expect("string ID literal/generated value must be non-empty");
         let mut call = resident_test_call(trace_id);
@@ -1117,10 +1213,17 @@ listens = []
         write_resident_wit_child(&children_dir);
 
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
-        MctDaemonConfigStore::new(&config_path)
+        let config_store = MctDaemonConfigStore::new(&config_path);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        config_store
             .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
             .unwrap();
-        let ledger = ResidentLedgerWriter::spawn(ledger_path).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path).unwrap();
         let trace_id = TraceId::new("trace-resident-wit-content-type")
             .expect("string ID literal/generated value must be non-empty");
         let mut call = resident_test_call(trace_id);
@@ -1157,10 +1260,17 @@ listens = []
 
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
         assert_eq!(loaded.loaded, 1, "{loaded:?}");
-        MctDaemonConfigStore::new(&config_path)
+        let config_store = MctDaemonConfigStore::new(&config_path);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        config_store
             .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
             .unwrap();
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         let trace_id = TraceId::new("trace-resident-wit-test")
             .expect("string ID literal/generated value must be non-empty");
         let call = resident_test_call(trace_id.clone());
@@ -1201,6 +1311,97 @@ listens = []
         );
     }
 
+    /// Phase J proofs 3 and 15: full resident post-mint mutation denies without refresh.
+    #[tokio::test]
+    async fn full_resident_post_mint_mutation_denies_then_retry_remints() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let marker_path = dir.path().join("executed-marker");
+        write_resident_process_child_script(
+            &children_dir,
+            "resident-echo",
+            format!(
+                "#!/bin/sh\necho executed > {}\nprintf '{{\"ok\":true}}'\n",
+                marker_path.display()
+            )
+            .as_bytes(),
+        );
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        let config_store = MctDaemonConfigStore::new(&config_path);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        config_store
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
+        let paths = ResidentRuntimePaths::new(
+            config_path.clone(),
+            children_dir.clone(),
+            state_path.clone(),
+        );
+        let first_call = resident_test_call(TraceId::new("trace-post-mint-denial").unwrap());
+        let first = execute_resident_call_with_post_mint_mutation(
+            paths.clone(),
+            ledger.clone(),
+            resident_test_protocol_request(first_call),
+            ResidentPayloadIngress::remote(None),
+            AuthorityMutationRequestV1 {
+                mutation_id: "phase-j-post-mint-unrelated-grant-change".into(),
+                changes: vec![AuthorityChangeV1::ToyCatalogPut {
+                    toy_id: "toy-unrelated-phase-j".into(),
+                    contract: ToyContractIdentity {
+                        namespace: "patina".into(),
+                        interface_name: "unrelated".into(),
+                        version: "0.1.0".into(),
+                        function_name: Some("observe".into()),
+                        resource_name: None,
+                    },
+                    authority_bearing: true,
+                    catalog_revision: 1,
+                    admitted_by_observation_id: "obs-phase-j-post-mint-change".into(),
+                }],
+                grant_shaping_sources: vec![GrantShapingSourceV1::OperatorDecision {
+                    decision_id: "decision-phase-j-post-mint-change".into(),
+                    authenticated_principal_ref: "test:phase-j".into(),
+                    command_kind: GrantShapingCommandKindV1::CatalogChange,
+                }],
+                decided_at: current_timestamp_string(),
+            },
+        )
+        .await;
+
+        assert_eq!(first.outcome, CallProtocolOutcome::Denied);
+        assert!(
+            !marker_path.exists(),
+            "stale token starts no process effect"
+        );
+
+        let retry_call = resident_test_call(TraceId::new("trace-post-mint-retry").unwrap());
+        let retry = execute_resident_call(
+            paths,
+            ledger.clone(),
+            resident_test_protocol_request(retry_call),
+            ResidentPayloadIngress::remote(None),
+        )
+        .await;
+        assert_eq!(retry.outcome, CallProtocolOutcome::Completed);
+        assert!(
+            marker_path.exists(),
+            "retry re-evaluates and mints wholly new current authority"
+        );
+        ledger.close().await;
+
+        let ledger_text = std::fs::read_to_string(ledger_path).unwrap();
+        assert!(ledger_text.contains("GrantsAuthorityMismatch"));
+    }
+
     #[test]
     fn resident_route_revision_guard_denies_before_effect() {
         let dir = tempfile::tempdir().unwrap();
@@ -1218,7 +1419,14 @@ listens = []
             .as_bytes(),
         );
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
-        MctDaemonConfigStore::new(&config_path)
+        let config_store = MctDaemonConfigStore::new(&config_path);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        config_store
             .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
             .unwrap();
         let config = MctDaemonConfigStore::new(&config_path).load().unwrap();
@@ -1227,24 +1435,32 @@ listens = []
                 .expect("string ID literal/generated value must be non-empty"),
         );
         let request = resident_test_protocol_request(call.clone());
+        let children = loaded.children;
         let RouteDisposition::Local {
             plan: authorized, ..
-        } = authorize_resident_child_from_loaded(&config, loaded.children, &call).unwrap()
+        } = authorize_resident_child_from_loaded(&config, children.clone(), &call).unwrap()
         else {
             panic!("approved child should authorize")
         };
-        let stale_revisions = AuthorityContextSnapshot {
-            policy_revision: call.authority_context.policy_revision + 1,
-            grants_revision: call.authority_context.grants_revision,
-            vision_policy_revision: call.authority_context.vision_policy_revision,
-        };
+        let changed_snapshot = resident_test_authority_snapshot(
+            &config,
+            None,
+            &children,
+            current_timestamp(),
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation
+                + 1,
+        )
+        .unwrap();
 
         let report = execute_authorized_resident_child(
             ResidentRuntimePaths::new(config_path, children_dir, state_path),
             *authorized,
             request,
             None,
-            stale_revisions,
+            changed_snapshot,
+            None,
             None,
         )
         .unwrap();
@@ -1253,8 +1469,8 @@ listens = []
         assert!(report.result.route_taken.is_none());
         assert!(!marker_path.exists());
         let text = serde_json::to_string(&report.observations).unwrap();
-        assert!(text.contains("PolicyRevisionStale"));
-        assert!(text.contains("minted_policy_revision"));
+        assert!(text.contains("GrantsAuthorityMismatch"));
+        assert!(text.contains("current_grants_authority"));
     }
 
     #[test]
@@ -1339,6 +1555,7 @@ listens = []
             result_payload: MctCallPayloadHandle::Empty,
             route_taken: None,
             reply_outcome: CallProtocolReplyOutcome::Cancelled,
+            retry_directive: CallProtocolRetryDirective::None,
             safe_message: "cancelled".into(),
             reply_observation_id: ObservationId::new("obs-reply-cancelled-route")
                 .expect("string ID literal/generated value must be non-empty"),

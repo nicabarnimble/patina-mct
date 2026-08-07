@@ -9,7 +9,7 @@ use mct_kernel::{
     CallId, CanonicalToyContract, MctObservation, ObservationId, ObservationKind,
     ObservationOutcome, ObservationTraceRef, ObservationVisibility, SourcePlane, Timestamp,
     ToyContractIdentity, ToyGrant, ToyGrantConstraints, ToyGrantId, ToyGrantScope, ToyGrantState,
-    ToyGrantSubject, ToyId, TraceId,
+    ToyGrantSubject, ToyId, TraceId, WatchObservationScope, WatchObservationScopeState,
 };
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
@@ -39,6 +39,7 @@ pub struct GrantsAuthorityIdentityV1 {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AuthorityEpochPredecessorV1 {
     NoneForVirgin,
+    NoneAfterOperatorReinitialization,
     ValidatedHead { sequence: u64, entry_hash: String },
 }
 
@@ -47,7 +48,19 @@ pub enum AuthorityEpochPredecessorV1 {
 pub enum AuthorityStartupClassV1 {
     Virgin,
     OrdinaryReopen,
+    LegacyLedgerUpgrade,
     OperatorGatedNonvirgin,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorityTenureStartupEvidenceV1 {
+    pub startup_class: AuthorityStartupClassV1,
+    pub expected_predecessor: AuthorityEpochPredecessorV1,
+    pub expected_prior_authority: Option<GrantsAuthorityIdentityV1>,
+    pub expected_authority_state_hash: String,
+    pub inventory_hash: String,
+    pub operator_gate_decision_id: Option<String>,
+    pub authenticated_principal_ref: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +143,9 @@ pub enum AuthorityChangeV1 {
     },
     ToyGrantRemove {
         grant_id: String,
+    },
+    WatchScopePut {
+        scope: Box<WatchObservationScope>,
     },
 }
 
@@ -279,6 +295,8 @@ pub enum AuthorityMutationResultV1 {
 pub struct AuthorityStateV1 {
     pub toy_catalog: BTreeMap<String, CanonicalToyContract>,
     pub toy_grants: BTreeMap<String, ToyGrant>,
+    #[serde(default)]
+    pub watch_scopes: BTreeMap<String, WatchObservationScope>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -699,6 +717,17 @@ impl JsonlObservationLedger {
         Ok(ledger)
     }
 
+    pub fn open_authority_with_startup(
+        path: impl AsRef<Path>,
+        ledger_id: impl Into<String>,
+        mother_node_id: impl Into<String>,
+        startup: AuthorityTenureStartupEvidenceV1,
+    ) -> Result<Self> {
+        let mut ledger = Self::open(path, ledger_id, mother_node_id)?;
+        ledger.begin_authority_tenure_with_startup(startup)?;
+        Ok(ledger)
+    }
+
     pub fn open_read_only(
         path: impl AsRef<Path>,
         ledger_id: impl Into<String>,
@@ -743,8 +772,89 @@ impl JsonlObservationLedger {
         } else if replay.current_authority.is_some() {
             AuthorityStartupClassV1::OrdinaryReopen
         } else {
-            AuthorityStartupClassV1::OperatorGatedNonvirgin
+            AuthorityStartupClassV1::LegacyLedgerUpgrade
         };
+        let startup = AuthorityTenureStartupEvidenceV1 {
+            startup_class,
+            expected_predecessor: predecessor,
+            expected_prior_authority: replay.current_authority,
+            expected_authority_state_hash: authority_state_hash(&replay.state)?,
+            inventory_hash: "legacy-inferred-startup-evidence".into(),
+            operator_gate_decision_id: None,
+            authenticated_principal_ref: None,
+        };
+        self.begin_authority_tenure_with_startup(startup)
+    }
+
+    pub fn begin_authority_tenure_with_startup(
+        &mut self,
+        startup: AuthorityTenureStartupEvidenceV1,
+    ) -> Result<()> {
+        if self.authority_tenure.is_some() {
+            return Ok(());
+        }
+        let entries = self.entries()?;
+        let replay = replay_authority_entries(&entries).map_err(|error| {
+            ObservationLedgerError::AuthorityReplay {
+                detail: error.to_string(),
+            }
+        })?;
+        let actual_predecessor =
+            entries
+                .last()
+                .map_or(AuthorityEpochPredecessorV1::NoneForVirgin, |entry| {
+                    AuthorityEpochPredecessorV1::ValidatedHead {
+                        sequence: entry.local_sequence,
+                        entry_hash: entry.entry_hash.clone(),
+                    }
+                });
+        let no_operator_evidence = startup.operator_gate_decision_id.is_none()
+            && startup.authenticated_principal_ref.is_none();
+        let complete_operator_evidence = startup
+            .operator_gate_decision_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+            && startup
+                .authenticated_principal_ref
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty());
+        let startup_relation_valid = match startup.startup_class {
+            AuthorityStartupClassV1::Virgin => {
+                entries.is_empty()
+                    && replay.current_authority.is_none()
+                    && startup.expected_predecessor == AuthorityEpochPredecessorV1::NoneForVirgin
+                    && no_operator_evidence
+            }
+            AuthorityStartupClassV1::OperatorGatedNonvirgin => {
+                entries.is_empty()
+                    && replay.current_authority.is_none()
+                    && startup.expected_predecessor
+                        == AuthorityEpochPredecessorV1::NoneAfterOperatorReinitialization
+                    && complete_operator_evidence
+            }
+            AuthorityStartupClassV1::LegacyLedgerUpgrade => {
+                !entries.is_empty()
+                    && replay.current_authority.is_none()
+                    && startup.expected_predecessor == actual_predecessor
+                    && no_operator_evidence
+            }
+            AuthorityStartupClassV1::OrdinaryReopen => {
+                !entries.is_empty()
+                    && replay.current_authority.is_some()
+                    && startup.expected_predecessor == actual_predecessor
+                    && no_operator_evidence
+            }
+        };
+        let actual_state_hash = authority_state_hash(&replay.state)?;
+        if startup.inventory_hash.trim().is_empty()
+            || !startup_relation_valid
+            || startup.expected_prior_authority != replay.current_authority
+            || startup.expected_authority_state_hash != actual_state_hash
+        {
+            return Err(ObservationLedgerError::AuthorityReplay {
+                detail: "explicit startup evidence does not match exclusive ledger rescan".into(),
+            });
+        }
         let generation_baseline = replay
             .current_authority
             .as_ref()
@@ -762,16 +872,16 @@ impl JsonlObservationLedger {
             mother_node_id: self.mother_node_id.clone(),
             ledger_id: self.ledger_id.clone(),
             authority_epoch,
-            predecessor,
+            predecessor: startup.expected_predecessor,
             generation_baseline,
             prior_authority: replay.current_authority,
             resulting_authority,
             grant_state_hash: authority_state_hash(&replay.state)?,
             establishment: WriterTenureEstablishmentV1 {
                 started_at: started_at.clone(),
-                startup_class,
-                operator_gate_decision_id: None,
-                authenticated_principal_ref: None,
+                startup_class: startup.startup_class,
+                operator_gate_decision_id: startup.operator_gate_decision_id,
+                authenticated_principal_ref: startup.authenticated_principal_ref,
             },
         };
         let detail_ref = encode_epoch_fact(&fact_id, &fact)?;
@@ -1503,6 +1613,9 @@ fn authority_change_sort_key(change: &AuthorityChangeV1) -> (&'static str, &str)
         AuthorityChangeV1::ToyCatalogRemove { toy_id } => ("toy_catalog_remove", toy_id),
         AuthorityChangeV1::ToyGrantPut { grant_id, .. } => ("toy_grant_put", grant_id),
         AuthorityChangeV1::ToyGrantRemove { grant_id } => ("toy_grant_remove", grant_id),
+        AuthorityChangeV1::WatchScopePut { scope } => {
+            ("watch_scope_put", scope.watch_scope_id.as_str())
+        }
     }
 }
 
@@ -1609,6 +1722,43 @@ pub fn apply_authority_changes(
                         detail: format!("cannot remove missing Toy grant '{grant_id}'"),
                     });
                 }
+            }
+            AuthorityChangeV1::WatchScopePut { scope } => {
+                scope
+                    .validate()
+                    .map_err(|error| AuthorityReplayError::Incoherent {
+                        sequence: 0,
+                        detail: format!("invalid Watch scope: {error}"),
+                    })?;
+                let scope_id = scope.watch_scope_id.to_string();
+                match state.watch_scopes.get(&scope_id) {
+                    None => {
+                        if scope.scope_revision != 1
+                            || scope.authority_state != WatchObservationScopeState::Active
+                        {
+                            return Err(AuthorityReplayError::Incoherent {
+                                sequence: 0,
+                                detail: "first Watch scope put must be active revision one".into(),
+                            });
+                        }
+                    }
+                    Some(current) => {
+                        if current.authority_state != WatchObservationScopeState::Active {
+                            return Err(AuthorityReplayError::Incoherent {
+                                sequence: 0,
+                                detail: "terminal Watch scope cannot be revised or resurrected"
+                                    .into(),
+                            });
+                        }
+                        if current.scope_revision.checked_add(1) != Some(scope.scope_revision) {
+                            return Err(AuthorityReplayError::Incoherent {
+                                sequence: 0,
+                                detail: "Watch scope revision is not exactly prior plus one".into(),
+                            });
+                        }
+                    }
+                }
+                state.watch_scopes.insert(scope_id, scope.as_ref().clone());
             }
         }
     }
@@ -1721,15 +1871,32 @@ fn finish_projected_mutation(
     }
 }
 
+fn validate_watch_scope_state(state: &AuthorityStateV1) -> std::result::Result<(), String> {
+    for (scope_id, scope) in &state.watch_scopes {
+        if scope_id != scope.watch_scope_id.as_str() {
+            return Err("Watch scope map key does not match complete value identity".into());
+        }
+        scope
+            .validate()
+            .map_err(|error| format!("invalid Watch scope authority value: {error}"))?;
+    }
+    Ok(())
+}
+
 pub fn authority_state_hash(state: &AuthorityStateV1) -> Result<String> {
+    validate_watch_scope_state(state)
+        .map_err(|detail| ObservationLedgerError::AuthorityReplay { detail })?;
     #[derive(Serialize)]
     struct HashableAuthorityState<'a> {
         toy_catalog: Vec<&'a CanonicalToyContract>,
         toy_grants: Vec<&'a ToyGrant>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        watch_scopes: Vec<&'a WatchObservationScope>,
     }
     let hashable = HashableAuthorityState {
         toy_catalog: state.toy_catalog.values().collect(),
         toy_grants: state.toy_grants.values().collect(),
+        watch_scopes: state.watch_scopes.values().collect(),
     };
     Ok(blake3::hash(&canonical_json_bytes(&hashable)?)
         .to_hex()
@@ -1899,15 +2066,45 @@ fn validate_epoch_fact(
         sequence: entry.local_sequence,
         detail: detail.to_owned(),
     };
-    let expected_predecessor =
+    let validated_head =
         index
             .checked_sub(1)
-            .map_or(AuthorityEpochPredecessorV1::NoneForVirgin, |previous| {
-                AuthorityEpochPredecessorV1::ValidatedHead {
-                    sequence: entries[previous].local_sequence,
-                    entry_hash: entries[previous].entry_hash.clone(),
-                }
+            .map(|previous| AuthorityEpochPredecessorV1::ValidatedHead {
+                sequence: entries[previous].local_sequence,
+                entry_hash: entries[previous].entry_hash.clone(),
             });
+    let no_operator_evidence = fact.establishment.operator_gate_decision_id.is_none()
+        && fact.establishment.authenticated_principal_ref.is_none();
+    let complete_operator_evidence = fact
+        .establishment
+        .operator_gate_decision_id
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        && fact
+            .establishment
+            .authenticated_principal_ref
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
+    let startup_relation_valid = match (
+        replay.current_authority.as_ref(),
+        validated_head.as_ref(),
+        fact.establishment.startup_class,
+    ) {
+        (None, None, AuthorityStartupClassV1::Virgin) => {
+            fact.predecessor == AuthorityEpochPredecessorV1::NoneForVirgin && no_operator_evidence
+        }
+        (None, None, AuthorityStartupClassV1::OperatorGatedNonvirgin) => {
+            fact.predecessor == AuthorityEpochPredecessorV1::NoneAfterOperatorReinitialization
+                && complete_operator_evidence
+        }
+        (None, Some(expected), AuthorityStartupClassV1::LegacyLedgerUpgrade) => {
+            &fact.predecessor == expected && no_operator_evidence
+        }
+        (Some(_), Some(expected), AuthorityStartupClassV1::OrdinaryReopen) => {
+            &fact.predecessor == expected && no_operator_evidence
+        }
+        _ => false,
+    };
     let expected_generation = replay
         .current_authority
         .as_ref()
@@ -1931,7 +2128,8 @@ fn validate_epoch_fact(
     }
     if fact.mother_node_id != entry.mother_node_id
         || fact.ledger_id != entry.ledger_id
-        || fact.predecessor != expected_predecessor
+        || !startup_relation_valid
+        || Timestamp::new(fact.establishment.started_at.clone()).is_err()
         || fact.generation_baseline != expected_generation
         || fact.prior_authority != replay.current_authority
         || fact.grant_state_hash != expected_hash
@@ -1969,6 +2167,7 @@ fn validate_legacy_import_fact(
     };
     let prior_hash =
         authority_state_hash(&replay.state).map_err(|error| incoherent(&error.to_string()))?;
+    validate_watch_scope_state(&fact.imported_state).map_err(|error| incoherent(&error))?;
     let imported_hash = authority_state_hash(&fact.imported_state)
         .map_err(|error| incoherent(&error.to_string()))?;
     let expected_generation = prior_authority
@@ -3644,6 +3843,129 @@ mod tests {
         }
     }
 
+    fn complete_watch_scope() -> mct_kernel::WatchObservationScope {
+        mct_kernel::WatchObservationScope {
+            watch_scope_id: mct_kernel::WatchObservationScopeId::new("scope-canonical").unwrap(),
+            observer_shape: mct_kernel::WatchObserverShape::ChildToy,
+            observer_ref: mct_kernel::WatchObserverRef {
+                child_name: "child-a".into(),
+                artifact_id: mct_kernel::ComponentArtifactId::new("artifact-a").unwrap(),
+                artifact_version: "1.0.0".into(),
+                assignment_id: mct_kernel::ChildAssignmentId::new("assignment-a").unwrap(),
+            },
+            scope_mode: mct_kernel::WatchScopeMode::Constrained,
+            canonical_root_ref: "file:///tmp/canonical-watch".into(),
+            traversal_scope: mct_kernel::WatchTraversalScope::Recursive,
+            event_classes: vec![
+                mct_kernel::WatchEventClass::Created,
+                mct_kernel::WatchEventClass::Modified,
+            ],
+            max_events_per_batch: 17,
+            coalescing_policy: mct_kernel::WatchCoalescingPolicy::LastPerPath,
+            starts_at: Timestamp::new("2026-08-05T12:00:00Z").unwrap(),
+            expires_at: Timestamp::new("2026-08-05T13:00:00Z").unwrap(),
+            scope_revision: 1,
+            policy_revision: 9,
+            authority_state: mct_kernel::WatchObservationScopeState::Active,
+            authority_observation_id: ObservationId::new("obs-watch-scope-canonical").unwrap(),
+            canonical_record_digest: String::new(),
+        }
+        .seal()
+    }
+
+    /// Phase I proof 15: every Watch-scope field is replayed from the canonical change alone.
+    #[test]
+    fn watch_scope_put_replays_complete_value_without_ordinary_observation() {
+        let scope = complete_watch_scope();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let mut ledger =
+            JsonlObservationLedger::open_authority(&path, "ledger-a", "mother-a").unwrap();
+        let result = ledger.execute_authority_mutation(
+            AuthorityMutationRequestV1 {
+                mutation_id: "watch-scope-complete".into(),
+                changes: vec![AuthorityChangeV1::WatchScopePut {
+                    scope: Box::new(scope.clone()),
+                }],
+                grant_shaping_sources: vec![GrantShapingSourceV1::OperatorDecision {
+                    decision_id: "decision-watch-scope-complete".into(),
+                    authenticated_principal_ref: "os-uid:501".into(),
+                    command_kind: GrantShapingCommandKindV1::GrantChange,
+                }],
+                decided_at: "2026-08-05T12:00:00Z".into(),
+            },
+            |_| Ok(None),
+        );
+        assert!(matches!(
+            result,
+            AuthorityMutationResultV1::CommittedProjectionPending { .. }
+        ));
+        let mut revoked = scope.clone();
+        revoked.scope_revision = 2;
+        revoked.authority_state = mct_kernel::WatchObservationScopeState::Revoked;
+        revoked.authority_observation_id =
+            ObservationId::new("obs-watch-scope-canonical-revoked").unwrap();
+        revoked = revoked.seal();
+        let revoke_result = ledger.execute_authority_mutation(
+            AuthorityMutationRequestV1 {
+                mutation_id: "watch-scope-revoke-complete".into(),
+                changes: vec![AuthorityChangeV1::WatchScopePut {
+                    scope: Box::new(revoked.clone()),
+                }],
+                grant_shaping_sources: vec![GrantShapingSourceV1::OperatorDecision {
+                    decision_id: "decision-watch-scope-revoke-complete".into(),
+                    authenticated_principal_ref: "os-uid:501".into(),
+                    command_kind: GrantShapingCommandKindV1::GrantChange,
+                }],
+                decided_at: "2026-08-05T12:01:00Z".into(),
+            },
+            |_| Ok(None),
+        );
+        assert!(matches!(
+            revoke_result,
+            AuthorityMutationResultV1::CommittedProjectionPending { .. }
+        ));
+        let entries = ledger.entries().unwrap();
+        assert!(!entries.iter().any(|entry| {
+            entry
+                .observation
+                .detail_ref
+                .as_deref()
+                .is_some_and(|detail| detail.starts_with("watch-observation-scope-v1:"))
+        }));
+        let replay = replay_authority_entries(&entries).unwrap();
+        let replayed = replay
+            .state
+            .watch_scopes
+            .get(scope.watch_scope_id.as_str())
+            .unwrap();
+        assert_eq!(
+            serde_json::to_vec(replayed).unwrap(),
+            serde_json::to_vec(&revoked).unwrap()
+        );
+        assert_eq!(replayed.observer_shape, revoked.observer_shape);
+        assert_eq!(replayed.observer_ref, revoked.observer_ref);
+        assert_eq!(replayed.scope_mode, revoked.scope_mode);
+        assert_eq!(replayed.canonical_root_ref, revoked.canonical_root_ref);
+        assert_eq!(replayed.traversal_scope, revoked.traversal_scope);
+        assert_eq!(replayed.event_classes, revoked.event_classes);
+        assert_eq!(replayed.max_events_per_batch, revoked.max_events_per_batch);
+        assert_eq!(replayed.coalescing_policy, revoked.coalescing_policy);
+        assert_eq!(replayed.starts_at, revoked.starts_at);
+        assert_eq!(replayed.expires_at, revoked.expires_at);
+        assert_eq!(replayed.scope_revision, revoked.scope_revision);
+        assert_eq!(replayed.policy_revision, revoked.policy_revision);
+        assert_eq!(replayed.authority_state, revoked.authority_state);
+        assert_eq!(
+            replayed.authority_observation_id,
+            revoked.authority_observation_id
+        );
+        assert_eq!(
+            replayed.canonical_record_digest,
+            revoked.canonical_record_digest
+        );
+    }
+
     /// Phase H2 proof 4: canonical structured content commits before the legacy write and replays alone.
     #[test]
     fn authority_mutation_fact_precedes_legacy_write_and_reconstructs_state() {
@@ -3761,6 +4083,110 @@ mod tests {
         ));
         assert_eq!(replay.mutations.len(), 1);
         assert_eq!(replay.current_authority.unwrap().generation, 1);
+    }
+
+    #[test]
+    fn accepted_operator_reinitialization_embeds_gate_in_first_epoch_fact() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let evidence = AuthorityTenureStartupEvidenceV1 {
+            startup_class: AuthorityStartupClassV1::OperatorGatedNonvirgin,
+            expected_predecessor: AuthorityEpochPredecessorV1::NoneAfterOperatorReinitialization,
+            expected_prior_authority: None,
+            expected_authority_state_hash: authority_state_hash(&AuthorityStateV1::default())
+                .unwrap(),
+            inventory_hash: "inventory-hash".into(),
+            operator_gate_decision_id: Some("decision:reinitialize-1".into()),
+            authenticated_principal_ref: Some("os-uid:501".into()),
+        };
+        let ledger = JsonlObservationLedger::open_authority_with_startup(
+            &path, "ledger-a", "mother-a", evidence,
+        )
+        .unwrap();
+        let tenure = ledger.authority_tenure().unwrap();
+
+        assert_eq!(
+            tenure.entry.local_sequence, 0,
+            "the gated epoch fact must be the first append"
+        );
+        assert_eq!(
+            tenure.fact.predecessor,
+            AuthorityEpochPredecessorV1::NoneAfterOperatorReinitialization
+        );
+        assert_eq!(tenure.fact.generation_baseline, 0);
+        assert!(tenure.fact.prior_authority.is_none());
+        assert_eq!(
+            tenure
+                .fact
+                .establishment
+                .operator_gate_decision_id
+                .as_deref(),
+            Some("decision:reinitialize-1")
+        );
+        assert_eq!(
+            tenure
+                .fact
+                .establishment
+                .authenticated_principal_ref
+                .as_deref(),
+            Some("os-uid:501")
+        );
+    }
+
+    #[test]
+    fn valid_nonempty_pre_h2_ledger_is_classified_as_legacy_upgrade() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let predecessor = {
+            let mut ledger = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+            ledger
+                .append_before_effect(
+                    observation("obs:pre-h2", "trace:pre-h2", None),
+                    "2026-08-04T00:00:00Z",
+                )
+                .unwrap()
+        };
+
+        let mut ledger = JsonlObservationLedger::open_authority(&path, "ledger-a", "mother-a")
+            .expect("an intact pre-H2 chain is continuity evidence");
+        let fact = ledger.authority_tenure().unwrap().fact.clone();
+        assert_eq!(
+            fact.establishment.startup_class,
+            AuthorityStartupClassV1::LegacyLedgerUpgrade,
+            "a valid non-empty ledger with no replayed authority auto-permits legacy_ledger_upgrade"
+        );
+        assert_eq!(
+            fact.predecessor,
+            AuthorityEpochPredecessorV1::ValidatedHead {
+                sequence: predecessor.local_sequence,
+                entry_hash: predecessor.entry_hash,
+            }
+        );
+        assert_eq!(fact.generation_baseline, 0);
+        assert!(fact.prior_authority.is_none());
+
+        let empty_hash = authority_state_hash(&AuthorityStateV1::default()).unwrap();
+        let import = ledger.execute_legacy_authority_import(
+            LegacyAuthorityImportRequestV1 {
+                schema: "mct-legacy-authority-import-request/v1".into(),
+                import_id: "legacy-upgrade-import".into(),
+                expected_mother_node_id: "mother-a".into(),
+                expected_ledger_id: "ledger-a".into(),
+                expected_config_authority_hash: empty_hash.clone(),
+                expected_sqlite_authority_hash: empty_hash,
+                confirmation: LEGACY_AUTHORITY_IMPORT_CONFIRMATION_V1.into(),
+            },
+            "os-uid:501".into(),
+            AuthorityStateV1::default(),
+            "2026-08-04T00:01:00Z".into(),
+        );
+        assert!(
+            matches!(
+                import,
+                AuthorityMutationResultV1::CommittedProjectionPending { .. }
+            ),
+            "legacy_ledger_upgrade must permit the standard replay-derived import afterward"
+        );
     }
 
     /// Phase H2 proof 1: an authority writer exposes only an acknowledged epoch fact.

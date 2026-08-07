@@ -92,6 +92,7 @@ fn recorded_reply_to_handler_result(reply: MctRecordedCallReply) -> MctIrohCallH
         route_taken: reply.route_taken,
         outcome: reply.outcome,
         protocol_reason: reply.protocol_reason,
+        retry_directive: CallProtocolRetryDirective::None,
         safe_message: reply.safe_message,
     }
 }
@@ -127,6 +128,7 @@ fn idempotency_refusal_result(reason: MctIdempotencyReason) -> MctIrohCallHandle
         route_taken: None,
         outcome,
         protocol_reason: Some(protocol_reason),
+        retry_directive: CallProtocolRetryDirective::None,
         safe_message: safe_message.into(),
     }
 }
@@ -209,7 +211,13 @@ fn resident_idempotency_observation(
             )
         )),
         policy_revision: Some(request.call.authority_context.policy_revision),
-        grants_revision: Some(request.call.authority_context.grants_revision),
+        grants_revision: Some(
+            request
+                .call
+                .authority_context
+                .expected_receiver_grants_authority
+                .generation,
+        ),
         outcome,
         visibility: ObservationVisibility::InternalOnly,
         safe_message: safe_message.into(),
@@ -341,11 +349,14 @@ mod tests {
     use super::*;
 
     fn resident_test_call(trace_id: TraceId) -> MctCall {
-        let mut call = local_wasm_call(OperationTarget {
-            namespace: "patina:demo".into(),
-            interface_name: "control@0.1.0".into(),
-            function_name: "run".into(),
-        });
+        let mut call = local_wasm_call(
+            OperationTarget {
+                namespace: "patina:demo".into(),
+                interface_name: "control@0.1.0".into(),
+                function_name: "run".into(),
+            },
+            test_grants_authority_identity(1),
+        );
         call.call_id = CallId::new("call-resident-wit")
             .expect("string ID literal/generated value must be non-empty");
         call.trace_context.trace_id = trace_id;
@@ -395,7 +406,7 @@ mod tests {
                 endpoint_id: EndpointIdText::new("endpoint-resident-wit")
                     .expect("string ID literal/generated value must be non-empty"),
                 policy_revision: 1,
-                grants_revision: 1,
+                expected_receiver_grants_authority: test_grants_authority_identity(1),
             },
             received_over: IrohConnectionPresentation {
                 endpoint_id: EndpointIdText::new("endpoint-resident-wit")
@@ -485,7 +496,9 @@ listens = []
     async fn in_flight_idempotency_duplicate_refuses_without_second_execution() {
         let dir = tempfile::tempdir().unwrap();
         let state_path = dir.path().join("state.sqlite");
-        let ledger = ResidentLedgerWriter::spawn(dir.path().join("observations.jsonl")).unwrap();
+        let ledger =
+            ResidentLedgerWriter::spawn_authority_for_test(dir.path().join("observations.jsonl"))
+                .unwrap();
         let mut request = resident_test_protocol_request(resident_test_call(
             TraceId::new("trace-idempotency-in-flight").unwrap(),
         ));
@@ -570,8 +583,10 @@ listens = []
         assert_eq!(first.safe_message, "observation ledger unavailable");
         assert_eq!(execution_count.load(Ordering::SeqCst), 1);
 
-        let healthy_writer =
-            ResidentLedgerWriter::spawn(dir.path().join("recovery-observations.jsonl")).unwrap();
+        let healthy_writer = ResidentLedgerWriter::spawn_authority_for_test(
+            dir.path().join("recovery-observations.jsonl"),
+        )
+        .unwrap();
         let retry = execute_idempotent_call(
             state_path,
             healthy_writer.clone(),
@@ -608,10 +623,17 @@ listens = []
 
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
         assert_eq!(loaded.loaded, 1, "{loaded:?}");
-        MctDaemonConfigStore::new(&config_path)
+        let config_store = MctDaemonConfigStore::new(&config_path);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        config_store
             .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
             .unwrap();
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         let paths =
             ResidentRuntimePaths::new(config_path, children_dir.clone(), state_path.clone());
         let payload = br#"{"request-secret-marker":true}"#.to_vec();
@@ -745,7 +767,7 @@ listens = []
         let dir = tempfile::tempdir().unwrap();
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         let mut request = resident_test_protocol_request(resident_test_call(
             TraceId::new("trace-idempotency-cancelled").unwrap(),
         ));

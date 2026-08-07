@@ -145,6 +145,13 @@ impl Timestamp {
     pub fn as_str(&self) -> &str {
         &self.value
     }
+
+    pub(crate) fn checked_add_milliseconds(&self, milliseconds: u64) -> Option<Self> {
+        let delta = i128::from(milliseconds).checked_mul(1_000_000)?;
+        let instant =
+            jiff::Timestamp::from_nanosecond(self.epoch_nanoseconds.checked_add(delta)?).ok()?;
+        Self::new(instant.to_string()).ok()
+    }
 }
 
 impl TryFrom<&str> for Timestamp {

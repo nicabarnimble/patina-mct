@@ -130,6 +130,7 @@ pub(crate) fn run_fake_echo_slice(ledger_path: impl AsRef<Path>) -> Result<FakeE
                 bindings: vec![binding.clone()],
                 policy_revision: HelloPolicy::default().current_policy_revision,
             },
+            current_receiver_grants_authority: Some(crate::test_grants_authority_identity(1)),
             now: Timestamp::new("2026-05-31T00:00:03Z").unwrap(),
         },
     );
@@ -316,7 +317,7 @@ fn fake_call_request(
         },
         authority_context: AuthorityContextSnapshot {
             policy_revision: 1,
-            grants_revision: 1,
+            expected_receiver_grants_authority: crate::test_grants_authority_identity(1),
             vision_policy_revision: 1,
         },
         deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
@@ -341,7 +342,7 @@ fn fake_call_request(
             endpoint_id: EndpointIdText::new("endpoint-b")
                 .expect("string ID literal/generated value must be non-empty"),
             policy_revision: 1,
-            grants_revision: 1,
+            expected_receiver_grants_authority: crate::test_grants_authority_identity(1),
         },
         received_over: IrohConnectionPresentation {
             endpoint_id: EndpointIdText::new("endpoint-b")

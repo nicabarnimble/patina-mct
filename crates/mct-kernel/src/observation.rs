@@ -1164,6 +1164,7 @@ mod tests {
             result_ref: None,
             outcome: CallProtocolOutcome::Denied,
             reason: CallProtocolReason::HelloNotAdmitted,
+            retry_directive: crate::call::CallProtocolRetryDirective::None,
             safe_message: "not authorized".into(),
             observation_id: ObservationId::new("obs-call-denied")
                 .expect("string ID literal/generated value must be non-empty"),
@@ -1247,7 +1248,7 @@ mod tests {
             },
             authority_context: AuthorityContextSnapshot {
                 policy_revision: 3,
-                grants_revision: 4,
+                expected_receiver_grants_authority: crate::call::test_grants_authority_identity(4),
                 vision_policy_revision: 5,
             },
             deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
@@ -1337,7 +1338,7 @@ mod tests {
             },
             authority_context: AuthorityContextSnapshot {
                 policy_revision: 3,
-                grants_revision: 4,
+                expected_receiver_grants_authority: crate::call::test_grants_authority_identity(4),
                 vision_policy_revision: 5,
             },
             deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),

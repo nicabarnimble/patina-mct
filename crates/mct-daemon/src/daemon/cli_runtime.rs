@@ -441,7 +441,13 @@ pub(super) fn run_process(mut args: Vec<String>) -> Result<()> {
         interface_name: args.get(1).cloned().unwrap_or_else(|| "echo".into()),
         function_name: args.get(2).cloned().unwrap_or_else(|| "echo".into()),
     };
-    let call = local_process_call(target, payload.len() as u64);
+    let expected_receiver_grants_authority =
+        proof_gated_receiver_identity(&ledger_path, &config_path, &children_dir, &state_path)?;
+    let call = local_process_call(
+        target,
+        payload.len() as u64,
+        expected_receiver_grants_authority,
+    );
     let (authorized, authority_observation) =
         authorize_configured_child_for_call(&config_path, &children_dir, &child_name, &call)?;
     append_ledger_observations(&ledger_path, std::slice::from_ref(&authority_observation))?;
@@ -541,7 +547,9 @@ pub(super) fn run_wasm_call(mut args: Vec<String>) -> Result<()> {
         interface_name: args.get(1).cloned().unwrap_or_else(|| export_name.clone()),
         function_name: args.get(2).cloned().unwrap_or_else(|| export_name.clone()),
     };
-    let call = local_wasm_call(target);
+    let expected_receiver_grants_authority =
+        proof_gated_receiver_identity(&ledger_path, &config_path, &children_dir, &state_path)?;
+    let call = local_wasm_call(target, expected_receiver_grants_authority);
     let (authorized, authority_observation) =
         authorize_configured_child_for_call(&config_path, &children_dir, &child_name, &call)?;
     append_ledger_observations(&ledger_path, std::slice::from_ref(&authority_observation))?;
@@ -627,7 +635,17 @@ pub(super) fn run_wasm_call_wit(mut args: Vec<String>) -> Result<()> {
     let args_json: serde_json::Value = serde_json::from_str(&args.remove(0))
         .context("parse WIT args JSON; expected a JSON array")?;
     let target = operation_target_from_wit_operation_id(&operation_id)?;
-    let call = local_wasm_call(target);
+    let authority_snapshot = mct_daemon::local_execution_authority_snapshot(
+        &ledger_path,
+        &config_path,
+        &children_dir,
+        &state_path,
+    )
+    .map_err(|reason| anyhow::anyhow!("local receiver authority unavailable: {reason:?}"))?;
+    let call = local_wasm_call(
+        target,
+        GrantsAuthorityIdentity::from(authority_snapshot.canonical_grants().grants_authority()),
+    );
     let child = load_named_child(&children_dir, &child_name)?;
     let (authorized, authority_observation) =
         authorize_configured_child_for_call(&config_path, &children_dir, &child_name, &call)?;
@@ -654,7 +672,6 @@ pub(super) fn run_wasm_call_wit(mut args: Vec<String>) -> Result<()> {
         Ok(runtime.discover_wit_imports(import_component_path)?)
     })?;
     let adapter_build = match build_wit_host_adapters_for_cli_call(CliWitAdapterRequest {
-        state: &state,
         child: &child,
         authorized_child: &authorized,
         call: &call,
@@ -662,6 +679,7 @@ pub(super) fn run_wasm_call_wit(mut args: Vec<String>) -> Result<()> {
         project_root: project_root.as_deref(),
         guest_project: &guest_project,
         git_repo: git_repo.as_deref(),
+        authority_snapshot: &authority_snapshot,
     }) {
         Ok(build) => build,
         Err(error) => {
@@ -726,7 +744,6 @@ pub(super) struct CliToyAuthorizationError {
 }
 
 pub(super) struct CliWitAdapterRequest<'a> {
-    pub(super) state: &'a MctRuntimeStateStore,
     pub(super) child: &'a mct_daemon::MctLoadedChild,
     pub(super) authorized_child: &'a AuthorizedChildInvocation,
     pub(super) call: &'a MctCall,
@@ -734,16 +751,17 @@ pub(super) struct CliWitAdapterRequest<'a> {
     pub(super) project_root: Option<&'a Path>,
     pub(super) guest_project: &'a str,
     pub(super) git_repo: Option<&'a Path>,
+    pub(super) authority_snapshot: &'a LocalExecutionAuthoritySnapshot,
 }
 
 pub(super) fn build_wit_host_adapters_for_cli_call(
     request: CliWitAdapterRequest<'_>,
 ) -> std::result::Result<CliWitHostAdapterBuild, CliToyAuthorizationError> {
-    let contracts = request.state.toy_contracts().map_err(cli_adapter_error)?;
     let grants = request
-        .state
-        .toy_grant_snapshots()
-        .map_err(cli_adapter_error)?;
+        .authority_snapshot
+        .canonical_grants()
+        .toy_grants()
+        .to_vec();
     let resource_id = request.project_root.map(|path| path.display().to_string());
     let mut observations = Vec::new();
     let mut toy_registry = MctToyAdapterRegistry::new();
@@ -768,12 +786,11 @@ pub(super) fn build_wit_host_adapters_for_cli_call(
             child: request.child,
             authorized_child: request.authorized_child,
             call: request.call,
-            contracts: &contracts,
-            grants: &grants,
             toy_id: logging_toy_id.clone(),
             action: "invoke",
             resource_id: logging_resource_id,
             label: "logging",
+            authority_snapshot: request.authority_snapshot,
         })?;
         observations.push(toy_grant_evaluation_observation(
             request.call.trace_context.trace_id.clone(),
@@ -803,12 +820,11 @@ pub(super) fn build_wit_host_adapters_for_cli_call(
             child: request.child,
             authorized_child: request.authorized_child,
             call: request.call,
-            contracts: &contracts,
-            grants: &grants,
             toy_id: measure_toy_id.clone(),
             action: "invoke",
             resource_id: measure_resource_id,
             label: "measure",
+            authority_snapshot: request.authority_snapshot,
         })?;
         observations.push(toy_grant_evaluation_observation(
             request.call.trace_context.trace_id.clone(),
@@ -835,12 +851,11 @@ pub(super) fn build_wit_host_adapters_for_cli_call(
             child: request.child,
             authorized_child: request.authorized_child,
             call: request.call,
-            contracts: &contracts,
-            grants: &grants,
             toy_id: slate_git_toy_id(),
             action: "invoke",
             resource_id: resource_id.clone(),
             label: "git",
+            authority_snapshot: request.authority_snapshot,
         })?;
         observations.push(toy_grant_evaluation_observation(
             request.call.trace_context.trace_id.clone(),
@@ -864,12 +879,11 @@ pub(super) fn build_wit_host_adapters_for_cli_call(
             child: request.child,
             authorized_child: request.authorized_child,
             call: request.call,
-            contracts: &contracts,
-            grants: &grants,
             toy_id: slate_filesystem_toy_id(),
             action: "preopen-project-root",
             resource_id: resource_id.clone(),
             label: "filesystem",
+            authority_snapshot: request.authority_snapshot,
         })?;
         observations.push(toy_grant_evaluation_observation(
             request.call.trace_context.trace_id.clone(),
@@ -880,6 +894,7 @@ pub(super) fn build_wit_host_adapters_for_cli_call(
             host_path: project_root.to_path_buf(),
             guest_path: request.guest_project.to_owned(),
             access: MctWasiPreopenAccess::ReadWrite,
+            authorized_toy_call: authorized.authorized,
         });
     }
 
@@ -890,6 +905,7 @@ pub(super) fn build_wit_host_adapters_for_cli_call(
     Ok(CliWitHostAdapterBuild {
         adapters: MctWitHostImportAdapters {
             toy_registry,
+            effect_authority: None,
             logging,
             measure,
             git,
@@ -938,49 +954,56 @@ pub(super) struct CliToyAuthorizationRequest<'a> {
     pub(super) child: &'a mct_daemon::MctLoadedChild,
     pub(super) authorized_child: &'a AuthorizedChildInvocation,
     pub(super) call: &'a MctCall,
-    pub(super) contracts: &'a [CanonicalToyContract],
-    pub(super) grants: &'a [ToyGrant],
     pub(super) toy_id: ToyId,
     pub(super) action: &'a str,
     pub(super) resource_id: Option<String>,
     pub(super) label: &'a str,
+    pub(super) authority_snapshot: &'a LocalExecutionAuthoritySnapshot,
 }
 
 pub(super) fn authorize_cli_toy(
     request: CliToyAuthorizationRequest<'_>,
 ) -> std::result::Result<CliAuthorizedToy, CliToyAuthorizationError> {
-    let result = evaluate_toy_grant_for_call(
-        request.call,
-        &ToyGrantEvaluationRequest {
-            toy_id: request.toy_id.clone(),
-            subject: ToyGrantSubject {
-                child_name: request.child.name.clone(),
-                artifact_id: request.child.artifact_id.clone(),
-                artifact_version: request.child.version.clone(),
-                assignment_id: Some(request.authorized_child.assignment_id().clone()),
-                caller_node_id: Some(request.call.caller.node_id.clone()),
-            },
-            child_instance_id: request.authorized_child.child_instance_id().clone(),
-            action: request.action.into(),
-            resource_id: request.resource_id,
-            node_id: request.call.caller.node_id.clone(),
-            now: current_timestamp(),
-            ids: ToyGrantEvaluationIds {
-                evaluation_id: ToyGrantEvaluationId::new(format!("toy-eval-cli-{}", request.label))
-                    .expect("string ID literal/generated value must be non-empty"),
-                decision_id: DecisionId::new(format!("decision-toy-cli-{}", request.label))
-                    .expect("string ID literal/generated value must be non-empty"),
-                observation_id: ObservationId::new(format!("obs-toy-grant-cli-{}", request.label))
-                    .expect("string ID literal/generated value must be non-empty"),
-                authorized_toy_call_id: AuthorizedToyCallId::new(format!(
-                    "authorized-toy-cli-{}",
-                    request.label
-                ))
-                .expect("string ID literal/generated value must be non-empty"),
-            },
+    let evaluation_request = ToyGrantEvaluationRequest {
+        toy_id: request.toy_id.clone(),
+        subject: ToyGrantSubject {
+            child_name: request.child.name.clone(),
+            artifact_id: request.child.artifact_id.clone(),
+            artifact_version: request.child.version.clone(),
+            assignment_id: Some(request.authorized_child.assignment_id().clone()),
+            caller_node_id: Some(request.call.caller.node_id.clone()),
         },
-        request.contracts,
-        request.grants,
+        child_instance_id: request.authorized_child.child_instance_id().clone(),
+        action: request.action.into(),
+        resource_id: request.resource_id,
+        node_id: request
+            .authority_snapshot
+            .child_policy()
+            .local_node_id()
+            .clone(),
+        now: request
+            .authority_snapshot
+            .mother_clock()
+            .evaluated_at()
+            .clone(),
+        ids: ToyGrantEvaluationIds {
+            evaluation_id: ToyGrantEvaluationId::new(format!("toy-eval-cli-{}", request.label))
+                .expect("string ID literal/generated value must be non-empty"),
+            decision_id: DecisionId::new(format!("decision-toy-cli-{}", request.label))
+                .expect("string ID literal/generated value must be non-empty"),
+            observation_id: ObservationId::new(format!("obs-toy-grant-cli-{}", request.label))
+                .expect("string ID literal/generated value must be non-empty"),
+            authorized_toy_call_id: AuthorizedToyCallId::new(format!(
+                "authorized-toy-cli-{}",
+                request.label
+            ))
+            .expect("string ID literal/generated value must be non-empty"),
+        },
+    };
+    let result = evaluate_toy_grant_for_snapshot(
+        request.call,
+        &evaluation_request,
+        request.authority_snapshot,
     );
     let Some(authorized) = result.authorized else {
         let observation = toy_grant_evaluation_observation(
@@ -1293,7 +1316,7 @@ mod tests {
             },
             authority_context: AuthorityContextSnapshot {
                 policy_revision: 1,
-                grants_revision: 1,
+                expected_receiver_grants_authority: test_grants_authority_identity(1),
                 vision_policy_revision: 1,
             },
             deadline: Timestamp::new("2026-07-10T23:00:00Z").unwrap(),
@@ -1350,7 +1373,7 @@ mod tests {
             },
             authority_context: AuthorityContextSnapshot {
                 policy_revision: 1,
-                grants_revision: 1,
+                expected_receiver_grants_authority: test_grants_authority_identity(1),
                 vision_policy_revision: 1,
             },
             deadline: Timestamp::new("2026-07-02T00:01:00Z").unwrap(),
@@ -1464,6 +1487,45 @@ mod tests {
                 .expect("string ID literal/generated value must be non-empty"),
         }
     }
+
+    fn test_snapshot(
+        toy_catalog: Vec<CanonicalToyContract>,
+        toy_grants: Vec<ToyGrant>,
+    ) -> LocalExecutionAuthoritySnapshot {
+        assemble_local_execution_authority_snapshot(LocalExecutionAuthoritySnapshotPartsV1 {
+            executing_mother_node_id: "local-mct".into(),
+            grants_authority_mother_node_id: "local-mct".into(),
+            grants_authority_epoch: "epoch-test".into(),
+            grants_authority_generation: 1,
+            grants_authority_observation_id: "obs-authority-test-1".into(),
+            toy_catalog,
+            toy_grants,
+            watch_scopes: Vec::new(),
+            policy_revision: 1,
+            vision_policy_revision: 1,
+            child_local_node_id: MctNodeId::new("local-mct").unwrap(),
+            child_vision_id: VisionId::new("vision-local").unwrap(),
+            child_artifacts: Vec::new(),
+            child_approvals: Vec::new(),
+            child_assignments: Vec::new(),
+            child_instances: Vec::new(),
+            peer_local_node_id: MctNodeId::new("local-mct").unwrap(),
+            peer_local_vision_id: VisionId::new("vision-local").unwrap(),
+            peer_local_endpoint_id: EndpointIdText::new("endpoint-local").unwrap(),
+            peer_records: Vec::new(),
+            callable_surfaces: Vec::new(),
+            evaluated_at: Timestamp::new("2026-07-01T00:00:00Z").unwrap(),
+            projection_id: "projection-test".into(),
+            projection_source_mother_node_id: "local-mct".into(),
+            projection_source_ledger_id: "ledger-local".into(),
+            through_sequence: 1,
+            through_observation_id: "obs-authority-test-1".into(),
+            through_entry_hash: "hash-test".into(),
+            authority_state_hash: "authority-state-test".into(),
+            projection_hash: "projection-hash-test".into(),
+        })
+    }
+
     #[test]
     fn authorize_cli_toy_denies_expired_grant_against_current_time() {
         let child = test_child();
@@ -1471,19 +1533,17 @@ mod tests {
         let call = test_call();
         let toy_id =
             ToyId::new("toy-demo").expect("string ID literal/generated value must be non-empty");
-        let contracts = vec![test_contract(&toy_id)];
-        let grants = vec![expired_grant(&toy_id)];
+        let snapshot = test_snapshot(vec![test_contract(&toy_id)], vec![expired_grant(&toy_id)]);
 
         let result = authorize_cli_toy(CliToyAuthorizationRequest {
             child: &child,
             authorized_child: &authorized_child,
             call: &call,
-            contracts: &contracts,
-            grants: &grants,
             toy_id,
             action: "read",
             resource_id: Some("resource-a".into()),
             label: "expired",
+            authority_snapshot: &snapshot,
         });
 
         let Err(error) = result else {

@@ -324,6 +324,161 @@ where
     .await
 }
 
+fn resident_startup_paths(config: &ResidentMotherConfig) -> MctStartupPaths {
+    let root = config
+        .state_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let (supervisor_record, supervisor_plist, stdout_log, stderr_log) =
+        config.supervisor.as_ref().map_or_else(
+            || {
+                let plist = std::env::var_os("HOME").map_or_else(
+                    || root.join("Library/LaunchAgents/io.patina.mct.mother.plist"),
+                    |home| {
+                        PathBuf::from(home).join("Library/LaunchAgents/io.patina.mct.mother.plist")
+                    },
+                );
+                (
+                    root.join("supervisor.json"),
+                    plist,
+                    root.join("logs/mother.stdout.log"),
+                    root.join("logs/mother.stderr.log"),
+                )
+            },
+            |record| {
+                (
+                    root.join("supervisor.json"),
+                    record.plist_path.clone(),
+                    record.stdout_log_path.clone(),
+                    record.stderr_log_path.clone(),
+                )
+            },
+        );
+    let control_socket = match &config.control {
+        ResidentControlTransport::Uds(path) => path.clone(),
+        ResidentControlTransport::Http(_) => root.join("control.sock"),
+    };
+    MctStartupPaths::new(
+        root,
+        config.ledger_path.clone(),
+        config.state_path.clone(),
+        config.config_path.clone(),
+        config.identity_path.clone(),
+        config.children_dir.clone(),
+        control_socket,
+        supervisor_record,
+        supervisor_plist,
+        stdout_log,
+        stderr_log,
+    )
+}
+
+#[cfg(all(unix, not(test)))]
+async fn run_isolated_startup_plane<S>(
+    plane: mct_daemon::MctIsolatedStartupPlaneV1,
+    socket_path: PathBuf,
+    shutdown: S,
+) -> Result<()>
+where
+    S: std::future::Future<Output = ()> + Send,
+{
+    use std::{fs, os::unix::fs::PermissionsExt as _};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    if let Some(parent) = socket_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create isolated startup UDS parent {}", parent.display()))?;
+    }
+    if socket_path.exists() {
+        if tokio::net::UnixStream::connect(&socket_path).await.is_ok() {
+            bail!("isolated startup UDS is already owned by an active listener");
+        }
+        fs::remove_file(&socket_path)
+            .with_context(|| format!("remove stale startup UDS {}", socket_path.display()))?;
+    }
+    let listener = UnixListener::bind(&socket_path)
+        .with_context(|| format!("bind isolated startup UDS {}", socket_path.display()))?;
+    fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))?;
+    tokio::pin!(shutdown);
+    loop {
+        let (mut stream, _) = tokio::select! {
+            accepted = listener.accept() => accepted.context("accept isolated startup UDS")?,
+            _ = &mut shutdown => break,
+        };
+        let peer_uid = stream
+            .peer_cred()
+            .context("authenticate isolated startup UDS peer")?
+            .uid();
+        let mut headers = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !headers.ends_with(b"\r\n\r\n") {
+            if headers.len() == 4096 {
+                bail!("isolated startup request headers exceed bounded budget");
+            }
+            if stream.read(&mut byte).await? == 0 {
+                bail!("isolated startup request ended before headers");
+            }
+            headers.push(byte[0]);
+        }
+        let request = String::from_utf8_lossy(&headers);
+        let mut line = request
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .split_whitespace();
+        let method = line.next().unwrap_or_default();
+        let path = line.next().unwrap_or_default();
+        let content_length = request
+            .lines()
+            .skip(1)
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .unwrap_or(0);
+        if content_length > 64 * 1024 {
+            bail!("isolated startup request body exceeds bounded budget");
+        }
+        let mut body = vec![0; content_length];
+        stream.read_exact(&mut body).await?;
+        let response = plane.handle(peer_uid, method, path, &body);
+        let reason = match response.status_code() {
+            200 => "OK",
+            400 => "Bad Request",
+            403 => "Forbidden",
+            404 => "Not Found",
+            409 => "Conflict",
+            _ => "Service Unavailable",
+        };
+        let extra_headers = response
+            .headers()
+            .iter()
+            .map(|(name, value)| format!("{name}: {value}\r\n"))
+            .collect::<String>();
+        let head = format!(
+            "HTTP/1.1 {} {}\r\ncontent-type: {}\r\ncontent-length: {}\r\n{}connection: close\r\n\r\n",
+            response.status_code(),
+            reason,
+            response.content_type(),
+            response.body_bytes().len(),
+            extra_headers,
+        );
+        stream.write_all(head.as_bytes()).await?;
+        stream.write_all(response.body_bytes()).await?;
+        let gate_accepted =
+            method == "POST" && path == "/startup/operator-gate" && response.status_code() == 200;
+        if gate_accepted {
+            break;
+        }
+    }
+    drop(listener);
+    let _ = fs::remove_file(&socket_path);
+    Ok(())
+}
+
 async fn run_resident_mother_with_trigger_runtime<S>(
     config: ResidentMotherConfig,
     shutdown: S,
@@ -338,13 +493,75 @@ where
         bail!("--max-connections must be greater than zero");
     }
 
-    let ledger = ResidentLedgerWriter::spawn(config.ledger_path.clone())?;
+    let config_store = MctDaemonConfigStore::new(&config.config_path);
+    let existing_config = config_store.load()?;
+    let mother_node_id = existing_config
+        .local_identity
+        .as_ref()
+        .map(|identity| identity.node_id.to_string())
+        .unwrap_or_else(|| "local-mct".into());
+    let startup_paths = resident_startup_paths(&config);
+    let startup_result =
+        classify_authority_startup(&startup_paths, "ledger-local", &mother_node_id);
+    #[cfg(not(test))]
+    if startup_result.as_ref().map_or(true, |startup| {
+        startup.startup_class == AuthorityStartupClassV1::OperatorGatedNonvirgin
+    }) {
+        use std::os::unix::fs::MetadataExt as _;
+        let owner_uid = std::fs::symlink_metadata(&startup_paths.root)
+            .with_context(|| {
+                format!(
+                    "inspect isolated startup root owner {}",
+                    startup_paths.root.display()
+                )
+            })?
+            .uid();
+        let plane = mct_daemon::MctIsolatedStartupPlaneV1::inspect(
+            startup_paths.clone(),
+            "ledger-local",
+            &mother_node_id,
+            owner_uid,
+        )?;
+        return run_isolated_startup_plane(plane, startup_paths.control_socket.clone(), shutdown)
+            .await;
+    }
+    let startup =
+        startup_result.context("classify Mother startup before opening authority storage")?;
+    #[cfg(test)]
+    let startup = if startup.startup_class == AuthorityStartupClassV1::OperatorGatedNonvirgin {
+        let request = mct_daemon::MctOperatorStartupGateRequestV1 {
+            schema: "mct-operator-startup-gate-request/v1".into(),
+            decision_id: format!("decision:test-startup:{}", startup.inventory.inventory_hash),
+            expected_mother_node_id: mother_node_id.clone(),
+            expected_ledger_id: "ledger-local".into(),
+            expected_inventory_hash: startup.inventory.inventory_hash.clone(),
+            confirmation: mct_daemon::MCT_OPERATOR_REINITIALIZATION_CONFIRMATION_V1.into(),
+        };
+        drop(mct_daemon::accept_operator_startup_gate(
+            &startup_paths,
+            "ledger-local",
+            &mother_node_id,
+            &request,
+            "os-uid:test-owner",
+            "os-uid:test-owner",
+        )?);
+        classify_authority_startup(&startup_paths, "ledger-local", &mother_node_id)
+            .context("reclassify test Mother after explicit startup gate")?
+    } else {
+        startup
+    };
+    if startup.startup_class == AuthorityStartupClassV1::OperatorGatedNonvirgin {
+        bail!("startup operator gate required before resident authority can become ready");
+    }
+    let ledger = ResidentLedgerWriter::spawn_authority(
+        config.ledger_path.clone(),
+        &mother_node_id,
+        startup.tenure_evidence(None)?,
+    )?;
     let supervised_instance = match &config.supervisor {
         Some(record) => Some(begin_supervised_resident_instance(record, &ledger).await?),
         None => None,
     };
-    let config_store = MctDaemonConfigStore::new(&config.config_path);
-    let existing_config = config_store.load()?;
     let identity_scope = existing_config
         .local_identity
         .as_ref()
@@ -375,6 +592,36 @@ where
             .await?
         }
     };
+    let startup_readiness = ledger
+        .finalize_startup(config.state_path.clone(), config.config_path.clone())
+        .await
+        .context("publish coherent authority startup projection")?;
+    if !startup_readiness.authority_ready {
+        #[cfg(test)]
+        bail!(
+            "startup authority remains degraded: {}",
+            startup_readiness.report.blocking_reasons.join(",")
+        );
+        #[cfg(not(test))]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            ledger.close().await;
+            let owner_uid = std::fs::symlink_metadata(&startup_paths.root)?.uid();
+            let plane = mct_daemon::MctIsolatedStartupPlaneV1::inspect(
+                startup_paths.clone(),
+                "ledger-local",
+                &mother_node_id,
+                owner_uid,
+            )?
+            .with_drift_report(startup_readiness.report);
+            return run_isolated_startup_plane(
+                plane,
+                startup_paths.control_socket.clone(),
+                shutdown,
+            )
+            .await;
+        }
+    }
     let secret_key_hex = load_or_create_node_secret_key_hex(&config.identity_path)?;
     let mut endpoint = MotherIrohEndpoint::bind(iroh_config(secret_key_hex, config.relay_default))
         .await
@@ -389,7 +636,7 @@ where
     }
     let ticket = endpoint.ticket();
     let load_report = load_children_from_dir(MctChildLoadOptions::new(config.children_dir.clone()));
-    reconcile_trigger_projection(&config.state_path, &config.ledger_path)
+    reconcile_trigger_projection(&config.state_path, &config.ledger_path, &mother_node_id)
         .context("reconcile trigger ledger projection before resident readiness")?;
     let state = MctRuntimeStateStore::open(&config.state_path)
         .with_context(|| format!("open runtime state {}", config.state_path.display()))?;
@@ -490,6 +737,28 @@ where
         config.state_path.clone(),
     );
     let execution_ledger = ledger.clone();
+    let receiver_authority_paths = (
+        config.ledger_path.clone(),
+        config.config_path.clone(),
+        config.children_dir.clone(),
+        config.state_path.clone(),
+    );
+    let receiver_authority_ledger = ledger.clone();
+    let receiver_authority_provider = MctIrohReceiverAuthorityProvider::new(move || {
+        let paths = receiver_authority_paths.clone();
+        let ledger = receiver_authority_ledger.clone();
+        async move {
+            ledger
+                .publish_authority_projection(paths.3.clone())
+                .await
+                .ok()?;
+            mct_daemon::local_execution_authority_snapshot(&paths.0, &paths.1, &paths.2, &paths.3)
+                .ok()
+                .map(|snapshot| {
+                    GrantsAuthorityIdentity::from(snapshot.canonical_grants().grants_authority())
+                })
+        }
+    });
     let observation_sink = resident_iroh_observation_sink(ledger.clone());
     let serve_result = tokio::select! {
         result = endpoint.serve_concurrent_with_binding_provider(
@@ -499,6 +768,7 @@ where
                 events: Some(events),
                 require_binding_signature: true,
                 capability_view: Some(hello_capability_view),
+                receiver_authority_provider,
                 ..MctIrohConcurrentServeConfig::new(observation_sink)
             },
             current_timestamp,
@@ -935,7 +1205,12 @@ listens = []
             },
             "authority_context": {
                 "policy_revision": 1,
-                "grants_revision": 1,
+                "expected_receiver_grants_authority": {
+                    "mother_node_id": "local-mct",
+                    "authority_epoch": "epoch-test",
+                    "generation": 1,
+                    "source_authority_observation_id": "obs-authority-test-1"
+                },
                 "vision_policy_revision": 1
             },
             "deadline": "2099-01-01T00:00:00Z",
@@ -1395,7 +1670,8 @@ listens = []
                 function_name: "run".into(),
             },
             &hello_response,
-        );
+        )
+        .unwrap();
         let reply = client.send_call(&ticket, &call).await.unwrap();
         assert_eq!(reply.reply_outcome, CallProtocolReplyOutcome::Success);
         assert!(reply.route_taken.is_some());
@@ -1493,7 +1769,14 @@ listens = []
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
+        let control_socket = socket_path.clone();
         let children_dir = dir.path().join("children");
+        let authority_paths = (
+            ledger_path.clone(),
+            config_path.clone(),
+            children_dir.clone(),
+            state_path.clone(),
+        );
         write_resident_process_child(&children_dir);
 
         let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
@@ -1571,6 +1854,30 @@ listens = []
         );
         let hello_response = client.send_hello(&ticket, &hello).await.unwrap();
         assert_eq!(hello_response.hello_outcome, HelloOutcome::Admitted);
+        let canonical_authority = replay_authority_entries(
+            &JsonlObservationLedger::open_read_only(
+                &authority_paths.0,
+                "ledger-local",
+                "local-mct",
+            )
+            .unwrap()
+            .entries()
+            .unwrap(),
+        )
+        .unwrap()
+        .current_authority
+        .unwrap();
+        let first_authority = GrantsAuthorityIdentity {
+            mother_node_id: canonical_authority.mother_node_id,
+            authority_epoch: canonical_authority.authority_epoch,
+            generation: canonical_authority.generation,
+            source_authority_observation_id: canonical_authority.source_authority_observation_id,
+        };
+        assert_eq!(
+            hello_response.receiving_grants_authority,
+            Some(first_authority.clone()),
+            "admitted hello advertises exactly the fresh proof-gated local identity"
+        );
         let capability_view = hello_response
             .capability_view
             .expect("resident hello response publishes capability view");
@@ -1585,6 +1892,55 @@ listens = []
                 && surface.operation_id == "patina:demo/control@0.1.0.run"
                 && surface.visibility == "vision_scoped"
         }));
+
+        let mutation = serde_json::to_vec(&serde_json::json!({
+            "mutation_id": "phase-k-hello-generation-advance",
+            "expected_config_path": authority_paths.1,
+            "expected_children_dir": authority_paths.2,
+            "expected_state_path": authority_paths.3,
+            "child_name": "resident-echo",
+            "secret_name": "phase-k-secret"
+        }))
+        .unwrap();
+        let request = [
+            format!(
+                "POST /toys/authorize-secret HTTP/1.1\r\nHost: local\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                mutation.len()
+            )
+            .into_bytes(),
+            mutation,
+        ]
+        .concat();
+        let (status, response) = resident_uds_request(&control_socket, request).await;
+        assert_eq!(status, 200, "{response}");
+
+        let next_hello = cli_hello_request(
+            &client_endpoint_id,
+            &binding_id,
+            &client_node_id,
+            &vision_id,
+            &trace_id,
+            store.load().unwrap().peers["mother-client"]
+                .binding_signature_ref
+                .clone(),
+        );
+        let next_response = client.send_hello(&ticket, &next_hello).await.unwrap();
+        let next_authority = next_response
+            .receiving_grants_authority
+            .expect("post-mutation hello advertises current authority");
+        assert_eq!(
+            next_authority.mother_node_id,
+            first_authority.mother_node_id
+        );
+        assert_eq!(
+            next_authority.authority_epoch,
+            first_authority.authority_epoch
+        );
+        assert_eq!(next_authority.generation, first_authority.generation + 1);
+        assert_ne!(
+            next_authority.source_authority_observation_id,
+            first_authority.source_authority_observation_id
+        );
 
         let _ = shutdown_tx.send(());
         tokio::time::timeout(Duration::from_secs(10), resident)
@@ -1791,7 +2147,8 @@ listens = []
                 function_name: "run".into(),
             },
             &hello_response,
-        );
+        )
+        .unwrap();
         call.call.call_id = CallId::new("call-resident-payload-e2e")
             .expect("string ID literal/generated value must be non-empty");
         call.call.payload_metadata.size_bytes = payload.len() as u64;
