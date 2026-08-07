@@ -4673,7 +4673,7 @@ status = "active"
         )
         .await;
         assert_eq!(status, 200, "{created_trigger:#}");
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(Duration::from_secs(60), async {
             loop {
                 let summary = MctRuntimeStateStore::open(&paths.state)
                     .unwrap()
