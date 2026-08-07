@@ -1168,6 +1168,7 @@ fn trigger_protocol_request(
     firing: &MctTriggerFiringRecord,
     idempotency_key: String,
     endpoint_id: EndpointIdText,
+    expected_receiver_grants_authority: GrantsAuthorityIdentity,
 ) -> Result<MctCallProtocolRequest> {
     let size_bytes = match &authority.payload_constraint {
         MctCallPayloadHandle::ContentAddressedBlob { size_bytes, .. } => *size_bytes,
@@ -1187,7 +1188,7 @@ fn trigger_protocol_request(
         },
         authority_context: AuthorityContextSnapshot {
             policy_revision: authority.policy_revision,
-            grants_revision: authority.policy_revision,
+            expected_receiver_grants_authority: expected_receiver_grants_authority.clone(),
             vision_policy_revision: authority.policy_revision,
         },
         deadline: Timestamp::new(deadline.to_string())?,
@@ -1213,7 +1214,7 @@ fn trigger_protocol_request(
             accepted_alpn: "mct/trigger-call/0".into(),
             endpoint_id: endpoint_id.clone(),
             policy_revision: authority.policy_revision,
-            grants_revision: authority.policy_revision,
+            expected_receiver_grants_authority,
         },
         received_over: IrohConnectionPresentation {
             endpoint_id,
@@ -1343,6 +1344,8 @@ async fn deny_trigger_firing_before_execution(
     let state = MctRuntimeStateStore::open(paths.state_path())?;
     let run_id = format!("run-trigger-denied:{}", firing.call_id);
     if state.get_run(&run_id)?.is_none() {
+        let expected_receiver_grants_authority =
+            fresh_resident_receiver_identity(paths, ledger).await?;
         let request = trigger_protocol_request(
             authority,
             firing,
@@ -1356,6 +1359,7 @@ async fn deny_trigger_firing_before_execution(
                 .local_identity
                 .context("trigger denial identity unavailable")?
                 .endpoint_id,
+            expected_receiver_grants_authority,
         )?;
         state.insert_run_started(
             &run_id,
@@ -1457,8 +1461,15 @@ async fn execute_trigger_firing(
     let identity = config
         .local_identity
         .context("trigger execution identity unavailable")?;
-    let request =
-        trigger_protocol_request(&authority, &firing, idempotency_key, identity.endpoint_id)?;
+    let expected_receiver_grants_authority =
+        fresh_resident_receiver_identity(&paths, &ledger).await?;
+    let request = trigger_protocol_request(
+        &authority,
+        &firing,
+        idempotency_key,
+        identity.endpoint_id,
+        expected_receiver_grants_authority,
+    )?;
     request.validate().map_err(anyhow::Error::from)?;
     let result = execute_resident_call_with_context(
         paths.clone(),
@@ -1504,9 +1515,14 @@ fn detail_json<'a>(detail: &'a str, prefix: &str) -> Option<&'a str> {
     detail.strip_prefix(prefix)
 }
 
-pub(crate) fn reconcile_trigger_projection(state_path: &Path, ledger_path: &Path) -> Result<()> {
-    let entries = JsonlObservationLedger::open_read_only(ledger_path, "ledger-local", "local-mct")?
-        .entries()?;
+pub(crate) fn reconcile_trigger_projection(
+    state_path: &Path,
+    ledger_path: &Path,
+    mother_node_id: &str,
+) -> Result<()> {
+    let entries =
+        JsonlObservationLedger::open_read_only(ledger_path, "ledger-local", mother_node_id)?
+            .entries()?;
     let state = MctRuntimeStateStore::open(state_path)?;
     let mut seen_authorities = BTreeSet::new();
     let mut seen_occurrences = BTreeSet::new();
@@ -1971,7 +1987,7 @@ listens = []
     }
 
     fn spawn_test_ledger_after_joined_shutdown(path: &Path) -> ResidentLedgerWriter {
-        ResidentLedgerWriter::spawn(path.to_path_buf())
+        ResidentLedgerWriter::spawn_authority_for_test(path.to_path_buf())
             .expect("joined resident writer shutdown must release its ledger lock")
     }
 
@@ -2387,7 +2403,12 @@ listens = []
             },
             "authority_context": {
                 "policy_revision": 1,
-                "grants_revision": 1,
+                "expected_receiver_grants_authority": {
+                    "mother_node_id": "local-mct",
+                    "authority_epoch": "epoch-test",
+                    "generation": 1,
+                    "source_authority_observation_id": "obs-authority-test-1"
+                },
                 "vision_policy_revision": 1
             },
             "deadline": add_millis(&clock.now(), 60_000),
@@ -2667,7 +2688,12 @@ listens = []
         }
         assert_eq!(
             std::fs::read_to_string(artifact.with_extension("wasm.count"))
-                .unwrap()
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "counting child did not run: {error}; ledger={}",
+                        std::fs::read_to_string(&ledger_path).unwrap_or_default()
+                    )
+                })
                 .trim(),
             "1"
         );
@@ -2712,7 +2738,7 @@ listens = []
             )
             .unwrap();
         drop(connection);
-        reconcile_trigger_projection(&state_path, &ledger_path).unwrap();
+        reconcile_trigger_projection(&state_path, &ledger_path, "local-mct").unwrap();
         let reconciled = MctRuntimeStateStore::open(&state_path).unwrap();
         assert_eq!(reconciled.call_trigger_authorities().unwrap().len(), 1);
         assert_eq!(reconciled.call_trigger_firings().unwrap().len(), 1);

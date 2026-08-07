@@ -8,6 +8,8 @@
 
 /// Artifact source, acquisition, and filesystem effect authority.
 pub mod artifact;
+/// Mother-owned, proof-gated local execution authority snapshots.
+pub mod authority;
 /// Call records, JSON edge validation, and call protocol admission decisions.
 pub mod call;
 /// Child artifact, approval, assignment, lifecycle, and invocation authority.
@@ -38,16 +40,25 @@ pub use artifact::{
     OperatorPointedAcquisitionState, OperatorPointedArtifactAcquisitionDecision,
     evaluate_artifact_acquisition_authority,
 };
+pub use authority::{
+    LocalAuthorityProjectionProvenanceV1, LocalCanonicalGrantsSnapshotV1,
+    LocalChildPolicyProvenanceV1, LocalChildPolicySnapshotV1, LocalExecutionAuthoritySnapshot,
+    LocalExecutionAuthoritySnapshotPartsV1, LocalExecutionAuthorityTokenV1,
+    LocalGrantsAuthorityIdentityV1, LocalMotherClockProvenanceV1, LocalMotherClockSnapshotV1,
+    LocalPeerAuthorityRecordPartsV1, LocalPeerAuthorityRecordV1, LocalPeerPolicyProvenanceV1,
+    LocalPeerPolicySnapshotV1, LocalRemoteCallableSurfacePartsV1, LocalRemoteCallableSurfaceV1,
+    assemble_local_execution_authority_snapshot,
+};
 pub use call::{
     AuthorityContextSnapshot, CallEvaluationContext, CallEvaluationIds, CallOrigin,
-    CallProtocolOutcome, CallProtocolReason, CallProtocolReplyOutcome, CallerIdentity,
-    ExecutionSummary, MctCall, MctCallPayloadHandle, MctCallProtocolAuthority,
-    MctCallProtocolEvaluation, MctCallProtocolReply, MctCallProtocolRequest,
-    MctIdempotencyDecision, MctIdempotencyEntryState, MctIdempotencyFingerprint,
-    MctIdempotencyReason, MctIdempotencyStoredEntry, MctPayloadIntegrityDecision,
-    MctPayloadIntegrityObservation, MctResult, OperationTarget, PayloadIntegrityOutcome,
-    PayloadIntegrityReason, PayloadIntegritySubject, PayloadMetadata, ResultOutcome, RouteTaken,
-    RuntimeKind, TraceContext, call_reply_from_evaluation,
+    CallProtocolOutcome, CallProtocolReason, CallProtocolReplyOutcome, CallProtocolRetryDirective,
+    CallerIdentity, ExecutionSummary, GrantsAuthorityIdentity, MctCall, MctCallPayloadHandle,
+    MctCallProtocolAuthority, MctCallProtocolEvaluation, MctCallProtocolReply,
+    MctCallProtocolRequest, MctIdempotencyDecision, MctIdempotencyEntryState,
+    MctIdempotencyFingerprint, MctIdempotencyReason, MctIdempotencyStoredEntry,
+    MctPayloadIntegrityDecision, MctPayloadIntegrityObservation, MctResult, OperationTarget,
+    PayloadIntegrityOutcome, PayloadIntegrityReason, PayloadIntegritySubject, PayloadMetadata,
+    ResultOutcome, RouteTaken, RuntimeKind, TraceContext, call_reply_from_evaluation,
     call_reply_from_evaluation_with_result_payload,
     call_reply_from_evaluation_with_result_payload_and_route, decode_call_protocol_reply_json,
     decode_call_protocol_request_json, encode_call_protocol_reply_json,
@@ -58,9 +69,10 @@ pub use child::{
     ArtifactProvenanceStatus, AuthorizedChildInvocation, ChildApproval, ChildApprovalState,
     ChildAssignment, ChildAssignmentState, ChildCallAuthorityEvaluation, ChildCallAuthorityIds,
     ChildCallAuthorityRequest, ChildCallAuthorityResult, ChildCallReasonCode, ChildCallVerdict,
-    ChildIngressMode, ChildInstance, ChildInstanceState, ChildLifecycleTransition,
-    ChildLifecycleTransitionReason, ComponentArtifact, ComponentRuntimeShape, ComponentWitExport,
-    LifecycleExports, VerificationStatus, evaluate_child_call_authority,
+    ChildEffectAdmissionDenyV1, ChildIngressMode, ChildInstance, ChildInstanceState,
+    ChildLifecycleTransition, ChildLifecycleTransitionReason, ComponentArtifact,
+    ComponentRuntimeShape, ComponentWitExport, LifecycleExports, VerificationStatus,
+    evaluate_child_call_authority, evaluate_child_call_authority_with_policy,
     is_allowed_instance_transition, transition_child_instance,
 };
 pub use error::{InvalidFieldReason, MctKernelError, MctKernelResult};
@@ -97,13 +109,14 @@ pub use route::{
     CandidateEliminationClass, CandidateEliminationReason, CandidateRoute, NetworkPathClass,
     RouteDecision, RouteDecisionIds, RouteDecisionKind, RouteDecisionOutcome, RouteRevalidationIds,
     RouteRevalidationReason, RouteRevalidationResult, no_route_denied_result,
-    revalidate_route_for_execution,
+    revalidate_route_for_execution, revalidate_route_for_execution_with_snapshot,
 };
 pub use toy::{
-    AuthorizedToyCall, CanonicalToyContract, ToyContractIdentity, ToyGrant, ToyGrantConstraints,
-    ToyGrantEvaluation, ToyGrantEvaluationIds, ToyGrantEvaluationRequest, ToyGrantEvaluationResult,
-    ToyGrantReasonCode, ToyGrantScope, ToyGrantState, ToyGrantSubject, ToyGrantVerdict,
-    evaluate_toy_grant_for_call,
+    AuthorizedToyCall, CanonicalToyContract, ToyContractIdentity, ToyEffectAdmissionDenyV1,
+    ToyGrant, ToyGrantConstraints, ToyGrantEvaluation, ToyGrantEvaluationIds,
+    ToyGrantEvaluationRequest, ToyGrantEvaluationResult, ToyGrantReasonCode, ToyGrantScope,
+    ToyGrantState, ToyGrantSubject, ToyGrantVerdict, evaluate_toy_grant_for_call,
+    evaluate_toy_grant_for_route_snapshot, evaluate_toy_grant_for_snapshot,
 };
 pub use trigger::{
     CallTriggerAuthority, CallTriggerAuthorityState, CallTriggerClass,

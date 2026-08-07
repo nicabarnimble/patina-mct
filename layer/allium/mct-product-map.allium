@@ -202,8 +202,9 @@ contract TwoPhaseRouting {
         -- authority evaluation and newly minted token.
 
     @invariant EffectBoundaryGuardCannotRepairStaleAuthority
-        -- A revision mismatch denies before the child effect; the adapter cannot refresh, widen,
-        -- or reinterpret the already-minted authority token as current.
+        -- A policy or namespaced grants-authority mismatch, exact-grant denial, expiry, or
+        -- unprovable currentness denies before the protected effect; no Child or Toy adapter can
+        -- refresh, widen, or reinterpret the already-minted authority token as current.
 
     @invariant PeerEgressAndLocalChildEffectGuardsAreDistinct
         -- Derived peer candidacy and its complete current-record authority are revalidated before
@@ -561,6 +562,10 @@ contract MctIrohProtocolLayer {
 -- Decision: A successful hello admits only the negotiated protocol version, Vision scope, peer binding, and ALPN set recorded in its decision. Later peer messages must reference that admission decision or a derived session capability.
 -- Decision: A denied hello returns only a safe reason such as `not authorized`, `unsupported version`, or `retry later`; internal observations retain the precise reason.
 -- Decision: `mct/hello/0` may advertise a policy-filtered capability view, but capability advertisement is not a grant. Child access, toy use, thought acceptance, and observation replication still require their own authority checks.
+-- Decision: An admitted hello advertises `receiving_grants_authority` only when the receiving
+-- Mother can prove her complete current namespaced authority identity. Stale, rebuilding,
+-- quarantined, missing, or otherwise unprovable receiver authority produces `retry_later` with
+-- no usable identity or capability view; a denied hello likewise advertises neither.
 -- Decision: 2026-07-10 Track-1 hello-observation gate: the hello response is the first
 -- protected effect because a peer can immediately use an admitted response. Receipt and the typed
 -- admission or denial decision are durably appended before admission is remembered or response
@@ -819,6 +824,9 @@ contract MctHelloProtocol {
 -- dispatch witness for which protocol question arrived; it creates and removes no authority.
 -- For Iroh arrivals, local-only evaluation follows from the submitted `mct/call/0` question under
 -- companion contract `TerminalPeerCallSubmission`, not from an origin-specific permission gate.
+-- Decision: A Mother-internal call uses that Mother's proof-gated current grants-authority
+-- identity as its expected receiver identity when constructed. Parent-call or Child-supplied
+-- identity is correlation lineage only and is never copied into the new call as authority.
 
 value CallerIdentity {
     node_id: String
@@ -1882,7 +1890,8 @@ entity MctCallProtocolEvaluation {
     route_decision_id: String?
     result_ref: String?
     outcome: accepted_for_routing | malformed | denied | failed | timed_out | cancelled | completed
-    reason: hello_not_admitted | alpn_not_admitted | endpoint_mismatch | binding_revoked | binding_expired | policy_revision_stale | malformed_call | payload_metadata_mismatch | authority_denied | no_route | execution_failed | execution_timed_out | result_recorded | idempotency_key_reuse_mismatch | idempotency_budget_full | idempotency_in_progress | idempotency_replay_completed
+    reason: hello_not_admitted | alpn_not_admitted | endpoint_mismatch | binding_revoked | binding_expired | policy_revision_stale | expected_receiver_authority_stale | receiver_authority_unavailable | malformed_call | payload_metadata_mismatch | authority_denied | no_route | execution_failed | execution_timed_out | result_recorded | idempotency_key_reuse_mismatch | idempotency_budget_full | idempotency_in_progress | idempotency_replay_completed
+    retry_directive: none | refresh_hello | retry_later
     safe_message: String
     observation_id: String
 }
@@ -1894,6 +1903,7 @@ entity MctCallProtocolReply {
     result_ref: String?
     route_taken: RouteTaken?
     reply_outcome: success | denied | failed | timed_out | cancelled | malformed
+    retry_directive: none | refresh_hello | retry_later
     safe_message: String
     reply_observation_id: String
 }
@@ -1958,6 +1968,7 @@ surface MctCallProtocolEvaluationProjection {
         evaluation.result_ref
         evaluation.outcome
         evaluation.reason
+        evaluation.retry_directive
         evaluation.safe_message
         evaluation.observation_id
 }
@@ -1975,6 +1986,7 @@ surface MctCallProtocolReplyProjection {
         reply.route_taken.child_id
         reply.route_taken.runtime_kind
         reply.reply_outcome
+        reply.retry_directive
         reply.safe_message
         reply.reply_observation_id
 }
@@ -2020,6 +2032,25 @@ contract MctCallProtocol {
 
     @invariant HelloDoesNotPreAuthorizeCall
         -- Hello admission permits the peer to submit a call envelope, but each call still passes authority, routing, ToyGrant, child assignment, data policy, and revalidation checks.
+
+    @invariant ExpectedReceiverIdentityIsCompleteAndConsistent
+        -- The protocol-authority and semantic-call copies of expected receiver authority contain
+        -- the same complete Mother, epoch, generation, and source-observation identity. Missing
+        -- or malformed copies are refused, and disagreement is malformedness rejected before
+        -- either copy is compared with current receiver authority; neither copy is preferred.
+
+    @invariant ReceiverIdentityComparisonPrecedesRoutingAndReplay
+        -- A well-formed expected identity is compared with freshly proved local receiver authority
+        -- before route evaluation or idempotent replay. Unprovable local authority retries later;
+        -- mismatch directs the caller to refresh hello.
+
+    @invariant EchoAgreementCannotAdmit
+        -- Expected/current identity agreement can only avoid the early stale rejection. It grants
+        -- no authority and skips no peer, route, Child, Toy, data, deadline, or effect evaluation.
+
+    @invariant StaleEchoIsDurablyCorrelated
+        -- Early stale rejection records the complete expected and current identities as correlation
+        -- evidence before returning its safe refresh directive; neither identity becomes a grant.
 
     @invariant PeerSubmissionProposesReceiverAsLocalExecutor
         -- `mct/call/0` uses `TerminalPeerCallSubmission`: the admitted ImmediateCaller asks this

@@ -420,7 +420,7 @@ mod tests {
             },
             authority_context: AuthorityContextSnapshot {
                 policy_revision: projection.policy_revision,
-                grants_revision: 1,
+                expected_receiver_grants_authority: crate::test_grants_authority_identity(1),
                 vision_policy_revision: 1,
             },
             deadline: Timestamp::new("2026-07-10T22:00:00Z").unwrap(),

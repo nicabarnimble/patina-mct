@@ -1,5 +1,7 @@
 use anyhow::{Context, Result, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+#[cfg(test)]
+use mct_daemon::outbound_peer_binding_for_local;
 use mct_daemon::{
     ChildInvocationProvenance, DEFAULT_WASM_MEMORY_LIMIT_BYTES, DaemonReleaseArtifactV1,
     MCT_BLOB_MAX_BYTES, MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER, MCT_IDEMPOTENCY_TTL_SECONDS,
@@ -12,42 +14,41 @@ use mct_daemon::{
     MctDaemonReleaseAcquisitionRequest, MctDaemonStatus, MctIdempotencyReservation, MctLoadedChild,
     MctLocalBlobStoreError, MctLocalNodeIdentity, MctOperatorChildScope, MctOperatorNodeScope,
     MctOutboundPeerBindingPresentation, MctPeerAddressBookEntry, MctProcessChildHarness,
-    MctProcessChildInvocationIds, MctRecordedCallReply, MctRemoteCallableSurfaceRecord,
-    MctRemoteSurfaceRefresh, MctResidentStatus, MctRuntimeStateStore, MctStandingSourceLedgerProof,
-    MctToyAdapterRegistry, MctToyBackend, MctTriggerFiringRecord, MctTriggerOccurrenceDisposition,
-    MctTriggerOccurrenceRecord, MctTriggerPendingOccurrenceRecord, MctUdsControlCallHandler,
-    MctUdsControlCallPreflight, MctUdsPeerCredentials, MctVerifiedDaemonRelease, MctWasiHostConfig,
-    MctWasiPreopen, MctWasiPreopenAccess, MctWasmComponentInvocationIds, MctWasmComponentRuntime,
+    MctProcessChildInvocationIds, MctRecordedCallReply, MctRemoteSurfaceRefresh, MctResidentStatus,
+    MctRuntimeStateStore, MctStartupPaths, MctToyAdapterRegistry, MctToyBackend,
+    MctTriggerFiringRecord, MctTriggerOccurrenceDisposition, MctTriggerOccurrenceRecord,
+    MctTriggerPendingOccurrenceRecord, MctUdsControlCallHandler, MctUdsControlCallPreflight,
+    MctUdsPeerCredentials, MctVerifiedDaemonRelease, MctWasiHostConfig, MctWasiPreopen,
+    MctWasiPreopenAccess, MctWasmComponentInvocationIds, MctWasmComponentRuntime,
     MctWasmHostConfig, MctWitHostImportAdapters, MctWitKeyvalueHostAdapter,
     MctWitMessagingHostAdapter, MctWitProducedMessage, MctWitToyHostAdapter,
-    MctWitWatchCallOutWireEvent, MctWitWatchMessageAdmission,
-    acquire_operator_file_daemon_release_offline,
-    acquire_operator_file_daemon_release_with_observer, admit_call_deadline,
+    MctWitWatchCallOutWireEvent, MctWitWatchMessageAdmission, StandingSourceAdmissionDenyReasonV1,
+    StandingSourceAdmissionV1, acquire_operator_file_daemon_release_offline,
+    acquire_operator_file_daemon_release_with_observer, admit_call_deadline, admit_standing_source,
     build_federation_capability_view_with_children, build_metrics_snapshot,
-    component_artifact_from_loaded_child, current_timestamp, current_timestamp_string,
-    daemon_status, daemon_status_with_resident, default_config_path, default_state_path,
-    hello_capability_view_from_federation_view, install_verified_child_package,
+    classify_authority_startup, component_artifact_from_loaded_child, current_timestamp,
+    current_timestamp_string, daemon_status, daemon_status_with_resident, default_config_path,
+    default_state_path, hello_capability_view_from_federation_view, install_verified_child_package,
     load_children_from_dir, local_blob_store_for_state_path, mct_secrets_toy_contract,
-    new_artifact_attempt_context, outbound_peer_binding_for_local, plan_daemon_release_source,
-    record_composition_plan, reload_configured_child, serve_http_control_once_with_snapshot_result,
-    stage_artifact_with_context_and_observer, sync_child_registry_source,
-    verify_standing_source_ledger_correlation, warmup_configured_child,
+    new_artifact_attempt_context, plan_daemon_release_source, record_composition_plan,
+    reload_configured_child, serve_http_control_once_with_snapshot_result,
+    stage_artifact_with_context_and_observer, sync_child_registry_source, warmup_configured_child,
 };
 use mct_iroh::{
     MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES, MctIrohCallHandlerResult, MctIrohCallPayloadReply,
     MctIrohConcurrentServeConfig, MctIrohObservationBatch, MctIrohObservationDurability,
-    MctIrohObservationSink, MctIrohServeEvent, MctIrohServeState, MctIrohServedProtocol,
-    MctPeerBindingSignatureVerification, MotherIrohEndpoint, MotherIrohEndpointConfig,
-    MotherIrohEndpointError, MotherIrohEndpointSnapshot, MotherIrohEndpointTicket,
-    MotherIrohRelayMode, endpoint_id_for_secret_key_hex, generate_node_secret_key_hex,
-    load_or_create_node_secret_key_hex, verify_peer_binding_signature_ref,
-    write_new_node_secret_key_file,
+    MctIrohObservationSink, MctIrohReceiverAuthorityProvider, MctIrohServeEvent, MctIrohServeState,
+    MctIrohServedProtocol, MctPeerBindingSignatureVerification, MotherIrohEndpoint,
+    MotherIrohEndpointConfig, MotherIrohEndpointError, MotherIrohEndpointSnapshot,
+    MotherIrohEndpointTicket, MotherIrohRelayMode, endpoint_id_for_secret_key_hex,
+    generate_node_secret_key_hex, load_or_create_node_secret_key_hex,
+    verify_peer_binding_signature_ref, write_new_node_secret_key_file,
 };
 use mct_kernel::*;
 use mct_observation::{
     AuthorityChangeV1, AuthorityMutationRejectionReasonV1, AuthorityMutationRequestV1,
-    AuthorityMutationResultV1, AuthorityStateV1, DurabilityClass, ExportStatus,
-    GrantShapingCommandKindV1, GrantShapingSourceV1, JsonlObservationLedger,
+    AuthorityMutationResultV1, AuthorityStartupClassV1, AuthorityStateV1, DurabilityClass,
+    ExportStatus, GrantShapingCommandKindV1, GrantShapingSourceV1, JsonlObservationLedger,
     LegacyAuthorityImportRequestV1, authority_state_hash, read_ledger_entries,
     replay_authority_entries,
 };
@@ -64,6 +65,21 @@ use tokio::{net::TcpListener, sync::broadcast};
 
 #[cfg(unix)]
 use tokio::net::UnixListener;
+
+#[cfg(test)]
+fn test_grants_authority_identity(generation: u64) -> GrantsAuthorityIdentity {
+    GrantsAuthorityIdentity {
+        mother_node_id: "local-mct".into(),
+        authority_epoch: "epoch-test".into(),
+        generation,
+        source_authority_observation_id: format!("obs-authority-test-{generation}"),
+    }
+}
+
+#[cfg(test)]
+fn test_receiver_authority_provider() -> MctIrohReceiverAuthorityProvider {
+    MctIrohReceiverAuthorityProvider::fixed(test_grants_authority_identity(1))
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {

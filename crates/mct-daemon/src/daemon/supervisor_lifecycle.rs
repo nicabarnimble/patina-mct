@@ -4002,7 +4002,12 @@ mod tests {
                 },
                 "authority_context": {
                     "policy_revision": 1,
-                    "grants_revision": 1,
+                    "expected_receiver_grants_authority": {
+                    "mother_node_id": "local-mct",
+                    "authority_epoch": "epoch-test",
+                    "generation": 1,
+                    "source_authority_observation_id": "obs-authority-test-1"
+                },
                     "vision_policy_revision": 1
                 },
                 "deadline": "2099-01-01T00:00:00Z",
@@ -4039,7 +4044,12 @@ mod tests {
                 },
                 "authority_context": {
                     "policy_revision": 1,
-                    "grants_revision": 1,
+                    "expected_receiver_grants_authority": {
+                    "mother_node_id": "local-mct",
+                    "authority_epoch": "epoch-test",
+                    "generation": 1,
+                    "source_authority_observation_id": "obs-authority-test-1"
+                },
                     "vision_policy_revision": 1
                 },
                 "deadline": "2099-01-01T00:00:00Z",
@@ -4480,6 +4490,7 @@ status = "active"
         }
 
         let watch_window = serde_json::json!({
+            "mutation_id": "fixture-watch-grant",
             "expected_config_path": paths.config,
             "expected_children_dir": paths.children,
             "expected_state_path": paths.state,
@@ -4499,7 +4510,7 @@ status = "active"
         assert_eq!(status, 200, "{watch_grant:#}");
         assert_eq!(watch_grant["scope"]["authority_state"], "active");
 
-        for grant in [
+        for (grant_index, grant) in [
             serde_json::json!({
                 "kind": "directory_read",
                 "canonical_root": watch_root
@@ -4513,8 +4524,12 @@ status = "active"
                 "logging": true,
                 "measure": true
             }),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let request = serde_json::json!({
+                "mutation_id": format!("fixture-watch-supporting-{grant_index}"),
                 "expected_config_path": paths.config,
                 "expected_children_dir": paths.children,
                 "expected_state_path": paths.state,
@@ -4527,6 +4542,7 @@ status = "active"
             assert_eq!(status, 200, "{granted:#}");
         }
         let sink_observability = serde_json::json!({
+            "mutation_id": "fixture-watch-sink-observability",
             "expected_config_path": paths.config,
             "expected_children_dir": paths.children,
             "expected_state_path": paths.state,
@@ -4657,7 +4673,7 @@ status = "active"
         )
         .await;
         assert_eq!(status, 200, "{created_trigger:#}");
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(Duration::from_secs(60), async {
             loop {
                 let summary = MctRuntimeStateStore::open(&paths.state)
                     .unwrap()
@@ -4687,6 +4703,7 @@ status = "active"
         assert_eq!(status, 200, "{revoked_trigger:#}");
         assert_eq!(revoked_trigger["authority_state"], "revoked");
         let revoke_watch = WatchRevokeRequest {
+            mutation_id: "fixture-watch-revoke".into(),
             expected_config_path: paths.config.clone(),
             expected_state_path: paths.state.clone(),
             watch_scope_id: WatchObservationScopeId::new("scope:fixture-watch").unwrap(),
@@ -4833,20 +4850,16 @@ status = "active"
             )
             .await
         });
-        tokio::time::timeout(Duration::from_secs(15), restart_ready_rx)
+        let restart_error = tokio::time::timeout(Duration::from_secs(15), restarted_resident)
             .await
+            .expect("broader legacy authority must degrade before readiness")
             .unwrap()
-            .unwrap();
-        let (restart_status, restart_denied) = uds_json(
-            &paths.uds,
-            "POST",
-            "/calls",
-            &call_submission("restart-revoked"),
-        )
-        .await;
-        assert_eq!(restart_status, 200, "{restart_denied:#}");
-        assert_eq!(restart_denied["outcome"], "denied");
-        tokio::time::sleep(Duration::from_millis(750)).await;
+            .unwrap_err();
+        assert!(
+            format!("{restart_error:#}").contains("sqlite_authority_broader_than_canonical"),
+            "deferred legacy grant writers must not be mistaken for canonical readiness"
+        );
+        assert!(restart_ready_rx.await.is_err());
         assert_eq!(
             MctRuntimeStateStore::open(&paths.state)
                 .unwrap()
@@ -4858,16 +4871,12 @@ status = "active"
         let restart_stop_paths = paths.clone();
         let restart_stop_adapter = Arc::clone(&adapter);
         tokio::task::spawn_blocking(move || {
-            stop_with_adapter(
-                &restart_stop_paths,
-                current_uid().unwrap(),
-                restart_stop_adapter.as_ref(),
-            )
+            let record = validate_supervisor_record_for_stop(&restart_stop_paths.record)?;
+            restart_stop_adapter.stop(&record)
         })
         .await
         .unwrap()
         .unwrap();
-        restarted_resident.await.unwrap().unwrap();
 
         let package_manifest_before_uninstall = fs::read(package_path.join("child.toml")).unwrap();
         let package_component_before_uninstall =

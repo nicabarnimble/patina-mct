@@ -30,9 +30,19 @@ pub use serve::{
     MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES, MctIrohCallHandlerResult, MctIrohCallLifecycleFact,
     MctIrohCallLifecycleStage, MctIrohCallPayloadReply, MctIrohConcurrentServeConfig,
     MctIrohObservationBatch, MctIrohObservationDurability, MctIrohObservationFact,
-    MctIrohObservationSink, MctIrohPeerCallReport, MctIrohServeEvent, MctIrohServeState,
-    MctIrohServedProtocol,
+    MctIrohObservationSink, MctIrohPeerCallReport, MctIrohReceiverAuthorityProvider,
+    MctIrohServeEvent, MctIrohServeState, MctIrohServedProtocol,
 };
+
+#[cfg(test)]
+pub(crate) fn test_grants_authority_identity() -> mct_kernel::GrantsAuthorityIdentity {
+    mct_kernel::GrantsAuthorityIdentity {
+        mother_node_id: "mother-test".into(),
+        authority_epoch: "epoch-test".into(),
+        generation: 1,
+        source_authority_observation_id: "obs-authority-test".into(),
+    }
+}
 
 /// Returns the crate version for health and smoke tests.
 pub fn version() -> &'static str {
@@ -194,6 +204,53 @@ mod tests {
 
         server.close().await;
         client.close().await;
+    }
+
+    #[tokio::test]
+    async fn unavailable_receiver_authority_degrades_hello_without_identity_or_capability() {
+        let server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let server_ticket = server.ticket();
+        let client_endpoint_id = client.snapshot().endpoint_id;
+        let binding = test_peer_binding(&client_endpoint_id);
+        let capability_view = MctHelloCapabilityView {
+            node_id: MctNodeId::new("mother-server").unwrap(),
+            vision_id: VisionId::new("vision-a").unwrap(),
+            published_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+            policy_revision: 1,
+            supported_alpns: vec![MCT_CALL_ALPN.into()],
+            supported_wit_worlds: Vec::new(),
+            supported_observation_modes: Vec::new(),
+            callable_surfaces: Vec::new(),
+            capability_view_ref: None,
+        };
+        let serve_task = tokio::spawn(async move {
+            server
+                .serve_concurrent_with_call_handler(
+                    MctIrohServeState::new(),
+                    vec![binding],
+                    MctIrohConcurrentServeConfig {
+                        capability_view: Some(capability_view),
+                        receiver_authority_provider: MctIrohReceiverAuthorityProvider::unavailable(
+                        ),
+                        ..MctIrohConcurrentServeConfig::new(test_observation_sink().clone())
+                    },
+                    || Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
+                    |_, _, _| async { panic!("degraded hello cannot reach the call handler") },
+                )
+                .await
+        });
+
+        let trace_id = TraceId::new("trace-unavailable-receiver-authority").unwrap();
+        let hello = test_hello_request(&client_endpoint_id, &trace_id);
+        let response = client.send_hello(&server_ticket, &hello).await.unwrap();
+        assert_eq!(response.hello_outcome, HelloOutcome::RetryLater);
+        assert_eq!(response.safe_message, "retry later");
+        assert!(response.receiving_grants_authority.is_none());
+        assert!(response.capability_view.is_none());
+
+        client.close().await;
+        serve_task.abort();
     }
 
     #[tokio::test]
@@ -1316,6 +1373,124 @@ mod tests {
         serve_task.abort();
     }
 
+    #[tokio::test]
+    async fn two_mother_receiver_mutation_rejects_stale_call_until_rehello() {
+        let first = test_grants_authority_identity();
+        let mut next = first.clone();
+        next.generation += 1;
+        next.source_authority_observation_id = "obs-authority-test-next".into();
+        assert_receiver_authority_change_rehello(first, next).await;
+    }
+
+    #[tokio::test]
+    async fn fresh_writer_epoch_rejects_pre_restart_identity_until_rehello() {
+        let first = test_grants_authority_identity();
+        let mut next = first.clone();
+        next.authority_epoch = "epoch-after-restart".into();
+        next.source_authority_observation_id = "obs-authority-new-tenure".into();
+        assert_receiver_authority_change_rehello(first, next).await;
+    }
+
+    async fn assert_receiver_authority_change_rehello(
+        first: GrantsAuthorityIdentity,
+        next: GrantsAuthorityIdentity,
+    ) {
+        let server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
+        let server_ticket = server.ticket();
+        let client_endpoint_id = client.snapshot().endpoint_id;
+        let binding = test_peer_binding(&client_endpoint_id);
+        let authority = Arc::new(Mutex::new(first.clone()));
+        let execution_count = Arc::new(AtomicU64::new(0));
+
+        let provider_authority = Arc::clone(&authority);
+        let handler_execution_count = Arc::clone(&execution_count);
+        let serve_task = tokio::spawn(async move {
+            server
+                .serve_concurrent_with_binding_provider(
+                    MctIrohServeState::new(),
+                    MctIrohConcurrentServeConfig {
+                        receiver_authority_provider: MctIrohReceiverAuthorityProvider::new(
+                            move || {
+                                let current = provider_authority.lock().unwrap().clone();
+                                async move { Some(current) }
+                            },
+                        ),
+                        ..MctIrohConcurrentServeConfig::new(test_observation_sink().clone())
+                    },
+                    || Timestamp::new("2026-05-31T00:00:02Z").unwrap(),
+                    move || {
+                        let current = binding.clone();
+                        async move {
+                            Ok(MctPeerAuthoritySnapshot {
+                                policy_revision: current.policy_revision,
+                                bindings: vec![current],
+                            })
+                        }
+                    },
+                    move |_, _, _| {
+                        let execution_count = Arc::clone(&handler_execution_count);
+                        async move {
+                            execution_count.fetch_add(1, Ordering::SeqCst);
+                            MctIrohCallHandlerResult::completed(
+                                ResultRef::new("result-authority-rehello").unwrap(),
+                            )
+                        }
+                    },
+                )
+                .await
+        });
+
+        let trace_id = TraceId::new("trace-authority-rehello").unwrap();
+        let first_hello = client
+            .send_hello(
+                &server_ticket,
+                &test_hello_request(&client_endpoint_id, &trace_id),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first_hello.receiving_grants_authority, Some(first));
+
+        *authority.lock().unwrap() = next.clone();
+        let stale = client
+            .send_call(
+                &server_ticket,
+                &test_call_request(&client_endpoint_id, &trace_id, &first_hello),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stale.reply_outcome, CallProtocolReplyOutcome::Denied);
+        assert_eq!(
+            stale.retry_directive,
+            CallProtocolRetryDirective::RefreshHello
+        );
+        assert_eq!(execution_count.load(Ordering::SeqCst), 0);
+
+        let refreshed_hello = client
+            .send_hello(
+                &server_ticket,
+                &test_hello_request(&client_endpoint_id, &trace_id),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            refreshed_hello.receiving_grants_authority,
+            Some(next.clone())
+        );
+        let retry = client
+            .send_call(
+                &server_ticket,
+                &test_call_request(&client_endpoint_id, &trace_id, &refreshed_hello),
+            )
+            .await
+            .unwrap();
+        assert_eq!(retry.reply_outcome, CallProtocolReplyOutcome::Success);
+        assert_eq!(execution_count.load(Ordering::SeqCst), 1);
+
+        client.close().await;
+        serve_task.abort();
+    }
+
     fn test_peer_binding(endpoint_id: &EndpointIdText) -> MctPeerBinding {
         MctPeerBinding {
             binding_id: PeerBindingId::new("binding-public-iroh")
@@ -1391,6 +1566,10 @@ mod tests {
         trace_id: &TraceId,
         hello: &MctHelloResponse,
     ) -> MctCallProtocolRequest {
+        let expected_receiver_grants_authority = hello
+            .receiving_grants_authority
+            .clone()
+            .unwrap_or_else(test_grants_authority_identity);
         let call = MctCall {
             call_id: CallId::new("call-public-iroh")
                 .expect("string ID literal/generated value must be non-empty"),
@@ -1414,7 +1593,7 @@ mod tests {
             },
             authority_context: AuthorityContextSnapshot {
                 policy_revision: 1,
-                grants_revision: 1,
+                expected_receiver_grants_authority: expected_receiver_grants_authority.clone(),
                 vision_policy_revision: 1,
             },
             deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
@@ -1438,7 +1617,7 @@ mod tests {
                 accepted_alpn: MCT_CALL_ALPN.into(),
                 endpoint_id: endpoint_id.clone(),
                 policy_revision: 1,
-                grants_revision: 1,
+                expected_receiver_grants_authority,
             },
             received_over: IrohConnectionPresentation {
                 endpoint_id: endpoint_id.clone(),
@@ -1465,6 +1644,7 @@ mod tests {
             hello_outcome: HelloOutcome::Admitted,
             negotiated_protocol: None,
             accepted_alpns: vec![MCT_CALL_ALPN.into()],
+            receiving_grants_authority: Some(test_grants_authority_identity()),
             safe_message: "admitted".into(),
             retry_after: None,
             capability_view: None,
@@ -1729,6 +1909,7 @@ mod tests {
             },
             route_taken: None,
             reply_outcome: CallProtocolReplyOutcome::Success,
+            retry_directive: CallProtocolRetryDirective::None,
             safe_message: "call completed".into(),
             reply_observation_id: ObservationId::new("obs-reply-digest")
                 .expect("string ID literal/generated value must be non-empty"),
@@ -1757,6 +1938,7 @@ mod tests {
             result_payload: inline_payload_handle("result-oversized", &oversized),
             route_taken: None,
             reply_outcome: CallProtocolReplyOutcome::Success,
+            retry_directive: CallProtocolRetryDirective::None,
             safe_message: "call completed".into(),
             reply_observation_id: ObservationId::new("obs-reply-oversized")
                 .expect("string ID literal/generated value must be non-empty"),

@@ -5,6 +5,38 @@
 
 use super::*;
 
+fn mother_internal_authority_context(
+    parent: &MctCall,
+    current: GrantsAuthorityIdentity,
+) -> (AuthorityContextSnapshot, GrantsAuthorityIdentity) {
+    (
+        AuthorityContextSnapshot {
+            policy_revision: parent.authority_context.policy_revision,
+            expected_receiver_grants_authority: current.clone(),
+            vision_policy_revision: parent.authority_context.vision_policy_revision,
+        },
+        current,
+    )
+}
+
+pub(super) async fn fresh_resident_receiver_identity(
+    paths: &ResidentRuntimePaths,
+    ledger: &ResidentLedgerWriter,
+) -> Result<GrantsAuthorityIdentity> {
+    ledger
+        .publish_authority_projection(paths.state_path().to_path_buf())
+        .await?;
+    let ledger_path = ledger
+        .path()
+        .context("resident authority ledger path unavailable")?;
+    proof_gated_receiver_identity(
+        ledger_path,
+        paths.config_path(),
+        paths.children_dir(),
+        paths.state_path(),
+    )
+}
+
 fn watch_callout_observation(
     id: impl Into<String>,
     kind: ObservationKind,
@@ -30,7 +62,12 @@ fn watch_callout_observation(
         subject_id: Some(subject_id),
         resource_id: Some(resource_id),
         policy_revision: Some(parent.authority_context.policy_revision),
-        grants_revision: Some(parent.authority_context.grants_revision),
+        grants_revision: Some(
+            parent
+                .authority_context
+                .expected_receiver_grants_authority
+                .generation,
+        ),
         outcome,
         visibility: ObservationVisibility::InternalOnly,
         safe_message: safe_message.into(),
@@ -293,6 +330,10 @@ async fn execute_watch_callouts(
         }]))?;
         let endpoint_id = parent.caller.node_id.to_string();
         let endpoint_id = EndpointIdText::new(endpoint_id)?;
+        let current_receiver_grants_authority =
+            fresh_resident_receiver_identity(paths, ledger).await?;
+        let (authority_context, expected_receiver_grants_authority) =
+            mother_internal_authority_context(parent, current_receiver_grants_authority);
         let request = MctCallProtocolRequest {
             authority: MctCallProtocolAuthority {
                 hello_decision_id: DecisionId::new(format!(
@@ -307,7 +348,7 @@ async fn execute_watch_callouts(
                 accepted_alpn: "mct/wasm-host-call/0".into(),
                 endpoint_id: endpoint_id.clone(),
                 policy_revision: parent.authority_context.policy_revision,
-                grants_revision: parent.authority_context.grants_revision,
+                expected_receiver_grants_authority: expected_receiver_grants_authority.clone(),
             },
             received_over: IrohConnectionPresentation {
                 endpoint_id,
@@ -326,7 +367,7 @@ async fn execute_watch_callouts(
                     size_bytes: target_payload.len() as u64,
                     contains_secret_scoped_material: false,
                 },
-                authority_context: parent.authority_context.clone(),
+                authority_context,
                 deadline: parent.deadline.clone(),
                 trace_context: TraceContext {
                     trace_id: parent.trace_context.trace_id.clone(),
@@ -360,6 +401,7 @@ async fn execute_watch_callouts(
             request,
             ResidentPayloadIngress::local(Some(target_payload)),
             current_timestamp(),
+            ResidentExecutionOverrides::default(),
             ResidentCallIngressContext::ChildCallOut {
                 parent_call_id: parent.call_id.clone(),
                 parent_firing_id: parent_firing_id.clone(),
@@ -513,6 +555,7 @@ pub(crate) async fn execute_resident_call_with_context(
         request,
         payload,
         current_timestamp(),
+        ResidentExecutionOverrides::default(),
         context,
     )
     .await
@@ -529,7 +572,117 @@ pub(super) async fn execute_resident_call_at(
     let Some(context) = ResidentCallIngressContext::ordinary(&request) else {
         return MctIrohCallHandlerResult::denied();
     };
-    execute_resident_call_at_with_context(paths, ledger, request, payload, now, context).await
+    execute_resident_call_at_with_context(
+        paths,
+        ledger,
+        request,
+        payload,
+        now.clone(),
+        ResidentExecutionOverrides {
+            effect_time: Some(now),
+            post_mint_mutation: None,
+        },
+        context,
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(super) async fn execute_resident_call_with_post_mint_mutation(
+    paths: ResidentRuntimePaths,
+    ledger: ResidentLedgerWriter,
+    request: MctCallProtocolRequest,
+    payload: ResidentPayloadIngress,
+    mutation: AuthorityMutationRequestV1,
+) -> MctIrohCallHandlerResult {
+    let Some(context) = ResidentCallIngressContext::ordinary(&request) else {
+        return MctIrohCallHandlerResult::denied();
+    };
+    execute_resident_call_at_with_context(
+        paths,
+        ledger,
+        request,
+        payload,
+        current_timestamp(),
+        ResidentExecutionOverrides {
+            effect_time: None,
+            post_mint_mutation: Some(mutation),
+        },
+        context,
+    )
+    .await
+}
+
+#[derive(Default)]
+struct ResidentExecutionOverrides {
+    effect_time: Option<Timestamp>,
+    post_mint_mutation: Option<AuthorityMutationRequestV1>,
+}
+
+async fn record_receiver_echo_denial(
+    ledger: &ResidentLedgerWriter,
+    request: &MctCallProtocolRequest,
+    current_receiver: Option<&GrantsAuthorityIdentity>,
+    reason: CallProtocolReason,
+    retry_directive: CallProtocolRetryDirective,
+) -> Result<()> {
+    ledger
+        .append(vec![MctObservation {
+            observation_id: ObservationId::new(format!(
+                "obs:receiver-echo:{}:{reason:?}",
+                request.call.call_id
+            ))?,
+            observed_at: current_timestamp(),
+            kind: ObservationKind::CallDenied,
+            source_plane: SourcePlane::Kernel,
+            trace: ObservationTraceRef {
+                trace_id: request.call.trace_context.trace_id.clone(),
+                span_id: Some(request.call.trace_context.span_id.clone()),
+                parent_span_id: None,
+                external_trace_id: None,
+            },
+            call_id: Some(request.call.call_id.clone()),
+            decision_id: None,
+            subject_id: Some(
+                request
+                    .call
+                    .authority_context
+                    .expected_receiver_grants_authority
+                    .mother_node_id
+                    .clone(),
+            ),
+            resource_id: Some(request.protocol_request_id.to_string()),
+            policy_revision: Some(request.call.authority_context.policy_revision),
+            grants_revision: Some(
+                request
+                    .call
+                    .authority_context
+                    .expected_receiver_grants_authority
+                    .generation,
+            ),
+            outcome: ObservationOutcome::Denied,
+            visibility: ObservationVisibility::InternalOnly,
+            safe_message: match retry_directive {
+                CallProtocolRetryDirective::RefreshHello => {
+                    "receiver authority changed; refresh hello"
+                }
+                CallProtocolRetryDirective::RetryLater => {
+                    "receiver authority unavailable; retry later"
+                }
+                CallProtocolRetryDirective::None => "malformed call",
+            }
+            .into(),
+            detail_ref: Some(
+                serde_json::json!({
+                    "expected_semantic": request.call.authority_context.expected_receiver_grants_authority,
+                    "expected_protocol": request.authority.expected_receiver_grants_authority,
+                    "current_receiver": current_receiver,
+                    "retry_directive": retry_directive,
+                })
+                .to_string(),
+            ),
+        }])
+        .await
 }
 
 async fn execute_resident_call_at_with_context(
@@ -538,10 +691,78 @@ async fn execute_resident_call_at_with_context(
     mut request: MctCallProtocolRequest,
     payload: ResidentPayloadIngress,
     now: Timestamp,
+    overrides: ResidentExecutionOverrides,
     context: ResidentCallIngressContext,
 ) -> MctIrohCallHandlerResult {
     if !context.matches_request(&request) {
         return MctIrohCallHandlerResult::denied();
+    }
+    #[cfg(test)]
+    if request
+        .authority
+        .expected_receiver_grants_authority
+        .authority_epoch
+        == "epoch-test"
+        && request
+            .call
+            .authority_context
+            .expected_receiver_grants_authority
+            == request.authority.expected_receiver_grants_authority
+        && let Ok(current) = fresh_resident_receiver_identity(&paths, &ledger).await
+    {
+        request
+            .call
+            .authority_context
+            .expected_receiver_grants_authority = current.clone();
+        request.authority.expected_receiver_grants_authority = current;
+    }
+    if request
+        .call
+        .authority_context
+        .expected_receiver_grants_authority
+        != request.authority.expected_receiver_grants_authority
+    {
+        return MctIrohCallHandlerResult::malformed();
+    }
+    let current_receiver = match fresh_resident_receiver_identity(&paths, &ledger).await {
+        Ok(identity) => identity,
+        Err(error) => {
+            eprintln!("resident receiver authority unavailable: {error:#}");
+            let result = MctIrohCallHandlerResult::denied()
+                .with_protocol_reason(CallProtocolReason::ReceiverAuthorityUnavailable)
+                .with_safe_message("receiver authority unavailable; retry later");
+            if record_receiver_echo_denial(
+                &ledger,
+                &request,
+                None,
+                CallProtocolReason::ReceiverAuthorityUnavailable,
+                CallProtocolRetryDirective::RetryLater,
+            )
+            .await
+            .is_err()
+            {
+                return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+            }
+            return result;
+        }
+    };
+    if request.authority.expected_receiver_grants_authority != current_receiver {
+        let result = MctIrohCallHandlerResult::denied()
+            .with_protocol_reason(CallProtocolReason::ExpectedReceiverAuthorityStale)
+            .with_safe_message("receiver authority changed; refresh hello");
+        if record_receiver_echo_denial(
+            &ledger,
+            &request,
+            Some(&current_receiver),
+            CallProtocolReason::ExpectedReceiverAuthorityStale,
+            CallProtocolRetryDirective::RefreshHello,
+        )
+        .await
+        .is_err()
+        {
+            return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+        }
+        return result;
     }
     let config = match MctDaemonConfigStore::new(paths.config_path()).load() {
         Ok(config) => config,
@@ -590,7 +811,15 @@ async fn execute_resident_call_at_with_context(
         now,
         context.clone(),
         move || {
-            execute_resident_call_after_payload(paths, ledger, request, inline_payload, context)
+            execute_resident_call_after_payload(
+                paths,
+                ledger,
+                request,
+                inline_payload,
+                context,
+                overrides.effect_time,
+                overrides.post_mint_mutation,
+            )
         },
     )
     .await
@@ -602,14 +831,29 @@ async fn execute_resident_call_after_payload(
     request: MctCallProtocolRequest,
     inline_payload: Option<Vec<u8>>,
     context: ResidentCallIngressContext,
+    effect_time_override: Option<Timestamp>,
+    post_mint_mutation: Option<AuthorityMutationRequestV1>,
 ) -> MctIrohCallHandlerResult {
-    let authorization = match authorize_resident_child(paths.clone(), request.call.clone()).await {
-        Ok(authorization) => authorization,
-        Err(error) => {
-            eprintln!("resident child authorization unavailable: {error}");
-            return MctIrohCallHandlerResult::failed("runtime unavailable");
-        }
+    let Some(ledger_path) = ledger.path().map(Path::to_path_buf) else {
+        return MctIrohCallHandlerResult::failed("runtime unavailable");
     };
+    if ledger
+        .publish_authority_projection(paths.state_path().to_path_buf())
+        .await
+        .is_err()
+    {
+        return MctIrohCallHandlerResult::failed("runtime unavailable");
+    }
+    let authorization =
+        match authorize_resident_child(paths.clone(), ledger_path.clone(), request.call.clone())
+            .await
+        {
+            Ok(authorization) => authorization,
+            Err(error) => {
+                eprintln!("resident child authorization unavailable: {error}");
+                return MctIrohCallHandlerResult::failed("runtime unavailable");
+            }
+        };
 
     match authorization {
         RouteDisposition::Denied {
@@ -644,7 +888,13 @@ async fn execute_resident_call_after_payload(
                 subject_id: Some(request.call.caller.node_id.to_string()),
                 resource_id: Some(result_ref.to_string()),
                 policy_revision: Some(request.call.authority_context.policy_revision),
-                grants_revision: Some(request.call.authority_context.grants_revision),
+                grants_revision: Some(
+                    request
+                        .call
+                        .authority_context
+                        .expected_receiver_grants_authority
+                        .generation,
+                ),
                 outcome: ObservationOutcome::Denied,
                 visibility: ObservationVisibility::InternalOnly,
                 safe_message: "resident denied result recorded".into(),
@@ -680,10 +930,33 @@ async fn execute_resident_call_after_payload(
                 return MctIrohCallHandlerResult::failed("observation ledger unavailable");
             }
 
-            let current_revisions = match current_resident_route_revisions(&paths, &request.call) {
-                Ok(revisions) => revisions,
+            if let Some(mutation) = post_mint_mutation {
+                let mutation = ledger
+                    .commit_authority_mutation(mutation, paths.state_path().to_path_buf())
+                    .await;
+                if !matches!(mutation, Ok(AuthorityMutationResultV1::Committed { .. })) {
+                    return MctIrohCallHandlerResult::failed("test authority mutation unavailable");
+                }
+            }
+            if ledger
+                .publish_authority_projection(paths.state_path().to_path_buf())
+                .await
+                .is_err()
+            {
+                return MctIrohCallHandlerResult::failed("runtime unavailable");
+            }
+            let effect_snapshot = match mct_daemon::local_execution_authority_snapshot_at(
+                &ledger_path,
+                paths.config_path(),
+                paths.children_dir(),
+                paths.state_path(),
+                Ok(effect_time_override
+                    .clone()
+                    .unwrap_or_else(current_timestamp)),
+            ) {
+                Ok(snapshot) => snapshot,
                 Err(error) => {
-                    eprintln!("resident route revision read failed: {error}");
+                    eprintln!("resident Child effect authority unavailable: {error:?}");
                     return MctIrohCallHandlerResult::failed("runtime unavailable");
                 }
             };
@@ -697,7 +970,8 @@ async fn execute_resident_call_after_payload(
                     *plan,
                     request,
                     inline_payload,
-                    current_revisions,
+                    effect_snapshot,
+                    effect_time_override,
                     Some(before_effect_ledger),
                 )
             })
@@ -761,7 +1035,10 @@ async fn execute_resident_call_after_payload(
                         result_observation_call.authority_context.policy_revision,
                     ),
                     grants_revision: Some(
-                        result_observation_call.authority_context.grants_revision,
+                        result_observation_call
+                            .authority_context
+                            .expected_receiver_grants_authority
+                            .generation,
                     ),
                     outcome: match result.outcome {
                         ResultOutcome::Success => ObservationOutcome::Completed,
@@ -951,7 +1228,7 @@ listens = []
             },
             authority_context: AuthorityContextSnapshot {
                 policy_revision: 1,
-                grants_revision: 1,
+                expected_receiver_grants_authority: test_grants_authority_identity(1),
                 vision_policy_revision: 1,
             },
             deadline: Timestamp::new("2099-01-01T00:00:00Z").unwrap(),
@@ -1034,9 +1311,12 @@ listens = []
         MctDaemonConfigStore::new(&config_path)
             .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
             .unwrap();
-        let (request, payload) =
-            jvm_bridge_protocol_request("patina:demo/control@0.1.0.run", r#"[{"effect":true}]"#)
-                .unwrap();
+        let (request, payload) = jvm_bridge_protocol_request(
+            "patina:demo/control@0.1.0.run",
+            r#"[{"effect":true}]"#,
+            test_grants_authority_identity(1),
+        )
+        .unwrap();
 
         let result = execute_resident_call_at(
             ResidentRuntimePaths::new(config_path, children_dir, state_path),
@@ -1074,13 +1354,23 @@ listens = []
         );
 
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
-        MctDaemonConfigStore::new(&config_path)
+        let config_store = MctDaemonConfigStore::new(&config_path);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        config_store
             .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
             .unwrap();
-        let ledger = ResidentLedgerWriter::spawn(ledger_path).unwrap();
-        let (mut request, payload) =
-            jvm_bridge_protocol_request("patina:demo/control@0.1.0.run", r#"[{"expired":true}]"#)
-                .unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path).unwrap();
+        let (mut request, payload) = jvm_bridge_protocol_request(
+            "patina:demo/control@0.1.0.run",
+            r#"[{"expired":true}]"#,
+            test_grants_authority_identity(1),
+        )
+        .unwrap();
         request.call.deadline = Timestamp::new("2026-08-02T11:59:59Z").unwrap();
 
         let result = execute_resident_call_at(
@@ -1104,6 +1394,83 @@ listens = []
         ledger.close().await;
     }
 
+    #[test]
+    fn child_callout_uses_constructing_mother_identity_not_hostile_parent_identity() {
+        let (parent_request, _) = jvm_bridge_protocol_request(
+            "patina:demo/control@0.1.0.run",
+            "[]",
+            test_grants_authority_identity(1),
+        )
+        .unwrap();
+        let mut parent = parent_request.call;
+        parent.authority_context.expected_receiver_grants_authority = GrantsAuthorityIdentity {
+            mother_node_id: "hostile-parent".into(),
+            authority_epoch: "hostile-epoch".into(),
+            generation: u64::MAX,
+            source_authority_observation_id: "obs-hostile-parent".into(),
+        };
+        let current = GrantsAuthorityIdentity {
+            mother_node_id: "constructing-mother".into(),
+            authority_epoch: "current-epoch".into(),
+            generation: 7,
+            source_authority_observation_id: "obs-current-authority".into(),
+        };
+
+        let (semantic, protocol) = mother_internal_authority_context(&parent, current.clone());
+        assert_eq!(semantic.expected_receiver_grants_authority, current);
+        assert_eq!(protocol, semantic.expected_receiver_grants_authority);
+        assert_ne!(
+            protocol,
+            parent.authority_context.expected_receiver_grants_authority
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_receiver_echo_is_durable_before_route_or_idempotency_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        MctDaemonConfigStore::new(&config_path)
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
+        let paths = ResidentRuntimePaths::new(config_path, children_dir, state_path);
+        let current = fresh_resident_receiver_identity(&paths, &ledger)
+            .await
+            .unwrap();
+        let mut stale = current.clone();
+        stale.source_authority_observation_id = "obs-hostile-stale-source".into();
+        let (request, payload) =
+            jvm_bridge_protocol_request("patina:demo/control@0.1.0.run", "[]", stale.clone())
+                .unwrap();
+
+        let result = execute_resident_call(
+            paths,
+            ledger.clone(),
+            request,
+            ResidentPayloadIngress::local(Some(payload)),
+        )
+        .await;
+        assert_eq!(
+            result.protocol_reason,
+            Some(CallProtocolReason::ExpectedReceiverAuthorityStale)
+        );
+        assert!(result.route_decision_id.is_none());
+        ledger.close().await;
+
+        let evidence = std::fs::read_to_string(ledger_path).unwrap();
+        assert!(evidence.contains("obs-hostile-stale-source"));
+        assert!(evidence.contains(&current.source_authority_observation_id));
+        assert!(evidence.contains("refresh_hello"));
+        assert!(!evidence.contains("idempotency_reserved"));
+        assert!(!evidence.contains("route_selected"));
+    }
+
     #[tokio::test]
     async fn jvm_bridge_json_call_enters_resident_route_path() {
         let dir = tempfile::tempdir().unwrap();
@@ -1115,13 +1482,23 @@ listens = []
 
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
         assert_eq!(loaded.loaded, 1, "{loaded:?}");
-        MctDaemonConfigStore::new(&config_path)
+        let config_store = MctDaemonConfigStore::new(&config_path);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        config_store
             .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
             .unwrap();
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
-        let (mut request, payload) =
-            jvm_bridge_protocol_request("patina:demo/control@0.1.0.run", r#"[{"from":"jvm"}]"#)
-                .unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
+        let (mut request, payload) = jvm_bridge_protocol_request(
+            "patina:demo/control@0.1.0.run",
+            r#"[{"from":"jvm"}]"#,
+            test_grants_authority_identity(1),
+        )
+        .unwrap();
         request.call.call_id = CallId::new("call-jvm-bridge-test")
             .expect("string ID literal/generated value must be non-empty");
         assert_eq!(request.call.origin, CallOrigin::JvmAdapter);

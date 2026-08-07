@@ -6,6 +6,8 @@
 #![forbid(unsafe_code)]
 
 mod acquisition;
+mod authority_order;
+mod authority_snapshot;
 #[cfg(test)]
 mod authority_test_fixture;
 mod blob_store;
@@ -23,6 +25,7 @@ mod metrics;
 mod process;
 mod registry;
 mod release;
+mod startup;
 mod state;
 mod status;
 mod supervisor;
@@ -30,14 +33,34 @@ mod toy;
 mod wasm;
 mod wit_values;
 
+#[cfg(test)]
+fn test_grants_authority_identity(generation: u64) -> mct_kernel::GrantsAuthorityIdentity {
+    mct_kernel::GrantsAuthorityIdentity {
+        mother_node_id: "local-mct".into(),
+        authority_epoch: "epoch-test".into(),
+        generation,
+        source_authority_observation_id: format!("obs-authority-test-{generation}"),
+    }
+}
+
 #[cfg(feature = "fuzzing")]
 pub use acquisition::fuzz_child_package_manifest;
 pub use acquisition::{
     MCT_CHILD_MANIFEST_MAX_BYTES, MCT_COMPONENT_ARTIFACT_MAX_BYTES,
     MCT_FILESYSTEM_ACQUISITION_ADAPTER, MctArtifactAcquisitionReport, MctArtifactAttemptContext,
-    MctArtifactStageRequest, MctStandingSourceLedgerProof, new_artifact_attempt_context,
+    MctArtifactStageRequest, MctStandingSourceLedgerProof, StandingSourceAdmissionDenyReasonV1,
+    StandingSourceAdmissionV1, admit_standing_source, new_artifact_attempt_context,
     stage_artifact_with_context, stage_artifact_with_context_and_observer,
     stage_operator_pointed_artifact, verify_standing_source_ledger_correlation,
+};
+pub use authority_order::{
+    MotherAuthorityAdmissionDenyV1, MotherAuthorityCommitOutcomeV1, MotherAuthorityFenceReasonV1,
+    MotherAuthorityOrderV1, MotherAuthorityRecoveryDenyV1, authority_expectation_from_ledger,
+    authority_expectation_from_snapshot,
+};
+pub use authority_snapshot::{
+    LocalExecutionAuthoritySnapshotDenyV1, local_execution_authority_snapshot,
+    local_execution_authority_snapshot_at,
 };
 pub use blob_store::{
     MCT_BLOB_MAX_BYTES, MctLocalBlobStore, MctLocalBlobStoreError, content_addressed_blob_handle,
@@ -123,6 +146,19 @@ pub use release::{
     acquire_operator_file_daemon_release_with_observer, plan_daemon_release_source,
     verify_and_extract_daemon_release_archive,
 };
+pub use startup::{
+    AuthorityDriftReportV1, MCT_OPERATOR_REINITIALIZATION_CONFIRMATION_V1,
+    MctAcceptedStartupGateV1, MctAuthorityProjectionDriftStatusV1, MctAuthorityStartupEvidenceV1,
+    MctCanonicalAuthorityDriftV1, MctIsolatedStartupPlaneV1, MctLedgerForensicCaseV1,
+    MctLedgerForensicReportV1, MctLegacyAuthorityComparisonV1, MctLegacyAuthorityInputV1,
+    MctLegacyAuthoritySourceV1, MctOperatorStartupGateRequestV1, MctProjectionAuthorityDriftV1,
+    MctStartupArtifactClassV1, MctStartupArtifactEntryV1, MctStartupArtifactFileTypeV1,
+    MctStartupArtifactInventoryV1, MctStartupArtifactStateV1, MctStartupAuthorityReadinessV1,
+    MctStartupClassificationErrorV1, MctStartupPaths, MctStartupPlaneResponseV1,
+    MctStartupPostureV1, MctStartupRefusalKindV1, MctStartupRefusalV1,
+    accept_operator_startup_gate, classify_authority_startup, classify_startup_artifacts,
+    finalize_authority_startup, open_classified_authority,
+};
 pub use state::{
     ChildInvocationProvenance, MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER, MCT_IDEMPOTENCY_TTL_SECONDS,
     MctArtifactPackageRecord, MctCompositionRunRecord, MctIdempotencyReservation, MctMetricPoint,
@@ -143,7 +179,7 @@ pub use supervisor::{
 };
 pub use toy::{
     MCT_SECRETS_TOY_ID, MctToyAdapterOutcome, MctToyAdapterRegistry, MctToyBackend, MctToyCallIds,
-    MctToyCallReport, mct_secrets_toy_contract,
+    MctToyCallReport, MctToyEffectAuthorityV1, mct_secrets_toy_contract,
 };
 pub use wasm::{
     DEFAULT_WASM_MEMORY_LIMIT_BYTES, MctWasiHostConfig, MctWasiPreopen, MctWasiPreopenAccess,

@@ -1,4 +1,4 @@
-use crate::{call::*, child::*, id::*, toy::*};
+use crate::{authority::*, call::*, child::*, id::*, toy::*};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,6 +241,8 @@ pub struct AuthorizedRouteExecution {
     policy_revision: u64,
     /// Grants revision under which this capability was minted.
     grants_revision: u64,
+    /// Complete executing-Mother authority for snapshot-revalidated production routes.
+    local_execution_authority: Option<LocalExecutionAuthorityTokenV1>,
 }
 
 impl AuthorizedRouteExecution {
@@ -292,6 +294,11 @@ impl AuthorizedRouteExecution {
     /// Returns the grants revision under which this capability was minted.
     pub fn grants_revision(&self) -> u64 {
         self.grants_revision
+    }
+
+    /// Returns complete local authority when this route was snapshot-revalidated.
+    pub fn local_execution_authority(&self) -> Option<&LocalExecutionAuthorityTokenV1> {
+        self.local_execution_authority.as_ref()
     }
 }
 
@@ -498,16 +505,6 @@ pub fn revalidate_route_for_execution(
                 CandidateEliminationReason::PolicyRevisionStale,
             );
         }
-        if toy.evaluation.grants_revision != call.authority_context.grants_revision {
-            return revalidation_denied(
-                call,
-                initial,
-                Some(selected_route.clone()),
-                ids,
-                RouteRevalidationReason::GrantsRevisionStale,
-                CandidateEliminationReason::GrantsRevisionStale,
-            );
-        }
         if toy.evaluation.call_id != call.call_id || !toy.is_allowed() {
             return revalidation_denied(
                 call,
@@ -540,7 +537,9 @@ pub fn revalidate_route_for_execution(
         authority_evaluations: vec![CandidateAuthorityEvaluation::admissible(
             selected_route.clone(),
             call.authority_context.policy_revision,
-            call.authority_context.grants_revision,
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation,
         )],
         selected_route: Some(selected_route.clone()),
         outcome: RouteDecisionOutcome::RouteSelected,
@@ -557,13 +556,182 @@ pub fn revalidate_route_for_execution(
         child_invocation,
         toy_calls: authorized_toys,
         policy_revision: call.authority_context.policy_revision,
-        grants_revision: call.authority_context.grants_revision,
+        grants_revision: call
+            .authority_context
+            .expected_receiver_grants_authority
+            .generation,
+        local_execution_authority: None,
     };
 
     RouteRevalidationResult {
         decision,
         reason: RouteRevalidationReason::Revalidated,
         authorized: Some(authorized),
+    }
+}
+
+/// Revalidates route-evaluation authority against one Mother-owned local snapshot.
+///
+/// Existing effect tokens retain their call-carried revision fields for the
+/// separately gated effect-admission migration; required Toy results here are
+/// evaluation-only and mint no effect token.
+pub fn revalidate_route_for_execution_with_snapshot(
+    call: &MctCall,
+    initial: &RouteDecision,
+    child: ChildCallAuthorityResult,
+    required_toys: Vec<ToyGrantEvaluation>,
+    snapshot: &LocalExecutionAuthoritySnapshot,
+    ids: RouteRevalidationIds,
+) -> RouteRevalidationResult {
+    let local_policy_revision = snapshot.policy_revision();
+    let local_grants_generation = snapshot.canonical_grants().grants_authority().generation();
+    let local_revisions = RouteEvaluationRevisions {
+        policy: local_policy_revision,
+        grants: local_grants_generation,
+    };
+    if initial.call_id != call.call_id {
+        return revalidation_denied_with_revisions(
+            call,
+            initial,
+            None,
+            ids,
+            RouteRevalidationReason::CallIdMismatch,
+            CandidateEliminationReason::RouteMismatch,
+            local_revisions,
+        );
+    }
+    let Some(selected_route) = initial.selected_route.as_ref() else {
+        return revalidation_denied_with_revisions(
+            call,
+            initial,
+            None,
+            ids,
+            RouteRevalidationReason::InitialDecisionNotSelected,
+            CandidateEliminationReason::CapabilityUnavailable,
+            local_revisions,
+        );
+    };
+    if initial.outcome != RouteDecisionOutcome::RouteSelected
+        || !initial_route_admitted_candidate(initial, selected_route)
+    {
+        return revalidation_denied_with_revisions(
+            call,
+            initial,
+            Some(selected_route.clone()),
+            ids,
+            RouteRevalidationReason::SelectedRouteNotAdmissible,
+            CandidateEliminationReason::CapabilityUnavailable,
+            local_revisions,
+        );
+    }
+    if child.evaluation.policy_revision != local_policy_revision {
+        return revalidation_denied_with_revisions(
+            call,
+            initial,
+            Some(selected_route.clone()),
+            ids,
+            RouteRevalidationReason::PolicyRevisionStale,
+            CandidateEliminationReason::PolicyRevisionStale,
+            local_revisions,
+        );
+    }
+    if child.evaluation.call_id != call.call_id || !child.is_allowed() {
+        return revalidation_denied_with_revisions(
+            call,
+            initial,
+            Some(selected_route.clone()),
+            ids,
+            RouteRevalidationReason::ChildAuthorityDenied,
+            CandidateEliminationReason::ChildNotApproved,
+            local_revisions,
+        );
+    }
+    let child_invocation = child
+        .authorized
+        .expect("allowed child authority has a token");
+    if let Some(child_id) = selected_route.child_id.as_ref()
+        && child_id.as_str() != child_invocation.child_name()
+    {
+        return revalidation_denied_with_revisions(
+            call,
+            initial,
+            Some(selected_route.clone()),
+            ids,
+            RouteRevalidationReason::SelectedChildMismatch,
+            CandidateEliminationReason::RouteMismatch,
+            local_revisions,
+        );
+    }
+    for toy in required_toys {
+        if toy.policy_revision != local_policy_revision {
+            return revalidation_denied_with_revisions(
+                call,
+                initial,
+                Some(selected_route.clone()),
+                ids,
+                RouteRevalidationReason::PolicyRevisionStale,
+                CandidateEliminationReason::PolicyRevisionStale,
+                local_revisions,
+            );
+        }
+        if toy.grants_revision != local_grants_generation {
+            return revalidation_denied_with_revisions(
+                call,
+                initial,
+                Some(selected_route.clone()),
+                ids,
+                RouteRevalidationReason::GrantsRevisionStale,
+                CandidateEliminationReason::GrantsRevisionStale,
+                local_revisions,
+            );
+        }
+        if toy.call_id != call.call_id || toy.verdict != ToyGrantVerdict::Allowed {
+            return revalidation_denied_with_revisions(
+                call,
+                initial,
+                Some(selected_route.clone()),
+                ids,
+                RouteRevalidationReason::ToyGrantDenied,
+                CandidateEliminationReason::ToyGrantMissing,
+                local_revisions,
+            );
+        }
+    }
+    let local_execution_authority = snapshot.execution_authority(call.deadline.clone());
+    let child_invocation =
+        child_invocation.bind_local_execution_authority(local_execution_authority.clone());
+    let decision_id = ids.decision_id.clone();
+    let decision = RouteDecision {
+        decision_id: ids.decision_id,
+        call_id: call.call_id.clone(),
+        decision_kind: RouteDecisionKind::Revalidation,
+        initial_decision_id: Some(initial.decision_id.clone()),
+        authority_evaluations: vec![CandidateAuthorityEvaluation::admissible(
+            selected_route.clone(),
+            local_policy_revision,
+            local_grants_generation,
+        )],
+        selected_route: Some(selected_route.clone()),
+        outcome: RouteDecisionOutcome::RouteSelected,
+        no_route_reason: None,
+        safe_message: "route revalidated".into(),
+        observation_id: ids.observation_id,
+    };
+    RouteRevalidationResult {
+        decision,
+        reason: RouteRevalidationReason::Revalidated,
+        authorized: Some(AuthorizedRouteExecution {
+            authorized_route_execution_id: ids.authorized_route_execution_id,
+            call_id: call.call_id.clone(),
+            initial_decision_id: initial.decision_id.clone(),
+            revalidation_decision_id: decision_id,
+            route: selected_route.clone(),
+            child_invocation,
+            toy_calls: Vec::new(),
+            policy_revision: local_policy_revision,
+            grants_revision: local_grants_generation,
+            local_execution_authority: Some(local_execution_authority),
+        }),
     }
 }
 
@@ -577,6 +745,12 @@ fn initial_route_admitted_candidate(
     })
 }
 
+#[derive(Clone, Copy)]
+struct RouteEvaluationRevisions {
+    policy: u64,
+    grants: u64,
+}
+
 fn revalidation_denied(
     call: &MctCall,
     initial: &RouteDecision,
@@ -585,14 +759,40 @@ fn revalidation_denied(
     reason: RouteRevalidationReason,
     elimination_reason: CandidateEliminationReason,
 ) -> RouteRevalidationResult {
+    revalidation_denied_with_revisions(
+        call,
+        initial,
+        selected_route,
+        ids,
+        reason,
+        elimination_reason,
+        RouteEvaluationRevisions {
+            policy: call.authority_context.policy_revision,
+            grants: call
+                .authority_context
+                .expected_receiver_grants_authority
+                .generation,
+        },
+    )
+}
+
+fn revalidation_denied_with_revisions(
+    call: &MctCall,
+    initial: &RouteDecision,
+    selected_route: Option<CandidateRoute>,
+    ids: RouteRevalidationIds,
+    reason: RouteRevalidationReason,
+    elimination_reason: CandidateEliminationReason,
+    revisions: RouteEvaluationRevisions,
+) -> RouteRevalidationResult {
     let authority_evaluations = selected_route
         .clone()
         .map(|candidate| {
             vec![CandidateAuthorityEvaluation::eliminated(
                 candidate,
                 elimination_reason,
-                call.authority_context.policy_revision,
-                call.authority_context.grants_revision,
+                revisions.policy,
+                revisions.grants,
             )]
         })
         .unwrap_or_default();
@@ -669,7 +869,7 @@ mod tests {
             },
             authority_context: AuthorityContextSnapshot {
                 policy_revision: 1,
-                grants_revision: 1,
+                expected_receiver_grants_authority: crate::call::test_grants_authority_identity(1),
                 vision_policy_revision: 1,
             },
             deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),
@@ -844,7 +1044,10 @@ mod tests {
     ) -> ToyGrantEvaluationResult {
         let mut authority_call = call();
         authority_call.authority_context.policy_revision = policy_revision;
-        authority_call.authority_context.grants_revision = grants_revision;
+        authority_call
+            .authority_context
+            .expected_receiver_grants_authority
+            .generation = grants_revision;
         let toy_id =
             ToyId::new("toy-echo").expect("string ID literal/generated value must be non-empty");
         let subject = ToyGrantSubject {
@@ -925,6 +1128,46 @@ mod tests {
         let result = evaluate_toy_grant_for_call(&authority_call, &request, &[catalog], &[grant]);
         assert_eq!(result.is_allowed(), allowed);
         result
+    }
+
+    fn local_snapshot(
+        policy_revision: u64,
+        grants_generation: u64,
+    ) -> LocalExecutionAuthoritySnapshot {
+        crate::assemble_local_execution_authority_snapshot(
+            crate::LocalExecutionAuthoritySnapshotPartsV1 {
+                executing_mother_node_id: "node-b".into(),
+                grants_authority_mother_node_id: "node-b".into(),
+                grants_authority_epoch: "mct-authority-epoch-v1:route-test".into(),
+                grants_authority_generation: grants_generation,
+                grants_authority_observation_id: "obs-route-authority".into(),
+                toy_catalog: Vec::new(),
+                toy_grants: Vec::new(),
+                watch_scopes: Vec::new(),
+                policy_revision,
+                vision_policy_revision: policy_revision,
+                child_local_node_id: MctNodeId::new("node-b").unwrap(),
+                child_vision_id: VisionId::new("vision-a").unwrap(),
+                child_artifacts: Vec::new(),
+                child_approvals: Vec::new(),
+                child_assignments: Vec::new(),
+                child_instances: Vec::new(),
+                peer_local_node_id: MctNodeId::new("node-b").unwrap(),
+                peer_local_vision_id: VisionId::new("vision-a").unwrap(),
+                peer_local_endpoint_id: EndpointIdText::new("endpoint-route-test").unwrap(),
+                peer_records: Vec::new(),
+                callable_surfaces: Vec::new(),
+                evaluated_at: Timestamp::new("2026-05-31T00:00:00Z").unwrap(),
+                projection_id: "authority-state-v1".into(),
+                projection_source_mother_node_id: "node-b".into(),
+                projection_source_ledger_id: "ledger-route-test".into(),
+                through_sequence: 7,
+                through_observation_id: "obs-route-authority".into(),
+                through_entry_hash: "entry-route-authority".into(),
+                authority_state_hash: "state-route-authority".into(),
+                projection_hash: "projection-route-authority".into(),
+            },
+        )
     }
 
     #[test]
@@ -1072,6 +1315,103 @@ mod tests {
             Some(CandidateEliminationReason::ToyGrantMissing)
         );
         assert!(revalidation.authorized.is_none());
+    }
+
+    /// Phase I proof 10: each migrated comparison receives independent local evidence.
+    #[test]
+    fn migrated_revalidation_denies_independent_stale_policy_and_grants_identity() {
+        let call = call();
+        let selected = candidate("candidate-1", RuntimeKind::Process);
+        let initial = initial_selected_route(selected);
+
+        let stale_policy = revalidate_route_for_execution_with_snapshot(
+            &call,
+            &initial,
+            child_result(1, true, "child-echo"),
+            Vec::new(),
+            &local_snapshot(2, 7),
+            revalidation_ids(),
+        );
+        assert_eq!(
+            stale_policy.reason,
+            RouteRevalidationReason::PolicyRevisionStale
+        );
+
+        let child = child_result(1, true, "child-echo");
+        let mut stale_grant = toy_result(1, 1, true).evaluation;
+        stale_grant.grants_revision = 6;
+        let stale_grants = revalidate_route_for_execution_with_snapshot(
+            &call,
+            &initial,
+            child,
+            vec![stale_grant],
+            &local_snapshot(1, 7),
+            revalidation_ids(),
+        );
+        assert_eq!(
+            stale_grants.reason,
+            RouteRevalidationReason::GrantsRevisionStale
+        );
+
+        let mut current_grant = toy_result(1, 1, true).evaluation;
+        current_grant.grants_revision = 7;
+        let current = revalidate_route_for_execution_with_snapshot(
+            &call,
+            &initial,
+            child_result(1, true, "child-echo"),
+            vec![current_grant],
+            &local_snapshot(1, 7),
+            revalidation_ids(),
+        );
+        assert!(
+            current.is_authorized(),
+            "matching independently sourced local policy and generation must not spuriously deny"
+        );
+    }
+
+    /// Phase J proof 1: executable authority is minted only from the local snapshot.
+    #[test]
+    fn snapshot_sourced_execution_tokens_ignore_hostile_caller_echoes() {
+        for (policy_echo, grants_echo, vision_echo) in [
+            (0, 0, 0),
+            (u64::MAX, u64::MAX - 1, u64::MAX - 2),
+            (41, 42, 43),
+        ] {
+            let mut hostile = call();
+            hostile.authority_context.policy_revision = policy_echo;
+            hostile
+                .authority_context
+                .expected_receiver_grants_authority
+                .generation = grants_echo;
+            hostile.authority_context.vision_policy_revision = vision_echo;
+            let selected = candidate("candidate-1", RuntimeKind::Process);
+            let initial = initial_selected_route(selected);
+            let result = revalidate_route_for_execution_with_snapshot(
+                &hostile,
+                &initial,
+                child_result(1, true, "child-echo"),
+                Vec::new(),
+                &local_snapshot(1, 7),
+                revalidation_ids(),
+            );
+            let route = result.authorized.expect("snapshot-authorized route");
+            let route_authority = route
+                .local_execution_authority()
+                .expect("snapshot-bound route authority");
+            let child_authority = route
+                .child_invocation()
+                .local_execution_authority()
+                .expect("route-bound child authority");
+
+            assert_eq!(route_authority.policy_revision(), 1);
+            assert_eq!(
+                route_authority.grants_authority().mother_node_id(),
+                "node-b"
+            );
+            assert_eq!(route_authority.grants_authority().generation(), 7);
+            assert_eq!(child_authority, route_authority);
+            assert_eq!(route_authority.effective_deadline(), &hostile.deadline);
+        }
     }
 
     #[test]

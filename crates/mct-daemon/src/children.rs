@@ -909,7 +909,7 @@ listens = ["events.changed"]
             },
             authority_context: AuthorityContextSnapshot {
                 policy_revision: 1,
-                grants_revision: 1,
+                expected_receiver_grants_authority: crate::test_grants_authority_identity(1),
                 vision_policy_revision: 1,
             },
             deadline: Timestamp::new("2026-05-31T00:01:00Z").unwrap(),

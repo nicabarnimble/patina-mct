@@ -174,7 +174,10 @@ fn local_protocol_request(
             accepted_alpn: LOCAL_CALL_ALPN.into(),
             endpoint_id: endpoint_id.clone(),
             policy_revision: call.authority_context.policy_revision,
-            grants_revision: call.authority_context.grants_revision,
+            expected_receiver_grants_authority: call
+                .authority_context
+                .expected_receiver_grants_authority
+                .clone(),
         },
         received_over: IrohConnectionPresentation {
             endpoint_id,
@@ -205,7 +208,13 @@ fn local_submission_observations(
     let subject = Some(authenticated_uid_subject(uid));
     let resource = Some(mct_daemon::operation_id_from_target(&request.call.target));
     let policy_revision = Some(request.call.authority_context.policy_revision);
-    let grants_revision = Some(request.call.authority_context.grants_revision);
+    let grants_revision = Some(
+        request
+            .call
+            .authority_context
+            .expected_receiver_grants_authority
+            .generation,
+    );
     vec![
         local_call_observation(LocalCallObservationFact {
             kind: ObservationKind::CallReceived,
@@ -269,7 +278,13 @@ fn terminal_observation(
         )),
         resource_id: result.result_ref.as_ref().map(ToString::to_string),
         policy_revision: Some(request.call.authority_context.policy_revision),
-        grants_revision: Some(request.call.authority_context.grants_revision),
+        grants_revision: Some(
+            request
+                .call
+                .authority_context
+                .expected_receiver_grants_authority
+                .generation,
+        ),
         safe_message: "local call result recorded".into(),
         detail_ref: Some(format!("call_outcome:{:?}", result.outcome)),
     })
@@ -501,7 +516,12 @@ mod tests {
             },
             "authority_context": {
                 "policy_revision": 1,
-                "grants_revision": 1,
+                "expected_receiver_grants_authority": {
+                    "mother_node_id": "local-mct",
+                    "authority_epoch": "epoch-test",
+                    "generation": 1,
+                    "source_authority_observation_id": "obs-authority-test-1"
+                },
                 "vision_policy_revision": 1
             },
             "deadline": "2099-01-01T00:00:00Z",
@@ -544,7 +564,7 @@ mod tests {
     async fn resident_call_uds_authenticates_peer_before_submission() {
         let dir = tempfile::tempdir().unwrap();
         let (_paths, _identity_path, ledger_path) = local_paths(&dir);
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         let response = match preflight_local_submission(
             &ledger,
             501,
@@ -604,7 +624,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let (paths, _identity_path, ledger_path) = local_paths(&dir);
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
 
         let mismatched_socket = dir.path().join("mismatched.sock");
         let mismatched_listener = tokio::net::UnixListener::bind(&mismatched_socket).unwrap();
@@ -671,7 +691,7 @@ mod tests {
     async fn locally_submitted_body_cannot_claim_trigger_firing_context() {
         let dir = tempfile::tempdir().unwrap();
         let (paths, _identity_path, ledger_path) = local_paths(&dir);
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         let payload = b"{}";
         let digest = blake3::hash(payload).to_hex().to_string();
         let mut body: serde_json::Value = serde_json::from_slice(&submission_body(
@@ -706,7 +726,7 @@ mod tests {
     async fn resident_call_uds_rejects_bad_payload_and_keeps_ledger_byte_free() {
         let dir = tempfile::tempdir().unwrap();
         let (paths, _identity_path, ledger_path) = local_paths(&dir);
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         let payload = br#"[{"secret-shaped":"do-not-record"}]"#;
         let response = execute_local_submission(
             paths,
@@ -735,7 +755,7 @@ mod tests {
     async fn resident_call_uds_idempotency_is_authenticated_caller_scoped() {
         let dir = tempfile::tempdir().unwrap();
         let (paths, _identity_path, ledger_path) = local_paths(&dir);
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         let payload = b"{}";
         let digest = blake3::hash(payload).to_hex().to_string();
         let peer = MctUdsPeerCredentials {
@@ -784,7 +804,7 @@ mod tests {
     async fn resident_call_uds_observes_decision_before_response() {
         let dir = tempfile::tempdir().unwrap();
         let (paths, _identity_path, ledger_path) = local_paths(&dir);
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         let payload = b"{}";
         let digest = blake3::hash(payload).to_hex().to_string();
         let response = execute_local_submission(

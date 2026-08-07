@@ -89,7 +89,11 @@ pub(super) fn resident_payload_fact_observation(
             bytes.len()
         )),
         policy_revision: Some(call.authority_context.policy_revision),
-        grants_revision: Some(call.authority_context.grants_revision),
+        grants_revision: Some(
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation,
+        ),
         outcome: ObservationOutcome::Completed,
         visibility: ObservationVisibility::InternalOnly,
         safe_message: format!("{direction} payload integrity facts recorded"),
@@ -138,7 +142,11 @@ pub(super) fn resident_payload_integrity_failure_observation(
             decision.reason
         )),
         policy_revision: Some(call.authority_context.policy_revision),
-        grants_revision: Some(call.authority_context.grants_revision),
+        grants_revision: Some(
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation,
+        ),
         outcome: ObservationOutcome::Failed,
         visibility: ObservationVisibility::InternalOnly,
         safe_message: decision.safe_message.clone(),
@@ -296,11 +304,14 @@ mod tests {
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 
     fn resident_test_call(trace_id: TraceId) -> MctCall {
-        let mut call = local_wasm_call(OperationTarget {
-            namespace: "patina:demo".into(),
-            interface_name: "control@0.1.0".into(),
-            function_name: "run".into(),
-        });
+        let mut call = local_wasm_call(
+            OperationTarget {
+                namespace: "patina:demo".into(),
+                interface_name: "control@0.1.0".into(),
+                function_name: "run".into(),
+            },
+            test_grants_authority_identity(1),
+        );
         call.call_id = CallId::new("call-resident-wit")
             .expect("string ID literal/generated value must be non-empty");
         call.trace_context.trace_id = trace_id;
@@ -323,7 +334,7 @@ mod tests {
                 endpoint_id: EndpointIdText::new("endpoint-resident-wit")
                     .expect("string ID literal/generated value must be non-empty"),
                 policy_revision: 1,
-                grants_revision: 1,
+                expected_receiver_grants_authority: test_grants_authority_identity(1),
             },
             received_over: IrohConnectionPresentation {
                 endpoint_id: EndpointIdText::new("endpoint-resident-wit")
@@ -425,10 +436,17 @@ listens = []
 
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
         assert_eq!(loaded.loaded, 1, "{loaded:?}");
-        MctDaemonConfigStore::new(&config_path)
+        let config_store = MctDaemonConfigStore::new(&config_path);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        config_store
             .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
             .unwrap();
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         let payload = br#"{"secret":"blob-marker"}"#.to_vec();
         let payload_base64 = BASE64_STANDARD.encode(&payload);
         let payload_digest = blake3_hex(&payload);
@@ -491,10 +509,17 @@ listens = []
         write_resident_payload_process_child(&children_dir);
 
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
-        MctDaemonConfigStore::new(&config_path)
+        let config_store = MctDaemonConfigStore::new(&config_path);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        config_store
             .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
             .unwrap();
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         let payload = b"missing blob bytes";
         let payload_digest = blake3_hex(payload);
         let trace_id = TraceId::new("trace-resident-blob-missing")
@@ -537,10 +562,17 @@ listens = []
         write_resident_payload_process_child(&children_dir);
 
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
-        MctDaemonConfigStore::new(&config_path)
+        let config_store = MctDaemonConfigStore::new(&config_path);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        config_store
             .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
             .unwrap();
-        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         let payload = br#"{"secret":"trusted-blob"}"#.to_vec();
         let payload_digest = blake3_hex(&payload);
         let store = local_blob_store_for_state_path(&state_path);

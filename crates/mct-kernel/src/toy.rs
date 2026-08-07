@@ -1,4 +1,8 @@
-use crate::{call::*, id::*};
+use crate::{
+    authority::{LocalExecutionAuthoritySnapshot, LocalExecutionAuthorityTokenV1},
+    call::*,
+    id::*,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,6 +237,56 @@ pub struct AuthorizedToyCall {
     policy_revision: u64,
     /// Grants revision under which this capability was minted.
     grants_revision: u64,
+    /// Complete executing-Mother authority for snapshot-evaluated Toy effects.
+    local_execution_authority: Option<LocalExecutionAuthorityTokenV1>,
+    /// Exact canonical Toy catalog record used to mint this token.
+    canonical_toy: CanonicalToyContract,
+    /// Exact canonical grant record used to mint this token.
+    canonical_grant: ToyGrant,
+    /// Exact subject admitted by evaluation.
+    subject: ToyGrantSubject,
+    /// Exact action admitted by evaluation.
+    action: String,
+    /// Exact node admitted by evaluation.
+    node_id: MctNodeId,
+    /// Exact Vision admitted by evaluation.
+    vision_id: VisionId,
+    /// Exact project admitted by evaluation.
+    project_id: Option<ProjectId>,
+    /// Exact data classification admitted by evaluation.
+    data_classification: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// Typed reason current Toy effect authority was denied.
+pub enum ToyEffectAdmissionDenyV1 {
+    /// Token was not minted from local snapshot authority.
+    LocalAuthorityUnavailable,
+    /// Supplied call differs from the authorized call.
+    CallIdMismatch,
+    /// Effective deadline differs from the minted deadline.
+    EffectiveDeadlineMismatch,
+    /// Current local policy identity differs from minted authority.
+    PolicyAuthorityMismatch,
+    /// Current namespaced grants identity differs from minted authority.
+    GrantsAuthorityMismatch,
+    /// Token or effective deadline has expired on the Mother clock.
+    TokenExpired,
+    /// Canonical current Toy catalog does not authorize this Toy.
+    UnknownToy,
+    /// Exact grant named by the token is absent.
+    MissingExactGrant,
+    /// Exact grant is not active.
+    InactiveGrant,
+    /// Exact current subject or effect scope differs from the token.
+    ExactGrantMismatch,
+    /// Exact grant has not reached its start time.
+    GrantNotStarted,
+    /// Exact grant reached its exclusive expiry.
+    GrantExpired,
+    /// A usage limit exists but no current live consumption fact is available.
+    ConsumptionStateUnavailable,
 }
 
 #[derive(Debug)]
@@ -254,6 +308,98 @@ impl AdmittedToyEffect<'_> {
 }
 
 impl AuthorizedToyCall {
+    /// Admits this token against one fresh proof-gated executing-Mother snapshot.
+    pub fn admit_effect_with_snapshot<'a>(
+        &'a self,
+        call: &MctCall,
+        snapshot: &LocalExecutionAuthoritySnapshot,
+    ) -> Result<AdmittedToyEffect<'a>, ToyEffectAdmissionDenyV1> {
+        let authority = self
+            .local_execution_authority
+            .as_ref()
+            .ok_or(ToyEffectAdmissionDenyV1::LocalAuthorityUnavailable)?;
+        if self.call_id != call.call_id {
+            return Err(ToyEffectAdmissionDenyV1::CallIdMismatch);
+        }
+        if authority.effective_deadline() != &call.deadline {
+            return Err(ToyEffectAdmissionDenyV1::EffectiveDeadlineMismatch);
+        }
+        if authority.policy_revision() != snapshot.policy_revision()
+            || authority.vision_policy_revision() != snapshot.vision_policy_revision()
+        {
+            return Err(ToyEffectAdmissionDenyV1::PolicyAuthorityMismatch);
+        }
+        if authority.grants_authority() != snapshot.canonical_grants().grants_authority()
+            || authority.grants_authority().mother_node_id() != snapshot.executing_mother_node_id()
+        {
+            return Err(ToyEffectAdmissionDenyV1::GrantsAuthorityMismatch);
+        }
+        let now = snapshot.mother_clock().evaluated_at();
+        if now >= &self.expires_at || now >= authority.effective_deadline() {
+            return Err(ToyEffectAdmissionDenyV1::TokenExpired);
+        }
+        let current_toy = snapshot
+            .canonical_grants()
+            .toy_catalog()
+            .iter()
+            .find(|toy| toy.toy_id == self.toy_id && toy.authority_bearing)
+            .ok_or(ToyEffectAdmissionDenyV1::UnknownToy)?;
+        if current_toy != &self.canonical_toy {
+            return Err(ToyEffectAdmissionDenyV1::ExactGrantMismatch);
+        }
+        let grant = snapshot
+            .canonical_grants()
+            .toy_grants()
+            .iter()
+            .find(|grant| grant.grant_id == self.grant_id)
+            .ok_or(ToyEffectAdmissionDenyV1::MissingExactGrant)?;
+        if grant.grant_state != ToyGrantState::Active {
+            return Err(ToyEffectAdmissionDenyV1::InactiveGrant);
+        }
+        if grant != &self.canonical_grant
+            || grant.toy_id != self.toy_id
+            || grant.policy_revision != snapshot.policy_revision()
+            || !subject_matches(&grant.subject, &self.subject)
+            || grant.scope.vision_id != self.vision_id
+            || !option_matches(&grant.scope.node_id, &Some(self.node_id.clone()))
+            || !option_matches(&grant.scope.project_id, &self.project_id)
+            || !option_matches(
+                &grant.scope.data_classification,
+                &Some(self.data_classification.clone()),
+            )
+            || !option_matches(&grant.scope.resource_id, &self.resource_id)
+            || !grant
+                .scope
+                .allowed_actions
+                .iter()
+                .any(|action| action == &self.action)
+        {
+            return Err(ToyEffectAdmissionDenyV1::ExactGrantMismatch);
+        }
+        if grant
+            .constraints
+            .starts_at
+            .as_ref()
+            .is_some_and(|starts_at| now < starts_at)
+        {
+            return Err(ToyEffectAdmissionDenyV1::GrantNotStarted);
+        }
+        if grant
+            .constraints
+            .expires_at
+            .as_ref()
+            .is_some_and(|expires_at| now >= expires_at)
+        {
+            return Err(ToyEffectAdmissionDenyV1::GrantExpired);
+        }
+        if grant.constraints.max_uses.is_some() {
+            return Err(ToyEffectAdmissionDenyV1::ConsumptionStateUnavailable);
+        }
+        Ok(AdmittedToyEffect { authorized: self })
+    }
+
+    /// Legacy exact-call/time guard retained for compatibility surfaces.
+    /// Resident Toy effects must use [`Self::admit_effect_with_snapshot`].
     /// Admits this token for an effect only when its exact call and authority
     /// revisions match the supplied call and the executing Mother's current
     /// time is strictly before token expiry.
@@ -262,10 +408,7 @@ impl AuthorizedToyCall {
         call: &MctCall,
         executing_mother_now: &Timestamp,
     ) -> Option<AdmittedToyEffect<'a>> {
-        (self.call_id == call.call_id
-            && self.policy_revision == call.authority_context.policy_revision
-            && self.grants_revision == call.authority_context.grants_revision
-            && executing_mother_now < &self.expires_at)
+        (self.call_id == call.call_id && executing_mother_now < &self.expires_at)
             .then_some(AdmittedToyEffect { authorized: self })
     }
 
@@ -323,6 +466,16 @@ impl AuthorizedToyCall {
     pub fn grants_revision(&self) -> u64 {
         self.grants_revision
     }
+
+    /// Returns complete local authority when snapshot minting produced this token.
+    pub fn local_execution_authority(&self) -> Option<&LocalExecutionAuthorityTokenV1> {
+        self.local_execution_authority.as_ref()
+    }
+
+    /// Returns the exact action admitted by evaluation.
+    pub fn action(&self) -> &str {
+        &self.action
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -379,7 +532,7 @@ impl ToyGrantEvaluationResult {
 ///
 /// Authority facts are the call snapshot, toy request, canonical catalog, and
 /// current grants. It allows only cataloged authority-bearing toys with an
-/// active grant whose subject, scope, action, revisions, and time window match.
+/// active grant whose subject, scope, action, policy revision, and time window match.
 /// Every missing, stale, revoked, expired, or mismatched fact returns a denied
 /// evaluation and no [`AuthorizedToyCall`].
 pub fn evaluate_toy_grant_for_call(
@@ -395,7 +548,9 @@ pub fn evaluate_toy_grant_for_call(
             None,
             ToyGrantReasonCode::UnknownToy,
             call.authority_context.policy_revision,
-            call.authority_context.grants_revision,
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation,
         );
     };
 
@@ -406,7 +561,9 @@ pub fn evaluate_toy_grant_for_call(
             None,
             ToyGrantReasonCode::PolicyDenied,
             call.authority_context.policy_revision,
-            call.authority_context.grants_revision,
+            call.authority_context
+                .expected_receiver_grants_authority
+                .generation,
         );
     }
 
@@ -416,9 +573,7 @@ pub fn evaluate_toy_grant_for_call(
             continue;
         }
 
-        if grant.policy_revision != call.authority_context.policy_revision
-            || grant.grants_revision != call.authority_context.grants_revision
-        {
+        if grant.policy_revision != call.authority_context.policy_revision {
             return denied(
                 call,
                 request,
@@ -501,6 +656,16 @@ pub fn evaluate_toy_grant_for_call(
             grants_revision: grant.grants_revision,
             observation_id: request.ids.observation_id.clone(),
         };
+        let Some(expires_at) = toy_token_expiry(call, request, grant) else {
+            return denied(
+                call,
+                request,
+                Some(grant),
+                ToyGrantReasonCode::PolicyDenied,
+                grant.policy_revision,
+                grant.grants_revision,
+            );
+        };
         let authorized = AuthorizedToyCall {
             authorized_toy_call_id: request.ids.authorized_toy_call_id.clone(),
             call_id: call.call_id.clone(),
@@ -510,12 +675,18 @@ pub fn evaluate_toy_grant_for_call(
             child_instance_id: request.child_instance_id.clone(),
             resource_id: request.resource_id.clone(),
             authority_decision_id: evaluation.decision_id.clone(),
-            expires_at: grant.constraints.expires_at.as_ref().map_or_else(
-                || call.deadline.clone(),
-                |expiry| expiry.clone().min(call.deadline.clone()),
-            ),
+            expires_at,
             policy_revision: grant.policy_revision,
             grants_revision: grant.grants_revision,
+            local_execution_authority: None,
+            canonical_toy: toy.clone(),
+            canonical_grant: grant.clone(),
+            subject: request.subject.clone(),
+            action: request.action.clone(),
+            node_id: request.node_id.clone(),
+            vision_id: call.caller.vision_id.clone(),
+            project_id: call.caller.project_id.clone(),
+            data_classification: call.payload_metadata.data_classification.clone(),
         };
 
         return ToyGrantEvaluationResult {
@@ -541,8 +712,254 @@ pub fn evaluate_toy_grant_for_call(
         None,
         ToyGrantReasonCode::MissingGrant,
         call.authority_context.policy_revision,
-        call.authority_context.grants_revision,
+        call.authority_context
+            .expected_receiver_grants_authority
+            .generation,
     )
+}
+
+/// Mints exact Toy effect authority from one proof-gated local snapshot.
+pub fn evaluate_toy_grant_for_snapshot(
+    call: &MctCall,
+    request: &ToyGrantEvaluationRequest,
+    snapshot: &LocalExecutionAuthoritySnapshot,
+) -> ToyGrantEvaluationResult {
+    let policy_revision = snapshot.policy_revision();
+    let grants_generation = snapshot.canonical_grants().grants_authority().generation();
+    let evaluation = evaluate_toy_grant_for_route_snapshot(
+        call,
+        request,
+        snapshot.canonical_grants().toy_catalog(),
+        snapshot.canonical_grants().toy_grants(),
+        policy_revision,
+        grants_generation,
+    );
+    if evaluation.verdict != ToyGrantVerdict::Allowed {
+        return ToyGrantEvaluationResult {
+            evaluation,
+            authorized: None,
+        };
+    }
+    let Some(grant_id) = evaluation.grant_id.as_ref() else {
+        return ToyGrantEvaluationResult {
+            evaluation,
+            authorized: None,
+        };
+    };
+    let Some(grant) = snapshot
+        .canonical_grants()
+        .toy_grants()
+        .iter()
+        .find(|grant| &grant.grant_id == grant_id)
+    else {
+        return ToyGrantEvaluationResult {
+            evaluation,
+            authorized: None,
+        };
+    };
+    let Some(toy) = snapshot
+        .canonical_grants()
+        .toy_catalog()
+        .iter()
+        .find(|toy| toy.toy_id == request.toy_id)
+    else {
+        return ToyGrantEvaluationResult {
+            evaluation,
+            authorized: None,
+        };
+    };
+    let Some(expires_at) = toy_token_expiry(call, request, grant) else {
+        return ToyGrantEvaluationResult {
+            evaluation: route_denied(
+                call,
+                request,
+                Some(grant),
+                ToyGrantReasonCode::PolicyDenied,
+                policy_revision,
+                grants_generation,
+            ),
+            authorized: None,
+        };
+    };
+    let authorized = AuthorizedToyCall {
+        authorized_toy_call_id: request.ids.authorized_toy_call_id.clone(),
+        call_id: call.call_id.clone(),
+        evaluation_id: evaluation.evaluation_id.clone(),
+        grant_id: grant.grant_id.clone(),
+        toy_id: request.toy_id.clone(),
+        child_instance_id: request.child_instance_id.clone(),
+        resource_id: request.resource_id.clone(),
+        authority_decision_id: evaluation.decision_id.clone(),
+        expires_at,
+        policy_revision,
+        grants_revision: grants_generation,
+        local_execution_authority: Some(snapshot.execution_authority(call.deadline.clone())),
+        canonical_toy: toy.clone(),
+        canonical_grant: grant.clone(),
+        subject: request.subject.clone(),
+        action: request.action.clone(),
+        node_id: request.node_id.clone(),
+        vision_id: call.caller.vision_id.clone(),
+        project_id: call.caller.project_id.clone(),
+        data_classification: call.payload_metadata.data_classification.clone(),
+    };
+    ToyGrantEvaluationResult {
+        evaluation,
+        authorized: Some(authorized),
+    }
+}
+
+/// Evaluates a required Toy for routing from one proof-gated local snapshot.
+///
+/// The canonical projection cursor proves grants generation; replayed legacy
+/// `ToyGrant.grants_revision` content is therefore not treated as generation.
+pub fn evaluate_toy_grant_for_route_snapshot(
+    call: &MctCall,
+    request: &ToyGrantEvaluationRequest,
+    catalog: &[CanonicalToyContract],
+    grants: &[ToyGrant],
+    local_policy_revision: u64,
+    local_grants_generation: u64,
+) -> ToyGrantEvaluation {
+    let Some(toy) = catalog.iter().find(|toy| toy.toy_id == request.toy_id) else {
+        return route_denied(
+            call,
+            request,
+            None,
+            ToyGrantReasonCode::UnknownToy,
+            local_policy_revision,
+            local_grants_generation,
+        );
+    };
+    if !toy.authority_bearing {
+        return route_denied(
+            call,
+            request,
+            None,
+            ToyGrantReasonCode::PolicyDenied,
+            local_policy_revision,
+            local_grants_generation,
+        );
+    }
+    let mut matching_wrong_state = None;
+    for grant in grants.iter().filter(|grant| grant.toy_id == request.toy_id) {
+        if !subject_matches(&grant.subject, &request.subject) {
+            continue;
+        }
+        if grant.policy_revision != local_policy_revision {
+            return route_denied(
+                call,
+                request,
+                Some(grant),
+                ToyGrantReasonCode::StaleSnapshot,
+                local_policy_revision,
+                local_grants_generation,
+            );
+        }
+        match grant.grant_state {
+            ToyGrantState::Active => {}
+            ToyGrantState::Expired => {
+                matching_wrong_state = Some((grant, ToyGrantReasonCode::ExpiredGrant));
+                continue;
+            }
+            ToyGrantState::Revoked | ToyGrantState::Superseded | ToyGrantState::Denied => {
+                matching_wrong_state = Some((grant, ToyGrantReasonCode::RevokedGrant));
+                continue;
+            }
+            ToyGrantState::Requested => {
+                matching_wrong_state = Some((grant, ToyGrantReasonCode::PolicyDenied));
+                continue;
+            }
+        }
+        if grant
+            .constraints
+            .starts_at
+            .as_ref()
+            .is_some_and(|starts_at| request.now < *starts_at)
+        {
+            return route_denied(
+                call,
+                request,
+                Some(grant),
+                ToyGrantReasonCode::PolicyDenied,
+                local_policy_revision,
+                local_grants_generation,
+            );
+        }
+        if grant
+            .constraints
+            .expires_at
+            .as_ref()
+            .is_some_and(|expires_at| request.now >= *expires_at)
+        {
+            return route_denied(
+                call,
+                request,
+                Some(grant),
+                ToyGrantReasonCode::ExpiredGrant,
+                local_policy_revision,
+                local_grants_generation,
+            );
+        }
+        if !scope_matches(&grant.scope, call, request) {
+            return route_denied(
+                call,
+                request,
+                Some(grant),
+                ToyGrantReasonCode::WrongScope,
+                local_policy_revision,
+                local_grants_generation,
+            );
+        }
+        return ToyGrantEvaluation {
+            evaluation_id: request.ids.evaluation_id.clone(),
+            call_id: call.call_id.clone(),
+            decision_id: request.ids.decision_id.clone(),
+            grant_id: Some(grant.grant_id.clone()),
+            toy_id: request.toy_id.clone(),
+            subject_child_name: request.subject.child_name.clone(),
+            verdict: ToyGrantVerdict::Allowed,
+            reason_code: ToyGrantReasonCode::ActiveGrant,
+            policy_revision: local_policy_revision,
+            grants_revision: local_grants_generation,
+            observation_id: request.ids.observation_id.clone(),
+        };
+    }
+    let (grant, reason) = matching_wrong_state.map_or(
+        (None, ToyGrantReasonCode::MissingGrant),
+        |(grant, reason)| (Some(grant), reason),
+    );
+    route_denied(
+        call,
+        request,
+        grant,
+        reason,
+        local_policy_revision,
+        local_grants_generation,
+    )
+}
+
+fn route_denied(
+    call: &MctCall,
+    request: &ToyGrantEvaluationRequest,
+    grant: Option<&ToyGrant>,
+    reason_code: ToyGrantReasonCode,
+    policy_revision: u64,
+    grants_revision: u64,
+) -> ToyGrantEvaluation {
+    ToyGrantEvaluation {
+        evaluation_id: request.ids.evaluation_id.clone(),
+        call_id: call.call_id.clone(),
+        decision_id: request.ids.decision_id.clone(),
+        grant_id: grant.map(|grant| grant.grant_id.clone()),
+        toy_id: request.toy_id.clone(),
+        subject_child_name: request.subject.child_name.clone(),
+        verdict: ToyGrantVerdict::Denied,
+        reason_code,
+        policy_revision,
+        grants_revision,
+        observation_id: request.ids.observation_id.clone(),
+    }
 }
 
 fn denied(
@@ -598,6 +1015,23 @@ fn scope_matches(
             .any(|action| action == &request.action)
 }
 
+fn toy_token_expiry(
+    call: &MctCall,
+    request: &ToyGrantEvaluationRequest,
+    grant: &ToyGrant,
+) -> Option<Timestamp> {
+    let mut expiry = grant
+        .constraints
+        .expires_at
+        .clone()
+        .unwrap_or_else(|| call.deadline.clone())
+        .min(call.deadline.clone());
+    if let Some(max_duration_ms) = grant.constraints.max_duration_ms {
+        expiry = expiry.min(request.now.checked_add_milliseconds(max_duration_ms)?);
+    }
+    Some(expiry)
+}
+
 fn option_matches<T: Eq>(grant_value: &Option<T>, request_value: &Option<T>) -> bool {
     grant_value
         .as_ref()
@@ -635,7 +1069,7 @@ mod tests {
             },
             authority_context: AuthorityContextSnapshot {
                 policy_revision: 3,
-                grants_revision: 7,
+                expected_receiver_grants_authority: crate::call::test_grants_authority_identity(7),
                 vision_policy_revision: 11,
             },
             deadline: Timestamp::new("2026-05-31T00:10:00Z").unwrap(),
@@ -734,7 +1168,7 @@ mod tests {
                 starts_at: None,
                 expires_at: Some(Timestamp::new("2026-05-31T00:05:00Z").unwrap()),
                 max_uses: None,
-                max_duration_ms: Some(1000),
+                max_duration_ms: None,
                 locality_required: true,
             },
             grant_state: state,
@@ -792,6 +1226,27 @@ mod tests {
 
         let authorized = result.authorized.expect("authorized toy call");
         assert_eq!(authorized.expires_at(), &effective_call.deadline);
+    }
+
+    #[test]
+    fn toy_max_duration_narrows_but_never_extends_effective_deadline() {
+        let mut bounded = grant(ToyGrantState::Active);
+        bounded.constraints.max_duration_ms = Some(1_000);
+        let result = evaluate_toy_grant_for_call(&call(), &request(), &[toy()], &[bounded]);
+        assert_eq!(
+            result.authorized.unwrap().expires_at(),
+            &Timestamp::new("2026-05-31T00:00:01Z").unwrap()
+        );
+
+        let mut long = grant(ToyGrantState::Active);
+        long.constraints.max_duration_ms = Some(3_600_000);
+        let mut short_call = call();
+        short_call.deadline = Timestamp::new("2026-05-31T00:00:30Z").unwrap();
+        let result = evaluate_toy_grant_for_call(&short_call, &request(), &[toy()], &[long]);
+        assert_eq!(
+            result.authorized.unwrap().expires_at(),
+            &short_call.deadline
+        );
     }
 
     #[test]
@@ -887,16 +1342,198 @@ mod tests {
     }
 
     #[test]
-    fn stale_grant_revision_denies_without_authorization() {
-        let mut stale = grant(ToyGrantState::Active);
-        stale.grants_revision = 6;
-        let result = evaluate_toy_grant_for_call(&call(), &request(), &[toy()], &[stale]);
+    fn call_echo_generation_cannot_create_a_legacy_toy_denial() {
+        let mut current = grant(ToyGrantState::Active);
+        current.grants_revision = 6;
+        let result = evaluate_toy_grant_for_call(&call(), &request(), &[toy()], &[current]);
 
         assert_eq!(
             result.evaluation.reason_code,
-            ToyGrantReasonCode::StaleSnapshot
+            ToyGrantReasonCode::ActiveGrant
         );
-        assert!(result.authorized.is_none());
+        assert!(result.authorized.is_some());
+    }
+
+    fn snapshot_with(
+        grants: Vec<ToyGrant>,
+        epoch: &str,
+        generation: u64,
+        evaluated_at: &str,
+    ) -> LocalExecutionAuthoritySnapshot {
+        crate::assemble_local_execution_authority_snapshot(
+            crate::LocalExecutionAuthoritySnapshotPartsV1 {
+                executing_mother_node_id: "node-a".into(),
+                grants_authority_mother_node_id: "node-a".into(),
+                grants_authority_epoch: epoch.into(),
+                grants_authority_generation: generation,
+                grants_authority_observation_id: "obs-toy-authority".into(),
+                toy_catalog: vec![toy()],
+                toy_grants: grants,
+                watch_scopes: Vec::new(),
+                policy_revision: 3,
+                vision_policy_revision: 11,
+                child_local_node_id: MctNodeId::new("node-a").unwrap(),
+                child_vision_id: VisionId::new("vision-a").unwrap(),
+                child_artifacts: Vec::new(),
+                child_approvals: Vec::new(),
+                child_assignments: Vec::new(),
+                child_instances: Vec::new(),
+                peer_local_node_id: MctNodeId::new("node-a").unwrap(),
+                peer_local_vision_id: VisionId::new("vision-a").unwrap(),
+                peer_local_endpoint_id: EndpointIdText::new("endpoint-toy-test").unwrap(),
+                peer_records: Vec::new(),
+                callable_surfaces: Vec::new(),
+                evaluated_at: Timestamp::new(evaluated_at).unwrap(),
+                projection_id: "authority-state-v1".into(),
+                projection_source_mother_node_id: "node-a".into(),
+                projection_source_ledger_id: "ledger-toy-test".into(),
+                through_sequence: 7,
+                through_observation_id: "obs-toy-authority".into(),
+                through_entry_hash: "entry-toy-authority".into(),
+                authority_state_hash: "state-toy-authority".into(),
+                projection_hash: "projection-toy-authority".into(),
+            },
+        )
+    }
+
+    fn snapshot_with_grant(grant: ToyGrant) -> LocalExecutionAuthoritySnapshot {
+        snapshot_with(
+            vec![grant],
+            "mct-authority-epoch-v1:toy-test",
+            7,
+            "2026-05-31T00:00:30Z",
+        )
+    }
+
+    /// Phase J proof 7/8: exact grant state is checked independently of generation.
+    #[test]
+    fn toy_revocation_and_missing_exact_grant_deny_at_effect_time() {
+        let minted_snapshot = snapshot_with_grant(grant(ToyGrantState::Active));
+        let token = evaluate_toy_grant_for_snapshot(&call(), &request(), &minted_snapshot)
+            .authorized
+            .expect("current grant mints Toy token");
+
+        let revoked_snapshot = snapshot_with_grant(grant(ToyGrantState::Revoked));
+        assert_eq!(
+            token
+                .admit_effect_with_snapshot(&call(), &revoked_snapshot)
+                .unwrap_err(),
+            ToyEffectAdmissionDenyV1::InactiveGrant
+        );
+        let missing_snapshot = snapshot_with(
+            Vec::new(),
+            "mct-authority-epoch-v1:toy-test",
+            7,
+            "2026-05-31T00:00:30Z",
+        );
+        assert_eq!(
+            token
+                .admit_effect_with_snapshot(&call(), &missing_snapshot)
+                .unwrap_err(),
+            ToyEffectAdmissionDenyV1::MissingExactGrant
+        );
+
+        let mut same_generation_changed_scope = grant(ToyGrantState::Active);
+        same_generation_changed_scope
+            .scope
+            .allowed_actions
+            .push("widened".into());
+        let changed_scope_snapshot = snapshot_with_grant(same_generation_changed_scope);
+        assert_eq!(
+            token
+                .admit_effect_with_snapshot(&call(), &changed_scope_snapshot)
+                .unwrap_err(),
+            ToyEffectAdmissionDenyV1::ExactGrantMismatch,
+            "matching generation cannot hide a changed exact canonical grant"
+        );
+    }
+
+    /// Phase J proofs 9 and 12: Mother time and authority epoch remain independent gates.
+    #[test]
+    fn toy_effect_uses_mother_time_and_rejects_prior_epoch() {
+        let minted_snapshot = snapshot_with_grant(grant(ToyGrantState::Active));
+        let token = evaluate_toy_grant_for_snapshot(&call(), &request(), &minted_snapshot)
+            .authorized
+            .expect("current grant mints Toy token");
+        let expired = snapshot_with(
+            vec![grant(ToyGrantState::Active)],
+            "mct-authority-epoch-v1:toy-test",
+            7,
+            "2026-05-31T00:05:00Z",
+        );
+        assert_eq!(
+            token
+                .admit_effect_with_snapshot(&call(), &expired)
+                .unwrap_err(),
+            ToyEffectAdmissionDenyV1::TokenExpired
+        );
+        let restarted = snapshot_with(
+            vec![grant(ToyGrantState::Active)],
+            "mct-authority-epoch-v1:after-restart",
+            7,
+            "2026-05-31T00:00:30Z",
+        );
+        assert_eq!(
+            token
+                .admit_effect_with_snapshot(&call(), &restarted)
+                .unwrap_err(),
+            ToyEffectAdmissionDenyV1::GrantsAuthorityMismatch
+        );
+    }
+
+    /// Phase J proof 13: caller authority echoes affect neither Toy mint nor revalidation.
+    #[test]
+    fn toy_snapshot_mint_and_effect_ignore_hostile_caller_echoes() {
+        let snapshot = snapshot_with_grant(grant(ToyGrantState::Active));
+        for (policy, grants, vision) in [(0, 0, 0), (u64::MAX, u64::MAX - 1, 42)] {
+            let mut hostile = call();
+            hostile.authority_context.policy_revision = policy;
+            hostile
+                .authority_context
+                .expected_receiver_grants_authority
+                .generation = grants;
+            hostile.authority_context.vision_policy_revision = vision;
+            let token = evaluate_toy_grant_for_snapshot(&hostile, &request(), &snapshot)
+                .authorized
+                .expect("local snapshot, not caller echoes, mints Toy token");
+            assert_eq!(token.policy_revision(), snapshot.policy_revision());
+            assert_eq!(
+                token.grants_revision(),
+                snapshot.canonical_grants().grants_authority().generation()
+            );
+            assert!(
+                token
+                    .admit_effect_with_snapshot(&hostile, &snapshot)
+                    .is_ok()
+            );
+        }
+    }
+
+    /// Phase J proof 16: unsupported live consumption state denies rather than becoming unmetered.
+    #[test]
+    fn consumption_bearing_grant_denies_while_unbounded_grant_admits() {
+        let unbounded_grant = grant(ToyGrantState::Active);
+        let unbounded_snapshot = snapshot_with_grant(unbounded_grant);
+        let admitted = evaluate_toy_grant_for_snapshot(&call(), &request(), &unbounded_snapshot)
+            .authorized
+            .expect("max_uses None mints current Toy authority");
+        assert!(
+            admitted
+                .admit_effect_with_snapshot(&call(), &unbounded_snapshot)
+                .is_ok()
+        );
+
+        let mut metered_grant = grant(ToyGrantState::Active);
+        metered_grant.constraints.max_uses = Some(1);
+        let metered_snapshot = snapshot_with_grant(metered_grant);
+        let metered = evaluate_toy_grant_for_snapshot(&call(), &request(), &metered_snapshot)
+            .authorized
+            .expect("consumption constraint remains represented in the minted exact grant");
+        let denied = metered.admit_effect_with_snapshot(&call(), &metered_snapshot);
+        assert_eq!(
+            denied.unwrap_err(),
+            ToyEffectAdmissionDenyV1::ConsumptionStateUnavailable
+        );
     }
 
     #[test]
