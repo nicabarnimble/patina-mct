@@ -26,7 +26,7 @@ Official mode has no matrix knobs. It:
 
 The complete output remains outside git. Under D-P0.10, later profile commits copy only `call-path.json`, `attribution.json`, `component-costs.json`, `host.json`, rendered Markdown, and the PROFILE report. Raw `observations.jsonl`, `client-calls.jsonl`, and logs stay in the output directory. `host.json` binds them by relative path, exact byte size, and BLAKE3 digest.
 
-The final one-command surface invokes ledger attribution after `attribution.py` lands in the next task. The Task 2 output explicitly records attribution as pending.
+The same one-command surface invokes `attribution.py` after clean resident shutdown. It derives stage timings and durability-class accounting from raw ledger frames and client intervals; no production instrumentation is used.
 
 ## Non-official harness check
 

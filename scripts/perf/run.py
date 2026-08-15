@@ -827,7 +827,7 @@ def render_markdown(result: dict[str, Any], host: dict[str, Any]) -> str:
             "",
             "## Attribution status",
             "",
-            "Ledger-derived stage attribution is intentionally pending the separate Phase 0 attribution task.",
+            "Ledger-derived stage timings and durability-class accounting are rendered in `attribution.md` from `attribution.json`.",
             "",
             "## Raw evidence",
             "",
@@ -910,11 +910,44 @@ class Harness:
                 "sequential": sequential,
                 "throughput": throughput,
                 "failures": self.failures,
-                "attribution": {"status": "pending_separate_task"},
+                "attribution": {
+                    "status": "generated",
+                    "json": "attribution.json",
+                    "markdown": "attribution.md",
+                },
             }
-            (self.output / "call-path.json").write_text(
+            call_path_json = self.output / "call-path.json"
+            call_path_json.write_text(
                 json.dumps(self.result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
             )
+            attribution_json = self.output / "attribution.json"
+            attribution_markdown = self.output / "attribution.md"
+            attribution_command: list[str | Path] = [
+                sys.executable,
+                self.repo / "scripts" / "perf" / "attribution.py",
+                "--run",
+                call_path_json,
+                "--ledger",
+                self.output / "observations.jsonl",
+                "--clients",
+                self.output / "client-calls.jsonl",
+                "--json",
+                attribution_json,
+                "--markdown",
+                attribution_markdown,
+            ]
+            self.log.write(f"derive ledger attribution: {command_text(attribution_command)}")
+            run_capture(
+                attribution_command,
+                self.raw_root / "attribution.log",
+                self.repo,
+            )
+            for committable_json in (call_path_json, attribution_json):
+                size = committable_json.stat().st_size
+                if size > 5_000_000:
+                    raise HarnessError(
+                        f"{committable_json.name} is {size} bytes, above D-P0.10 5 MB limit"
+                    )
             success = True
         except BaseException as error:
             if self.active is not None:
