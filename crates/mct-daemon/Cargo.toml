@@ -36,3 +36,7 @@ wasmtime-wasi.workspace = true
 mct-observation = { path = "../mct-observation" }
 tempfile.workspace = true
 wat.workspace = true
+
+[[bench]]
+name = "perf_phase_0"
+harness = false
