@@ -45,9 +45,9 @@ exit_criteria:
     checked: false
     verify: python3 scripts/perf/attribution.py --run <output-directory>/call-path.json --ledger <output-directory>/observations.jsonl --clients <output-directory>/client-calls.jsonl --json <output-directory>/attribution.json --markdown <output-directory>/attribution.md
   - id: component-costs
-    text: Public-API-only micro-bench evidence reports p50/p95 and full sample metadata for H1 Engine construction, null-sink and Slate component loading under verified cold and warm page-cache conditions, H2 snapshot construction, H3 Child loading and hashing, H4 one sync_data ledger append, and H5 SQLite open plus one idempotency reservation cycle.
+    text: Public-API-only micro-bench evidence reports p50/p95 and full sample metadata for H1 Engine construction, warm-cache null-sink and Slate component loading plus either verified-purge cold evidence or a typed cold_unavailable result for each fixture, H2 snapshot construction, H3 Child loading and hashing, H4 one sync_data ledger append, and H5 SQLite open plus one idempotency reservation cycle.
     checked: false
-    verify: cargo bench -p mct-daemon --bench perf_phase_0 -- --fixtures crates/mct-daemon/tests/fixtures --output <output-directory>/component-costs.json
+    verify: cargo bench -p mct-daemon --bench perf_phase_0 -- --fixtures crates/mct-daemon/tests/fixtures --output <output-directory>/component-costs.json; inspect each fixture's cold status and, when cold_unavailable, its exact failure plus the close-out attribution-gaps entry
   - id: scaling-curve
     text: The report gives p50/p95 latency for each consecutive 500-call window across exactly 10000 sequential measured calls, with ledger entry count and byte size at every boundary, and gives snapshot-construction p50/p95 at approximately 1000, 10000, and 100000 real-writer entries.
     checked: false
@@ -121,7 +121,7 @@ The output directory must not exist. The durable bundle contains at least:
 - `host.json`, resident stdout/stderr, harness log, and failure metadata; and
 - separately, `component-costs.json` from the ratified Rust bench.
 
-JSON carries raw samples as well as summaries. Markdown is rendered from JSON, never maintained as an independent number source. Failed runs preserve their isolated temp evidence and emit no successful result marker.
+JSON carries raw samples as well as summaries. Markdown is rendered from JSON, never maintained as an independent number source. Failed runs preserve their isolated temp evidence and emit no successful result marker. The run directory is the complete on-disk evidence bundle; D-P0.10 below defines the deliberately smaller committed evidence set and required raw-file digests.
 
 ### D-P0.4 — isolation and host refusal
 
@@ -182,7 +182,7 @@ The standalone bench emits raw nanosecond samples and p50/p95/max summaries. It 
 | H4 append+sync | one `JsonlObservationLedger::append_before_effect` per sample on the target temp volume, including `sync_data`; 20 warmups then 200 measured unique valid observations on one real writer |
 | H5 SQLite | `MctRuntimeStateStore::open` alone and open plus one unique `reserve_call_idempotency` `ExecuteFresh` cycle; 20 warmups then 200 measured on one migrated state file; report open-only and combined numbers separately |
 
-The bench never invokes `sudo`. Cold-cache samples are valid only when `/usr/sbin/purge` exits successfully; otherwise it emits a typed unavailable result and the official component-cost criterion remains unchecked rather than relabeling a warm first read as cold.
+The bench never invokes `sudo`. Cold-cache samples are valid only when `/usr/sbin/purge` exits successfully; otherwise it emits a typed `cold_unavailable` result naming the exact command failure rather than relabeling a warm first read as cold. The bench documents the same invocation for an operator-controlled environment where purge succeeds.
 
 ### D-P0.8 — law-bound candidate ranking
 
@@ -198,12 +198,22 @@ The report may rank only measured candidate families and may not propose merging
 
 SQLite-open and Child-reload candidates may be ranked separately only if micro-benches establish meaningful cost. H6 may state correlation between concurrent peak RSS and per-call Engine/component work, but it must not claim causation without process-memory attribution.
 
+### D-P0.9 — cold-cache availability cannot deadlock close-out
+
+The `component-costs` criterion is satisfied when warm-cache evidence lands for both null-sink and Slate and each fixture's cold-cache result is either (a) measured only after verified `/usr/sbin/purge` success or (b) typed `cold_unavailable` with the exact command failure. Every `cold_unavailable` result is listed in the close-out attribution gaps. The bench supports and documents an operator invocation in an environment where purge succeeds, but the phase does not wait on that environment. The agent never invokes `sudo`.
+
+### D-P0.10 — raw evidence stays out of git; digests go in
+
+The run output directory retains the complete evidence bundle on disk. Git receives only `call-path.json`, `attribution.json`, `component-costs.json`, `host.json`, rendered Markdown files, and `PROFILE-ead8796d5143-aarch64-apple-darwin.md`. Raw `observations.jsonl`, `client-calls.jsonl`, resident stdout/stderr, harness logs, and other raw logs remain uncommitted in that output directory.
+
+Committed `host.json` records each retained raw file's relative path, exact byte size, and BLAKE3 digest after clean shutdown and before rendering. Operator verification is a harness rerun plus digest comparison against those on-disk raw files, not a committed raw ledger. Before staging, every committable JSON is checked independently; if any exceeds 5,000,000 bytes, work stops and reports the oversized artifact rather than committing it.
+
 ## Implementation tasks after Gate G1
 
 1. **Call-path harness** — land `scripts/perf/` and the isolated direct-resident matrix.
 2. **Ledger attribution** — land raw-frame attribution and durability-class accounting.
 3. **Component micro-benches** — land only the two ratified bench scaffolding files and public-API cases.
-4. **Covered-revision profile** — run on AC power, commit the raw evidence bundle required for verification, and write `PROFILE-<12-hex-rev>-aarch64-apple-darwin.md`.
+4. **Covered-revision profile** — run on AC power; retain raw evidence only in the output directory; commit only the D-P0.10 allowlist with raw-file sizes/BLAKE3 digests and no JSON over 5 MB; and write `PROFILE-ead8796d5143-aarch64-apple-darwin.md`.
 5. **Phase K-style close-out** — reconstruct evidence from disk into this SPEC and prepare, but do not archive, the active session.
 
 Each task uses the commit subject named in the phase instruction. Ratified decisions above are not reopened absent a genuine stop-condition fork.
@@ -235,7 +245,7 @@ git diff ead8796d5143d0f9da623057dadc5c920c47bf2b..HEAD -- crates/
 
 ## Gate G1
 
-**STOP after the SPEC-only commit.** Operator ratification is required before harness, attribution, bench scaffolding, measurement execution, or any later phase commit.
+The operator ratified the committed plan at `495e3526879433e2c8c158e479f70b27ca4c27d3`, including D-P0.1 through D-P0.8, then ratified amendments D-P0.9 and D-P0.10 above. Task 2 implementation is authorized after the single amendment commit `spec(perf): record G1 amendments D-P0.9 and D-P0.10`. Ratified decisions are not reopened absent a genuine stop-condition fork.
 
 ## Phase 0 close-out evidence
 
