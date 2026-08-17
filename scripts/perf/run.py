@@ -729,7 +729,6 @@ def call_template(helper: Path, root: Path, receiver_authority: dict[str, Any]) 
             "blake3_digest_hex": digest_bytes(helper, root, payload_bytes),
         },
         "inline_payload_base64": base64.b64encode(payload_bytes).decode(),
-        "idempotency_key": "idempotency-perf-template",
     }
 
 
@@ -739,7 +738,6 @@ def unique_call(template: dict[str, Any], suffix: str) -> dict[str, Any]:
     value["call_id"] = f"call-perf-{suffix}"
     value["trace_context"] = {"trace_id": f"trace-perf-{suffix}", "span_id": f"span-{suffix}"}
     value["payload"]["inline_payload_ref"] = f"payload-perf-{suffix}"
-    value["idempotency_key"] = f"idempotency-perf-{suffix}"
     return value
 
 
