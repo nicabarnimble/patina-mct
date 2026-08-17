@@ -15,12 +15,12 @@ python3 scripts/perf/run.py \
 
 Official mode has no matrix knobs. It:
 
-- verifies the source-derived Watch fixtures with `scripts/build-watch-fixtures.sh`;
 - builds the resident and digest helper with Cargo's locked release profile;
+- copies the committed canonical `watch-null-sink@0.1.0` bytes without invoking the non-byte-reproducible provenance rebuild verifier;
 - creates fresh owner-private roots under a unique short `/tmp/mctp0.*` run root;
 - initializes each isolated identity offline, then directly launches `mct-daemon serve` with explicit identity, config, Child, state, ledger, and unique UDS paths;
 - never invokes launchd, a production supervisor, `release-local.sh`, or `release-baselines.sh`;
-- stages, approves, and grants the exact `watch-null-sink@0.1.0` fixture separately for each scenario;
+- stages each copied fixture through UDS acquisition with its expected BLAKE3 digest, verifies the observed digest and canonical artifact SHA-256 identity, verifies the product-generated package manifest and SHA-256 sidecars, then approves and grants that exact artifact;
 - captures the ratified 5-startup, idle-RSS, 100-warmup + 10,000-sequential, and 4 × 500 concurrent matrix; and
 - writes machine JSON, rendered Markdown, raw ledgers/client intervals/logs, and raw-file byte-size/BLAKE3 receipts.
 
@@ -30,7 +30,7 @@ The same one-command surface invokes `attribution.py` after clean resident shutd
 
 ## Non-official harness check
 
-`--smoke` uses a deliberately tiny matrix and labels all output non-official. Hidden skip flags are accepted only with `--smoke`; they exist for local code-path checks and can never produce official evidence.
+`--smoke` uses a deliberately tiny matrix and labels all output non-official. Its hidden release-build skip flag exists only for local code-path checks and can never produce official evidence.
 
 ```bash
 python3 scripts/perf/run.py --smoke --output /tmp/mct-perf-smoke
