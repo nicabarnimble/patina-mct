@@ -515,9 +515,38 @@ def digest_bytes(helper: Path, root: Path, value: bytes) -> str:
         path.unlink(missing_ok=True)
 
 
-def stage_fixture(paths: ScenarioPaths, fixture: Path, mutation_suffix: str) -> dict[str, Any]:
-    for name in ("child.toml", "watch-null-sink.wasm"):
-        shutil.copyfile(fixture / name, paths.source / name)
+def fixture_receipt(helper: Path, path: Path, fixture: Path) -> dict[str, Any]:
+    record = digest_files(helper, [path])[0]
+    return {
+        "committed_path": str(path.relative_to(fixture.parents[4])),
+        "fixture_relative_path": str(path.relative_to(fixture)),
+        "size_bytes": record["size"],
+        "sha256": record["sha256"],
+        "blake3": record["blake3"],
+    }
+
+
+def staged_receipt(helper: Path, path: Path, package: Path) -> dict[str, Any]:
+    record = digest_files(helper, [path])[0]
+    return {
+        "package_relative_path": str(path.relative_to(package)),
+        "size_bytes": record["size"],
+        "sha256": record["sha256"],
+        "blake3": record["blake3"],
+    }
+
+
+def stage_fixture(
+    paths: ScenarioPaths, helper: Path, fixture: Path, mutation_suffix: str
+) -> dict[str, Any]:
+    manifest = fixture / "child.toml"
+    component = fixture / "watch-null-sink.wasm"
+    source_manifest = fixture_receipt(helper, manifest, fixture)
+    source_component = fixture_receipt(helper, component, fixture)
+    expected_digest = f"blake3:{source_component['blake3']}"
+    expected_artifact_id = f"sha256:{source_component['sha256']}"
+    for source in (manifest, component):
+        shutil.copyfile(source, paths.source / source.name)
     staged = expect(
         paths.socket,
         "POST",
@@ -528,7 +557,7 @@ def stage_fixture(paths: ScenarioPaths, fixture: Path, mutation_suffix: str) -> 
             "component_path": "watch-null-sink.wasm",
             "claimed_child_name": "watch-null-sink",
             "claimed_artifact_version": "0.1.0",
-            "expected_digest": None,
+            "expected_digest": expected_digest,
             "standing_source_authority_id": None,
             "claimed_publisher": None,
             "require_source_sidecars": False,
@@ -537,8 +566,53 @@ def stage_fixture(paths: ScenarioPaths, fixture: Path, mutation_suffix: str) -> 
         },
     )
     artifact_id = staged.get("artifact_id")
-    if not isinstance(artifact_id, str) or not artifact_id.startswith("sha256:"):
-        raise HarnessError(f"stage omitted exact artifact identity: {staged!r}")
+    observed_digest = staged.get("observed_digest")
+    observed_size = staged.get("observed_size_bytes")
+    if artifact_id != expected_artifact_id:
+        raise HarnessError(
+            f"acquired artifact identity {artifact_id!r} does not match committed component "
+            f"receipt {expected_artifact_id!r}"
+        )
+    if observed_digest != expected_digest:
+        raise HarnessError(
+            f"acquisition observed digest {observed_digest!r} does not match supplied expected "
+            f"digest {expected_digest!r}"
+        )
+    if observed_size != source_component["size_bytes"]:
+        raise HarnessError(
+            f"acquisition observed size {observed_size!r} does not match committed component "
+            f"size {source_component['size_bytes']!r}"
+        )
+    digest_hex = artifact_id.removeprefix("sha256:")
+    package = paths.children / "artifacts" / "sha256" / digest_hex
+    reported_package = staged.get("package_path")
+    if not isinstance(reported_package, str) or Path(reported_package).resolve() != package.resolve():
+        raise HarnessError(
+            f"acquisition package path {reported_package!r} does not match canonical path {package}"
+        )
+    assert_safe_path(package, "staged fixture package")
+    package_manifest = package / "child.toml"
+    package_component = package / "artifact" / "watch-null-sink.wasm"
+    package_manifest_sidecar = Path(str(package_manifest) + ".sha256")
+    package_component_sidecar = Path(str(package_component) + ".sha256")
+    for generated in (
+        package_manifest,
+        package_component,
+        package_manifest_sidecar,
+        package_component_sidecar,
+    ):
+        if not generated.is_file():
+            raise HarnessError(f"canonical staged package file is missing: {generated}")
+    package_manifest_receipt = staged_receipt(helper, package_manifest, package)
+    package_component_receipt = staged_receipt(helper, package_component, package)
+    package_manifest_sidecar_receipt = staged_receipt(helper, package_manifest_sidecar, package)
+    package_component_sidecar_receipt = staged_receipt(helper, package_component_sidecar, package)
+    if package_component_receipt["sha256"] != source_component["sha256"]:
+        raise HarnessError("canonical staged component differs from committed fixture component")
+    if package_manifest_sidecar.read_text(encoding="utf-8") != package_manifest_receipt["sha256"]:
+        raise HarnessError("canonical manifest SHA-256 sidecar does not match staged manifest")
+    if package_component_sidecar.read_text(encoding="utf-8") != package_component_receipt["sha256"]:
+        raise HarnessError("canonical component SHA-256 sidecar does not match staged component")
     approved = expect(
         paths.socket,
         "POST",
@@ -587,9 +661,25 @@ def stage_fixture(paths: ScenarioPaths, fixture: Path, mutation_suffix: str) -> 
     ):
         raise HarnessError(f"post-grant owner status is not ready/consistent: {status!r}")
     return {
-        "artifact_id": artifact_id,
-        "observed_digest": staged.get("observed_digest"),
-        "observed_size_bytes": staged.get("observed_size_bytes"),
+        "method": "committed_canonical_copy_and_digest_v1",
+        "source": {
+            "manifest": source_manifest,
+            "component": source_component,
+        },
+        "acquisition": {
+            "expected_digest": expected_digest,
+            "observed_digest": observed_digest,
+            "observed_size_bytes": observed_size,
+            "artifact_id": artifact_id,
+            "verification_outcome": staged.get("verification_outcome"),
+        },
+        "canonical_package": {
+            "package_path_relative_to_scenario": str(package.relative_to(paths.root)),
+            "manifest": package_manifest_receipt,
+            "component": package_component_receipt,
+            "manifest_sha256_sidecar": package_manifest_sidecar_receipt,
+            "component_sha256_sidecar": package_component_sidecar_receipt,
+        },
         "approval": approved,
         "receiver_authority": authority,
         "owner_status": status,
@@ -853,6 +943,7 @@ class Harness:
         self.client_handle: TextIO | None = None
         self.combined_observations: BinaryIO | None = None
         self.client_lock = threading.Lock()
+        self.fixture_staging: list[dict[str, Any]] = []
 
     def run_command(self) -> None:
         assert_safe_path(self.output, "output")
@@ -886,8 +977,8 @@ class Harness:
                 "w", encoding="utf-8", buffering=1
             )
             self.combined_observations = (self.output / "observations.jsonl").open("wb")
-            startup = self.measure_startup(binary, fixture, matrix)
-            idle = self.measure_idle(binary, fixture, matrix)
+            startup = self.measure_startup(binary, helper, fixture, matrix)
+            idle = self.measure_idle(binary, helper, fixture, matrix)
             sequential = self.measure_sequential(binary, helper, fixture, matrix)
             throughput = self.measure_throughput(binary, helper, fixture, matrix)
             self.client_handle.close()
@@ -905,6 +996,7 @@ class Harness:
                 "percentile_method": "nearest_rank_sorted_ceil_p_times_n_minus_1",
                 "units": {"latency": "microseconds", "rss": "bytes", "cpu": "seconds"},
                 "matrix": vars(matrix),
+                "fixture_staging": self.fixture_staging,
                 "startup": startup,
                 "idle_rss": idle,
                 "sequential": sequential,
@@ -1018,14 +1110,6 @@ class Harness:
 
     def prepare_tools(self, binary: Path, helper: Path) -> None:
         assert self.raw_root is not None and self.log is not None
-        if not self.args.skip_fixture_rebuild:
-            argv: list[str | Path] = [self.repo / "scripts" / "build-watch-fixtures.sh"]
-            if self.args.watch_upstream is not None:
-                argv.append(self.args.watch_upstream)
-            self.log.write(f"verify fixtures: {command_text(argv)}")
-            run_capture(argv, self.raw_root / "fixture-verification.log", self.repo)
-        else:
-            self.log.write("non-official smoke: fixture rebuild skipped")
         if not self.args.skip_build:
             argv = [
                 "cargo",
@@ -1056,16 +1140,22 @@ class Harness:
         resident.initialize_identity()
         return resident
 
-    def setup_resident(self, resident: Resident, fixture: Path, suffix: str) -> dict[str, Any]:
-        setup = stage_fixture(resident.paths, fixture, suffix)
+    def setup_resident(
+        self, resident: Resident, helper: Path, fixture: Path, suffix: str
+    ) -> dict[str, Any]:
+        setup = stage_fixture(resident.paths, helper, fixture, suffix)
+        self.fixture_staging.append({"scenario": resident.paths.name, **setup})
         assert self.log is not None
         self.log.write(
-            f"ready fixture {resident.paths.name}: artifact={setup['artifact_id']} "
+            f"ready fixture {resident.paths.name}: "
+            f"artifact={setup['acquisition']['artifact_id']} "
             f"authority={setup['receiver_authority']}"
         )
         return setup
 
-    def measure_startup(self, binary: Path, fixture: Path, matrix: Matrix) -> dict[str, Any]:
+    def measure_startup(
+        self, binary: Path, helper: Path, fixture: Path, matrix: Matrix
+    ) -> dict[str, Any]:
         assert self.raw_root is not None
         values: list[float] = []
         statuses: list[dict[str, Any]] = []
@@ -1077,7 +1167,7 @@ class Harness:
             status = resident.await_ready()
             values.append((time.monotonic_ns() - started) / 1_000_000)
             statuses.append(status)
-            self.setup_resident(resident, fixture, f"startup-{index}")
+            self.setup_resident(resident, helper, fixture, f"startup-{index}")
             resident.stop()
             copy_scenario_evidence(resident.paths, self.raw_root, None)
             self.active = None
@@ -1091,13 +1181,15 @@ class Harness:
             "ready_statuses": statuses,
         }
 
-    def measure_idle(self, binary: Path, fixture: Path, matrix: Matrix) -> dict[str, Any]:
+    def measure_idle(
+        self, binary: Path, helper: Path, fixture: Path, matrix: Matrix
+    ) -> dict[str, Any]:
         assert self.raw_root is not None
         resident = self.new_resident(binary, "idle")
         self.active = resident
         pid = resident.start()
         resident.await_ready()
-        self.setup_resident(resident, fixture, "idle")
+        self.setup_resident(resident, helper, fixture, "idle")
         time.sleep(matrix.idle_settle_seconds)
         samples: list[int] = []
         footprints: list[int] = []
@@ -1131,7 +1223,7 @@ class Harness:
         self.active = resident
         resident.start()
         resident.await_ready()
-        setup = self.setup_resident(resident, fixture, "sequential")
+        setup = self.setup_resident(resident, helper, fixture, "sequential")
         template = call_template(helper, resident.paths.root, setup["receiver_authority"])
         for index in range(matrix.sequential_warmups):
             suffix = f"sequential-warmup-{index}"
@@ -1186,11 +1278,7 @@ class Harness:
             },
             "scaling_window_calls": matrix.scaling_window,
             "scaling_windows": windows,
-            "fixture": {
-                "artifact_id": setup["artifact_id"],
-                "observed_digest": setup["observed_digest"],
-                "observed_size_bytes": setup["observed_size_bytes"],
-            },
+            "fixture": setup["acquisition"],
         }
 
     def measure_throughput(
@@ -1202,7 +1290,7 @@ class Harness:
         self.active = resident
         pid = resident.start()
         resident.await_ready()
-        setup = self.setup_resident(resident, fixture, "throughput")
+        setup = self.setup_resident(resident, helper, fixture, "throughput")
         template = call_template(helper, resident.paths.root, setup["receiver_authority"])
         # Clients, RSS monitor, and the coordinating main thread start together.
         barrier = threading.Barrier(matrix.throughput_clients + 2)
@@ -1357,10 +1445,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--official", action="store_true")
     parser.add_argument("--load-note", default="")
-    parser.add_argument("--watch-upstream", type=Path)
     parser.add_argument("--smoke", action="store_true", help="small non-official harness check")
     parser.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--skip-fixture-rebuild", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -1369,8 +1455,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--output is required")
     if args.official == args.smoke:
         parser.error("choose exactly one of --official or --smoke")
-    if args.official and (args.skip_build or args.skip_fixture_rebuild):
-        parser.error("official mode cannot skip build or fixture verification")
+    if args.official and args.skip_build:
+        parser.error("official mode cannot skip the release-profile build")
     return args
 
 
