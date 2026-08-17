@@ -21,6 +21,7 @@ Official mode has no matrix knobs. It:
 - initializes each isolated identity offline, then directly launches `mct-daemon serve` with explicit identity, config, Child, state, ledger, and unique UDS paths;
 - never invokes launchd, a production supervisor, `release-local.sh`, or `release-baselines.sh`;
 - stages each copied fixture through UDS acquisition with its expected BLAKE3 digest, verifies the observed digest and canonical artifact SHA-256 identity, verifies the product-generated package manifest and SHA-256 sidecars, then approves and grants that exact artifact;
+- uses the baseline call shape without opting into the separately bounded idempotency service, while keeping every required protocol/call/trace/payload reference unique;
 - captures the ratified 5-startup, idle-RSS, 100-warmup + 10,000-sequential, and 4 × 500 concurrent matrix; and
 - writes machine JSON, rendered Markdown, raw ledgers/client intervals/logs, and raw-file byte-size/BLAKE3 receipts.
 
