@@ -110,7 +110,7 @@ python3 scripts/perf/run.py \
   --output <new-output-directory>
 ```
 
-`run.py` builds `mct-daemon` with `cargo build --release --locked`, provisions fresh private temp service roots, builds/verifies the Watch fixtures through `scripts/build-watch-fixtures.sh`, stages `watch-null-sink@0.1.0` through the same UDS acquisition/approval/supporting-grant flow as `release-baselines.py`, launches `target/release/mct-daemon serve` directly, awaits owner-authenticated readiness, measures the matrix, shuts the child process down, and invokes `scripts/perf/attribution.py`.
+`run.py` builds `mct-daemon` with `cargo build --release --locked`, provisions fresh private temp service roots, copies the committed canonical `watch-null-sink@0.1.0` bytes and stages them through the same digest-verified UDS acquisition/approval/supporting-grant flow as `release-baselines.py`, launches `target/release/mct-daemon serve` directly, awaits owner-authenticated readiness, measures the matrix, shuts the child process down, and invokes `scripts/perf/attribution.py`. It does not invoke `scripts/build-watch-fixtures.sh`. Call-matrix evidence records the committed source manifest and component receipts plus the acquisition request's expected BLAKE3 digest, returned observed BLAKE3 digest, canonical artifact SHA-256 identity, and staged package manifest/sidecar receipts; all must agree with the committed fixture bytes and product-generated canonical metadata. The component bench likewise reads only the committed canonical `watch-null-sink@0.1.0` and `slate-manager@0.2.0` fixture bytes and records their receipts.
 
 The output directory must not exist. The durable bundle contains at least:
 
@@ -208,6 +208,14 @@ The run output directory retains the complete evidence bundle on disk. Git recei
 
 Committed `host.json` records each retained raw file's relative path, exact byte size, and BLAKE3 digest after clean shutdown and before rendering. Operator verification is a harness rerun plus digest comparison against those on-disk raw files, not a committed raw ledger. Before staging, every committable JSON is checked independently; if any exceeds 5,000,000 bytes, work stops and reports the oversized artifact rather than committing it.
 
+### D-P0.11 — fixture staging follows the canonical copy-and-digest methodology
+
+The instruction to run `scripts/build-watch-fixtures.sh` was an instruction error. That script is a provenance rebuild verifier, not the baseline measurement staging path. Because the Watch upstream archive has no committed lockfile and the committed provenance explicitly binds historical output bytes rather than promising future dependency-index reproducibility, a current-toolchain rebuild is not an admissible precondition for measuring the canonical fixture.
+
+The harness must not invoke `scripts/build-watch-fixtures.sh`. Following `scripts/release-baselines.py`, each scenario copies the committed `watch-null-sink@0.1.0` source manifest and component into its fresh private source directory, computes the component's expected BLAKE3 digest from those bytes, and supplies that digest to UDS artifact acquisition before exact-artifact approval and the supporting grant. Run evidence must prove that the expected and acquisition-observed BLAKE3 digests match, that the acquired canonical artifact SHA-256 identity matches the committed component receipt, and that the product-generated canonical package manifest and digest sidecar match that identity. The micro-bench reads the committed `watch-null-sink@0.1.0` and `slate-manager@0.2.0` files directly and records their manifest/component receipts. This is the same copy-and-digest artifact floor used by the `0.2.0` baselines and three-fixture replacement proof, not a verification waiver.
+
+The failed provenance rebuild remains evidence rather than becoming work in this measurement-only phase. The close-out records that `scripts/build-watch-fixtures.sh` is not byte-reproducible with Rust/Cargo 1.96.0 and the current unpinned upstream dependency index, cites the preserved failed evidence bundle, and creates a release-discipline board follow-up for an upstream lockfile plus pinned toolchain in MCT-REBUILD provenance. This phase neither repairs rebuild reproducibility nor refreshes committed fixture bytes.
+
 ## Implementation tasks after Gate G1
 
 1. **Call-path harness** — land `scripts/perf/` and the isolated direct-resident matrix.
@@ -245,8 +253,13 @@ git diff ead8796d5143d0f9da623057dadc5c920c47bf2b..HEAD -- crates/
 
 ## Gate G1
 
-The operator ratified the committed plan at `495e3526879433e2c8c158e479f70b27ca4c27d3`, including D-P0.1 through D-P0.8, then ratified amendments D-P0.9 and D-P0.10 above. Task 2 implementation is authorized after the single amendment commit `spec(perf): record G1 amendments D-P0.9 and D-P0.10`. Ratified decisions are not reopened absent a genuine stop-condition fork.
+The operator ratified the committed plan at `495e3526879433e2c8c158e479f70b27ca4c27d3`, including D-P0.1 through D-P0.8, then ratified amendments D-P0.9 and D-P0.10 above. After the correctly stopped official run exposed the fixture-rebuild instruction error, the operator ratified D-P0.11. Harness fixture staging resumes only after the amendment commit `spec(perf): record D-P0.11 fixture staging disposition`. Ratified decisions are not reopened absent a genuine stop-condition fork.
 
 ## Phase 0 close-out evidence
 
-To be reconstructed from disk after Tasks 2–5. It will contain the exact commit range, one evidence-table row per frontmatter criterion with central numbers, validation and verbatim flake log per commit, final map waiver, measurement-only diff, attribution gaps carried into the next slice's SPEC, and checked exit-criterion flags. Session archival remains operator-run.
+### Attribution gaps and findings (open)
+
+- **Fixture provenance rebuild reproducibility:** the first official Task 5 attempt correctly stopped before resident launch because `scripts/build-watch-fixtures.sh` rebuilt `folder-watch-actor.wasm` to bytes that differed from the committed fixture. The rebuild ran with Rust/Cargo 1.96.0 against an unpinned upstream dependency index, whereas the committed MCT-REBUILD provenance records Rust/Cargo 1.94.0 and explicitly disclaims future dependency-index byte reproducibility. The complete failed bundle is retained outside git at `/Users/nicabar/Projects/Patina/patina-mct-perf-phase0-ead8796-20260815`; its `failure.json` and `raw/fixture-verification.log` preserve the exact failure. This does not invalidate canonical copy-and-digest measurement under D-P0.11 and is not repaired here.
+- **Release-discipline board follow-up:** require an upstream lockfile and pinned Rust/toolchain declaration for future MCT-REBUILD provenance verification. This is a later release-discipline item, not a Phase 0 optimization or fixture refresh.
+
+The remaining close-out evidence will be reconstructed from disk after Tasks 2–5. It will contain the exact commit range, one evidence-table row per frontmatter criterion with central numbers, validation and verbatim flake log per commit, final map waiver, measurement-only diff, attribution gaps carried into the next slice's SPEC, and checked exit-criterion flags. Session archival remains operator-run.
