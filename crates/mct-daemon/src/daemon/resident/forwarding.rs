@@ -914,80 +914,11 @@ mod tests {
             capability_view_ref: None,
         }
     }
-    fn write_resident_process_child(children_dir: &Path) {
-        write_resident_process_child_script(
-            children_dir,
-            "resident-echo",
-            b"#!/bin/sh\ncat >/dev/null\nprintf '{\\\"ok\\\":true}'\n",
-        );
+    fn write_resident_wasm_child(children_dir: &Path) {
+        write_test_wasm_child(children_dir, "resident-echo");
     }
-    fn write_resident_payload_process_child(children_dir: &Path) {
-        write_resident_process_child_script(
-            children_dir,
-            "resident-payload-echo",
-            b"#!/bin/sh\npayload=$(cat)\nprintf 'processed:%s' \"$payload\"\n",
-        );
-    }
-    fn write_resident_process_child_script(children_dir: &Path, name: &str, script: &[u8]) {
-        #[cfg(unix)]
-        use std::os::unix::fs::PermissionsExt;
-
-        let child_dir = children_dir.join(name);
-        std::fs::create_dir_all(&child_dir).unwrap();
-        let artifact_path = child_dir.join(format!("{name}.wasm"));
-        let manifest_path = child_dir.join("child.toml");
-        std::fs::write(&artifact_path, script).unwrap();
-        #[cfg(unix)]
-        {
-            let mut permissions = std::fs::metadata(&artifact_path).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&artifact_path, permissions).unwrap();
-        }
-        write_resident_child_manifest(&manifest_path, name, "handle");
-        write_sha256_sidecar(&artifact_path, script);
-        let manifest_bytes = std::fs::read(&manifest_path).unwrap();
-        write_sha256_sidecar(&manifest_path, &manifest_bytes);
-    }
-    fn write_resident_child_manifest(manifest_path: &Path, name: &str, mode: &str) {
-        std::fs::write(
-            manifest_path,
-            format!(
-                r#"[child]
-name = "{name}"
-version = "0.1.0"
-description = "resident test child"
-kind = "child"
-role = "app"
-
-[child.ingress]
-mode = "{mode}"
-
-[child.artifact]
-wasm = "{name}.wasm"
-
-[child.contract]
-allow = ["patina:demo/control@0.1.0.run"]
-
-[needs]
-toys = []
-
-[relationships]
-listens = []
-"#
-            ),
-        )
-        .unwrap();
-    }
-    fn write_sha256_sidecar(path: &Path, bytes: &[u8]) {
-        use sha2::{Digest, Sha256};
-
-        let mut sidecar = path.as_os_str().to_os_string();
-        sidecar.push(".sha256");
-        std::fs::write(
-            PathBuf::from(sidecar),
-            format!("{:x}", Sha256::digest(bytes)),
-        )
-        .unwrap();
+    fn write_resident_payload_wasm_child(children_dir: &Path) {
+        write_test_wasm_echo_child(children_dir, "resident-payload-echo");
     }
     #[tokio::test]
     async fn two_mother_forwards_selected_call_over_iroh_and_maps_reply() {
@@ -1011,7 +942,7 @@ listens = []
         let mother_b_ledger_path = dir.path().join("mother-b").join("observations.jsonl");
         let mother_b_socket_path = dir.path().join("mother-b").join("control.sock");
         let mother_b_children_dir = dir.path().join("mother-b").join("children");
-        write_resident_payload_process_child(&mother_b_children_dir);
+        write_resident_payload_wasm_child(&mother_b_children_dir);
 
         let mother_a_node_id = MctNodeId::new("mother-a")
             .expect("string ID literal/generated value must be non-empty");
@@ -1133,12 +1064,12 @@ listens = []
             published_at: received_at.clone(),
             policy_revision: 1,
             supported_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
-            supported_wit_worlds: vec!["patina:demo/control@0.1.0".into()],
+            supported_wit_worlds: vec!["patina:mct-test/echo@0.1.0".into()],
             supported_observation_modes: vec!["local-ledger".into()],
             callable_surfaces: vec![MctHelloCallableSurface {
                 child_name: "resident-payload-echo".into(),
-                operation_id: "patina:demo/control@0.1.0.run".into(),
-                runtime_kind: RuntimeKind::Process,
+                operation_id: "patina:mct-test/echo@0.1.0.echo".into(),
+                runtime_kind: RuntimeKind::WasmComponent,
                 vision_id: vision_id.clone(),
                 policy_revision: 1,
                 visibility: "vision_scoped".into(),
@@ -1161,10 +1092,15 @@ listens = []
 
         let trace_id = TraceId::new("trace-two-mother-forward")
             .expect("string ID literal/generated value must be non-empty");
-        let payload = br#"{"hello":"remote"}"#.to_vec();
+        let payload = b"[41]".to_vec();
         let mut call = resident_test_protocol_request(resident_test_call(trace_id));
         call.call.call_id = CallId::new("call-two-mother-forward")
             .expect("string ID literal/generated value must be non-empty");
+        call.call.target = OperationTarget {
+            namespace: "patina:mct-test".into(),
+            interface_name: "echo@0.1.0".into(),
+            function_name: "echo".into(),
+        };
         call.call.caller.node_id = mother_a_node_id;
         call.call.caller.vision_id = vision_id;
         call.call.origin = CallOrigin::Cli;
@@ -1205,7 +1141,7 @@ listens = []
             call_reply
                 .inline_result_payload
                 .expect("forwarded result payload"),
-            br#"processed:{"hello":"remote"}"#.to_vec()
+            br#"{"results":[41]}"#.to_vec()
         );
         assert!(matches!(
             call_reply.route_taken,
@@ -1218,9 +1154,8 @@ listens = []
         let mother_b_ledger = std::fs::read_to_string(&mother_b_ledger_path).unwrap();
         assert!(mother_a_ledger.contains("forwarded_from:mother-a;forwarded_to:mother-b"));
         assert!(mother_b_ledger.contains("executed_on:mother-b;forwarded_from:mother-a"));
-        assert!(!mother_a_ledger.contains("{\"hello\":\"remote\"}"));
-        assert!(!mother_b_ledger.contains("{\"hello\":\"remote\"}"));
-        assert!(!mother_a_ledger.contains("processed:"));
+        assert!(!mother_a_ledger.contains("{\"results\":[41]}"));
+        assert!(!mother_b_ledger.contains("{\"results\":[41]}"));
         assert!(!mother_b_ledger.contains("processed:"));
     }
 
@@ -1472,8 +1407,8 @@ listens = []
         let b_state_path = b_root.join("state.sqlite");
         let b_ledger_path = b_root.join("observations.jsonl");
         let b_children_dir = b_root.join("children");
-        write_resident_process_child(&a_children_dir);
-        write_resident_process_child(&b_children_dir);
+        write_resident_wasm_child(&a_children_dir);
+        write_resident_wasm_child(&b_children_dir);
 
         let a_node = MctNodeId::new("mother-a").unwrap();
         let b_node = MctNodeId::new("mother-b").unwrap();

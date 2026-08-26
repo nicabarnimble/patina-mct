@@ -3302,73 +3302,8 @@ mod tests {
         }
     }
 
-    fn write_resident_process_child(children_dir: &Path) {
-        write_resident_process_child_script(
-            children_dir,
-            "resident-echo",
-            b"#!/bin/sh\ncat >/dev/null\nprintf '{\\\"ok\\\":true}'\n",
-        );
-    }
-    fn write_resident_process_child_script(children_dir: &Path, name: &str, script: &[u8]) {
-        #[cfg(unix)]
-        use std::os::unix::fs::PermissionsExt;
-
-        let child_dir = children_dir.join(name);
-        std::fs::create_dir_all(&child_dir).unwrap();
-        let artifact_path = child_dir.join(format!("{name}.wasm"));
-        let manifest_path = child_dir.join("child.toml");
-        std::fs::write(&artifact_path, script).unwrap();
-        #[cfg(unix)]
-        {
-            let mut permissions = std::fs::metadata(&artifact_path).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&artifact_path, permissions).unwrap();
-        }
-        write_resident_child_manifest(&manifest_path, name, "handle");
-        write_sha256_sidecar(&artifact_path, script);
-        let manifest_bytes = std::fs::read(&manifest_path).unwrap();
-        write_sha256_sidecar(&manifest_path, &manifest_bytes);
-    }
-    fn write_resident_child_manifest(manifest_path: &Path, name: &str, mode: &str) {
-        std::fs::write(
-            manifest_path,
-            format!(
-                r#"[child]
-name = "{name}"
-version = "0.1.0"
-description = "resident test child"
-kind = "child"
-role = "app"
-
-[child.ingress]
-mode = "{mode}"
-
-[child.artifact]
-wasm = "{name}.wasm"
-
-[child.contract]
-allow = ["patina:demo/control@0.1.0.run"]
-
-[needs]
-toys = []
-
-[relationships]
-listens = []
-"#
-            ),
-        )
-        .unwrap();
-    }
-    fn write_sha256_sidecar(path: &Path, bytes: &[u8]) {
-        use sha2::{Digest, Sha256};
-
-        let mut sidecar = path.as_os_str().to_os_string();
-        sidecar.push(".sha256");
-        std::fs::write(
-            PathBuf::from(sidecar),
-            format!("{:x}", Sha256::digest(bytes)),
-        )
-        .unwrap();
+    fn write_resident_wasm_child(children_dir: &Path) {
+        write_test_wasm_child(children_dir, "resident-echo");
     }
     fn resident_test_call(trace_id: TraceId) -> MctCall {
         let mut call = local_wasm_call(
@@ -3708,7 +3643,7 @@ listens = []
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
         let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
         let handler = resident_observed_mutation_handler(
@@ -3751,7 +3686,7 @@ listens = []
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
         let child =
             load_children_from_dir(MctChildLoadOptions::new(&children_dir).strict_integrity())
                 .children
@@ -3890,7 +3825,7 @@ listens = []
     async fn resident_standing_acquisition_requires_and_consumes_shared_ledger_proof() {
         let dir = tempfile::tempdir().unwrap();
         let source_catalog = dir.path().join("source-catalog");
-        write_resident_process_child(&source_catalog);
+        write_resident_wasm_child(&source_catalog);
         let source_root = source_catalog.join("resident-echo").canonicalize().unwrap();
         let config_path = dir.path().join("config.json");
         let children_dir = dir.path().join("children");
@@ -4046,7 +3981,7 @@ listens = []
         let config_path = dir.path().join("config.json");
         let children_dir = dir.path().join("children");
         let socket_path = dir.path().join("control.sock");
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
         let failed_ledger = ResidentLedgerWriter::failed_for_test();
         let handler = resident_authority_mutation_handler(
@@ -4080,7 +4015,7 @@ listens = []
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
         let child =
             load_children_from_dir(MctChildLoadOptions::new(&children_dir).strict_integrity())
                 .children
@@ -4207,7 +4142,7 @@ listens = []
         let socket_path = dir.path().join("control.sock");
         let watch_root = dir.path().join("watch-root");
         std::fs::create_dir(&watch_root).unwrap();
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
         let child =
             load_children_from_dir(MctChildLoadOptions::new(&children_dir).strict_integrity())
                 .children
@@ -4469,7 +4404,7 @@ listens = []
                 let socket_path = dir.path().join("control.sock");
                 let watch_root = dir.path().join("watch-root");
                 std::fs::create_dir(&watch_root).unwrap();
-                write_resident_process_child(&children_dir);
+                write_resident_wasm_child(&children_dir);
                 let child = load_children_from_dir(
                     MctChildLoadOptions::new(&children_dir).strict_integrity(),
                 )
@@ -4626,7 +4561,7 @@ listens = []
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
         let child =
             load_children_from_dir(MctChildLoadOptions::new(&children_dir).strict_integrity())
                 .children
@@ -4730,7 +4665,7 @@ listens = []
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
         let child =
             load_children_from_dir(MctChildLoadOptions::new(&children_dir).strict_integrity())
                 .children
@@ -4882,7 +4817,7 @@ listens = []
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
-        write_resident_process_child(&source_parent);
+        write_resident_wasm_child(&source_parent);
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
         let failed_ledger = ResidentLedgerWriter::failed_for_test();
         let handler = resident_observed_mutation_handler(
@@ -5099,7 +5034,7 @@ listens = []
         let identity_path = dir.path().join("node.key");
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
 
         assert!(
             execute_offline_child_mutation(

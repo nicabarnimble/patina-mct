@@ -960,84 +960,11 @@ mod tests {
             capability_view_ref: None,
         }
     }
-    fn write_resident_process_child(children_dir: &Path) {
-        write_resident_process_child_script(
-            children_dir,
-            "resident-echo",
-            b"#!/bin/sh\ncat >/dev/null\nprintf '{\\\"ok\\\":true}'\n",
-        );
-    }
-    fn write_resident_process_child_script(children_dir: &Path, name: &str, script: &[u8]) {
-        #[cfg(unix)]
-        use std::os::unix::fs::PermissionsExt;
-
-        let child_dir = children_dir.join(name);
-        std::fs::create_dir_all(&child_dir).unwrap();
-        let artifact_path = child_dir.join(format!("{name}.wasm"));
-        let manifest_path = child_dir.join("child.toml");
-        std::fs::write(&artifact_path, script).unwrap();
-        #[cfg(unix)]
-        {
-            let mut permissions = std::fs::metadata(&artifact_path).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&artifact_path, permissions).unwrap();
-        }
-        write_resident_child_manifest(&manifest_path, name, "handle");
-        write_sha256_sidecar(&artifact_path, script);
-        let manifest_bytes = std::fs::read(&manifest_path).unwrap();
-        write_sha256_sidecar(&manifest_path, &manifest_bytes);
+    fn write_resident_wasm_child(children_dir: &Path) {
+        write_test_wasm_child(children_dir, "resident-echo");
     }
     fn write_resident_wit_child(children_dir: &Path) {
-        let child_dir = children_dir.join("resident-wit");
-        std::fs::create_dir_all(&child_dir).unwrap();
-        let artifact_path = child_dir.join("resident-wit.wasm");
-        let manifest_path = child_dir.join("child.toml");
-        let component_wat = r#"
-(component
-  (core module $m
-    (func $run (export "run") (result i32)
-      i32.const 7))
-  (core instance $i (instantiate $m))
-  (func $run (result s32) (canon lift (core func $i "run")))
-  (instance $control (export "run" (func $run)))
-  (export "patina:demo/control@0.1.0" (instance $control)))
-"#;
-        let component = wat::parse_str(component_wat).unwrap();
-        std::fs::write(&artifact_path, &component).unwrap();
-        write_resident_child_manifest(&manifest_path, "resident-wit", "wit-only");
-        write_sha256_sidecar(&artifact_path, &component);
-        let manifest_bytes = std::fs::read(&manifest_path).unwrap();
-        write_sha256_sidecar(&manifest_path, &manifest_bytes);
-    }
-    fn write_resident_child_manifest(manifest_path: &Path, name: &str, mode: &str) {
-        std::fs::write(
-            manifest_path,
-            format!(
-                r#"[child]
-name = "{name}"
-version = "0.1.0"
-description = "resident test child"
-kind = "child"
-role = "app"
-
-[child.ingress]
-mode = "{mode}"
-
-[child.artifact]
-wasm = "{name}.wasm"
-
-[child.contract]
-allow = ["patina:demo/control@0.1.0.run"]
-
-[needs]
-toys = []
-
-[relationships]
-listens = []
-"#
-            ),
-        )
-        .unwrap();
+        write_test_wasm_child(children_dir, "resident-wit");
     }
     fn write_sha256_sidecar(path: &Path, bytes: &[u8]) {
         use sha2::{Digest, Sha256};
@@ -1058,10 +985,10 @@ listens = []
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         write_resident_wit_child(&children_dir);
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
 
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
-        let process_child = loaded
+        let approved_child = loaded
             .children
             .iter()
             .find(|child| child.name == "resident-echo")
@@ -1074,7 +1001,7 @@ listens = []
             )
             .unwrap();
         config_store
-            .approve_and_assign_loaded_child(process_child, MctOperatorChildScope::default())
+            .approve_and_assign_loaded_child(approved_child, MctOperatorChildScope::default())
             .unwrap();
         let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         let trace_id = TraceId::new("trace-route-optimization-cannot-grant")
@@ -1092,7 +1019,7 @@ listens = []
         assert!(matches!(
             result.route_taken,
             Some(RouteTaken {
-                runtime_kind: RuntimeKind::Process,
+                runtime_kind: RuntimeKind::WasmComponent,
                 ..
             })
         ));
@@ -1113,7 +1040,7 @@ listens = []
         let children_dir = dir.path().join("children");
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
         MctDaemonConfigStore::new(&config_path)
             .ensure_local_identity(
                 MctOperatorNodeScope::default(),
@@ -1291,7 +1218,7 @@ listens = []
         let config_path = dir.path().join("config.json");
         let state_path = dir.path().join("state.sqlite");
         let children_dir = dir.path().join("children");
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
         let manifest_path = children_dir.join("resident-echo").join("child.toml");
         let manifest = std::fs::read_to_string(&manifest_path)
             .unwrap()

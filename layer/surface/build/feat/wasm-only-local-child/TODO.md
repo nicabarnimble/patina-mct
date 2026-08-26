@@ -350,11 +350,11 @@ test(resident): move execution proofs to WASM Children
 
 ### M3.2 — Serving, control, ingress, and forwarding
 
-- [ ] Replace process fixtures in serving and control tests.
-- [ ] Replace standalone and two-Mother process fixtures.
-- [ ] Preserve hello, binding, route, forwarding, durability, shutdown, and caller-safe result coverage.
-- [ ] Ensure remote tests prove a remote Mother boundary, not a remote process substrate.
-- [ ] Commit:
+- [x] Replace process fixtures in serving and control tests.
+- [x] Replace standalone and two-Mother process fixtures.
+- [x] Preserve hello, binding, route, forwarding, durability, shutdown, and caller-safe result coverage.
+- [x] Ensure remote tests prove a remote Mother boundary, not a remote process substrate.
+- [x] Commit:
 
 ```text
 test(resident): move peer and control proofs to WASM Children
@@ -364,11 +364,11 @@ test(resident): move peer and control proofs to WASM Children
 
 ### M3.3 — Test inventory closure
 
-- [ ] Search all non-historical tests for process-backed Child helpers.
-- [ ] Remove dead shell Child writers.
-- [ ] Retain subprocess tests only for explicitly trusted Mother adapters.
-- [ ] Record before/after test counts and explain any intentional replacement.
-- [ ] Commit only if cleanup is substantial and independently reviewable:
+- [x] Search all non-historical tests for process-backed Child helpers.
+- [x] Remove dead shell Child writers.
+- [x] Retain subprocess tests only for explicitly trusted Mother adapters.
+- [x] Record before/after test counts and explain any intentional replacement.
+- [x] Commit only if cleanup is substantial and independently reviewable (folded into C3.2):
 
 ```text
 test(runtime): remove retired process Child fixtures
@@ -734,7 +734,7 @@ Populate during execution.
 | `633cbcb` | Gate repair | Patch `h2` for RUSTSEC-2026-0258 | Tier 0, audit, workspace tests, clippy |
 | `d049a8a` | C1 | Plan and inventory | Tier 0, docs build, diff check |
 | `bdfacc6` | C2 | WASM test fixture | Tier 0, focused fixture test, clippy |
-| pending | C3.1 | Execution/payload/idempotency test migration | pending |
+| `579bded` | C3.1 | Execution/payload/idempotency test migration | Tier 0, clippy, focused and full binary tests |
 | pending | C3.2 | Peer/control test migration | pending |
 | pending | C4 | Current execution type boundary | pending |
 | pending | C5 | Product surface retirement | pending |
