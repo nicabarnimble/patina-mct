@@ -1,6 +1,6 @@
 # TODO: WASM-only local Children
 
-**Status:** Implementation complete; final PR validation and merge pending.
+**Status:** Complete; PR #35 merged into `patina`.
 
 **Product decision:** Option C. A locally executed Child is a WASM component. Native and JVM processes are external integrations or trusted Mother-side adapters, not local Children.
 
@@ -695,10 +695,10 @@ For code complexity, test migration difficulty, compile errors, CI failures, or 
 - [x] Every planned commit passed its gate.
 - [x] Final validation passed and is recorded in the PR.
 - [x] Draft PR was updated into a reviewer-ready ledger.
-- [ ] Required CI passed.
-- [ ] PR merged into `patina` with commit history preserved.
-- [ ] Feature branch deleted and local `patina` updated.
-- [ ] Session artifact records commits, PR, validation, compatibility, and follow-ups.
+- [x] Required CI passed.
+- [x] PR merged into `patina` with commit history preserved.
+- [x] Feature branch deleted and local `patina` updated.
+- [x] Session artifact records commits, PR, validation, compatibility, and follow-ups.
 
 ---
 
@@ -718,7 +718,7 @@ Populate during execution.
 
 ### Final inventory
 
-- Merge commit: pending PR merge.
+- Merge commit: `d7e5c03b7450705aa24214f8eb8ddb561e13270b`.
 - PR URL: <https://github.com/nicabarnimble/patina-mct/pull/35>.
 - Removed commands: `process call`, `iroh serve-process`.
 - Removed public items: `MctProcessChildHarness`, `MctProcessChildError`, `MctProcessChildInvocationIds`, and `MctProcessChildInvocationReport`; deleted `crates/mct-daemon/src/process.rs`.
@@ -741,6 +741,7 @@ Populate during execution.
 | `d95ddb0` | C5/C6 | Product surface and resident dispatch retirement | Tier 0, CLI no-spawn tests, handle rejection tests, clippy |
 | `b58ca30` | C7 | Historical compatibility | Tier 0, persisted artifact/run history tests, clippy |
 | `de52390` | C8 | Law/docs/release close-out | Final serialized gate, docs/rustdoc, Allium check/analyse, Perf integrity check |
+| `bf9205d` | Close-out | Reviewer-ready PR and session evidence | Vocabulary and diff checks |
 
 ### Flake log
 
