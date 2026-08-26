@@ -12,5 +12,6 @@ access.
 
 An integration guide must identify its WIT contract, authority requirements,
 data scope, denial behavior, and observations before describing transport or
-framework convenience. Process-backed integrations must also state which
-external OS confinement boundary, if any, controls their ambient host access.
+framework convenience. Native and JVM integrations must state whether they
+are external callers, remote workloads governed by another Mother, or trusted
+Mother-side adapters. None of those placements is a local Child.

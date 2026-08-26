@@ -24,6 +24,13 @@ Optimization can never grant authority. Authority is revalidated at the
 effect boundary because stale authority is a security failure while stale
 optimization is only a performance miss.
 
+## Local execution boundary
+
+Current local execution plans carry a WASM-only runtime type. Persisted legacy
+`process` and `jvm_child` values remain decodeable for historical inspection,
+but checked conversion and kernel authority evaluation reject them before
+candidate execution.
+
 ## Knowledge boundaries
 
 - Allium defines semantic law.

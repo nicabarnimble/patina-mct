@@ -22,28 +22,19 @@ pub struct ComponentWitExport {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Execution substrate class declared for a child artifact.
+/// Persisted execution-substrate record for a component artifact.
+///
+/// Only `WasmComponent` converts to current local execution; the other values
+/// remain decodeable for historical evidence.
 pub enum ComponentRuntimeShape {
-    /// WASM component runtime.
+    /// Current WASM component runtime.
     WasmComponent,
-    /// JVM-backed child runtime.
+    /// Retired JVM-backed local runtime record.
     JvmChild,
-    /// Process-backed child runtime.
+    /// Retired process-backed local runtime record.
     ProcessChild,
-    /// Remote peer child route.
+    /// Historical remote-child substrate record.
     RemoteChild,
-}
-
-impl From<RuntimeKind> for ComponentRuntimeShape {
-    fn from(value: RuntimeKind) -> Self {
-        match value {
-            RuntimeKind::Process => Self::ProcessChild,
-            RuntimeKind::JvmChild => Self::JvmChild,
-            RuntimeKind::WasmComponent => Self::WasmComponent,
-            RuntimeKind::RemotePeer => Self::RemoteChild,
-            RuntimeKind::Internal => Self::ProcessChild,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

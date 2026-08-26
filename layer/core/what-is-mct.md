@@ -45,19 +45,18 @@ the child runtime, ToyGrant evaluation, and the peer protocols. There is
 nothing above her: no hosted registry or cloud control plane holds the "real"
 state. The node is sovereign and complete.
 
-**Child** identity is WIT-shaped: namespace, interface, function. The design
-center is a WASM component, but a Child may be process-backed or JVM-backed.
-Those substrates can share WIT-shaped identity, call admission, and route
-observations without sharing the same confinement guarantee. In 0.2.0 the
-process harness authorizes launch but does not OS-sandbox the spawned process.
-WIT-only Children are valid; legacy lifecycle exports (`init`, `handle`,
-`drain`, `tick`) are compatibility hooks, not identity.
+**Child** identity is WIT-shaped: namespace, interface, function. A current
+local Child is a WASM component. Native and JVM software can share the
+WIT-shaped call model as an external caller, a remote workload governed by
+another Mother, or an explicitly trusted Mother adapter, but those placements
+do not become local Children. WIT-only Children are valid; optional legacy
+lifecycle exports (`init`, `on-load`, `health`, `drain`, `tick`) are
+compatibility hooks, not identity. Handle-only ingress is rejected.
 
 **Toy** capabilities form a closed canonical catalog, and each Toy is itself a
 WIT contract identity. MCT semantic law requires Toys to be the only way a
-Child affects the world outside its own memory. The 0.2.0 WASM/WIT path
-enforces that boundary; process-backed execution remains a known confinement
-gap and must use trusted code or an external OS sandbox.
+Child affects the world outside its own memory. The local WASM/WIT path
+enforces that boundary.
 
 Mother decides; Children compute; Toys effect.
 
@@ -126,17 +125,15 @@ A peer Mother invokes `patina:slate/control@0.1.0#complete-work` on your node:
    paths, and data authority has final say over placement.
 6. **Revalidate, then execute.** Authority is rechecked at execution time —
    stale authority is a security bug; stale optimization is a performance
-   miss. WASM/WIT host effects pass through Toy gates. A process-backed Child
-   is authorized before spawn, but its later OS activity is not currently
-   confined or mediated by those gates.
+   miss. A local execution plan can name only a WASM Child, and its host
+   effects pass through Toy gates.
 7. **MctResult returns.** Closed outcome set — success, denied, failed,
    timed_out, cancelled — with a caller-safe message and opaque audit ref.
 8. **Throughout:** MCT stages emit typed `MctObservation` facts into an
    append-only, hash-chained, per-Mother ledger. Authority-critical
    observations are durable before their effect proceeds where the governing
    contract requires append-before-effect. The MCT-mediated call story
-   reconstructs from the ledger; arbitrary activity inside an unsandboxed
-   process does not.
+   reconstructs from the ledger.
 
 ## Four records, four audiences
 
@@ -177,7 +174,8 @@ domain, or application fabric; do not collapse it to "tenant" early. Nodes
 are heterogeneous (a Raspberry Pi and a Mac Studio are both Mothers);
 capability publication is per-Vision and policy-filtered; cross-Vision
 sharing requires explicit grants. JVM ecosystems (banking is the adoption
-example) integrate as WIT children, not as a second call model.
+example) integrate through WIT-shaped external ingress, trusted Mother
+adapters, or remote Mothers—not as a second call model or local Child runtime.
 
 ## What MCT is not
 

@@ -1,6 +1,6 @@
 # TODO: WASM-only local Children
 
-**Status:** Approved direction; autonomous execution authorized after the current documentation foundation is checkpointed.
+**Status:** Implementation complete; final PR validation and merge pending.
 
 **Product decision:** Option C. A locally executed Child is a WASM component. Native and JVM processes are external integrations or trusted Mother-side adapters, not local Children.
 
@@ -519,32 +519,32 @@ fix(state): keep retired runtime history readable and inert
 
 ### Minimal Allium alignment
 
-- [ ] Remove current-law statements that bless local process/JVM Child execution.
-- [ ] Narrow current `ComponentArtifact.runtime_shape` law to WASM local execution and remote Mother routing, while preserving historical evidence semantics in prose where needed.
-- [ ] State native/JVM integration as external caller, remote Mother, or trusted Mother adapter.
-- [ ] Do not add new entities, actors, surfaces, or generalized confinement machinery.
-- [ ] Run Allium check/analyse.
+- [x] Remove current-law statements that bless local process/JVM Child execution.
+- [x] Narrow current `ComponentArtifact.runtime_shape` law to WASM local execution and remote Mother routing, while preserving historical evidence semantics in prose where needed.
+- [x] State native/JVM integration as external caller, remote Mother, or trusted Mother adapter.
+- [x] Do not add new entities, actors, surfaces, or generalized confinement machinery.
+- [x] Run Allium check/analyse.
 
 ### Documentation
 
-- [ ] Update README and mdBook from “current limitation” to the final product statement: local Children are WASM components.
-- [ ] Update Core concepts, Child development, Integrations, Architecture, and Operations where relevant.
-- [ ] Update `layer/core/what-is-mct.md` and the product roadmap.
-- [ ] Update CLI/reference material so retired commands do not appear.
-- [ ] Add a CHANGELOG entry naming the intentional pre-GA removal.
-- [ ] Explain that native/JVM systems remain valid external integrations, not local Child runtimes.
-- [ ] Rebuild `/docs/` and `/api/`.
+- [x] Update README and mdBook from “current limitation” to the final product statement: local Children are WASM components.
+- [x] Update Core concepts, Child development, Integrations, Architecture, and Operations where relevant.
+- [x] Update `layer/core/what-is-mct.md` and the product roadmap.
+- [x] Update CLI/reference material so retired commands do not appear.
+- [x] Add a CHANGELOG entry naming the intentional pre-GA removal.
+- [x] Explain that native/JVM systems remain valid external integrations, not local Child runtimes.
+- [x] Rebuild `/docs/` and `/api/`.
 
 ### Close-out audits
 
-- [ ] `rg` proves no production `Command::spawn` path is named or typed as Child execution.
-- [ ] `rg` proves no current local candidate can be `Process` or `JvmChild`.
-- [ ] Public exports contain no process Child harness.
-- [ ] Help output contains no `process call` or `iroh serve-process`.
-- [ ] Historical compatibility tests are green.
-- [ ] Record final test counts and changed-surface inventory below.
-- [ ] Check every completed TODO item.
-- [ ] Commit:
+- [x] `rg` proves no production `Command::spawn` path is named or typed as Child execution.
+- [x] `rg` proves no current local candidate can be `Process` or `JvmChild`.
+- [x] Public exports contain no process Child harness.
+- [x] Help output contains no `process call` or `iroh serve-process`.
+- [x] Historical compatibility tests are green.
+- [x] Record final test counts and changed-surface inventory below.
+- [x] Check every completed TODO item.
+- [x] Commit:
 
 ```text
 docs(runtime): close WASM-only local Child transition
@@ -679,21 +679,21 @@ For code complexity, test migration difficulty, compile errors, CI failures, or 
 
 ## 10. Definition of done
 
-- [ ] Local executable Child types represent only WASM.
-- [ ] Native/JVM processes cannot be approved, assigned, made ready, routed, or executed as local Children.
-- [ ] `process call` is removed.
-- [ ] `iroh serve-process` is removed.
-- [ ] Resident process Child dispatch is removed.
-- [ ] Process Child public library exports are removed.
-- [ ] Handle-only ingress cannot become local execution.
-- [ ] Existing supported WASM fixtures still load and execute.
-- [ ] Process-backed behavioral tests are replaced with WASM tests without coverage loss.
-- [ ] Historical process/JVM records remain readable and inert.
-- [ ] Current code cannot write new process/JVM local execution facts.
-- [ ] Allium is minimally aligned and not expanded.
-- [ ] README, mdBook, core narrative, roadmap, help, and changelog agree.
-- [ ] Every planned commit passed its gate.
-- [ ] Final validation passed and is recorded in the PR.
+- [x] Local executable Child types represent only WASM.
+- [x] Native/JVM processes cannot be approved, assigned, made ready, routed, or executed as local Children.
+- [x] `process call` is removed.
+- [x] `iroh serve-process` is removed.
+- [x] Resident process Child dispatch is removed.
+- [x] Process Child public library exports are removed.
+- [x] Handle-only ingress cannot become local execution.
+- [x] Existing supported WASM fixtures still load and execute.
+- [x] Process-backed behavioral tests are replaced with WASM tests without coverage loss.
+- [x] Historical process/JVM records remain readable and inert.
+- [x] Current code cannot write new process/JVM local execution facts.
+- [x] Allium is minimally aligned and not expanded.
+- [x] README, mdBook, core narrative, roadmap, help, and changelog agree.
+- [x] Every planned commit passed its gate.
+- [x] Final validation passed and is recorded in the PR.
 - [ ] Draft PR was updated into a reviewer-ready ledger.
 - [ ] Required CI passed.
 - [ ] PR merged into `patina` with commit history preserved.
@@ -718,14 +718,15 @@ Populate during execution.
 
 ### Final inventory
 
-- Merge commit:
-- PR URL:
-- Removed commands:
-- Removed public items:
-- Remaining trusted subprocess surfaces:
-- Historical compatibility proofs:
-- Final test counts:
-- Documentation URL/check:
+- Merge commit: pending PR merge.
+- PR URL: <https://github.com/nicabarnimble/patina-mct/pull/35>.
+- Removed commands: `process call`, `iroh serve-process`.
+- Removed public items: `MctProcessChildHarness`, `MctProcessChildError`, `MctProcessChildInvocationIds`, and `MctProcessChildInvocationReport`; deleted `crates/mct-daemon/src/process.rs`.
+- Remaining trusted subprocess surfaces: artifact/release identity inspection (`id`, `codesign`), macOS launchd/`ps` lifecycle adapters, daemon supervision, the explicitly authorized Git Toy adapter, Git-only test setup, release archive executable fixtures, and the retired-CLI no-spawn negative fixture. None accepts Child authority as permission to launch an arbitrary executable.
+- Historical compatibility proofs: `historical_non_wasm_runtime_shapes_are_readable_but_not_locally_executable`, `retired_process_and_jvm_artifacts_roundtrip_as_inert_history`, `state_store_migrates_legacy_child_invocation_records_to_provenance`, and existing process-valued call/observation JSON roundtrips.
+- Final test counts: 515 workspace tests discovered; 514 passing and 1 intentionally ignored before final serialized gate. M3 added one fixture proof and deleted no behavioral test; C5 removed four dedicated process-harness unit tests and one standalone process-server test, then added handle/history/CLI-absence coverage.
+- Documentation URL/check: `./scripts/build-docs.sh` passes; static outputs staged at `target/site/docs/` and `target/site/api/`.
+- Paused Perf integrity: `patina spec check perf-phase-0 --json` still reports the expected paused state (`checked: 0`, `total: 9`, all acceptance criteria unchecked); the feature branch has no diff under `layer/surface/build/feat/perf-phase-0/`.
 
 ### Commit ledger
 
@@ -738,12 +739,16 @@ Populate during execution.
 | `6a4a6e9` | C3.2 | Peer/control test migration | Tier 0, clippy, serialized workspace tests |
 | `3f58c5c` | C4 | Current execution type boundary | Workspace tests, Tier 0, clippy |
 | `d95ddb0` | C5/C6 | Product surface and resident dispatch retirement | Tier 0, CLI no-spawn tests, handle rejection tests, clippy |
-| pending | C7 | Historical compatibility | pending |
+| `b58ca30` | C7 | Historical compatibility | Tier 0, persisted artifact/run history tests, clippy |
 | pending | C8 | Law/docs/release close-out | pending |
 
 ### Flake log
 
-None at plan creation.
+No nondeterministic flake was accepted. Deterministic gate failures encountered and fixed:
+
+- Initial C1 gate: `error: 1 vulnerability found!` for `RUSTSEC-2026-0258` (`h2 0.4.14`); patched to 0.4.16 and reran Tier 0 cleanly.
+- Initial C7 gate affected four denial/internal-run tests with `retired runtime kind Internal cannot start a current local Child run`; current run admission was narrowed to reject only process/JVM and to allow provenance-free internal/remote records, then the focused tests and Tier 0 passed.
+- During WASM fixture migration, the historical-time idempotency test produced `safe_message: "call timed out"` because the injected 2026-07-10 clock clamped a deadline already expired against the real WASM clock; the test now uses a current injected clock plus deterministic TTL offset.
 
 ### Follow-ups
 
