@@ -46,6 +46,61 @@ impl From<RuntimeKind> for ComponentRuntimeShape {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Runtime substrate accepted for current local Child execution.
+///
+/// Historical component records may contain other [`ComponentRuntimeShape`]
+/// values, but only this type may enter a current local execution plan.
+pub enum LocalChildRuntime {
+    /// A capability-mediated WASM component.
+    WasmComponent,
+}
+
+impl From<LocalChildRuntime> for RuntimeKind {
+    fn from(value: LocalChildRuntime) -> Self {
+        match value {
+            LocalChildRuntime::WasmComponent => Self::WasmComponent,
+        }
+    }
+}
+
+impl TryFrom<RuntimeKind> for LocalChildRuntime {
+    type Error = RuntimeKind;
+
+    fn try_from(value: RuntimeKind) -> Result<Self, Self::Error> {
+        match value {
+            RuntimeKind::WasmComponent => Ok(Self::WasmComponent),
+            RuntimeKind::Process
+            | RuntimeKind::JvmChild
+            | RuntimeKind::RemotePeer
+            | RuntimeKind::Internal => Err(value),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+/// Failure to admit a historical runtime shape as current local execution.
+pub enum LocalChildRuntimeError {
+    /// The recorded shape is retained for history but is not a local Child runtime.
+    #[error("recorded runtime shape {0:?} is not executable as a local Child")]
+    RetiredOrNonLocal(ComponentRuntimeShape),
+}
+
+impl TryFrom<ComponentRuntimeShape> for LocalChildRuntime {
+    type Error = LocalChildRuntimeError;
+
+    fn try_from(value: ComponentRuntimeShape) -> Result<Self, Self::Error> {
+        match value {
+            ComponentRuntimeShape::WasmComponent => Ok(Self::WasmComponent),
+            ComponentRuntimeShape::JvmChild
+            | ComponentRuntimeShape::ProcessChild
+            | ComponentRuntimeShape::RemoteChild => {
+                Err(LocalChildRuntimeError::RetiredOrNonLocal(value))
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 /// How a child accepts calls at its component boundary.
@@ -325,6 +380,8 @@ pub enum ChildCallReasonCode {
     ArtifactMissing,
     /// Artifact verification was not successful.
     ArtifactRejected,
+    /// Artifact runtime shape is historical, retired, or non-local.
+    UnsupportedLocalRuntime,
     /// Artifact does not export the requested operation.
     OperationNotExported,
     /// Instance state was not ready.
@@ -510,6 +567,7 @@ impl AuthorizedChildInvocation {
                 && artifact.child_name == self.child_name
                 && artifact.artifact_version == approval.artifact_version
                 && artifact.verification_status == VerificationStatus::Verified
+                && LocalChildRuntime::try_from(artifact.runtime_shape).is_ok()
         }) {
             return Err(ChildEffectAdmissionDenyV1::ChildAuthorityMismatch);
         }
@@ -915,6 +973,19 @@ pub fn evaluate_child_call_authority_with_policy(
         );
     }
 
+    if LocalChildRuntime::try_from(artifact.runtime_shape).is_err() {
+        return denied_with_context(
+            call,
+            request,
+            ChildCallReasonCode::UnsupportedLocalRuntime,
+            Some(instance),
+            Some(assignment),
+            Some(approval),
+            Some(artifact),
+            approval.policy_revision,
+        );
+    }
+
     if artifact.artifact_version != assignment.pinned_artifact_version
         || artifact.artifact_version != approval.artifact_version
         || artifact.artifact_id != instance.artifact_id
@@ -1275,6 +1346,57 @@ mod tests {
                 .expect("string ID literal/generated value must be non-empty")
         );
         assert_eq!(authorized.child_name(), "slate-manager");
+    }
+
+    #[test]
+    fn historical_non_wasm_runtime_shapes_are_readable_but_not_locally_executable() {
+        for (wire, shape) in [
+            ("\"process_child\"", ComponentRuntimeShape::ProcessChild),
+            ("\"jvm_child\"", ComponentRuntimeShape::JvmChild),
+            ("\"remote_child\"", ComponentRuntimeShape::RemoteChild),
+        ] {
+            let decoded: ComponentRuntimeShape = serde_json::from_str(wire).unwrap();
+            assert_eq!(decoded, shape);
+            assert_eq!(
+                LocalChildRuntime::try_from(decoded),
+                Err(LocalChildRuntimeError::RetiredOrNonLocal(shape))
+            );
+
+            let mut retired_artifact = artifact();
+            retired_artifact.runtime_shape = decoded;
+            let result = evaluate_child_call_authority(
+                &call(),
+                &request(),
+                &[retired_artifact],
+                &[approval(ChildApprovalState::Approved)],
+                &[assignment(ChildAssignmentState::Active)],
+                &[instance(ChildInstanceState::Ready)],
+            );
+            assert_eq!(
+                result.evaluation.reason_code,
+                ChildCallReasonCode::UnsupportedLocalRuntime
+            );
+            assert!(result.authorized.is_none());
+        }
+
+        for (wire, kind) in [
+            ("\"process\"", RuntimeKind::Process),
+            ("\"jvm_child\"", RuntimeKind::JvmChild),
+            ("\"remote_peer\"", RuntimeKind::RemotePeer),
+            ("\"internal\"", RuntimeKind::Internal),
+        ] {
+            let decoded: RuntimeKind = serde_json::from_str(wire).unwrap();
+            assert_eq!(decoded, kind);
+            assert_eq!(LocalChildRuntime::try_from(decoded), Err(kind));
+        }
+        assert_eq!(
+            LocalChildRuntime::try_from(ComponentRuntimeShape::WasmComponent),
+            Ok(LocalChildRuntime::WasmComponent)
+        );
+        assert_eq!(
+            LocalChildRuntime::try_from(RuntimeKind::WasmComponent),
+            Ok(LocalChildRuntime::WasmComponent)
+        );
     }
 
     #[test]
