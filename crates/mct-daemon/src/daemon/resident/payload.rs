@@ -306,9 +306,9 @@ mod tests {
     fn resident_test_call(trace_id: TraceId) -> MctCall {
         let mut call = local_wasm_call(
             OperationTarget {
-                namespace: "patina:demo".into(),
-                interface_name: "control@0.1.0".into(),
-                function_name: "run".into(),
+                namespace: "patina:mct-test".into(),
+                interface_name: "echo@0.1.0".into(),
+                function_name: "echo".into(),
             },
             test_grants_authority_identity(1),
         );
@@ -353,76 +353,8 @@ mod tests {
         }
     }
 
-    fn write_resident_payload_process_child(children_dir: &Path) {
-        write_resident_process_child_script(
-            children_dir,
-            "resident-payload-echo",
-            b"#!/bin/sh\npayload=$(cat)\nprintf 'processed:%s' \"$payload\"\n",
-        );
-    }
-
-    fn write_resident_process_child_script(children_dir: &Path, name: &str, script: &[u8]) {
-        #[cfg(unix)]
-        use std::os::unix::fs::PermissionsExt;
-
-        let child_dir = children_dir.join(name);
-        std::fs::create_dir_all(&child_dir).unwrap();
-        let artifact_path = child_dir.join(format!("{name}.wasm"));
-        let manifest_path = child_dir.join("child.toml");
-        std::fs::write(&artifact_path, script).unwrap();
-        #[cfg(unix)]
-        {
-            let mut permissions = std::fs::metadata(&artifact_path).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&artifact_path, permissions).unwrap();
-        }
-        write_resident_child_manifest(&manifest_path, name, "handle");
-        write_sha256_sidecar(&artifact_path, script);
-        let manifest_bytes = std::fs::read(&manifest_path).unwrap();
-        write_sha256_sidecar(&manifest_path, &manifest_bytes);
-    }
-
-    fn write_resident_child_manifest(manifest_path: &Path, name: &str, mode: &str) {
-        std::fs::write(
-            manifest_path,
-            format!(
-                r#"[child]
-name = "{name}"
-version = "0.1.0"
-description = "resident test child"
-kind = "child"
-role = "app"
-
-[child.ingress]
-mode = "{mode}"
-
-[child.artifact]
-wasm = "{name}.wasm"
-
-[child.contract]
-allow = ["patina:demo/control@0.1.0.run"]
-
-[needs]
-toys = []
-
-[relationships]
-listens = []
-"#
-            ),
-        )
-        .unwrap();
-    }
-
-    fn write_sha256_sidecar(path: &Path, bytes: &[u8]) {
-        use sha2::{Digest, Sha256};
-
-        let mut sidecar = path.as_os_str().to_os_string();
-        sidecar.push(".sha256");
-        std::fs::write(
-            PathBuf::from(sidecar),
-            format!("{:x}", Sha256::digest(bytes)),
-        )
-        .unwrap();
+    fn write_resident_payload_wasm_child(children_dir: &Path) {
+        write_test_wasm_echo_child(children_dir, "resident-payload-echo");
     }
 
     #[tokio::test]
@@ -432,7 +364,7 @@ listens = []
         let children_dir = dir.path().join("children");
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
-        write_resident_payload_process_child(&children_dir);
+        write_resident_payload_wasm_child(&children_dir);
 
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
         assert_eq!(loaded.loaded, 1, "{loaded:?}");
@@ -447,7 +379,7 @@ listens = []
             .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
             .unwrap();
         let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
-        let payload = br#"{"secret":"blob-marker"}"#.to_vec();
+        let payload = b"[41]".to_vec();
         let payload_base64 = BASE64_STANDARD.encode(&payload);
         let payload_digest = blake3_hex(&payload);
         let handle = local_blob_store_for_state_path(&state_path)
@@ -478,7 +410,7 @@ listens = []
         let result_payload = result
             .inline_result_payload
             .expect("result payload returned");
-        let expected_result = br#"processed:{"secret":"blob-marker"}"#.to_vec();
+        let expected_result = br#"{"results":[41]}"#.to_vec();
         let expected_result_base64 = BASE64_STANDARD.encode(&expected_result);
         assert_eq!(result_payload, expected_result);
         assert!(matches!(
@@ -493,8 +425,7 @@ listens = []
         assert!(ledger_text.contains(&payload_digest));
         assert!(ledger_text.contains("payload:request:size="));
         assert!(ledger_text.contains("payload:result:size="));
-        assert!(!ledger_text.contains("blob-marker"));
-        assert!(!ledger_text.contains("processed:"));
+        assert!(!ledger_text.contains(String::from_utf8_lossy(&expected_result).as_ref()));
         assert!(!ledger_text.contains(&payload_base64));
         assert!(!ledger_text.contains(&expected_result_base64));
     }
@@ -506,7 +437,7 @@ listens = []
         let children_dir = dir.path().join("children");
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
-        write_resident_payload_process_child(&children_dir);
+        write_resident_payload_wasm_child(&children_dir);
 
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
         let config_store = MctDaemonConfigStore::new(&config_path);
@@ -559,7 +490,7 @@ listens = []
         let children_dir = dir.path().join("children");
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
-        write_resident_payload_process_child(&children_dir);
+        write_resident_payload_wasm_child(&children_dir);
 
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
         let config_store = MctDaemonConfigStore::new(&config_path);

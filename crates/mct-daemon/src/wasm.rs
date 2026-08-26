@@ -3212,7 +3212,10 @@ mod tests {
         );
         assert_eq!(
             child.allowed_operations,
-            vec!["patina:mct-test/echo@0.1.0.echo"]
+            vec![
+                "patina:mct-test/echo@0.1.0.echo",
+                "patina:demo/control@0.1.0.run"
+            ]
         );
 
         let mut echo_call = call();
