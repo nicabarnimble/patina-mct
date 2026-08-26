@@ -335,12 +335,12 @@ Migrate tests before removing production code so coverage remains legible.
 
 ### M3.1 — Execution, payload, and idempotency
 
-- [ ] Replace shell Children in resident execution tests.
-- [ ] Replace payload-dependent shell Children; retain proof that output depends on request input.
-- [ ] Replace counting/idempotency shell behavior with deterministic WASM-visible evidence or an adapter-owned test counter that does not become product authority.
-- [ ] Preserve exact payload digest/size and no-ledger-payload assertions.
-- [ ] Preserve revision-guard and no-effect-on-denial assertions.
-- [ ] Commit:
+- [x] Replace shell Children in resident execution tests.
+- [x] Replace payload-dependent shell Children; retain proof that output depends on request input.
+- [x] Replace counting/idempotency shell behavior with deterministic WASM-visible evidence or an adapter-owned test counter that does not become product authority.
+- [x] Preserve exact payload digest/size and no-ledger-payload assertions.
+- [x] Preserve revision-guard and no-effect-on-denial assertions.
+- [x] Commit:
 
 ```text
 test(resident): move execution proofs to WASM Children
@@ -733,7 +733,7 @@ Populate during execution.
 | --- | --- | --- | --- |
 | `633cbcb` | Gate repair | Patch `h2` for RUSTSEC-2026-0258 | Tier 0, audit, workspace tests, clippy |
 | `d049a8a` | C1 | Plan and inventory | Tier 0, docs build, diff check |
-| pending | C2 | WASM test fixture | pending |
+| `bdfacc6` | C2 | WASM test fixture | Tier 0, focused fixture test, clippy |
 | pending | C3.1 | Execution/payload/idempotency test migration | pending |
 | pending | C3.2 | Peer/control test migration | pending |
 | pending | C4 | Current execution type boundary | pending |

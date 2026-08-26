@@ -81,6 +81,64 @@ fn test_receiver_authority_provider() -> MctIrohReceiverAuthorityProvider {
     MctIrohReceiverAuthorityProvider::fixed(test_grants_authority_identity(1))
 }
 
+#[cfg(test)]
+fn write_test_wasm_child(children_dir: &Path, name: &str) {
+    write_test_wasm_child_for_operation(children_dir, name, "patina:demo/control@0.1.0.run");
+}
+
+#[cfg(test)]
+fn write_test_wasm_echo_child(children_dir: &Path, name: &str) {
+    write_test_wasm_child_for_operation(children_dir, name, "patina:mct-test/echo@0.1.0.echo");
+}
+
+#[cfg(test)]
+fn write_test_wasm_child_for_operation(children_dir: &Path, name: &str, operation: &str) {
+    use sha2::{Digest, Sha256};
+
+    let child_dir = children_dir.join(name);
+    std::fs::create_dir_all(&child_dir).unwrap();
+    let artifact_path = child_dir.join(format!("{name}.wasm"));
+    let manifest_path = child_dir.join("child.toml");
+    let component = include_bytes!("../tests/fixtures/mct-test-echo-0.1.0/mct-test-echo.wasm");
+    std::fs::write(&artifact_path, component).unwrap();
+    std::fs::write(
+        &manifest_path,
+        format!(
+            r#"[child]
+name = "{name}"
+version = "0.1.0"
+description = "deterministic resident test Child"
+kind = "child"
+role = "test"
+
+[child.ingress]
+mode = "wit-only"
+
+[child.artifact]
+wasm = "{name}.wasm"
+
+[child.contract]
+default = "{operation}"
+allow = ["{operation}"]
+
+[needs]
+toys = []
+"#
+        ),
+    )
+    .unwrap();
+    for path in [&artifact_path, &manifest_path] {
+        let bytes = std::fs::read(path).unwrap();
+        let mut sidecar = path.as_os_str().to_os_string();
+        sidecar.push(".sha256");
+        std::fs::write(
+            PathBuf::from(sidecar),
+            format!("{:x}", Sha256::digest(bytes)),
+        )
+        .unwrap();
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1).collect::<Vec<_>>();

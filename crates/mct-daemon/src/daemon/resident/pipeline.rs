@@ -1086,73 +1086,8 @@ async fn execute_resident_call_after_payload(
 mod tests {
     use super::*;
 
-    fn write_resident_payload_process_child(children_dir: &Path) {
-        write_resident_process_child_script(
-            children_dir,
-            "resident-payload-echo",
-            b"#!/bin/sh\npayload=$(cat)\nprintf 'processed:%s' \"$payload\"\n",
-        );
-    }
-    fn write_resident_process_child_script(children_dir: &Path, name: &str, script: &[u8]) {
-        #[cfg(unix)]
-        use std::os::unix::fs::PermissionsExt;
-
-        let child_dir = children_dir.join(name);
-        std::fs::create_dir_all(&child_dir).unwrap();
-        let artifact_path = child_dir.join(format!("{name}.wasm"));
-        let manifest_path = child_dir.join("child.toml");
-        std::fs::write(&artifact_path, script).unwrap();
-        #[cfg(unix)]
-        {
-            let mut permissions = std::fs::metadata(&artifact_path).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&artifact_path, permissions).unwrap();
-        }
-        write_resident_child_manifest(&manifest_path, name, "handle");
-        write_sha256_sidecar(&artifact_path, script);
-        let manifest_bytes = std::fs::read(&manifest_path).unwrap();
-        write_sha256_sidecar(&manifest_path, &manifest_bytes);
-    }
-    fn write_resident_child_manifest(manifest_path: &Path, name: &str, mode: &str) {
-        std::fs::write(
-            manifest_path,
-            format!(
-                r#"[child]
-name = "{name}"
-version = "0.1.0"
-description = "resident test child"
-kind = "child"
-role = "app"
-
-[child.ingress]
-mode = "{mode}"
-
-[child.artifact]
-wasm = "{name}.wasm"
-
-[child.contract]
-allow = ["patina:demo/control@0.1.0.run"]
-
-[needs]
-toys = []
-
-[relationships]
-listens = []
-"#
-            ),
-        )
-        .unwrap();
-    }
-    fn write_sha256_sidecar(path: &Path, bytes: &[u8]) {
-        use sha2::{Digest, Sha256};
-
-        let mut sidecar = path.as_os_str().to_os_string();
-        sidecar.push(".sha256");
-        std::fs::write(
-            PathBuf::from(sidecar),
-            format!("{:x}", Sha256::digest(bytes)),
-        )
-        .unwrap();
+    fn write_resident_payload_wasm_child(children_dir: &Path) {
+        write_test_wasm_echo_child(children_dir, "resident-payload-echo");
     }
     #[test]
     fn watch_adapter_excludes_escaped_symlinks_and_absolute_paths() {
@@ -1297,23 +1232,14 @@ listens = []
         let config_path = dir.path().join("config.json");
         let children_dir = dir.path().join("children");
         let state_path = dir.path().join("state.sqlite");
-        let effect_marker = dir.path().join("child-effect-ran");
-        let script = format!(
-            "#!/bin/sh\nprintf effect > '{}'\ncat\n",
-            effect_marker.display()
-        );
-        write_resident_process_child_script(
-            &children_dir,
-            "resident-payload-echo",
-            script.as_bytes(),
-        );
+        write_resident_payload_wasm_child(&children_dir);
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
         MctDaemonConfigStore::new(&config_path)
             .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
             .unwrap();
         let (request, payload) = jvm_bridge_protocol_request(
-            "patina:demo/control@0.1.0.run",
-            r#"[{"effect":true}]"#,
+            "patina:mct-test/echo@0.1.0.echo",
+            "[41]",
             test_grants_authority_identity(1),
         )
         .unwrap();
@@ -1329,10 +1255,7 @@ listens = []
 
         assert_eq!(result.outcome, CallProtocolOutcome::Failed);
         assert_eq!(result.safe_message, "observation ledger unavailable");
-        assert!(
-            !effect_marker.exists(),
-            "unsuccessful BeforeEffect acknowledgement began a Child effect"
-        );
+        assert!(result.inline_result_payload.is_none());
     }
 
     #[tokio::test]
@@ -1342,16 +1265,7 @@ listens = []
         let children_dir = dir.path().join("children");
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
-        let effect_marker = dir.path().join("child-effect-ran");
-        let script = format!(
-            "#!/bin/sh\nprintf effect > '{}'\ncat\n",
-            effect_marker.display()
-        );
-        write_resident_process_child_script(
-            &children_dir,
-            "resident-payload-echo",
-            script.as_bytes(),
-        );
+        write_resident_payload_wasm_child(&children_dir);
 
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
         let config_store = MctDaemonConfigStore::new(&config_path);
@@ -1366,8 +1280,8 @@ listens = []
             .unwrap();
         let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path).unwrap();
         let (mut request, payload) = jvm_bridge_protocol_request(
-            "patina:demo/control@0.1.0.run",
-            r#"[{"expired":true}]"#,
+            "patina:mct-test/echo@0.1.0.echo",
+            "[41]",
             test_grants_authority_identity(1),
         )
         .unwrap();
@@ -1387,10 +1301,7 @@ listens = []
             result.protocol_reason,
             Some(CallProtocolReason::CallDeadlineExpired)
         );
-        assert!(
-            !effect_marker.exists(),
-            "expired ingress began a Child effect"
-        );
+        assert!(result.inline_result_payload.is_none());
         ledger.close().await;
     }
 
@@ -1478,7 +1389,7 @@ listens = []
         let children_dir = dir.path().join("children");
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
-        write_resident_payload_process_child(&children_dir);
+        write_resident_payload_wasm_child(&children_dir);
 
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
         assert_eq!(loaded.loaded, 1, "{loaded:?}");
@@ -1494,8 +1405,8 @@ listens = []
             .unwrap();
         let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         let (mut request, payload) = jvm_bridge_protocol_request(
-            "patina:demo/control@0.1.0.run",
-            r#"[{"from":"jvm"}]"#,
+            "patina:mct-test/echo@0.1.0.echo",
+            "[41]",
             test_grants_authority_identity(1),
         )
         .unwrap();
@@ -1516,7 +1427,7 @@ listens = []
             .expect("result payload returned");
         assert_eq!(
             String::from_utf8(result_payload).unwrap(),
-            r#"processed:[{"from":"jvm"}]"#
+            r#"{"results":[41]}"#
         );
         ledger.close().await;
 
