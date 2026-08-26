@@ -9,6 +9,8 @@
     "trace_id",
     "event_id",
     "sequence",
+    "normalizer_version",
+    "source_digest",
     "source",
     "actor",
     "kind",
@@ -25,6 +27,11 @@
     "occurred_at": {
       "type": ["string", "null"],
       "format": "date-time"
+    },
+    "normalizer_version": { "type": "string", "minLength": 1 },
+    "source_digest": {
+      "type": "string",
+      "pattern": "^blake3:[0-9a-f]{64}$"
     },
     "source": {
       "type": "object",

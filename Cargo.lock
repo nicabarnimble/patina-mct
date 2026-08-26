@@ -2412,6 +2412,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mct-trace"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zstd",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

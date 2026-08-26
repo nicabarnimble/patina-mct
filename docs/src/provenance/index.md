@@ -12,6 +12,8 @@ Provenance is not implementation authority. It answers questions such as:
 - Which commit landed the result?
 - Which tutorial, explanation, or release note was derived from the session?
 
-The initial book establishes the [Open trace contract](open-trace-contract.md).
-Trace ingestion and generated session indexes begin only after the archive and
-normalization formats have a reviewed fixture.
+The [Open trace contract](open-trace-contract.md) governs the archive. The
+[Published sessions](sessions.md) index is generated during each documentation
+build from reviewed receipts in `traces/manifest.jsonl`. Each session links to
+its complete transcript, normalized projection, exact receipt, and compressed
+raw download.
