@@ -163,22 +163,15 @@ pub(super) fn execute_authorized_resident_child(
         ));
     }
 
-    let mut report = match child_execution.child.ingress_mode {
-        mct_daemon::MctChildIngressMode::Handle => {
-            execute_resident_process_child(child_execution, &request, inline_payload.as_deref())?
-        }
-        mct_daemon::MctChildIngressMode::Hybrid | mct_daemon::MctChildIngressMode::WitOnly => {
-            execute_resident_wit_child(
-                child_execution,
-                &request,
-                inline_payload.as_deref(),
-                &paths,
-                &effect_snapshot,
-                toy_effect_time_override,
-                before_effect_ledger,
-            )?
-        }
-    };
+    let mut report = execute_resident_wit_child(
+        child_execution,
+        &request,
+        inline_payload.as_deref(),
+        &paths,
+        &effect_snapshot,
+        toy_effect_time_override,
+        before_effect_ledger,
+    )?;
     if let Some(route) = report.result.route_taken.as_ref() {
         report.observations.push(resident_executed_on_observation(
             &call,
@@ -204,62 +197,6 @@ pub(super) fn execute_authorized_resident_child(
     }
     report.run_id = Some(run_id);
     Ok(report)
-}
-
-fn execute_resident_process_child(
-    execution: PreparedChildExecution,
-    request: &MctCallProtocolRequest,
-    inline_payload: Option<&[u8]>,
-) -> Result<LocalExecutionReport> {
-    let call = &request.call;
-    let harness = MctProcessChildHarness {
-        executable: execution.child.wasm_path.clone(),
-        args: Vec::new(),
-        timeout: Duration::from_secs(5),
-        local_node_id: MctNodeId::new("local-mct")
-            .expect("string ID literal/generated value must be non-empty"),
-    };
-    let payload_bytes = inline_payload.unwrap_or_default();
-    let report = harness.invoke_authorized_child_bytes(
-        execution.authorized,
-        call,
-        payload_bytes,
-        MctProcessChildInvocationIds {
-            started_observation_id: ObservationId::new(format!(
-                "obs-resident-process-started:{}",
-                call.call_id
-            ))
-            .expect("string ID literal/generated value must be non-empty"),
-            completed_observation_id: ObservationId::new(format!(
-                "obs-resident-process-completed:{}",
-                call.call_id
-            ))
-            .expect("string ID literal/generated value must be non-empty"),
-            result_ref: ResultRef::new(format!("result-resident-process:{}", call.call_id))
-                .expect("string ID literal/generated value must be non-empty"),
-            audit_ref: AuditRef::new(format!("audit-resident-process:{}", call.call_id))
-                .expect("string ID literal/generated value must be non-empty"),
-            started_at: current_timestamp(),
-            completed_at: current_timestamp(),
-        },
-    )?;
-    let result_bytes = report.stdout.as_bytes().to_vec();
-    let mut result = report.result;
-    result.authority_decision_ref = execution.route_decision_id;
-    result.route_taken = route_taken_for_outcome(result.outcome, execution.route_taken);
-    let inline_result_payload = apply_inline_result_payload(
-        &mut result,
-        format!("result-resident-process:{}", call.call_id),
-        "text/plain",
-        result_bytes,
-    );
-    Ok(LocalExecutionReport {
-        result,
-        observations: report.observations,
-        inline_result_payload,
-        run_id: None,
-        produced_messages: Vec::new(),
-    })
 }
 
 fn authorize_resident_watch_toy(

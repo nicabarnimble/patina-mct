@@ -392,19 +392,7 @@ pub(super) fn resident_child_accepts_call(
     child: &mct_daemon::MctLoadedChild,
     call: &MctCall,
 ) -> bool {
-    let operation_id = mct_daemon::operation_id_from_target(&call.target);
-    match child.ingress_mode {
-        mct_daemon::MctChildIngressMode::Handle => {
-            child.allowed_operations.is_empty()
-                || child
-                    .allowed_operations
-                    .iter()
-                    .any(|allowed| allowed == &operation_id)
-        }
-        mct_daemon::MctChildIngressMode::Hybrid | mct_daemon::MctChildIngressMode::WitOnly => {
-            child.allows_operation_target(&call.target)
-        }
-    }
+    child.allows_operation_target(&call.target)
 }
 
 #[cfg(test)]

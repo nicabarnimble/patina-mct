@@ -22,7 +22,6 @@ mod federation;
 mod inspector;
 mod lifecycle;
 mod metrics;
-mod process;
 mod registry;
 mod release;
 mod startup;
@@ -124,10 +123,6 @@ pub use lifecycle::{
     warmup_configured_child,
 };
 pub use metrics::{MctMetricsSnapshot, build_metrics_snapshot};
-pub use process::{
-    MctProcessChildError, MctProcessChildHarness, MctProcessChildInvocationIds,
-    MctProcessChildInvocationReport,
-};
 pub use registry::{
     MctChildPackageInstallReport, MctRegistrySyncReport, install_verified_child_package,
     sync_child_registry_source,

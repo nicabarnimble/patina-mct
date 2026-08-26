@@ -1,6 +1,6 @@
 use crate::{
-    MctChildIngressMode, MctChildInstanceState, MctDaemonConfig, MctLoadedChild,
-    MctRuntimeStateSummary, current_timestamp_string,
+    MctChildInstanceState, MctDaemonConfig, MctLoadedChild, MctRuntimeStateSummary,
+    current_timestamp_string,
 };
 use mct_kernel::{
     ChildApprovalState, ChildAssignmentState, MctHelloCallableSurface, MctHelloCapabilityView,
@@ -177,12 +177,7 @@ fn federation_callable_surfaces<'a>(
         {
             continue;
         }
-        let runtime_kind = match child.ingress_mode {
-            MctChildIngressMode::Handle => RuntimeKind::Process,
-            MctChildIngressMode::Hybrid | MctChildIngressMode::WitOnly => {
-                RuntimeKind::WasmComponent
-            }
-        };
+        let runtime_kind = RuntimeKind::WasmComponent;
         for operation_id in &child.allowed_operations {
             surfaces.push(MctFederationCallableSurfaceView {
                 child_name: child.name.clone(),
@@ -200,6 +195,7 @@ fn federation_callable_surfaces<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MctChildIngressMode;
     use crate::{
         MctChildFileDigest, MctPeerAddressBookEntry, MctStoredChildApproval,
         MctStoredChildAssignment,
