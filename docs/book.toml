@@ -1,0 +1,27 @@
+[book]
+title = "MCT Documentation"
+authors = ["Patina MCT contributors"]
+description = "Product, operator, developer, and provenance documentation for MCT"
+language = "en"
+src = "src"
+
+[build]
+build-dir = "../target/mdbook"
+create-missing = false
+
+[output.html]
+site-url = "/docs/"
+git-repository-url = "https://github.com/nicabarnimble/patina-mct"
+edit-url-template = "https://github.com/nicabarnimble/patina-mct/edit/patina/docs/{path}"
+additional-css = ["theme/mct.css"]
+
+[output.html.search]
+enable = true
+limit-results = 30
+use-boolean-and = true
+
+[output.linkcheck2]
+follow-web-links = false
+traverse-parent-directories = false
+require-md-extension = true
+warning-policy = "error"

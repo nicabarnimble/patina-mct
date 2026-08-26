@@ -1,0 +1,41 @@
+:root {
+  --mct-accent: #b86b38;
+  --mct-accent-soft: #f3dfcf;
+}
+
+.light,
+.rust {
+  --links: var(--mct-accent);
+  --sidebar-active: var(--mct-accent);
+  --quote-border: var(--mct-accent);
+}
+
+.navy,
+.coal,
+.ayu {
+  --links: #e3a274;
+  --sidebar-active: #e3a274;
+  --quote-border: #e3a274;
+}
+
+.content main {
+  max-width: 56rem;
+}
+
+.content main > h1:first-child {
+  letter-spacing: -0.025em;
+}
+
+blockquote {
+  border-inline-start-width: 0.25rem;
+}
+
+code {
+  overflow-wrap: anywhere;
+}
+
+.mct-boundary {
+  border-inline-start: 0.25rem solid var(--mct-accent);
+  padding: 0.75rem 1rem;
+  background: color-mix(in srgb, var(--mct-accent-soft) 35%, transparent);
+}

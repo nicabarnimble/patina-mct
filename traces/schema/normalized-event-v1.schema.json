@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://patina.dev/schema/mct/normalized-trace-event-v1.json",
+  "title": "MCT normalized trace event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "trace_id",
+    "event_id",
+    "sequence",
+    "source",
+    "actor",
+    "kind",
+    "payload"
+  ],
+  "properties": {
+    "schema": { "const": "mct.normalized-trace-event/v1" },
+    "trace_id": {
+      "type": "string",
+      "pattern": "^trace:[a-z0-9][a-z0-9._-]*:[^#\\s]+$"
+    },
+    "event_id": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "occurred_at": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "session_id", "entry_id", "parent_entry_id"],
+      "properties": {
+        "format": { "type": "string", "minLength": 1 },
+        "session_id": { "type": "string", "minLength": 1 },
+        "entry_id": { "type": ["string", "null"] },
+        "parent_entry_id": { "type": ["string", "null"] }
+      }
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "enum": ["user", "assistant", "tool", "runtime", "system", "unknown"]
+        },
+        "id": { "type": ["string", "null"] },
+        "model": { "type": ["string", "null"] }
+      }
+    },
+    "kind": { "type": "string", "minLength": 1 },
+    "payload": {
+      "type": "object",
+      "description": "Complete source record; interpretation is source-format specific."
+    },
+    "redaction": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["category", "reason", "approved_by"],
+      "properties": {
+        "category": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 },
+        "approved_by": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

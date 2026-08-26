@@ -3,7 +3,7 @@ id: what-is-mct
 layer: core
 status: active
 created: 2026-06-09
-revised: 2026-07-14
+revised: 2026-08-26
 tags: [mct, product, mother, child, toy, authority, iroh, observations]
 references: [mct-build-boundaries, spec-driven-design, adapter-pattern, safety-boundaries, migration-vocabulary]
 ---
@@ -18,10 +18,12 @@ explains it. Where they disagree, the Allium spec wins.
 
 ## Product statement
 
-MCT is a whole-app, local-first Mother/Child/Toy runtime: a Mother carries
-local authority, observation ledger, child runtime, ToyGrant checks, and peer
-protocols in the same deployable node instead of treating a hidden SaaS
-backend as the source of truth.
+Running code is not authority.
+
+MCT is a whole-app, local-first Mother/Child/Toy runtime built around that
+rule. A Mother carries local authority, the observation ledger, Child runtime,
+ToyGrant checks, and peer protocols in the same deployable node instead of
+treating a hidden SaaS backend as the source of truth.
 
 Iroh supplies public-key-addressed connectivity between nodes. MCT supplies
 the application, runtime, and authority layer above it.
@@ -44,23 +46,28 @@ nothing above her: no hosted registry or cloud control plane holds the "real"
 state. The node is sovereign and complete.
 
 **Child** identity is WIT-shaped: namespace, interface, function. The design
-center is a WASM component, but a child may be process-backed or JVM-backed —
-the substrate is an execution detail recorded in route observations, never a
-separate authority model. Authority only ever sees the WIT contract.
-WIT-only children are valid; legacy lifecycle exports (`init`, `handle`,
+center is a WASM component, but a Child may be process-backed or JVM-backed.
+Those substrates can share WIT-shaped identity, call admission, and route
+observations without sharing the same confinement guarantee. In 0.2.0 the
+process harness authorizes launch but does not OS-sandbox the spawned process.
+WIT-only Children are valid; legacy lifecycle exports (`init`, `handle`,
 `drain`, `tick`) are compatibility hooks, not identity.
 
-**Toy** capabilities form a closed canonical catalog, and each toy is itself a
-WIT contract identity. Toys are the only way children touch the world outside
-their own memory.
+**Toy** capabilities form a closed canonical catalog, and each Toy is itself a
+WIT contract identity. MCT semantic law requires Toys to be the only way a
+Child affects the world outside its own memory. The 0.2.0 WASM/WIT path
+enforces that boundary; process-backed execution remains a known confinement
+gap and must use trusted code or an external OS sandbox.
 
-Mother decides; children compute; toys effect.
+Mother decides; Children compute; Toys effect.
 
-## The core inversion: nothing is ambient
+## The core inversion: authority is explicit
 
-Most runtimes start from code having power and sandbox away the dangerous
-parts. MCT starts from code having zero power. Every power a child exercises
-must trace to an explicit, issued, scoped, time-bounded, revocable record:
+Most runtimes begin with the authority of their host process and then try to
+remove dangerous parts. MCT begins a Child with no MCT authority. In the
+WASM/WIT path, that semantic rule is also a host-capability boundary. Every
+MCT-mediated power a Child exercises must trace to an explicit, issued,
+scoped, time-bounded, revocable record:
 
 - A manifest `needs` entry is a request. It grants nothing.
 - Authority exists only as data: a `ToyGrant` names subject, canonical toy
@@ -119,13 +126,17 @@ A peer Mother invokes `patina:slate/control@0.1.0#complete-work` on your node:
    paths, and data authority has final say over placement.
 6. **Revalidate, then execute.** Authority is rechecked at execution time —
    stale authority is a security bug; stale optimization is a performance
-   miss. Every effect the child attempts passes through a toy gate.
+   miss. WASM/WIT host effects pass through Toy gates. A process-backed Child
+   is authorized before spawn, but its later OS activity is not currently
+   confined or mediated by those gates.
 7. **MctResult returns.** Closed outcome set — success, denied, failed,
    timed_out, cancelled — with a caller-safe message and opaque audit ref.
-8. **Throughout:** every step emits typed `MctObservation` facts into an
+8. **Throughout:** MCT stages emit typed `MctObservation` facts into an
    append-only, hash-chained, per-Mother ledger. Authority-critical
-   observations are durable before their effect proceeds (fail closed). The
-   whole story reconstructs from the ledger alone.
+   observations are durable before their effect proceeds where the governing
+   contract requires append-before-effect. The MCT-mediated call story
+   reconstructs from the ledger; arbitrary activity inside an unsandboxed
+   process does not.
 
 ## Four records, four audiences
 

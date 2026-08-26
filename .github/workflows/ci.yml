@@ -30,5 +30,11 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked --version 0.22.2
 
+      - name: Install documentation tools
+        run: scripts/install-docs-tools.sh
+
       - name: Check Allium specs and Rust tests
         run: scripts/ci-tier0.sh
+
+      - name: Build and check product and API documentation
+        run: scripts/build-docs.sh
