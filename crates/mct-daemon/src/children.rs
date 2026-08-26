@@ -4,9 +4,9 @@ use mct_kernel::{
     ChildCallAuthorityIds, ChildCallAuthorityRequest, ChildCallEvaluationId, ChildId,
     ChildIngressMode as KernelChildIngressMode, ChildInstance, ChildInstanceId,
     ChildInstanceState as KernelChildInstanceState, ComponentArtifact, ComponentArtifactId,
-    ComponentRuntimeShape, ComponentWitExport, LifecycleExports, MctCall, MctNodeId,
-    NetworkPathClass, ObservationId, OperationTarget, ProjectId, RuntimeKind, VerificationStatus,
-    VisionId, evaluate_child_call_authority,
+    ComponentRuntimeShape, ComponentWitExport, LifecycleExports, LocalChildRuntime, MctCall,
+    MctNodeId, NetworkPathClass, ObservationId, OperationTarget, ProjectId, RuntimeKind,
+    VerificationStatus, VisionId, evaluate_child_call_authority,
 };
 use patina_sdk::manifest::{
     CHILD_MANIFEST_FILE, ChildManifest as SdkChildManifest, ChildManifestError, ChildPackage,
@@ -60,9 +60,8 @@ impl MctChildLoadOptions {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MctChildIngressMode {
-    #[default]
-    Handle,
     Hybrid,
+    #[default]
     WitOnly,
 }
 
@@ -112,7 +111,6 @@ impl MctLoadedChild {
     pub fn allows_operation_target(&self, target: &OperationTarget) -> bool {
         let operation_id = operation_id_from_target(target);
         match self.ingress_mode {
-            MctChildIngressMode::Handle => false,
             MctChildIngressMode::Hybrid => {
                 self.allowed_operations.is_empty()
                     || self
@@ -390,7 +388,7 @@ impl MctChildAuthorityProjection {
                         ChildId::new(instance.child_name.clone())
                             .expect("string ID literal/generated value must be non-empty"),
                     ),
-                    runtime_kind: runtime_kind_for_instance(instance, &self.artifacts),
+                    runtime_kind: LocalChildRuntime::WasmComponent.into(),
                     network_path: NetworkPathClass::Local,
                 })
             })
@@ -568,7 +566,6 @@ pub fn component_artifact_from_loaded_child(child: &MctLoadedChild) -> Component
         primary_export: component_export_from_allowed_operations(&child.allowed_operations),
         runtime_shape: ComponentRuntimeShape::WasmComponent,
         ingress_mode: match child.ingress_mode {
-            MctChildIngressMode::Handle => KernelChildIngressMode::Handle,
             MctChildIngressMode::Hybrid => KernelChildIngressMode::Hybrid,
             MctChildIngressMode::WitOnly => KernelChildIngressMode::WitOnly,
         },
@@ -631,22 +628,6 @@ fn fallback_component_export(allowed_operations: &[String]) -> ComponentWitExpor
     }
 }
 
-fn runtime_kind_for_instance(
-    instance: &ChildInstance,
-    artifacts: &[ComponentArtifact],
-) -> RuntimeKind {
-    artifacts
-        .iter()
-        .find(|artifact| artifact.artifact_id == instance.artifact_id)
-        .map(|artifact| match artifact.runtime_shape {
-            ComponentRuntimeShape::WasmComponent => RuntimeKind::WasmComponent,
-            ComponentRuntimeShape::JvmChild => RuntimeKind::JvmChild,
-            ComponentRuntimeShape::ProcessChild => RuntimeKind::Process,
-            ComponentRuntimeShape::RemoteChild => RuntimeKind::RemotePeer,
-        })
-        .unwrap_or(RuntimeKind::WasmComponent)
-}
-
 #[derive(Debug, Error)]
 enum MctChildLoadError {
     #[error("missing child manifest at {path}")]
@@ -667,6 +648,8 @@ enum MctChildLoadError {
         #[source]
         source: ChildManifestError,
     },
+    #[error("legacy handle ingress is not executable as a local Child in {path}")]
+    UnsupportedHandleIngress { path: PathBuf },
 }
 
 impl MctChildLoadError {
@@ -676,6 +659,7 @@ impl MctChildLoadError {
             Self::MissingHashSidecar { .. } => "missing child integrity sidecar".into(),
             Self::HashMismatch { .. } => "child integrity check failed".into(),
             Self::ParseManifest { .. } => "invalid child manifest".into(),
+            Self::UnsupportedHandleIngress { .. } => "unsupported local Child ingress".into(),
             Self::ReadFile { .. } => "child file could not be read".into(),
         }
     }
@@ -711,6 +695,15 @@ fn load_child_pair(
         }
     })?;
     let artifact_id = format!("sha256:{}", wasm_digest.sha256);
+    let ingress_mode = match manifest.ingress_mode {
+        patina_sdk::manifest::ChildIngressMode::Handle => {
+            return Err(MctChildLoadError::UnsupportedHandleIngress {
+                path: manifest_path.to_path_buf(),
+            });
+        }
+        patina_sdk::manifest::ChildIngressMode::Hybrid => MctChildIngressMode::Hybrid,
+        patina_sdk::manifest::ChildIngressMode::WitOnly => MctChildIngressMode::WitOnly,
+    };
 
     Ok(MctLoadedChild {
         child_id: ChildId::new(manifest.name.clone())
@@ -725,7 +718,7 @@ fn load_child_pair(
         wasm_digest,
         manifest_digest,
         artifact_id,
-        ingress_mode: mct_ingress_mode_from_sdk(manifest.ingress_mode),
+        ingress_mode,
         allowed_operations: manifest.contract.allow_operations,
         requested_toys: manifest.needs.toys,
         subscribed_streams: Vec::new(),
@@ -733,14 +726,6 @@ fn load_child_pair(
         wasm_size_bytes: wasm_bytes.len() as u64,
         instance_state: MctChildInstanceState::Ready,
     })
-}
-
-fn mct_ingress_mode_from_sdk(mode: patina_sdk::manifest::ChildIngressMode) -> MctChildIngressMode {
-    match mode {
-        patina_sdk::manifest::ChildIngressMode::Handle => MctChildIngressMode::Handle,
-        patina_sdk::manifest::ChildIngressMode::Hybrid => MctChildIngressMode::Hybrid,
-        patina_sdk::manifest::ChildIngressMode::WitOnly => MctChildIngressMode::WitOnly,
-    }
 }
 
 fn digest_bytes_with_sidecar(
@@ -938,8 +923,8 @@ listens = ["events.changed"]
             dir.path(),
             "watch-null-sink",
             "watch-null-sink",
-            "handle",
-            &[],
+            "hybrid",
+            &["patina:watch/events@0.1.0.emit"],
         );
 
         let report = load_children_from_dir(MctChildLoadOptions::new(dir.path()));
@@ -1073,10 +1058,40 @@ kind = "child"
     }
 
     #[test]
+    fn legacy_handle_ingress_is_readable_manifest_data_but_not_a_local_child() {
+        let dir = tempfile::tempdir().unwrap();
+        write_child(dir.path(), "retired", "retired", "handle", &[]);
+        write_sidecars(dir.path(), "retired");
+
+        let report = load_children_from_dir(MctChildLoadOptions::new(dir.path()));
+
+        assert_eq!(report.discovered, 1);
+        assert_eq!(report.loaded, 0);
+        assert_eq!(report.failed, 1);
+        assert_eq!(
+            report.failures[0].safe_message,
+            "unsupported local Child ingress"
+        );
+        assert!(report.children.is_empty());
+    }
+
+    #[test]
     fn duplicate_child_names_are_failed_closed() {
         let dir = tempfile::tempdir().unwrap();
-        write_child(dir.path(), "alpha-a", "alpha", "handle", &[]);
-        write_child(dir.path(), "alpha-b", "alpha", "handle", &[]);
+        write_child(
+            dir.path(),
+            "alpha-a",
+            "alpha",
+            "wit-only",
+            &["patina:test/run@0.1.0.run"],
+        );
+        write_child(
+            dir.path(),
+            "alpha-b",
+            "alpha",
+            "wit-only",
+            &["patina:test/run@0.1.0.run"],
+        );
 
         let report = load_children_from_dir(MctChildLoadOptions::new(dir.path()));
 

@@ -21,10 +21,10 @@ must separately approve the exact artifact, assign it to a scope, and issue
 any ToyGrants needed for MCT-mediated effects. Child code should handle typed
 denial as a normal outcome.
 
-The WASM/WIT runtime is the confinement boundary. A process-backed Child is
-authorized before launch but currently runs as an ordinary host process. Do
-not use the process harness for untrusted code unless an external OS sandbox
-provides the missing filesystem, network, environment, and process isolation.
+The WASM/WIT runtime is the local Child confinement boundary. Handle-only
+manifests and native/JVM artifacts are rejected for current local Child
+loading. Integrate native or JVM software through authenticated ingress,
+another Mother, or a separately reviewed trusted Mother adapter.
 
 ## API documentation
 

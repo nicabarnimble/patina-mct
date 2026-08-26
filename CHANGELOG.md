@@ -6,6 +6,15 @@ All notable changes to MCT are documented here. MCT follows semantic versioning 
 
 Release-discipline work after PR #29 remains unreleased until it has a reviewable PR association and the generated 0.2.0 section is refreshed.
 
+### Changed
+
+- **Breaking (pre-GA):** made WASM components the only locally executable Child substrate; removed `process call`, `iroh serve-process`, handle-only ingress, resident process dispatch, and the public process Child harness ([#35](https://github.com/nicabarnimble/patina-mct/pull/35)).
+- Kept persisted process/JVM runtime values readable as historical evidence while refusing their conversion into current approval, routing, or execution authority ([#35](https://github.com/nicabarnimble/patina-mct/pull/35)).
+
+### Security
+
+- Eliminated the unconstrained host-process Child path rather than claiming admission was OS confinement ([#35](https://github.com/nicabarnimble/patina-mct/pull/35)).
+
 ## [0.2.0] - 2026-07-22
 
 ### Added
