@@ -264,13 +264,13 @@ git switch -c feat/wasm-only-local-child
 spec(runtime): plan WASM-only local Children
 ```
 
-- [ ] Push the branch:
+- [x] Push the branch:
 
 ```bash
 git push -u origin feat/wasm-only-local-child
 ```
 
-- [ ] Create a draft PR into `patina` using a body file:
+- [x] Create a draft PR into `patina` using a body file:
 
 ```bash
 gh pr create \
@@ -281,7 +281,7 @@ gh pr create \
   --body-file /tmp/wasm-only-local-child-pr.md
 ```
 
-- [ ] Verify rendered Markdown:
+- [x] Verify rendered Markdown:
 
 ```bash
 gh pr view --json number,title,body,url --jq '.body'
@@ -314,10 +314,10 @@ Preferred location:
 crates/mct-daemon/tests/fixtures/mct-test-echo-0.1.0/
 ```
 
-- [ ] Add the fixture and reproducibility check.
-- [ ] Add focused loader/invocation proof through the real WASM runtime.
-- [ ] Do not add a generic fixture framework or production public API for tests.
-- [ ] Commit:
+- [x] Add the fixture and reproducibility check.
+- [x] Add focused loader/invocation proof through the real WASM runtime.
+- [x] Do not add a generic fixture framework or production public API for tests.
+- [x] Commit:
 
 ```text
 test(runtime): add deterministic WASM echo Child fixture
@@ -731,7 +731,8 @@ Populate during execution.
 
 | Commit | Milestone | Purpose | Validation |
 | --- | --- | --- | --- |
-| pending | C1 | Plan and inventory | pending |
+| `633cbcb` | Gate repair | Patch `h2` for RUSTSEC-2026-0258 | Tier 0, audit, workspace tests, clippy |
+| `d049a8a` | C1 | Plan and inventory | Tier 0, docs build, diff check |
 | pending | C2 | WASM test fixture | pending |
 | pending | C3.1 | Execution/payload/idempotency test migration | pending |
 | pending | C3.2 | Peer/control test migration | pending |

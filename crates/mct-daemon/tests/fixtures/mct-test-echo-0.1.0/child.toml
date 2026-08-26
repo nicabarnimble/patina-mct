@@ -1,0 +1,22 @@
+[child]
+name = "mct-test-echo"
+version = "0.1.0"
+description = "Deterministic identity component for MCT runtime tests"
+kind = "child"
+role = "test"
+patina_min = "0.71.0"
+
+[child.ingress]
+mode = "wit-only"
+
+[child.artifact]
+wasm = "mct-test-echo.wasm"
+
+[child.contract]
+default = "patina:mct-test/echo@0.1.0.echo"
+allow = [
+  "patina:mct-test/echo@0.1.0.echo",
+]
+
+[needs]
+toys = []
