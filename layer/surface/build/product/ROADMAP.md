@@ -20,12 +20,14 @@ grant → invoke typed WIT export with JSON args → child reaches
 git/logging/metrics/filesystem through capability gates → result lifts to
 JSON → full trace reconstructible from the observation ledger.
 
-All of it runs under the hardened authority path: validated timestamps and
-IDs, kernel-minted unforgeable capability tokens, staleness guards at
-effect boundaries, execution deadlines and memory caps, fail-closed
-everywhere. Process-backed children work the same way. Run records,
-control-plane snapshots (HTTP/UDS), and the hash-chained ledger provide
-after-the-fact inspection.
+The WASM/WIT path runs under the hardened authority path: validated timestamps
+and IDs, kernel-minted unforgeable capability tokens, staleness guards at
+effect boundaries, execution deadlines and memory caps, and fail-closed host
+adapter admission. Process-backed Children pass the same call and launch
+admission gates, but the spawned process is not OS-sandboxed and its arbitrary
+host effects are not Toy-mediated. Run records, control-plane snapshots
+(HTTP/UDS), and the hash-chained ledger provide after-the-fact inspection of
+MCT-mediated activity.
 
 ### Proven as slices, not product-wired
 
@@ -118,6 +120,13 @@ Dependency-ordered; each item assumes the ones before it.
 
 ### Standing backlog (from the audit arc, non-blocking)
 
+- [ ] Close the process-backed confinement gap. The current harness authorizes
+      call and launch, then spawns an ordinary host process with inherited OS
+      access. Before process-backed Children can claim the same explicit
+      confinement boundary as WASM/WIT Children, MCT must either provide a
+      reviewed OS sandbox or require and attest an external confinement
+      boundary. Until then, process-backed Children are trusted-code
+      compatibility paths.
 - [x] `main.rs` CLI decomposition substantially addressed by Track 1 slice S2.5: binary-local CLI, control, and ingress modules own their behavior. The resident-decomposition phase completed the behavior-owning resident split into observation, payload, publication, idempotency, candidates, decision, execution, forwarding, pipeline, and serving stages while keeping `main.rs` at 146 lines. `main.rs` intentionally retains entrypoint dispatch wiring, argument-token helpers, default paths, and help text.
 - [ ] Live node identity rotation — requires endpoint rebind plus peer re-admission design. Track 1 Slice 4 intentionally makes identity creation/rotation offline-only and refuses mutation while a resident endpoint is bound.
 - [ ] Consolidate the concurrent and single-connection Iroh call-serving branches behind one reviewed lifecycle routine without weakening the mandatory observation sink or malformed fail-closed ordering; Slice 3 intentionally made both public paths correct before attempting that behavior-owning refactor.

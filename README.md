@@ -1,24 +1,20 @@
 # Patina MCT
 
-MCT is a local-first application runtime in which **no code has ambient
-power**. A node runs sandboxed components (WASM or processes) that start with
-zero access to the filesystem, network, secrets, or each other — every effect
-a component performs must trace back to an explicit, inspectable, revocable
-authority record. Nodes connect to each other over [Iroh](https://iroh.computer)
-public-key networking, and there is no cloud control plane: each node is
-sovereign and holds its own complete state.
+## Running code is not authority
 
-The name is the model:
+MCT is an application runtime built around one rule: code should not gain
+power merely because it is running.
 
-```text
-Mother = the authority of one node   (decides everything, owns the ledger)
-Child  = an application component    (computes; identified by its WIT contract)
-Toy    = a host capability           (the only way a child touches the world)
-```
+A Mother runs application components called Children. When a Child needs to
+affect the outside world, it uses a Toy. A ToyGrant states which Child may
+perform which action, within which scope, and for how long. Mother evaluates
+that authority before MCT performs the effect.
 
-Mother decides; children compute; toys effect. When a child wants to write a
-file, tag a git repo, or emit a metric, it calls a toy — and the toy runs only
-if a persisted grant, evaluated against the current call, says it may.
+The authority and evidence stay with the node that enforces them. Mothers can
+work together over [Iroh](https://iroh.computer) without depending on a central
+cloud control plane.
+
+**Mother decides. Children compute. Toys effect.**
 
 ## Status
 
@@ -29,6 +25,11 @@ and exact-approved upgrade path are proven. APIs and CLI surfaces are still
 evolving; operational `patinaMother` shutoff and into-the-wild 1.0.0 GA remain
 separate, unclaimed gates.
 
+The capability-mediated host-access claim applies to WASM/WIT Children.
+Process-backed Children are admitted by MCT authority before launch, but the
+0.2.0 process harness is not an OS sandbox: those Children inherit ordinary
+host-process access and must be trusted or externally confined.
+
 ## What works today
 
 - **Verified child packages** — children ship as packages with a `child.toml`
@@ -37,8 +38,8 @@ separate, unclaimed gates.
 - **Durable approvals and assignments** — which children may run, and where,
   is persisted authority data, not runtime state.
 - **Typed WIT invocation** — call a component's WIT export with JSON
-  arguments; results lift back to JSON. Process-backed children are also
-  supported.
+  arguments; results lift back to JSON. Process-backed Children can enter the
+  same call-admission flow, with the confinement limitation stated above.
 - **Capability-scoped host access** — concrete host adapters for
   `wasi:logging`, `patina:measure` (metrics), `patina:git`, and selected WASI
   filesystem imports with explicit directory preopens. A WIT import with no
@@ -46,10 +47,11 @@ separate, unclaimed gates.
 - **Execution limits** — WASM component invocations run under wall-clock
   deadlines and memory caps; process-backed children run under harness
   timeouts.
-- **Audit trail** — every decision and effect emits a typed observation into
-  an append-only, hash-chained ledger with exclusive writer locking and
-  lock-free read-only validation. Logs and metrics are projections of this
-  ledger, never the truth themselves.
+- **Audit trail** — MCT authority decisions and MCT-mediated effects emit
+  typed observations into an append-only, hash-chained ledger with exclusive
+  writer locking and lock-free read-only validation. Logs and metrics are
+  projections of this ledger, never the truth themselves. Arbitrary effects
+  performed by an unsandboxed process are outside this claim.
 - **Observed service and release lifecycle** — macOS user-launchd install/start/
   stop/restart/uninstall, closed ad-hoc-signed archives with SBOM/provenance,
   immutable daemon-release evidence, and digest-exact guided upgrade.
@@ -133,14 +135,19 @@ for diagnosis and explicit retained-release rollback.
 
 The guarantees MCT is built to give you:
 
-- **Authority before effects.** Child calls, toy calls, peer admission, and
-  filesystem access are authorized before any adapter effect runs. Executable
-  child, toy, and route authority is carried by private, kernel-minted
-  capability tokens and checked for stale revisions at effect boundaries —
-  earlier admission is never treated as permanent permission.
-- **Nothing is ambient.** Children receive no raw filesystem roots, network
-  endpoints, secrets, process handles, or database handles by default. A
-  manifest `needs` entry is a request; it grants nothing.
+- **Authority before MCT-mediated effects.** Child calls, Toy calls, peer
+  admission, and WASM filesystem delegation are authorized before their
+  adapters begin. Executable Child, Toy, and route authority is carried by
+  private, kernel-minted capability tokens and checked for stale revisions at
+  effect boundaries; earlier admission is never permanent permission.
+- **WASM host capability is not ambient.** WASM/WIT Children receive no raw
+  filesystem roots, network endpoints, secrets, process handles, or database
+  handles by default. A manifest `needs` entry is a request; it grants
+  nothing.
+- **Process-backed execution has a narrower guarantee.** MCT authorizes the
+  call and process launch, and the harness enforces its timeout. It does not
+  currently confine the spawned process's filesystem, network, environment, or
+  other OS access.
 - **Fail closed.** Unknown, expired, revoked, mismatched, or malformed state
   becomes a typed denial — never a permissive default. Unconfigured WIT
   imports refuse to instantiate.
@@ -148,10 +155,12 @@ The guarantees MCT is built to give you:
   manifest and artifact hashes verify against their sidecars.
 - **Optimization cannot grant authority.** Routing ranks only candidates that
   already passed authority checks.
-- **Everything is auditable.** Decisions and effects are recorded in the
-  hash-chained observation ledger before effects proceed. Denials carry a
-  precise internal reason in the ledger and a deliberately vague external
-  message ("not authorized") to the caller.
+- **MCT-mediated activity is auditable.** Authority decisions and mediated
+  effects are recorded in the hash-chained observation ledger. Where the
+  authority contract requires append-before-effect, ledger failure denies the
+  effect. Denials carry a precise internal reason and a deliberately vague
+  external message ("not authorized") to the caller. Unmediated OS activity
+  by a process-backed Child is not made observable by MCT.
 
 ## Workspace
 
@@ -190,6 +199,20 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 All three must pass before a change lands.
+
+## Documentation
+
+The product manual is ordinary Markdown rendered with mdBook, while workspace
+API documentation is rendered with rustdoc:
+
+```bash
+./scripts/install-docs-tools.sh
+./scripts/build-docs.sh
+```
+
+The static outputs are staged at `target/site/docs/` and `target/site/api/`,
+matching the deployed `/docs/` and `/api/` layout. Start with the
+[MCT documentation introduction](docs/src/introduction.md).
 
 ## Learn more
 
