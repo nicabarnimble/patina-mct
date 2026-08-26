@@ -494,16 +494,16 @@ refactor(resident): route local calls only to WASM Children
 
 ## M7 — Historical state, wire, and observation compatibility
 
-- [ ] Inventory every persisted SQLite column and JSON/ledger field carrying runtime kind/shape.
-- [ ] Add fixtures for historical `process` and `jvm_child` values.
-- [ ] Prove historical rows remain listable/inspectable.
-- [ ] Prove historical observations remain deserializeable and renderable.
-- [ ] Prove current approval, assignment, candidate sourcing, and execution refuse them.
-- [ ] Do not mutate historical facts into WASM.
-- [ ] Do not delete rows or observations automatically.
-- [ ] If a schema migration is required, make it idempotent and preserve exact historical identity.
-- [ ] Ensure current writes cannot create new process/JVM local Child runtime facts.
-- [ ] Commit:
+- [x] Inventory every persisted SQLite column and JSON/ledger field carrying runtime kind/shape.
+- [x] Add fixtures for historical `process` and `jvm_child` values.
+- [x] Prove historical rows remain listable/inspectable.
+- [x] Prove historical observations remain deserializeable and renderable.
+- [x] Prove current approval, assignment, candidate sourcing, and execution refuse them.
+- [x] Do not mutate historical facts into WASM.
+- [x] Do not delete rows or observations automatically.
+- [x] If a schema migration is required, make it idempotent and preserve exact historical identity (no migration was required).
+- [x] Ensure current writes cannot create new process/JVM local Child runtime facts.
+- [x] Commit:
 
 ```text
 fix(state): keep retired runtime history readable and inert
@@ -737,7 +737,7 @@ Populate during execution.
 | `579bded` | C3.1 | Execution/payload/idempotency test migration | Tier 0, clippy, focused and full binary tests |
 | `6a4a6e9` | C3.2 | Peer/control test migration | Tier 0, clippy, serialized workspace tests |
 | `3f58c5c` | C4 | Current execution type boundary | Workspace tests, Tier 0, clippy |
-| pending | C5/C6 | Product surface and resident dispatch retirement | pending |
+| `d95ddb0` | C5/C6 | Product surface and resident dispatch retirement | Tier 0, CLI no-spawn tests, handle rejection tests, clippy |
 | pending | C7 | Historical compatibility | pending |
 | pending | C8 | Law/docs/release close-out | pending |
 
