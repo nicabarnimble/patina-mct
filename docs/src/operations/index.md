@@ -12,6 +12,8 @@ evidence to explain every authority decision and effect.
 - Treat denials as expected fail-closed outcomes, not permission to bypass an
   authority boundary.
 - Preserve the observation ledger when diagnosing failures.
+- Treat legacy process/JVM runtime rows as inert history, not recoverable local
+  execution configuration.
 - Perform rollback explicitly; upgrade never silently rolls back.
 
 ## Current platform

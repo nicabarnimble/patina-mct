@@ -1,6 +1,6 @@
 # MCT product roadmap — from runtime kernel to working product
 
-Status assessment date: 2026-07-04 (post audit-remediation merge, PR #15).
+Status assessment date: 2026-08-26 (WASM-only local Child transition).
 This document records where MCT stands as a product and the ordered TODO to
 close the gap. Update the checkboxes as phases land; each phase gets its own
 task file under `layer/surface/build/feat/<name>/` following the proven
@@ -20,29 +20,27 @@ grant → invoke typed WIT export with JSON args → child reaches
 git/logging/metrics/filesystem through capability gates → result lifts to
 JSON → full trace reconstructible from the observation ledger.
 
-The WASM/WIT path runs under the hardened authority path: validated timestamps
-and IDs, kernel-minted unforgeable capability tokens, staleness guards at
-effect boundaries, execution deadlines and memory caps, and fail-closed host
-adapter admission. Process-backed Children pass the same call and launch
-admission gates, but the spawned process is not OS-sandboxed and its arbitrary
-host effects are not Toy-mediated. Run records, control-plane snapshots
-(HTTP/UDS), and the hash-chained ledger provide after-the-fact inspection of
-MCT-mediated activity.
+The local WASM/WIT path runs under the hardened authority path: validated
+timestamps and IDs, kernel-minted unforgeable capability tokens, staleness
+guards at effect boundaries, execution deadlines and memory caps, and
+fail-closed host adapter admission. Native and JVM systems are external
+integrations, remote Mother workloads, or trusted Mother adapters—not local
+Children. Historical process/JVM records remain inspectable but inert. Run
+records, control-plane snapshots (HTTP/UDS), and the hash-chained ledger
+provide inspection of MCT-mediated activity.
 
 ### Proven as slices, not product-wired
 
-- **Peer federation.** Two Mothers complete `mct/hello/0` → `mct/call/0`
-  with real binding admission; `iroh serve-process` executes a process
-  child for a remote call. But: one connection at a time, single-slot
-  hello state (a second peer's hello evicts the first), driven by a
-  foreground CLI command with bindings supplied as CLI args.
+- **Peer federation.** Two resident Mothers complete `mct/hello/0` →
+  `mct/call/0` with signed binding admission and single-hop forwarding to a
+  WASM Child. Multi-Vision and transitive policy remain roadmap work.
 - **Routing.** The kernel's two-phase decision model (authority filter →
   ranking → revalidation at execution) is complete and tested as decision
   logic; no daemon path consumes `AuthorizedRouteExecution` yet. Calls go
   where the operator points them.
-- **Child lifecycle.** Approval/assignment/instance generations are
-  modeled; a process supervisor plus warmup/reload/task-cycle exist as
-  one-shot operations; no resident loop owns children.
+- **Child lifecycle.** Approval/assignment/instance generations, warmup,
+  reload, task cycles, and resident ownership are implemented for WASM
+  Children.
 
 ### Does not exist yet
 
@@ -120,13 +118,12 @@ Dependency-ordered; each item assumes the ones before it.
 
 ### Standing backlog (from the audit arc, non-blocking)
 
-- [ ] Close the process-backed confinement gap. The current harness authorizes
-      call and launch, then spawns an ordinary host process with inherited OS
-      access. Before process-backed Children can claim the same explicit
-      confinement boundary as WASM/WIT Children, MCT must either provide a
-      reviewed OS sandbox or require and attest an external confinement
-      boundary. Until then, process-backed Children are trusted-code
-      compatibility paths.
+- [x] Close the process-backed confinement gap by subtraction: local Children
+      are WASM components. `process call`, `iroh serve-process`, resident
+      process dispatch, handle-only ingress, and the process Child harness are
+      removed. Native/JVM software remains available only as external
+      integration, remote Mother workload, or trusted Mother adapter;
+      historical process/JVM records remain readable but inert.
 - [x] `main.rs` CLI decomposition substantially addressed by Track 1 slice S2.5: binary-local CLI, control, and ingress modules own their behavior. The resident-decomposition phase completed the behavior-owning resident split into observation, payload, publication, idempotency, candidates, decision, execution, forwarding, pipeline, and serving stages while keeping `main.rs` at 146 lines. `main.rs` intentionally retains entrypoint dispatch wiring, argument-token helpers, default paths, and help text.
 - [ ] Live node identity rotation — requires endpoint rebind plus peer re-admission design. Track 1 Slice 4 intentionally makes identity creation/rotation offline-only and refuses mutation while a resident endpoint is bound.
 - [ ] Consolidate the concurrent and single-connection Iroh call-serving branches behind one reviewed lifecycle routine without weakening the mandatory observation sink or malformed fail-closed ordering; Slice 3 intentionally made both public paths correct before attempting that behavior-owning refactor.
