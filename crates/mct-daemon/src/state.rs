@@ -3537,7 +3537,6 @@ impl MctRuntimeStateStore {
             primary_export: component_export_from_allowed_operations(&child.allowed_operations),
             runtime_shape: ComponentRuntimeShape::WasmComponent,
             ingress_mode: match child.ingress_mode {
-                crate::MctChildIngressMode::Handle => ChildIngressMode::Handle,
                 crate::MctChildIngressMode::Hybrid => ChildIngressMode::Hybrid,
                 crate::MctChildIngressMode::WitOnly => ChildIngressMode::WitOnly,
             },

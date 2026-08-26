@@ -436,28 +436,28 @@ refactor(kernel): make local Child execution WASM-only
 
 ### CLI and standalone ingress
 
-- [ ] Remove `process call` dispatch, implementation, and help text.
-- [ ] Remove `iroh serve-process` dispatch, implementation, and help text.
-- [ ] Remove parser acceptance that creates a current local process/JVM Child runtime.
-- [ ] Keep `jvm call-json` only if inspection proves it is an external authenticated ingress into a WASM/remote Child; rename or document it if its current name implies JVM Child execution.
-- [ ] Unknown retired commands fail with ordinary unknown/unsupported command behavior and perform no state, ledger, spawn, or network effect.
+- [x] Remove `process call` dispatch, implementation, and help text.
+- [x] Remove `iroh serve-process` dispatch, implementation, and help text.
+- [x] Remove parser acceptance that creates a current local process/JVM Child runtime.
+- [x] Keep `jvm call-json` only if inspection proves it is an external authenticated ingress into a WASM/remote Child; rename or document it if its current name implies JVM Child execution.
+- [x] Unknown retired commands fail with ordinary unknown/unsupported command behavior and perform no state, ledger, spawn, or network effect.
 
 ### Child loading and ingress mode
 
-- [ ] Reject legacy handle-only ingress as a current local Child shape.
-- [ ] Keep WIT-only and hybrid only when both execute through the WASM component runtime.
-- [ ] Do not silently reinterpret a missing ingress mode as process execution.
-- [ ] Existing supported fixtures (`slate-manager`, `folder-watch-actor`, `watch-null-sink`) remain loadable and callable.
+- [x] Reject legacy handle-only ingress as a current local Child shape.
+- [x] Keep WIT-only and hybrid only when both execute through the WASM component runtime.
+- [x] Do not silently reinterpret a missing ingress mode as process execution.
+- [x] Existing supported fixtures (`slate-manager`, `folder-watch-actor`, `watch-null-sink`) remain loadable and callable.
 
 ### Public library surface
 
-- [ ] Remove `MctProcessChildHarness` and related Child-named public exports.
-- [ ] Delete `process.rs` if no trusted non-Child consumer remains.
-- [ ] If a trusted subprocess helper remains, give it a Mother-adapter name, restrict its visibility, and ensure it does not consume Child authority types.
+- [x] Remove `MctProcessChildHarness` and related Child-named public exports.
+- [x] Delete `process.rs` if no trusted non-Child consumer remains.
+- [x] If a trusted subprocess helper remains, give it a Mother-adapter name, restrict its visibility, and ensure it does not consume Child authority types.
 
-- [ ] Add CLI/API absence tests.
-- [ ] Add no-spawn marker tests for retired inputs.
-- [ ] Commit:
+- [x] Add CLI/API absence tests.
+- [x] Add no-spawn marker tests for retired inputs.
+- [x] Commit:
 
 ```text
 refactor(daemon): retire process-backed local Children
@@ -471,16 +471,16 @@ refactor(daemon): retire process-backed local Children
 
 ## M6 — Remove resident local process dispatch and routing
 
-- [ ] Delete `execute_resident_process_child` and all resident selection branches that reach it.
-- [ ] Remove handle-to-`RuntimeKind::Process` candidate mapping.
-- [ ] Ensure every local candidate is backed by a verified loaded WASM component.
-- [ ] Ensure local `RouteTaken` can report only the current WASM local runtime.
-- [ ] Keep remote route observations substrate-neutral at the local authority boundary.
-- [ ] Preserve authority filtering before ranking.
-- [ ] Preserve effect-boundary revision checks and ordered observation durability.
-- [ ] Add a regression proving no persisted/synthetic process artifact becomes a local candidate.
-- [ ] Add a regression proving no process/JVM historical value becomes a ready/routable local Child.
-- [ ] Commit:
+- [x] Delete `execute_resident_process_child` and all resident selection branches that reach it.
+- [x] Remove handle-to-`RuntimeKind::Process` candidate mapping.
+- [x] Ensure every local candidate is backed by a verified loaded WASM component.
+- [x] Ensure local `RouteTaken` can report only the current WASM local runtime.
+- [x] Keep remote route observations substrate-neutral at the local authority boundary.
+- [x] Preserve authority filtering before ranking.
+- [x] Preserve effect-boundary revision checks and ordered observation durability.
+- [x] Add a regression proving no persisted/synthetic process artifact becomes a local candidate.
+- [x] Add a regression proving no process/JVM historical value becomes a ready/routable local Child.
+- [x] Commit (folded into C5 because removing the public harness required removing its only resident consumer):
 
 ```text
 refactor(resident): route local calls only to WASM Children
@@ -736,9 +736,8 @@ Populate during execution.
 | `bdfacc6` | C2 | WASM test fixture | Tier 0, focused fixture test, clippy |
 | `579bded` | C3.1 | Execution/payload/idempotency test migration | Tier 0, clippy, focused and full binary tests |
 | `6a4a6e9` | C3.2 | Peer/control test migration | Tier 0, clippy, serialized workspace tests |
-| pending | C4 | Current execution type boundary | pending |
-| pending | C5 | Product surface retirement | pending |
-| pending | C6 | Resident route/dispatch retirement | pending |
+| `3f58c5c` | C4 | Current execution type boundary | Workspace tests, Tier 0, clippy |
+| pending | C5/C6 | Product surface and resident dispatch retirement | pending |
 | pending | C7 | Historical compatibility | pending |
 | pending | C8 | Law/docs/release close-out | pending |
 
