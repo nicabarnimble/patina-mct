@@ -25,10 +25,9 @@ and exact-approved upgrade path are proven. APIs and CLI surfaces are still
 evolving; operational `patinaMother` shutoff and into-the-wild 1.0.0 GA remain
 separate, unclaimed gates.
 
-The capability-mediated host-access claim applies to WASM/WIT Children.
-Process-backed Children are admitted by MCT authority before launch, but the
-0.2.0 process harness is not an OS sandbox: those Children inherit ordinary
-host-process access and must be trusted or externally confined.
+A local Child is a WASM component. Native and JVM software may call an
+authenticated MCT ingress, operate behind another Mother, or run as an
+explicitly trusted Mother-side adapter; it does not become a local Child.
 
 ## What works today
 
@@ -38,20 +37,18 @@ host-process access and must be trusted or externally confined.
 - **Durable approvals and assignments** — which children may run, and where,
   is persisted authority data, not runtime state.
 - **Typed WIT invocation** — call a component's WIT export with JSON
-  arguments; results lift back to JSON. Process-backed Children can enter the
-  same call-admission flow, with the confinement limitation stated above.
+  arguments; results lift back to JSON. WASM components are the only local
+  Child execution substrate.
 - **Capability-scoped host access** — concrete host adapters for
   `wasi:logging`, `patina:measure` (metrics), `patina:git`, and selected WASI
   filesystem imports with explicit directory preopens. A WIT import with no
   configured adapter fails closed before instantiation.
 - **Execution limits** — WASM component invocations run under wall-clock
-  deadlines and memory caps; process-backed children run under harness
-  timeouts.
+  deadlines and memory caps.
 - **Audit trail** — MCT authority decisions and MCT-mediated effects emit
   typed observations into an append-only, hash-chained ledger with exclusive
   writer locking and lock-free read-only validation. Logs and metrics are
-  projections of this ledger, never the truth themselves. Arbitrary effects
-  performed by an unsandboxed process are outside this claim.
+  projections of this ledger, never the truth themselves.
 - **Observed service and release lifecycle** — macOS user-launchd install/start/
   stop/restart/uninstall, closed ad-hoc-signed archives with SBOM/provenance,
   immutable daemon-release evidence, and digest-exact guided upgrade.
@@ -144,10 +141,10 @@ The guarantees MCT is built to give you:
   filesystem roots, network endpoints, secrets, process handles, or database
   handles by default. A manifest `needs` entry is a request; it grants
   nothing.
-- **Process-backed execution has a narrower guarantee.** MCT authorizes the
-  call and process launch, and the harness enforces its timeout. It does not
-  currently confine the spawned process's filesystem, network, environment, or
-  other OS access.
+- **Local execution has one confinement boundary.** A current local Child is
+  a WASM component. Legacy process/JVM runtime records remain readable as
+  evidence but cannot become current approval, routing, or execution
+  authority.
 - **Fail closed.** Unknown, expired, revoked, mismatched, or malformed state
   becomes a typed denial — never a permissive default. Unconfigured WIT
   imports refuse to instantiate.
@@ -159,8 +156,7 @@ The guarantees MCT is built to give you:
   effects are recorded in the hash-chained observation ledger. Where the
   authority contract requires append-before-effect, ledger failure denies the
   effect. Denials carry a precise internal reason and a deliberately vague
-  external message ("not authorized") to the caller. Unmediated OS activity
-  by a process-backed Child is not made observable by MCT.
+  external message ("not authorized") to the caller.
 
 ## Workspace
 
@@ -169,7 +165,7 @@ The guarantees MCT is built to give you:
 | `mct-kernel` | Pure authority domain: typed records and decisions for calls, children, peers, routes, toys, and observations. No I/O. |
 | `mct-observation` | Append-only JSONL observation ledger with hash chaining, single-writer locking, and read-only validated access. |
 | `mct-iroh` | Mother-owned Iroh endpoint and the MCT hello/call protocol adapters. |
-| `mct-daemon` | Composition: config, child loading, WASM/process runtimes, toy adapters, SQLite state, control plane, and the CLI. |
+| `mct-daemon` | Composition: config, WASM Child runtime, toy adapters, SQLite state, control plane, trusted Mother adapters, and the CLI. |
 
 The kernel decides; the other crates gather facts for it and perform effects
 it has authorized. Wasmtime, Iroh, SQLite, and filesystem details never

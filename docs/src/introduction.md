@@ -33,9 +33,9 @@ WASM/WIT path enforces capability-mediated host access and records MCT
 authority decisions and mediated effects in an append-only, hash-chained
 observation ledger.
 
-Process-backed Children are authorized before launch, but they are not
-currently OS-sandboxed. They inherit ordinary host-process access and must not
-be treated as zero-ambient-authority workloads.
+A local Child is a WASM component. Native and JVM systems integrate as
+external callers, remote workloads governed by another Mother, or explicitly
+trusted Mother-side adapters; they are not local Children.
 
 CLI and API surfaces are still evolving. Documentation must distinguish proven
 behavior from planned behavior; the project does not present roadmap intent as

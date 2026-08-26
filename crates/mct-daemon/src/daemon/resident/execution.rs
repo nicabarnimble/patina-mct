@@ -105,13 +105,15 @@ pub(super) fn execute_authorized_resident_child(
 ) -> Result<LocalExecutionReport> {
     let call = request.call.clone();
     let state = MctRuntimeStateStore::open(paths.state_path())?;
-    let (child, authorized_route, child_authority_observation_id) = execution.into_parts();
+    let (child, local_runtime, authorized_route, child_authority_observation_id) =
+        execution.into_parts();
     let route_taken = RouteTaken {
         node_id: authorized_route.route().node_id.clone(),
         child_id: authorized_route.route().child_id.clone(),
         runtime_kind: authorized_route.route().runtime_kind,
     };
-    let runtime_kind = route_taken.runtime_kind;
+    let runtime_kind: RuntimeKind = local_runtime.into();
+    debug_assert_eq!(route_taken.runtime_kind, runtime_kind);
     let run_id = run_id_for_call("resident", &call);
     let route_decision_id = authorized_route.revalidation_decision_id().clone();
     let route_candidate = authorized_route.route().clone();
@@ -161,22 +163,15 @@ pub(super) fn execute_authorized_resident_child(
         ));
     }
 
-    let mut report = match child_execution.child.ingress_mode {
-        mct_daemon::MctChildIngressMode::Handle => {
-            execute_resident_process_child(child_execution, &request, inline_payload.as_deref())?
-        }
-        mct_daemon::MctChildIngressMode::Hybrid | mct_daemon::MctChildIngressMode::WitOnly => {
-            execute_resident_wit_child(
-                child_execution,
-                &request,
-                inline_payload.as_deref(),
-                &paths,
-                &effect_snapshot,
-                toy_effect_time_override,
-                before_effect_ledger,
-            )?
-        }
-    };
+    let mut report = execute_resident_wit_child(
+        child_execution,
+        &request,
+        inline_payload.as_deref(),
+        &paths,
+        &effect_snapshot,
+        toy_effect_time_override,
+        before_effect_ledger,
+    )?;
     if let Some(route) = report.result.route_taken.as_ref() {
         report.observations.push(resident_executed_on_observation(
             &call,
@@ -202,62 +197,6 @@ pub(super) fn execute_authorized_resident_child(
     }
     report.run_id = Some(run_id);
     Ok(report)
-}
-
-fn execute_resident_process_child(
-    execution: PreparedChildExecution,
-    request: &MctCallProtocolRequest,
-    inline_payload: Option<&[u8]>,
-) -> Result<LocalExecutionReport> {
-    let call = &request.call;
-    let harness = MctProcessChildHarness {
-        executable: execution.child.wasm_path.clone(),
-        args: Vec::new(),
-        timeout: Duration::from_secs(5),
-        local_node_id: MctNodeId::new("local-mct")
-            .expect("string ID literal/generated value must be non-empty"),
-    };
-    let payload_bytes = inline_payload.unwrap_or_default();
-    let report = harness.invoke_authorized_child_bytes(
-        execution.authorized,
-        call,
-        payload_bytes,
-        MctProcessChildInvocationIds {
-            started_observation_id: ObservationId::new(format!(
-                "obs-resident-process-started:{}",
-                call.call_id
-            ))
-            .expect("string ID literal/generated value must be non-empty"),
-            completed_observation_id: ObservationId::new(format!(
-                "obs-resident-process-completed:{}",
-                call.call_id
-            ))
-            .expect("string ID literal/generated value must be non-empty"),
-            result_ref: ResultRef::new(format!("result-resident-process:{}", call.call_id))
-                .expect("string ID literal/generated value must be non-empty"),
-            audit_ref: AuditRef::new(format!("audit-resident-process:{}", call.call_id))
-                .expect("string ID literal/generated value must be non-empty"),
-            started_at: current_timestamp(),
-            completed_at: current_timestamp(),
-        },
-    )?;
-    let result_bytes = report.stdout.as_bytes().to_vec();
-    let mut result = report.result;
-    result.authority_decision_ref = execution.route_decision_id;
-    result.route_taken = route_taken_for_outcome(result.outcome, execution.route_taken);
-    let inline_result_payload = apply_inline_result_payload(
-        &mut result,
-        format!("result-resident-process:{}", call.call_id),
-        "text/plain",
-        result_bytes,
-    );
-    Ok(LocalExecutionReport {
-        result,
-        observations: report.observations,
-        inline_result_payload,
-        run_id: None,
-        produced_messages: Vec::new(),
-    })
 }
 
 fn authorize_resident_watch_toy(
@@ -1044,104 +983,20 @@ mod tests {
                 .expect("string ID literal/generated value must be non-empty"),
         }
     }
-    fn write_resident_payload_process_child(children_dir: &Path) {
-        write_resident_process_child_script(
-            children_dir,
-            "resident-payload-echo",
-            b"#!/bin/sh\npayload=$(cat)\nprintf 'processed:%s' \"$payload\"\n",
-        );
-    }
-    fn write_resident_process_child_script(children_dir: &Path, name: &str, script: &[u8]) {
-        #[cfg(unix)]
-        use std::os::unix::fs::PermissionsExt;
-
-        let child_dir = children_dir.join(name);
-        std::fs::create_dir_all(&child_dir).unwrap();
-        let artifact_path = child_dir.join(format!("{name}.wasm"));
-        let manifest_path = child_dir.join("child.toml");
-        std::fs::write(&artifact_path, script).unwrap();
-        #[cfg(unix)]
-        {
-            let mut permissions = std::fs::metadata(&artifact_path).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&artifact_path, permissions).unwrap();
-        }
-        write_resident_child_manifest(&manifest_path, name, "handle");
-        write_sha256_sidecar(&artifact_path, script);
-        let manifest_bytes = std::fs::read(&manifest_path).unwrap();
-        write_sha256_sidecar(&manifest_path, &manifest_bytes);
+    fn write_resident_payload_wasm_child(children_dir: &Path) {
+        write_test_wasm_echo_child(children_dir, "resident-payload-echo");
     }
     fn write_resident_wit_child(children_dir: &Path) {
-        let child_dir = children_dir.join("resident-wit");
-        std::fs::create_dir_all(&child_dir).unwrap();
-        let artifact_path = child_dir.join("resident-wit.wasm");
-        let manifest_path = child_dir.join("child.toml");
-        let component_wat = r#"
-(component
-  (core module $m
-    (func $run (export "run") (result i32)
-      i32.const 7))
-  (core instance $i (instantiate $m))
-  (func $run (result s32) (canon lift (core func $i "run")))
-  (instance $control (export "run" (func $run)))
-  (export "patina:demo/control@0.1.0" (instance $control)))
-"#;
-        let component = wat::parse_str(component_wat).unwrap();
-        std::fs::write(&artifact_path, &component).unwrap();
-        write_resident_child_manifest(&manifest_path, "resident-wit", "wit-only");
-        write_sha256_sidecar(&artifact_path, &component);
-        let manifest_bytes = std::fs::read(&manifest_path).unwrap();
-        write_sha256_sidecar(&manifest_path, &manifest_bytes);
-    }
-    fn write_resident_child_manifest(manifest_path: &Path, name: &str, mode: &str) {
-        std::fs::write(
-            manifest_path,
-            format!(
-                r#"[child]
-name = "{name}"
-version = "0.1.0"
-description = "resident test child"
-kind = "child"
-role = "app"
-
-[child.ingress]
-mode = "{mode}"
-
-[child.artifact]
-wasm = "{name}.wasm"
-
-[child.contract]
-allow = ["patina:demo/control@0.1.0.run"]
-
-[needs]
-toys = []
-
-[relationships]
-listens = []
-"#
-            ),
-        )
-        .unwrap();
-    }
-    fn write_sha256_sidecar(path: &Path, bytes: &[u8]) {
-        use sha2::{Digest, Sha256};
-
-        let mut sidecar = path.as_os_str().to_os_string();
-        sidecar.push(".sha256");
-        std::fs::write(
-            PathBuf::from(sidecar),
-            format!("{:x}", Sha256::digest(bytes)),
-        )
-        .unwrap();
+        write_test_wasm_child(children_dir, "resident-wit");
     }
     #[tokio::test]
-    async fn resident_process_payload_delivery_returns_digest_and_keeps_ledger_byte_free() {
+    async fn resident_wasm_payload_delivery_returns_digest_and_keeps_ledger_byte_free() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.json");
         let children_dir = dir.path().join("children");
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
-        write_resident_payload_process_child(&children_dir);
+        write_resident_payload_wasm_child(&children_dir);
 
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
         assert_eq!(loaded.loaded, 1, "{loaded:?}");
@@ -1156,17 +1011,22 @@ listens = []
             .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
             .unwrap();
         let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
-        let trace_id = TraceId::new("trace-resident-process-payload")
+        let trace_id = TraceId::new("trace-resident-wasm-payload")
             .expect("string ID literal/generated value must be non-empty");
         let mut call = resident_test_call(trace_id);
-        call.call_id = CallId::new("call-resident-process-payload")
+        call.call_id = CallId::new("call-resident-wasm-payload")
             .expect("string ID literal/generated value must be non-empty");
-        let payload = br#"{"secret":"payload-marker"}"#.to_vec();
+        call.target = OperationTarget {
+            namespace: "patina:mct-test".into(),
+            interface_name: "echo@0.1.0".into(),
+            function_name: "echo".into(),
+        };
+        let payload = b"[41]".to_vec();
         let payload_base64 = BASE64_STANDARD.encode(&payload);
         call.payload_metadata.size_bytes = payload.len() as u64;
         let mut request = resident_test_protocol_request(call);
         request.payload = MctCallPayloadHandle::InlinePayload {
-            inline_payload_ref: "payload-resident-process".into(),
+            inline_payload_ref: "payload-resident-wasm".into(),
             content_type: "application/json".into(),
             size_bytes: payload.len() as u64,
             blake3_digest_hex: blake3_hex(&payload),
@@ -1183,7 +1043,7 @@ listens = []
         let result_payload = result
             .inline_result_payload
             .expect("result payload returned");
-        let expected_result = r#"processed:{"secret":"payload-marker"}"#;
+        let expected_result = r#"{"results":[41]}"#;
         let expected_result_base64 = BASE64_STANDARD.encode(expected_result.as_bytes());
         assert_eq!(String::from_utf8(result_payload).unwrap(), expected_result);
         assert_eq!(
@@ -1193,12 +1053,11 @@ listens = []
         ledger.close().await;
 
         let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
-        assert!(ledger_text.contains("call-resident-process-payload"));
+        assert!(ledger_text.contains("call-resident-wasm-payload"));
         assert!(ledger_text.contains("payload:request:size="));
         assert!(ledger_text.contains("payload:result:size="));
         assert!(ledger_text.contains("digest="));
-        assert!(!ledger_text.contains("payload-marker"));
-        assert!(!ledger_text.contains("processed:"));
+        assert!(!ledger_text.contains(expected_result));
         assert!(!ledger_text.contains(&payload_base64));
         assert!(!ledger_text.contains(&expected_result_base64));
     }
@@ -1319,16 +1178,7 @@ listens = []
         let children_dir = dir.path().join("children");
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
-        let marker_path = dir.path().join("executed-marker");
-        write_resident_process_child_script(
-            &children_dir,
-            "resident-echo",
-            format!(
-                "#!/bin/sh\necho executed > {}\nprintf '{{\"ok\":true}}'\n",
-                marker_path.display()
-            )
-            .as_bytes(),
-        );
+        write_test_wasm_child(&children_dir, "resident-echo");
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
         let config_store = MctDaemonConfigStore::new(&config_path);
         config_store
@@ -1346,7 +1196,8 @@ listens = []
             children_dir.clone(),
             state_path.clone(),
         );
-        let first_call = resident_test_call(TraceId::new("trace-post-mint-denial").unwrap());
+        let mut first_call = resident_test_call(TraceId::new("trace-post-mint-denial").unwrap());
+        first_call.call_id = CallId::new("call-post-mint-denial").unwrap();
         let first = execute_resident_call_with_post_mint_mutation(
             paths.clone(),
             ledger.clone(),
@@ -1378,12 +1229,11 @@ listens = []
         .await;
 
         assert_eq!(first.outcome, CallProtocolOutcome::Denied);
-        assert!(
-            !marker_path.exists(),
-            "stale token starts no process effect"
-        );
+        let denied_ledger = std::fs::read_to_string(&ledger_path).unwrap();
+        assert!(!denied_ledger.contains("obs-resident-wasm-wit-started:call-post-mint-denial"));
 
-        let retry_call = resident_test_call(TraceId::new("trace-post-mint-retry").unwrap());
+        let mut retry_call = resident_test_call(TraceId::new("trace-post-mint-retry").unwrap());
+        retry_call.call_id = CallId::new("call-post-mint-retry").unwrap();
         let retry = execute_resident_call(
             paths,
             ledger.clone(),
@@ -1392,10 +1242,6 @@ listens = []
         )
         .await;
         assert_eq!(retry.outcome, CallProtocolOutcome::Completed);
-        assert!(
-            marker_path.exists(),
-            "retry re-evaluates and mints wholly new current authority"
-        );
         ledger.close().await;
 
         let ledger_text = std::fs::read_to_string(ledger_path).unwrap();
@@ -1408,16 +1254,7 @@ listens = []
         let config_path = dir.path().join("config.json");
         let children_dir = dir.path().join("children");
         let state_path = dir.path().join("state.sqlite");
-        let marker_path = dir.path().join("executed-marker");
-        write_resident_process_child_script(
-            &children_dir,
-            "resident-echo",
-            format!(
-                "#!/bin/sh\necho executed > {}\nprintf '{{\"ok\":true}}'\n",
-                marker_path.display()
-            )
-            .as_bytes(),
-        );
+        write_test_wasm_child(&children_dir, "resident-echo");
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
         let config_store = MctDaemonConfigStore::new(&config_path);
         config_store
@@ -1467,7 +1304,12 @@ listens = []
 
         assert_eq!(report.result.outcome, ResultOutcome::Denied);
         assert!(report.result.route_taken.is_none());
-        assert!(!marker_path.exists());
+        assert!(
+            !report
+                .observations
+                .iter()
+                .any(|observation| observation.kind == ObservationKind::RuntimeExecutionStarted)
+        );
         let text = serde_json::to_string(&report.observations).unwrap();
         assert!(text.contains("GrantsAuthorityMismatch"));
         assert!(text.contains("current_grants_authority"));
@@ -1482,7 +1324,7 @@ listens = []
                 ChildId::new("resident-echo")
                     .expect("string ID literal/generated value must be non-empty"),
             ),
-            runtime_kind: RuntimeKind::Process,
+            runtime_kind: RuntimeKind::WasmComponent,
         };
 
         for outcome in [
@@ -1514,7 +1356,7 @@ listens = []
                 ChildId::new("resident-echo")
                     .expect("string ID literal/generated value must be non-empty"),
             ),
-            runtime_kind: RuntimeKind::Process,
+            runtime_kind: RuntimeKind::WasmComponent,
             network_path: NetworkPathClass::Local,
         };
         let decision = RouteDecision::selected(

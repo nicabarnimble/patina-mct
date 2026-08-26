@@ -351,9 +351,9 @@ mod tests {
     fn resident_test_call(trace_id: TraceId) -> MctCall {
         let mut call = local_wasm_call(
             OperationTarget {
-                namespace: "patina:demo".into(),
-                interface_name: "control@0.1.0".into(),
-                function_name: "run".into(),
+                namespace: "patina:mct-test".into(),
+                interface_name: "echo@0.1.0".into(),
+                function_name: "echo".into(),
             },
             test_grants_authority_identity(1),
         );
@@ -424,73 +424,15 @@ mod tests {
                 .expect("string ID literal/generated value must be non-empty"),
         }
     }
-    fn write_resident_counting_process_child(children_dir: &Path) {
-        write_resident_process_child_script(
-            children_dir,
-            "resident-counting",
-            b"#!/bin/sh\ncounter=\"$0.count\"\ncount=$(cat \"$counter\" 2>/dev/null || printf 0)\ncount=$((count + 1))\nprintf '%s' \"$count\" >\"$counter\"\ncat >/dev/null\nprintf 'result-run-%s' \"$count\"\n",
-        );
+    fn write_resident_counting_wasm_child(children_dir: &Path) {
+        write_test_wasm_echo_child(children_dir, "resident-counting");
     }
-    fn write_resident_process_child_script(children_dir: &Path, name: &str, script: &[u8]) {
-        #[cfg(unix)]
-        use std::os::unix::fs::PermissionsExt;
 
-        let child_dir = children_dir.join(name);
-        std::fs::create_dir_all(&child_dir).unwrap();
-        let artifact_path = child_dir.join(format!("{name}.wasm"));
-        let manifest_path = child_dir.join("child.toml");
-        std::fs::write(&artifact_path, script).unwrap();
-        #[cfg(unix)]
-        {
-            let mut permissions = std::fs::metadata(&artifact_path).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&artifact_path, permissions).unwrap();
-        }
-        write_resident_child_manifest(&manifest_path, name, "handle");
-        write_sha256_sidecar(&artifact_path, script);
-        let manifest_bytes = std::fs::read(&manifest_path).unwrap();
-        write_sha256_sidecar(&manifest_path, &manifest_bytes);
-    }
-    fn write_resident_child_manifest(manifest_path: &Path, name: &str, mode: &str) {
-        std::fs::write(
-            manifest_path,
-            format!(
-                r#"[child]
-name = "{name}"
-version = "0.1.0"
-description = "resident test child"
-kind = "child"
-role = "app"
-
-[child.ingress]
-mode = "{mode}"
-
-[child.artifact]
-wasm = "{name}.wasm"
-
-[child.contract]
-allow = ["patina:demo/control@0.1.0.run"]
-
-[needs]
-toys = []
-
-[relationships]
-listens = []
-"#
-            ),
-        )
-        .unwrap();
-    }
-    fn write_sha256_sidecar(path: &Path, bytes: &[u8]) {
-        use sha2::{Digest, Sha256};
-
-        let mut sidecar = path.as_os_str().to_os_string();
-        sidecar.push(".sha256");
-        std::fs::write(
-            PathBuf::from(sidecar),
-            format!("{:x}", Sha256::digest(bytes)),
-        )
-        .unwrap();
+    fn durable_execution_count(ledger_path: &Path) -> usize {
+        std::fs::read_to_string(ledger_path)
+            .unwrap()
+            .matches("runtime_execution_started")
+            .count()
     }
     #[tokio::test]
     async fn in_flight_idempotency_duplicate_refuses_without_second_execution() {
@@ -619,7 +561,7 @@ listens = []
         let children_dir = dir.path().join("children");
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
-        write_resident_counting_process_child(&children_dir);
+        write_resident_counting_wasm_child(&children_dir);
 
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
         assert_eq!(loaded.loaded, 1, "{loaded:?}");
@@ -636,11 +578,12 @@ listens = []
         let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         let paths =
             ResidentRuntimePaths::new(config_path, children_dir.clone(), state_path.clone());
-        let payload = br#"{"request-secret-marker":true}"#.to_vec();
+        let payload = b"[41]".to_vec();
         let mut call = resident_test_call(TraceId::new("trace-idempotency").unwrap());
         call.call_id = CallId::new("call-idempotency").unwrap();
         call.payload_metadata.size_bytes = payload.len() as u64;
         let mut request = resident_test_protocol_request(call);
+        request.call.deadline = Timestamp::new("2099-01-01T00:00:00Z").unwrap();
         request.idempotency_key = Some("same-key".into());
         request.payload = MctCallPayloadHandle::InlinePayload {
             inline_payload_ref: "payload-idempotency".into(),
@@ -648,7 +591,8 @@ listens = []
             size_bytes: payload.len() as u64,
             blake3_digest_hex: blake3_hex(&payload),
         };
-        let now = Timestamp::new("2026-07-10T00:00:00Z").unwrap();
+        let now_value = jiff::Timestamp::now();
+        let now = Timestamp::new(now_value.to_string()).unwrap();
 
         let first = execute_resident_call_at(
             paths.clone(),
@@ -672,15 +616,17 @@ listens = []
         assert_eq!(replay.result_payload, first.result_payload);
         assert_eq!(replay.inline_result_payload, first.inline_result_payload);
         assert_eq!(replay.route_taken, first.route_taken);
-        assert_eq!(first.outcome, CallProtocolOutcome::Completed);
+        assert_eq!(
+            first.outcome,
+            CallProtocolOutcome::Completed,
+            "{first:#?}\n{}",
+            std::fs::read_to_string(&ledger_path).unwrap()
+        );
         assert_eq!(
             String::from_utf8(first.inline_result_payload.clone().unwrap()).unwrap(),
-            "result-run-1"
+            r#"{"results":[41]}"#
         );
-        let counter_path = children_dir
-            .join("resident-counting")
-            .join("resident-counting.wasm.count");
-        assert_eq!(std::fs::read_to_string(&counter_path).unwrap().trim(), "1");
+        assert_eq!(durable_execution_count(&ledger_path), 1);
 
         let mut other_caller = request.clone();
         other_caller.authority.peer_binding_id = PeerBindingId::new("binding-other").unwrap();
@@ -694,7 +640,7 @@ listens = []
         )
         .await;
         assert_eq!(isolated.outcome, CallProtocolOutcome::Completed);
-        assert_eq!(std::fs::read_to_string(&counter_path).unwrap().trim(), "2");
+        assert_eq!(durable_execution_count(&ledger_path), 2);
 
         let mut mismatch = request.clone();
         mismatch.call.call_id = CallId::new("call-idempotency-mismatch").unwrap();
@@ -711,18 +657,24 @@ listens = []
             mismatch.protocol_reason,
             Some(CallProtocolReason::IdempotencyKeyReuseMismatch)
         );
-        assert_eq!(std::fs::read_to_string(&counter_path).unwrap().trim(), "2");
+        assert_eq!(durable_execution_count(&ledger_path), 2);
 
         let expired = execute_resident_call_at(
             paths.clone(),
             ledger.clone(),
             request.clone(),
             ResidentPayloadIngress::remote(Some(payload.clone())),
-            Timestamp::new("2026-07-10T00:13:00Z").unwrap(),
+            Timestamp::new(
+                now_value
+                    .checked_add(jiff::SignedDuration::from_mins(13))
+                    .unwrap()
+                    .to_string(),
+            )
+            .unwrap(),
         )
         .await;
         assert_eq!(expired.outcome, CallProtocolOutcome::Completed);
-        assert_eq!(std::fs::read_to_string(&counter_path).unwrap().trim(), "3");
+        assert_eq!(durable_execution_count(&ledger_path), 3);
 
         let mut unkeyed = request;
         unkeyed.idempotency_key = None;
@@ -745,20 +697,14 @@ listens = []
         .await;
         assert_eq!(first_unkeyed.outcome, CallProtocolOutcome::Completed);
         assert_eq!(second_unkeyed.outcome, CallProtocolOutcome::Completed);
-        assert_eq!(std::fs::read_to_string(&counter_path).unwrap().trim(), "5");
+        assert_eq!(durable_execution_count(&ledger_path), 5);
         ledger.close().await;
 
         let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
         assert!(ledger_text.contains("idempotency_replay_completed"));
         assert!(ledger_text.contains("idempotency_key_reuse_mismatch"));
         assert!(!ledger_text.contains("same-key"));
-        assert!(!ledger_text.contains("request-secret-marker"));
-        let state_bytes = std::fs::read(&state_path).unwrap();
-        assert!(
-            !state_bytes
-                .windows(b"request-secret-marker".len())
-                .any(|window| window == b"request-secret-marker")
-        );
+        assert!(!ledger_text.contains(r#"{\"results\":[41]}"#));
     }
 
     /// Covers `MctCallProtocol.MatchingCompletedRetryReplaysRecordedReply` for cancellation.

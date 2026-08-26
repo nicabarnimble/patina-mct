@@ -1011,81 +1011,12 @@ mod tests {
         }
         panic!("resident status did not become ready: {last:?}");
     }
-    fn write_resident_process_child(children_dir: &Path) {
-        write_resident_process_child_script(
-            children_dir,
-            "resident-echo",
-            b"#!/bin/sh\ncat >/dev/null\nprintf '{\\\"ok\\\":true}'\n",
-        );
+    fn write_resident_wasm_child(children_dir: &Path) {
+        write_test_wasm_child(children_dir, "resident-echo");
     }
 
-    fn write_resident_payload_process_child(children_dir: &Path) {
-        write_resident_process_child_script(
-            children_dir,
-            "resident-payload-echo",
-            b"#!/bin/sh\npayload=$(cat)\nprintf 'processed:%s' \"$payload\"\n",
-        );
-    }
-    fn write_resident_process_child_script(children_dir: &Path, name: &str, script: &[u8]) {
-        #[cfg(unix)]
-        use std::os::unix::fs::PermissionsExt;
-
-        let child_dir = children_dir.join(name);
-        std::fs::create_dir_all(&child_dir).unwrap();
-        let artifact_path = child_dir.join(format!("{name}.wasm"));
-        let manifest_path = child_dir.join("child.toml");
-        std::fs::write(&artifact_path, script).unwrap();
-        #[cfg(unix)]
-        {
-            let mut permissions = std::fs::metadata(&artifact_path).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&artifact_path, permissions).unwrap();
-        }
-        write_resident_child_manifest(&manifest_path, name, "handle");
-        write_sha256_sidecar(&artifact_path, script);
-        let manifest_bytes = std::fs::read(&manifest_path).unwrap();
-        write_sha256_sidecar(&manifest_path, &manifest_bytes);
-    }
-    fn write_resident_child_manifest(manifest_path: &Path, name: &str, mode: &str) {
-        std::fs::write(
-            manifest_path,
-            format!(
-                r#"[child]
-name = "{name}"
-version = "0.1.0"
-description = "resident test child"
-kind = "child"
-role = "app"
-
-[child.ingress]
-mode = "{mode}"
-
-[child.artifact]
-wasm = "{name}.wasm"
-
-[child.contract]
-allow = ["patina:demo/control@0.1.0.run"]
-
-[needs]
-toys = []
-
-[relationships]
-listens = []
-"#
-            ),
-        )
-        .unwrap();
-    }
-    fn write_sha256_sidecar(path: &Path, bytes: &[u8]) {
-        use sha2::{Digest, Sha256};
-
-        let mut sidecar = path.as_os_str().to_os_string();
-        sidecar.push(".sha256");
-        std::fs::write(
-            PathBuf::from(sidecar),
-            format!("{:x}", Sha256::digest(bytes)),
-        )
-        .unwrap();
+    fn write_resident_payload_wasm_child(children_dir: &Path) {
+        write_test_wasm_echo_child(children_dir, "resident-payload-echo");
     }
 
     fn decode_resident_uds_response(response: Vec<u8>) -> (u16, serde_json::Value) {
@@ -1132,7 +1063,7 @@ listens = []
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
-        write_resident_payload_process_child(&children_dir);
+        write_resident_payload_wasm_child(&children_dir);
 
         let store = MctDaemonConfigStore::new(&config_path);
         store
@@ -1189,14 +1120,14 @@ listens = []
         }
         let sequence_before = status.resident.unwrap().ledger_sequence_tip;
 
-        let payload = br#"[{"from":"uds"}]"#;
+        let payload = b"[41]";
         let body = serde_json::json!({
             "protocol_request_id": "proto-resident-uds",
             "call_id": "call-resident-uds",
             "target": {
-                "namespace": "patina:demo",
-                "interface_name": "control@0.1.0",
-                "function_name": "run"
+                "namespace": "patina:mct-test",
+                "interface_name": "echo@0.1.0",
+                "function_name": "echo"
             },
             "payload_metadata": {
                 "data_classification": "public",
@@ -1251,7 +1182,7 @@ listens = []
         let result_payload = BASE64_STANDARD
             .decode(call_reply["inline_result_payload_base64"].as_str().unwrap())
             .unwrap();
-        assert_eq!(result_payload, br#"processed:[{"from":"uds"}]"#);
+        assert_eq!(result_payload, br#"{"results":[41]}"#);
         assert_eq!(
             call_reply["result_payload"]["blake3_digest_hex"],
             blake3::hash(&result_payload).to_hex().to_string()
@@ -1420,7 +1351,7 @@ listens = []
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
 
         let store = MctDaemonConfigStore::new(&config_path);
         store
@@ -1466,11 +1397,7 @@ listens = []
         assert_eq!(initial.approved_child_count, 1);
 
         let package_root = dir.path().join("package");
-        write_resident_process_child_script(
-            &package_root,
-            "resident-second",
-            b"#!/bin/sh\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
-        );
+        write_test_wasm_child(&package_root, "resident-second");
         install_verified_child_package(package_root.join("resident-second"), &children_dir, false)
             .unwrap();
         let after_install = poll_resident_status(&socket_path, |status| {
@@ -1581,7 +1508,7 @@ listens = []
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
         let children_dir = dir.path().join("children");
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
 
         let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
         let client_endpoint_id = client.snapshot().endpoint_id;
@@ -1777,7 +1704,7 @@ listens = []
             children_dir.clone(),
             state_path.clone(),
         );
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
 
         let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
         let client_endpoint_id = client.snapshot().endpoint_id;
@@ -2054,7 +1981,7 @@ listens = []
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
         let children_dir = dir.path().join("children");
-        write_resident_payload_process_child(&children_dir);
+        write_resident_payload_wasm_child(&children_dir);
 
         let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
         let client_endpoint_id = client.snapshot().endpoint_id;
@@ -2133,7 +2060,7 @@ listens = []
         let hello_response = client.send_hello(&ticket, &hello).await.unwrap();
         assert_eq!(hello_response.hello_outcome, HelloOutcome::Admitted);
 
-        let payload = br#"{"secret":"payload-marker"}"#.to_vec();
+        let payload = b"[41]".to_vec();
         let payload_base64 = BASE64_STANDARD.encode(&payload);
         let mut call = cli_call_request(
             &client_endpoint_id,
@@ -2142,9 +2069,9 @@ listens = []
             &vision_id,
             &trace_id,
             OperationTarget {
-                namespace: "patina:demo".into(),
-                interface_name: "control@0.1.0".into(),
-                function_name: "run".into(),
+                namespace: "patina:mct-test".into(),
+                interface_name: "echo@0.1.0".into(),
+                function_name: "echo".into(),
             },
             &hello_response,
         )
@@ -2167,7 +2094,7 @@ listens = []
         let result_payload = call_reply
             .inline_result_payload
             .expect("verified result payload bytes returned");
-        let expected_result = br#"processed:{"secret":"payload-marker"}"#.to_vec();
+        let expected_result = br#"{"results":[41]}"#.to_vec();
         let expected_result_base64 = BASE64_STANDARD.encode(&expected_result);
         assert_eq!(result_payload, expected_result);
         assert_eq!(
@@ -2309,8 +2236,7 @@ listens = []
         assert!(ledger_text.contains("call-resident-payload-e2e"));
         assert!(ledger_text.contains("payload:request:size="));
         assert!(ledger_text.contains("payload:result:size="));
-        assert!(!ledger_text.contains("payload-marker"));
-        assert!(!ledger_text.contains("processed:"));
+        assert!(!ledger_text.contains(String::from_utf8_lossy(&expected_result).as_ref()));
         assert!(!ledger_text.contains(&payload_base64));
         assert!(!ledger_text.contains(&expected_result_base64));
         assert!(!ledger_text.contains(&signature_marker));

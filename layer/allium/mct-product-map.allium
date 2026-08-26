@@ -257,9 +257,9 @@ contract NoRouteDecision {
 -- Decision: `patinaMother` provides partial inputs: node id/slug/hostname/status, `patinaChild` and `patinaToy` inventory/governance, readiness, child health, memory pressure, DB sizes, heartbeat, and uptime. `mctMother` adds hardware inspection, locality tags, data-class authorization, Iroh peer binding, per-Vision capability declarations, CPU/load telemetry, memory utilization, and network observations.
 
 -- Decision: Capability publication is per-Vision. A Mother keeps a full private node capability profile, then publishes only policy-filtered capability views to each Vision.
--- Decision: A public or cross-Vision discovery view exposes minimal information such as node identity and reachability, not sensitive data classes, JVM-backed child details, children, toys, or topology.
+-- Decision: A public or cross-Vision discovery view exposes minimal information such as node identity and reachability, not sensitive data classes, JVM integration details, children, toys, or topology.
 -- Decision: For adoption domains such as banking, where JVM ecosystems are common, Vision is an authority and sharing boundary that may represent a tenant, institution, business unit, environment, compliance zone, data domain, or application fabric. Do not reduce it to only `tenant` too early.
--- Decision: JVM-backed child capabilities are visible only in the Vision capability views that are approved to discover and use them.
+-- Decision: JVM integration capabilities are visible only in the Vision capability views that are approved to discover and use them.
 -- Decision: Route audit answers `why could this node be selected?` by referencing the relevant Vision capability view and policy revision, not a global node blob.
 
 contract NodeProfileAndTelemetry {
@@ -281,8 +281,8 @@ contract NodeProfileAndTelemetry {
     @invariant PrivateProfileIsNotGlobalDiscovery
         -- The full private node profile is not exposed as one global discovery blob.
 
-    @invariant JvmChildDiscoveryIsScoped
-        -- JVM-backed child capabilities are discoverable only to approved Visions.
+    @invariant JvmIntegrationDiscoveryIsScoped
+        -- JVM integration capabilities are discoverable only to approved Visions.
 }
 
 -- Decision: Iroh `EndpointId` is transport identity: it proves endpoint key possession for an Iroh connection, but it does not by itself grant MCT node identity, Vision membership, child access, toy access, observation access, or data movement authority.
@@ -602,7 +602,7 @@ value MctPeerBindingPresentation {
 value MctHelloCallableSurface {
     child_name: String
     operation_id: String
-    runtime_kind: process | jvm_child | wasm_component | remote_peer | internal
+    runtime_kind: wasm_component
     vision_id: String
     policy_revision: Integer
     visibility: String
@@ -813,7 +813,7 @@ contract MctHelloProtocol {
 
 -- Decision: `MctCall` is the atomic unit that Mother can authorize, route, execute, and observe.
 -- Decision: `MctCall` is designed before `WorkRequest`. `WorkRequest` is deferred until there is a real multi-call orchestration need such as fan-out, dependencies, partial failure, scheduling, or rollback.
--- Decision: `MctCall` is the internal semantic representation, not a wire format. Iroh, JVM caller adapters, WASM host, process harness, and CLI adapters translate their own external formats into `MctCall`.
+-- Decision: `MctCall` is the internal semantic representation, not a wire format. Iroh, JVM caller adapters, WASM hosts, and CLI adapters translate their own external formats into `MctCall`.
 -- Decision: `MctCall` is immutable after adapter construction. Routing decisions, execution results, and observations are separate records that reference `call_id`.
 -- Decision: `MctCall` is not a task. It carries no retry policy, dependency graph, schedule, or partial completion state.
 -- Decision: `MctCall` is not the result. The return path is a separate future concept, likely `MctResult` or `MctReply`.
@@ -895,7 +895,7 @@ entity MctCall {
     authority_context: AuthorityContextSnapshot
     deadline: Timestamp
     trace_context: TraceContext
-    origin: iroh | jvm_adapter | wasm_host | process_harness | cli | trigger_firing
+    origin: iroh | jvm_adapter | wasm_host | cli | trigger_firing
 }
 
 actor MotherAuthority {
@@ -942,7 +942,7 @@ contract MctCallAtomicity {
         -- Route selections, execution outcomes, and replies are separate records that reference `call_id`.
 
     @invariant AdapterNeutralAuthority
-        -- Iroh, JVM adapter, WASM host, process harness, CLI, and trigger-firing calls enter the same authority pipeline after translation to `MctCall`.
+        -- Iroh, JVM adapter, WASM host, CLI, and trigger-firing calls enter the same authority pipeline after translation to `MctCall`.
 
     @invariant OriginIsForObservationNotPermission
         -- The origin adapter may be used for audit, telemetry, and dispatch of the protocol
@@ -2158,14 +2158,14 @@ contract MctPayloadIntegrityAndLocalCas {
 -- Decision: `MctResult` carries caller-safe outcome information and opaque references to internal audit/authority records. Full topology, candidate elimination, policy internals, and detailed execution telemetry stay in observations.
 -- Decision: `MctResult` outcome is a closed set: success, denied, failed, timed_out, cancelled.
 -- Decision: `route_taken` exists only when execution was attempted. Denied and cancelled-before-execution results have no route taken.
--- Decision: `requester_message` is safe to return through JVM adapters, Iroh, CLI, WASM host, or process harness adapters without leaking topology or policy internals.
+-- Decision: `requester_message` is safe to return through JVM adapters, Iroh, CLI, or WASM host adapters without leaking topology or policy internals.
 -- Decision: `audit_ref` links caller/support/operator workflows to the durable observation trail.
 -- Decision: `MctCall`, `RouteDecision`, `MctResult`, and `Observation` are separate concepts with different audiences and retention policies.
 
 value RouteTaken {
     node_id: String
     child_id: String?
-    runtime_kind: process | jvm_child | wasm_component | remote_peer | internal
+    runtime_kind: wasm_component | remote_peer | internal
 }
 
 value ExecutionSummary {
@@ -2232,7 +2232,7 @@ contract MctResultTerminality {
 -- Decision: `RouteDecision` is internal-only by default. Callers learn what happened through `MctResult`; they do not receive the full route reasoning.
 -- Decision: `RouteDecision` records the two-phase reasoning: authority filtering, candidate eliminations, feasible set, planner scoring, selected route, no-route disposition, snapshot revisions, and revalidation chain.
 -- Decision: `RouteDecision` has its own `decision_id` because one `MctCall` may have multiple decisions, such as initial routing and pre-execution revalidation.
--- Decision: Full `RouteDecision` records may reveal topology, data residency boundaries, GPU/compute inventory, Iroh direct-vs-relay paths, current load, JVM-backed child availability, and denied capabilities. This is operator-facing information, not caller-facing information.
+-- Decision: Full `RouteDecision` records may reveal topology, data residency boundaries, GPU/compute inventory, Iroh direct-vs-relay paths, current load, JVM integration availability, and denied capabilities. This is operator-facing information, not caller-facing information.
 -- Decision: `MctResult.authority_decision_ref` is an opaque reference to `RouteDecision`; it is not permission to read the decision.
 -- Decision: Full `RouteDecision` access is itself governed by authority: a node operator may see decisions involving their node, a Vision operator may see decisions in their Vision, and a system operator may see broader records.
 -- Decision: `RouteDecision` retention may have full-fidelity and compacted forms later. This is storage policy; the domain structure should still capture the complete reasoning.
@@ -2247,7 +2247,7 @@ value CandidateRoute {
     candidate_id: String
     node_id: String
     child_id: String?
-    runtime_kind: process | jvm_child | wasm_component | remote_peer | internal
+    runtime_kind: wasm_component | remote_peer | internal
     network_path: direct | relayed | local | unknown
 }
 
@@ -2318,7 +2318,7 @@ contract RouteDecisionPrivacy {
         -- `MctResult` may expose `authority_decision_ref`, but the reference does not reveal the full decision without separate operator authority.
 
     @invariant CandidateReasoningIsSensitive
-        -- Candidate elimination, topology, JVM-backed child availability, data location, peer path quality, and load details are protected internal reasoning.
+        -- Candidate elimination, topology, JVM integration availability, data location, peer path quality, and load details are protected internal reasoning.
 
     @invariant RevalidationIsSeparateDecision
         -- Pre-execution revalidation records a separate decision linked to the initial decision.
@@ -2336,8 +2336,8 @@ contract RouteDecisionPrivacy {
 }
 
 -- Decision: WIT/WASI is not replaced by this lower-level routing model. `MctCall.target` is intentionally WIT-shaped: namespace, interface, function.
--- Decision: JVM adapters, Iroh peer messages, process harnesses, CLI, and WASM hosts translate into the same WIT-shaped operation target instead of inventing separate target semantics.
--- Decision: WASM/WIT/WASI remains the child/toy design center. JVM-backed and process-backed execution is modeled behind that semantic model, not as competing kernels.
+-- Decision: JVM adapters, Iroh peer messages, CLI, and WASM hosts translate into the same WIT-shaped operation target instead of inventing separate target semantics.
+-- Decision: WASM components are the only current local Child execution substrate. Native and JVM software integrates as an external caller, a remote workload governed by another Mother, or an explicitly trusted Mother adapter.
 -- Decision: Toy grants map to WIT/WASI host capability contracts. Routing and RouteDecision decide where and whether a call may execute; WIT/WASI defines the component and host capability contract being invoked.
 
 contract WitWasiAlignment {
@@ -2345,13 +2345,13 @@ contract WitWasiAlignment {
         -- MCT operations are described as namespace/interface/function rather than adapter-specific method shapes.
 
     @invariant AdaptersTranslateToWitSemantics
-        -- JVM, Iroh, process, CLI, and WASM adapters translate external formats into the same MCT operation target semantics.
+        -- JVM, Iroh, CLI, and WASM adapters translate external formats into the same MCT operation target semantics.
 
     @invariant WitsAndToysStayCentral
-        -- Child operations and toy capabilities remain centered on WIT/WASI contracts even when the route uses JVM-backed, process-backed, or remote peer execution.
+        -- Local Child operations and toy capabilities remain centered on WIT/WASI contracts; remote routes cross another Mother authority boundary.
 
     @invariant RuntimeTypesStayOutsideKernel
-        -- Wasmtime, JVM, Iroh, HTTP, and process-specific implementation types do not become the kernel authority API.
+        -- Wasmtime, JVM, Iroh, HTTP, and trusted Mother-adapter implementation types do not become the kernel authority API.
 }
 
 -- Decision: The actively supported external children are compatibility fixtures, not accidental legacy input.
@@ -2374,7 +2374,7 @@ entity ExternalChildCompatibilityFixture {
     child_name: String
     artifact_version: String
     primary_export: WitInterfaceIdentity
-    ingress_mode: wit_only | hybrid | handle
+    ingress_mode: wit_only | hybrid
     lifecycle_exports: required | optional | absent_allowed
     required_canonical_toys: List<String>
 }
@@ -2422,25 +2422,23 @@ contract ExternalChildCompatibility {
         -- Legacy or experimental capability names cannot create new canonical toys or child shapes without an explicit MCT design decision.
 }
 
--- Decision: JVM integration for MCT should be modeled as WIT children, not as a separate competing call model.
--- Decision: A JVM-backed child presents WIT namespace/interface/version/function exports to MCT even when its implementation runs on a JVM, talks to JDBC, invokes domain libraries, or manages a JVM process out of band.
--- Decision: `jvm_child` remains an execution substrate detail in route observations; it does not create JVM-specific authority semantics outside the WIT child and ToyGrant model.
--- Decision: JVM classpath, jars, drivers, database handles, credentials, and domain-specific APIs stay behind canonical toy grants and Vision/Node/data policy.
--- Decision: A JVM WIT child can be routed like any other child only when its artifact/version/export, required toys, node placement, Vision scope, and data authority are approved.
+-- Decision: JVM integration for MCT uses the common WIT-shaped call model without becoming a local Child runtime.
+-- Decision: JVM software may call authenticated MCT ingress, run behind a remote Mother, or reside in an explicitly trusted Mother adapter.
+-- Decision: JVM classpaths, jars, drivers, database handles, credentials, and domain-specific APIs remain outside local Child authority and confinement claims.
 -- Decision: Banking is an adoption target and example domain for MCT because banking ecosystems often depend on JVM infrastructure; banking does not become a special core model.
 
-contract JvmAsWitChild {
-    @invariant JvmExportsWitOperations
-        -- JVM-backed integration exposes MCT-callable operations through WIT namespace, interface, version, and function identity.
+contract JvmAsExternalIntegration {
+    @invariant JvmUsesWitShapedCalls
+        -- JVM integrations expose or consume MCT operations through WIT namespace, interface, version, and function identity.
 
     @invariant JvmRuntimeDoesNotChangeAuthority
-        -- Running on or through a JVM does not bypass Vision, Node, data, child approval, or ToyGrant checks.
+        -- Running on or through a JVM does not bypass Vision, Node, data, peer, or call authority checks.
 
-    @invariant JvmDetailsStayBehindChildBoundary
-        -- JVM classpaths, jars, JDBC drivers, domain libraries, credentials, and process details remain implementation details of the WIT child or its approved toys.
+    @invariant JvmDetailsStayOutsideLocalChildBoundary
+        -- JVM classpaths, jars, JDBC drivers, domain libraries, credentials, and process details remain external integration or trusted Mother-adapter implementation details.
 
-    @invariant RouteObservationMayNameJvmSubstrate
-        -- Route and execution observations may record that the selected route used a JVM substrate without exposing that as a separate caller-facing operation model.
+    @invariant JvmCannotBecomeLocalChildExecution
+        -- No JVM artifact, route fact, or historical record can become current local Child execution authority.
 
     @invariant BankingIsAdoptionTargetNotCoreModel
         -- Banking validates MCT's JVM and compliance-zone needs as an adoption domain, but MCT does not hard-code banking-specific authority semantics.
@@ -3339,6 +3337,8 @@ entity ArtifactAcquisition {
     component_artifact_id: String?
 }
 
+-- Decision: Persisted pre-boundary `process_child`, `jvm_child`, `remote_child`, and `handle` values remain readable as historical evidence but cannot be written or converted into current local Child execution authority.
+
 entity ComponentArtifact {
     artifact_id: String
     child_name: String
@@ -3346,8 +3346,8 @@ entity ComponentArtifact {
     content_hash: String
     manifest_hash: String
     primary_export: ComponentWitExport
-    runtime_shape: wasm_component | jvm_child | process_child | remote_child
-    ingress_mode: wit_only | hybrid | handle
+    runtime_shape: wasm_component
+    ingress_mode: wit_only | hybrid
     lifecycle_exports: required | optional | absent_allowed
     verification_status: verified | rejected
     provenance_status: acquisition_backed | historical_unknown

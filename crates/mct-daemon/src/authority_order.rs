@@ -729,7 +729,8 @@ mod tests {
         assert!(toy_adapter.contains("authority.admit_order(&snapshot, ||"));
         let wasm_adapter = read("src/wasm.rs");
         assert!(wasm_adapter.contains("install_wasi_preopen(&mut builder"));
-        assert!(read("src/process.rs").contains("authorized.admit_effect_for_call(call)"));
+        assert!(!crate_root.join("src/process.rs").exists());
+        assert!(!resident_effect.contains("execute_resident_process_child"));
         assert!(wasm_adapter.contains("authorized.admit_effect_for_call(call)"));
 
         let peer_wire = read("../mct-kernel/src/peer/mod.rs");

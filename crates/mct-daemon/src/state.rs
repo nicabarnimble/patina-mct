@@ -3537,7 +3537,6 @@ impl MctRuntimeStateStore {
             primary_export: component_export_from_allowed_operations(&child.allowed_operations),
             runtime_shape: ComponentRuntimeShape::WasmComponent,
             ingress_mode: match child.ingress_mode {
-                crate::MctChildIngressMode::Handle => ChildIngressMode::Handle,
                 crate::MctChildIngressMode::Hybrid => ChildIngressMode::Hybrid,
                 crate::MctChildIngressMode::WitOnly => ChildIngressMode::WitOnly,
             },
@@ -3579,6 +3578,16 @@ impl MctRuntimeStateStore {
         provenance: Option<&ChildInvocationProvenance>,
         started_at: impl Into<String>,
     ) -> Result<MctRuntimeRunRecord> {
+        match runtime_kind {
+            RuntimeKind::Process | RuntimeKind::JvmChild => {
+                bail!("retired runtime kind {runtime_kind:?} cannot start a current run")
+            }
+            RuntimeKind::WasmComponent => {}
+            RuntimeKind::RemotePeer | RuntimeKind::Internal if provenance.is_none() => {}
+            RuntimeKind::RemotePeer | RuntimeKind::Internal => {
+                bail!("non-local runtime kind {runtime_kind:?} cannot carry local Child provenance")
+            }
+        }
         let run_id = run_id.into();
         let started_at = started_at.into();
         let child_name = provenance.map(|auth| auth.child_name.clone());
@@ -5035,6 +5044,12 @@ fn same_immutable_artifact_facts(left: &ComponentArtifact, right: &ComponentArti
 }
 
 fn validate_artifact_provenance_shape(artifact: &ComponentArtifact) -> Result<()> {
+    LocalChildRuntime::try_from(artifact.runtime_shape).map_err(|_| {
+        anyhow::anyhow!(
+            "retired runtime shape {:?} cannot be written as current local Child state",
+            artifact.runtime_shape
+        )
+    })?;
     match artifact.provenance_status {
         ArtifactProvenanceStatus::AcquisitionBacked if artifact.acquisition_ids.is_empty() => {
             bail!("acquisition-backed artifact requires acquisition evidence")
@@ -5591,6 +5606,82 @@ mod tests {
             ArtifactProvenanceStatus::HistoricalUnknown
         );
         assert!(persisted.acquisition_ids.is_empty());
+    }
+
+    #[test]
+    fn retired_process_and_jvm_artifacts_roundtrip_as_inert_history() {
+        for (shape, runtime_kind) in [
+            (ComponentRuntimeShape::ProcessChild, RuntimeKind::Process),
+            (ComponentRuntimeShape::JvmChild, RuntimeKind::JvmChild),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let state_path = dir.path().join("state.sqlite");
+            let store = MctRuntimeStateStore::open(&state_path).unwrap();
+            let mut current_attempt = artifact();
+            current_attempt.runtime_shape = shape;
+            current_attempt.ingress_mode = ChildIngressMode::Handle;
+            assert!(store.upsert_artifact(&current_attempt).is_err());
+            assert!(
+                store
+                    .insert_run_started(
+                        "retired-run",
+                        &call(),
+                        runtime_kind,
+                        Some(&provenance()),
+                        "2026-05-31T00:00:00Z",
+                    )
+                    .is_err()
+            );
+
+            let historical = artifact();
+            store.upsert_artifact(&historical).unwrap();
+            store
+                .conn
+                .execute(
+                    "UPDATE component_artifacts SET runtime_shape = ?1, ingress_mode = ?2 WHERE artifact_id = ?3",
+                    params![
+                        json_atom(&shape).unwrap(),
+                        json_atom(&ChildIngressMode::Handle).unwrap(),
+                        historical.artifact_id.as_str()
+                    ],
+                )
+                .unwrap();
+            drop(store);
+
+            let reopened = MctRuntimeStateStore::open(&state_path).unwrap();
+            let persisted = reopened
+                .get_artifact(&historical.artifact_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(persisted.runtime_shape, shape);
+            assert_eq!(persisted.ingress_mode, ChildIngressMode::Handle);
+
+            let authority = evaluate_child_call_authority(
+                &call(),
+                &ChildCallAuthorityRequest {
+                    instance_id: ChildInstanceId::new("instance-a").unwrap(),
+                    node_id: MctNodeId::new("node-a").unwrap(),
+                    ids: ChildCallAuthorityIds {
+                        evaluation_id: ChildCallEvaluationId::new("eval-retired").unwrap(),
+                        decision_id: DecisionId::new("decision-retired").unwrap(),
+                        observation_id: ObservationId::new("obs-retired").unwrap(),
+                        authorized_child_invocation_id: AuthorizedChildInvocationId::new(
+                            "authorized-retired",
+                        )
+                        .unwrap(),
+                    },
+                },
+                &[persisted],
+                &[approval(ChildApprovalState::Approved)],
+                &[assignment(ChildAssignmentState::Active)],
+                &[instance(ChildInstanceState::Ready)],
+            );
+            assert_eq!(
+                authority.evaluation.reason_code,
+                ChildCallReasonCode::UnsupportedLocalRuntime
+            );
+            assert!(authority.authorized.is_none());
+        }
     }
 
     #[test]
@@ -6884,7 +6975,7 @@ mod tests {
             .insert_run_started(
                 "run-a",
                 &call,
-                RuntimeKind::Process,
+                RuntimeKind::WasmComponent,
                 Some(&provenance),
                 "2026-05-31T00:00:00Z",
             )
@@ -6911,7 +7002,7 @@ mod tests {
                     ChildId::new("child-a")
                         .expect("string ID literal/generated value must be non-empty"),
                 ),
-                runtime_kind: RuntimeKind::Process,
+                runtime_kind: RuntimeKind::WasmComponent,
             }),
             authority_decision_ref: DecisionId::new("decision-a")
                 .expect("string ID literal/generated value must be non-empty"),
@@ -6937,7 +7028,7 @@ mod tests {
             .append_metric_point(MctMetricPoint {
                 metric_name: "runtime.run.completed".into(),
                 metric_value: 1,
-                labels: serde_json::json!({"runtime": "process"}),
+                labels: serde_json::json!({"runtime": "wasm_component"}),
                 observed_at: "2026-05-31T00:00:01Z".into(),
             })
             .unwrap();
