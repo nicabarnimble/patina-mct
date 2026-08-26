@@ -415,12 +415,12 @@ Compatibility guidance:
 - Add explicit tests for reading old values and refusing executable conversion.
 - Preserve old observation display and state inspection.
 
-- [ ] Introduce the narrow current type(s).
-- [ ] Add private or checked constructors.
-- [ ] Update candidate and execution plans to consume only the narrow type.
-- [ ] Add negative conversion and construction tests.
-- [ ] Avoid changing unrelated wire records unless necessary.
-- [ ] Commit:
+- [x] Introduce the narrow current type(s).
+- [x] Add private or checked constructors.
+- [x] Update candidate and execution plans to consume only the narrow type.
+- [x] Add negative conversion and construction tests.
+- [x] Avoid changing unrelated wire records unless necessary.
+- [x] Commit:
 
 ```text
 refactor(kernel): make local Child execution WASM-only
@@ -735,7 +735,7 @@ Populate during execution.
 | `d049a8a` | C1 | Plan and inventory | Tier 0, docs build, diff check |
 | `bdfacc6` | C2 | WASM test fixture | Tier 0, focused fixture test, clippy |
 | `579bded` | C3.1 | Execution/payload/idempotency test migration | Tier 0, clippy, focused and full binary tests |
-| pending | C3.2 | Peer/control test migration | pending |
+| `6a4a6e9` | C3.2 | Peer/control test migration | Tier 0, clippy, serialized workspace tests |
 | pending | C4 | Current execution type boundary | pending |
 | pending | C5 | Product surface retirement | pending |
 | pending | C6 | Resident route/dispatch retirement | pending |

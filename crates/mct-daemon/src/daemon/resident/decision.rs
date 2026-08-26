@@ -5,6 +5,7 @@ use super::*;
 #[derive(Debug)]
 pub(super) struct LocalExecutionPlan {
     child: mct_daemon::MctLoadedChild,
+    local_runtime: LocalChildRuntime,
     authorized_route: AuthorizedRouteExecution,
     child_authority_observation_id: ObservationId,
 }
@@ -14,11 +15,13 @@ impl LocalExecutionPlan {
         self,
     ) -> (
         mct_daemon::MctLoadedChild,
+        LocalChildRuntime,
         AuthorizedRouteExecution,
         ObservationId,
     ) {
         (
             self.child,
+            self.local_runtime,
             self.authorized_route,
             self.child_authority_observation_id,
         )
@@ -339,7 +342,7 @@ pub(super) fn authorize_resident_child_from_snapshot(
         } else {
             Vec::new()
         };
-        let candidate = resident_candidate_for_child(&projection, &child);
+        let (local_runtime, candidate) = resident_candidate_for_child(&projection, &child);
         let reason = if !child_authority.is_allowed() {
             Some(child_elimination_reason(
                 child_authority.evaluation.reason_code,
@@ -367,6 +370,7 @@ pub(super) fn authorize_resident_child_from_snapshot(
         };
         plans.push(LocalCandidatePlan {
             child,
+            local_runtime,
             candidate,
             authority,
             child_authority,
@@ -480,6 +484,7 @@ pub(super) fn authorize_resident_child_from_snapshot(
             Ok(RouteDisposition::Local {
                 plan: Box::new(LocalExecutionPlan {
                     child: selected.child,
+                    local_runtime: selected.local_runtime,
                     authorized_route,
                     child_authority_observation_id,
                 }),

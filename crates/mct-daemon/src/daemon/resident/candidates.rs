@@ -5,6 +5,7 @@ use super::*;
 #[derive(Debug)]
 pub(super) struct LocalCandidatePlan {
     pub(super) child: mct_daemon::MctLoadedChild,
+    pub(super) local_runtime: LocalChildRuntime,
     pub(super) candidate: CandidateRoute,
     pub(super) authority: CandidateAuthorityEvaluation,
     pub(super) child_authority: ChildCallAuthorityResult,
@@ -33,21 +34,18 @@ impl<'a> ResidentRemoteCandidateSource<'a> {
 pub(super) fn resident_candidate_for_child(
     projection: &MctConfigChildAuthorityProjection,
     child: &mct_daemon::MctLoadedChild,
-) -> CandidateRoute {
+) -> (LocalChildRuntime, CandidateRoute) {
+    let local_runtime = LocalChildRuntime::WasmComponent;
     let child_id = ChildId::new(child.name.clone())
         .expect("string ID literal/generated value must be non-empty");
-    CandidateRoute {
+    let candidate = CandidateRoute {
         candidate_id: format!("child:{}", child.name),
         node_id: projection.local_node_id.clone(),
         child_id: Some(child_id),
-        runtime_kind: match child.ingress_mode {
-            mct_daemon::MctChildIngressMode::Handle => RuntimeKind::Process,
-            mct_daemon::MctChildIngressMode::Hybrid | mct_daemon::MctChildIngressMode::WitOnly => {
-                RuntimeKind::WasmComponent
-            }
-        },
+        runtime_kind: local_runtime.into(),
         network_path: NetworkPathClass::Local,
-    }
+    };
+    (local_runtime, candidate)
 }
 
 fn resident_remote_candidate_plans_from_source(
@@ -299,6 +297,7 @@ pub(super) fn child_elimination_reason(reason: ChildCallReasonCode) -> Candidate
         | ChildCallReasonCode::ApprovalScopeMismatch
         | ChildCallReasonCode::ArtifactMissing
         | ChildCallReasonCode::ArtifactRejected
+        | ChildCallReasonCode::UnsupportedLocalRuntime
         | ChildCallReasonCode::WrongNode
         | ChildCallReasonCode::WrongProject
         | ChildCallReasonCode::VersionMismatch => CandidateEliminationReason::ChildNotApproved,

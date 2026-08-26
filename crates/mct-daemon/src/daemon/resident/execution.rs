@@ -105,13 +105,15 @@ pub(super) fn execute_authorized_resident_child(
 ) -> Result<LocalExecutionReport> {
     let call = request.call.clone();
     let state = MctRuntimeStateStore::open(paths.state_path())?;
-    let (child, authorized_route, child_authority_observation_id) = execution.into_parts();
+    let (child, local_runtime, authorized_route, child_authority_observation_id) =
+        execution.into_parts();
     let route_taken = RouteTaken {
         node_id: authorized_route.route().node_id.clone(),
         child_id: authorized_route.route().child_id.clone(),
         runtime_kind: authorized_route.route().runtime_kind,
     };
-    let runtime_kind = route_taken.runtime_kind;
+    let runtime_kind: RuntimeKind = local_runtime.into();
+    debug_assert_eq!(route_taken.runtime_kind, runtime_kind);
     let run_id = run_id_for_call("resident", &call);
     let route_decision_id = authorized_route.revalidation_decision_id().clone();
     let route_candidate = authorized_route.route().clone();
