@@ -597,10 +597,10 @@ At PR-DRAFT, create `/tmp/wasm-only-local-child-pr.md` with:
 
 After every push point:
 
-- [ ] Refresh the body from the actual branch, not this template alone.
-- [ ] Add commits and exact validation completed so far.
-- [ ] Keep known failures/follow-ups explicit.
-- [ ] Verify no literal `\n` appears in rendered prose.
+- [x] Refresh the body from the actual branch, not this template alone.
+- [x] Add commits and exact validation completed so far.
+- [x] Keep known failures/follow-ups explicit.
+- [x] Verify no literal `\n` appears in rendered prose.
 
 Before ready-for-review:
 
@@ -694,7 +694,7 @@ For code complexity, test migration difficulty, compile errors, CI failures, or 
 - [x] README, mdBook, core narrative, roadmap, help, and changelog agree.
 - [x] Every planned commit passed its gate.
 - [x] Final validation passed and is recorded in the PR.
-- [ ] Draft PR was updated into a reviewer-ready ledger.
+- [x] Draft PR was updated into a reviewer-ready ledger.
 - [ ] Required CI passed.
 - [ ] PR merged into `patina` with commit history preserved.
 - [ ] Feature branch deleted and local `patina` updated.
@@ -740,7 +740,7 @@ Populate during execution.
 | `3f58c5c` | C4 | Current execution type boundary | Workspace tests, Tier 0, clippy |
 | `d95ddb0` | C5/C6 | Product surface and resident dispatch retirement | Tier 0, CLI no-spawn tests, handle rejection tests, clippy |
 | `b58ca30` | C7 | Historical compatibility | Tier 0, persisted artifact/run history tests, clippy |
-| pending | C8 | Law/docs/release close-out | pending |
+| `de52390` | C8 | Law/docs/release close-out | Final serialized gate, docs/rustdoc, Allium check/analyse, Perf integrity check |
 
 ### Flake log
 
