@@ -6,6 +6,10 @@ All notable changes to MCT are documented here. MCT follows semantic versioning 
 
 Release-discipline work after PR #29 remains unreleased until it has a reviewable PR association and the generated 0.2.0 section is refreshed.
 
+### Added
+
+- Added the `mct-trace` public evidence tool and first reviewed Pi trace fixture, with fail-closed safety scanning, exact BLAKE3 receipts, reproducible Zstandard archiving, normalized events, complete static transcripts, and raw downloads.
+
 ### Changed
 
 - **Breaking (pre-GA):** made WASM components the only locally executable Child substrate; removed `process call`, `iroh serve-process`, handle-only ingress, resident process dispatch, and the public process Child harness ([#35](https://github.com/nicabarnimble/patina-mct/pull/35)).

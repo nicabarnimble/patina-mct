@@ -4,6 +4,7 @@ members = [
     "crates/mct-observation",
     "crates/mct-iroh",
     "crates/mct-daemon",
+    "crates/mct-trace",
 ]
 resolver = "2"
 
@@ -33,3 +34,4 @@ tempfile = "3.23.0"
 wasmtime = "46.0.2"
 wasmtime-wasi = "46.0.2"
 wat = "1.241.2"
+zstd = "0.13.3"

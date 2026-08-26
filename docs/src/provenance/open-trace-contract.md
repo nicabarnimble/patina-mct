@@ -132,6 +132,10 @@ archive. Projections extract them by BLAKE3 identity, retain media type and
 size, and link them to the source event. Attachments pass the same publication
 and restriction checks as text.
 
+The v1 pilot importer fails closed when it detects an attachment-bearing
+session. Such a session cannot be published as `complete` until extraction,
+content-addressed receipts, and projection links are implemented.
+
 ## Projections and derived content
 
 One trace may produce a full transcript, timeline, session narrative, branch

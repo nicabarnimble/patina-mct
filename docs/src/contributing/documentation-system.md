@@ -58,6 +58,21 @@ The full trace archive is not copied into authored Markdown. Build tooling
 produces navigable static projections and links each projection to the exact
 compressed source.
 
+The `mct-trace` workspace tool owns trace ingestion and disposable projection:
+
+```bash
+cargo run -p mct-trace -- verify --repo-root .
+cargo run -p mct-trace -- ingest --source <completed-pi-session.jsonl> --repo-root .
+./scripts/build-docs.sh
+```
+
+Ingestion scans before publication, preserves exact source bytes, writes one
+append-only receipt, and is idempotent when the same reviewed source is
+presented again. The documentation build verifies all receipts and generates
+session indexes, complete transcripts, normalized JSONL, and raw downloads in
+the staged `target/docs-book/` tree. Those generated files are never edited or
+committed as authored documentation.
+
 ## Presentation
 
 The initial theme is a small CSS layer over mdBook defaults. Datastar may later

@@ -1,6 +1,6 @@
 # TODO: MCT Documentation and Open Trace System
 
-**Status:** Active. Phase 2 static foundation implemented; trace ingestion remains gated on the reviewed Phase 3 fixture.
+**Status:** Active. Phase 3 public trace pilot implemented and verified; authored audience journeys and the incremental historical import remain.
 
 ## Objective
 
@@ -72,16 +72,16 @@ The final layout must account for the existing `docs/allium-training.md` before 
 
 Design the trace system as a public evidence ledger.
 
-- [ ] Publish completed product-session traces by default.
-- [ ] Preserve every event actually persisted by the runtime.
-- [ ] Do not invent missing reasoning or activity.
-- [ ] Preserve user messages, assistant responses, persisted thinking blocks, tool calls, tool results, compactions, branches, model changes, usage metadata, timestamps, file activity, Patina events, Git state, commits, and attachments.
-- [ ] Preserve original trace bytes immutably.
-- [ ] Compress archived JSONL with Zstandard.
-- [ ] Record exact byte size and BLAKE3 digest.
-- [ ] Never manually edit archived traces.
-- [ ] Never silently truncate a rendered transcript.
-- [ ] Provide a public download of the exact compressed trace from its documentation page.
+- [x] Publish completed product-session traces by default.
+- [x] Preserve every event actually persisted by the runtime.
+- [x] Do not invent missing reasoning or activity.
+- [ ] Preserve user messages, assistant responses, persisted thinking blocks, tool calls, tool results, compactions, branches, model changes, usage metadata, timestamps, file activity, Patina events, Git state, commits, and extracted attachments. The v1 importer fails closed on attachment-bearing sessions until extraction is implemented.
+- [x] Preserve original trace bytes immutably.
+- [x] Compress archived JSONL with Zstandard.
+- [x] Record exact byte size and BLAKE3 digest.
+- [x] Never manually edit archived traces.
+- [x] Never silently truncate a rendered transcript.
+- [x] Provide a public download of the exact compressed trace from its documentation page.
 
 Proposed archive structure:
 
@@ -126,10 +126,10 @@ sources:
 
 - [x] Define one stable normalized event schema.
 - [x] Preserve original source format and source IDs in every normalized event.
-- [ ] Implement Pi JSONL v3 normalization first.
+- [x] Implement Pi JSONL v3 normalization first.
 - [ ] Incorporate `layer/sessions/*.md`, `layer/events.jsonl`, and Git history without replacing their original forms.
 - [x] Keep the normalization layer independent of Pi so future agent runtimes can be added.
-- [ ] Record normalizer version and source digest in every generated projection.
+- [x] Record normalizer version and source digest in every generated projection.
 
 Conceptual model:
 
@@ -150,8 +150,9 @@ Trace
 
 Generate multiple views from one immutable trace:
 
-- [ ] Complete transcript
-- [ ] Session overview and narrative
+- [x] Complete transcript
+- [x] Session overview
+- [ ] Session narrative
 - [ ] Chronological timeline
 - [ ] Branch and compaction history
 - [ ] Decision index
@@ -164,7 +165,7 @@ Generate multiple views from one immutable trace:
 
 Rules:
 
-- [ ] Deterministic projections are generated and never manually edited.
+- [x] Deterministic projections are generated and never manually edited.
 - [ ] Large transcripts are split into navigable chunks without omission.
 - [ ] LLM-synthesized guides become reviewed, committed Markdown.
 - [ ] Every synthesized page records the trace ranges, commits, generator/prompt recipe, and model used.
@@ -173,10 +174,10 @@ Rules:
 
 ## Static mdBook integration
 
-- [ ] Generate trace-backed provenance pages during the mdBook build.
+- [x] Generate trace-backed provenance pages during the mdBook build.
 - [x] Keep the book readable without client-side JavaScript.
 - [ ] Add session, decision, commit, file, model, and event indexes.
-- [ ] Include exact trace receipts and raw downloads.
+- [x] Include exact trace receipts and raw downloads.
 - [x] Ensure generated trace material does not become an independent authority source.
 - [x] Stage generated trace Markdown only during builds; do not duplicate the full trace corpus in Git without a demonstrated need.
 
@@ -212,7 +213,7 @@ Potential later features:
 
 Transparency is the default. Safety checks must prevent accidental credential publication without creating silent or misleading traces.
 
-- [ ] Implement scanning for tokens, private keys, authorization headers, credentials, and equivalent secrets.
+- [x] Implement scanning for tokens, private keys, authorization headers, credentials, and equivalent secrets.
 - [x] Instruct agents not to print secrets into trace-visible output.
 - [x] Do not silently redact or rewrite raw evidence.
 - [x] If removal is unavoidable, publish an explicit redaction event with category and reason.
@@ -228,9 +229,9 @@ Transparency is the default. Safety checks must prevent accidental credential pu
 - [x] Check rustdoc and doctests in CI.
 - [x] Check internal links in CI; add external-link checking when deployment policy is set.
 - [ ] Detect stale generated CLI/configuration/protocol references.
-- [ ] Verify trace digests and manifests.
-- [ ] Verify generated projections against their source traces.
-- [ ] Prevent manual edits to generated files.
+- [x] Verify trace digests and manifests.
+- [x] Verify generated projections against their source traces.
+- [x] Prevent manual edits to generated files.
 - [x] Require source citations for agent-generated explanatory content.
 - [x] Keep documentation updates reviewable and separate from unrelated product changes.
 
@@ -238,11 +239,11 @@ Transparency is the default. Safety checks must prevent accidental credential pu
 
 ### Phase 1: contract only
 
-- [ ] Ratify authority, evidence, and presentation boundaries after reviewing the implemented contract.
-- [ ] Ratify public-by-default trace policy after reviewing the implemented contract.
-- [ ] Ratify stable trace identifier format after reviewing the implemented contract.
-- [ ] Ratify archive, manifest, normalization, and redaction contracts after reviewing the schemas.
-- [ ] Ratify authored documentation information architecture after reviewing the initial book.
+- [x] Ratify authority, evidence, and presentation boundaries after reviewing the implemented contract.
+- [x] Ratify public-by-default trace policy after reviewing the implemented contract.
+- [x] Ratify stable trace identifier format after reviewing the implemented contract.
+- [x] Ratify archive, manifest, normalization, and redaction contracts after reviewing the schemas.
+- [x] Ratify authored documentation information architecture after reviewing the initial book.
 - [x] Keep `docs/allium-training.md` as a compatibility pointer and maintain its content in `docs/src/contributing/allium-training.md`.
 
 ### Phase 2: minimal static documentation
@@ -255,11 +256,11 @@ Transparency is the default. Safety checks must prevent accidental credential pu
 
 ### Phase 3: trace archive
 
-- [ ] Implement trace ingestion as a small Rust tool or workspace `xtask`.
-- [ ] Import one reviewed Pi session as a fixture/proof.
-- [ ] Produce the compressed raw trace, manifest entry, and BLAKE3 receipt.
-- [ ] Generate a complete static transcript and session overview.
-- [ ] Verify no event was omitted.
+- [x] Implement trace ingestion as a small Rust tool or workspace `xtask`.
+- [x] Import one reviewed Pi session as a fixture/proof.
+- [x] Produce the compressed raw trace, manifest entry, and BLAKE3 receipt.
+- [x] Generate a complete static transcript and session overview.
+- [x] Verify no event was omitted.
 
 ### Phase 4: complete historical import
 
@@ -282,10 +283,10 @@ Transparency is the default. Safety checks must prevent accidental credential pu
 ## Decisions requiring operator review
 
 - [x] Confirm complete persisted thinking blocks are public by default.
-- [ ] Confirm raw compressed traces initially live in this repository.
-- [ ] Confirm the proposed 512 MiB aggregate / 50 MiB single-object archive review thresholds.
-- [ ] Confirm the operator-approved exceptional redaction process.
-- [ ] Confirm the proposed session-close publication gate.
-- [ ] Confirm the `trace:<runtime>:<session-id>#<entry-id>` identifier syntax.
+- [x] Confirm raw compressed traces initially live in this repository.
+- [x] Confirm the proposed 512 MiB aggregate / 50 MiB single-object archive review thresholds.
+- [x] Confirm the operator-approved exceptional redaction process.
+- [x] Confirm the proposed session-close publication gate.
+- [x] Confirm the `trace:<runtime>:<session-id>#<entry-id>` identifier syntax.
 - [x] Confirm mdBook as the product documentation renderer and rustdoc as the API renderer.
 - [x] Confirm Datastar remains optional and replaceable.
