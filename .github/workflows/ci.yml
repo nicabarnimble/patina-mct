@@ -2,10 +2,9 @@ name: CI
 
 on:
   push:
-    tags-ignore:
-      - "v*"
+    branches: [main]
   pull_request:
-    branches: [patina, main, master]
+    branches: [main]
 
 permissions:
   contents: read
@@ -38,3 +37,17 @@ jobs:
 
       - name: Build and check product and API documentation
         run: scripts/build-docs.sh
+
+  ledger-benchmark:
+    name: Ledger open benchmark
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Streaming ledger open at 10k and 100k
+        run: cargo run -p mct-observation --release --bin ledger-bench -- --sizes 10000,100000 --check
