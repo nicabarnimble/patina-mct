@@ -15,6 +15,7 @@ pub(crate) async fn run_serve(mut args: Vec<String>) -> Result<()> {
                     | "--ledger"
                     | "--http"
                     | "--uds"
+                    | "--bind"
             )
         });
     if supervised_path_override {
@@ -31,6 +32,7 @@ pub(crate) async fn run_serve(mut args: Vec<String>) -> Result<()> {
         None => None,
     };
     let relay_default = take_flag(&mut args, "--relay-default");
+    let bind_addr = take_bind_addr(&mut args)?;
     let config_path = take_option(&mut args, "--config")
         .map(PathBuf::from)
         .unwrap_or_else(default_config_path);
@@ -93,6 +95,7 @@ pub(crate) async fn run_serve(mut args: Vec<String>) -> Result<()> {
             ledger_path,
             control,
             relay_default,
+            bind_addr,
             max_concurrent_connections,
             supervisor,
         },
@@ -117,6 +120,7 @@ struct ResidentMotherConfig {
     ledger_path: PathBuf,
     pub(super) control: ResidentControlTransport,
     pub(super) relay_default: bool,
+    pub(super) bind_addr: Option<std::net::SocketAddr>,
     pub(super) max_concurrent_connections: usize,
     pub(super) supervisor: Option<SupervisorRecordV1>,
 }
@@ -239,6 +243,7 @@ where
             ledger_path: record.ledger_path.clone(),
             control: ResidentControlTransport::Uds(record.uds_path.clone()),
             relay_default: false,
+            bind_addr: None,
             max_concurrent_connections: 8,
             supervisor: Some(record),
         },
@@ -295,6 +300,7 @@ where
             ledger_path,
             control: ResidentControlTransport::Uds(socket_path),
             relay_default: false,
+            bind_addr: None,
             max_concurrent_connections: 8,
             supervisor: None,
         },
@@ -623,9 +629,13 @@ where
         }
     }
     let secret_key_hex = load_or_create_node_secret_key_hex(&config.identity_path)?;
-    let mut endpoint = MotherIrohEndpoint::bind(iroh_config(secret_key_hex, config.relay_default))
-        .await
-        .context("bind resident Mother Iroh endpoint")?;
+    let mut endpoint = MotherIrohEndpoint::bind(iroh_config_with_bind(
+        secret_key_hex,
+        config.relay_default,
+        config.bind_addr,
+    ))
+    .await
+    .context("bind resident Mother Iroh endpoint")?;
     let snapshot = endpoint.snapshot();
     if snapshot.endpoint_id != identity.endpoint_id {
         bail!(
@@ -1554,6 +1564,7 @@ mod tests {
                 ledger_path: ledger_path.clone(),
                 control: ResidentControlTransport::Uds(socket_path.clone()),
                 relay_default: false,
+                bind_addr: None,
                 max_concurrent_connections: 8,
                 supervisor: None,
             },
@@ -1750,6 +1761,7 @@ mod tests {
                 ledger_path,
                 control: ResidentControlTransport::Uds(socket_path),
                 relay_default: false,
+                bind_addr: None,
                 max_concurrent_connections: 8,
                 supervisor: None,
             },
@@ -1930,6 +1942,7 @@ mod tests {
                 ledger_path,
                 control: ResidentControlTransport::Uds(socket_path),
                 relay_default: false,
+                bind_addr: None,
                 max_concurrent_connections: 8,
                 supervisor: None,
             },
@@ -2028,6 +2041,7 @@ mod tests {
                 ledger_path: ledger_path.clone(),
                 control: ResidentControlTransport::Uds(socket_path),
                 relay_default: false,
+                bind_addr: None,
                 max_concurrent_connections: 8,
                 supervisor: None,
             },

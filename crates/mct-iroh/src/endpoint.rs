@@ -5,7 +5,7 @@ use iroh::{
 };
 use mct_kernel::{EndpointIdText, MCT_CALL_ALPN, MCT_HELLO_ALPN, MctKernelError};
 use serde::{Deserialize, Serialize};
-use std::{error::Error as StdError, path::PathBuf};
+use std::{error::Error as StdError, net::SocketAddr, path::PathBuf};
 use thiserror::Error;
 
 pub type MotherIrohEndpointResult<T> = std::result::Result<T, MotherIrohEndpointError>;
@@ -52,6 +52,9 @@ pub enum MotherIrohEndpointError {
         #[source]
         source: Box<dyn StdError + Send + Sync + 'static>,
     },
+
+    #[error("invalid Mother Iroh bind address '{value}'")]
+    InvalidBindAddr { value: String },
 
     #[error("bind Mother-owned Iroh endpoint")]
     Bind {
@@ -132,6 +135,9 @@ pub struct MotherIrohEndpointConfig {
     pub accepted_alpns: Vec<String>,
     pub relay_mode: MotherIrohRelayMode,
     pub secret_key_hex: Option<String>,
+    /// When set, the endpoint binds this UDP address instead of Iroh's
+    /// ephemeral port. `None` preserves the historical random-port bind.
+    pub bind_addr: Option<SocketAddr>,
 }
 
 impl MotherIrohEndpointConfig {
@@ -140,6 +146,7 @@ impl MotherIrohEndpointConfig {
             accepted_alpns: mct_alpns(),
             relay_mode: MotherIrohRelayMode::Disabled,
             secret_key_hex: None,
+            bind_addr: None,
         }
     }
 
@@ -150,6 +157,11 @@ impl MotherIrohEndpointConfig {
 
     pub fn with_secret_key_hex(mut self, secret_key_hex: impl Into<String>) -> Self {
         self.secret_key_hex = Some(secret_key_hex.into());
+        self
+    }
+
+    pub fn with_bind_addr(mut self, bind_addr: SocketAddr) -> Self {
+        self.bind_addr = Some(bind_addr);
         self
     }
 }
@@ -229,6 +241,13 @@ impl MotherIrohEndpoint {
             .alpns(alpn_bytes(&accepted_alpns));
         if let Some(secret_key_hex) = config.secret_key_hex {
             builder = builder.secret_key(secret_key_from_hex(&secret_key_hex)?);
+        }
+        if let Some(bind_addr) = config.bind_addr {
+            builder = builder.bind_addr(bind_addr).map_err(|_| {
+                MotherIrohEndpointError::InvalidBindAddr {
+                    value: bind_addr.to_string(),
+                }
+            })?;
         }
         let endpoint = builder
             .bind()

@@ -81,6 +81,7 @@ mod tests {
         let config = MotherIrohEndpointConfig::local_mct();
         assert_eq!(config.accepted_alpns, mct_alpns());
         assert_eq!(config.relay_mode, MotherIrohRelayMode::Disabled);
+        assert!(config.bind_addr.is_none());
     }
 
     #[test]
@@ -88,6 +89,29 @@ mod tests {
         let config =
             MotherIrohEndpointConfig::local_mct().with_relay_mode(MotherIrohRelayMode::Default);
         assert_eq!(config.relay_mode, MotherIrohRelayMode::Default);
+    }
+
+    #[tokio::test]
+    async fn endpoint_binds_configured_udp_address() {
+        let probe = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let bind_addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        let mut endpoint = MotherIrohEndpoint::bind(
+            MotherIrohEndpointConfig::local_mct().with_bind_addr(bind_addr),
+        )
+        .await
+        .unwrap();
+        let bound = endpoint.snapshot();
+        assert!(
+            bound
+                .direct_addresses
+                .iter()
+                .any(|addr| addr.ends_with(&format!(":{port}"))),
+            "expected fixed port {port} in {:?}",
+            bound.direct_addresses
+        );
+        endpoint.close().await;
     }
 
     #[tokio::test]
