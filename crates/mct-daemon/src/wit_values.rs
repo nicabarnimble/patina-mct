@@ -204,7 +204,8 @@ fn shape_from_type(ty: &Type, path: &str) -> ConvResult<ConversionShape> {
         | Type::Borrow(_)
         | Type::Future(_)
         | Type::Stream(_)
-        | Type::ErrorContext => {
+        | Type::ErrorContext
+        | Type::FixedLengthList(_) => {
             return Err(err(
                 ConversionErrorCode::UnsupportedType,
                 format!("unsupported component type for JSON lowering: {:?}", ty),
@@ -756,7 +757,12 @@ fn lift_component_val_to_json(value: &Val) -> ConvResult<Value> {
                 .map(serde_json::Value::String)
                 .collect(),
         ),
-        Val::Map(_) | Val::Resource(_) | Val::Future(_) | Val::Stream(_) | Val::ErrorContext(_) => {
+        Val::Map(_)
+        | Val::Resource(_)
+        | Val::Future(_)
+        | Val::Stream(_)
+        | Val::ErrorContext(_)
+        | Val::FixedLengthList(_) => {
             return Err(err(
                 ConversionErrorCode::UnsupportedType,
                 "unsupported component result type for JSON lift",
