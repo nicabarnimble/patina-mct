@@ -80,10 +80,40 @@ pub fn local_execution_authority_snapshot_at(
         }
         _ => LocalExecutionAuthoritySnapshotDenyV1::LedgerUnavailable,
     })?;
-    let replay = verified.replay;
-    let head = verified
-        .head
-        .ok_or(LocalExecutionAuthoritySnapshotDenyV1::AuthorityReplayBlocked)?;
+    local_execution_authority_snapshot_from_verified(
+        verified
+            .head
+            .ok_or(LocalExecutionAuthoritySnapshotDenyV1::AuthorityReplayBlocked)?,
+        verified.replay,
+        config_path,
+        children_dir,
+        state_path,
+        Ok(evaluated_at),
+    )
+}
+
+/// Builds a snapshot from an already verified writer head and replay.
+///
+/// The resident call path uses this so it does not re-read or re-hash the ledger
+/// prefix. External readers still use [`local_execution_authority_snapshot`], which
+/// full-verifies on checkpoint mismatch and fails closed on a suffix break.
+pub fn local_execution_authority_snapshot_from_verified(
+    head: mct_observation::LedgerVerifiedHead,
+    replay: mct_observation::AuthorityReplayV1,
+    config_path: &Path,
+    children_dir: &Path,
+    state_path: &Path,
+    mother_time: Result<Timestamp, LocalExecutionAuthoritySnapshotDenyV1>,
+) -> Result<LocalExecutionAuthoritySnapshot, LocalExecutionAuthoritySnapshotDenyV1> {
+    let evaluated_at =
+        mother_time.map_err(|_| LocalExecutionAuthoritySnapshotDenyV1::MotherClockUnavailable)?;
+    let config = MctDaemonConfigStore::new(config_path)
+        .load()
+        .map_err(|_| LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?;
+    let identity = config
+        .local_identity
+        .as_ref()
+        .ok_or(LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?;
     let authority = replay
         .current_authority
         .ok_or(LocalExecutionAuthoritySnapshotDenyV1::AuthorityReplayBlocked)?;

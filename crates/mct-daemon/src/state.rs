@@ -377,6 +377,8 @@ impl MctRuntimeStateStore {
         }
         let conn = Connection::open(&path)
             .with_context(|| format!("open runtime state {}", path.display()))?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .context("set runtime state busy timeout")?;
         let store = Self { path, conn };
         store.migrate()?;
         Ok(store)
@@ -2566,7 +2568,7 @@ impl MctRuntimeStateStore {
                 artifact.artifact_version,
                 artifact.content_hash,
                 artifact.manifest_hash,
-                json_string(&artifact.primary_export)?,
+                stored_primary_export_json(artifact)?,
                 json_atom(&artifact.runtime_shape)?,
                 json_atom(&artifact.ingress_mode)?,
                 json_atom(&artifact.lifecycle_exports)?,
@@ -3527,6 +3529,8 @@ impl MctRuntimeStateStore {
         child: &MctLoadedChild,
         scope: MctOperatorChildScope,
     ) -> Result<ComponentArtifact> {
+        let (primary_export, additional_exports) =
+            component_exports_from_allowed_operations(&child.allowed_operations);
         let artifact = ComponentArtifact {
             artifact_id: ComponentArtifactId::new(child.artifact_id.clone())
                 .expect("string ID literal/generated value must be non-empty"),
@@ -3534,7 +3538,8 @@ impl MctRuntimeStateStore {
             artifact_version: child.version.clone(),
             content_hash: format!("sha256:{}", child.wasm_digest.sha256),
             manifest_hash: format!("sha256:{}", child.manifest_digest.sha256),
-            primary_export: component_export_from_allowed_operations(&child.allowed_operations),
+            primary_export,
+            additional_exports,
             runtime_shape: ComponentRuntimeShape::WasmComponent,
             ingress_mode: match child.ingress_mode {
                 crate::MctChildIngressMode::Hybrid => ChildIngressMode::Hybrid,
@@ -4236,6 +4241,43 @@ impl MctRuntimeStateStore {
         self.publish_replay(&head, &replay, before_commit)
     }
 
+    fn projection_cursor_matches_unchanged_state(
+        &self,
+        head: &LedgerVerifiedHead,
+        authority: &mct_observation::GrantsAuthorityIdentityV1,
+        state_hash: &str,
+    ) -> Result<bool> {
+        let existing = self
+            .conn
+            .query_row(
+                r#"
+                SELECT schema_version, projection_id, projection_kind, source_mother_node_id,
+                       source_ledger_id, through_sequence, through_observation_id,
+                       through_entry_hash, grants_authority_json, authority_state_hash,
+                       projection_hash, projection_status, updated_at
+                FROM authority_projection_cursor WHERE projection_id = 'authority-state-v1'
+                "#,
+                [],
+                authority_cursor_from_row,
+            )
+            .optional();
+        let existing = match existing {
+            Ok(existing) => existing,
+            Err(_) => return Ok(false),
+        };
+        let Some(existing) = existing else {
+            return Ok(false);
+        };
+        Ok(
+            existing.projection_status == AuthorityProjectionStatusV1::Current
+                && existing.authority_state_hash == state_hash
+                && existing.grants_authority == *authority
+                && existing.source_mother_node_id == head.mother_node_id
+                && existing.source_ledger_id == head.ledger_id
+                && existing.projection_id == "authority-state-v1",
+        )
+    }
+
     fn publish_replay(
         &self,
         head: &LedgerVerifiedHead,
@@ -4247,6 +4289,8 @@ impl MctRuntimeStateStore {
             .clone()
             .context("authority projection requires an epoch fact")?;
         let state_hash = authority_state_hash(&replay.state)?;
+        let state_unchanged =
+            self.projection_cursor_matches_unchanged_state(head, &authority, &state_hash)?;
         let status = AuthorityProjectionStatusV1::Current;
         let projection_hash = authority_projection_hash(&AuthorityProjectionHashInputV1 {
             source_mother_node_id: head.mother_node_id.clone(),
@@ -4275,6 +4319,43 @@ impl MctRuntimeStateStore {
         };
         let transaction =
             rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        if state_unchanged {
+            transaction.execute(
+                r#"
+                INSERT INTO authority_projection_cursor(
+                    projection_id, schema_version, projection_kind, source_mother_node_id,
+                    source_ledger_id, through_sequence, through_observation_id,
+                    through_entry_hash, grants_authority_json, authority_state_hash,
+                    projection_hash, projection_status, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                ON CONFLICT(projection_id) DO UPDATE SET
+                    through_sequence = excluded.through_sequence,
+                    through_observation_id = excluded.through_observation_id,
+                    through_entry_hash = excluded.through_entry_hash,
+                    projection_hash = excluded.projection_hash,
+                    projection_status = excluded.projection_status,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    cursor.projection_id,
+                    cursor.schema_version as i64,
+                    cursor.projection_kind,
+                    cursor.source_mother_node_id,
+                    cursor.source_ledger_id,
+                    cursor.through_sequence as i64,
+                    cursor.through_observation_id,
+                    cursor.through_entry_hash,
+                    json_string(&cursor.grants_authority)?,
+                    cursor.authority_state_hash,
+                    cursor.projection_hash,
+                    "current",
+                    cursor.updated_at,
+                ],
+            )?;
+            before_commit()?;
+            transaction.commit()?;
+            return Ok(cursor);
+        }
         transaction.execute("DELETE FROM authority_projection_toy_catalog", [])?;
         transaction.execute("DELETE FROM authority_projection_toy_grants", [])?;
         transaction.execute("DELETE FROM authority_projection_watch_scopes", [])?;
@@ -4975,7 +5056,7 @@ fn insert_artifact_on(tx: &rusqlite::Transaction<'_>, artifact: &ComponentArtifa
             artifact.artifact_version,
             artifact.content_hash,
             artifact.manifest_hash,
-            json_string(&artifact.primary_export)?,
+            stored_primary_export_json(artifact)?,
             json_atom(&artifact.runtime_shape)?,
             json_atom(&artifact.ingress_mode)?,
             json_atom(&artifact.lifecycle_exports)?,
@@ -5060,6 +5141,7 @@ fn same_immutable_artifact_facts(left: &ComponentArtifact, right: &ComponentArti
         && left.content_hash == right.content_hash
         && left.manifest_hash == right.manifest_hash
         && left.primary_export == right.primary_export
+        && left.additional_exports == right.additional_exports
         && left.runtime_shape == right.runtime_shape
         && left.ingress_mode == right.ingress_mode
         && left.lifecycle_exports == right.lifecycle_exports
@@ -5085,8 +5167,42 @@ fn validate_artifact_provenance_shape(artifact: &ComponentArtifact) -> Result<()
     }
 }
 
+fn stored_primary_export_json(artifact: &ComponentArtifact) -> Result<String> {
+    if artifact.additional_exports.is_empty() {
+        return json_string(&artifact.primary_export);
+    }
+    json_string(&serde_json::json!({
+        "primary_export": artifact.primary_export,
+        "additional_exports": artifact.additional_exports,
+    }))
+}
+
+fn exports_from_stored_json(value: &str) -> Result<(ComponentWitExport, Vec<ComponentWitExport>)> {
+    let parsed: serde_json::Value = serde_json::from_str(value).context("decode stored exports")?;
+    if parsed.get("additional_exports").is_some() {
+        let primary = serde_json::from_value(
+            parsed
+                .get("primary_export")
+                .cloned()
+                .context("stored exports missing primary_export")?,
+        )
+        .context("decode primary export")?;
+        let additional = serde_json::from_value(
+            parsed
+                .get("additional_exports")
+                .cloned()
+                .unwrap_or(serde_json::Value::Array(Vec::new())),
+        )
+        .context("decode additional exports")?;
+        return Ok((primary, additional));
+    }
+    Ok((from_json_cell(value)?, Vec::new()))
+}
+
 fn artifact_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ComponentArtifact> {
     let primary_export_json: String = row.get(5)?;
+    let (primary_export, additional_exports) =
+        exports_from_stored_json(&primary_export_json).map_err(to_sql_error)?;
     let runtime_shape: String = row.get(6)?;
     let ingress_mode: String = row.get(7)?;
     let lifecycle_exports: String = row.get(8)?;
@@ -5100,7 +5216,8 @@ fn artifact_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ComponentArtif
         artifact_version: row.get(2)?,
         content_hash: row.get(3)?,
         manifest_hash: row.get(4)?,
-        primary_export: from_json_cell(&primary_export_json).map_err(to_sql_error)?,
+        primary_export,
+        additional_exports,
         runtime_shape: from_json_atom(&runtime_shape).map_err(to_sql_error)?,
         ingress_mode: from_json_atom(&ingress_mode).map_err(to_sql_error)?,
         lifecycle_exports: from_json_atom(&lifecycle_exports).map_err(to_sql_error)?,
@@ -5309,50 +5426,23 @@ fn to_sql_error(error: anyhow::Error) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, error.into())
 }
 
-fn component_export_from_allowed_operations(allowed_operations: &[String]) -> ComponentWitExport {
-    let Some(first) = allowed_operations.first() else {
-        return ComponentWitExport {
-            namespace: String::new(),
-            interface_name: String::new(),
-            version: "0.0.0".into(),
-            function_names: Vec::new(),
-        };
-    };
-
-    let Some((namespace, interface_and_function)) = first.split_once('/') else {
-        return ComponentWitExport {
-            namespace: String::new(),
-            interface_name: String::new(),
-            version: "0.0.0".into(),
-            function_names: allowed_operations.to_vec(),
-        };
-    };
-    let Some((interface_with_version, _function_name)) = interface_and_function.rsplit_once('.')
-    else {
-        return ComponentWitExport {
-            namespace: String::new(),
-            interface_name: String::new(),
-            version: "0.0.0".into(),
-            function_names: allowed_operations.to_vec(),
-        };
-    };
-    let (interface_name, version) = interface_with_version
-        .split_once('@')
-        .map_or((interface_with_version, "0.0.0"), |(name, version)| {
-            (name, version)
-        });
-    let prefix = format!("{namespace}/{interface_with_version}.");
-    let function_names = allowed_operations
-        .iter()
-        .filter_map(|operation| operation.strip_prefix(&prefix).map(str::to_string))
-        .collect();
-
-    ComponentWitExport {
-        namespace: namespace.into(),
-        interface_name: interface_name.into(),
-        version: version.into(),
-        function_names,
+fn component_exports_from_allowed_operations(
+    allowed_operations: &[String],
+) -> (ComponentWitExport, Vec<ComponentWitExport>) {
+    let mut exports = component_wit_exports_from_operation_ids(allowed_operations);
+    if exports.is_empty() {
+        return (
+            ComponentWitExport {
+                namespace: String::new(),
+                interface_name: String::new(),
+                version: "0.0.0".into(),
+                function_names: Vec::new(),
+            },
+            Vec::new(),
+        );
     }
+    let primary = exports.remove(0);
+    (primary, exports)
 }
 
 pub fn default_state_path() -> PathBuf {
@@ -5410,6 +5500,7 @@ mod tests {
                 version: "0.1.0".into(),
                 function_names: vec!["echo".into()],
             },
+            additional_exports: Vec::new(),
             runtime_shape: ComponentRuntimeShape::WasmComponent,
             ingress_mode: ChildIngressMode::WitOnly,
             lifecycle_exports: LifecycleExports::AbsentAllowed,
@@ -7380,5 +7471,29 @@ mod tests {
             MctTaskStatus::Succeeded
         );
         assert_eq!(store.summary().unwrap().queued_tasks, 0);
+    }
+
+    #[test]
+    fn additional_wit_exports_round_trip_in_the_artifact_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MctRuntimeStateStore::open(dir.path().join("state.sqlite")).unwrap();
+        let mut artifact = artifact();
+        artifact.additional_exports = vec![ComponentWitExport {
+            namespace: "patina:demo".into(),
+            interface_name: "control".into(),
+            version: "0.1.0".into(),
+            function_names: vec!["run".into()],
+        }];
+        store.upsert_artifact(&artifact).unwrap();
+        let loaded = store
+            .get_artifact(&artifact.artifact_id)
+            .unwrap()
+            .expect("persisted artifact");
+        assert_eq!(loaded.additional_exports, artifact.additional_exports);
+        assert!(loaded.exports_operation(&OperationTarget {
+            namespace: "patina:demo".into(),
+            interface_name: "control@0.1.0".into(),
+            function_name: "run".into(),
+        }));
     }
 }

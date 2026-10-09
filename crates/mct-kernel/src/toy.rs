@@ -568,6 +568,7 @@ pub fn evaluate_toy_grant_for_call(
     }
 
     let mut matching_wrong_state = None;
+    let mut matching_wrong_scope = None;
     for grant in grants.iter().filter(|grant| grant.toy_id == request.toy_id) {
         if !subject_matches(&grant.subject, &request.subject) {
             continue;
@@ -633,14 +634,8 @@ pub fn evaluate_toy_grant_for_call(
         }
 
         if !scope_matches(&grant.scope, call, request) {
-            return denied(
-                call,
-                request,
-                Some(grant),
-                ToyGrantReasonCode::WrongScope,
-                grant.policy_revision,
-                grant.grants_revision,
-            );
+            matching_wrong_scope = Some(grant);
+            continue;
         }
 
         let evaluation = ToyGrantEvaluation {
@@ -693,6 +688,17 @@ pub fn evaluate_toy_grant_for_call(
             evaluation,
             authorized: Some(authorized),
         };
+    }
+
+    if let Some(grant) = matching_wrong_scope {
+        return denied(
+            call,
+            request,
+            Some(grant),
+            ToyGrantReasonCode::WrongScope,
+            grant.policy_revision,
+            grant.grants_revision,
+        );
     }
 
     if let Some((grant, reason)) = matching_wrong_state {
@@ -842,6 +848,7 @@ pub fn evaluate_toy_grant_for_route_snapshot(
         );
     }
     let mut matching_wrong_state = None;
+    let mut matching_wrong_scope = None;
     for grant in grants.iter().filter(|grant| grant.toy_id == request.toy_id) {
         if !subject_matches(&grant.subject, &request.subject) {
             continue;
@@ -902,14 +909,8 @@ pub fn evaluate_toy_grant_for_route_snapshot(
             );
         }
         if !scope_matches(&grant.scope, call, request) {
-            return route_denied(
-                call,
-                request,
-                Some(grant),
-                ToyGrantReasonCode::WrongScope,
-                local_policy_revision,
-                local_grants_generation,
-            );
+            matching_wrong_scope = Some(grant);
+            continue;
         }
         return ToyGrantEvaluation {
             evaluation_id: request.ids.evaluation_id.clone(),
@@ -924,6 +925,16 @@ pub fn evaluate_toy_grant_for_route_snapshot(
             grants_revision: local_grants_generation,
             observation_id: request.ids.observation_id.clone(),
         };
+    }
+    if let Some(grant) = matching_wrong_scope {
+        return route_denied(
+            call,
+            request,
+            Some(grant),
+            ToyGrantReasonCode::WrongScope,
+            local_policy_revision,
+            local_grants_generation,
+        );
     }
     let (grant, reason) = matching_wrong_state.map_or(
         (None, ToyGrantReasonCode::MissingGrant),
@@ -1321,6 +1332,41 @@ mod tests {
             ToyGrantReasonCode::ExpiredGrant
         );
         assert!(result.authorized.is_none());
+    }
+
+    #[test]
+    fn later_active_grant_is_used_after_an_earlier_wrong_scope() {
+        let mut revoked_scope = grant(ToyGrantState::Active);
+        revoked_scope.grant_id = ToyGrantId::new("grant-old-watch-scope")
+            .expect("string ID literal/generated value must be non-empty");
+        revoked_scope.scope.resource_id = Some("watch-scope:old:1".into());
+        let current = grant(ToyGrantState::Active);
+        let result = evaluate_toy_grant_for_call(
+            &call(),
+            &request(),
+            &[toy()],
+            &[revoked_scope.clone(), current],
+        );
+        assert!(result.is_allowed(), "{:?}", result.evaluation.reason_code);
+        assert_eq!(
+            result.authorized.expect("later grant").grant_id().as_str(),
+            "grant-logging"
+        );
+
+        let route = evaluate_toy_grant_for_route_snapshot(
+            &call(),
+            &request(),
+            &[toy()],
+            &[revoked_scope, grant(ToyGrantState::Active)],
+            3,
+            7,
+        );
+        assert_eq!(route.verdict, ToyGrantVerdict::Allowed);
+        assert_eq!(route.reason_code, ToyGrantReasonCode::ActiveGrant);
+        assert_eq!(
+            route.grant_id.expect("route grant").as_str(),
+            "grant-logging"
+        );
     }
 
     #[test]

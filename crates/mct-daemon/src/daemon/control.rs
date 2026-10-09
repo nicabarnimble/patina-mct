@@ -585,8 +585,18 @@ fn prepare_child_mutation(
                 .into_iter()
                 .map(|acquisition| acquisition.acquisition_id)
                 .collect();
-            let config = store
-                .prepare_approved_and_assigned_child(&child, MctOperatorChildScope::default())?;
+            let existing = store.load()?;
+            let scope = existing
+                .local_identity
+                .as_ref()
+                .map(|identity| MctOperatorChildScope {
+                    vision_id: identity.vision_id.clone(),
+                    node_id: identity.node_id.clone(),
+                    project_id: None,
+                    policy_revision: identity.policy_revision,
+                })
+                .unwrap_or_default();
+            let config = store.prepare_approved_and_assigned_child(&child, scope)?;
             Ok(PreparedChildMutation {
                 config_path: configured_path.to_path_buf(),
                 child_name: request.child_name,
@@ -2791,6 +2801,15 @@ fn prepare_identity_mutation(
     scope: MctOperatorNodeScope,
     identity_path: &Path,
 ) -> Result<PreparedIdentityMutation> {
+    if let Some(existing) = store.load()?.local_identity
+        && (existing.node_id != scope.node_id || existing.vision_id != scope.vision_id)
+    {
+        bail!(
+            "local identity {} / {} is already recorded; rename it only on a fresh ledger",
+            existing.node_id,
+            existing.vision_id
+        );
+    }
     let secret_key_hex = if identity_path.exists() {
         load_or_create_node_secret_key_hex(identity_path)?
     } else {
@@ -2882,25 +2901,37 @@ pub(super) fn execute_offline_identity_mutation(
     configured_path: &Path,
     identity_path: &Path,
     ledger_path: &Path,
+    requested_scope: Option<MctOperatorNodeScope>,
 ) -> Result<MctLocalNodeIdentity> {
-    let mut ledger = JsonlObservationLedger::open(ledger_path, "ledger-local", "local-mct")
-        .with_context(|| {
-            format!(
-                "acquire exclusive observation ledger writer lock at {}",
-                ledger_path.display()
-            )
-        })?;
     let store = MctDaemonConfigStore::new(configured_path);
     let existing = store.load()?;
-    let scope = existing
-        .local_identity
-        .as_ref()
-        .map(|identity| MctOperatorNodeScope {
+    let scope = match (&existing.local_identity, requested_scope) {
+        (Some(identity), Some(requested))
+            if identity.node_id != requested.node_id
+                || identity.vision_id != requested.vision_id =>
+        {
+            bail!(
+                "local identity {} / {} is already recorded; rename it only on a fresh ledger",
+                identity.node_id,
+                identity.vision_id
+            );
+        }
+        (Some(identity), _) => MctOperatorNodeScope {
             node_id: identity.node_id.clone(),
             vision_id: identity.vision_id.clone(),
             policy_revision: identity.policy_revision,
-        })
-        .unwrap_or_default();
+        },
+        (None, Some(requested)) => requested,
+        (None, None) => MctOperatorNodeScope::default(),
+    };
+    let mut ledger =
+        JsonlObservationLedger::open(ledger_path, "ledger-local", scope.node_id.as_str())
+            .with_context(|| {
+                format!(
+                    "acquire exclusive observation ledger writer lock at {}",
+                    ledger_path.display()
+                )
+            })?;
     let prepared = prepare_identity_mutation(&store, scope, identity_path)?;
     ledger.append_batch_before_effect(
         [prepared.decision_observation()],
@@ -3025,24 +3056,29 @@ pub(super) async fn run_control_serve_uds_with_state_until(
         std::fs::create_dir_all(parent)?;
     }
     let _ = std::fs::remove_file(&socket_path);
-    let listener = UnixListener::bind(&socket_path)?;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-    std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
-    let expected_uid = std::fs::metadata(&socket_path)?.uid();
+    let config_owner_uid = std::fs::metadata(paths.config_path())?.uid();
     ledger
-        .append(vec![resident_local_call_endpoint_observation(expected_uid)])
+        .append(vec![resident_local_call_endpoint_observation(
+            config_owner_uid,
+        )])
         .await
         .context("record authenticated local call endpoint readiness")?;
+    let snapshot_source =
+        ControlSnapshotSource::open_with_status(paths.state_path(), status_source);
+    control_snapshot(&snapshot_source).await.map_err(|_| {
+        anyhow::anyhow!("resident control status was not ready before the socket was bound")
+    })?;
+    let listener = UnixListener::bind(&socket_path)?;
+    std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
+    let expected_uid = std::fs::metadata(&socket_path)?.uid();
+    if config_owner_uid != expected_uid {
+        bail!("resident config and UDS socket owner UID differ");
+    }
     println!(
         "mct daemon serving control uds on {}",
         socket_path.display()
     );
-    let snapshot_source =
-        ControlSnapshotSource::open_with_status(paths.state_path(), status_source);
-    let config_owner_uid = std::fs::metadata(paths.config_path())?.uid();
-    if config_owner_uid != expected_uid {
-        bail!("resident config and UDS socket owner UID differ");
-    }
     let mutation_handler = resident_observed_mutation_handler(
         paths.config_path().to_path_buf(),
         paths.children_dir().to_path_buf(),
@@ -5062,7 +5098,8 @@ mod tests {
             .is_err()
         );
         assert!(!config_path.exists());
-        execute_offline_identity_mutation(&config_path, &identity_path, &ledger_path).unwrap();
+        execute_offline_identity_mutation(&config_path, &identity_path, &ledger_path, None)
+            .unwrap();
         assert!(identity_path.exists());
         assert!(config_path.exists());
 
@@ -5077,7 +5114,7 @@ mod tests {
         let _lock =
             JsonlObservationLedger::open(&ledger_path, "ledger-local", "local-mct").unwrap();
         let error =
-            execute_offline_identity_mutation(&locked_config, &locked_identity, &ledger_path)
+            execute_offline_identity_mutation(&locked_config, &locked_identity, &ledger_path, None)
                 .unwrap_err();
         assert!(format!("{error:#}").contains("writer lock"));
         assert!(!locked_config.exists());
