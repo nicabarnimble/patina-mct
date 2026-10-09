@@ -35,3 +35,12 @@ wasmtime = "46.0.2"
 wasmtime-wasi = "46.0.2"
 wat = "1.241.2"
 zstd = "0.13.3"
+
+# Size-oriented release profile. Panic stays unwind: wasmtime catches
+# host-function panics with catch_unwind, and abort would turn those into
+# process aborts. Thin LTO plus one codegen unit and symbol stripping
+# shrink mct-daemon without a fat-LTO link.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
