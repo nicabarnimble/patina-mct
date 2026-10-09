@@ -20,28 +20,138 @@ pub struct ComponentWitExport {
     pub function_names: Vec<String>,
 }
 
+/// Groups allowed operation ids into one WIT export per interface, in first-seen order.
+///
+/// Operation ids use `namespace/interface@version.function`. The first interface stays
+/// the artifact primary export; later interfaces are additional exports the same artifact
+/// may still be called through.
+pub fn component_wit_exports_from_operation_ids(
+    allowed_operations: &[String],
+) -> Vec<ComponentWitExport> {
+    let mut exports: Vec<ComponentWitExport> = Vec::new();
+    for operation in allowed_operations {
+        let Some((namespace, interface_and_function)) = operation.split_once('/') else {
+            return vec![ComponentWitExport {
+                namespace: String::new(),
+                interface_name: String::new(),
+                version: "0.0.0".into(),
+                function_names: allowed_operations.to_vec(),
+            }];
+        };
+        let Some((interface_with_version, function_name)) = interface_and_function.rsplit_once('.')
+        else {
+            return vec![ComponentWitExport {
+                namespace: String::new(),
+                interface_name: String::new(),
+                version: "0.0.0".into(),
+                function_names: allowed_operations.to_vec(),
+            }];
+        };
+        if function_name.is_empty() {
+            return vec![ComponentWitExport {
+                namespace: String::new(),
+                interface_name: String::new(),
+                version: "0.0.0".into(),
+                function_names: allowed_operations.to_vec(),
+            }];
+        }
+        let (interface_name, version) = interface_with_version
+            .split_once('@')
+            .map_or((interface_with_version, "0.0.0"), |(name, version)| {
+                (name, version)
+            });
+        if let Some(existing) = exports.iter_mut().find(|export| {
+            export.namespace == namespace
+                && export.interface_name == interface_name
+                && export.version == version
+        }) {
+            if !existing
+                .function_names
+                .iter()
+                .any(|name| name == function_name)
+            {
+                existing.function_names.push(function_name.to_string());
+            }
+        } else {
+            exports.push(ComponentWitExport {
+                namespace: namespace.to_string(),
+                interface_name: interface_name.to_string(),
+                version: version.to_string(),
+                function_names: vec![function_name.to_string()],
+            });
+        }
+    }
+    exports
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Execution substrate class declared for a child artifact.
+/// Persisted execution-substrate record for a component artifact.
+///
+/// Only `WasmComponent` converts to current local execution; the other values
+/// remain decodeable for historical evidence.
 pub enum ComponentRuntimeShape {
-    /// WASM component runtime.
+    /// Current WASM component runtime.
     WasmComponent,
-    /// JVM-backed child runtime.
+    /// Retired JVM-backed local runtime record.
     JvmChild,
-    /// Process-backed child runtime.
+    /// Retired process-backed local runtime record.
     ProcessChild,
-    /// Remote peer child route.
+    /// Historical remote-child substrate record.
     RemoteChild,
 }
 
-impl From<RuntimeKind> for ComponentRuntimeShape {
-    fn from(value: RuntimeKind) -> Self {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Runtime substrate accepted for current local Child execution.
+///
+/// Historical component records may contain other [`ComponentRuntimeShape`]
+/// values, but only this type may enter a current local execution plan.
+pub enum LocalChildRuntime {
+    /// A capability-mediated WASM component.
+    WasmComponent,
+}
+
+impl From<LocalChildRuntime> for RuntimeKind {
+    fn from(value: LocalChildRuntime) -> Self {
         match value {
-            RuntimeKind::Process => Self::ProcessChild,
-            RuntimeKind::JvmChild => Self::JvmChild,
-            RuntimeKind::WasmComponent => Self::WasmComponent,
-            RuntimeKind::RemotePeer => Self::RemoteChild,
-            RuntimeKind::Internal => Self::ProcessChild,
+            LocalChildRuntime::WasmComponent => Self::WasmComponent,
+        }
+    }
+}
+
+impl TryFrom<RuntimeKind> for LocalChildRuntime {
+    type Error = RuntimeKind;
+
+    fn try_from(value: RuntimeKind) -> Result<Self, Self::Error> {
+        match value {
+            RuntimeKind::WasmComponent => Ok(Self::WasmComponent),
+            RuntimeKind::Process
+            | RuntimeKind::JvmChild
+            | RuntimeKind::RemotePeer
+            | RuntimeKind::Internal => Err(value),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+/// Failure to admit a historical runtime shape as current local execution.
+pub enum LocalChildRuntimeError {
+    /// The recorded shape is retained for history but is not a local Child runtime.
+    #[error("recorded runtime shape {0:?} is not executable as a local Child")]
+    RetiredOrNonLocal(ComponentRuntimeShape),
+}
+
+impl TryFrom<ComponentRuntimeShape> for LocalChildRuntime {
+    type Error = LocalChildRuntimeError;
+
+    fn try_from(value: ComponentRuntimeShape) -> Result<Self, Self::Error> {
+        match value {
+            ComponentRuntimeShape::WasmComponent => Ok(Self::WasmComponent),
+            ComponentRuntimeShape::JvmChild
+            | ComponentRuntimeShape::ProcessChild
+            | ComponentRuntimeShape::RemoteChild => {
+                Err(LocalChildRuntimeError::RetiredOrNonLocal(value))
+            }
         }
     }
 }
@@ -107,6 +217,9 @@ pub struct ComponentArtifact {
     pub manifest_hash: String,
     /// Primary WIT export used to match call targets.
     pub primary_export: ComponentWitExport,
+    /// Further WIT interfaces this artifact exports besides [`Self::primary_export`].
+    #[serde(default)]
+    pub additional_exports: Vec<ComponentWitExport>,
     /// Runtime substrate declared for this artifact.
     pub runtime_shape: ComponentRuntimeShape,
     /// Call ingress shape supported by this artifact.
@@ -124,21 +237,23 @@ pub struct ComponentArtifact {
 }
 
 impl ComponentArtifact {
-    /// Returns true when the artifact primary export exposes the requested call target.
+    /// Returns true when any declared WIT export exposes the requested call target.
     pub fn exports_operation(&self, target: &OperationTarget) -> bool {
-        let interface_with_version = format!(
-            "{}@{}",
-            self.primary_export.interface_name, self.primary_export.version
-        );
-        self.primary_export.namespace == target.namespace
-            && (self.primary_export.interface_name == target.interface_name
-                || interface_with_version == target.interface_name)
-            && self
-                .primary_export
-                .function_names
-                .iter()
-                .any(|function_name| function_name == &target.function_name)
+        std::iter::once(&self.primary_export)
+            .chain(self.additional_exports.iter())
+            .any(|export| wit_export_matches(export, target))
     }
+}
+
+fn wit_export_matches(export: &ComponentWitExport, target: &OperationTarget) -> bool {
+    let interface_with_version = format!("{}@{}", export.interface_name, export.version);
+    export.namespace == target.namespace
+        && (export.interface_name == target.interface_name
+            || interface_with_version == target.interface_name)
+        && export
+            .function_names
+            .iter()
+            .any(|function_name| function_name == &target.function_name)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -325,6 +440,8 @@ pub enum ChildCallReasonCode {
     ArtifactMissing,
     /// Artifact verification was not successful.
     ArtifactRejected,
+    /// Artifact runtime shape is historical, retired, or non-local.
+    UnsupportedLocalRuntime,
     /// Artifact does not export the requested operation.
     OperationNotExported,
     /// Instance state was not ready.
@@ -510,6 +627,7 @@ impl AuthorizedChildInvocation {
                 && artifact.child_name == self.child_name
                 && artifact.artifact_version == approval.artifact_version
                 && artifact.verification_status == VerificationStatus::Verified
+                && LocalChildRuntime::try_from(artifact.runtime_shape).is_ok()
         }) {
             return Err(ChildEffectAdmissionDenyV1::ChildAuthorityMismatch);
         }
@@ -915,6 +1033,19 @@ pub fn evaluate_child_call_authority_with_policy(
         );
     }
 
+    if LocalChildRuntime::try_from(artifact.runtime_shape).is_err() {
+        return denied_with_context(
+            call,
+            request,
+            ChildCallReasonCode::UnsupportedLocalRuntime,
+            Some(instance),
+            Some(assignment),
+            Some(approval),
+            Some(artifact),
+            approval.policy_revision,
+        );
+    }
+
     if artifact.artifact_version != assignment.pinned_artifact_version
         || artifact.artifact_version != approval.artifact_version
         || artifact.artifact_id != instance.artifact_id
@@ -1136,6 +1267,7 @@ mod tests {
                 version: "0.1.0".into(),
                 function_names: vec!["list-work".into(), "complete-work".into()],
             },
+            additional_exports: Vec::new(),
             runtime_shape: ComponentRuntimeShape::WasmComponent,
             ingress_mode: ChildIngressMode::WitOnly,
             lifecycle_exports: LifecycleExports::AbsentAllowed,
@@ -1278,6 +1410,57 @@ mod tests {
     }
 
     #[test]
+    fn historical_non_wasm_runtime_shapes_are_readable_but_not_locally_executable() {
+        for (wire, shape) in [
+            ("\"process_child\"", ComponentRuntimeShape::ProcessChild),
+            ("\"jvm_child\"", ComponentRuntimeShape::JvmChild),
+            ("\"remote_child\"", ComponentRuntimeShape::RemoteChild),
+        ] {
+            let decoded: ComponentRuntimeShape = serde_json::from_str(wire).unwrap();
+            assert_eq!(decoded, shape);
+            assert_eq!(
+                LocalChildRuntime::try_from(decoded),
+                Err(LocalChildRuntimeError::RetiredOrNonLocal(shape))
+            );
+
+            let mut retired_artifact = artifact();
+            retired_artifact.runtime_shape = decoded;
+            let result = evaluate_child_call_authority(
+                &call(),
+                &request(),
+                &[retired_artifact],
+                &[approval(ChildApprovalState::Approved)],
+                &[assignment(ChildAssignmentState::Active)],
+                &[instance(ChildInstanceState::Ready)],
+            );
+            assert_eq!(
+                result.evaluation.reason_code,
+                ChildCallReasonCode::UnsupportedLocalRuntime
+            );
+            assert!(result.authorized.is_none());
+        }
+
+        for (wire, kind) in [
+            ("\"process\"", RuntimeKind::Process),
+            ("\"jvm_child\"", RuntimeKind::JvmChild),
+            ("\"remote_peer\"", RuntimeKind::RemotePeer),
+            ("\"internal\"", RuntimeKind::Internal),
+        ] {
+            let decoded: RuntimeKind = serde_json::from_str(wire).unwrap();
+            assert_eq!(decoded, kind);
+            assert_eq!(LocalChildRuntime::try_from(decoded), Err(kind));
+        }
+        assert_eq!(
+            LocalChildRuntime::try_from(ComponentRuntimeShape::WasmComponent),
+            Ok(LocalChildRuntime::WasmComponent)
+        );
+        assert_eq!(
+            LocalChildRuntime::try_from(RuntimeKind::WasmComponent),
+            Ok(LocalChildRuntime::WasmComponent)
+        );
+    }
+
+    #[test]
     fn unknown_instance_denies_by_default() {
         let mut request = request();
         request.instance_id = ChildInstanceId::new("unknown-instance")
@@ -1392,6 +1575,37 @@ mod tests {
             ChildCallReasonCode::ApprovalScopeMismatch
         );
         assert!(result.authorized.is_none());
+    }
+
+    #[test]
+    fn later_interface_stays_callable_beside_the_primary_export() {
+        let exports = component_wit_exports_from_operation_ids(&[
+            "patina:mct-test/echo@0.1.0.echo".into(),
+            "patina:demo/control@0.1.0.run".into(),
+        ]);
+        assert_eq!(exports.len(), 2);
+        assert_eq!(exports[1].namespace, "patina:demo");
+        assert_eq!(exports[1].interface_name, "control");
+        assert_eq!(exports[1].function_names, vec!["run".to_string()]);
+
+        let mut artifact = artifact();
+        artifact.primary_export = exports[0].clone();
+        artifact.additional_exports = vec![exports[1].clone()];
+        let mut demo_call = call();
+        demo_call.target = OperationTarget {
+            namespace: "patina:demo".into(),
+            interface_name: "control@0.1.0".into(),
+            function_name: "run".into(),
+        };
+        let result = evaluate_child_call_authority(
+            &demo_call,
+            &request(),
+            &[artifact],
+            &[approval(ChildApprovalState::Approved)],
+            &[assignment(ChildAssignmentState::Active)],
+            &[instance(ChildInstanceState::Ready)],
+        );
+        assert!(result.is_allowed(), "{:?}", result.evaluation.reason_code);
     }
 
     #[test]

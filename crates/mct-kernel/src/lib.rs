@@ -71,7 +71,8 @@ pub use child::{
     ChildCallAuthorityRequest, ChildCallAuthorityResult, ChildCallReasonCode, ChildCallVerdict,
     ChildEffectAdmissionDenyV1, ChildIngressMode, ChildInstance, ChildInstanceState,
     ChildLifecycleTransition, ChildLifecycleTransitionReason, ComponentArtifact,
-    ComponentRuntimeShape, ComponentWitExport, LifecycleExports, VerificationStatus,
+    ComponentRuntimeShape, ComponentWitExport, LifecycleExports, LocalChildRuntime,
+    LocalChildRuntimeError, VerificationStatus, component_wit_exports_from_operation_ids,
     evaluate_child_call_authority, evaluate_child_call_authority_with_policy,
     is_allowed_instance_transition, transition_child_instance,
 };

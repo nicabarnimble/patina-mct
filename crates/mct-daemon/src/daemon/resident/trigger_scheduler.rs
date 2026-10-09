@@ -1756,126 +1756,23 @@ mod tests {
         Timestamp::new(value.to_string()).unwrap()
     }
 
-    fn write_counting_child(children_dir: &Path) -> PathBuf {
-        use sha2::{Digest as _, Sha256};
-        #[cfg(unix)]
-        use std::os::unix::fs::PermissionsExt as _;
+    fn write_counting_child(children_dir: &Path) {
+        write_test_wasm_child(children_dir, "trigger-counting");
+    }
 
-        let child_dir = children_dir.join("trigger-counting");
-        std::fs::create_dir_all(&child_dir).unwrap();
-        let artifact = child_dir.join("trigger-counting.wasm");
-        let script = b"#!/bin/sh\ncounter=\"$0.count\"\ncount=$(cat \"$counter\" 2>/dev/null || printf 0)\ncount=$((count + 1))\nprintf '%s' \"$count\" >\"$counter\"\ncat >/dev/null\nprintf 'trigger-result-%s' \"$count\"\n";
-        std::fs::write(&artifact, script).unwrap();
-        #[cfg(unix)]
-        {
-            let mut permissions = std::fs::metadata(&artifact).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&artifact, permissions).unwrap();
-        }
-        let manifest = child_dir.join("child.toml");
-        std::fs::write(
-            &manifest,
-            r#"[child]
-name = "trigger-counting"
-version = "0.1.0"
-description = "trigger scheduler test child"
-kind = "child"
-role = "app"
-
-[child.ingress]
-mode = "handle"
-
-[child.artifact]
-wasm = "trigger-counting.wasm"
-
-[child.contract]
-allow = ["patina:demo/control@0.1.0.run"]
-
-[needs]
-toys = []
-
-[relationships]
-listens = []
-"#,
-        )
-        .unwrap();
-        let manifest_bytes = std::fs::read(&manifest).unwrap();
-        for (path, bytes) in [
-            (artifact.as_path(), script.as_slice()),
-            (manifest.as_path(), manifest_bytes.as_slice()),
-        ] {
-            let mut sidecar = path.as_os_str().to_os_string();
-            sidecar.push(".sha256");
-            std::fs::write(
-                PathBuf::from(sidecar),
-                format!("{:x}", Sha256::digest(bytes)),
-            )
-            .unwrap();
-        }
-        artifact
+    fn durable_trigger_execution_count(state_path: &Path) -> usize {
+        MctRuntimeStateStore::open(state_path)
+            .unwrap()
+            .list_runs(100)
+            .unwrap()
+            .into_iter()
+            .filter(|run| run.call.origin == CallOrigin::TriggerFiring)
+            .count()
     }
 
     fn write_wit_child(children_dir: &Path) -> PathBuf {
-        use sha2::{Digest as _, Sha256};
-
-        let child_dir = children_dir.join("trigger-wit");
-        std::fs::create_dir_all(&child_dir).unwrap();
-        let artifact = child_dir.join("trigger-wit.wasm");
-        let manifest = child_dir.join("child.toml");
-        let component = wat::parse_str(
-            r#"
-(component
-  (core module $m
-    (func $run (export "run") (result i32)
-      i32.const 7))
-  (core instance $i (instantiate $m))
-  (func $run (result s32) (canon lift (core func $i "run")))
-  (instance $control (export "run" (func $run)))
-  (export "patina:demo/control@0.1.0" (instance $control)))
-"#,
-        )
-        .unwrap();
-        std::fs::write(&artifact, &component).unwrap();
-        std::fs::write(
-            &manifest,
-            r#"[child]
-name = "trigger-wit"
-version = "0.1.0"
-description = "trigger resident integration child"
-kind = "child"
-role = "app"
-
-[child.ingress]
-mode = "wit-only"
-
-[child.artifact]
-wasm = "trigger-wit.wasm"
-
-[child.contract]
-allow = ["patina:demo/control@0.1.0.run"]
-
-[needs]
-toys = []
-
-[relationships]
-listens = []
-"#,
-        )
-        .unwrap();
-        let manifest_bytes = std::fs::read(&manifest).unwrap();
-        for (path, bytes) in [
-            (artifact.as_path(), component.as_slice()),
-            (manifest.as_path(), manifest_bytes.as_slice()),
-        ] {
-            let mut sidecar = path.as_os_str().to_os_string();
-            sidecar.push(".sha256");
-            std::fs::write(
-                PathBuf::from(sidecar),
-                format!("{:x}", Sha256::digest(bytes)),
-            )
-            .unwrap();
-        }
-        artifact
+        write_test_wasm_child(children_dir, "trigger-wit");
+        children_dir.join("trigger-wit/trigger-wit.wasm")
     }
 
     async fn post_uds_json(
@@ -2595,7 +2492,7 @@ listens = []
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let children_dir = dir.path().join("children");
-        let artifact = write_counting_child(&children_dir);
+        write_counting_child(&children_dir);
         let config_store = MctDaemonConfigStore::new(&config_path);
         config_store
             .ensure_local_identity(
@@ -2686,17 +2583,7 @@ listens = []
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert_eq!(
-            std::fs::read_to_string(artifact.with_extension("wasm.count"))
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "counting child did not run: {error}; ledger={}",
-                        std::fs::read_to_string(&ledger_path).unwrap_or_default()
-                    )
-                })
-                .trim(),
-            "1"
-        );
+        assert_eq!(durable_trigger_execution_count(&state_path), 1);
         let state = MctRuntimeStateStore::open(&state_path).unwrap();
         assert_eq!(state.summary().unwrap().active_trigger_firings, 0);
         let runs = state.list_runs(10).unwrap();
@@ -2716,12 +2603,7 @@ listens = []
             MctTriggerOccurrenceDisposition::Fired,
         )
         .await;
-        assert_eq!(
-            std::fs::read_to_string(artifact.with_extension("wasm.count"))
-                .unwrap()
-                .trim(),
-            "1"
-        );
+        assert_eq!(durable_trigger_execution_count(&state_path), 1);
         drop(scheduler);
         ledger.close().await;
 
@@ -2760,12 +2642,7 @@ listens = []
             MctTriggerOccurrenceDisposition::Fired,
         )
         .await;
-        assert_eq!(
-            std::fs::read_to_string(artifact.with_extension("wasm.count"))
-                .unwrap()
-                .trim(),
-            "1"
-        );
+        assert_eq!(durable_trigger_execution_count(&state_path), 1);
 
         let revoke = crate::triggers::TriggerRevokeRequest {
             expected_config_path: config_path.clone(),
@@ -2799,12 +2676,7 @@ listens = []
             occurrence.record_revision == 2
                 && occurrence.final_disposition == MctTriggerOccurrenceDisposition::Suppressed
         }));
-        assert_eq!(
-            std::fs::read_to_string(artifact.with_extension("wasm.count"))
-                .unwrap()
-                .trim(),
-            "1"
-        );
+        assert_eq!(durable_trigger_execution_count(&state_path), 1);
         drop(recovered);
         recovered_ledger.close().await;
 

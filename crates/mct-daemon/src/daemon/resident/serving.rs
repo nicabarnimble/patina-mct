@@ -15,6 +15,7 @@ pub(crate) async fn run_serve(mut args: Vec<String>) -> Result<()> {
                     | "--ledger"
                     | "--http"
                     | "--uds"
+                    | "--bind"
             )
         });
     if supervised_path_override {
@@ -31,6 +32,9 @@ pub(crate) async fn run_serve(mut args: Vec<String>) -> Result<()> {
         None => None,
     };
     let relay_default = take_flag(&mut args, "--relay-default");
+    let bind_addrs = take_bind_addrs(&mut args)?;
+    let requested_node_id = take_option(&mut args, "--node-id");
+    let requested_vision_id = take_option(&mut args, "--vision");
     let config_path = take_option(&mut args, "--config")
         .map(PathBuf::from)
         .unwrap_or_else(default_config_path);
@@ -93,8 +97,11 @@ pub(crate) async fn run_serve(mut args: Vec<String>) -> Result<()> {
             ledger_path,
             control,
             relay_default,
+            bind_addrs,
             max_concurrent_connections,
             supervisor,
+            requested_node_id,
+            requested_vision_id,
         },
         resident_shutdown_signal(),
         None,
@@ -117,8 +124,11 @@ struct ResidentMotherConfig {
     ledger_path: PathBuf,
     pub(super) control: ResidentControlTransport,
     pub(super) relay_default: bool,
+    pub(super) bind_addrs: Vec<std::net::SocketAddr>,
     pub(super) max_concurrent_connections: usize,
     pub(super) supervisor: Option<SupervisorRecordV1>,
+    requested_node_id: Option<String>,
+    requested_vision_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -129,7 +139,6 @@ pub(crate) struct ResidentStatusSource {
     accepted_connection_count: Arc<AtomicU64>,
     config_path: PathBuf,
     children_dir: PathBuf,
-    ledger_path: PathBuf,
     ledger_writer: ResidentLedgerWriter,
     supervisor: Option<SupervisorRecordV1>,
 }
@@ -143,7 +152,7 @@ impl ResidentStatusSource {
         ledger_writer: ResidentLedgerWriter,
         supervisor: Option<SupervisorRecordV1>,
     ) -> Self {
-        let (config_path, children_dir, ledger_path) = paths;
+        let (config_path, children_dir, _ledger_path) = paths;
         Self {
             endpoint,
             node_id: identity.0,
@@ -151,7 +160,6 @@ impl ResidentStatusSource {
             accepted_connection_count,
             config_path,
             children_dir,
-            ledger_path,
             ledger_writer,
             supervisor,
         }
@@ -196,7 +204,7 @@ impl ResidentStatusSource {
                 loaded_child_count,
                 approved_child_count,
                 binding_count,
-                ledger_sequence_tip: ledger_sequence_tip(&self.ledger_path),
+                ledger_sequence_tip: self.ledger_writer.cached_sequence_tip(),
             }),
         );
         if self.ledger_writer.is_fenced() {
@@ -212,12 +220,31 @@ impl ResidentStatusSource {
     }
 }
 
-pub(super) fn ledger_sequence_tip(path: &Path) -> u64 {
-    JsonlObservationLedger::open_read_only(path, "ledger-local", "local-mct")
-        .and_then(|reader| reader.entries())
-        .ok()
-        .and_then(|entries| entries.last().map(|entry| entry.local_sequence))
-        .unwrap_or(0)
+#[cfg(test)]
+pub(crate) fn receiver_authority_from_ledger(
+    ledger_path: &Path,
+    mother_node_id: &str,
+) -> Option<GrantsAuthorityIdentity> {
+    let verified =
+        mct_observation::load_verified_ledger_replay(ledger_path, "ledger-local", mother_node_id)
+            .ok()?;
+    let authority = verified.replay.current_authority?;
+    Some(GrantsAuthorityIdentity {
+        mother_node_id: authority.mother_node_id,
+        authority_epoch: authority.authority_epoch,
+        generation: authority.generation,
+        source_authority_observation_id: authority.source_authority_observation_id,
+    })
+}
+
+impl ResidentStatusSource {
+    pub(crate) fn receiver_authority(&self) -> Option<GrantsAuthorityIdentity> {
+        let authority = self.ledger_writer.cached_receiver_authority()?;
+        if authority.mother_node_id != self.node_id.as_str() {
+            return None;
+        }
+        Some(authority)
+    }
 }
 
 #[cfg(test)]
@@ -239,8 +266,11 @@ where
             ledger_path: record.ledger_path.clone(),
             control: ResidentControlTransport::Uds(record.uds_path.clone()),
             relay_default: false,
+            bind_addrs: Vec::new(),
             max_concurrent_connections: 8,
             supervisor: Some(record),
+            requested_node_id: None,
+            requested_vision_id: None,
         },
         shutdown,
         ready,
@@ -295,8 +325,11 @@ where
             ledger_path,
             control: ResidentControlTransport::Uds(socket_path),
             relay_default: false,
+            bind_addrs: Vec::new(),
             max_concurrent_connections: 8,
             supervisor: None,
+            requested_node_id: None,
+            requested_vision_id: None,
         },
         shutdown,
         ready,
@@ -495,10 +528,37 @@ where
 
     let config_store = MctDaemonConfigStore::new(&config.config_path);
     let existing_config = config_store.load()?;
+    let requested_scope = match (
+        config.requested_node_id.as_deref(),
+        config.requested_vision_id.as_deref(),
+    ) {
+        (None, None) => None,
+        (node_id, vision_id) => Some(MctOperatorNodeScope {
+            node_id: MctNodeId::new(node_id.unwrap_or("local-mct"))
+                .context("serve --node-id is empty")?,
+            vision_id: VisionId::new(vision_id.unwrap_or("vision-local"))
+                .context("serve --vision is empty")?,
+            policy_revision: 1,
+        }),
+    };
+    if let (Some(identity), Some(requested)) = (&existing_config.local_identity, &requested_scope)
+        && (identity.node_id != requested.node_id || identity.vision_id != requested.vision_id)
+    {
+        bail!(
+            "local identity {} / {} is already recorded; rename it only on a fresh ledger",
+            identity.node_id,
+            identity.vision_id
+        );
+    }
     let mother_node_id = existing_config
         .local_identity
         .as_ref()
         .map(|identity| identity.node_id.to_string())
+        .or_else(|| {
+            requested_scope
+                .as_ref()
+                .map(|scope| scope.node_id.to_string())
+        })
         .unwrap_or_else(|| "local-mct".into());
     let startup_paths = resident_startup_paths(&config);
     let startup_result =
@@ -570,6 +630,7 @@ where
             vision_id: identity.vision_id.clone(),
             policy_revision: identity.policy_revision,
         })
+        .or(requested_scope)
         .unwrap_or_default();
     let identity = match &config.supervisor {
         Some(_) => {
@@ -623,9 +684,13 @@ where
         }
     }
     let secret_key_hex = load_or_create_node_secret_key_hex(&config.identity_path)?;
-    let mut endpoint = MotherIrohEndpoint::bind(iroh_config(secret_key_hex, config.relay_default))
-        .await
-        .context("bind resident Mother Iroh endpoint")?;
+    let mut endpoint = MotherIrohEndpoint::bind(iroh_config_with_bind(
+        secret_key_hex,
+        config.relay_default,
+        config.bind_addrs,
+    ))
+    .await
+    .context("bind resident Mother Iroh endpoint")?;
     let snapshot = endpoint.snapshot();
     if snapshot.endpoint_id != identity.endpoint_id {
         bail!(
@@ -638,20 +703,34 @@ where
     let load_report = load_children_from_dir(MctChildLoadOptions::new(config.children_dir.clone()));
     reconcile_trigger_projection(&config.state_path, &config.ledger_path, &mother_node_id)
         .context("reconcile trigger ledger projection before resident readiness")?;
-    let state = MctRuntimeStateStore::open(&config.state_path)
+    MctRuntimeStateStore::open(&config.state_path)
         .with_context(|| format!("open runtime state {}", config.state_path.display()))?;
-    let runtime_summary = state.summary()?;
-    drop(state);
 
     let loaded_child_count = load_report.loaded;
     let resident_config = config_store.load()?;
-    let hello_capability_view = resident_hello_capability_view(
-        &resident_config,
-        &runtime_summary,
-        &identity,
-        &load_report.children,
-    );
     let binding_count = resident_config.peers.len();
+    let hello_view_paths = (
+        config.config_path.clone(),
+        config.children_dir.clone(),
+        config.state_path.clone(),
+    );
+    let capability_view_provider = MctHelloCapabilityViewProvider::new(move || {
+        let config = MctDaemonConfigStore::new(&hello_view_paths.0).load().ok()?;
+        let identity = config.local_identity.clone()?;
+        let load_report =
+            load_children_from_dir(MctChildLoadOptions::new(hello_view_paths.1.clone()));
+        if !load_report.failures.is_empty() {
+            return None;
+        }
+        let state = MctRuntimeStateStore::open(&hello_view_paths.2).ok()?;
+        let summary = state.summary().ok()?;
+        Some(resident_hello_capability_view(
+            &config,
+            &summary,
+            &identity,
+            &load_report.children,
+        ))
+    });
     let accepted_connection_count = Arc::new(AtomicU64::new(0));
     let endpoint_status = Arc::new(Mutex::new(snapshot.clone()));
     let status_source = Arc::new(ResidentStatusSource::new(
@@ -712,18 +791,18 @@ where
         "mct resident mother children loaded={} failed={} bindings={} max_connections={}",
         loaded_child_count, load_report.failed, binding_count, config.max_concurrent_connections
     );
-    if let Some(instance) = &supervised_instance {
-        if let ResidentControlTransport::Uds(path) = &config.control {
-            for _ in 0..100 {
-                if path.exists() {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
+    if let ResidentControlTransport::Uds(path) = &config.control {
+        for _ in 0..200 {
+            if path.exists() {
+                break;
             }
-            if !path.exists() {
-                bail!("supervised resident control socket did not bind before readiness");
-            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
+        if !path.exists() {
+            bail!("resident control socket did not bind before readiness");
+        }
+    }
+    if let Some(instance) = &supervised_instance {
         record_supervised_resident_ready(instance, &ledger).await?;
     }
     if let Some(ready) = ready {
@@ -752,22 +831,27 @@ where
                 .publish_authority_projection(paths.3.clone())
                 .await
                 .ok()?;
-            mct_daemon::local_execution_authority_snapshot(&paths.0, &paths.1, &paths.2, &paths.3)
-                .ok()
-                .map(|snapshot| {
-                    GrantsAuthorityIdentity::from(snapshot.canonical_grants().grants_authority())
+            let (_head, replay) = ledger.verified_authority().await.ok()?;
+            replay
+                .current_authority
+                .map(|authority| GrantsAuthorityIdentity {
+                    mother_node_id: authority.mother_node_id,
+                    authority_epoch: authority.authority_epoch,
+                    generation: authority.generation,
+                    source_authority_observation_id: authority.source_authority_observation_id,
                 })
         }
     });
     let observation_sink = resident_iroh_observation_sink(ledger.clone());
-    let serve_result = tokio::select! {
-        result = endpoint.serve_concurrent_with_binding_provider(
+    let serve_result = {
+        let serve_fut = endpoint.serve_concurrent_with_binding_provider(
             MctIrohServeState::new(),
             MctIrohConcurrentServeConfig {
                 max_concurrent_connections: config.max_concurrent_connections,
                 events: Some(events),
                 require_binding_signature: true,
-                capability_view: Some(hello_capability_view),
+                capability_view: None,
+                capability_view_provider: Some(capability_view_provider),
                 receiver_authority_provider,
                 ..MctIrohConcurrentServeConfig::new(observation_sink)
             },
@@ -789,8 +873,33 @@ where
                     .await
                 }
             },
-        ) => result.map_err(anyhow::Error::from),
-        _ = shutdown => Ok(()),
+        );
+        tokio::pin!(serve_fut);
+        tokio::pin!(shutdown);
+        let mut admitted_refresh = tokio::time::interval(Duration::from_secs(120));
+        admitted_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        admitted_refresh.tick().await;
+        let refresh_config = config.config_path.clone();
+        let refresh_children = config.children_dir.clone();
+        let refresh_state = config.state_path.clone();
+        loop {
+            tokio::select! {
+                result = &mut serve_fut => break result.map_err(anyhow::Error::from),
+                _ = admitted_refresh.tick() => {
+                    if let Err(error) = refresh_admitted_peers(
+                        &endpoint,
+                        &refresh_config,
+                        &refresh_children,
+                        &refresh_state,
+                    )
+                    .await
+                    {
+                        eprintln!("admitted peer hello refresh failed: {error}");
+                    }
+                }
+                _ = &mut shutdown => break Ok(()),
+            }
+        }
     };
 
     let clean_shutdown_observed = match &supervised_instance {
@@ -826,6 +935,57 @@ where
         let _ = std::fs::remove_file(path);
     }
     serve_result
+}
+
+async fn refresh_admitted_peers(
+    endpoint: &MotherIrohEndpoint,
+    config_path: &Path,
+    children_dir: &Path,
+    state_path: &Path,
+) -> Result<()> {
+    let config = MctDaemonConfigStore::new(config_path).load()?;
+    let Some(identity) = config.local_identity.clone() else {
+        return Ok(());
+    };
+    let capability_view =
+        local_hello_capability_view_from_config(&config, state_path, children_dir)?;
+    let local_endpoint_id = endpoint.snapshot().endpoint_id;
+    for peer in config.peers.values() {
+        if peer.binding_state != BindingState::Admitted {
+            continue;
+        }
+        let (Some(ticket), Some(outbound)) = (peer.ticket.clone(), peer.outbound_binding.clone())
+        else {
+            continue;
+        };
+        let trace_id = TraceId::new(format!("trace-refresh-{}", peer.peer_node_id))
+            .context("refresh trace id")?;
+        let mut hello = cli_hello_request_with_capability_view(
+            &local_endpoint_id,
+            &outbound.binding_id,
+            &identity.node_id,
+            &peer.vision_id,
+            &trace_id,
+            Some(outbound.signature_ref),
+            capability_view.clone(),
+        );
+        hello.presented_binding.policy_revision = Some(outbound.policy_revision);
+        hello.presented_binding.expires_at = Some(outbound.expires_at);
+        match endpoint.send_hello(&ticket, &hello).await {
+            Ok(response) => {
+                refresh_remote_surfaces_from_admitted_hello_response(
+                    state_path,
+                    peer,
+                    &response,
+                    current_timestamp(),
+                )?;
+            }
+            Err(error) => {
+                eprintln!("refresh hello to {} failed: {error}", peer.peer_node_id);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn spawn_resident_control_task(
@@ -953,6 +1113,19 @@ mod tests {
     use super::*;
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 
+    #[tokio::test]
+    async fn receiver_authority_read_returns_epoch_and_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger_path = dir.path().join("observations.jsonl");
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
+        let identity = receiver_authority_from_ledger(&ledger_path, "local-mct")
+            .expect("spawned authority ledger has a current receiver identity");
+        assert_eq!(identity.mother_node_id, "local-mct");
+        assert!(!identity.authority_epoch.is_empty());
+        assert!(!identity.source_authority_observation_id.is_empty());
+        ledger.close().await;
+    }
+
     fn contract_peer_expiry() -> Timestamp {
         Timestamp::new("2099-01-01T00:00:00Z").unwrap()
     }
@@ -1011,81 +1184,12 @@ mod tests {
         }
         panic!("resident status did not become ready: {last:?}");
     }
-    fn write_resident_process_child(children_dir: &Path) {
-        write_resident_process_child_script(
-            children_dir,
-            "resident-echo",
-            b"#!/bin/sh\ncat >/dev/null\nprintf '{\\\"ok\\\":true}'\n",
-        );
+    fn write_resident_wasm_child(children_dir: &Path) {
+        write_test_wasm_child(children_dir, "resident-echo");
     }
 
-    fn write_resident_payload_process_child(children_dir: &Path) {
-        write_resident_process_child_script(
-            children_dir,
-            "resident-payload-echo",
-            b"#!/bin/sh\npayload=$(cat)\nprintf 'processed:%s' \"$payload\"\n",
-        );
-    }
-    fn write_resident_process_child_script(children_dir: &Path, name: &str, script: &[u8]) {
-        #[cfg(unix)]
-        use std::os::unix::fs::PermissionsExt;
-
-        let child_dir = children_dir.join(name);
-        std::fs::create_dir_all(&child_dir).unwrap();
-        let artifact_path = child_dir.join(format!("{name}.wasm"));
-        let manifest_path = child_dir.join("child.toml");
-        std::fs::write(&artifact_path, script).unwrap();
-        #[cfg(unix)]
-        {
-            let mut permissions = std::fs::metadata(&artifact_path).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&artifact_path, permissions).unwrap();
-        }
-        write_resident_child_manifest(&manifest_path, name, "handle");
-        write_sha256_sidecar(&artifact_path, script);
-        let manifest_bytes = std::fs::read(&manifest_path).unwrap();
-        write_sha256_sidecar(&manifest_path, &manifest_bytes);
-    }
-    fn write_resident_child_manifest(manifest_path: &Path, name: &str, mode: &str) {
-        std::fs::write(
-            manifest_path,
-            format!(
-                r#"[child]
-name = "{name}"
-version = "0.1.0"
-description = "resident test child"
-kind = "child"
-role = "app"
-
-[child.ingress]
-mode = "{mode}"
-
-[child.artifact]
-wasm = "{name}.wasm"
-
-[child.contract]
-allow = ["patina:demo/control@0.1.0.run"]
-
-[needs]
-toys = []
-
-[relationships]
-listens = []
-"#
-            ),
-        )
-        .unwrap();
-    }
-    fn write_sha256_sidecar(path: &Path, bytes: &[u8]) {
-        use sha2::{Digest, Sha256};
-
-        let mut sidecar = path.as_os_str().to_os_string();
-        sidecar.push(".sha256");
-        std::fs::write(
-            PathBuf::from(sidecar),
-            format!("{:x}", Sha256::digest(bytes)),
-        )
-        .unwrap();
+    fn write_resident_payload_wasm_child(children_dir: &Path) {
+        write_test_wasm_echo_child(children_dir, "resident-payload-echo");
     }
 
     fn decode_resident_uds_response(response: Vec<u8>) -> (u16, serde_json::Value) {
@@ -1132,7 +1236,7 @@ listens = []
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
-        write_resident_payload_process_child(&children_dir);
+        write_resident_payload_wasm_child(&children_dir);
 
         let store = MctDaemonConfigStore::new(&config_path);
         store
@@ -1189,14 +1293,14 @@ listens = []
         }
         let sequence_before = status.resident.unwrap().ledger_sequence_tip;
 
-        let payload = br#"[{"from":"uds"}]"#;
+        let payload = b"[41]";
         let body = serde_json::json!({
             "protocol_request_id": "proto-resident-uds",
             "call_id": "call-resident-uds",
             "target": {
-                "namespace": "patina:demo",
-                "interface_name": "control@0.1.0",
-                "function_name": "run"
+                "namespace": "patina:mct-test",
+                "interface_name": "echo@0.1.0",
+                "function_name": "echo"
             },
             "payload_metadata": {
                 "data_classification": "public",
@@ -1251,7 +1355,7 @@ listens = []
         let result_payload = BASE64_STANDARD
             .decode(call_reply["inline_result_payload_base64"].as_str().unwrap())
             .unwrap();
-        assert_eq!(result_payload, br#"processed:[{"from":"uds"}]"#);
+        assert_eq!(result_payload, br#"{"results":[41]}"#);
         assert_eq!(
             call_reply["result_payload"]["blake3_digest_hex"],
             blake3::hash(&result_payload).to_hex().to_string()
@@ -1420,7 +1524,7 @@ listens = []
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
 
         let store = MctDaemonConfigStore::new(&config_path);
         store
@@ -1466,11 +1570,7 @@ listens = []
         assert_eq!(initial.approved_child_count, 1);
 
         let package_root = dir.path().join("package");
-        write_resident_process_child_script(
-            &package_root,
-            "resident-second",
-            b"#!/bin/sh\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
-        );
+        write_test_wasm_child(&package_root, "resident-second");
         install_verified_child_package(package_root.join("resident-second"), &children_dir, false)
             .unwrap();
         let after_install = poll_resident_status(&socket_path, |status| {
@@ -1581,7 +1681,7 @@ listens = []
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
         let children_dir = dir.path().join("children");
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
 
         let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
         let client_endpoint_id = client.snapshot().endpoint_id;
@@ -1627,8 +1727,11 @@ listens = []
                 ledger_path: ledger_path.clone(),
                 control: ResidentControlTransport::Uds(socket_path.clone()),
                 relay_default: false,
+                bind_addrs: Vec::new(),
                 max_concurrent_connections: 8,
                 supervisor: None,
+                requested_node_id: None,
+                requested_vision_id: None,
             },
             async move {
                 let _ = shutdown_rx.await;
@@ -1777,7 +1880,7 @@ listens = []
             children_dir.clone(),
             state_path.clone(),
         );
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
 
         let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
         let client_endpoint_id = client.snapshot().endpoint_id;
@@ -1823,8 +1926,11 @@ listens = []
                 ledger_path,
                 control: ResidentControlTransport::Uds(socket_path),
                 relay_default: false,
+                bind_addrs: Vec::new(),
                 max_concurrent_connections: 8,
                 supervisor: None,
+                requested_node_id: None,
+                requested_vision_id: None,
             },
             async move {
                 let _ = shutdown_rx.await;
@@ -2003,8 +2109,11 @@ listens = []
                 ledger_path,
                 control: ResidentControlTransport::Uds(socket_path),
                 relay_default: false,
+                bind_addrs: Vec::new(),
                 max_concurrent_connections: 8,
                 supervisor: None,
+                requested_node_id: None,
+                requested_vision_id: None,
             },
             async move {
                 let _ = shutdown_rx.await;
@@ -2054,7 +2163,7 @@ listens = []
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
         let children_dir = dir.path().join("children");
-        write_resident_payload_process_child(&children_dir);
+        write_resident_payload_wasm_child(&children_dir);
 
         let mut client = MotherIrohEndpoint::bind_local_mct().await.unwrap();
         let client_endpoint_id = client.snapshot().endpoint_id;
@@ -2101,8 +2210,11 @@ listens = []
                 ledger_path: ledger_path.clone(),
                 control: ResidentControlTransport::Uds(socket_path),
                 relay_default: false,
+                bind_addrs: Vec::new(),
                 max_concurrent_connections: 8,
                 supervisor: None,
+                requested_node_id: None,
+                requested_vision_id: None,
             },
             async move {
                 let _ = shutdown_rx.await;
@@ -2133,7 +2245,7 @@ listens = []
         let hello_response = client.send_hello(&ticket, &hello).await.unwrap();
         assert_eq!(hello_response.hello_outcome, HelloOutcome::Admitted);
 
-        let payload = br#"{"secret":"payload-marker"}"#.to_vec();
+        let payload = b"[41]".to_vec();
         let payload_base64 = BASE64_STANDARD.encode(&payload);
         let mut call = cli_call_request(
             &client_endpoint_id,
@@ -2142,9 +2254,9 @@ listens = []
             &vision_id,
             &trace_id,
             OperationTarget {
-                namespace: "patina:demo".into(),
-                interface_name: "control@0.1.0".into(),
-                function_name: "run".into(),
+                namespace: "patina:mct-test".into(),
+                interface_name: "echo@0.1.0".into(),
+                function_name: "echo".into(),
             },
             &hello_response,
         )
@@ -2167,7 +2279,7 @@ listens = []
         let result_payload = call_reply
             .inline_result_payload
             .expect("verified result payload bytes returned");
-        let expected_result = br#"processed:{"secret":"payload-marker"}"#.to_vec();
+        let expected_result = br#"{"results":[41]}"#.to_vec();
         let expected_result_base64 = BASE64_STANDARD.encode(&expected_result);
         assert_eq!(result_payload, expected_result);
         assert_eq!(
@@ -2309,8 +2421,7 @@ listens = []
         assert!(ledger_text.contains("call-resident-payload-e2e"));
         assert!(ledger_text.contains("payload:request:size="));
         assert!(ledger_text.contains("payload:result:size="));
-        assert!(!ledger_text.contains("payload-marker"));
-        assert!(!ledger_text.contains("processed:"));
+        assert!(!ledger_text.contains(String::from_utf8_lossy(&expected_result).as_ref()));
         assert!(!ledger_text.contains(&payload_base64));
         assert!(!ledger_text.contains(&expected_result_base64));
         assert!(!ledger_text.contains(&signature_marker));
@@ -2335,6 +2446,7 @@ listens = []
                 dir.path().join("identity.key"),
             )
             .unwrap();
+        let missing_ledger = PathBuf::from("/path/that/does/not/exist.jsonl");
         let source = ResidentStatusSource::new(
             Arc::clone(&endpoint),
             (
@@ -2345,7 +2457,7 @@ listens = []
             (
                 config_path,
                 dir.path().join("children"),
-                PathBuf::from("/path/that/does/not/exist.jsonl"),
+                missing_ledger.clone(),
             ),
             ResidentLedgerWriter::spawn(dir.path().join("writer.jsonl")).unwrap(),
             None,
@@ -2365,7 +2477,7 @@ listens = []
             (
                 source.config_path.clone(),
                 source.children_dir.clone(),
-                source.ledger_path.clone(),
+                missing_ledger,
             ),
             ResidentLedgerWriter::failed_for_test(),
             None,

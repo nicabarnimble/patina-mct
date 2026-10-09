@@ -114,9 +114,6 @@ pub(super) async fn execute_authorized_resident_remote_call(
     inline_payload: Option<Vec<u8>>,
     ledger: ResidentLedgerWriter,
 ) -> MctIrohCallHandlerResult {
-    let Some(ledger_path) = ledger.path().map(Path::to_path_buf) else {
-        return MctIrohCallHandlerResult::failed("runtime unavailable");
-    };
     if ledger
         .publish_authority_projection(paths.state_path().to_path_buf())
         .await
@@ -124,8 +121,15 @@ pub(super) async fn execute_authorized_resident_remote_call(
     {
         return MctIrohCallHandlerResult::failed("runtime unavailable");
     }
+    let (head, replay) = match ledger.verified_authority().await {
+        Ok(view) => view,
+        Err(error) => {
+            eprintln!("resident remote authority view failed: {error}");
+            return MctIrohCallHandlerResult::failed("runtime unavailable");
+        }
+    };
     let revalidation =
-        match revalidate_resident_remote_route(&paths, &ledger_path, &execution, &request.call) {
+        match revalidate_resident_remote_route(&paths, head, replay, &execution, &request.call) {
             Ok(revalidation) => revalidation,
             Err(error) => {
                 eprintln!("resident remote route revalidation failed: {error}");
@@ -294,15 +298,18 @@ pub(super) async fn execute_authorized_resident_remote_call(
 
 fn revalidate_resident_remote_route(
     paths: &ResidentRuntimePaths,
-    ledger_path: &Path,
+    head: mct_observation::LedgerVerifiedHead,
+    replay: mct_observation::AuthorityReplayV1,
     execution: &RemoteExecutionPlan,
     call: &MctCall,
 ) -> Result<RemoteRevalidation> {
-    let snapshot = match mct_daemon::local_execution_authority_snapshot(
-        ledger_path,
+    let snapshot = match mct_daemon::local_execution_authority_snapshot_from_verified(
+        head,
+        replay,
         paths.config_path(),
         paths.children_dir(),
         paths.state_path(),
+        Ok(current_timestamp()),
     ) {
         Ok(snapshot) => snapshot,
         Err(_) => {
@@ -914,80 +921,11 @@ mod tests {
             capability_view_ref: None,
         }
     }
-    fn write_resident_process_child(children_dir: &Path) {
-        write_resident_process_child_script(
-            children_dir,
-            "resident-echo",
-            b"#!/bin/sh\ncat >/dev/null\nprintf '{\\\"ok\\\":true}'\n",
-        );
+    fn write_resident_wasm_child(children_dir: &Path) {
+        write_test_wasm_child(children_dir, "resident-echo");
     }
-    fn write_resident_payload_process_child(children_dir: &Path) {
-        write_resident_process_child_script(
-            children_dir,
-            "resident-payload-echo",
-            b"#!/bin/sh\npayload=$(cat)\nprintf 'processed:%s' \"$payload\"\n",
-        );
-    }
-    fn write_resident_process_child_script(children_dir: &Path, name: &str, script: &[u8]) {
-        #[cfg(unix)]
-        use std::os::unix::fs::PermissionsExt;
-
-        let child_dir = children_dir.join(name);
-        std::fs::create_dir_all(&child_dir).unwrap();
-        let artifact_path = child_dir.join(format!("{name}.wasm"));
-        let manifest_path = child_dir.join("child.toml");
-        std::fs::write(&artifact_path, script).unwrap();
-        #[cfg(unix)]
-        {
-            let mut permissions = std::fs::metadata(&artifact_path).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&artifact_path, permissions).unwrap();
-        }
-        write_resident_child_manifest(&manifest_path, name, "handle");
-        write_sha256_sidecar(&artifact_path, script);
-        let manifest_bytes = std::fs::read(&manifest_path).unwrap();
-        write_sha256_sidecar(&manifest_path, &manifest_bytes);
-    }
-    fn write_resident_child_manifest(manifest_path: &Path, name: &str, mode: &str) {
-        std::fs::write(
-            manifest_path,
-            format!(
-                r#"[child]
-name = "{name}"
-version = "0.1.0"
-description = "resident test child"
-kind = "child"
-role = "app"
-
-[child.ingress]
-mode = "{mode}"
-
-[child.artifact]
-wasm = "{name}.wasm"
-
-[child.contract]
-allow = ["patina:demo/control@0.1.0.run"]
-
-[needs]
-toys = []
-
-[relationships]
-listens = []
-"#
-            ),
-        )
-        .unwrap();
-    }
-    fn write_sha256_sidecar(path: &Path, bytes: &[u8]) {
-        use sha2::{Digest, Sha256};
-
-        let mut sidecar = path.as_os_str().to_os_string();
-        sidecar.push(".sha256");
-        std::fs::write(
-            PathBuf::from(sidecar),
-            format!("{:x}", Sha256::digest(bytes)),
-        )
-        .unwrap();
+    fn write_resident_payload_wasm_child(children_dir: &Path) {
+        write_test_wasm_echo_child(children_dir, "resident-payload-echo");
     }
     #[tokio::test]
     async fn two_mother_forwards_selected_call_over_iroh_and_maps_reply() {
@@ -1011,7 +949,7 @@ listens = []
         let mother_b_ledger_path = dir.path().join("mother-b").join("observations.jsonl");
         let mother_b_socket_path = dir.path().join("mother-b").join("control.sock");
         let mother_b_children_dir = dir.path().join("mother-b").join("children");
-        write_resident_payload_process_child(&mother_b_children_dir);
+        write_resident_payload_wasm_child(&mother_b_children_dir);
 
         let mother_a_node_id = MctNodeId::new("mother-a")
             .expect("string ID literal/generated value must be non-empty");
@@ -1133,12 +1071,12 @@ listens = []
             published_at: received_at.clone(),
             policy_revision: 1,
             supported_alpns: vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()],
-            supported_wit_worlds: vec!["patina:demo/control@0.1.0".into()],
+            supported_wit_worlds: vec!["patina:mct-test/echo@0.1.0".into()],
             supported_observation_modes: vec!["local-ledger".into()],
             callable_surfaces: vec![MctHelloCallableSurface {
                 child_name: "resident-payload-echo".into(),
-                operation_id: "patina:demo/control@0.1.0.run".into(),
-                runtime_kind: RuntimeKind::Process,
+                operation_id: "patina:mct-test/echo@0.1.0.echo".into(),
+                runtime_kind: RuntimeKind::WasmComponent,
                 vision_id: vision_id.clone(),
                 policy_revision: 1,
                 visibility: "vision_scoped".into(),
@@ -1161,10 +1099,15 @@ listens = []
 
         let trace_id = TraceId::new("trace-two-mother-forward")
             .expect("string ID literal/generated value must be non-empty");
-        let payload = br#"{"hello":"remote"}"#.to_vec();
+        let payload = b"[41]".to_vec();
         let mut call = resident_test_protocol_request(resident_test_call(trace_id));
         call.call.call_id = CallId::new("call-two-mother-forward")
             .expect("string ID literal/generated value must be non-empty");
+        call.call.target = OperationTarget {
+            namespace: "patina:mct-test".into(),
+            interface_name: "echo@0.1.0".into(),
+            function_name: "echo".into(),
+        };
         call.call.caller.node_id = mother_a_node_id;
         call.call.caller.vision_id = vision_id;
         call.call.origin = CallOrigin::Cli;
@@ -1205,7 +1148,7 @@ listens = []
             call_reply
                 .inline_result_payload
                 .expect("forwarded result payload"),
-            br#"processed:{"hello":"remote"}"#.to_vec()
+            br#"{"results":[41]}"#.to_vec()
         );
         assert!(matches!(
             call_reply.route_taken,
@@ -1218,10 +1161,324 @@ listens = []
         let mother_b_ledger = std::fs::read_to_string(&mother_b_ledger_path).unwrap();
         assert!(mother_a_ledger.contains("forwarded_from:mother-a;forwarded_to:mother-b"));
         assert!(mother_b_ledger.contains("executed_on:mother-b;forwarded_from:mother-a"));
-        assert!(!mother_a_ledger.contains("{\"hello\":\"remote\"}"));
-        assert!(!mother_b_ledger.contains("{\"hello\":\"remote\"}"));
-        assert!(!mother_a_ledger.contains("processed:"));
+        assert!(!mother_a_ledger.contains("{\"results\":[41]}"));
+        assert!(!mother_b_ledger.contains("{\"results\":[41]}"));
         assert!(!mother_b_ledger.contains("processed:"));
+    }
+
+    #[tokio::test]
+    async fn two_mother_learns_catalog_after_approve_and_drops_it_on_revoke() {
+        let dir = tempfile::tempdir().unwrap();
+        let mother_a_config_path = dir.path().join("mother-a").join("config.json");
+        let mother_a_identity_path = dir
+            .path()
+            .join("mother-a")
+            .join("identity")
+            .join("iroh-secret.hex");
+        let mother_a_state_path = dir.path().join("mother-a").join("state.sqlite");
+        let mother_a_ledger_path = dir.path().join("mother-a").join("observations.jsonl");
+        let mother_a_children_dir = dir.path().join("mother-a").join("children");
+        let mother_b_config_path = dir.path().join("mother-b").join("config.json");
+        let mother_b_identity_path = dir
+            .path()
+            .join("mother-b")
+            .join("identity")
+            .join("iroh-secret.hex");
+        let mother_b_state_path = dir.path().join("mother-b").join("state.sqlite");
+        let mother_b_ledger_path = dir.path().join("mother-b").join("observations.jsonl");
+        let mother_b_socket_path = dir.path().join("mother-b").join("control.sock");
+        let mother_b_children_dir = dir.path().join("mother-b").join("children");
+        write_resident_payload_wasm_child(&mother_b_children_dir);
+
+        let mother_a_node_id = MctNodeId::new("mother-a")
+            .expect("string ID literal/generated value must be non-empty");
+        let mother_b_node_id = MctNodeId::new("mother-b")
+            .expect("string ID literal/generated value must be non-empty");
+        let vision_id = VisionId::new("vision-local")
+            .expect("string ID literal/generated value must be non-empty");
+        let mother_a_store = MctDaemonConfigStore::new(&mother_a_config_path);
+        let mother_b_store = MctDaemonConfigStore::new(&mother_b_config_path);
+        let mother_a_identity = mother_a_store
+            .ensure_local_identity(
+                MctOperatorNodeScope {
+                    node_id: mother_a_node_id.clone(),
+                    vision_id: vision_id.clone(),
+                    policy_revision: 1,
+                },
+                &mother_a_identity_path,
+            )
+            .unwrap();
+        let mother_b_identity = mother_b_store
+            .ensure_local_identity(
+                MctOperatorNodeScope {
+                    node_id: mother_b_node_id.clone(),
+                    vision_id: vision_id.clone(),
+                    policy_revision: 1,
+                },
+                &mother_b_identity_path,
+            )
+            .unwrap();
+        let loaded_b =
+            load_children_from_dir(MctChildLoadOptions::new(mother_b_children_dir.clone()));
+        mother_b_store
+            .upsert_peer(MctPeerAddressBookEntry {
+                peer_node_id: mother_a_node_id.clone(),
+                binding_id: PeerBindingId::new("binding-b-admits-a")
+                    .expect("string ID literal/generated value must be non-empty"),
+                endpoint_id: mother_a_identity.endpoint_id.clone(),
+                vision_id: vision_id.clone(),
+                ticket: None,
+                binding_signature_ref: None,
+                outbound_binding: None,
+                binding_state: BindingState::Admitted,
+                policy_revision: 1,
+                expires_at: contract_peer_expiry(),
+                updated_at: mct_daemon::current_timestamp_string(),
+            })
+            .unwrap();
+        let mother_b_proof_for_a = mother_b_store.load().unwrap().peers["mother-a"]
+            .binding_signature_ref
+            .clone()
+            .unwrap();
+
+        let (mother_b_ready_tx, mother_b_ready_rx) = tokio::sync::oneshot::channel();
+        let (mother_b_shutdown_tx, mother_b_shutdown_rx) = tokio::sync::oneshot::channel();
+        let mother_b = tokio::spawn(run_test_resident_mother(
+            ResidentRuntimePaths::new(
+                mother_b_config_path.clone(),
+                mother_b_children_dir.clone(),
+                mother_b_state_path,
+            ),
+            mother_b_identity_path,
+            mother_b_ledger_path,
+            mother_b_socket_path,
+            async move {
+                let _ = mother_b_shutdown_rx.await;
+            },
+            Some(mother_b_ready_tx),
+        ));
+        let mother_b_ticket = tokio::time::timeout(Duration::from_secs(10), mother_b_ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+
+        mother_a_store
+            .upsert_peer(MctPeerAddressBookEntry {
+                peer_node_id: mother_b_node_id.clone(),
+                binding_id: PeerBindingId::new("binding-a-admits-b")
+                    .expect("string ID literal/generated value must be non-empty"),
+                endpoint_id: mother_b_identity.endpoint_id.clone(),
+                vision_id: vision_id.clone(),
+                ticket: Some(mother_b_ticket.clone()),
+                binding_signature_ref: None,
+                outbound_binding: None,
+                binding_state: BindingState::Admitted,
+                policy_revision: 1,
+                expires_at: contract_peer_expiry(),
+                updated_at: mct_daemon::current_timestamp_string(),
+            })
+            .unwrap();
+        mother_a_store
+            .set_peer_outbound_proof(
+                &mother_b_node_id,
+                MctOutboundPeerBindingPresentation {
+                    binding_id: PeerBindingId::new("binding-b-admits-a")
+                        .expect("string ID literal/generated value must be non-empty"),
+                    policy_revision: 1,
+                    signature_ref: mother_b_proof_for_a,
+                    expires_at: contract_peer_expiry(),
+                },
+            )
+            .unwrap();
+
+        let secret = load_or_create_node_secret_key_hex(&mother_a_identity_path).unwrap();
+        let operation = "patina:mct-test/echo@0.1.0.echo";
+        let hello_surfaces = |ticket: MotherIrohEndpointTicket,
+                              identity: MctLocalNodeIdentity,
+                              peer: MctPeerAddressBookEntry,
+                              secret: String| async move {
+            let mut endpoint = MotherIrohEndpoint::bind(iroh_config(secret, false))
+                .await
+                .unwrap();
+            let local_endpoint_id = endpoint.snapshot().endpoint_id;
+            assert_eq!(local_endpoint_id, identity.endpoint_id);
+            let outbound = peer.outbound_binding.clone().unwrap();
+            let trace_id = TraceId::new(format!("trace-catalog-{}", peer.peer_node_id))
+                .expect("string ID literal/generated value must be non-empty");
+            let hello = resident_forwarding_hello_request(
+                &local_endpoint_id,
+                &identity,
+                &peer,
+                &outbound,
+                &trace_id,
+                None,
+            );
+            let response = endpoint.send_hello(&ticket, &hello).await.unwrap();
+            endpoint.close().await;
+            response
+        };
+
+        let peer = mother_a_store.load().unwrap().peers["mother-b"].clone();
+        let before = hello_surfaces(
+            mother_b_ticket.clone(),
+            mother_a_identity.clone(),
+            peer.clone(),
+            secret.clone(),
+        )
+        .await;
+        assert_eq!(before.hello_outcome, HelloOutcome::Admitted);
+        let before_view = before.capability_view.expect("hello capability view");
+        assert_eq!(before_view.node_id, mother_b_node_id);
+        assert!(
+            before_view
+                .callable_surfaces
+                .iter()
+                .all(|surface| surface.operation_id != operation)
+        );
+
+        mother_b_store
+            .approve_and_assign_loaded_child(
+                &loaded_b.children[0],
+                MctOperatorChildScope {
+                    vision_id: vision_id.clone(),
+                    node_id: mother_b_node_id.clone(),
+                    project_id: None,
+                    policy_revision: 1,
+                },
+            )
+            .unwrap();
+        let peer = mother_a_store.load().unwrap().peers["mother-b"].clone();
+        let approved = hello_surfaces(
+            mother_b_ticket.clone(),
+            mother_a_identity.clone(),
+            peer.clone(),
+            secret.clone(),
+        )
+        .await;
+        let approved_view = approved
+            .capability_view
+            .clone()
+            .expect("approved capability view");
+        assert!(
+            approved_view
+                .callable_surfaces
+                .iter()
+                .any(|surface| surface.operation_id == operation)
+        );
+        refresh_remote_surfaces_from_admitted_hello_response(
+            &mother_a_state_path,
+            &peer,
+            &approved,
+            current_timestamp(),
+        )
+        .unwrap();
+
+        let mother_a_ledger = ResidentLedgerWriter::spawn_authority_with_identity_for_test(
+            mother_a_ledger_path,
+            "mother-a",
+        )
+        .unwrap();
+        let payload = b"[41]".to_vec();
+        let mut call = resident_test_protocol_request(resident_test_call(
+            TraceId::new("trace-catalog-forward")
+                .expect("string ID literal/generated value must be non-empty"),
+        ));
+        call.call.call_id = CallId::new("call-catalog-forward")
+            .expect("string ID literal/generated value must be non-empty");
+        call.call.target = OperationTarget {
+            namespace: "patina:mct-test".into(),
+            interface_name: "echo@0.1.0".into(),
+            function_name: "echo".into(),
+        };
+        call.call.caller.node_id = mother_a_node_id.clone();
+        call.call.caller.vision_id = vision_id;
+        call.call.origin = CallOrigin::Cli;
+        call.call.payload_metadata.size_bytes = payload.len() as u64;
+        call.payload = MctCallPayloadHandle::InlinePayload {
+            inline_payload_ref: "payload-catalog-forward".into(),
+            content_type: "application/json".into(),
+            size_bytes: payload.len() as u64,
+            blake3_digest_hex: blake3_hex(&payload),
+        };
+        let forwarded = execute_resident_call(
+            ResidentRuntimePaths::new(
+                mother_a_config_path.clone(),
+                mother_a_children_dir.clone(),
+                mother_a_state_path.clone(),
+            ),
+            mother_a_ledger.clone(),
+            call,
+            ResidentPayloadIngress::remote(Some(payload.clone())),
+        )
+        .await;
+        assert_eq!(forwarded.outcome, CallProtocolOutcome::Completed);
+        assert_eq!(
+            forwarded.inline_result_payload.expect("forwarded echo"),
+            br#"{"results":[41]}"#.to_vec()
+        );
+
+        mother_b_store
+            .revoke_child(&loaded_b.children[0].name)
+            .unwrap();
+        let peer = mother_a_store.load().unwrap().peers["mother-b"].clone();
+        let revoked =
+            hello_surfaces(mother_b_ticket, mother_a_identity, peer.clone(), secret).await;
+        let revoked_view = revoked
+            .capability_view
+            .clone()
+            .expect("revoked capability view");
+        assert!(
+            revoked_view
+                .callable_surfaces
+                .iter()
+                .all(|surface| surface.operation_id != operation)
+        );
+        refresh_remote_surfaces_from_admitted_hello_response(
+            &mother_a_state_path,
+            &peer,
+            &revoked,
+            current_timestamp(),
+        )
+        .unwrap();
+        let mut denied_call = resident_test_protocol_request(resident_test_call(
+            TraceId::new("trace-catalog-revoked")
+                .expect("string ID literal/generated value must be non-empty"),
+        ));
+        denied_call.call.call_id = CallId::new("call-catalog-revoked")
+            .expect("string ID literal/generated value must be non-empty");
+        denied_call.call.target = OperationTarget {
+            namespace: "patina:mct-test".into(),
+            interface_name: "echo@0.1.0".into(),
+            function_name: "echo".into(),
+        };
+        denied_call.call.caller.node_id = mother_a_node_id;
+        denied_call.call.payload_metadata.size_bytes = payload.len() as u64;
+        denied_call.payload = MctCallPayloadHandle::InlinePayload {
+            inline_payload_ref: "payload-catalog-revoked".into(),
+            content_type: "application/json".into(),
+            size_bytes: payload.len() as u64,
+            blake3_digest_hex: blake3_hex(&payload),
+        };
+        let denied = execute_resident_call(
+            ResidentRuntimePaths::new(
+                mother_a_config_path,
+                mother_a_children_dir,
+                mother_a_state_path,
+            ),
+            mother_a_ledger.clone(),
+            denied_call,
+            ResidentPayloadIngress::remote(Some(payload)),
+        )
+        .await;
+        mother_a_ledger.close().await;
+        assert_eq!(denied.outcome, CallProtocolOutcome::Denied);
+
+        let _ = mother_b_shutdown_tx.send(());
+        tokio::time::timeout(Duration::from_secs(10), mother_b)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1472,8 +1729,8 @@ listens = []
         let b_state_path = b_root.join("state.sqlite");
         let b_ledger_path = b_root.join("observations.jsonl");
         let b_children_dir = b_root.join("children");
-        write_resident_process_child(&a_children_dir);
-        write_resident_process_child(&b_children_dir);
+        write_resident_wasm_child(&a_children_dir);
+        write_resident_wasm_child(&b_children_dir);
 
         let a_node = MctNodeId::new("mother-a").unwrap();
         let b_node = MctNodeId::new("mother-b").unwrap();

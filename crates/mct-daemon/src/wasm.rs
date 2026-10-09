@@ -21,7 +21,7 @@ use wasmtime::{
     AsContext, AsContextMut, Config, Engine, Store, StoreContextMut, StoreLimits,
     StoreLimitsBuilder, component, component::ResourceTable,
 };
-use wasmtime_wasi::{DirPerms, FilePerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MctWasmComponentInvocationIds {
@@ -351,9 +351,9 @@ fn build_wasi_ctx(
         let mut guest_paths = BTreeSet::new();
         for preopen in &config.preopens {
             validate_wasi_preopen(preopen, &mut guest_paths)?;
-            let (dir_perms, file_perms) = match preopen.access {
-                MctWasiPreopenAccess::ReadOnly => (DirPerms::READ, FilePerms::READ),
-                MctWasiPreopenAccess::ReadWrite => (DirPerms::all(), FilePerms::all()),
+            let fs_perms = match preopen.access {
+                MctWasiPreopenAccess::ReadOnly => FsPerms::ReadOnly,
+                MctWasiPreopenAccess::ReadWrite => FsPerms::ReadWrite,
             };
             match effect_authority {
                 Some(authority) => {
@@ -372,7 +372,7 @@ fn build_wasi_ctx(
                         })?;
                     authority
                         .admit_order(&snapshot, || {
-                            install_wasi_preopen(&mut builder, preopen, dir_perms, file_perms)
+                            install_wasi_preopen(&mut builder, preopen, fs_perms)
                         })
                         .map_err(|_| {
                             MctWasmComponentRuntimeError::Configure(
@@ -389,7 +389,7 @@ fn build_wasi_ctx(
                                 "WASI preopen legacy authority denied".into(),
                             )
                         })?;
-                    install_wasi_preopen(&mut builder, preopen, dir_perms, file_perms)?;
+                    install_wasi_preopen(&mut builder, preopen, fs_perms)?;
                 }
             }
         }
@@ -400,16 +400,10 @@ fn build_wasi_ctx(
 fn install_wasi_preopen(
     builder: &mut WasiCtxBuilder,
     preopen: &MctWasiPreopen,
-    dir_perms: DirPerms,
-    file_perms: FilePerms,
+    fs_perms: FsPerms,
 ) -> Result<(), MctWasmComponentRuntimeError> {
     builder
-        .preopened_dir(
-            &preopen.host_path,
-            &preopen.guest_path,
-            dir_perms,
-            file_perms,
-        )
+        .preopened_dir(&preopen.host_path, &preopen.guest_path, fs_perms)
         .map_err(|error| {
             MctWasmComponentRuntimeError::Configure(format!(
                 "configure WASI preopen '{}'=>'{}': {error}",
@@ -3187,6 +3181,65 @@ mod tests {
             wasm_size_bytes: 0,
             instance_state: crate::children::MctChildInstanceState::Ready,
         }
+    }
+
+    #[test]
+    fn committed_echo_fixture_is_reproducible_and_invocable() {
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mct-test-echo-0.1.0");
+        let wat_source = include_str!("../tests/fixtures/mct-test-echo-0.1.0/mct-test-echo.wat");
+        let committed_component =
+            include_bytes!("../tests/fixtures/mct-test-echo-0.1.0/mct-test-echo.wasm");
+        assert_eq!(wat::parse_str(wat_source).unwrap(), committed_component);
+
+        let report = crate::children::load_children_from_dir(
+            crate::children::MctChildLoadOptions::new(&fixture).strict_integrity(),
+        );
+        assert_eq!(report.discovered, 1, "{:#?}", report.failures);
+        assert_eq!(report.loaded, 1, "{:#?}", report.failures);
+        assert_eq!(report.failed, 0, "{:#?}", report.failures);
+        let mut child = report.children.into_iter().next().unwrap();
+        assert!(child.integrity_verified());
+        assert_eq!(
+            child.ingress_mode,
+            crate::children::MctChildIngressMode::WitOnly
+        );
+        assert_eq!(
+            child.allowed_operations,
+            vec![
+                "patina:mct-test/echo@0.1.0.echo",
+                "patina:demo/control@0.1.0.run"
+            ]
+        );
+
+        let mut echo_call = call();
+        echo_call.target = OperationTarget {
+            namespace: "patina:mct-test".into(),
+            interface_name: "echo@0.1.0".into(),
+            function_name: "echo".into(),
+        };
+        // The authority fixture uses a stable synthetic artifact identity. Runtime
+        // invocation still consumes the exact strictly loaded component bytes.
+        child.artifact_id = "artifact-echo".into();
+        let authorized = crate::authority_test_fixture::authorized_child_for_call(
+            &echo_call,
+            &child.name,
+            MctNodeId::new("mother-a").unwrap(),
+            "echo",
+        );
+        let invocation = runtime()
+            .invoke_authorized_child_wit_export(
+                authorized,
+                &child,
+                &echo_call,
+                &serde_json::json!([41]),
+                ids(),
+            )
+            .unwrap();
+
+        assert_eq!(invocation.output_json, serde_json::json!({"results": [41]}));
+        assert_eq!(invocation.result.outcome, ResultOutcome::Success);
+        assert!(invocation.produced_messages.is_empty());
     }
 
     #[test]

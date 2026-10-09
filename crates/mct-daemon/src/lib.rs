@@ -22,7 +22,6 @@ mod federation;
 mod inspector;
 mod lifecycle;
 mod metrics;
-mod process;
 mod registry;
 mod release;
 mod startup;
@@ -60,7 +59,7 @@ pub use authority_order::{
 };
 pub use authority_snapshot::{
     LocalExecutionAuthoritySnapshotDenyV1, local_execution_authority_snapshot,
-    local_execution_authority_snapshot_at,
+    local_execution_authority_snapshot_at, local_execution_authority_snapshot_from_verified,
 };
 pub use blob_store::{
     MCT_BLOB_MAX_BYTES, MctLocalBlobStore, MctLocalBlobStoreError, content_addressed_blob_handle,
@@ -124,10 +123,6 @@ pub use lifecycle::{
     warmup_configured_child,
 };
 pub use metrics::{MctMetricsSnapshot, build_metrics_snapshot};
-pub use process::{
-    MctProcessChildError, MctProcessChildHarness, MctProcessChildInvocationIds,
-    MctProcessChildInvocationReport,
-};
 pub use registry::{
     MctChildPackageInstallReport, MctRegistrySyncReport, install_verified_child_package,
     sync_child_registry_source,

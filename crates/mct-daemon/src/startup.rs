@@ -585,8 +585,16 @@ pub fn classify_startup_artifacts(
             .cmp(&right.artifact_class)
             .then_with(|| left.path.cmp(&right.path))
     });
+    // The serving plane's own control socket appears only after this inventory is
+    // taken and the socket is bound. Hashing it makes the operator gate compare a
+    // pre-bind inventory with a post-bind one and refuse a fresh root. The socket
+    // stays in the listed inventory; it is not part of the gate hash.
+    let hashed_entries: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.artifact_class != MctStartupArtifactClassV1::ControlSocket)
+        .collect();
     let inventory_hash =
-        blake3::hash(&serde_json::to_vec(&entries).map_err(std::io::Error::other)?)
+        blake3::hash(&serde_json::to_vec(&hashed_entries).map_err(std::io::Error::other)?)
             .to_hex()
             .to_string();
     Ok(MctStartupArtifactInventoryV1 {
@@ -2367,12 +2375,15 @@ mod tests {
 
         let transient = tempfile::tempdir().unwrap();
         let transient_paths = paths(transient.path());
+        let before_socket = classify_startup_artifacts(&transient_paths).unwrap();
         touch(&transient_paths.control_socket);
-        assert!(
-            classify_startup_artifacts(&transient_paths)
-                .unwrap()
-                .proves_virgin()
-        );
+        let with_socket = classify_startup_artifacts(&transient_paths).unwrap();
+        assert!(with_socket.proves_virgin());
+        assert_eq!(before_socket.inventory_hash, with_socket.inventory_hash);
+        assert!(with_socket.entries.iter().any(|entry| {
+            entry.artifact_class == MctStartupArtifactClassV1::ControlSocket
+                && entry.state == MctStartupArtifactStateV1::Transient
+        }));
 
         let unavailable = tempfile::tempdir().unwrap();
         let mut unavailable_paths = paths(unavailable.path());

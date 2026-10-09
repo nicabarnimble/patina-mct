@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://patina.dev/schema/mct/trace-manifest-entry-v1.json",
+  "title": "MCT trace manifest entry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record_type",
+    "schema",
+    "trace_id",
+    "runtime",
+    "runtime_session_id",
+    "source_format",
+    "source",
+    "archive",
+    "event_count",
+    "started_at",
+    "completed_at",
+    "publication",
+    "attachments",
+    "normalizer_version"
+  ],
+  "properties": {
+    "record_type": { "const": "trace" },
+    "schema": { "const": "mct.trace-manifest-entry/v1" },
+    "trace_id": {
+      "type": "string",
+      "pattern": "^trace:[a-z0-9][a-z0-9._-]*:[^#\\s]+$"
+    },
+    "runtime": { "type": "string", "minLength": 1 },
+    "runtime_session_id": { "type": "string", "minLength": 1 },
+    "source_format": { "type": "string", "minLength": 1 },
+    "source": { "$ref": "#/$defs/objectReceipt" },
+    "archive": { "$ref": "#/$defs/objectReceipt" },
+    "event_count": { "type": "integer", "minimum": 1 },
+    "started_at": { "type": ["string", "null"], "format": "date-time" },
+    "completed_at": { "type": ["string", "null"], "format": "date-time" },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "redactions"],
+      "properties": {
+        "status": { "enum": ["complete", "redacted"] },
+        "redactions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["event_id", "category", "reason", "approved_by"],
+            "properties": {
+              "event_id": { "type": "string", "minLength": 1 },
+              "category": { "type": "string", "minLength": 1 },
+              "reason": { "type": "string", "minLength": 1 },
+              "approved_by": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "attachments": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/objectReceipt" }
+    },
+    "normalizer_version": { "type": "string", "minLength": 1 },
+    "supersedes": { "type": ["string", "null"] }
+  },
+  "$defs": {
+    "objectReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "digest", "bytes"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "digest": {
+          "type": "string",
+          "pattern": "^blake3:[0-9a-f]{64}$"
+        },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "media_type": { "type": "string" },
+        "source_event_id": { "type": "string" }
+      }
+    }
+  }
+}

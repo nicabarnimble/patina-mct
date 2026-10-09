@@ -517,6 +517,29 @@ impl fmt::Debug for MctIrohReceiverAuthorityProvider {
     }
 }
 
+#[derive(Clone)]
+pub struct MctHelloCapabilityViewProvider {
+    inner: std::sync::Arc<dyn Fn() -> Option<MctHelloCapabilityView> + Send + Sync>,
+}
+
+impl fmt::Debug for MctHelloCapabilityViewProvider {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("MctHelloCapabilityViewProvider")
+    }
+}
+
+impl MctHelloCapabilityViewProvider {
+    pub fn new(inner: impl Fn() -> Option<MctHelloCapabilityView> + Send + Sync + 'static) -> Self {
+        Self {
+            inner: std::sync::Arc::new(inner),
+        }
+    }
+
+    pub fn current(&self) -> Option<MctHelloCapabilityView> {
+        (self.inner)()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct MctIrohConcurrentServeConfig {
     pub max_concurrent_connections: usize,
@@ -524,6 +547,8 @@ pub struct MctIrohConcurrentServeConfig {
     pub events: Option<mpsc::Sender<MctIrohServeEvent>>,
     pub require_binding_signature: bool,
     pub capability_view: Option<MctHelloCapabilityView>,
+    /// When set, rebuilt on every admitted hello instead of the boot-time view.
+    pub capability_view_provider: Option<MctHelloCapabilityViewProvider>,
     pub receiver_authority_provider: MctIrohReceiverAuthorityProvider,
     pub observation_sink: MctIrohObservationSink,
 }
@@ -536,6 +561,7 @@ impl MctIrohConcurrentServeConfig {
             events: None,
             require_binding_signature: false,
             capability_view: None,
+            capability_view_provider: None,
             receiver_authority_provider: {
                 #[cfg(test)]
                 {
@@ -1325,6 +1351,7 @@ impl MotherIrohEndpoint {
         let issuer_endpoint_id = self.snapshot().endpoint_id;
         let require_binding_signature = config.require_binding_signature;
         let capability_view = config.capability_view.clone();
+        let capability_view_provider = config.capability_view_provider.clone();
         let receiver_authority_provider = config.receiver_authority_provider.clone();
         let observation_sink = config.observation_sink.clone();
         let state = Arc::new(Mutex::new(state));
@@ -1363,6 +1390,7 @@ impl MotherIrohEndpoint {
             let issuer_endpoint_id = issuer_endpoint_id.clone();
             let active_tasks = Arc::clone(&active_tasks);
             let capability_view = capability_view.clone();
+            let capability_view_provider = capability_view_provider.clone();
             let receiver_authority_provider = receiver_authority_provider.clone();
             let observation_sink = observation_sink.clone();
             let task_error_tx = task_error_tx.clone();
@@ -1531,7 +1559,10 @@ impl MotherIrohEndpoint {
                             );
                             if evaluation.is_admitted() {
                                 response.receiving_grants_authority = receiver_authority;
-                                response.capability_view = capability_view.clone();
+                                response.capability_view = capability_view_provider
+                                    .as_ref()
+                                    .map(MctHelloCapabilityViewProvider::current)
+                                    .unwrap_or_else(|| capability_view.clone());
                             }
                             let response_bytes =
                                 serde_json::to_vec(&response).map_err(|source| {

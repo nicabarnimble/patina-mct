@@ -12,6 +12,39 @@ use mct_observation::{
 
 const RESIDENT_LEDGER_QUEUE_CAPACITY: usize = 256;
 
+#[derive(Clone, Debug, Default)]
+struct CachedLedgerTip {
+    sequence: u64,
+    mother_node_id: String,
+    authority: Option<mct_observation::GrantsAuthorityIdentityV1>,
+}
+
+fn cached_tip_from_ledger(ledger: &JsonlObservationLedger) -> CachedLedgerTip {
+    let Ok(head) = ledger.verified_head() else {
+        return CachedLedgerTip::default();
+    };
+    let authority = ledger
+        .verified_replay()
+        .ok()
+        .and_then(|replay| replay.current_authority.clone());
+    CachedLedgerTip {
+        sequence: head.local_sequence,
+        mother_node_id: head.mother_node_id,
+        authority,
+    }
+}
+
+fn publish_cached_tip(ledger: &JsonlObservationLedger, cached: &std::sync::Mutex<CachedLedgerTip>) {
+    let Ok(mut slot) = cached.lock() else {
+        return;
+    };
+    let next = cached_tip_from_ledger(ledger);
+    if next.mother_node_id.is_empty() && !slot.mother_node_id.is_empty() {
+        return;
+    }
+    *slot = next;
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ResidentLedgerWriter {
     sender: tokio::sync::mpsc::Sender<ResidentLedgerCommand>,
@@ -19,6 +52,7 @@ pub(crate) struct ResidentLedgerWriter {
     path: Option<Arc<PathBuf>>,
     task: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     authority_order: Arc<MotherAuthorityOrderV1>,
+    cached_tip: Arc<std::sync::Mutex<CachedLedgerTip>>,
 }
 
 enum ResidentLedgerCommand {
@@ -46,6 +80,17 @@ enum ResidentLedgerCommand {
         decided_at: String,
         state_path: PathBuf,
         ack: tokio::sync::oneshot::Sender<AuthorityMutationResultV1>,
+    },
+    VerifiedAuthority {
+        ack: tokio::sync::oneshot::Sender<
+            std::result::Result<
+                (
+                    mct_observation::LedgerVerifiedHead,
+                    mct_observation::AuthorityReplayV1,
+                ),
+                String,
+            >,
+        >,
     },
     Shutdown(tokio::sync::oneshot::Sender<()>),
 }
@@ -81,11 +126,16 @@ fn publish_committed_authority_result(
         return result;
     };
     let publication = ledger
-        .entries()
+        .verified_head()
+        .and_then(|head| {
+            ledger
+                .verified_replay()
+                .map(|replay| (head, replay.clone()))
+        })
         .map_err(|error| error.to_string())
-        .and_then(|entries| {
+        .and_then(|(head, replay)| {
             MctRuntimeStateStore::open(state_path)
-                .and_then(|state| state.publish_authority_projection(&entries))
+                .and_then(|state| state.publish_authority_projection_from_replay(&head, &replay))
                 .map_err(|error| error.to_string())
         });
     match publication {
@@ -200,6 +250,9 @@ impl ResidentLedgerWriter {
                             reason: AuthorityMutationRejectionReasonV1::WriterPoisoned,
                         });
                     }
+                    ResidentLedgerCommand::VerifiedAuthority { ack } => {
+                        let _ = ack.send(Err("injected resident writer loss".into()));
+                    }
                     ResidentLedgerCommand::Shutdown(ack) => {
                         let _ = ack.send(());
                         break;
@@ -213,6 +266,7 @@ impl ResidentLedgerWriter {
             path: Some(Arc::new(path)),
             task: Arc::new(std::sync::Mutex::new(Some(task))),
             authority_order: Arc::new(MotherAuthorityOrderV1::unavailable()),
+            cached_tip: Arc::new(std::sync::Mutex::new(CachedLedgerTip::default())),
         }
     }
 
@@ -267,6 +321,9 @@ impl ResidentLedgerWriter {
                             reason: AuthorityMutationRejectionReasonV1::InvalidRequest,
                         });
                     }
+                    ResidentLedgerCommand::VerifiedAuthority { ack } => {
+                        let _ = ack.send(Err("scripted authority writer".into()));
+                    }
                     ResidentLedgerCommand::Shutdown(ack) => {
                         let _ = ack.send(());
                         break;
@@ -280,6 +337,7 @@ impl ResidentLedgerWriter {
             path: None,
             task: Arc::new(std::sync::Mutex::new(Some(task))),
             authority_order: Arc::new(MotherAuthorityOrderV1::unavailable()),
+            cached_tip: Arc::new(std::sync::Mutex::new(CachedLedgerTip::default())),
         }
     }
 
@@ -293,6 +351,7 @@ impl ResidentLedgerWriter {
             path: None,
             task: Arc::new(std::sync::Mutex::new(None)),
             authority_order: Arc::new(MotherAuthorityOrderV1::unavailable()),
+            cached_tip: Arc::new(std::sync::Mutex::new(CachedLedgerTip::default())),
         }
     }
 
@@ -335,6 +394,8 @@ impl ResidentLedgerWriter {
     fn spawn_opened(path: PathBuf, mut ledger: JsonlObservationLedger) -> Result<Self> {
         let authority_order = Arc::new(MotherAuthorityOrderV1::from_ledger(&ledger));
         let task_authority_order = Arc::clone(&authority_order);
+        let cached_tip = Arc::new(std::sync::Mutex::new(cached_tip_from_ledger(&ledger)));
+        let task_cached_tip = Arc::clone(&cached_tip);
         let (sender, mut receiver) =
             tokio::sync::mpsc::channel::<ResidentLedgerCommand>(RESIDENT_LEDGER_QUEUE_CAPACITY);
         let task = tokio::task::spawn_blocking(move || {
@@ -342,26 +403,28 @@ impl ResidentLedgerWriter {
                 match command {
                     ResidentLedgerCommand::Write(write) => {
                         let appended_at = mct_daemon::current_timestamp_string();
-                        let result = write
-                            .observations
-                            .into_iter()
-                            .try_for_each(|observation| match write.durability {
-                                DurabilityClass::BeforeEffect => ledger
-                                    .append_before_effect(observation, appended_at.clone())
-                                    .map(|_| ()),
-                                DurabilityClass::Buffered | DurabilityClass::ProjectionOnly => {
-                                    ledger
-                                        .append(
-                                            observation,
-                                            appended_at.clone(),
-                                            write.durability,
-                                            ExportStatus::NotRequired,
-                                        )
-                                        .map(|_| ())
-                                }
+                        let result = ledger
+                            .append_durable_batch(
+                                write.observations,
+                                appended_at,
+                                write.durability,
+                                ExportStatus::NotRequired,
+                            )
+                            .map(|_| ())
+                            .map_err(|error| error.to_string());
+                        publish_cached_tip(&ledger, &task_cached_tip);
+                        let _ = write.ack.send(result);
+                    }
+                    ResidentLedgerCommand::VerifiedAuthority { ack } => {
+                        let result = ledger
+                            .verified_head()
+                            .and_then(|head| {
+                                ledger
+                                    .verified_replay()
+                                    .map(|replay| (head, replay.clone()))
                             })
                             .map_err(|error| error.to_string());
-                        let _ = write.ack.send(result);
+                        let _ = ack.send(result);
                     }
                     ResidentLedgerCommand::AuthorityMutation {
                         request,
@@ -401,16 +464,26 @@ impl ResidentLedgerWriter {
                                 reason: AuthorityMutationRejectionReasonV1::WriterPoisoned,
                             },
                         );
+                        publish_cached_tip(&ledger, &task_cached_tip);
                         let _ = ack.send(result);
                     }
                     ResidentLedgerCommand::PublishAuthorityProjection { state_path, ack } => {
                         let result = ledger
-                            .entries()
+                            .verified_head()
+                            .and_then(|head| {
+                                ledger
+                                    .verified_replay()
+                                    .map(|replay| (head, replay.clone()))
+                            })
                             .map_err(|error| error.to_string())
-                            .and_then(|entries| {
+                            .and_then(|(head, replay)| {
                                 MctRuntimeStateStore::open(&state_path)
                                     .and_then(|state| {
-                                        state.publish_authority_projection(&entries).map(|_| ())
+                                        state
+                                            .publish_authority_projection_from_replay(
+                                                &head, &replay,
+                                            )
+                                            .map(|_| ())
                                     })
                                     .map_err(|error| error.to_string())
                             });
@@ -427,6 +500,7 @@ impl ResidentLedgerWriter {
                             &config_path,
                         )
                         .map_err(|error| error.to_string());
+                        publish_cached_tip(&ledger, &task_cached_tip);
                         let _ = ack.send(result);
                     }
                     ResidentLedgerCommand::LegacyAuthorityImport {
@@ -464,6 +538,7 @@ impl ResidentLedgerWriter {
                                 reason: AuthorityMutationRejectionReasonV1::WriterPoisoned,
                             },
                         );
+                        publish_cached_tip(&ledger, &task_cached_tip);
                         let _ = ack.send(result);
                     }
                     ResidentLedgerCommand::Shutdown(ack) => {
@@ -479,6 +554,22 @@ impl ResidentLedgerWriter {
             path: Some(Arc::new(path)),
             task: Arc::new(std::sync::Mutex::new(Some(task))),
             authority_order,
+            cached_tip,
+        })
+    }
+
+    pub(crate) fn cached_sequence_tip(&self) -> u64 {
+        self.cached_tip.lock().map(|tip| tip.sequence).unwrap_or(0)
+    }
+
+    pub(crate) fn cached_receiver_authority(&self) -> Option<GrantsAuthorityIdentity> {
+        let tip = self.cached_tip.lock().ok()?;
+        let authority = tip.authority.clone()?;
+        Some(GrantsAuthorityIdentity {
+            mother_node_id: authority.mother_node_id,
+            authority_epoch: authority.authority_epoch,
+            generation: authority.generation,
+            source_authority_observation_id: authority.source_authority_observation_id,
         })
     }
 
@@ -537,6 +628,43 @@ impl ResidentLedgerWriter {
             .context("send blocking authority projection publication")?;
         rx.blocking_recv()
             .context("receive blocking authority projection publication")?
+            .map_err(anyhow::Error::msg)
+    }
+
+    pub(crate) fn verified_authority_blocking(
+        &self,
+    ) -> Result<(
+        mct_observation::LedgerVerifiedHead,
+        mct_observation::AuthorityReplayV1,
+    )> {
+        if self.is_fenced() {
+            bail!("resident observation writer is fenced");
+        }
+        let (ack, rx) = tokio::sync::oneshot::channel();
+        self.sender
+            .blocking_send(ResidentLedgerCommand::VerifiedAuthority { ack })
+            .context("send blocking verified authority read")?;
+        rx.blocking_recv()
+            .context("receive blocking verified authority read")?
+            .map_err(anyhow::Error::msg)
+    }
+
+    pub(crate) async fn verified_authority(
+        &self,
+    ) -> Result<(
+        mct_observation::LedgerVerifiedHead,
+        mct_observation::AuthorityReplayV1,
+    )> {
+        if self.is_fenced() {
+            bail!("resident observation writer is fenced");
+        }
+        let (ack, rx) = tokio::sync::oneshot::channel();
+        self.sender
+            .send(ResidentLedgerCommand::VerifiedAuthority { ack })
+            .await
+            .context("send verified authority read to resident ledger writer")?;
+        rx.await
+            .context("receive verified authority read")?
             .map_err(anyhow::Error::msg)
     }
 

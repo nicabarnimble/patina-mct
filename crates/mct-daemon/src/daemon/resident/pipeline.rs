@@ -26,15 +26,26 @@ pub(super) async fn fresh_resident_receiver_identity(
     ledger
         .publish_authority_projection(paths.state_path().to_path_buf())
         .await?;
-    let ledger_path = ledger
-        .path()
-        .context("resident authority ledger path unavailable")?;
-    proof_gated_receiver_identity(
-        ledger_path,
-        paths.config_path(),
-        paths.children_dir(),
-        paths.state_path(),
-    )
+    let (head, replay) = ledger.verified_authority().await?;
+    let config_path = paths.config_path().to_path_buf();
+    let children_dir = paths.children_dir().to_path_buf();
+    let state_path = paths.state_path().to_path_buf();
+    let snapshot = tokio::task::spawn_blocking(move || {
+        mct_daemon::local_execution_authority_snapshot_from_verified(
+            head,
+            replay,
+            &config_path,
+            &children_dir,
+            &state_path,
+            Ok(mct_daemon::current_timestamp()),
+        )
+    })
+    .await
+    .context("join resident receiver identity")?
+    .map_err(|reason| anyhow::anyhow!("local receiver authority unavailable: {reason:?}"))?;
+    Ok(GrantsAuthorityIdentity::from(
+        snapshot.canonical_grants().grants_authority(),
+    ))
 }
 
 fn watch_callout_observation(
@@ -834,7 +845,7 @@ async fn execute_resident_call_after_payload(
     effect_time_override: Option<Timestamp>,
     post_mint_mutation: Option<AuthorityMutationRequestV1>,
 ) -> MctIrohCallHandlerResult {
-    let Some(ledger_path) = ledger.path().map(Path::to_path_buf) else {
+    if ledger.path().is_none() {
         return MctIrohCallHandlerResult::failed("runtime unavailable");
     };
     if ledger
@@ -845,9 +856,7 @@ async fn execute_resident_call_after_payload(
         return MctIrohCallHandlerResult::failed("runtime unavailable");
     }
     let authorization =
-        match authorize_resident_child(paths.clone(), ledger_path.clone(), request.call.clone())
-            .await
-        {
+        match authorize_resident_child(paths.clone(), ledger.clone(), request.call.clone()).await {
             Ok(authorization) => authorization,
             Err(error) => {
                 eprintln!("resident child authorization unavailable: {error}");
@@ -945,18 +954,38 @@ async fn execute_resident_call_after_payload(
             {
                 return MctIrohCallHandlerResult::failed("runtime unavailable");
             }
-            let effect_snapshot = match mct_daemon::local_execution_authority_snapshot_at(
-                &ledger_path,
-                paths.config_path(),
-                paths.children_dir(),
-                paths.state_path(),
-                Ok(effect_time_override
-                    .clone()
-                    .unwrap_or_else(current_timestamp)),
-            ) {
-                Ok(snapshot) => snapshot,
+            let (head, replay) = match ledger.verified_authority().await {
+                Ok(view) => view,
                 Err(error) => {
+                    eprintln!("resident Child effect authority unavailable: {error}");
+                    return MctIrohCallHandlerResult::failed("runtime unavailable");
+                }
+            };
+            let config_path = paths.config_path().to_path_buf();
+            let children_dir = paths.children_dir().to_path_buf();
+            let state_path = paths.state_path().to_path_buf();
+            let evaluated_at = effect_time_override
+                .clone()
+                .unwrap_or_else(current_timestamp);
+            let effect_snapshot = match tokio::task::spawn_blocking(move || {
+                mct_daemon::local_execution_authority_snapshot_from_verified(
+                    head,
+                    replay,
+                    &config_path,
+                    &children_dir,
+                    &state_path,
+                    Ok(evaluated_at),
+                )
+            })
+            .await
+            {
+                Ok(Ok(snapshot)) => snapshot,
+                Ok(Err(error)) => {
                     eprintln!("resident Child effect authority unavailable: {error:?}");
+                    return MctIrohCallHandlerResult::failed("runtime unavailable");
+                }
+                Err(error) => {
+                    eprintln!("resident Child effect authority task failed: {error}");
                     return MctIrohCallHandlerResult::failed("runtime unavailable");
                 }
             };
@@ -1086,73 +1115,8 @@ async fn execute_resident_call_after_payload(
 mod tests {
     use super::*;
 
-    fn write_resident_payload_process_child(children_dir: &Path) {
-        write_resident_process_child_script(
-            children_dir,
-            "resident-payload-echo",
-            b"#!/bin/sh\npayload=$(cat)\nprintf 'processed:%s' \"$payload\"\n",
-        );
-    }
-    fn write_resident_process_child_script(children_dir: &Path, name: &str, script: &[u8]) {
-        #[cfg(unix)]
-        use std::os::unix::fs::PermissionsExt;
-
-        let child_dir = children_dir.join(name);
-        std::fs::create_dir_all(&child_dir).unwrap();
-        let artifact_path = child_dir.join(format!("{name}.wasm"));
-        let manifest_path = child_dir.join("child.toml");
-        std::fs::write(&artifact_path, script).unwrap();
-        #[cfg(unix)]
-        {
-            let mut permissions = std::fs::metadata(&artifact_path).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&artifact_path, permissions).unwrap();
-        }
-        write_resident_child_manifest(&manifest_path, name, "handle");
-        write_sha256_sidecar(&artifact_path, script);
-        let manifest_bytes = std::fs::read(&manifest_path).unwrap();
-        write_sha256_sidecar(&manifest_path, &manifest_bytes);
-    }
-    fn write_resident_child_manifest(manifest_path: &Path, name: &str, mode: &str) {
-        std::fs::write(
-            manifest_path,
-            format!(
-                r#"[child]
-name = "{name}"
-version = "0.1.0"
-description = "resident test child"
-kind = "child"
-role = "app"
-
-[child.ingress]
-mode = "{mode}"
-
-[child.artifact]
-wasm = "{name}.wasm"
-
-[child.contract]
-allow = ["patina:demo/control@0.1.0.run"]
-
-[needs]
-toys = []
-
-[relationships]
-listens = []
-"#
-            ),
-        )
-        .unwrap();
-    }
-    fn write_sha256_sidecar(path: &Path, bytes: &[u8]) {
-        use sha2::{Digest, Sha256};
-
-        let mut sidecar = path.as_os_str().to_os_string();
-        sidecar.push(".sha256");
-        std::fs::write(
-            PathBuf::from(sidecar),
-            format!("{:x}", Sha256::digest(bytes)),
-        )
-        .unwrap();
+    fn write_resident_payload_wasm_child(children_dir: &Path) {
+        write_test_wasm_echo_child(children_dir, "resident-payload-echo");
     }
     #[test]
     fn watch_adapter_excludes_escaped_symlinks_and_absolute_paths() {
@@ -1297,23 +1261,14 @@ listens = []
         let config_path = dir.path().join("config.json");
         let children_dir = dir.path().join("children");
         let state_path = dir.path().join("state.sqlite");
-        let effect_marker = dir.path().join("child-effect-ran");
-        let script = format!(
-            "#!/bin/sh\nprintf effect > '{}'\ncat\n",
-            effect_marker.display()
-        );
-        write_resident_process_child_script(
-            &children_dir,
-            "resident-payload-echo",
-            script.as_bytes(),
-        );
+        write_resident_payload_wasm_child(&children_dir);
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
         MctDaemonConfigStore::new(&config_path)
             .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
             .unwrap();
         let (request, payload) = jvm_bridge_protocol_request(
-            "patina:demo/control@0.1.0.run",
-            r#"[{"effect":true}]"#,
+            "patina:mct-test/echo@0.1.0.echo",
+            "[41]",
             test_grants_authority_identity(1),
         )
         .unwrap();
@@ -1329,10 +1284,7 @@ listens = []
 
         assert_eq!(result.outcome, CallProtocolOutcome::Failed);
         assert_eq!(result.safe_message, "observation ledger unavailable");
-        assert!(
-            !effect_marker.exists(),
-            "unsuccessful BeforeEffect acknowledgement began a Child effect"
-        );
+        assert!(result.inline_result_payload.is_none());
     }
 
     #[tokio::test]
@@ -1342,16 +1294,7 @@ listens = []
         let children_dir = dir.path().join("children");
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
-        let effect_marker = dir.path().join("child-effect-ran");
-        let script = format!(
-            "#!/bin/sh\nprintf effect > '{}'\ncat\n",
-            effect_marker.display()
-        );
-        write_resident_process_child_script(
-            &children_dir,
-            "resident-payload-echo",
-            script.as_bytes(),
-        );
+        write_resident_payload_wasm_child(&children_dir);
 
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
         let config_store = MctDaemonConfigStore::new(&config_path);
@@ -1366,8 +1309,8 @@ listens = []
             .unwrap();
         let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path).unwrap();
         let (mut request, payload) = jvm_bridge_protocol_request(
-            "patina:demo/control@0.1.0.run",
-            r#"[{"expired":true}]"#,
+            "patina:mct-test/echo@0.1.0.echo",
+            "[41]",
             test_grants_authority_identity(1),
         )
         .unwrap();
@@ -1387,10 +1330,7 @@ listens = []
             result.protocol_reason,
             Some(CallProtocolReason::CallDeadlineExpired)
         );
-        assert!(
-            !effect_marker.exists(),
-            "expired ingress began a Child effect"
-        );
+        assert!(result.inline_result_payload.is_none());
         ledger.close().await;
     }
 
@@ -1478,7 +1418,7 @@ listens = []
         let children_dir = dir.path().join("children");
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
-        write_resident_payload_process_child(&children_dir);
+        write_resident_payload_wasm_child(&children_dir);
 
         let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
         assert_eq!(loaded.loaded, 1, "{loaded:?}");
@@ -1494,8 +1434,8 @@ listens = []
             .unwrap();
         let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         let (mut request, payload) = jvm_bridge_protocol_request(
-            "patina:demo/control@0.1.0.run",
-            r#"[{"from":"jvm"}]"#,
+            "patina:mct-test/echo@0.1.0.echo",
+            "[41]",
             test_grants_authority_identity(1),
         )
         .unwrap();
@@ -1516,7 +1456,7 @@ listens = []
             .expect("result payload returned");
         assert_eq!(
             String::from_utf8(result_payload).unwrap(),
-            r#"processed:[{"from":"jvm"}]"#
+            r#"{"results":[41]}"#
         );
         ledger.close().await;
 
@@ -1524,6 +1464,260 @@ listens = []
         assert!(ledger_text.contains("call-jvm-bridge-test"));
         assert!(
             ledger_text.contains("RouteRevalidated") || ledger_text.contains("route_revalidated")
+        );
+    }
+
+    #[tokio::test]
+    async fn wit_arg_type_mismatch_fails_the_run_and_records_execution_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        write_resident_payload_wasm_child(&children_dir);
+
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        let config_store = MctDaemonConfigStore::new(&config_path);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        config_store
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
+        let (request, payload) = jvm_bridge_protocol_request(
+            "patina:mct-test/echo@0.1.0.echo",
+            r#"["nope"]"#,
+            test_grants_authority_identity(1),
+        )
+        .unwrap();
+
+        let result = execute_resident_call(
+            ResidentRuntimePaths::new(config_path, children_dir, state_path.clone()),
+            ledger.clone(),
+            request,
+            ResidentPayloadIngress::local(Some(payload)),
+        )
+        .await;
+        assert_eq!(result.outcome, CallProtocolOutcome::Failed);
+        assert_eq!(result.safe_message, "runtime execution failed");
+        ledger.close().await;
+
+        let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
+        assert!(ledger_text.contains("runtime_execution_failed"));
+        assert!(ledger_text.contains("expected s32"));
+        let runs = MctRuntimeStateStore::open(&state_path)
+            .unwrap()
+            .list_runs(10)
+            .unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].state, mct_daemon::MctRuntimeRunState::Failed);
+    }
+
+    #[tokio::test]
+    async fn echo_fixture_run_export_is_callable_beside_echo() {
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mct-test-echo-0.1.0");
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(&fixture));
+        assert_eq!(loaded.loaded, 1, "{loaded:?}");
+        let artifact = mct_daemon::component_artifact_from_loaded_child(&loaded.children[0]);
+        assert!(artifact.exports_operation(&OperationTarget {
+            namespace: "patina:mct-test".into(),
+            interface_name: "echo@0.1.0".into(),
+            function_name: "echo".into(),
+        }));
+        assert!(
+            artifact.exports_operation(&OperationTarget {
+                namespace: "patina:demo".into(),
+                interface_name: "control@0.1.0".into(),
+                function_name: "run".into(),
+            }),
+            "manifest-allowed demo control run must survive artifact export splitting"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        write_test_wasm_echo_and_run_child(&children_dir, "resident-echo-run");
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        let config_store = MctDaemonConfigStore::new(&config_path);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        config_store
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path).unwrap();
+        let (request, payload) = jvm_bridge_protocol_request(
+            "patina:demo/control@0.1.0.run",
+            "[]",
+            test_grants_authority_identity(1),
+        )
+        .unwrap();
+        let result = execute_resident_call(
+            ResidentRuntimePaths::new(config_path, children_dir, state_path),
+            ledger.clone(),
+            request,
+            ResidentPayloadIngress::local(Some(payload)),
+        )
+        .await;
+        ledger.close().await;
+        assert_eq!(result.outcome, CallProtocolOutcome::Completed, "{result:?}");
+        assert_eq!(
+            String::from_utf8(result.inline_result_payload.expect("run result")).unwrap(),
+            r#"{"results":[7]}"#
+        );
+    }
+
+    fn filler_observation(index: u64) -> MctObservation {
+        MctObservation {
+            observation_id: ObservationId::new(format!("obs-filler-{index}"))
+                .expect("string ID literal/generated value must be non-empty"),
+            observed_at: current_timestamp(),
+            kind: ObservationKind::OperatorActionRecorded,
+            source_plane: SourcePlane::Operator,
+            trace: ObservationTraceRef {
+                trace_id: TraceId::new("trace-filler")
+                    .expect("string ID literal/generated value must be non-empty"),
+                span_id: None,
+                parent_span_id: None,
+                external_trace_id: None,
+            },
+            call_id: None,
+            decision_id: None,
+            subject_id: Some("latency".into()),
+            resource_id: Some(format!("pad-{index}")),
+            policy_revision: None,
+            grants_revision: None,
+            outcome: ObservationOutcome::Completed,
+            visibility: ObservationVisibility::InternalOnly,
+            safe_message: "ledger pad".into(),
+            detail_ref: None,
+        }
+    }
+
+    fn ledger_line_count(path: &Path) -> usize {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .filter(|line| !line.is_empty())
+            .count()
+    }
+
+    async fn pad_ledger(ledger: &ResidentLedgerWriter, path: &Path, target: usize, salt: u64) {
+        let have = ledger_line_count(path);
+        if have >= target {
+            return;
+        }
+        let batch = (0..(target - have))
+            .map(|index| filler_observation(salt + index as u64))
+            .collect::<Vec<_>>();
+        ledger.append(batch).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn echo_latency_stays_flat_as_the_ledger_grows() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        write_resident_payload_wasm_child(&children_dir);
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        let config_store = MctDaemonConfigStore::new(&config_path);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        config_store
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
+        let paths = ResidentRuntimePaths::new(config_path, children_dir, state_path);
+
+        let echo = |call_id: &str| {
+            let (mut request, payload) = jvm_bridge_protocol_request(
+                "patina:mct-test/echo@0.1.0.echo",
+                "[41]",
+                test_grants_authority_identity(1),
+            )
+            .unwrap();
+            request.call.call_id =
+                CallId::new(call_id).expect("string ID literal/generated value must be non-empty");
+            (request, payload)
+        };
+
+        let (request, payload) = echo("call-echo-warmup");
+        let warmup = execute_resident_call(
+            paths.clone(),
+            ledger.clone(),
+            request,
+            ResidentPayloadIngress::local(Some(payload)),
+        )
+        .await;
+        assert_eq!(warmup.outcome, CallProtocolOutcome::Completed);
+
+        pad_ledger(&ledger, &ledger_path, 100, 0).await;
+        let hashed_at_small = mct_observation::ledger_prefix_bytes_hashed_for(&ledger_path);
+        let before_small = ledger_line_count(&ledger_path);
+        let (request, payload) = echo("call-echo-small-ledger");
+        let started = std::time::Instant::now();
+        let small = execute_resident_call(
+            paths.clone(),
+            ledger.clone(),
+            request,
+            ResidentPayloadIngress::local(Some(payload)),
+        )
+        .await;
+        let small_elapsed = started.elapsed();
+        assert_eq!(small.outcome, CallProtocolOutcome::Completed);
+        let entries_per_echo = ledger_line_count(&ledger_path) - before_small;
+        assert_eq!(
+            entries_per_echo, 10,
+            "plain echo ledger entry count changed"
+        );
+        assert_eq!(
+            mct_observation::ledger_prefix_bytes_hashed_for(&ledger_path),
+            hashed_at_small,
+            "echo rehashed the ledger prefix"
+        );
+
+        pad_ledger(&ledger, &ledger_path, 2_000, 10_000).await;
+        let large_entries = ledger_line_count(&ledger_path);
+        assert!(large_entries >= 2_000, "ledger has {large_entries} entries");
+        let hashed_at_large = mct_observation::ledger_prefix_bytes_hashed_for(&ledger_path);
+        let (request, payload) = echo("call-echo-large-ledger");
+        let started = std::time::Instant::now();
+        let large = execute_resident_call(
+            paths,
+            ledger.clone(),
+            request,
+            ResidentPayloadIngress::local(Some(payload)),
+        )
+        .await;
+        let large_elapsed = started.elapsed();
+        ledger.close().await;
+        assert_eq!(large.outcome, CallProtocolOutcome::Completed);
+        assert_eq!(
+            mct_observation::ledger_prefix_bytes_hashed_for(&ledger_path),
+            hashed_at_large,
+            "echo at {large_entries} entries rehashed the ledger prefix"
+        );
+        let small_ns = small_elapsed.as_nanos().max(1);
+        let large_ns = large_elapsed.as_nanos();
+        assert!(
+            large_ns <= small_ns.saturating_mul(4),
+            "echo at {large_entries} entries took {large_elapsed:?}; echo near 100 entries took {small_elapsed:?} ({entries_per_echo} entries per echo)"
         );
     }
 }

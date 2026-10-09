@@ -585,8 +585,18 @@ fn prepare_child_mutation(
                 .into_iter()
                 .map(|acquisition| acquisition.acquisition_id)
                 .collect();
-            let config = store
-                .prepare_approved_and_assigned_child(&child, MctOperatorChildScope::default())?;
+            let existing = store.load()?;
+            let scope = existing
+                .local_identity
+                .as_ref()
+                .map(|identity| MctOperatorChildScope {
+                    vision_id: identity.vision_id.clone(),
+                    node_id: identity.node_id.clone(),
+                    project_id: None,
+                    policy_revision: identity.policy_revision,
+                })
+                .unwrap_or_default();
+            let config = store.prepare_approved_and_assigned_child(&child, scope)?;
             Ok(PreparedChildMutation {
                 config_path: configured_path.to_path_buf(),
                 child_name: request.child_name,
@@ -2791,6 +2801,15 @@ fn prepare_identity_mutation(
     scope: MctOperatorNodeScope,
     identity_path: &Path,
 ) -> Result<PreparedIdentityMutation> {
+    if let Some(existing) = store.load()?.local_identity
+        && (existing.node_id != scope.node_id || existing.vision_id != scope.vision_id)
+    {
+        bail!(
+            "local identity {} / {} is already recorded; rename it only on a fresh ledger",
+            existing.node_id,
+            existing.vision_id
+        );
+    }
     let secret_key_hex = if identity_path.exists() {
         load_or_create_node_secret_key_hex(identity_path)?
     } else {
@@ -2882,25 +2901,37 @@ pub(super) fn execute_offline_identity_mutation(
     configured_path: &Path,
     identity_path: &Path,
     ledger_path: &Path,
+    requested_scope: Option<MctOperatorNodeScope>,
 ) -> Result<MctLocalNodeIdentity> {
-    let mut ledger = JsonlObservationLedger::open(ledger_path, "ledger-local", "local-mct")
-        .with_context(|| {
-            format!(
-                "acquire exclusive observation ledger writer lock at {}",
-                ledger_path.display()
-            )
-        })?;
     let store = MctDaemonConfigStore::new(configured_path);
     let existing = store.load()?;
-    let scope = existing
-        .local_identity
-        .as_ref()
-        .map(|identity| MctOperatorNodeScope {
+    let scope = match (&existing.local_identity, requested_scope) {
+        (Some(identity), Some(requested))
+            if identity.node_id != requested.node_id
+                || identity.vision_id != requested.vision_id =>
+        {
+            bail!(
+                "local identity {} / {} is already recorded; rename it only on a fresh ledger",
+                identity.node_id,
+                identity.vision_id
+            );
+        }
+        (Some(identity), _) => MctOperatorNodeScope {
             node_id: identity.node_id.clone(),
             vision_id: identity.vision_id.clone(),
             policy_revision: identity.policy_revision,
-        })
-        .unwrap_or_default();
+        },
+        (None, Some(requested)) => requested,
+        (None, None) => MctOperatorNodeScope::default(),
+    };
+    let mut ledger =
+        JsonlObservationLedger::open(ledger_path, "ledger-local", scope.node_id.as_str())
+            .with_context(|| {
+                format!(
+                    "acquire exclusive observation ledger writer lock at {}",
+                    ledger_path.display()
+                )
+            })?;
     let prepared = prepare_identity_mutation(&store, scope, identity_path)?;
     ledger.append_batch_before_effect(
         [prepared.decision_observation()],
@@ -3025,24 +3056,29 @@ pub(super) async fn run_control_serve_uds_with_state_until(
         std::fs::create_dir_all(parent)?;
     }
     let _ = std::fs::remove_file(&socket_path);
-    let listener = UnixListener::bind(&socket_path)?;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-    std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
-    let expected_uid = std::fs::metadata(&socket_path)?.uid();
+    let config_owner_uid = std::fs::metadata(paths.config_path())?.uid();
     ledger
-        .append(vec![resident_local_call_endpoint_observation(expected_uid)])
+        .append(vec![resident_local_call_endpoint_observation(
+            config_owner_uid,
+        )])
         .await
         .context("record authenticated local call endpoint readiness")?;
+    let snapshot_source =
+        ControlSnapshotSource::open_with_status(paths.state_path(), status_source);
+    control_snapshot(&snapshot_source).await.map_err(|_| {
+        anyhow::anyhow!("resident control status was not ready before the socket was bound")
+    })?;
+    let listener = UnixListener::bind(&socket_path)?;
+    std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
+    let expected_uid = std::fs::metadata(&socket_path)?.uid();
+    if config_owner_uid != expected_uid {
+        bail!("resident config and UDS socket owner UID differ");
+    }
     println!(
         "mct daemon serving control uds on {}",
         socket_path.display()
     );
-    let snapshot_source =
-        ControlSnapshotSource::open_with_status(paths.state_path(), status_source);
-    let config_owner_uid = std::fs::metadata(paths.config_path())?.uid();
-    if config_owner_uid != expected_uid {
-        bail!("resident config and UDS socket owner UID differ");
-    }
     let mutation_handler = resident_observed_mutation_handler(
         paths.config_path().to_path_buf(),
         paths.children_dir().to_path_buf(),
@@ -3185,13 +3221,21 @@ pub(super) async fn control_snapshot(
             status_source,
         } => {
             let state = Arc::clone(state);
+            let authority_source = status_source.clone();
             let status = resident_or_default_status(status_source.as_ref());
             tokio::task::spawn_blocking(move || {
                 let state = state
                     .lock()
                     .map_err(|_| MctControlPlaneSnapshotError::runtime_state_unavailable())?;
-                control_snapshot_from_state(&state, status)
-                    .map_err(|_source| MctControlPlaneSnapshotError::runtime_state_unavailable())
+                let mut snapshot = control_snapshot_from_state(&state, status)
+                    .map_err(|_source| MctControlPlaneSnapshotError::runtime_state_unavailable())?;
+                if let Some(identity) = authority_source
+                    .as_ref()
+                    .and_then(|source| source.receiver_authority())
+                {
+                    snapshot = snapshot.with_receiver_authority(identity);
+                }
+                Ok(snapshot)
             })
             .await
             .map_err(|_source| MctControlPlaneSnapshotError::runtime_state_unavailable())?
@@ -3302,73 +3346,8 @@ mod tests {
         }
     }
 
-    fn write_resident_process_child(children_dir: &Path) {
-        write_resident_process_child_script(
-            children_dir,
-            "resident-echo",
-            b"#!/bin/sh\ncat >/dev/null\nprintf '{\\\"ok\\\":true}'\n",
-        );
-    }
-    fn write_resident_process_child_script(children_dir: &Path, name: &str, script: &[u8]) {
-        #[cfg(unix)]
-        use std::os::unix::fs::PermissionsExt;
-
-        let child_dir = children_dir.join(name);
-        std::fs::create_dir_all(&child_dir).unwrap();
-        let artifact_path = child_dir.join(format!("{name}.wasm"));
-        let manifest_path = child_dir.join("child.toml");
-        std::fs::write(&artifact_path, script).unwrap();
-        #[cfg(unix)]
-        {
-            let mut permissions = std::fs::metadata(&artifact_path).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&artifact_path, permissions).unwrap();
-        }
-        write_resident_child_manifest(&manifest_path, name, "handle");
-        write_sha256_sidecar(&artifact_path, script);
-        let manifest_bytes = std::fs::read(&manifest_path).unwrap();
-        write_sha256_sidecar(&manifest_path, &manifest_bytes);
-    }
-    fn write_resident_child_manifest(manifest_path: &Path, name: &str, mode: &str) {
-        std::fs::write(
-            manifest_path,
-            format!(
-                r#"[child]
-name = "{name}"
-version = "0.1.0"
-description = "resident test child"
-kind = "child"
-role = "app"
-
-[child.ingress]
-mode = "{mode}"
-
-[child.artifact]
-wasm = "{name}.wasm"
-
-[child.contract]
-allow = ["patina:demo/control@0.1.0.run"]
-
-[needs]
-toys = []
-
-[relationships]
-listens = []
-"#
-            ),
-        )
-        .unwrap();
-    }
-    fn write_sha256_sidecar(path: &Path, bytes: &[u8]) {
-        use sha2::{Digest, Sha256};
-
-        let mut sidecar = path.as_os_str().to_os_string();
-        sidecar.push(".sha256");
-        std::fs::write(
-            PathBuf::from(sidecar),
-            format!("{:x}", Sha256::digest(bytes)),
-        )
-        .unwrap();
+    fn write_resident_wasm_child(children_dir: &Path) {
+        write_test_wasm_child(children_dir, "resident-echo");
     }
     fn resident_test_call(trace_id: TraceId) -> MctCall {
         let mut call = local_wasm_call(
@@ -3708,7 +3687,7 @@ listens = []
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
         let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
         let handler = resident_observed_mutation_handler(
@@ -3751,7 +3730,7 @@ listens = []
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
         let child =
             load_children_from_dir(MctChildLoadOptions::new(&children_dir).strict_integrity())
                 .children
@@ -3890,7 +3869,7 @@ listens = []
     async fn resident_standing_acquisition_requires_and_consumes_shared_ledger_proof() {
         let dir = tempfile::tempdir().unwrap();
         let source_catalog = dir.path().join("source-catalog");
-        write_resident_process_child(&source_catalog);
+        write_resident_wasm_child(&source_catalog);
         let source_root = source_catalog.join("resident-echo").canonicalize().unwrap();
         let config_path = dir.path().join("config.json");
         let children_dir = dir.path().join("children");
@@ -4046,7 +4025,7 @@ listens = []
         let config_path = dir.path().join("config.json");
         let children_dir = dir.path().join("children");
         let socket_path = dir.path().join("control.sock");
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
         let failed_ledger = ResidentLedgerWriter::failed_for_test();
         let handler = resident_authority_mutation_handler(
@@ -4080,7 +4059,7 @@ listens = []
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
         let child =
             load_children_from_dir(MctChildLoadOptions::new(&children_dir).strict_integrity())
                 .children
@@ -4207,7 +4186,7 @@ listens = []
         let socket_path = dir.path().join("control.sock");
         let watch_root = dir.path().join("watch-root");
         std::fs::create_dir(&watch_root).unwrap();
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
         let child =
             load_children_from_dir(MctChildLoadOptions::new(&children_dir).strict_integrity())
                 .children
@@ -4469,7 +4448,7 @@ listens = []
                 let socket_path = dir.path().join("control.sock");
                 let watch_root = dir.path().join("watch-root");
                 std::fs::create_dir(&watch_root).unwrap();
-                write_resident_process_child(&children_dir);
+                write_resident_wasm_child(&children_dir);
                 let child = load_children_from_dir(
                     MctChildLoadOptions::new(&children_dir).strict_integrity(),
                 )
@@ -4626,7 +4605,7 @@ listens = []
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
         let child =
             load_children_from_dir(MctChildLoadOptions::new(&children_dir).strict_integrity())
                 .children
@@ -4730,7 +4709,7 @@ listens = []
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
         let child =
             load_children_from_dir(MctChildLoadOptions::new(&children_dir).strict_integrity())
                 .children
@@ -4882,7 +4861,7 @@ listens = []
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
-        write_resident_process_child(&source_parent);
+        write_resident_wasm_child(&source_parent);
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
         let failed_ledger = ResidentLedgerWriter::failed_for_test();
         let handler = resident_observed_mutation_handler(
@@ -5099,7 +5078,7 @@ listens = []
         let identity_path = dir.path().join("node.key");
         let state_path = dir.path().join("state.sqlite");
         let ledger_path = dir.path().join("observations.jsonl");
-        write_resident_process_child(&children_dir);
+        write_resident_wasm_child(&children_dir);
 
         assert!(
             execute_offline_child_mutation(
@@ -5119,7 +5098,8 @@ listens = []
             .is_err()
         );
         assert!(!config_path.exists());
-        execute_offline_identity_mutation(&config_path, &identity_path, &ledger_path).unwrap();
+        execute_offline_identity_mutation(&config_path, &identity_path, &ledger_path, None)
+            .unwrap();
         assert!(identity_path.exists());
         assert!(config_path.exists());
 
@@ -5134,7 +5114,7 @@ listens = []
         let _lock =
             JsonlObservationLedger::open(&ledger_path, "ledger-local", "local-mct").unwrap();
         let error =
-            execute_offline_identity_mutation(&locked_config, &locked_identity, &ledger_path)
+            execute_offline_identity_mutation(&locked_config, &locked_identity, &ledger_path, None)
                 .unwrap_err();
         assert!(format!("{error:#}").contains("writer lock"));
         assert!(!locked_config.exists());
