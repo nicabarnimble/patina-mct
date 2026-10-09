@@ -21,7 +21,7 @@ use wasmtime::{
     AsContext, AsContextMut, Config, Engine, Store, StoreContextMut, StoreLimits,
     StoreLimitsBuilder, component, component::ResourceTable,
 };
-use wasmtime_wasi::{DirPerms, FilePerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MctWasmComponentInvocationIds {
@@ -351,9 +351,9 @@ fn build_wasi_ctx(
         let mut guest_paths = BTreeSet::new();
         for preopen in &config.preopens {
             validate_wasi_preopen(preopen, &mut guest_paths)?;
-            let (dir_perms, file_perms) = match preopen.access {
-                MctWasiPreopenAccess::ReadOnly => (DirPerms::READ, FilePerms::READ),
-                MctWasiPreopenAccess::ReadWrite => (DirPerms::all(), FilePerms::all()),
+            let fs_perms = match preopen.access {
+                MctWasiPreopenAccess::ReadOnly => FsPerms::ReadOnly,
+                MctWasiPreopenAccess::ReadWrite => FsPerms::ReadWrite,
             };
             match effect_authority {
                 Some(authority) => {
@@ -372,7 +372,7 @@ fn build_wasi_ctx(
                         })?;
                     authority
                         .admit_order(&snapshot, || {
-                            install_wasi_preopen(&mut builder, preopen, dir_perms, file_perms)
+                            install_wasi_preopen(&mut builder, preopen, fs_perms)
                         })
                         .map_err(|_| {
                             MctWasmComponentRuntimeError::Configure(
@@ -389,7 +389,7 @@ fn build_wasi_ctx(
                                 "WASI preopen legacy authority denied".into(),
                             )
                         })?;
-                    install_wasi_preopen(&mut builder, preopen, dir_perms, file_perms)?;
+                    install_wasi_preopen(&mut builder, preopen, fs_perms)?;
                 }
             }
         }
@@ -400,16 +400,10 @@ fn build_wasi_ctx(
 fn install_wasi_preopen(
     builder: &mut WasiCtxBuilder,
     preopen: &MctWasiPreopen,
-    dir_perms: DirPerms,
-    file_perms: FilePerms,
+    fs_perms: FsPerms,
 ) -> Result<(), MctWasmComponentRuntimeError> {
     builder
-        .preopened_dir(
-            &preopen.host_path,
-            &preopen.guest_path,
-            dir_perms,
-            file_perms,
-        )
+        .preopened_dir(&preopen.host_path, &preopen.guest_path, fs_perms)
         .map_err(|error| {
             MctWasmComponentRuntimeError::Configure(format!(
                 "configure WASI preopen '{}'=>'{}': {error}",
