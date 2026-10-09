@@ -5,6 +5,14 @@
 
 #![forbid(unsafe_code)]
 
+mod segment;
+
+pub use segment::{
+    SEGMENT_CHECKPOINT_PREFIX, SealedSegment, SegmentCheckpointV1, SegmentedLedgerReport,
+    ledger_segments_enabled, seal_segment, verify_sealed_segment, verify_segmented_ledger,
+    verify_segmented_ledger_if_enabled,
+};
+
 use mct_kernel::{
     CallId, CanonicalToyContract, MctObservation, ObservationId, ObservationKind,
     ObservationOutcome, ObservationTraceRef, ObservationVisibility, SourcePlane, Timestamp,
@@ -487,6 +495,10 @@ pub enum ObservationLedgerError {
         expected_sequence: u64,
         actual_sequence: u64,
     },
+    #[error("observation ledger segment rejected: {detail}")]
+    SegmentRejected { detail: String },
+    #[error("segmented ledger verification is disabled")]
+    SegmentsDisabled,
 }
 
 pub type Result<T> = std::result::Result<T, ObservationLedgerError>;
