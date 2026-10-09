@@ -17,8 +17,9 @@ use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{File, OpenOptions},
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
 };
 use thiserror::Error;
 
@@ -609,6 +610,12 @@ pub struct JsonlObservationLedger {
     recovery_status: Option<LedgerRecoveryStatus>,
     authority_tenure: Option<AuthorityWriterTenureV1>,
     writer_state: LedgerWriterState,
+    authority_replay: std::result::Result<AuthorityReplayV1, String>,
+    used_epochs: BTreeSet<String>,
+    prefix_hasher: blake3::Hasher,
+    prefix_len: u64,
+    last_observation_id: Option<String>,
+    last_frame_len: u64,
     #[cfg(test)]
     append_fault: Option<ScheduledAppendFault>,
 }
@@ -752,22 +759,14 @@ impl JsonlObservationLedger {
         if self.authority_tenure.is_some() {
             return Ok(());
         }
-        let entries = self.entries()?;
-        let replay = replay_authority_entries(&entries).map_err(|error| {
-            ObservationLedgerError::AuthorityReplay {
-                detail: error.to_string(),
-            }
-        })?;
-        let predecessor =
-            entries
-                .last()
-                .map_or(AuthorityEpochPredecessorV1::NoneForVirgin, |entry| {
-                    AuthorityEpochPredecessorV1::ValidatedHead {
-                        sequence: entry.local_sequence,
-                        entry_hash: entry.entry_hash.clone(),
-                    }
-                });
-        let startup_class = if entries.is_empty() {
+        let replay = self.cached_replay()?.clone();
+        let empty = self.next_sequence == 0;
+        let predecessor = if empty {
+            AuthorityEpochPredecessorV1::NoneForVirgin
+        } else {
+            self.head_predecessor()?
+        };
+        let startup_class = if empty {
             AuthorityStartupClassV1::Virgin
         } else if replay.current_authority.is_some() {
             AuthorityStartupClassV1::OrdinaryReopen
@@ -793,21 +792,13 @@ impl JsonlObservationLedger {
         if self.authority_tenure.is_some() {
             return Ok(());
         }
-        let entries = self.entries()?;
-        let replay = replay_authority_entries(&entries).map_err(|error| {
-            ObservationLedgerError::AuthorityReplay {
-                detail: error.to_string(),
-            }
-        })?;
-        let actual_predecessor =
-            entries
-                .last()
-                .map_or(AuthorityEpochPredecessorV1::NoneForVirgin, |entry| {
-                    AuthorityEpochPredecessorV1::ValidatedHead {
-                        sequence: entry.local_sequence,
-                        entry_hash: entry.entry_hash.clone(),
-                    }
-                });
+        let replay = self.cached_replay()?.clone();
+        let empty = self.next_sequence == 0;
+        let actual_predecessor = if empty {
+            AuthorityEpochPredecessorV1::NoneForVirgin
+        } else {
+            self.head_predecessor()?
+        };
         let no_operator_evidence = startup.operator_gate_decision_id.is_none()
             && startup.authenticated_principal_ref.is_none();
         let complete_operator_evidence = startup
@@ -820,26 +811,26 @@ impl JsonlObservationLedger {
                 .is_some_and(|value| !value.trim().is_empty());
         let startup_relation_valid = match startup.startup_class {
             AuthorityStartupClassV1::Virgin => {
-                entries.is_empty()
+                empty
                     && replay.current_authority.is_none()
                     && startup.expected_predecessor == AuthorityEpochPredecessorV1::NoneForVirgin
                     && no_operator_evidence
             }
             AuthorityStartupClassV1::OperatorGatedNonvirgin => {
-                entries.is_empty()
+                empty
                     && replay.current_authority.is_none()
                     && startup.expected_predecessor
                         == AuthorityEpochPredecessorV1::NoneAfterOperatorReinitialization
                     && complete_operator_evidence
             }
             AuthorityStartupClassV1::LegacyLedgerUpgrade => {
-                !entries.is_empty()
+                !empty
                     && replay.current_authority.is_none()
                     && startup.expected_predecessor == actual_predecessor
                     && no_operator_evidence
             }
             AuthorityStartupClassV1::OrdinaryReopen => {
-                !entries.is_empty()
+                !empty
                     && replay.current_authority.is_some()
                     && startup.expected_predecessor == actual_predecessor
                     && no_operator_evidence
@@ -946,17 +937,8 @@ impl JsonlObservationLedger {
                 );
             }
         };
-        let entries = match self.entries() {
-            Ok(entries) => entries,
-            Err(_) => {
-                return rejected_mutation(
-                    mutation_id,
-                    AuthorityMutationRejectionReasonV1::PriorStateMismatch,
-                );
-            }
-        };
-        let replay = match replay_authority_entries(&entries) {
-            Ok(replay) => replay,
+        let replay = match self.cached_replay() {
+            Ok(replay) => replay.clone(),
             Err(_) => {
                 return rejected_mutation(
                     mutation_id,
@@ -1108,17 +1090,8 @@ impl JsonlObservationLedger {
                 AuthorityMutationRejectionReasonV1::InvalidRequest,
             );
         }
-        let entries = match self.entries() {
-            Ok(entries) => entries,
-            Err(_) => {
-                return rejected_mutation(
-                    mutation_id,
-                    AuthorityMutationRejectionReasonV1::PriorStateMismatch,
-                );
-            }
-        };
-        let replay = match replay_authority_entries(&entries) {
-            Ok(replay) => replay,
+        let replay = match self.cached_replay() {
+            Ok(replay) => replay.clone(),
             Err(_) => {
                 return rejected_mutation(
                     mutation_id,
@@ -1331,11 +1304,115 @@ impl JsonlObservationLedger {
                 source,
             })?;
         frame.push(b'\n');
+        let previous = self.previous_link();
         self.append_frame(&frame)?;
+        self.record_committed_entry(previous, &entry, &frame);
 
         self.previous_hash = Some(entry.entry_hash.clone());
         self.next_sequence += 1;
         Ok(entry)
+    }
+
+    fn cached_replay(&self) -> Result<&AuthorityReplayV1> {
+        self.authority_replay
+            .as_ref()
+            .map_err(|detail| ObservationLedgerError::AuthorityReplay {
+                detail: detail.clone(),
+            })
+    }
+
+    fn head_predecessor(&self) -> Result<AuthorityEpochPredecessorV1> {
+        let sequence = self.next_sequence.checked_sub(1).ok_or_else(|| {
+            ObservationLedgerError::AuthorityReplay {
+                detail: "ledger head is missing".into(),
+            }
+        })?;
+        let entry_hash =
+            self.previous_hash
+                .clone()
+                .ok_or_else(|| ObservationLedgerError::AuthorityReplay {
+                    detail: "ledger head hash is missing".into(),
+                })?;
+        Ok(AuthorityEpochPredecessorV1::ValidatedHead {
+            sequence,
+            entry_hash,
+        })
+    }
+
+    fn previous_link(&self) -> Option<(u64, String)> {
+        let sequence = self.next_sequence.checked_sub(1)?;
+        self.previous_hash.clone().map(|hash| (sequence, hash))
+    }
+
+    fn record_committed_entry(
+        &mut self,
+        previous: Option<(u64, String)>,
+        entry: &MctObservationLedgerEntry,
+        frame: &[u8],
+    ) {
+        self.prefix_hasher.update(frame);
+        self.prefix_len += frame.len() as u64;
+        self.last_frame_len = frame.len() as u64;
+        self.last_observation_id = Some(entry.observation.observation_id.to_string());
+        if let Ok(replay) = self.authority_replay.as_mut()
+            && let Err(error) = fold_authority_entry(
+                replay,
+                &mut self.used_epochs,
+                previous
+                    .as_ref()
+                    .map(|(sequence, hash)| (*sequence, hash.as_str())),
+                entry,
+            )
+        {
+            self.authority_replay = Err(error.to_string());
+        }
+    }
+
+    /// Authority replay captured while the chain was verified.
+    ///
+    /// Later authority mutations update this cache in place. They do not reread
+    /// the prefix of the log.
+    pub fn verified_replay(&self) -> Result<&AuthorityReplayV1> {
+        self.cached_replay()
+    }
+
+    /// Validated head of the open writer, without rereading the log.
+    pub fn verified_head(&self) -> Result<LedgerVerifiedHead> {
+        let AuthorityEpochPredecessorV1::ValidatedHead {
+            sequence,
+            entry_hash,
+        } = self.head_predecessor()?
+        else {
+            return Err(ObservationLedgerError::AuthorityReplay {
+                detail: "ledger head is missing".into(),
+            });
+        };
+        let observation_id = self.last_observation_id.clone().ok_or_else(|| {
+            ObservationLedgerError::AuthorityReplay {
+                detail: "ledger head observation is missing".into(),
+            }
+        })?;
+        Ok(LedgerVerifiedHead {
+            local_sequence: sequence,
+            entry_hash,
+            observation_id,
+            ledger_id: self.ledger_id.clone(),
+            mother_node_id: self.mother_node_id.clone(),
+        })
+    }
+
+    /// Checkpoint a caller can use to verify only the suffix after this head.
+    pub fn replay_checkpoint(&self) -> Result<LedgerReplayCheckpoint> {
+        let head = self.verified_head()?;
+        Ok(LedgerReplayCheckpoint {
+            through_sequence: head.local_sequence,
+            through_entry_hash: head.entry_hash,
+            prefix_len: self.prefix_len,
+            prefix_blake3: self.prefix_hasher.clone().finalize().to_hex().to_string(),
+            checkpoint_frame_len: self.last_frame_len,
+            replay: self.cached_replay()?.clone(),
+            used_epochs: self.used_epochs.clone(),
+        })
     }
 
     fn append_frame(&mut self, frame: &[u8]) -> Result<()> {
@@ -1482,12 +1559,35 @@ fn entries_by_call(
     Ok(entries)
 }
 
+struct PrefixHasher(blake3::Hasher);
+
+impl std::fmt::Debug for PrefixHasher {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PrefixHasher")
+    }
+}
+
+impl PrefixHasher {
+    fn new() -> Self {
+        Self(blake3::Hasher::new())
+    }
+
+    fn update(&mut self, bytes: &[u8]) {
+        self.0.update(bytes);
+    }
+}
+
 #[derive(Debug)]
 struct LedgerScanState {
     next_sequence: u64,
     previous_hash: Option<String>,
     committed_len: u64,
-    entries: Vec<MctObservationLedgerEntry>,
+    recovery_observation_ids: BTreeSet<String>,
+    authority_replay: std::result::Result<AuthorityReplayV1, String>,
+    used_epochs: BTreeSet<String>,
+    prefix_hasher: PrefixHasher,
+    last_observation_id: Option<String>,
+    last_frame_len: u64,
 }
 
 #[derive(Debug)]
@@ -1934,7 +2034,25 @@ pub fn authority_projection_hash(input: &AuthorityProjectionHashInputV1) -> Resu
 pub fn replay_authority_entries(
     entries: &[MctObservationLedgerEntry],
 ) -> std::result::Result<AuthorityReplayV1, AuthorityReplayError> {
-    let mut replay = AuthorityReplayV1 {
+    let mut replay = empty_authority_replay();
+    let mut used_epochs = BTreeSet::new();
+    let mut previous: Option<(u64, String)> = None;
+    for entry in entries {
+        fold_authority_entry(
+            &mut replay,
+            &mut used_epochs,
+            previous
+                .as_ref()
+                .map(|(sequence, hash)| (*sequence, hash.as_str())),
+            entry,
+        )?;
+        previous = Some((entry.local_sequence, entry.entry_hash.clone()));
+    }
+    Ok(replay)
+}
+
+fn empty_authority_replay() -> AuthorityReplayV1 {
+    AuthorityReplayV1 {
         state: AuthorityStateV1::default(),
         current_authority: None,
         imported: false,
@@ -1942,121 +2060,125 @@ pub fn replay_authority_entries(
         mutations: BTreeMap::new(),
         facts: Vec::new(),
         canonical_fact_count: 0,
-    };
-    let mut used_epochs = BTreeSet::new();
+    }
+}
 
-    for (index, entry) in entries.iter().enumerate() {
-        let Some(detail) = entry.observation.detail_ref.as_deref() else {
-            continue;
-        };
-        let Some(payload) = detail.strip_prefix(AUTHORITY_FACT_DETAIL_PREFIX) else {
-            continue;
-        };
-        let envelope: CanonicalAuthorityEnvelopeV1 =
-            serde_json::from_str(payload).map_err(|error| AuthorityReplayError::Malformed {
-                sequence: entry.local_sequence,
-                detail: error.to_string(),
-            })?;
-        if envelope.schema != AUTHORITY_FACT_SCHEMA_V1 {
-            return Err(AuthorityReplayError::UnknownSchema {
-                sequence: entry.local_sequence,
-                schema: envelope.schema,
-            });
-        }
-        if envelope.fact_id != entry.observation.observation_id.as_str() {
-            return Err(AuthorityReplayError::Incoherent {
-                sequence: entry.local_sequence,
-                detail: "fact_id does not match observation_id".into(),
-            });
-        }
-        let fact_kind = envelope.fact_kind.clone();
-        let fact_id = envelope.fact_id.clone();
-        match fact_kind.as_str() {
-            "epoch_established" => {
-                let fact: EpochEstablishedFactV1 =
-                    serde_json::from_value(envelope.body).map_err(|error| {
-                        AuthorityReplayError::Malformed {
-                            sequence: entry.local_sequence,
-                            detail: error.to_string(),
-                        }
-                    })?;
-                validate_epoch_fact(entries, index, entry, &replay, &used_epochs, &fact)?;
-                used_epochs.insert(fact.authority_epoch.clone());
-                replay.current_authority = Some(fact.resulting_authority);
-                replay.canonical_fact_count += 1;
-            }
-            "authority_mutation" => {
-                let fact: AuthorityMutationFactV1 =
-                    serde_json::from_value(envelope.body).map_err(|error| {
-                        AuthorityReplayError::Malformed {
-                            sequence: entry.local_sequence,
-                            detail: error.to_string(),
-                        }
-                    })?;
-                let resulting_state = validate_authority_mutation_fact(entry, &replay, &fact)?;
-                if replay.mutations.contains_key(&fact.mutation_id) {
-                    return Err(AuthorityReplayError::Incoherent {
-                        sequence: entry.local_sequence,
-                        detail: "duplicate canonical authority mutation id".into(),
-                    });
-                }
-                replay.mutations.insert(
-                    fact.mutation_id.clone(),
-                    CommittedAuthorityMutationV1 {
-                        fact: fact.clone(),
-                        entry_sequence: entry.local_sequence,
-                        entry_hash: entry.entry_hash.clone(),
-                    },
-                );
-                replay.state = resulting_state;
-                replay.current_authority = Some(fact.resulting_state.grants_authority);
-                replay.canonical_fact_count += 1;
-            }
-            "legacy_authority_import" => {
-                let fact: LegacyAuthorityImportFactV1 = serde_json::from_value(envelope.body)
-                    .map_err(|error| AuthorityReplayError::Malformed {
-                        sequence: entry.local_sequence,
-                        detail: error.to_string(),
-                    })?;
-                validate_legacy_import_fact(entry, &replay, &fact)?;
-                if replay.imported || !replay.mutations.is_empty() {
-                    return Err(AuthorityReplayError::Incoherent {
-                        sequence: entry.local_sequence,
-                        detail: "legacy authority import is not one-time or precedes mutations"
-                            .into(),
-                    });
-                }
-                replay.state = fact.imported_state.clone();
-                replay.current_authority = Some(fact.resulting_state.grants_authority.clone());
-                replay.imported = true;
-                replay.import = Some(CommittedLegacyAuthorityImportV1 {
-                    fact,
-                    entry_sequence: entry.local_sequence,
-                    entry_hash: entry.entry_hash.clone(),
-                });
-                replay.canonical_fact_count += 1;
-            }
-            other => {
-                return Err(AuthorityReplayError::UnknownFactKind {
-                    sequence: entry.local_sequence,
-                    fact_kind: other.to_owned(),
-                });
-            }
-        }
-        replay.facts.push(AuthorityCanonicalFactRecordV1 {
-            fact_id,
-            fact_kind,
-            source_sequence: entry.local_sequence,
-            source_entry_hash: entry.entry_hash.clone(),
-            canonical_payload: payload.to_owned(),
+fn fold_authority_entry(
+    replay: &mut AuthorityReplayV1,
+    used_epochs: &mut BTreeSet<String>,
+    previous: Option<(u64, &str)>,
+    entry: &MctObservationLedgerEntry,
+) -> std::result::Result<(), AuthorityReplayError> {
+    let Some(detail) = entry.observation.detail_ref.as_deref() else {
+        return Ok(());
+    };
+    let Some(payload) = detail.strip_prefix(AUTHORITY_FACT_DETAIL_PREFIX) else {
+        return Ok(());
+    };
+    let envelope: CanonicalAuthorityEnvelopeV1 =
+        serde_json::from_str(payload).map_err(|error| AuthorityReplayError::Malformed {
+            sequence: entry.local_sequence,
+            detail: error.to_string(),
+        })?;
+    if envelope.schema != AUTHORITY_FACT_SCHEMA_V1 {
+        return Err(AuthorityReplayError::UnknownSchema {
+            sequence: entry.local_sequence,
+            schema: envelope.schema,
         });
     }
-    Ok(replay)
+    if envelope.fact_id != entry.observation.observation_id.as_str() {
+        return Err(AuthorityReplayError::Incoherent {
+            sequence: entry.local_sequence,
+            detail: "fact_id does not match observation_id".into(),
+        });
+    }
+    let fact_kind = envelope.fact_kind.clone();
+    let fact_id = envelope.fact_id.clone();
+    match fact_kind.as_str() {
+        "epoch_established" => {
+            let fact: EpochEstablishedFactV1 =
+                serde_json::from_value(envelope.body).map_err(|error| {
+                    AuthorityReplayError::Malformed {
+                        sequence: entry.local_sequence,
+                        detail: error.to_string(),
+                    }
+                })?;
+            validate_epoch_fact(previous, entry, replay, used_epochs, &fact)?;
+            used_epochs.insert(fact.authority_epoch.clone());
+            replay.current_authority = Some(fact.resulting_authority);
+            replay.canonical_fact_count += 1;
+        }
+        "authority_mutation" => {
+            let fact: AuthorityMutationFactV1 =
+                serde_json::from_value(envelope.body).map_err(|error| {
+                    AuthorityReplayError::Malformed {
+                        sequence: entry.local_sequence,
+                        detail: error.to_string(),
+                    }
+                })?;
+            let resulting_state = validate_authority_mutation_fact(entry, replay, &fact)?;
+            if replay.mutations.contains_key(&fact.mutation_id) {
+                return Err(AuthorityReplayError::Incoherent {
+                    sequence: entry.local_sequence,
+                    detail: "duplicate canonical authority mutation id".into(),
+                });
+            }
+            replay.mutations.insert(
+                fact.mutation_id.clone(),
+                CommittedAuthorityMutationV1 {
+                    fact: fact.clone(),
+                    entry_sequence: entry.local_sequence,
+                    entry_hash: entry.entry_hash.clone(),
+                },
+            );
+            replay.state = resulting_state;
+            replay.current_authority = Some(fact.resulting_state.grants_authority);
+            replay.canonical_fact_count += 1;
+        }
+        "legacy_authority_import" => {
+            let fact: LegacyAuthorityImportFactV1 =
+                serde_json::from_value(envelope.body).map_err(|error| {
+                    AuthorityReplayError::Malformed {
+                        sequence: entry.local_sequence,
+                        detail: error.to_string(),
+                    }
+                })?;
+            validate_legacy_import_fact(entry, replay, &fact)?;
+            if replay.imported || !replay.mutations.is_empty() {
+                return Err(AuthorityReplayError::Incoherent {
+                    sequence: entry.local_sequence,
+                    detail: "legacy authority import is not one-time or precedes mutations".into(),
+                });
+            }
+            replay.state = fact.imported_state.clone();
+            replay.current_authority = Some(fact.resulting_state.grants_authority.clone());
+            replay.imported = true;
+            replay.import = Some(CommittedLegacyAuthorityImportV1 {
+                fact,
+                entry_sequence: entry.local_sequence,
+                entry_hash: entry.entry_hash.clone(),
+            });
+            replay.canonical_fact_count += 1;
+        }
+        other => {
+            return Err(AuthorityReplayError::UnknownFactKind {
+                sequence: entry.local_sequence,
+                fact_kind: other.to_owned(),
+            });
+        }
+    }
+    replay.facts.push(AuthorityCanonicalFactRecordV1 {
+        fact_id,
+        fact_kind,
+        source_sequence: entry.local_sequence,
+        source_entry_hash: entry.entry_hash.clone(),
+        canonical_payload: payload.to_owned(),
+    });
+    Ok(())
 }
 
 fn validate_epoch_fact(
-    entries: &[MctObservationLedgerEntry],
-    index: usize,
+    previous: Option<(u64, &str)>,
     entry: &MctObservationLedgerEntry,
     replay: &AuthorityReplayV1,
     used_epochs: &BTreeSet<String>,
@@ -2067,12 +2189,12 @@ fn validate_epoch_fact(
         detail: detail.to_owned(),
     };
     let validated_head =
-        index
-            .checked_sub(1)
-            .map(|previous| AuthorityEpochPredecessorV1::ValidatedHead {
-                sequence: entries[previous].local_sequence,
-                entry_hash: entries[previous].entry_hash.clone(),
-            });
+        previous.map(
+            |(sequence, entry_hash)| AuthorityEpochPredecessorV1::ValidatedHead {
+                sequence,
+                entry_hash: entry_hash.to_owned(),
+            },
+        );
     let no_operator_evidence = fact.establishment.operator_gate_decision_id.is_none()
         && fact.establishment.authenticated_principal_ref.is_none();
     let complete_operator_evidence = fact
@@ -2278,27 +2400,53 @@ pub fn forensic_root_path(ledger_path: &Path) -> PathBuf {
     ledger_path.with_file_name(format!("{file_name}.forensics"))
 }
 
-fn scan_existing(path: &Path, ledger_id: &str, mother_node_id: &str) -> Result<LedgerScan> {
-    let bytes = std::fs::read(path).map_err(|source| ObservationLedgerError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    let mut state = LedgerScanState {
+fn empty_scan_state() -> LedgerScanState {
+    LedgerScanState {
         next_sequence: 0,
         previous_hash: None,
         committed_len: 0,
-        entries: Vec::new(),
-    };
-    let mut frame_start = 0usize;
+        recovery_observation_ids: BTreeSet::new(),
+        authority_replay: Ok(empty_authority_replay()),
+        used_epochs: BTreeSet::new(),
+        prefix_hasher: PrefixHasher::new(),
+        last_observation_id: None,
+        last_frame_len: 0,
+    }
+}
 
-    for terminator in bytes
-        .iter()
-        .enumerate()
-        .filter_map(|(index, byte)| (*byte == b'\n').then_some(index))
-    {
-        let frame = &bytes[frame_start..terminator];
-        let offset = frame_start as u64;
-        let entry: MctObservationLedgerEntry = match serde_json::from_slice(frame) {
+fn scan_existing(path: &Path, ledger_id: &str, mother_node_id: &str) -> Result<LedgerScan> {
+    let file = File::open(path).map_err(|source| ObservationLedgerError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut reader = BufReader::new(file);
+    let mut state = empty_scan_state();
+    let mut frame = Vec::new();
+
+    loop {
+        frame.clear();
+        let read =
+            reader
+                .read_until(b'\n', &mut frame)
+                .map_err(|source| ObservationLedgerError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+        if read == 0 {
+            break;
+        }
+        let offset = state.committed_len;
+        if !frame.ends_with(b"\n") {
+            let digest = blake3::hash(&frame).to_hex().to_string();
+            return Ok(LedgerScan::Residue(LedgerTailResidue {
+                offset,
+                bytes: frame,
+                digest,
+                state,
+            }));
+        }
+        let entry_bytes = &frame[..frame.len() - 1];
+        let entry: MctObservationLedgerEntry = match serde_json::from_slice(entry_bytes) {
             Ok(entry) => entry,
             Err(source) => {
                 return Ok(LedgerScan::Quarantine(quarantine_status(
@@ -2354,25 +2502,45 @@ fn scan_existing(path: &Path, ledger_id: &str, mother_node_id: &str) -> Result<L
             )));
         }
 
-        state.next_sequence += 1;
-        state.previous_hash = Some(entry.entry_hash.clone());
-        state.entries.push(entry);
-        frame_start = terminator + 1;
-        state.committed_len = frame_start as u64;
-    }
-
-    if frame_start < bytes.len() {
-        let residue = bytes[frame_start..].to_vec();
-        let digest = blake3::hash(&residue).to_hex().to_string();
-        return Ok(LedgerScan::Residue(LedgerTailResidue {
-            offset: frame_start as u64,
-            bytes: residue,
-            digest,
-            state,
-        }));
+        remember_scanned_entry(&mut state, &entry, &frame);
     }
 
     Ok(LedgerScan::Ready(state))
+}
+
+fn remember_scanned_entry(
+    state: &mut LedgerScanState,
+    entry: &MctObservationLedgerEntry,
+    frame: &[u8],
+) {
+    let previous = state
+        .next_sequence
+        .checked_sub(1)
+        .zip(state.previous_hash.clone());
+    if let Ok(replay) = state.authority_replay.as_mut()
+        && let Err(error) = fold_authority_entry(
+            replay,
+            &mut state.used_epochs,
+            previous
+                .as_ref()
+                .map(|(sequence, hash)| (*sequence, hash.as_str())),
+            entry,
+        )
+    {
+        state.authority_replay = Err(error.to_string());
+    }
+    let observation_id = entry.observation.observation_id.as_str();
+    if observation_id.starts_with("ledger-tail-recovery-") {
+        state
+            .recovery_observation_ids
+            .insert(observation_id.to_owned());
+    }
+    state.last_observation_id = Some(observation_id.to_owned());
+    state.last_frame_len = frame.len() as u64;
+    state.prefix_hasher.update(frame);
+    state.next_sequence += 1;
+    state.previous_hash = Some(entry.entry_hash.clone());
+    state.committed_len += frame.len() as u64;
 }
 
 fn quarantine_status(
@@ -2475,6 +2643,12 @@ fn open_with_recovery_hook(
         recovery_status,
         authority_tenure: None,
         writer_state: LedgerWriterState::Ready,
+        authority_replay: state.authority_replay,
+        used_epochs: state.used_epochs,
+        prefix_hasher: state.prefix_hasher.0,
+        prefix_len: state.committed_len,
+        last_observation_id: state.last_observation_id,
+        last_frame_len: state.last_frame_len,
         #[cfg(test)]
         append_fault: None,
     })
@@ -2593,9 +2767,8 @@ fn complete_pending_recovery(
             continue;
         }
         let already_observed = state
-            .entries
-            .iter()
-            .any(|entry| entry.observation.observation_id.as_str() == status.recovery_decision_id);
+            .recovery_observation_ids
+            .contains(&status.recovery_decision_id);
         if !already_observed {
             append_recovery_observation(file, path, ledger_id, mother_node_id, &status, state)?;
             call_recovery_hook(path, hook, RecoveryStage::RecoveryObservationAppended)?;
@@ -2619,9 +2792,8 @@ fn append_recovery_observation(
     let observation_id = ObservationId::new(status.recovery_decision_id.clone())
         .expect("deterministic recovery observation identity is non-empty");
     if state
-        .entries
-        .iter()
-        .any(|entry| entry.observation.observation_id == observation_id)
+        .recovery_observation_ids
+        .contains(observation_id.as_str())
     {
         return Ok(());
     }
@@ -2661,10 +2833,8 @@ fn append_recovery_observation(
         export_status: ExportStatus::NotRequired,
     };
     entry.entry_hash = entry_hash(&entry)?;
-    write_entry_durable(file, path, &entry)?;
-    state.next_sequence += 1;
-    state.previous_hash = Some(entry.entry_hash.clone());
-    state.entries.push(entry);
+    let frame = write_entry_durable(file, path, &entry)?;
+    remember_scanned_entry(state, &entry, &frame);
     Ok(())
 }
 
@@ -2672,7 +2842,7 @@ fn write_entry_durable(
     file: &mut File,
     path: &Path,
     entry: &MctObservationLedgerEntry,
-) -> Result<()> {
+) -> Result<Vec<u8>> {
     let mut bytes = serde_json::to_vec(entry).map_err(|source| ObservationLedgerError::Json {
         path: path.to_path_buf(),
         source,
@@ -2687,7 +2857,8 @@ fn write_entry_durable(
         .map_err(|source| ObservationLedgerError::Io {
             path: path.to_path_buf(),
             source,
-        })
+        })?;
+    Ok(bytes)
 }
 
 fn preserve_quarantine(
@@ -2949,6 +3120,473 @@ fn entry_hash(entry: &MctObservationLedgerEntry) -> Result<String> {
         source,
     })?;
     Ok(blake3::hash(&bytes).to_hex().to_string())
+}
+
+/// Head of a hash-chain that has been verified without retaining every entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LedgerVerifiedHead {
+    pub local_sequence: u64,
+    pub entry_hash: String,
+    pub observation_id: String,
+    pub ledger_id: String,
+    pub mother_node_id: String,
+}
+
+/// Streaming verification result. `head` is absent only for an empty ledger.
+#[derive(Clone, Debug)]
+pub struct VerifiedLedgerReplay {
+    pub head: Option<LedgerVerifiedHead>,
+    pub replay: AuthorityReplayV1,
+    pub prefix_len: u64,
+    pub prefix_blake3: String,
+    pub checkpoint: Option<LedgerReplayCheckpoint>,
+}
+
+/// Verified prefix binding. Hot paths hash these raw prefix bytes and parse
+/// only the entries that follow. A digest or entry-hash mismatch is not trusted.
+#[derive(Clone, Debug)]
+pub struct LedgerReplayCheckpoint {
+    pub through_sequence: u64,
+    pub through_entry_hash: String,
+    pub prefix_len: u64,
+    pub prefix_blake3: String,
+    pub checkpoint_frame_len: u64,
+    pub replay: AuthorityReplayV1,
+    pub used_epochs: BTreeSet<String>,
+}
+
+#[derive(Clone, Debug)]
+pub enum CheckpointResume {
+    Resumed(Box<VerifiedLedgerReplay>),
+    /// The checkpoint does not bind the current log. Callers must full-verify
+    /// and fail closed if that verification fails.
+    Mismatch {
+        detail: String,
+    },
+}
+
+/// Stream the ledger, verify every link, and fold authority facts.
+///
+/// Entries are not retained. Quarantine, foreign lineage, and a torn tail fail closed.
+pub fn verify_ledger_streaming(
+    path: impl AsRef<Path>,
+    ledger_id: &str,
+    mother_node_id: &str,
+) -> Result<VerifiedLedgerReplay> {
+    let path = path.as_ref();
+    match scan_existing(path, ledger_id, mother_node_id)? {
+        LedgerScan::Ready(state) => verified_from_scan(state, ledger_id, mother_node_id),
+        LedgerScan::Residue(residue) => Err(ObservationLedgerError::UnterminatedTail {
+            path: path.to_path_buf(),
+            offset: residue.offset,
+            length: residue.bytes.len() as u64,
+            digest: residue.digest,
+        }),
+        LedgerScan::Quarantine(status) => Err(ObservationLedgerError::Quarantined {
+            status: Box::new(status),
+        }),
+        LedgerScan::ForeignLineage(status) => Err(ObservationLedgerError::ForeignLineage {
+            status: Box::new(status),
+        }),
+    }
+}
+
+/// Verify the checkpoint prefix by its raw BLAKE3 digest and entry hash, then
+/// parse and chain-check only the suffix. A prefix mismatch returns
+/// [`CheckpointResume::Mismatch`]. A broken suffix fails closed.
+pub fn resume_ledger_replay(
+    path: impl AsRef<Path>,
+    ledger_id: &str,
+    mother_node_id: &str,
+    checkpoint: &LedgerReplayCheckpoint,
+) -> Result<CheckpointResume> {
+    let path = path.as_ref();
+    if checkpoint.prefix_len == 0
+        || checkpoint.checkpoint_frame_len == 0
+        || checkpoint.checkpoint_frame_len > checkpoint.prefix_len
+    {
+        return Ok(CheckpointResume::Mismatch {
+            detail: "checkpoint does not name a committed entry".into(),
+        });
+    }
+    let mut file = File::open(path).map_err(|source| ObservationLedgerError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let file_len = file
+        .metadata()
+        .map_err(|source| ObservationLedgerError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .len();
+    if file_len < checkpoint.prefix_len {
+        return Ok(CheckpointResume::Mismatch {
+            detail: "ledger is shorter than the checkpoint prefix".into(),
+        });
+    }
+
+    let mut hasher = blake3::Hasher::new();
+    let mut remaining = checkpoint.prefix_len;
+    let mut carry = Vec::new();
+    let mut last_frame = Vec::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    while remaining > 0 {
+        let want = std::cmp::min(buffer.len() as u64, remaining) as usize;
+        file.read_exact(&mut buffer[..want])
+            .map_err(|source| ObservationLedgerError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        hasher.update(&buffer[..want]);
+        for byte in &buffer[..want] {
+            carry.push(*byte);
+            if *byte == b'\n' {
+                last_frame = std::mem::take(&mut carry);
+            }
+        }
+        remaining -= want as u64;
+    }
+    if !carry.is_empty() || last_frame.len() as u64 != checkpoint.checkpoint_frame_len {
+        return Ok(CheckpointResume::Mismatch {
+            detail: "checkpoint prefix frame boundary moved".into(),
+        });
+    }
+    let digest = hasher.clone().finalize().to_hex().to_string();
+    if digest != checkpoint.prefix_blake3 {
+        return Ok(CheckpointResume::Mismatch {
+            detail: "checkpoint prefix digest does not match the log".into(),
+        });
+    }
+
+    let entry: MctObservationLedgerEntry =
+        match serde_json::from_slice(&last_frame[..last_frame.len() - 1]) {
+            Ok(entry) => entry,
+            Err(_) => {
+                return Ok(CheckpointResume::Mismatch {
+                    detail: "checkpoint entry is not a ledger frame".into(),
+                });
+            }
+        };
+    let recomputed = entry_hash(&entry)?;
+    if entry.local_sequence != checkpoint.through_sequence
+        || entry.entry_hash != checkpoint.through_entry_hash
+        || recomputed != checkpoint.through_entry_hash
+        || entry.ledger_id != ledger_id
+        || entry.mother_node_id != mother_node_id
+    {
+        return Ok(CheckpointResume::Mismatch {
+            detail: "checkpoint entry hash does not match the log".into(),
+        });
+    }
+
+    let mut replay = checkpoint.replay.clone();
+    let mut used_epochs = checkpoint.used_epochs.clone();
+    let mut expected_sequence = checkpoint.through_sequence.checked_add(1).ok_or(
+        ObservationLedgerError::SequenceMismatch {
+            expected: checkpoint.through_sequence,
+            actual: u64::MAX,
+        },
+    )?;
+    let mut previous_hash = Some(checkpoint.through_entry_hash.clone());
+    let mut head = head_from_entry(&entry);
+    let mut prefix_len = checkpoint.prefix_len;
+    let mut last_frame_len = checkpoint.checkpoint_frame_len;
+    let mut reader = BufReader::new(file);
+    let mut frame = Vec::new();
+    loop {
+        frame.clear();
+        let read =
+            reader
+                .read_until(b'\n', &mut frame)
+                .map_err(|source| ObservationLedgerError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+        if read == 0 {
+            break;
+        }
+        let offset = prefix_len;
+        if !frame.ends_with(b"\n") {
+            return Err(ObservationLedgerError::UnterminatedTail {
+                path: path.to_path_buf(),
+                offset,
+                length: frame.len() as u64,
+                digest: blake3::hash(&frame).to_hex().to_string(),
+            });
+        }
+        let suffix_entry: MctObservationLedgerEntry =
+            serde_json::from_slice(&frame[..frame.len() - 1]).map_err(|source| {
+                ObservationLedgerError::Json {
+                    path: path.to_path_buf(),
+                    source,
+                }
+            })?;
+        if suffix_entry.local_sequence != expected_sequence {
+            return Err(ObservationLedgerError::SequenceMismatch {
+                expected: expected_sequence,
+                actual: suffix_entry.local_sequence,
+            });
+        }
+        if suffix_entry.ledger_id != ledger_id || suffix_entry.mother_node_id != mother_node_id {
+            return Err(ObservationLedgerError::LedgerIdentityMismatch {
+                sequence: suffix_entry.local_sequence,
+                expected_ledger_id: ledger_id.to_owned(),
+                expected_mother_node_id: mother_node_id.to_owned(),
+                actual_ledger_id: suffix_entry.ledger_id.clone(),
+                actual_mother_node_id: suffix_entry.mother_node_id.clone(),
+            });
+        }
+        if suffix_entry.previous_entry_hash != previous_hash {
+            return Err(ObservationLedgerError::BrokenHashChain {
+                sequence: suffix_entry.local_sequence,
+            });
+        }
+        let expected = entry_hash(&suffix_entry)?;
+        if suffix_entry.entry_hash != expected {
+            return Err(ObservationLedgerError::BrokenHashChain {
+                sequence: suffix_entry.local_sequence,
+            });
+        }
+        let previous = Some((
+            expected_sequence - 1,
+            previous_hash.clone().unwrap_or_default(),
+        ));
+        fold_authority_entry(
+            &mut replay,
+            &mut used_epochs,
+            previous
+                .as_ref()
+                .map(|(sequence, hash)| (*sequence, hash.as_str())),
+            &suffix_entry,
+        )
+        .map_err(|error| ObservationLedgerError::AuthorityReplay {
+            detail: error.to_string(),
+        })?;
+        hasher.update(&frame);
+        prefix_len += frame.len() as u64;
+        last_frame_len = frame.len() as u64;
+        previous_hash = Some(suffix_entry.entry_hash.clone());
+        expected_sequence += 1;
+        head = head_from_entry(&suffix_entry);
+    }
+
+    let verified = assemble_verified(
+        Some(head),
+        replay,
+        used_epochs,
+        prefix_len,
+        last_frame_len,
+        hasher.finalize().to_hex().to_string(),
+    );
+    Ok(CheckpointResume::Resumed(Box::new(verified)))
+}
+
+/// Verify the log, reusing a process-local checkpoint when its prefix digest
+/// still matches. A mismatch falls back to a streaming full verification.
+pub fn load_verified_ledger_replay(
+    path: impl AsRef<Path>,
+    ledger_id: &str,
+    mother_node_id: &str,
+) -> Result<VerifiedLedgerReplay> {
+    let path = path.as_ref();
+    let key = replay_cache_key(path, ledger_id, mother_node_id);
+    if let Some(checkpoint) = replay_cache_get(&key) {
+        match resume_ledger_replay(path, ledger_id, mother_node_id, &checkpoint)? {
+            CheckpointResume::Resumed(verified) => {
+                if let Some(checkpoint) = verified.checkpoint.clone() {
+                    replay_cache_store(key, checkpoint);
+                }
+                return Ok(*verified);
+            }
+            CheckpointResume::Mismatch { .. } => replay_cache_remove(&key),
+        }
+    }
+    let verified = verify_ledger_streaming(path, ledger_id, mother_node_id)?;
+    if let Some(checkpoint) = verified.checkpoint.clone() {
+        replay_cache_store(key, checkpoint);
+    }
+    Ok(verified)
+}
+
+/// Write `count` chain-valid observations and fsync once.
+///
+/// This is a benchmark fixture. It is not the before-effect durability path.
+pub fn write_benchmark_chain(
+    path: impl AsRef<Path>,
+    ledger_id: &str,
+    mother_node_id: &str,
+    count: u64,
+) -> Result<u64> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| ObservationLedgerError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+    let mut file = File::create(path).map_err(|source| ObservationLedgerError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut previous = None;
+    for sequence in 0..count {
+        let observation_id = ObservationId::new(format!("obs-bench-{sequence}"))
+            .expect("benchmark observation id is non-empty");
+        let trace_id = TraceId::new("trace-bench").expect("benchmark trace id is non-empty");
+        let observation = MctObservation::informational(
+            observation_id,
+            Timestamp::new("2026-05-31T00:00:00Z").expect("fixed benchmark timestamp"),
+            ObservationKind::PeerHelloReceived,
+            trace_id,
+            "benchmark observation",
+        );
+        let mut entry = MctObservationLedgerEntry {
+            ledger_id: ledger_id.to_owned(),
+            mother_node_id: mother_node_id.to_owned(),
+            local_sequence: sequence,
+            observation,
+            previous_entry_hash: previous.clone(),
+            entry_hash: String::new(),
+            appended_at: "2026-05-31T00:00:00Z".into(),
+            durability_class: DurabilityClass::BeforeEffect,
+            export_status: ExportStatus::NotRequired,
+        };
+        entry.entry_hash = entry_hash(&entry)?;
+        previous = Some(entry.entry_hash.clone());
+        let mut frame =
+            serde_json::to_vec(&entry).map_err(|source| ObservationLedgerError::Json {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        frame.push(b'\n');
+        file.write_all(&frame)
+            .map_err(|source| ObservationLedgerError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+    }
+    file.sync_all()
+        .map_err(|source| ObservationLedgerError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    Ok(file
+        .metadata()
+        .map_err(|source| ObservationLedgerError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .len())
+}
+
+/// Drop process-local replay checkpoints. Tests use this to isolate tamper cases.
+pub fn clear_ledger_replay_cache() {
+    replay_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clear();
+}
+
+fn verified_from_scan(
+    state: LedgerScanState,
+    ledger_id: &str,
+    mother_node_id: &str,
+) -> Result<VerifiedLedgerReplay> {
+    let replay = state
+        .authority_replay
+        .map_err(|detail| ObservationLedgerError::AuthorityReplay { detail })?;
+    let prefix_blake3 = state.prefix_hasher.0.finalize().to_hex().to_string();
+    let head = match (
+        state.next_sequence.checked_sub(1),
+        state.previous_hash,
+        state.last_observation_id,
+    ) {
+        (Some(sequence), Some(entry_hash), Some(observation_id)) => Some(LedgerVerifiedHead {
+            local_sequence: sequence,
+            entry_hash,
+            observation_id,
+            ledger_id: ledger_id.to_owned(),
+            mother_node_id: mother_node_id.to_owned(),
+        }),
+        _ => None,
+    };
+    Ok(assemble_verified(
+        head,
+        replay,
+        state.used_epochs,
+        state.committed_len,
+        state.last_frame_len,
+        prefix_blake3,
+    ))
+}
+
+fn assemble_verified(
+    head: Option<LedgerVerifiedHead>,
+    replay: AuthorityReplayV1,
+    used_epochs: BTreeSet<String>,
+    prefix_len: u64,
+    checkpoint_frame_len: u64,
+    prefix_blake3: String,
+) -> VerifiedLedgerReplay {
+    let checkpoint = head.as_ref().map(|head| LedgerReplayCheckpoint {
+        through_sequence: head.local_sequence,
+        through_entry_hash: head.entry_hash.clone(),
+        prefix_len,
+        prefix_blake3: prefix_blake3.clone(),
+        checkpoint_frame_len,
+        replay: replay.clone(),
+        used_epochs,
+    });
+    VerifiedLedgerReplay {
+        head,
+        replay,
+        prefix_len,
+        prefix_blake3,
+        checkpoint,
+    }
+}
+
+fn head_from_entry(entry: &MctObservationLedgerEntry) -> LedgerVerifiedHead {
+    LedgerVerifiedHead {
+        local_sequence: entry.local_sequence,
+        entry_hash: entry.entry_hash.clone(),
+        observation_id: entry.observation.observation_id.to_string(),
+        ledger_id: entry.ledger_id.clone(),
+        mother_node_id: entry.mother_node_id.clone(),
+    }
+}
+
+fn replay_cache() -> &'static Mutex<BTreeMap<String, LedgerReplayCheckpoint>> {
+    static CACHE: OnceLock<Mutex<BTreeMap<String, LedgerReplayCheckpoint>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn replay_cache_key(path: &Path, ledger_id: &str, mother_node_id: &str) -> String {
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    format!("{}|{ledger_id}|{mother_node_id}", canonical.display())
+}
+
+fn replay_cache_get(key: &str) -> Option<LedgerReplayCheckpoint> {
+    replay_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(key)
+        .cloned()
+}
+
+fn replay_cache_store(key: String, checkpoint: LedgerReplayCheckpoint) {
+    replay_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(key, checkpoint);
+}
+
+fn replay_cache_remove(key: &str) {
+    replay_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(key);
 }
 
 /// Returns the crate version for health and smoke tests.
@@ -4291,5 +4929,144 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let result = JsonlObservationLedger::open(dir.path(), "ledger-a", "mother-a");
         assert!(matches!(result, Err(ObservationLedgerError::Io { .. })));
+    }
+
+    fn three_entry_ledger(path: &Path) -> LedgerReplayCheckpoint {
+        clear_ledger_replay_cache();
+        let mut ledger = JsonlObservationLedger::open(path, "ledger-a", "mother-a").unwrap();
+        for index in 1..=3 {
+            ledger
+                .append_before_effect(
+                    observation(&format!("obs-{index}"), "trace-replay", None),
+                    "2026-05-31T00:00:01Z",
+                )
+                .unwrap();
+        }
+        let checkpoint = ledger.replay_checkpoint().unwrap();
+        let head = ledger.verified_head().unwrap();
+        let replay = ledger.verified_replay().unwrap().clone();
+        let entries = ledger.entries().unwrap();
+        assert_eq!(head.local_sequence, 2);
+        assert_eq!(replay, replay_authority_entries(&entries).unwrap());
+        checkpoint
+    }
+
+    #[test]
+    fn resume_matches_streaming_verification() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let checkpoint = three_entry_ledger(&path);
+        drop_cache_and_compare(&path, &checkpoint);
+    }
+
+    #[test]
+    fn resume_after_append_sees_the_new_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let checkpoint = three_entry_ledger(&path);
+        let mut ledger = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+        ledger
+            .append_before_effect(
+                observation("obs-4", "trace-replay", None),
+                "2026-05-31T00:00:02Z",
+            )
+            .unwrap();
+        drop(ledger);
+        match resume_ledger_replay(&path, "ledger-a", "mother-a", &checkpoint).unwrap() {
+            CheckpointResume::Resumed(resumed) => {
+                assert_eq!(resumed.head.as_ref().unwrap().local_sequence, 3);
+                let full = verify_ledger_streaming(&path, "ledger-a", "mother-a").unwrap();
+                assert_eq!(resumed.head, full.head);
+                assert_eq!(resumed.prefix_blake3, full.prefix_blake3);
+                assert_eq!(resumed.replay, full.replay);
+            }
+            CheckpointResume::Mismatch { detail } => panic!("resume mismatched: {detail}"),
+        }
+    }
+
+    #[test]
+    fn prefix_byte_change_mismatches_then_full_verify_quarantines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let checkpoint = three_entry_ledger(&path);
+        let mut bytes = std::fs::read(&path).unwrap();
+        let pos = bytes
+            .windows(4)
+            .position(|window| window == b"obs-")
+            .unwrap();
+        bytes[pos] = b'X';
+        std::fs::write(&path, bytes).unwrap();
+
+        match resume_ledger_replay(&path, "ledger-a", "mother-a", &checkpoint).unwrap() {
+            CheckpointResume::Mismatch { .. } => {}
+            CheckpointResume::Resumed(_) => panic!("tampered prefix was trusted"),
+        }
+        assert!(matches!(
+            verify_ledger_streaming(&path, "ledger-a", "mother-a"),
+            Err(ObservationLedgerError::Quarantined { .. })
+        ));
+    }
+
+    #[test]
+    fn suffix_tamper_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let checkpoint = three_entry_ledger(&path);
+        let mut ledger = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+        ledger
+            .append_before_effect(
+                observation("obs-4", "trace-replay", None),
+                "2026-05-31T00:00:02Z",
+            )
+            .unwrap();
+        drop(ledger);
+        let mut bytes = std::fs::read(&path).unwrap();
+        let last = bytes.iter().rposition(|byte| *byte == b'\n').unwrap();
+        let line_start = bytes[..last]
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .unwrap()
+            + 1;
+        let pos = bytes[line_start..]
+            .windows(4)
+            .position(|window| window == b"obs-")
+            .unwrap()
+            + line_start;
+        bytes[pos] = b'Y';
+        std::fs::write(&path, bytes).unwrap();
+
+        let error = resume_ledger_replay(&path, "ledger-a", "mother-a", &checkpoint).unwrap_err();
+        assert!(matches!(
+            error,
+            ObservationLedgerError::BrokenHashChain { sequence: 3 }
+        ));
+    }
+
+    #[test]
+    fn stale_checkpoint_entry_hash_mismatches_without_hiding_a_valid_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let mut checkpoint = three_entry_ledger(&path);
+        checkpoint.through_entry_hash = "f".repeat(64);
+        match resume_ledger_replay(&path, "ledger-a", "mother-a", &checkpoint).unwrap() {
+            CheckpointResume::Mismatch { .. } => {}
+            CheckpointResume::Resumed(_) => panic!("stale entry hash was trusted"),
+        }
+        let verified = verify_ledger_streaming(&path, "ledger-a", "mother-a").unwrap();
+        assert_eq!(verified.head.unwrap().local_sequence, 2);
+    }
+
+    fn drop_cache_and_compare(path: &Path, checkpoint: &LedgerReplayCheckpoint) {
+        clear_ledger_replay_cache();
+        match resume_ledger_replay(path, "ledger-a", "mother-a", checkpoint).unwrap() {
+            CheckpointResume::Resumed(resumed) => {
+                let full = verify_ledger_streaming(path, "ledger-a", "mother-a").unwrap();
+                assert_eq!(resumed.head, full.head);
+                assert_eq!(resumed.prefix_blake3, full.prefix_blake3);
+                assert_eq!(resumed.replay, full.replay);
+                assert_eq!(resumed.prefix_len, full.prefix_len);
+            }
+            CheckpointResume::Mismatch { detail } => panic!("resume mismatched: {detail}"),
+        }
     }
 }
