@@ -72,9 +72,9 @@ pub use child::{
     ChildEffectAdmissionDenyV1, ChildIngressMode, ChildInstance, ChildInstanceState,
     ChildLifecycleTransition, ChildLifecycleTransitionReason, ComponentArtifact,
     ComponentRuntimeShape, ComponentWitExport, LifecycleExports, LocalChildRuntime,
-    LocalChildRuntimeError, VerificationStatus, evaluate_child_call_authority,
-    evaluate_child_call_authority_with_policy, is_allowed_instance_transition,
-    transition_child_instance,
+    LocalChildRuntimeError, VerificationStatus, component_wit_exports_from_operation_ids,
+    evaluate_child_call_authority, evaluate_child_call_authority_with_policy,
+    is_allowed_instance_transition, transition_child_instance,
 };
 pub use error::{InvalidFieldReason, MctKernelError, MctKernelResult};
 pub use id::{

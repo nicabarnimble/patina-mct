@@ -27,11 +27,11 @@ pub use identity::{
 };
 pub use serve::{
     MCT_CALL_FRAME_READ_BUDGET_BYTES, MCT_INLINE_PAYLOAD_MAX_BYTES,
-    MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES, MctIrohCallHandlerResult, MctIrohCallLifecycleFact,
-    MctIrohCallLifecycleStage, MctIrohCallPayloadReply, MctIrohConcurrentServeConfig,
-    MctIrohObservationBatch, MctIrohObservationDurability, MctIrohObservationFact,
-    MctIrohObservationSink, MctIrohPeerCallReport, MctIrohReceiverAuthorityProvider,
-    MctIrohServeEvent, MctIrohServeState, MctIrohServedProtocol,
+    MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES, MctHelloCapabilityViewProvider, MctIrohCallHandlerResult,
+    MctIrohCallLifecycleFact, MctIrohCallLifecycleStage, MctIrohCallPayloadReply,
+    MctIrohConcurrentServeConfig, MctIrohObservationBatch, MctIrohObservationDurability,
+    MctIrohObservationFact, MctIrohObservationSink, MctIrohPeerCallReport,
+    MctIrohReceiverAuthorityProvider, MctIrohServeEvent, MctIrohServeState, MctIrohServedProtocol,
 };
 
 #[cfg(test)]

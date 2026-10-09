@@ -531,10 +531,6 @@ fn resident_toy_effect_authority(
     ledger: &ResidentLedgerWriter,
     time_override: Option<Timestamp>,
 ) -> Result<MctToyEffectAuthorityV1> {
-    let ledger_path = ledger
-        .path()
-        .map(Path::to_path_buf)
-        .context("resident Toy effect authority requires ledger path")?;
     let snapshot_paths = paths.clone();
     let snapshot_ledger = ledger.clone();
     let order_paths = paths.clone();
@@ -544,8 +540,12 @@ fn resident_toy_effect_authority(
             snapshot_ledger
                 .publish_authority_projection_blocking(snapshot_paths.state_path().to_path_buf())
                 .map_err(|error| error.to_string())?;
-            mct_daemon::local_execution_authority_snapshot_at(
-                &ledger_path,
+            let (head, replay) = snapshot_ledger
+                .verified_authority_blocking()
+                .map_err(|error| error.to_string())?;
+            mct_daemon::local_execution_authority_snapshot_from_verified(
+                head,
+                replay,
                 snapshot_paths.config_path(),
                 snapshot_paths.children_dir(),
                 snapshot_paths.state_path(),

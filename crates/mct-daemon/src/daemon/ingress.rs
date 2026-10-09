@@ -233,6 +233,20 @@ pub(super) async fn run_iroh(mut args: Vec<String>) -> Result<()> {
             let socket_path = take_option(&mut args, "--uds")
                 .map(PathBuf::from)
                 .unwrap_or_else(default_control_uds_path);
+            let node_id = take_option(&mut args, "--node-id");
+            let vision_id = take_option(&mut args, "--vision");
+            let requested_scope = match (node_id, vision_id) {
+                (None, None) => None,
+                (node_id, vision_id) => Some(MctOperatorNodeScope {
+                    node_id: MctNodeId::new(
+                        node_id.unwrap_or_else(|| "local-mct".into()).as_str(),
+                    )?,
+                    vision_id: VisionId::new(
+                        vision_id.unwrap_or_else(|| "vision-local".into()).as_str(),
+                    )?,
+                    policy_revision: 1,
+                }),
+            };
             let identity_path = args
                 .first()
                 .map(PathBuf::from)
@@ -243,14 +257,18 @@ pub(super) async fn run_iroh(mut args: Vec<String>) -> Result<()> {
             {
                 bail!("resident accepted unsupported live identity mutation");
             }
-            let identity =
-                execute_offline_identity_mutation(&config_path, &identity_path, &ledger_path)
-                    .with_context(|| {
-                        format!(
-                            "resident UDS {} unavailable and offline identity mutation failed",
-                            socket_path.display()
-                        )
-                    })?;
+            let identity = execute_offline_identity_mutation(
+                &config_path,
+                &identity_path,
+                &ledger_path,
+                requested_scope,
+            )
+            .with_context(|| {
+                format!(
+                    "resident UDS {} unavailable and offline identity mutation failed",
+                    socket_path.display()
+                )
+            })?;
             println!("node_id={}", identity.node_id);
             println!("vision_id={}", identity.vision_id);
             println!("endpoint_id={}", identity.endpoint_id);
@@ -435,6 +453,7 @@ pub(super) async fn call_iroh(mut args: Vec<String>) -> Result<()> {
     let relay_default = take_flag(&mut args, "--relay-default");
     let bind_addrs = take_bind_addrs(&mut args)?;
     let binding_signature_ref = take_option(&mut args, "--signature-ref");
+    let inline_payload = take_option(&mut args, "--payload").unwrap_or_else(|| "[]".into());
     let ledger_path = take_option(&mut args, "--ledger")
         .map(PathBuf::from)
         .unwrap_or_else(default_observation_ledger_path);
@@ -488,12 +507,17 @@ pub(super) async fn call_iroh(mut args: Vec<String>) -> Result<()> {
         target,
         &hello_response,
     )?;
+    let (call_request, inline_payload) =
+        call_request_with_inline_payload(call_request, &inline_payload)?;
     record_operator_pointed_egress(
         &ledger_path,
         &call_request,
         peer_ticket.endpoint_id.to_string(),
     )?;
-    let call_reply = endpoint.send_call(&peer_ticket, &call_request).await?;
+    let call_reply = endpoint
+        .send_call_with_inline_payload(&peer_ticket, &call_request, inline_payload)
+        .await?
+        .reply;
     println!("{}", serde_json::to_string_pretty(&call_reply)?);
     endpoint.close().await;
     Ok(())
@@ -502,6 +526,7 @@ pub(super) async fn call_iroh(mut args: Vec<String>) -> Result<()> {
 pub(super) async fn call_iroh_peer(mut args: Vec<String>) -> Result<()> {
     let relay_default = take_flag(&mut args, "--relay-default");
     let bind_addrs = take_bind_addrs(&mut args)?;
+    let inline_payload = take_option(&mut args, "--payload").unwrap_or_else(|| "[]".into());
     let config_path = take_option(&mut args, "--config")
         .map(PathBuf::from)
         .unwrap_or_else(default_config_path);
@@ -528,6 +553,10 @@ pub(super) async fn call_iroh_peer(mut args: Vec<String>) -> Result<()> {
         function_name: args.get(2).cloned().unwrap_or_else(|| "echo".into()),
     };
     let config = MctDaemonConfigStore::new(&config_path).load()?;
+    let local_identity = config
+        .local_identity
+        .clone()
+        .context("iroh call-peer requires a recorded local identity")?;
     let capability_view =
         local_hello_capability_view_from_config(&config, &state_path, &children_dir)?;
     let peer = config.peers.get(peer_node_id.as_str()).ok_or_else(|| {
@@ -551,15 +580,22 @@ pub(super) async fn call_iroh_peer(mut args: Vec<String>) -> Result<()> {
     let local_endpoint_id = endpoint.snapshot().endpoint_id;
     let trace_id = TraceId::new("trace-cli-iroh-call-peer")
         .expect("string ID literal/generated value must be non-empty");
-    let hello_request = cli_hello_request_with_capability_view(
+    let outbound = peer.outbound_binding.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "peer '{peer_node_id}' has no outbound binding proof; set it with peers set-outbound-proof or peers accept"
+        )
+    })?;
+    let mut hello_request = cli_hello_request_with_capability_view(
         &local_endpoint_id,
-        &peer.binding_id,
-        &MctNodeId::new("local-mct").expect("string ID literal/generated value must be non-empty"),
+        &outbound.binding_id,
+        &local_identity.node_id,
         &peer.vision_id,
         &trace_id,
-        peer.binding_signature_ref.clone(),
+        Some(outbound.signature_ref.clone()),
         capability_view,
     );
+    hello_request.presented_binding.policy_revision = Some(outbound.policy_revision);
+    hello_request.presented_binding.expires_at = Some(outbound.expires_at.clone());
     let hello_response = endpoint.send_hello(&peer_ticket, &hello_request).await?;
     refresh_remote_surfaces_from_admitted_hello_response(
         &state_path,
@@ -571,15 +607,23 @@ pub(super) async fn call_iroh_peer(mut args: Vec<String>) -> Result<()> {
 
     let call_request = cli_call_request(
         &local_endpoint_id,
-        &peer.binding_id,
-        &MctNodeId::new("local-mct").expect("string ID literal/generated value must be non-empty"),
+        &outbound.binding_id,
+        &local_identity.node_id,
         &peer.vision_id,
         &trace_id,
         target,
         &hello_response,
     )?;
+    let (mut call_request, inline_payload) =
+        call_request_with_inline_payload(call_request, &inline_payload)?;
+    call_request.authority.policy_revision = local_identity.policy_revision;
+    call_request.call.authority_context.policy_revision = local_identity.policy_revision;
+    call_request.call.authority_context.vision_policy_revision = local_identity.policy_revision;
     record_operator_pointed_egress(&ledger_path, &call_request, peer_node_id.to_string())?;
-    let call_reply = endpoint.send_call(&peer_ticket, &call_request).await?;
+    let call_reply = endpoint
+        .send_call_with_inline_payload(&peer_ticket, &call_request, inline_payload)
+        .await?
+        .reply;
     println!("{}", serde_json::to_string_pretty(&call_reply)?);
     endpoint.close().await;
     Ok(())
@@ -642,6 +686,24 @@ pub(super) fn cli_hello_request_with_capability_view(
         received_observation_id: ObservationId::new("obs-cli-hello-received")
             .expect("string ID literal/generated value must be non-empty"),
     }
+}
+
+fn call_request_with_inline_payload(
+    mut request: MctCallProtocolRequest,
+    payload_json: &str,
+) -> Result<(MctCallProtocolRequest, Vec<u8>)> {
+    let payload = payload_json.as_bytes().to_vec();
+    serde_json::from_slice::<serde_json::Value>(&payload)
+        .context("iroh call --payload must be JSON")?;
+    let digest = blake3_hex(&payload);
+    request.call.payload_metadata.size_bytes = payload.len() as u64;
+    request.payload = MctCallPayloadHandle::InlinePayload {
+        inline_payload_ref: format!("payload-cli-{}", digest),
+        content_type: "application/json".into(),
+        size_bytes: payload.len() as u64,
+        blake3_digest_hex: digest,
+    };
+    Ok((request, payload))
 }
 
 pub(super) fn cli_call_request(

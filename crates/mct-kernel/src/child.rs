@@ -20,6 +20,70 @@ pub struct ComponentWitExport {
     pub function_names: Vec<String>,
 }
 
+/// Groups allowed operation ids into one WIT export per interface, in first-seen order.
+///
+/// Operation ids use `namespace/interface@version.function`. The first interface stays
+/// the artifact primary export; later interfaces are additional exports the same artifact
+/// may still be called through.
+pub fn component_wit_exports_from_operation_ids(
+    allowed_operations: &[String],
+) -> Vec<ComponentWitExport> {
+    let mut exports: Vec<ComponentWitExport> = Vec::new();
+    for operation in allowed_operations {
+        let Some((namespace, interface_and_function)) = operation.split_once('/') else {
+            return vec![ComponentWitExport {
+                namespace: String::new(),
+                interface_name: String::new(),
+                version: "0.0.0".into(),
+                function_names: allowed_operations.to_vec(),
+            }];
+        };
+        let Some((interface_with_version, function_name)) = interface_and_function.rsplit_once('.')
+        else {
+            return vec![ComponentWitExport {
+                namespace: String::new(),
+                interface_name: String::new(),
+                version: "0.0.0".into(),
+                function_names: allowed_operations.to_vec(),
+            }];
+        };
+        if function_name.is_empty() {
+            return vec![ComponentWitExport {
+                namespace: String::new(),
+                interface_name: String::new(),
+                version: "0.0.0".into(),
+                function_names: allowed_operations.to_vec(),
+            }];
+        }
+        let (interface_name, version) = interface_with_version
+            .split_once('@')
+            .map_or((interface_with_version, "0.0.0"), |(name, version)| {
+                (name, version)
+            });
+        if let Some(existing) = exports.iter_mut().find(|export| {
+            export.namespace == namespace
+                && export.interface_name == interface_name
+                && export.version == version
+        }) {
+            if !existing
+                .function_names
+                .iter()
+                .any(|name| name == function_name)
+            {
+                existing.function_names.push(function_name.to_string());
+            }
+        } else {
+            exports.push(ComponentWitExport {
+                namespace: namespace.to_string(),
+                interface_name: interface_name.to_string(),
+                version: version.to_string(),
+                function_names: vec![function_name.to_string()],
+            });
+        }
+    }
+    exports
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 /// Persisted execution-substrate record for a component artifact.
@@ -153,6 +217,9 @@ pub struct ComponentArtifact {
     pub manifest_hash: String,
     /// Primary WIT export used to match call targets.
     pub primary_export: ComponentWitExport,
+    /// Further WIT interfaces this artifact exports besides [`Self::primary_export`].
+    #[serde(default)]
+    pub additional_exports: Vec<ComponentWitExport>,
     /// Runtime substrate declared for this artifact.
     pub runtime_shape: ComponentRuntimeShape,
     /// Call ingress shape supported by this artifact.
@@ -170,21 +237,23 @@ pub struct ComponentArtifact {
 }
 
 impl ComponentArtifact {
-    /// Returns true when the artifact primary export exposes the requested call target.
+    /// Returns true when any declared WIT export exposes the requested call target.
     pub fn exports_operation(&self, target: &OperationTarget) -> bool {
-        let interface_with_version = format!(
-            "{}@{}",
-            self.primary_export.interface_name, self.primary_export.version
-        );
-        self.primary_export.namespace == target.namespace
-            && (self.primary_export.interface_name == target.interface_name
-                || interface_with_version == target.interface_name)
-            && self
-                .primary_export
-                .function_names
-                .iter()
-                .any(|function_name| function_name == &target.function_name)
+        std::iter::once(&self.primary_export)
+            .chain(self.additional_exports.iter())
+            .any(|export| wit_export_matches(export, target))
     }
+}
+
+fn wit_export_matches(export: &ComponentWitExport, target: &OperationTarget) -> bool {
+    let interface_with_version = format!("{}@{}", export.interface_name, export.version);
+    export.namespace == target.namespace
+        && (export.interface_name == target.interface_name
+            || interface_with_version == target.interface_name)
+        && export
+            .function_names
+            .iter()
+            .any(|function_name| function_name == &target.function_name)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1198,6 +1267,7 @@ mod tests {
                 version: "0.1.0".into(),
                 function_names: vec!["list-work".into(), "complete-work".into()],
             },
+            additional_exports: Vec::new(),
             runtime_shape: ComponentRuntimeShape::WasmComponent,
             ingress_mode: ChildIngressMode::WitOnly,
             lifecycle_exports: LifecycleExports::AbsentAllowed,
@@ -1505,6 +1575,37 @@ mod tests {
             ChildCallReasonCode::ApprovalScopeMismatch
         );
         assert!(result.authorized.is_none());
+    }
+
+    #[test]
+    fn later_interface_stays_callable_beside_the_primary_export() {
+        let exports = component_wit_exports_from_operation_ids(&[
+            "patina:mct-test/echo@0.1.0.echo".into(),
+            "patina:demo/control@0.1.0.run".into(),
+        ]);
+        assert_eq!(exports.len(), 2);
+        assert_eq!(exports[1].namespace, "patina:demo");
+        assert_eq!(exports[1].interface_name, "control");
+        assert_eq!(exports[1].function_names, vec!["run".to_string()]);
+
+        let mut artifact = artifact();
+        artifact.primary_export = exports[0].clone();
+        artifact.additional_exports = vec![exports[1].clone()];
+        let mut demo_call = call();
+        demo_call.target = OperationTarget {
+            namespace: "patina:demo".into(),
+            interface_name: "control@0.1.0".into(),
+            function_name: "run".into(),
+        };
+        let result = evaluate_child_call_authority(
+            &demo_call,
+            &request(),
+            &[artifact],
+            &[approval(ChildApprovalState::Approved)],
+            &[assignment(ChildAssignmentState::Active)],
+            &[instance(ChildInstanceState::Ready)],
+        );
+        assert!(result.is_allowed(), "{:?}", result.evaluation.reason_code);
     }
 
     #[test]

@@ -59,7 +59,7 @@ pub use authority_order::{
 };
 pub use authority_snapshot::{
     LocalExecutionAuthoritySnapshotDenyV1, local_execution_authority_snapshot,
-    local_execution_authority_snapshot_at,
+    local_execution_authority_snapshot_at, local_execution_authority_snapshot_from_verified,
 };
 pub use blob_store::{
     MCT_BLOB_MAX_BYTES, MctLocalBlobStore, MctLocalBlobStoreError, content_addressed_blob_handle,

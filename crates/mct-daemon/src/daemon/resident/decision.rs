@@ -84,31 +84,26 @@ pub(super) enum RouteDisposition {
 
 pub(super) async fn authorize_resident_child(
     paths: ResidentRuntimePaths,
-    ledger_path: PathBuf,
+    ledger: ResidentLedgerWriter,
     call: MctCall,
 ) -> Result<RouteDisposition> {
+    let (head, replay) = ledger.verified_authority().await?;
     tokio::task::spawn_blocking(move || {
-        authorize_resident_child_blocking(&paths, &ledger_path, &call)
+        let snapshot = mct_daemon::local_execution_authority_snapshot_from_verified(
+            head,
+            replay,
+            paths.config_path(),
+            paths.children_dir(),
+            paths.state_path(),
+            Ok(mct_daemon::current_timestamp()),
+        )
+        .map_err(|deny| anyhow::anyhow!("local execution authority unavailable: {deny:?}"))?;
+        let load_report =
+            load_children_from_dir(MctChildLoadOptions::new(paths.children_dir().to_path_buf()));
+        authorize_resident_child_from_snapshot(&snapshot, load_report.children, &call)
     })
     .await
     .context("join resident child authorization")?
-}
-
-pub(super) fn authorize_resident_child_blocking(
-    paths: &ResidentRuntimePaths,
-    ledger_path: &Path,
-    call: &MctCall,
-) -> Result<RouteDisposition> {
-    let snapshot = mct_daemon::local_execution_authority_snapshot(
-        ledger_path,
-        paths.config_path(),
-        paths.children_dir(),
-        paths.state_path(),
-    )
-    .map_err(|deny| anyhow::anyhow!("local execution authority unavailable: {deny:?}"))?;
-    let load_report =
-        load_children_from_dir(MctChildLoadOptions::new(paths.children_dir().to_path_buf()));
-    authorize_resident_child_from_snapshot(&snapshot, load_report.children, call)
 }
 
 #[cfg(test)]
@@ -550,10 +545,21 @@ fn resident_required_toy_authority(
                 .canonical_grants()
                 .toy_grants()
                 .iter()
-                .find(|grant| {
+                .filter(|grant| {
                     grant.toy_id == toy_id
+                        && grant.grant_state == ToyGrantState::Active
                         && grant.subject.child_name == child.name
                         && grant.subject.artifact_id == child.artifact_id
+                        && grant.subject.artifact_version == child.version
+                        && grant.subject.assignment_id.as_ref()
+                            == Some(authorized_child.assignment_id())
+                })
+                .find(|grant| {
+                    grant
+                        .subject
+                        .caller_node_id
+                        .as_ref()
+                        .is_none_or(|node_id| node_id == &call.caller.node_id)
                 });
             let action = matching_grant
                 .and_then(|grant| grant.scope.allowed_actions.first())

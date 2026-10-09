@@ -29,6 +29,30 @@ use std::{
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
 };
+
+/// Bytes fed to the prefix BLAKE3 hasher while opening or resuming a ledger, by path.
+///
+/// The resident call path must not grow a ledger's count after that writer is open. A
+/// checkpoint mismatch still full-verifies, and a broken suffix still fails closed.
+static LEDGER_PREFIX_BYTES_HASHED: Mutex<BTreeMap<PathBuf, u64>> = Mutex::new(BTreeMap::new());
+
+/// Returns prefix bytes hashed while opening or resuming `path` in this process.
+pub fn ledger_prefix_bytes_hashed_for(path: &Path) -> u64 {
+    LEDGER_PREFIX_BYTES_HASHED
+        .lock()
+        .ok()
+        .and_then(|counts| counts.get(path).copied())
+        .unwrap_or(0)
+}
+
+fn note_prefix_bytes_hashed(path: &Path, bytes: u64) {
+    if bytes == 0 {
+        return;
+    }
+    if let Ok(mut counts) = LEDGER_PREFIX_BYTES_HASHED.lock() {
+        *counts.entry(path.to_path_buf()).or_insert(0) += bytes;
+    }
+}
 use thiserror::Error;
 
 /// Reserved `MctObservation.detail_ref` carrier for inline canonical authority facts.
@@ -1256,6 +1280,76 @@ impl JsonlObservationLedger {
             DurabilityClass::BeforeEffect,
             ExportStatus::NotRequired,
         )
+    }
+
+    /// Writes every frame, then acknowledges the batch with one `sync_data`.
+    ///
+    /// `BeforeEffectRequiresAcknowledgedCommit` is met because none of the batch is
+    /// acknowledged until that single sync succeeds. A crash before the sync loses the
+    /// whole batch. A failed or uncertain sync poisons the writer
+    /// (`UncertainAppendPoisonsWriter`) and does not advance the in-memory chain.
+    pub fn append_durable_batch(
+        &mut self,
+        observations: impl IntoIterator<Item = MctObservation>,
+        appended_at: impl Into<String>,
+        durability_class: DurabilityClass,
+        export_status: ExportStatus,
+    ) -> Result<Vec<MctObservationLedgerEntry>> {
+        if self.is_poisoned() {
+            return Err(ObservationLedgerError::WriterPoisoned {
+                path: self.path.clone(),
+            });
+        }
+        let appended_at = appended_at.into();
+        let mut next_sequence = self.next_sequence;
+        let mut previous_hash = self.previous_hash.clone();
+        let mut prepared = Vec::new();
+        for observation in observations {
+            let mut entry = MctObservationLedgerEntry {
+                ledger_id: self.ledger_id.clone(),
+                mother_node_id: self.mother_node_id.clone(),
+                local_sequence: next_sequence,
+                observation,
+                previous_entry_hash: previous_hash.clone(),
+                entry_hash: String::new(),
+                appended_at: appended_at.clone(),
+                durability_class,
+                export_status,
+            };
+            entry.entry_hash = entry_hash(&entry)?;
+            let mut frame =
+                serde_json::to_vec(&entry).map_err(|source| ObservationLedgerError::Json {
+                    path: self.path.clone(),
+                    source,
+                })?;
+            frame.push(b'\n');
+            previous_hash = Some(entry.entry_hash.clone());
+            next_sequence = next_sequence.saturating_add(1);
+            prepared.push((entry, frame));
+        }
+        if prepared.is_empty() {
+            return Ok(Vec::new());
+        }
+        for (_, frame) in &prepared {
+            if let Err(source) = self.file.write_all(frame) {
+                return Err(self.poisoned_append_error(AppendFailureStage::Write, source));
+            }
+        }
+        if let Err(source) = self.file.sync_data() {
+            return Err(self.poisoned_append_error(AppendFailureStage::Durability, source));
+        }
+        let mut acknowledged = Vec::with_capacity(prepared.len());
+        for (entry, frame) in &prepared {
+            let previous = entry
+                .previous_entry_hash
+                .as_ref()
+                .map(|hash| (entry.local_sequence.saturating_sub(1), hash.clone()));
+            self.record_committed_entry(previous, entry, frame);
+            self.previous_hash = Some(entry.entry_hash.clone());
+            self.next_sequence = entry.local_sequence.saturating_add(1);
+            acknowledged.push(entry.clone());
+        }
+        Ok(acknowledged)
     }
 
     pub fn append_batch_before_effect(
@@ -2514,13 +2608,14 @@ fn scan_existing(path: &Path, ledger_id: &str, mother_node_id: &str) -> Result<L
             )));
         }
 
-        remember_scanned_entry(&mut state, &entry, &frame);
+        remember_scanned_entry(path, &mut state, &entry, &frame);
     }
 
     Ok(LedgerScan::Ready(state))
 }
 
 fn remember_scanned_entry(
+    path: &Path,
     state: &mut LedgerScanState,
     entry: &MctObservationLedgerEntry,
     frame: &[u8],
@@ -2550,6 +2645,7 @@ fn remember_scanned_entry(
     state.last_observation_id = Some(observation_id.to_owned());
     state.last_frame_len = frame.len() as u64;
     state.prefix_hasher.update(frame);
+    note_prefix_bytes_hashed(path, frame.len() as u64);
     state.next_sequence += 1;
     state.previous_hash = Some(entry.entry_hash.clone());
     state.committed_len += frame.len() as u64;
@@ -2846,7 +2942,7 @@ fn append_recovery_observation(
     };
     entry.entry_hash = entry_hash(&entry)?;
     let frame = write_entry_durable(file, path, &entry)?;
-    remember_scanned_entry(state, &entry, &frame);
+    remember_scanned_entry(path, state, &entry, &frame);
     Ok(())
 }
 
@@ -3251,6 +3347,7 @@ pub fn resume_ledger_replay(
                 source,
             })?;
         hasher.update(&buffer[..want]);
+        note_prefix_bytes_hashed(path, want as u64);
         for byte in &buffer[..want] {
             carry.push(*byte);
             if *byte == b'\n' {

@@ -6,7 +6,8 @@ use mct_kernel::{
     ChildInstanceState as KernelChildInstanceState, ComponentArtifact, ComponentArtifactId,
     ComponentRuntimeShape, ComponentWitExport, LifecycleExports, LocalChildRuntime, MctCall,
     MctNodeId, NetworkPathClass, ObservationId, OperationTarget, ProjectId, RuntimeKind,
-    VerificationStatus, VisionId, evaluate_child_call_authority,
+    VerificationStatus, VisionId, component_wit_exports_from_operation_ids,
+    evaluate_child_call_authority,
 };
 use patina_sdk::manifest::{
     CHILD_MANIFEST_FILE, ChildManifest as SdkChildManifest, ChildManifestError, ChildPackage,
@@ -556,6 +557,8 @@ pub fn operation_id_from_target(target: &OperationTarget) -> String {
 }
 
 pub fn component_artifact_from_loaded_child(child: &MctLoadedChild) -> ComponentArtifact {
+    let (primary_export, additional_exports) =
+        component_exports_from_allowed_operations(&child.allowed_operations);
     ComponentArtifact {
         artifact_id: ComponentArtifactId::new(child.artifact_id.clone())
             .expect("string ID literal/generated value must be non-empty"),
@@ -563,7 +566,8 @@ pub fn component_artifact_from_loaded_child(child: &MctLoadedChild) -> Component
         artifact_version: child.version.clone(),
         content_hash: format!("sha256:{}", child.wasm_digest.sha256),
         manifest_hash: format!("sha256:{}", child.manifest_digest.sha256),
-        primary_export: component_export_from_allowed_operations(&child.allowed_operations),
+        primary_export,
+        additional_exports,
         runtime_shape: ComponentRuntimeShape::WasmComponent,
         ingress_mode: match child.ingress_mode {
             MctChildIngressMode::Hybrid => KernelChildIngressMode::Hybrid,
@@ -582,50 +586,23 @@ pub fn component_artifact_from_loaded_child(child: &MctLoadedChild) -> Component
     }
 }
 
-fn component_export_from_allowed_operations(allowed_operations: &[String]) -> ComponentWitExport {
-    let Some(first) = allowed_operations.first() else {
-        return ComponentWitExport {
-            namespace: String::new(),
-            interface_name: String::new(),
-            version: "0.0.0".into(),
-            function_names: Vec::new(),
-        };
-    };
-
-    let Some((namespace, interface_and_function)) = first.split_once('/') else {
-        return fallback_component_export(allowed_operations);
-    };
-    let Some((interface_with_version, _function_name)) = interface_and_function.rsplit_once('.')
-    else {
-        return fallback_component_export(allowed_operations);
-    };
-    let (interface_name, version) = interface_with_version
-        .split_once('@')
-        .map_or((interface_with_version, "0.0.0"), |(name, version)| {
-            (name, version)
-        });
-
-    let prefix = format!("{namespace}/{interface_with_version}.");
-    let function_names = allowed_operations
-        .iter()
-        .filter_map(|operation| operation.strip_prefix(&prefix).map(str::to_string))
-        .collect();
-
-    ComponentWitExport {
-        namespace: namespace.into(),
-        interface_name: interface_name.into(),
-        version: version.into(),
-        function_names,
+fn component_exports_from_allowed_operations(
+    allowed_operations: &[String],
+) -> (ComponentWitExport, Vec<ComponentWitExport>) {
+    let mut exports = component_wit_exports_from_operation_ids(allowed_operations);
+    if exports.is_empty() {
+        return (
+            ComponentWitExport {
+                namespace: String::new(),
+                interface_name: String::new(),
+                version: "0.0.0".into(),
+                function_names: Vec::new(),
+            },
+            Vec::new(),
+        );
     }
-}
-
-fn fallback_component_export(allowed_operations: &[String]) -> ComponentWitExport {
-    ComponentWitExport {
-        namespace: String::new(),
-        interface_name: String::new(),
-        version: "0.0.0".into(),
-        function_names: allowed_operations.to_vec(),
-    }
+    let primary = exports.remove(0);
+    (primary, exports)
 }
 
 #[derive(Debug, Error)]
