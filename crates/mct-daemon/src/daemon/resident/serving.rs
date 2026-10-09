@@ -32,7 +32,7 @@ pub(crate) async fn run_serve(mut args: Vec<String>) -> Result<()> {
         None => None,
     };
     let relay_default = take_flag(&mut args, "--relay-default");
-    let bind_addr = take_bind_addr(&mut args)?;
+    let bind_addrs = take_bind_addrs(&mut args)?;
     let config_path = take_option(&mut args, "--config")
         .map(PathBuf::from)
         .unwrap_or_else(default_config_path);
@@ -95,7 +95,7 @@ pub(crate) async fn run_serve(mut args: Vec<String>) -> Result<()> {
             ledger_path,
             control,
             relay_default,
-            bind_addr,
+            bind_addrs,
             max_concurrent_connections,
             supervisor,
         },
@@ -120,7 +120,7 @@ struct ResidentMotherConfig {
     ledger_path: PathBuf,
     pub(super) control: ResidentControlTransport,
     pub(super) relay_default: bool,
-    pub(super) bind_addr: Option<std::net::SocketAddr>,
+    pub(super) bind_addrs: Vec<std::net::SocketAddr>,
     pub(super) max_concurrent_connections: usize,
     pub(super) supervisor: Option<SupervisorRecordV1>,
 }
@@ -216,6 +216,28 @@ impl ResidentStatusSource {
     }
 }
 
+pub(crate) fn receiver_authority_from_ledger(
+    ledger_path: &Path,
+    mother_node_id: &str,
+) -> Option<GrantsAuthorityIdentity> {
+    let verified =
+        mct_observation::load_verified_ledger_replay(ledger_path, "ledger-local", mother_node_id)
+            .ok()?;
+    let authority = verified.replay.current_authority?;
+    Some(GrantsAuthorityIdentity {
+        mother_node_id: authority.mother_node_id,
+        authority_epoch: authority.authority_epoch,
+        generation: authority.generation,
+        source_authority_observation_id: authority.source_authority_observation_id,
+    })
+}
+
+impl ResidentStatusSource {
+    pub(crate) fn receiver_authority(&self) -> Option<GrantsAuthorityIdentity> {
+        receiver_authority_from_ledger(&self.ledger_path, self.node_id.as_str())
+    }
+}
+
 pub(super) fn ledger_sequence_tip(path: &Path) -> u64 {
     JsonlObservationLedger::open_read_only(path, "ledger-local", "local-mct")
         .and_then(|reader| reader.entries())
@@ -243,7 +265,7 @@ where
             ledger_path: record.ledger_path.clone(),
             control: ResidentControlTransport::Uds(record.uds_path.clone()),
             relay_default: false,
-            bind_addr: None,
+            bind_addrs: Vec::new(),
             max_concurrent_connections: 8,
             supervisor: Some(record),
         },
@@ -300,7 +322,7 @@ where
             ledger_path,
             control: ResidentControlTransport::Uds(socket_path),
             relay_default: false,
-            bind_addr: None,
+            bind_addrs: Vec::new(),
             max_concurrent_connections: 8,
             supervisor: None,
         },
@@ -632,7 +654,7 @@ where
     let mut endpoint = MotherIrohEndpoint::bind(iroh_config_with_bind(
         secret_key_hex,
         config.relay_default,
-        config.bind_addr,
+        config.bind_addrs,
     ))
     .await
     .context("bind resident Mother Iroh endpoint")?;
@@ -962,6 +984,19 @@ pub(super) fn resident_observations_for_served_protocol(
 mod tests {
     use super::*;
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+
+    #[tokio::test]
+    async fn receiver_authority_read_returns_epoch_and_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger_path = dir.path().join("observations.jsonl");
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
+        let identity = receiver_authority_from_ledger(&ledger_path, "local-mct")
+            .expect("spawned authority ledger has a current receiver identity");
+        assert_eq!(identity.mother_node_id, "local-mct");
+        assert!(!identity.authority_epoch.is_empty());
+        assert!(!identity.source_authority_observation_id.is_empty());
+        ledger.close().await;
+    }
 
     fn contract_peer_expiry() -> Timestamp {
         Timestamp::new("2099-01-01T00:00:00Z").unwrap()
@@ -1564,7 +1599,7 @@ mod tests {
                 ledger_path: ledger_path.clone(),
                 control: ResidentControlTransport::Uds(socket_path.clone()),
                 relay_default: false,
-                bind_addr: None,
+                bind_addrs: Vec::new(),
                 max_concurrent_connections: 8,
                 supervisor: None,
             },
@@ -1761,7 +1796,7 @@ mod tests {
                 ledger_path,
                 control: ResidentControlTransport::Uds(socket_path),
                 relay_default: false,
-                bind_addr: None,
+                bind_addrs: Vec::new(),
                 max_concurrent_connections: 8,
                 supervisor: None,
             },
@@ -1942,7 +1977,7 @@ mod tests {
                 ledger_path,
                 control: ResidentControlTransport::Uds(socket_path),
                 relay_default: false,
-                bind_addr: None,
+                bind_addrs: Vec::new(),
                 max_concurrent_connections: 8,
                 supervisor: None,
             },
@@ -2041,7 +2076,7 @@ mod tests {
                 ledger_path: ledger_path.clone(),
                 control: ResidentControlTransport::Uds(socket_path),
                 relay_default: false,
-                bind_addr: None,
+                bind_addrs: Vec::new(),
                 max_concurrent_connections: 8,
                 supervisor: None,
             },

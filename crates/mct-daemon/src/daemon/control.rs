@@ -3185,13 +3185,21 @@ pub(super) async fn control_snapshot(
             status_source,
         } => {
             let state = Arc::clone(state);
+            let authority_source = status_source.clone();
             let status = resident_or_default_status(status_source.as_ref());
             tokio::task::spawn_blocking(move || {
                 let state = state
                     .lock()
                     .map_err(|_| MctControlPlaneSnapshotError::runtime_state_unavailable())?;
-                control_snapshot_from_state(&state, status)
-                    .map_err(|_source| MctControlPlaneSnapshotError::runtime_state_unavailable())
+                let mut snapshot = control_snapshot_from_state(&state, status)
+                    .map_err(|_source| MctControlPlaneSnapshotError::runtime_state_unavailable())?;
+                if let Some(identity) = authority_source
+                    .as_ref()
+                    .and_then(|source| source.receiver_authority())
+                {
+                    snapshot = snapshot.with_receiver_authority(identity);
+                }
+                Ok(snapshot)
             })
             .await
             .map_err(|_source| MctControlPlaneSnapshotError::runtime_state_unavailable())?
