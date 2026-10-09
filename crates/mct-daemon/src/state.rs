@@ -8,7 +8,7 @@ use mct_kernel::*;
 use mct_observation::{
     AuthorityCanonicalFactRecordV1, AuthorityProjectionCursorV1, AuthorityProjectionDenyReasonV1,
     AuthorityProjectionHashInputV1, AuthorityProjectionLedgerEvidenceV1,
-    AuthorityProjectionStatusV1, AuthorityStateV1, MctObservationLedgerEntry,
+    AuthorityProjectionStatusV1, AuthorityStateV1, LedgerVerifiedHead, MctObservationLedgerEntry,
     UsableAuthorityProjectionProofV1, authority_projection_hash, authority_state_hash,
     replay_authority_entries,
 };
@@ -4167,6 +4167,14 @@ impl MctRuntimeStateStore {
         self.publish_authority_projection_with_hook(entries, || Ok(()))
     }
 
+    pub fn publish_authority_projection_from_replay(
+        &self,
+        head: &LedgerVerifiedHead,
+        replay: &mct_observation::AuthorityReplayV1,
+    ) -> Result<AuthorityProjectionCursorV1> {
+        self.publish_replay(head, replay, || Ok(()))
+    }
+
     pub fn rebuild_authority_projection(
         &self,
         entries: &[MctObservationLedgerEntry],
@@ -4215,20 +4223,36 @@ impl MctRuntimeStateStore {
     ) -> Result<AuthorityProjectionCursorV1> {
         let replay = replay_authority_entries(entries)
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let last = entries
+            .last()
+            .context("authority projection requires a committed head")?;
+        let head = LedgerVerifiedHead {
+            local_sequence: last.local_sequence,
+            entry_hash: last.entry_hash.clone(),
+            observation_id: last.observation.observation_id.to_string(),
+            ledger_id: last.ledger_id.clone(),
+            mother_node_id: last.mother_node_id.clone(),
+        };
+        self.publish_replay(&head, &replay, before_commit)
+    }
+
+    fn publish_replay(
+        &self,
+        head: &LedgerVerifiedHead,
+        replay: &mct_observation::AuthorityReplayV1,
+        before_commit: impl FnOnce() -> Result<()>,
+    ) -> Result<AuthorityProjectionCursorV1> {
         let authority = replay
             .current_authority
             .clone()
             .context("authority projection requires an epoch fact")?;
-        let head = entries
-            .last()
-            .context("authority projection requires a committed head")?;
         let state_hash = authority_state_hash(&replay.state)?;
         let status = AuthorityProjectionStatusV1::Current;
         let projection_hash = authority_projection_hash(&AuthorityProjectionHashInputV1 {
             source_mother_node_id: head.mother_node_id.clone(),
             source_ledger_id: head.ledger_id.clone(),
             through_sequence: head.local_sequence,
-            through_observation_id: head.observation.observation_id.to_string(),
+            through_observation_id: head.observation_id.clone(),
             through_entry_hash: head.entry_hash.clone(),
             grants_authority: authority.clone(),
             authority_state_hash: state_hash.clone(),
@@ -4241,7 +4265,7 @@ impl MctRuntimeStateStore {
             source_mother_node_id: head.mother_node_id.clone(),
             source_ledger_id: head.ledger_id.clone(),
             through_sequence: head.local_sequence,
-            through_observation_id: head.observation.observation_id.to_string(),
+            through_observation_id: head.observation_id.clone(),
             through_entry_hash: head.entry_hash.clone(),
             grants_authority: authority,
             authority_state_hash: state_hash,

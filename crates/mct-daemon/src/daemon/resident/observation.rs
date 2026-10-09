@@ -81,11 +81,16 @@ fn publish_committed_authority_result(
         return result;
     };
     let publication = ledger
-        .entries()
+        .verified_head()
+        .and_then(|head| {
+            ledger
+                .verified_replay()
+                .map(|replay| (head, replay.clone()))
+        })
         .map_err(|error| error.to_string())
-        .and_then(|entries| {
+        .and_then(|(head, replay)| {
             MctRuntimeStateStore::open(state_path)
-                .and_then(|state| state.publish_authority_projection(&entries))
+                .and_then(|state| state.publish_authority_projection_from_replay(&head, &replay))
                 .map_err(|error| error.to_string())
         });
     match publication {
@@ -405,12 +410,21 @@ impl ResidentLedgerWriter {
                     }
                     ResidentLedgerCommand::PublishAuthorityProjection { state_path, ack } => {
                         let result = ledger
-                            .entries()
+                            .verified_head()
+                            .and_then(|head| {
+                                ledger
+                                    .verified_replay()
+                                    .map(|replay| (head, replay.clone()))
+                            })
                             .map_err(|error| error.to_string())
-                            .and_then(|entries| {
+                            .and_then(|(head, replay)| {
                                 MctRuntimeStateStore::open(&state_path)
                                     .and_then(|state| {
-                                        state.publish_authority_projection(&entries).map(|_| ())
+                                        state
+                                            .publish_authority_projection_from_replay(
+                                                &head, &replay,
+                                            )
+                                            .map(|_| ())
                                     })
                                     .map_err(|error| error.to_string())
                             });
