@@ -283,6 +283,7 @@ pub(super) fn default_wasm_host_config() -> MctWasmHostConfig {
 
 pub(super) async fn serve_iroh(mut args: Vec<String>) -> Result<()> {
     let relay_default = take_flag(&mut args, "--relay-default");
+    let bind_addr = take_bind_addr(&mut args)?;
     let ledger_path = take_option(&mut args, "--ledger")
         .map(PathBuf::from)
         .unwrap_or_else(default_observation_ledger_path);
@@ -294,7 +295,7 @@ pub(super) async fn serve_iroh(mut args: Vec<String>) -> Result<()> {
         .and_then(|value| Timestamp::new(value).context("parse --expires-at timestamp"))?;
     if args.len() < 5 {
         bail!(
-            "expected: mct-daemon iroh serve [--relay-default] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir] --expires-at ts [--ledger path] [--state path]"
+            "expected: mct-daemon iroh serve [--relay-default] [--bind ip:port] <identity-file> <binding-id> <peer-endpoint-id> <peer-node-id> <vision-id> [children-dir] --expires-at ts [--ledger path] [--state path]"
         );
     }
     let identity_path = PathBuf::from(&args[0]);
@@ -319,7 +320,12 @@ pub(super) async fn serve_iroh(mut args: Vec<String>) -> Result<()> {
     })?;
     let observation_sink = resident_iroh_observation_sink(ledger.clone());
     let secret_key_hex = load_or_create_node_secret_key_hex(&identity_path)?;
-    let mut endpoint = MotherIrohEndpoint::bind(iroh_config(secret_key_hex, relay_default)).await?;
+    let mut endpoint = MotherIrohEndpoint::bind(iroh_config_with_bind(
+        secret_key_hex,
+        relay_default,
+        bind_addr,
+    ))
+    .await?;
     let local_endpoint_id = endpoint.snapshot().endpoint_id;
     let ticket = endpoint.ticket();
     let load_report = load_children_from_dir(MctChildLoadOptions::new(children_dir));
@@ -427,13 +433,14 @@ fn record_operator_pointed_egress(
 
 pub(super) async fn call_iroh(mut args: Vec<String>) -> Result<()> {
     let relay_default = take_flag(&mut args, "--relay-default");
+    let bind_addr = take_bind_addr(&mut args)?;
     let binding_signature_ref = take_option(&mut args, "--signature-ref");
     let ledger_path = take_option(&mut args, "--ledger")
         .map(PathBuf::from)
         .unwrap_or_else(default_observation_ledger_path);
     if args.len() < 5 {
         bail!(
-            "expected: mct-daemon iroh call [--relay-default] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function] [--signature-ref proof] [--ledger path]"
+            "expected: mct-daemon iroh call [--relay-default] [--bind ip:port] <identity-file> <peer-ticket-file> <binding-id> <local-node-id> <vision-id> [namespace interface function] [--signature-ref proof] [--ledger path]"
         );
     }
     let identity_path = PathBuf::from(&args[0]);
@@ -451,7 +458,12 @@ pub(super) async fn call_iroh(mut args: Vec<String>) -> Result<()> {
     };
 
     let secret_key_hex = load_or_create_node_secret_key_hex(&identity_path)?;
-    let mut endpoint = MotherIrohEndpoint::bind(iroh_config(secret_key_hex, relay_default)).await?;
+    let mut endpoint = MotherIrohEndpoint::bind(iroh_config_with_bind(
+        secret_key_hex,
+        relay_default,
+        bind_addr,
+    ))
+    .await?;
     let local_endpoint_id = endpoint.snapshot().endpoint_id;
     let peer_ticket = read_ticket(&peer_ticket_path)?;
     let trace_id = TraceId::new("trace-cli-iroh-call")
@@ -489,6 +501,7 @@ pub(super) async fn call_iroh(mut args: Vec<String>) -> Result<()> {
 
 pub(super) async fn call_iroh_peer(mut args: Vec<String>) -> Result<()> {
     let relay_default = take_flag(&mut args, "--relay-default");
+    let bind_addr = take_bind_addr(&mut args)?;
     let config_path = take_option(&mut args, "--config")
         .map(PathBuf::from)
         .unwrap_or_else(default_config_path);
@@ -503,7 +516,7 @@ pub(super) async fn call_iroh_peer(mut args: Vec<String>) -> Result<()> {
         .unwrap_or_else(default_observation_ledger_path);
     if args.len() < 2 {
         bail!(
-            "expected: mct-daemon iroh call-peer [--relay-default] <identity-file> <peer-node-id> [namespace interface function] [--config path] [--children-dir path] [--state path] [--ledger path]"
+            "expected: mct-daemon iroh call-peer [--relay-default] [--bind ip:port] <identity-file> <peer-node-id> [namespace interface function] [--config path] [--children-dir path] [--state path] [--ledger path]"
         );
     }
     let identity_path = PathBuf::from(args.remove(0));
@@ -529,7 +542,12 @@ pub(super) async fn call_iroh_peer(mut args: Vec<String>) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("peer '{peer_node_id}' has no endpoint ticket"))?;
 
     let secret_key_hex = load_or_create_node_secret_key_hex(&identity_path)?;
-    let mut endpoint = MotherIrohEndpoint::bind(iroh_config(secret_key_hex, relay_default)).await?;
+    let mut endpoint = MotherIrohEndpoint::bind(iroh_config_with_bind(
+        secret_key_hex,
+        relay_default,
+        bind_addr,
+    ))
+    .await?;
     let local_endpoint_id = endpoint.snapshot().endpoint_id;
     let trace_id = TraceId::new("trace-cli-iroh-call-peer")
         .expect("string ID literal/generated value must be non-empty");
@@ -804,11 +822,31 @@ pub(super) fn default_observation_ledger_path() -> PathBuf {
 }
 
 pub(super) fn iroh_config(secret_key_hex: String, relay_default: bool) -> MotherIrohEndpointConfig {
+    iroh_config_with_bind(secret_key_hex, relay_default, None)
+}
+
+pub(super) fn iroh_config_with_bind(
+    secret_key_hex: String,
+    relay_default: bool,
+    bind_addr: Option<std::net::SocketAddr>,
+) -> MotherIrohEndpointConfig {
     let mut config = MotherIrohEndpointConfig::local_mct().with_secret_key_hex(secret_key_hex);
     if relay_default {
         config = config.with_relay_mode(MotherIrohRelayMode::Default);
     }
+    if let Some(bind_addr) = bind_addr {
+        config = config.with_bind_addr(bind_addr);
+    }
     config
+}
+
+pub(super) fn take_bind_addr(args: &mut Vec<String>) -> Result<Option<std::net::SocketAddr>> {
+    let Some(value) = take_option(args, "--bind") else {
+        return Ok(None);
+    };
+    value
+        .parse()
+        .with_context(|| format!("parse --bind '{value}' as ip:port"))
 }
 
 pub(super) fn cli_peer_binding(
