@@ -1437,4 +1437,54 @@ mod tests {
             ledger_text.contains("RouteRevalidated") || ledger_text.contains("route_revalidated")
         );
     }
+
+    #[tokio::test]
+    async fn wit_arg_type_mismatch_fails_the_run_and_records_execution_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        write_resident_payload_wasm_child(&children_dir);
+
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        let config_store = MctDaemonConfigStore::new(&config_path);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        config_store
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
+        let (request, payload) = jvm_bridge_protocol_request(
+            "patina:mct-test/echo@0.1.0.echo",
+            r#"["nope"]"#,
+            test_grants_authority_identity(1),
+        )
+        .unwrap();
+
+        let result = execute_resident_call(
+            ResidentRuntimePaths::new(config_path, children_dir, state_path.clone()),
+            ledger.clone(),
+            request,
+            ResidentPayloadIngress::local(Some(payload)),
+        )
+        .await;
+        assert_eq!(result.outcome, CallProtocolOutcome::Failed);
+        assert_eq!(result.safe_message, "runtime execution failed");
+        ledger.close().await;
+
+        let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
+        assert!(ledger_text.contains("runtime_execution_failed"));
+        assert!(ledger_text.contains("expected s32"));
+        let runs = MctRuntimeStateStore::open(&state_path)
+            .unwrap()
+            .list_runs(10)
+            .unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].state, mct_daemon::MctRuntimeRunState::Failed);
+    }
 }

@@ -153,17 +153,21 @@ pub(super) fn execute_authorized_resident_child(
     if let Err(reason) =
         order_admission.and_then(|ledger| ledger.admit_effect(&effect_snapshot, paths.state_path()))
     {
-        return Ok(resident_child_effect_denial_report(
+        let mut report = resident_child_effect_denial_report(
             &call,
             &route_candidate,
             child_execution.route_decision_id.clone(),
             &format!("MotherAuthorityOrder:{reason:?}"),
             &effect_snapshot,
             &child_execution.authorized,
-        ));
+        );
+        report.run_id = Some(run_id);
+        return Ok(report);
     }
 
-    let mut report = execute_resident_wit_child(
+    let failure_decision_id = child_execution.route_decision_id.clone();
+    let failure_route = child_execution.route_taken.clone();
+    let mut report = match execute_resident_wit_child(
         child_execution,
         &request,
         inline_payload.as_deref(),
@@ -171,7 +175,12 @@ pub(super) fn execute_authorized_resident_child(
         &effect_snapshot,
         toy_effect_time_override,
         before_effect_ledger,
-    )?;
+    ) {
+        Ok(report) => report,
+        Err(error) => {
+            resident_execution_failure_report(&call, failure_decision_id, failure_route, &error)
+        }
+    };
     if let Some(route) = report.result.route_taken.as_ref() {
         report.observations.push(resident_executed_on_observation(
             &call,
@@ -829,6 +838,38 @@ fn resident_toy_authority_denial_report(
         run_id: None,
         produced_messages: Vec::new(),
     }
+}
+
+fn resident_execution_failure_report(
+    call: &MctCall,
+    authority_decision_ref: DecisionId,
+    route_taken: RouteTaken,
+    error: &anyhow::Error,
+) -> LocalExecutionReport {
+    let mut report = resident_delivery_failure_report(
+        call,
+        authority_decision_ref,
+        route_taken,
+        CallProtocolReason::ExecutionFailed,
+        "runtime execution failed",
+    );
+    if let Some(observation) = report.observations.first_mut() {
+        observation.detail_ref = Some(bounded_execution_error(error));
+    }
+    report
+}
+
+fn bounded_execution_error(error: &anyhow::Error) -> String {
+    let message = error.to_string();
+    const MAX: usize = 400;
+    if message.len() <= MAX {
+        return message;
+    }
+    let mut end = MAX;
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &message[..end])
 }
 
 pub(super) fn resident_delivery_failure_report(

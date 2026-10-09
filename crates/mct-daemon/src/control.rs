@@ -4,6 +4,7 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use mct_iroh::MotherIrohEndpointSnapshot;
+use mct_kernel::GrantsAuthorityIdentity;
 use serde::{Deserialize, Serialize};
 use std::{future::Future, path::Path, pin::Pin, sync::Arc, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -49,6 +50,11 @@ pub struct MctControlPlaneSnapshot {
     pub status: MctDaemonStatus,
     pub state: Option<MctRuntimeStateSummary>,
     pub runs: Vec<MctRuntimeRunRecord>,
+    /// Current receiver grants identity a local caller must echo on `POST /calls`.
+    ///
+    /// Absent when this process cannot read a current authority projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_authority: Option<GrantsAuthorityIdentity>,
 }
 
 pub type MctControlPlaneSnapshotResult =
@@ -95,7 +101,13 @@ impl MctControlPlaneSnapshot {
             status,
             state,
             runs,
+            receiver_authority: None,
         }
+    }
+
+    pub fn with_receiver_authority(mut self, identity: GrantsAuthorityIdentity) -> Self {
+        self.receiver_authority = Some(identity);
+        self
     }
 }
 
@@ -385,6 +397,13 @@ pub fn handle_control_plane_path_result_with_auth(
         "/state" => json_response(200, &snapshot.state),
         "/runs" => json_response(200, &snapshot.runs),
         "/snapshot" => json_response(200, snapshot),
+        "/receiver-authority" => match &snapshot.receiver_authority {
+            Some(identity) => json_response(200, identity),
+            None => json_response(
+                503,
+                serde_json::json!({"error": "receiver authority unavailable"}),
+            ),
+        },
         _ => json_response(404, serde_json::json!({"error": "not found"})),
     }
 }
@@ -869,6 +888,24 @@ mod tests {
             handle_control_plane_path("POST", "/status", &snapshot()).status_code,
             405
         );
+        assert_eq!(
+            handle_control_plane_path("GET", "/receiver-authority", &snapshot()).status_code,
+            503
+        );
+        let identity = mct_kernel::GrantsAuthorityIdentity {
+            mother_node_id: "local-mct".into(),
+            authority_epoch: "epoch-route".into(),
+            generation: 4,
+            source_authority_observation_id: "obs-authority-route".into(),
+        };
+        let response = handle_control_plane_path(
+            "GET",
+            "/receiver-authority",
+            &snapshot().with_receiver_authority(identity),
+        );
+        assert_eq!(response.status_code, 200);
+        assert!(response.body.contains("epoch-route"));
+        assert!(response.body.contains("\"generation\": 4"));
     }
 
     #[cfg(unix)]

@@ -135,9 +135,11 @@ pub struct MotherIrohEndpointConfig {
     pub accepted_alpns: Vec<String>,
     pub relay_mode: MotherIrohRelayMode,
     pub secret_key_hex: Option<String>,
-    /// When set, the endpoint binds this UDP address instead of Iroh's
-    /// ephemeral port. `None` preserves the historical random-port bind.
-    pub bind_addr: Option<SocketAddr>,
+    /// Explicit UDP sockets. Empty preserves Iroh's ephemeral IPv4 and IPv6
+    /// presets. Any entry clears those presets, then binds each address once.
+    /// At most one address per family; an IPv4-only pin does not leave a
+    /// random IPv6 socket.
+    pub bind_addrs: Vec<SocketAddr>,
 }
 
 impl MotherIrohEndpointConfig {
@@ -146,7 +148,7 @@ impl MotherIrohEndpointConfig {
             accepted_alpns: mct_alpns(),
             relay_mode: MotherIrohRelayMode::Disabled,
             secret_key_hex: None,
-            bind_addr: None,
+            bind_addrs: Vec::new(),
         }
     }
 
@@ -161,7 +163,7 @@ impl MotherIrohEndpointConfig {
     }
 
     pub fn with_bind_addr(mut self, bind_addr: SocketAddr) -> Self {
-        self.bind_addr = Some(bind_addr);
+        self.bind_addrs.push(bind_addr);
         self
     }
 }
@@ -242,12 +244,34 @@ impl MotherIrohEndpoint {
         if let Some(secret_key_hex) = config.secret_key_hex {
             builder = builder.secret_key(secret_key_from_hex(&secret_key_hex)?);
         }
-        if let Some(bind_addr) = config.bind_addr {
-            builder = builder.bind_addr(bind_addr).map_err(|_| {
-                MotherIrohEndpointError::InvalidBindAddr {
-                    value: bind_addr.to_string(),
+        if !config.bind_addrs.is_empty() {
+            builder = builder.clear_ip_transports();
+            let mut seen_v4 = false;
+            let mut seen_v6 = false;
+            for bind_addr in config.bind_addrs {
+                let duplicate = match bind_addr {
+                    SocketAddr::V4(_) => {
+                        let duplicate = seen_v4;
+                        seen_v4 = true;
+                        duplicate
+                    }
+                    SocketAddr::V6(_) => {
+                        let duplicate = seen_v6;
+                        seen_v6 = true;
+                        duplicate
+                    }
+                };
+                if duplicate {
+                    return Err(MotherIrohEndpointError::InvalidBindAddr {
+                        value: format!("{bind_addr} duplicates an address family"),
+                    });
                 }
-            })?;
+                builder = builder.bind_addr(bind_addr).map_err(|_| {
+                    MotherIrohEndpointError::InvalidBindAddr {
+                        value: bind_addr.to_string(),
+                    }
+                })?;
+            }
         }
         let endpoint = builder
             .bind()

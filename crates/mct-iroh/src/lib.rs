@@ -81,7 +81,7 @@ mod tests {
         let config = MotherIrohEndpointConfig::local_mct();
         assert_eq!(config.accepted_alpns, mct_alpns());
         assert_eq!(config.relay_mode, MotherIrohRelayMode::Disabled);
-        assert!(config.bind_addr.is_none());
+        assert!(config.bind_addrs.is_empty());
     }
 
     #[test]
@@ -111,7 +111,74 @@ mod tests {
             "expected fixed port {port} in {:?}",
             bound.direct_addresses
         );
+        assert!(
+            bound
+                .direct_addresses
+                .iter()
+                .all(|addr| !addr.starts_with('[')),
+            "ipv4 pin must not leave a random ipv6 socket: {:?}",
+            bound.direct_addresses
+        );
         endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn endpoint_pins_ipv4_and_ipv6_without_a_third_port() {
+        let v4_probe = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let v6_probe = std::net::UdpSocket::bind("[::1]:0").unwrap();
+        let v4 = v4_probe.local_addr().unwrap();
+        let v6 = v6_probe.local_addr().unwrap();
+        drop(v4_probe);
+        drop(v6_probe);
+        let mut endpoint = MotherIrohEndpoint::bind(
+            MotherIrohEndpointConfig::local_mct()
+                .with_bind_addr(v4)
+                .with_bind_addr(v6),
+        )
+        .await
+        .unwrap();
+        let bound = endpoint.snapshot();
+        assert!(
+            bound
+                .direct_addresses
+                .iter()
+                .any(|addr| addr == &v4.to_string()),
+            "missing pinned ipv4 {v4} in {:?}",
+            bound.direct_addresses
+        );
+        assert!(
+            bound
+                .direct_addresses
+                .iter()
+                .any(|addr| addr == &v6.to_string()),
+            "missing pinned ipv6 {v6} in {:?}",
+            bound.direct_addresses
+        );
+        let pinned = [v4.port(), v6.port()];
+        assert!(
+            bound.direct_addresses.iter().all(|addr| {
+                addr.rsplit_once(':')
+                    .and_then(|(_, port)| port.parse::<u16>().ok())
+                    .is_some_and(|port| pinned.contains(&port))
+            }),
+            "unexpected extra socket in {:?}",
+            bound.direct_addresses
+        );
+        endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn endpoint_rejects_two_binds_in_one_family() {
+        let result = MotherIrohEndpoint::bind(
+            MotherIrohEndpointConfig::local_mct()
+                .with_bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 1)))
+                .with_bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 2))),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(MotherIrohEndpointError::InvalidBindAddr { .. })
+        ));
     }
 
     #[tokio::test]
