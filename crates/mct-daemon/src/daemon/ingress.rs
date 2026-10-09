@@ -844,9 +844,10 @@ pub(super) fn take_bind_addr(args: &mut Vec<String>) -> Result<Option<std::net::
     let Some(value) = take_option(args, "--bind") else {
         return Ok(None);
     };
-    value
-        .parse()
-        .with_context(|| format!("parse --bind '{value}' as ip:port"))
+    let addr = value
+        .parse::<std::net::SocketAddr>()
+        .with_context(|| format!("parse --bind '{value}' as ip:port"))?;
+    Ok(Some(addr))
 }
 
 pub(super) fn cli_peer_binding(
