@@ -47,19 +47,29 @@ claim of exhaustive vulnerability absence.
 
 ## Dependency-audit policy
 
-GitHub CI installs exactly `cargo-audit 0.22.2` and delegates to Tier 0
-([`.github/workflows/ci.yml`](.github/workflows/ci.yml)). Tier 0 runs
-`cargo audit` before Clippy and tests
-([`scripts/ci-tier0.sh`](scripts/ci-tier0.sh)).
+GitHub CI installs exactly `cargo-audit 0.22.2`. Fmt, Clippy, tests, the
+Allium/vocabulary/release checks, and `cargo audit` are separate jobs in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml), so one failure does not
+hide the others. [`scripts/ci-tier0.sh`](scripts/ci-tier0.sh) still runs the
+same checks; `audit` is one of its subcommands.
+
+A pull request fails the audit job only when it changes `Cargo.lock` or a
+`Cargo.toml`. Any other pull request still runs `cargo audit` and publishes a
+warning annotation. A nightly schedule on `main` runs the same
+[`.cargo/audit.toml`](.cargo/audit.toml) policy strictly and opens or updates
+one issue titled "dependency advisories" when it fails. That nightly run also
+flags ignore entries whose `revisit-by` date has passed.
 
 The repository policy is [`.cargo/audit.toml`](.cargo/audit.toml):
 
 - warnings are denied;
 - unmaintained and unsound informational advisories are evaluated;
 - `RUSTSEC-2024-0436` and `RUSTSEC-2026-0173` are explicitly ignored with
-  transitive-dependency rationale in the policy file; and
+  transitive-dependency rationale, a revisit date, and a revisit condition in
+  the policy file; and
 - yanked-package checking is disabled with the pinned `spin 0.10.0` transitive
   rationale recorded in the policy file.
 
 Changes to those exceptions require an explicit policy edit; CI does not apply
-an unrecorded fallback or blanket advisory waiver.
+an unrecorded fallback or blanket advisory waiver. The nightly audit and any
+pull request that touches dependencies keep this policy.
