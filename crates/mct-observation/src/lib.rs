@@ -1678,7 +1678,7 @@ fn authority_change_sort_key(change: &AuthorityChangeV1) -> (&'static str, &str)
 fn grant_shaping_source_is_complete(source: &GrantShapingSourceV1) -> bool {
     match source {
         GrantShapingSourceV1::AdminKey { public_half } => {
-            mct_kernel::admin_key_public_half_error(public_half.as_str()).is_none()
+            public_half.scheme() == mct_kernel::AdminKeySchemeV1::Ed25519
         }
         GrantShapingSourceV1::OperatorDecision { .. }
         | GrantShapingSourceV1::ChildApproval { .. }
@@ -4598,8 +4598,11 @@ mod tests {
         }
     }
 
+    const DAY_PK: &str = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+    const RECOVERY_PK: &str = "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c";
+
     fn half(value: &str) -> AdminKeyPublicHalf {
-        AdminKeyPublicHalf::new(value).expect("public half")
+        AdminKeyPublicHalf::ed25519_from_hex(value).expect("ed25519 public key")
     }
 
     fn admin_key_source(public_half: &str) -> GrantShapingSourceV1 {
@@ -4611,7 +4614,7 @@ mod tests {
     fn day_to_day_admin_grant() -> AdminKeyGrantV1 {
         AdminKeyGrantV1 {
             grant_id: "day-to-day".into(),
-            public_half: half("public-half-day"),
+            public_half: half(DAY_PK),
             class: AdminKeyGrantClassV1::DayToDay,
             scopes: vec![AdminKeyScopeV1::KeyManage, AdminKeyScopeV1::Status],
             expires_at: Some(Timestamp::new("2026-10-14T00:00:00Z").unwrap()),
@@ -4622,7 +4625,7 @@ mod tests {
     fn recovery_admin_grant() -> AdminKeyGrantV1 {
         AdminKeyGrantV1 {
             grant_id: "recovery".into(),
-            public_half: half("public-half-recovery"),
+            public_half: half(RECOVERY_PK),
             class: AdminKeyGrantClassV1::Recovery,
             scopes: vec![AdminKeyScopeV1::KeyManage, AdminKeyScopeV1::StartupGate],
             expires_at: None,
@@ -4667,7 +4670,7 @@ mod tests {
                     grant: Box::new(recovery.clone()),
                 },
             ],
-            admin_key_source("public-half-recovery"),
+            admin_key_source(RECOVERY_PK),
         );
         assert_pending_commit(&result, "admin-grants", 1, &ledger);
 
@@ -4680,7 +4683,7 @@ mod tests {
             serde_json::to_value(replayed_day).unwrap(),
             serde_json::json!({
                 "grant_id": "day-to-day",
-                "public_half": "public-half-day",
+                "public_half": {"scheme": "ed25519", "public_key": DAY_PK},
                 "class": "day_to_day",
                 "scopes": ["key_manage", "status"],
                 "expires_at": "2026-10-14T00:00:00Z",
@@ -4691,7 +4694,7 @@ mod tests {
             serde_json::to_value(replayed_recovery).unwrap(),
             serde_json::json!({
                 "grant_id": "recovery",
-                "public_half": "public-half-recovery",
+                "public_half": {"scheme": "ed25519", "public_key": RECOVERY_PK},
                 "class": "recovery",
                 "scopes": ["key_manage", "startup_gate"],
                 "grant_state": "active"
@@ -4705,7 +4708,7 @@ mod tests {
                 .fact
                 .grant_shaping_sources
                 .as_slice(),
-            &[admin_key_source("public-half-recovery")]
+            &[admin_key_source(RECOVERY_PK)]
         );
     }
 
@@ -4723,7 +4726,7 @@ mod tests {
             vec![AuthorityChangeV1::PairingTicketIssued {
                 ticket_hash: ticket_hash.into(),
             }],
-            admin_key_source("public-half-day"),
+            admin_key_source(DAY_PK),
         );
         assert_pending_commit(&issued, "ticket-issue", 1, &ledger);
         let consumed = commit_authority(
@@ -4732,7 +4735,7 @@ mod tests {
             vec![AuthorityChangeV1::PairingTicketConsumed {
                 ticket_hash: ticket_hash.into(),
             }],
-            admin_key_source("public-half-day"),
+            admin_key_source(DAY_PK),
         );
         assert_pending_commit(&consumed, "ticket-consume", 2, &ledger);
 
@@ -4753,7 +4756,7 @@ mod tests {
             vec![AuthorityChangeV1::PairingTicketConsumed {
                 ticket_hash: ticket_hash.into(),
             }],
-            admin_key_source("public-half-day"),
+            admin_key_source(DAY_PK),
         );
         assert_eq!(
             second,
@@ -4801,7 +4804,7 @@ mod tests {
                     grant: Box::new(recovery_admin_grant()),
                 },
             ],
-            admin_key_source("public-half-recovery"),
+            admin_key_source(RECOVERY_PK),
         );
         assert_pending_commit(&granted, "admin-grants", 1, &ledger);
 
@@ -4812,7 +4815,7 @@ mod tests {
             vec![AuthorityChangeV1::AdminKeyGrantRevoke {
                 grant_id: "recovery".into(),
             }],
-            admin_key_source("public-half-day"),
+            admin_key_source(DAY_PK),
         );
         assert_eq!(
             revoke,
@@ -4852,7 +4855,7 @@ mod tests {
             changes: vec![AuthorityChangeV1::AdminKeyGrantRevoke {
                 grant_id: "recovery".into(),
             }],
-            grant_shaping_sources: vec![admin_key_source("public-half-day")],
+            grant_shaping_sources: vec![admin_key_source(DAY_PK)],
             resulting_state: replay
                 .mutations
                 .get("admin-grants")
@@ -4915,7 +4918,7 @@ mod tests {
                     grant: Box::new(recovery_admin_grant()),
                 },
             ],
-            admin_key_source("public-half-recovery"),
+            admin_key_source(RECOVERY_PK),
         );
         let replay = replay_authority_entries(&ledger.entries().unwrap()).unwrap();
         let grants: Vec<_> = replay.state.admin_key_grants.values().cloned().collect();
@@ -4935,36 +4938,33 @@ mod tests {
         };
 
         assert_eq!(
-            check(
-                "public-half-day",
-                AdminKeyCheckAction::Route(AdminKeyScopeV1::Status),
-            ),
+            check(DAY_PK, AdminKeyCheckAction::Route(AdminKeyScopeV1::Status),),
             allow("day-to-day", AdminKeyScopeV1::Status)
         );
         assert_eq!(
             check(
-                "public-half-day",
+                DAY_PK,
                 AdminKeyCheckAction::Route(AdminKeyScopeV1::StartupGate),
             ),
             deny(AdminKeyGrantReason::WrongScope, Some("day-to-day"))
         );
         assert_eq!(
             check(
-                "public-half-recovery",
+                RECOVERY_PK,
                 AdminKeyCheckAction::Route(AdminKeyScopeV1::StartupGate),
             ),
             allow("recovery", AdminKeyScopeV1::StartupGate)
         );
         assert_eq!(
             check(
-                "public-half-recovery",
+                RECOVERY_PK,
                 AdminKeyCheckAction::Route(AdminKeyScopeV1::Status),
             ),
             deny(AdminKeyGrantReason::WrongScope, Some("recovery"))
         );
         assert_eq!(
             check(
-                "public-half-day",
+                DAY_PK,
                 AdminKeyCheckAction::Revoke {
                     target_grant_id: "recovery".into(),
                 },
@@ -4974,7 +4974,7 @@ mod tests {
         assert_eq!(
             evaluate_admin_key_grant(
                 &AdminKeyGrantCheckRequest {
-                    public_half: half("public-half-day"),
+                    public_half: half(DAY_PK),
                     action: AdminKeyCheckAction::Route(AdminKeyScopeV1::Status),
                     now: Timestamp::new("2026-10-14T00:00:00Z").unwrap(),
                     presented_generation: generation,

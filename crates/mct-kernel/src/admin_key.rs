@@ -7,8 +7,9 @@
 
 use crate::grant_check::{ExpiryDecision, ExpiryRequirement, action_is_allowed, expiry_decision};
 use crate::id::Timestamp;
+use ed25519_dalek::VerifyingKey;
 use serde::de::Error as _;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Route scope named on an admin-key grant.
 ///
@@ -116,33 +117,126 @@ pub enum AdminKeyGrantStateV1 {
     Revoked,
 }
 
-/// Public half of an admin key.
+/// Scheme of an admin-key public half.
 ///
-/// The secret and any armored raw key are not representable. Hex and other
-/// unarmored public halves stay. A Child that deserializes a grant or a
-/// shaping source therefore cannot receive raw key material through this type.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(transparent)]
-pub struct AdminKeyPublicHalf(String);
+/// `Ed25519` is the only scheme this phase stores. Ed25519+ML-DSA-65 is the
+/// next scheme and is not a variant yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdminKeySchemeV1 {
+    /// One Ed25519 verifying key.
+    Ed25519,
+}
+
+/// Ed25519 verifying key checked by [`VerifyingKey`].
+///
+/// The bytes are the canonical compressed Edwards-Y encoding.
+#[derive(Clone, Copy, Eq)]
+pub struct Ed25519VerifyingKey(VerifyingKey);
+
+impl PartialEq for Ed25519VerifyingKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.as_bytes() == other.0.as_bytes()
+    }
+}
+
+impl std::fmt::Debug for Ed25519VerifyingKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Ed25519VerifyingKey(")?;
+        formatter.write_str(&hex_encode(self.0.as_bytes()))?;
+        formatter.write_str(")")
+    }
+}
+
+impl Ed25519VerifyingKey {
+    /// Returns the dalek verifying key.
+    pub fn verifying_key(self) -> VerifyingKey {
+        self.0
+    }
+
+    /// Returns the canonical 32-byte compressed public key.
+    pub fn to_bytes(self) -> [u8; 32] {
+        self.0.to_bytes()
+    }
+}
+
+/// Versioned public half of an admin key.
+///
+/// The only variant is an Ed25519 verifying key. A later variant can carry
+/// the Ed25519+ML-DSA-65 public key. This phase does not parse or verify
+/// ML-DSA. Construction rejects text that is not a canonical Ed25519 point,
+/// including armored secrets, empty text, and hex that does not decompress.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AdminKeyPublicHalf {
+    /// Canonical Ed25519 public key.
+    Ed25519(Ed25519VerifyingKey),
+}
+
+impl std::fmt::Debug for AdminKeyPublicHalf {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ed25519(key) => formatter.debug_tuple("Ed25519").field(key).finish(),
+        }
+    }
+}
 
 impl AdminKeyPublicHalf {
-    /// Accepts one non-empty public half.
+    /// Parses a canonical 32-byte Ed25519 public key.
     ///
     /// # Errors
     ///
-    /// Returns an error when `value` is empty, contains whitespace, or is
-    /// armored raw key material such as a private-key PEM.
-    pub fn new(value: impl AsRef<str>) -> Result<Self, &'static str> {
-        let value = value.as_ref();
-        if let Some(error) = admin_key_public_half_error(value) {
-            return Err(error);
+    /// Returns an error when `bytes` is not a dalek [`VerifyingKey`] in
+    /// canonical compressed form.
+    pub fn ed25519_from_bytes(bytes: &[u8; 32]) -> Result<Self, &'static str> {
+        let key = VerifyingKey::from_bytes(bytes).map_err(|_| NOT_ED25519_PUBLIC_KEY)?;
+        let canonical = key.to_edwards().compress().to_bytes();
+        if canonical != *bytes {
+            return Err(NOT_ED25519_PUBLIC_KEY);
         }
-        Ok(Self(value.to_owned()))
+        Ok(Self::Ed25519(Ed25519VerifyingKey(key)))
     }
 
-    /// Returns the public half text.
-    pub fn as_str(&self) -> &str {
-        &self.0
+    /// Parses 64 hex characters of a canonical Ed25519 public key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `hex` is not a canonical Ed25519 point. Empty
+    /// text, armored secrets, and other non-points fail.
+    pub fn ed25519_from_hex(hex: &str) -> Result<Self, &'static str> {
+        let bytes = hex_decode_32(hex)?;
+        Self::ed25519_from_bytes(&bytes)
+    }
+
+    /// Scheme stored in this public half.
+    pub fn scheme(self) -> AdminKeySchemeV1 {
+        match self {
+            Self::Ed25519(_) => AdminKeySchemeV1::Ed25519,
+        }
+    }
+
+    /// Canonical compressed public-key bytes for the Ed25519 scheme.
+    pub fn to_ed25519_bytes(self) -> [u8; 32] {
+        match self {
+            Self::Ed25519(key) => key.to_bytes(),
+        }
+    }
+
+    /// Lowercase hex of [`Self::to_ed25519_bytes`].
+    pub fn to_hex(self) -> String {
+        hex_encode(&self.to_ed25519_bytes())
+    }
+}
+
+impl Serialize for AdminKeyPublicHalf {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeStruct as _;
+        let mut state = serializer.serialize_struct("AdminKeyPublicHalf", 2)?;
+        state.serialize_field("scheme", "ed25519")?;
+        let hex = self.to_hex();
+        state.serialize_field("public_key", &hex)?;
+        state.end()
     }
 }
 
@@ -151,22 +245,63 @@ impl<'de> Deserialize<'de> for AdminKeyPublicHalf {
     where
         D: Deserializer<'de>,
     {
-        let value = String::deserialize(deserializer)?;
-        Self::new(value).map_err(D::Error::custom)
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            scheme: String,
+            public_key: String,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        if wire.scheme != "ed25519" {
+            return Err(D::Error::custom(
+                "admin key public half scheme is not ed25519",
+            ));
+        }
+        Self::ed25519_from_hex(&wire.public_key).map_err(D::Error::custom)
     }
 }
 
-/// Why a public-half string is not admissible.
+const NOT_ED25519_PUBLIC_KEY: &str = "admin key public half must be an Ed25519 verifying key";
+
+/// Why a hex public-key string is not an Ed25519 verifying key.
 ///
-/// `None` means the text is a public half, not a secret and not raw key material.
-pub fn admin_key_public_half_error(value: &str) -> Option<&'static str> {
-    if !non_empty_token(value) {
-        return Some("admin key grant stores only a non-empty public half");
+/// `None` means `hex` is 64 hex characters of a canonical Ed25519 point.
+pub fn admin_key_public_half_error(hex: &str) -> Option<&'static str> {
+    AdminKeyPublicHalf::ed25519_from_hex(hex).err()
+}
+
+fn hex_encode(bytes: &[u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(64);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
     }
-    if public_half_is_raw_key(value) {
-        return Some("admin key grant stores a public half, not raw key material");
+    out
+}
+
+fn hex_decode_32(value: &str) -> Result<[u8; 32], &'static str> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 64 {
+        return Err(NOT_ED25519_PUBLIC_KEY);
     }
-    None
+    let mut out = [0u8; 32];
+    for index in 0..32 {
+        let high = hex_nibble(bytes[index * 2])?;
+        let low = hex_nibble(bytes[index * 2 + 1])?;
+        out[index] = (high << 4) | low;
+    }
+    Ok(out)
+}
+
+fn hex_nibble(byte: u8) -> Result<u8, &'static str> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(NOT_ED25519_PUBLIC_KEY),
+    }
 }
 
 /// Ledger fact for one admin key. Mother stores the public half only.
@@ -175,7 +310,7 @@ pub fn admin_key_public_half_error(value: &str) -> Option<&'static str> {
 pub struct AdminKeyGrantV1 {
     /// Stable grant identifier.
     pub grant_id: String,
-    /// Public half. Raw key material cannot be stored in this field.
+    /// Ed25519 verifying key. Raw key material cannot be stored in this field.
     pub public_half: AdminKeyPublicHalf,
     /// Day-to-day or recovery.
     pub class: AdminKeyGrantClassV1,
@@ -195,8 +330,8 @@ pub fn admin_key_grant_shape_error(grant: &AdminKeyGrantV1) -> Option<&'static s
     if !non_empty_token(&grant.grant_id) {
         return Some("admin key grant id is empty");
     }
-    if let Some(error) = admin_key_public_half_error(grant.public_half.as_str()) {
-        return Some(error);
+    if grant.public_half.scheme() != AdminKeySchemeV1::Ed25519 {
+        return Some("admin key public half scheme is not ed25519");
     }
     if !admin_key_scopes_are_canonical(&grant.scopes) {
         return Some("admin key scopes are empty or not strictly ordered");
@@ -241,7 +376,7 @@ pub enum AdminKeyCheckAction {
 /// Facts for one admin-key grant check.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AdminKeyGrantCheckRequest {
-    /// Presented public half. A secret cannot be represented here.
+    /// Presented Ed25519 verifying key. A secret cannot be represented here.
     pub public_half: AdminKeyPublicHalf,
     /// Route scope, or a revoke of one grant.
     pub action: AdminKeyCheckAction,
@@ -322,9 +457,6 @@ pub fn evaluate_admin_key_grant(
 ) -> AdminKeyGrantCheckResult {
     if request.presented_generation != request.current_generation {
         return deny(AdminKeyGrantReason::StaleGeneration, None);
-    }
-    if admin_key_public_half_error(request.public_half.as_str()).is_some() {
-        return deny(AdminKeyGrantReason::WrongKey, None);
     }
 
     let route_scope = match &request.action {
@@ -510,23 +642,6 @@ fn non_empty_token(value: &str) -> bool {
     !value.is_empty() && !value.chars().any(char::is_whitespace)
 }
 
-/// A public half is not a PEM or other armored private key.
-///
-/// Hex-encoded public halves stay. Armor such as `BEGIN PRIVATE KEY` is raw
-/// key material and is not a grant fact a Child, or the ledger, can hold.
-fn public_half_is_raw_key(value: &str) -> bool {
-    let compact: String = value
-        .chars()
-        .filter(|ch| !ch.is_whitespace())
-        .flat_map(char::to_uppercase)
-        .collect();
-    compact.contains("PRIVATEKEY")
-        || compact.contains("SECRETKEY")
-        || compact.contains("BEGINOPENSSH")
-        || compact.contains("BEGINRSA")
-        || compact.contains("BEGINEC")
-}
-
 fn admin_key_scopes_are_canonical(scopes: &[AdminKeyScopeV1]) -> bool {
     !scopes.is_empty() && scopes.windows(2).all(|pair| pair[0] < pair[1])
 }
@@ -543,14 +658,23 @@ mod tests {
         Timestamp::new("2026-10-14T00:00:00Z").unwrap()
     }
 
+    /// RFC 8032 test 1 public key.
+    const DAY_PK: &str = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+    /// RFC 8032 test 2 public key.
+    const RECOVERY_PK: &str = "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c";
+    /// RFC 8032 test 3 public key.
+    const OTHER_PK: &str = "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025";
+    /// A different valid Ed25519 point, absent from the grant set.
+    const ABSENT_PK: &str = "278117fc144c72340f67d0f2316e8386ceffbf2b2428c9c51fef7c597f1d426e";
+
     fn half(value: &str) -> AdminKeyPublicHalf {
-        AdminKeyPublicHalf::new(value).expect("public half")
+        AdminKeyPublicHalf::ed25519_from_hex(value).expect("ed25519 public key")
     }
 
     fn day_to_day(scopes: Vec<AdminKeyScopeV1>) -> AdminKeyGrantV1 {
         AdminKeyGrantV1 {
             grant_id: "day-to-day".into(),
-            public_half: half("public-half-day"),
+            public_half: half(DAY_PK),
             class: AdminKeyGrantClassV1::DayToDay,
             scopes,
             expires_at: Some(later()),
@@ -561,7 +685,7 @@ mod tests {
     fn recovery() -> AdminKeyGrantV1 {
         AdminKeyGrantV1 {
             grant_id: "recovery".into(),
-            public_half: half("public-half-recovery"),
+            public_half: half(RECOVERY_PK),
             class: AdminKeyGrantClassV1::Recovery,
             scopes: recovery_grant_scopes().to_vec(),
             expires_at: None,
@@ -601,19 +725,13 @@ mod tests {
     fn day_to_day_key_allows_its_route_scope_and_denies_another() {
         let grant = day_to_day(vec![AdminKeyScopeV1::Status]);
         let allowed = evaluate_admin_key_grant(
-            &request(
-                "public-half-day",
-                AdminKeyCheckAction::Route(AdminKeyScopeV1::Status),
-            ),
+            &request(DAY_PK, AdminKeyCheckAction::Route(AdminKeyScopeV1::Status)),
             std::slice::from_ref(&grant),
         );
         assert_eq!(allowed, allow("day-to-day", AdminKeyScopeV1::Status));
 
         let denied = evaluate_admin_key_grant(
-            &request(
-                "public-half-day",
-                AdminKeyCheckAction::Route(AdminKeyScopeV1::PeerAdd),
-            ),
+            &request(DAY_PK, AdminKeyCheckAction::Route(AdminKeyScopeV1::PeerAdd)),
             &[grant],
         );
         assert_eq!(
@@ -627,7 +745,7 @@ mod tests {
         let grant = day_to_day(vec![AdminKeyScopeV1::Status]);
         let wrong_key = evaluate_admin_key_grant(
             &request(
-                "other-half",
+                ABSENT_PK,
                 AdminKeyCheckAction::Route(AdminKeyScopeV1::Status),
             ),
             std::slice::from_ref(&grant),
@@ -637,10 +755,7 @@ mod tests {
         let mut revoked = grant.clone();
         revoked.grant_state = AdminKeyGrantStateV1::Revoked;
         let revoked_result = evaluate_admin_key_grant(
-            &request(
-                "public-half-day",
-                AdminKeyCheckAction::Route(AdminKeyScopeV1::Status),
-            ),
+            &request(DAY_PK, AdminKeyCheckAction::Route(AdminKeyScopeV1::Status)),
             &[revoked],
         );
         assert_eq!(
@@ -648,10 +763,7 @@ mod tests {
             deny(AdminKeyGrantReason::RevokedGrant, Some("day-to-day"))
         );
 
-        let mut stale = request(
-            "public-half-day",
-            AdminKeyCheckAction::Route(AdminKeyScopeV1::Status),
-        );
+        let mut stale = request(DAY_PK, AdminKeyCheckAction::Route(AdminKeyScopeV1::Status));
         stale.presented_generation = 3;
         let stale_result = evaluate_admin_key_grant(&stale, &[grant]);
         assert_eq!(
@@ -665,10 +777,7 @@ mod tests {
         let mut permanent = day_to_day(vec![AdminKeyScopeV1::Status]);
         permanent.expires_at = None;
         let missing = evaluate_admin_key_grant(
-            &request(
-                "public-half-day",
-                AdminKeyCheckAction::Route(AdminKeyScopeV1::Status),
-            ),
+            &request(DAY_PK, AdminKeyCheckAction::Route(AdminKeyScopeV1::Status)),
             &[permanent],
         );
         assert_eq!(
@@ -679,10 +788,7 @@ mod tests {
         let mut expired = day_to_day(vec![AdminKeyScopeV1::Status]);
         expired.expires_at = Some(now());
         let at_expiry = evaluate_admin_key_grant(
-            &request(
-                "public-half-day",
-                AdminKeyCheckAction::Route(AdminKeyScopeV1::Status),
-            ),
+            &request(DAY_PK, AdminKeyCheckAction::Route(AdminKeyScopeV1::Status)),
             &[expired],
         );
         assert_eq!(
@@ -696,7 +802,7 @@ mod tests {
         let mut grant = recovery();
         let gate = evaluate_admin_key_grant(
             &request(
-                "public-half-recovery",
+                RECOVERY_PK,
                 AdminKeyCheckAction::Route(AdminKeyScopeV1::StartupGate),
             ),
             std::slice::from_ref(&grant),
@@ -705,7 +811,7 @@ mod tests {
 
         let manage = evaluate_admin_key_grant(
             &request(
-                "public-half-recovery",
+                RECOVERY_PK,
                 AdminKeyCheckAction::Route(AdminKeyScopeV1::KeyManage),
             ),
             std::slice::from_ref(&grant),
@@ -714,7 +820,7 @@ mod tests {
 
         let status = evaluate_admin_key_grant(
             &request(
-                "public-half-recovery",
+                RECOVERY_PK,
                 AdminKeyCheckAction::Route(AdminKeyScopeV1::Status),
             ),
             std::slice::from_ref(&grant),
@@ -725,7 +831,7 @@ mod tests {
         );
 
         let mut far_future = request(
-            "public-half-recovery",
+            RECOVERY_PK,
             AdminKeyCheckAction::Route(AdminKeyScopeV1::StartupGate),
         );
         far_future.now = Timestamp::new("2099-01-01T00:00:00Z").unwrap();
@@ -737,7 +843,7 @@ mod tests {
         grant.expires_at = Some(later());
         let dated = evaluate_admin_key_grant(
             &request(
-                "public-half-recovery",
+                RECOVERY_PK,
                 AdminKeyCheckAction::Route(AdminKeyScopeV1::StartupGate),
             ),
             &[grant],
@@ -753,7 +859,7 @@ mod tests {
         let grant = day_to_day(vec![AdminKeyScopeV1::KeyManage, AdminKeyScopeV1::Status]);
         let gate = evaluate_admin_key_grant(
             &request(
-                "public-half-day",
+                DAY_PK,
                 AdminKeyCheckAction::Route(AdminKeyScopeV1::StartupGate),
             ),
             std::slice::from_ref(&grant),
@@ -766,10 +872,7 @@ mod tests {
         let mut carries_gate = grant;
         carries_gate.scopes = vec![AdminKeyScopeV1::StartupGate, AdminKeyScopeV1::Status];
         let malformed = evaluate_admin_key_grant(
-            &request(
-                "public-half-day",
-                AdminKeyCheckAction::Route(AdminKeyScopeV1::Status),
-            ),
+            &request(DAY_PK, AdminKeyCheckAction::Route(AdminKeyScopeV1::Status)),
             &[carries_gate],
         );
         assert_eq!(
@@ -784,7 +887,7 @@ mod tests {
         let recovery = recovery();
         let revoked = evaluate_admin_key_grant(
             &request(
-                "public-half-day",
+                DAY_PK,
                 AdminKeyCheckAction::Revoke {
                     target_grant_id: "recovery".into(),
                 },
@@ -798,7 +901,7 @@ mod tests {
 
         let outcome = crate::evaluate_grant_subject(crate::GrantCheckSubject::AdminKey {
             request: &request(
-                "public-half-day",
+                DAY_PK,
                 AdminKeyCheckAction::Revoke {
                     target_grant_id: "recovery".into(),
                 },
@@ -820,7 +923,7 @@ mod tests {
         let recovery = recovery();
         let self_revoke = evaluate_admin_key_grant(
             &request(
-                "public-half-recovery",
+                RECOVERY_PK,
                 AdminKeyCheckAction::Revoke {
                     target_grant_id: "recovery".into(),
                 },
@@ -834,7 +937,7 @@ mod tests {
 
         let revoke_day = evaluate_admin_key_grant(
             &request(
-                "public-half-recovery",
+                RECOVERY_PK,
                 AdminKeyCheckAction::Revoke {
                     target_grant_id: "day-to-day".into(),
                 },
@@ -848,11 +951,11 @@ mod tests {
     fn day_to_day_key_cannot_revoke_itself_and_can_revoke_another_day_to_day_key() {
         let mut other = day_to_day(vec![AdminKeyScopeV1::Status]);
         other.grant_id = "other-day".into();
-        other.public_half = half("public-half-other");
+        other.public_half = half(OTHER_PK);
         let holder = day_to_day(vec![AdminKeyScopeV1::KeyManage]);
         let self_revoke = evaluate_admin_key_grant(
             &request(
-                "public-half-day",
+                DAY_PK,
                 AdminKeyCheckAction::Revoke {
                     target_grant_id: "day-to-day".into(),
                 },
@@ -866,7 +969,7 @@ mod tests {
 
         let revoke_other = evaluate_admin_key_grant(
             &request(
-                "public-half-day",
+                DAY_PK,
                 AdminKeyCheckAction::Revoke {
                     target_grant_id: "other-day".into(),
                 },
@@ -884,7 +987,7 @@ mod tests {
         let grant = day_to_day(vec![AdminKeyScopeV1::PeerAdd, AdminKeyScopeV1::Status]);
         let revoke = evaluate_admin_key_grant(
             &request(
-                "public-half-day",
+                DAY_PK,
                 AdminKeyCheckAction::Revoke {
                     target_grant_id: "missing".into(),
                 },
@@ -900,10 +1003,7 @@ mod tests {
     #[test]
     fn empty_grant_set_denies() {
         let denied = evaluate_admin_key_grant(
-            &request(
-                "public-half-day",
-                AdminKeyCheckAction::Route(AdminKeyScopeV1::Status),
-            ),
+            &request(DAY_PK, AdminKeyCheckAction::Route(AdminKeyScopeV1::Status)),
             &[],
         );
         assert_eq!(denied, deny(AdminKeyGrantReason::WrongKey, None));
@@ -916,28 +1016,48 @@ mod tests {
             serde_json::to_value(&grant).unwrap(),
             serde_json::json!({
                 "grant_id": "day-to-day",
-                "public_half": "public-half-day",
+                "public_half": {
+                    "scheme": "ed25519",
+                    "public_key": DAY_PK
+                },
                 "class": "day_to_day",
                 "scopes": ["status"],
                 "expires_at": "2026-10-14T00:00:00Z",
                 "grant_state": "active"
             })
         );
+        assert_eq!(grant.public_half.to_hex(), DAY_PK);
+        assert_eq!(
+            grant.public_half.to_ed25519_bytes(),
+            hex_decode_32(DAY_PK).unwrap()
+        );
+        assert_eq!(grant.public_half.scheme(), AdminKeySchemeV1::Ed25519);
 
+        let uppercase = DAY_PK.to_ascii_uppercase();
         assert_eq!(
-            AdminKeyPublicHalf::new("-----BEGINPRIVATEKEY-----abc"),
-            Err("admin key grant stores a public half, not raw key material")
+            AdminKeyPublicHalf::ed25519_from_hex(&uppercase)
+                .expect("uppercase hex of a point")
+                .to_hex(),
+            DAY_PK
         );
-        assert_eq!(
-            AdminKeyPublicHalf::new("-----BEGIN PRIVATE KEY-----\nabc"),
-            Err("admin key grant stores only a non-empty public half")
-        );
-        assert_eq!(
-            AdminKeyPublicHalf::new("-----BEGINPUBLICKEY-----abc")
-                .expect("unarmored public key text")
-                .as_str(),
-            "-----BEGINPUBLICKEY-----abc"
-        );
+
+        for rejected in [
+            "",
+            "aabbccddeeff",
+            "-----BEGINPRIVATEKEY-----abc",
+            "-----BEGIN PRIVATE KEY-----\nabc",
+            "-----BEGINPUBLICKEY-----abc",
+            &"ff".repeat(64),
+            // y = 2^255 - 19 is the field prime, not a reduced Edwards coordinate.
+            "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        ] {
+            assert_eq!(
+                AdminKeyPublicHalf::ed25519_from_hex(rejected),
+                Err("admin key public half must be an Ed25519 verifying key"),
+                "{rejected}"
+            );
+        }
+
         let armored = r#"{
             "grant_id": "day-to-day",
             "public_half": "-----BEGINPRIVATEKEY-----abc",
@@ -946,17 +1066,74 @@ mod tests {
             "expires_at": "2026-10-14T00:00:00Z",
             "grant_state": "active"
         }"#;
+        let armored_error = serde_json::from_str::<AdminKeyGrantV1>(armored).unwrap_err();
         assert_eq!(
-            serde_json::from_str::<AdminKeyGrantV1>(armored)
+            armored_error.to_string(),
+            "invalid type: string \"-----BEGINPRIVATEKEY-----abc\", expected struct Wire at line 3 column 57"
+        );
+
+        let off_curve = r#"{
+            "grant_id": "day-to-day",
+            "public_half": {
+                "scheme": "ed25519",
+                "public_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+            },
+            "class": "day_to_day",
+            "scopes": ["status"],
+            "expires_at": "2026-10-14T00:00:00Z",
+            "grant_state": "active"
+        }"#;
+        assert_eq!(
+            serde_json::from_str::<AdminKeyGrantV1>(off_curve)
                 .unwrap_err()
                 .to_string(),
-            "admin key grant stores a public half, not raw key material at line 3 column 57"
+            "admin key public half must be an Ed25519 verifying key at line 6 column 13"
+        );
+
+        let ml_dsa = r#"{"scheme":"ed25519_ml_dsa65","public_key":"d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"}"#;
+        assert_eq!(
+            serde_json::from_str::<AdminKeyPublicHalf>(ml_dsa)
+                .unwrap_err()
+                .to_string(),
+            "admin key public half scheme is not ed25519"
+        );
+    }
+
+    /// RFC 8032 test 1 seed, compared with the public key derived from it.
+    #[test]
+    fn ed25519_seed_bytes_are_checked_as_a_point_not_as_a_secret() {
+        const SEED: &str = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
+        let seed = hex_decode_32(SEED).unwrap();
+        let derived = ed25519_dalek::SigningKey::from_bytes(&seed).verifying_key();
+        assert_eq!(hex_encode(derived.as_bytes()), DAY_PK);
+        assert_eq!(
+            AdminKeyPublicHalf::ed25519_from_bytes(derived.as_bytes())
+                .expect("derived public key")
+                .to_hex(),
+            DAY_PK
         );
         assert_eq!(
-            AdminKeyPublicHalf::new("aabbccddeeff")
-                .expect("hex public half")
-                .as_str(),
-            "aabbccddeeff"
+            AdminKeyPublicHalf::ed25519_from_bytes(&seed).map(|key| key.to_hex()),
+            Err("admin key public half must be an Ed25519 verifying key")
+        );
+
+        // These 32 bytes are a valid point, so they are also a legal seed.
+        let point_as_seed = hex_decode_32(DAY_PK).unwrap();
+        assert_eq!(
+            AdminKeyPublicHalf::ed25519_from_bytes(&point_as_seed)
+                .expect("a valid point is accepted")
+                .to_hex(),
+            DAY_PK
+        );
+        let derived = hex_encode(
+            ed25519_dalek::SigningKey::from_bytes(&point_as_seed)
+                .verifying_key()
+                .as_bytes(),
+        );
+        assert_ne!(derived, DAY_PK);
+        assert_eq!(
+            derived,
+            "134c745ace0685684eff306853268b6eea82cfa84376ad7516dd4381b7bdcbd9"
         );
     }
 }

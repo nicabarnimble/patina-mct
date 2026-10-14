@@ -38,8 +38,9 @@ pub mod watch;
 pub use admin_key::{
     AdminKeyCheckAction, AdminKeyGrantCheckRequest, AdminKeyGrantCheckResult, AdminKeyGrantClassV1,
     AdminKeyGrantReason, AdminKeyGrantStateV1, AdminKeyGrantV1, AdminKeyGrantVerdict,
-    AdminKeyPublicHalf, AdminKeyScopeV1, admin_key_grant_shape_error, admin_key_public_half_error,
-    evaluate_admin_key_grant, recovery_grant_scopes,
+    AdminKeyPublicHalf, AdminKeySchemeV1, AdminKeyScopeV1, Ed25519VerifyingKey,
+    admin_key_grant_shape_error, admin_key_public_half_error, evaluate_admin_key_grant,
+    recovery_grant_scopes,
 };
 pub use artifact::{
     ArtifactAcquisition, ArtifactAcquisitionAuthorityPath, ArtifactAcquisitionAuthorityReason,
