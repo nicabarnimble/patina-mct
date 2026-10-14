@@ -23,9 +23,9 @@ JSON → full trace reconstructible from the observation ledger.
 All of it runs under the hardened authority path: validated timestamps and
 IDs, kernel-minted unforgeable capability tokens, staleness guards at
 effect boundaries, execution deadlines and memory caps, fail-closed
-everywhere. Process-backed children work the same way. Run records,
-control-plane snapshots (HTTP/UDS), and the hash-chained ledger provide
-after-the-fact inspection.
+everywhere. Process-backed children work the same way. Run records
+and the hash-chained ledger provide after-the-fact inspection.
+Administration presents a granted iroh admin key.
 
 ### Proven as slices, not product-wired
 
@@ -91,8 +91,7 @@ Dependency-ordered; each item assumes the ones before it.
       audit-remediation/PHASE3.md); local dispatch is just the
       single-candidate case.
       Completed 2026-07-06 for local candidates only; PHASE3 T5 stale-
-      revision effect-boundary guard is discharged. Remote candidates and
-      cross-Mother call forwarding remain recorded under item 6.
+      revision effect-boundary guard is discharged.
 - [x] **4. Binding signature verification** — verify `signature_ref`
       against the issuer's key material at hello time; required before
       admitting peers you don't operate.
@@ -106,20 +105,13 @@ Dependency-ordered; each item assumes the ones before it.
       with redacted observations and scoped grants. Network egress and storage
       toys remain follow-up breadth.
 - [ ] **6. Multi-Vision publication** — per-Vision capability publication
-      and cross-Vision grants; the federation product. Single-hop remote route
-      candidates and cross-Mother call forwarding are implemented under
-      `multi-mother-route-forwarding`; multi-Vision/cross-Vision authority
-      remains here. Future multi-hop/transitive routing also belongs here and
-      requires end-to-end caller identity (not per-hop rewriting) plus explicit
-      transitive-routing policy before implementation. Cross-Mother idempotency
-      after forwarding failover also belongs here: Track 1 Slice 6 deliberately
-      provides request-scoped replay only at the Mother whose authenticated
-      caller/binding and SQLite store handled the original request.
+      and cross-Vision grants. Multi-Mother with per-Mother ledgers is future
+      scale work, not planned now.
 
 ### Standing backlog (from the audit arc, non-blocking)
 
 - [x] `main.rs` CLI decomposition substantially addressed by Track 1 slice S2.5: binary-local CLI, control, and ingress modules own their behavior. The resident-decomposition phase completed the behavior-owning resident split into observation, payload, publication, idempotency, candidates, decision, execution, forwarding, pipeline, and serving stages while keeping `main.rs` at 146 lines. `main.rs` intentionally retains entrypoint dispatch wiring, argument-token helpers, default paths, and help text.
-- [ ] Live node identity rotation — requires endpoint rebind plus peer re-admission design. Track 1 Slice 4 intentionally makes identity creation/rotation offline-only and refuses mutation while a resident endpoint is bound.
+- [ ] Live node identity rotation — requires endpoint rebind plus peer re-admission design. Offline commands are not an administration path.
 - [ ] Consolidate the concurrent and single-connection Iroh call-serving branches behind one reviewed lifecycle routine without weakening the mandatory observation sink or malformed fail-closed ordering; Slice 3 intentionally made both public paths correct before attempting that behavior-owning refactor.
 - [ ] Property-based tests for ALPN intersection and payload validation.
 - [x] Make the source-derived supported `folder-watch-actor@0.1.0` and exact unmodified `watch-null-sink@0.1.0` artifacts available to MCT CI alongside the real `slate-manager@0.2.0` acquisition-to-execution fixture. Completed 2026-07-21 in Replacement Slice 4B with scoped Watch/supporting grants, synchronous send admission, deterministic before-effect batch evidence, ordinary `WasmHost` delivery, legacy ABI narrowing, revocation, restart, and the supervised three-fixture `patinaMother` replacement proof.
