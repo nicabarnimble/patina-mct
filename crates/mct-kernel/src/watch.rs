@@ -601,21 +601,33 @@ mod tests {
         let mut invalid_batch = valid.clone();
         invalid_batch.max_events_per_batch = MCT_WATCH_MAX_EVENTS_PER_BATCH + 1;
         invalid_batch = invalid_batch.seal();
-        assert!(invalid_batch.validate().is_err());
+        assert_eq!(
+            invalid_batch.validate().unwrap_err().to_string(),
+            "invalid WatchObservationScope.max_events_per_batch: outside named ceiling"
+        );
 
         let mut unordered = valid.clone();
         unordered.event_classes = vec![WatchEventClass::Deleted, WatchEventClass::Created];
         unordered = unordered.seal();
-        assert!(unordered.validate().is_err());
+        assert_eq!(
+            unordered.validate().unwrap_err().to_string(),
+            "invalid WatchObservationScope.event_classes: not unique canonical order"
+        );
 
         let mut broad = valid.clone();
         broad.canonical_root_ref = "file:///".into();
         broad = broad.seal();
-        assert!(broad.validate().is_err());
+        assert_eq!(
+            broad.validate().unwrap_err().to_string(),
+            "invalid WatchObservationScope.canonical_root_ref: credentialed, broad, or non-canonical root"
+        );
 
         let mut tampered = valid;
         tampered.observer_ref.artifact_version = "0.2.0".into();
-        assert!(tampered.validate().is_err());
+        assert_eq!(
+            tampered.validate().unwrap_err().to_string(),
+            "invalid WatchObservationScope.canonical_record_digest: digest mismatch"
+        );
     }
 
     #[test]
@@ -638,10 +650,17 @@ mod tests {
             .unwrap(),
             LegacyWatchCompatibilityValidation::MismatchRefused
         );
-        assert!(validate_safe_watch_relative_path("../escape").is_err());
-        assert!(
+        assert_eq!(
+            validate_safe_watch_relative_path("../escape")
+                .unwrap_err()
+                .to_string(),
+            "invalid WatchObservationScope.relative_path: non-canonical segment"
+        );
+        assert_eq!(
             validate_legacy_watch_paths("patina:watch/events@1.0.0", "file.txt", "file.txt")
-                .is_err()
+                .unwrap_err()
+                .to_string(),
+            "invalid WatchObservationScope.legacy_interface: not exact 0.1.x dispatch"
         );
     }
 

@@ -253,7 +253,12 @@ mod tests {
                 reason: crate::InvalidFieldReason::Blank,
             })
         ));
-        assert!(serde_json::from_str::<CallId>("\"\"").is_err());
+        assert_eq!(
+            serde_json::from_str::<CallId>("\"\"")
+                .unwrap_err()
+                .to_string(),
+            "invalid CallId.value: empty"
+        );
     }
 
     #[test]
@@ -268,12 +273,18 @@ mod tests {
 
     #[test]
     fn epoch_second_strings_are_rejected_as_timestamps() {
-        assert!(matches!(
-            Timestamp::new("1772323200"),
-            Err(crate::MctKernelError::InvalidTimestamp { .. })
-        ));
-
-        let decoded = serde_json::from_str::<Timestamp>("\"1772323200\"");
-        assert!(decoded.is_err());
+        let rejected = Timestamp::new("1772323200").unwrap_err();
+        assert_eq!(
+            rejected.to_string(),
+            serde_json::from_str::<Timestamp>("\"1772323200\"")
+                .unwrap_err()
+                .to_string()
+        );
+        assert!(
+            rejected
+                .to_string()
+                .starts_with("invalid Timestamp '1772323200': "),
+            "{rejected}"
+        );
     }
 }
