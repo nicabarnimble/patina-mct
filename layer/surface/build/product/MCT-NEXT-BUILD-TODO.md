@@ -4,10 +4,10 @@ Goal: build the next operational layer after the v0 `patinaMother` replacement b
 
 ## Execution order
 
-1. [x] Multi-Mother first. Completed 2026-07-09 as single-hop route forwarding; multi-Vision and transitive routing remain ROADMAP item 6 follow-ons.
-2. [x] Before Multi-Mother implementation, audit `patinaMother` routing and record translate/rebuild/replace decisions. See audit snapshot below.
-3. [ ] During/after Multi-Mother, design storage/network `mctToy` contracts from the `patinaToy` capability audit.
-4. [ ] JVM SDK targeting the chosen resident ingress: synchronous JSON `POST /calls` over the owner-authenticated UDS control socket. The SDK must use UUID idempotency keys by default because `(node, UID, Vision)` scope is shared by same-user applications.
+1. [x] Single-hop route forwarding landed 2026-07-09. Multi-Mother with per-Mother ledgers is future scale work, not planned now.
+2. [x] Audit `patinaMother` routing and record translate/rebuild/replace decisions. See audit snapshot below.
+3. [ ] Design storage/network `mctToy` contracts from the `patinaToy` capability audit.
+4. [ ] JVM SDK on the iroh call path. A Child call presents a platform-given handle. Administration presents a granted iroh admin key. Same-uid is not caller identity.
 5. [x] macOS user-launchd supervisor install/start/stop/restart/uninstall completed 2026-07-15 under `layer/surface/build/feat/supervisor-lifecycle/SPEC.md`. The daily-operation pain clock that started 2026-07-14 is closed. Linux systemd and non-GUI/headless launchd domains remain separately gated future adapters.
 6. [x] Acquisition-backed immutable artifact staging completed 2026-07-16 under `layer/surface/build/feat/artifact-acquisition/SPEC.md`, including the real supervised `slate-manager@0.2.0` daily-driver proof.
 7. [x] Durable temporal triggering and scoped Watch delivery completed 2026-07-21 under the Replacement Slice 4A/4B SPECs, including the source-derived watcher, exact sink, and supervised three-fixture proof.
@@ -19,24 +19,13 @@ Goal: build the next operational layer after the v0 `patinaMother` replacement b
       - [x] After operator-approved push/merge and the first default-branch Scorecard workflow run, record the initial observed score in `feat/post-r3-credibility/CLOSEOUT.md`: **5.1** at `2026-07-25T02:02:28Z`.
    - [ ] R5/into-the-wild work remains separate: exact publication tag/release, update-channel authority, network acquisition, notarization activation, and 1.0.0 GA are not implied by R3.
 
-## Completed: Multi-Mother — single-hop forwarding
+## Completed: single-hop forwarding
 
-Multi-Mother means one `mctMother` can safely call another Mother in MCT.
-
-This unlocks:
-
-- routing work across machines/projects;
-- one Mother exposing approved children to another;
-- remote child execution;
-- distributed observations;
-- Vision-scoped publication;
-- eventually cluster-like behavior.
-
-The hard part is authority. A remote Mother is not trusted just because it connects.
+A 2026-07-09 slice forwards one authorized call to one admitted peer. Multi-Mother with per-Mother ledgers is future scale work, not planned now. A remote node is not trusted just because it connects.
 
 ### Translate/rebuild/replace decisions from the `patinaMother` routing audit
 
-- [x] Translate and rebuild: UDS-first local control, explicit child call surfaces, health/status readiness, and named bridges where they are useful.
+- [x] Translate and rebuild: explicit child call surfaces, health/status readiness, and named bridges where they are useful. Administration is a granted iroh admin key. A Unix socket and same-uid are not the authorization path.
 - [x] Translate and rebuild: source/broker fail-closed authentication resolution and domain-scoped connection use.
 - [x] Replace: `patinaMother` HTTP `/child/{child}/{action}` as the trust model for cross-Mother runtime calls.
 - [x] Replace: `patinaMother` graph/federation knowledge routing as a substitute for runtime route authority.
@@ -74,20 +63,11 @@ Build order — each step depends on the one before it:
 - [x] Unauthorized, wrong-Vision, wrong-operation, expired-binding, bad-payload, and remote no-route paths fail closed.
 - [x] Both Mothers record enough observations to reconstruct the route and authority chain without leaking payload bytes or secrets.
 
-## Completed: Resident Operational Loop — Slice 1
+## Resident call path
 
-Completed 2026-07-14 under `layer/surface/build/feat/resident-call-ingress/SPEC.md`:
+A Child call is a platform-given handle on the iroh path. Holding the handle is the authorization. Administration presents a granted iroh admin key. The Unix socket, peer credentials, and offline commands are not an authorization path.
 
-- owner-only (`0600`) UDS control socket with Unix peer-UID authentication for local application calls;
-- synchronous JSON `POST /calls`, canonical `CallOrigin::JvmAdapter` bridge lineage, and resident node/UID/Vision caller scope;
-- unchanged inline/CAS size and BLAKE3 integrity laws, with payload bytes excluded from observations and control reads;
-- durable caller-scoped idempotency and submission/result observations before response;
-- calls execute through the existing authority, route revalidation, child execution, result, run-state, and ledger pipeline;
-- concurrent control dispatch keeps reads available while administrative mutations remain serialized;
-- `mct-daemon serve` defaults to `.mct/control.sock`; explicit HTTP mode remains read-only and has no `/calls` ingress;
-- `mct-daemon status [--uds path] [--json]` now reports real resident readiness, node/Vision/Iroh identity, loaded/approved/ready counts, and last observation sequence, and fails honestly when no resident is reachable.
-
-This is the production transport target for TODO item 4. The one-shot `mct-daemon jvm call-json` bridge remains compatibility/development evidence, not the resident operational boundary.
+Inline and content-addressed payloads keep their size and BLAKE3 checks, and payload bytes stay out of observations. Calls still run through authority, route revalidation, child execution, and the ledger. `mct-daemon jvm call-json` remains a one-shot compatibility bridge, not the resident boundary.
 
 ## Next: storage/network toy contracts
 
@@ -121,7 +101,7 @@ Executable digest binding is intentionally strict: replacing binary bytes requir
 
 Completed 2026-07-16 under `layer/surface/build/feat/artifact-acquisition/SPEC.md`:
 
-- [x] Add explicit `artifacts stage|acquire|show|acquisitions|sources` commands and resident UDS mutations.
+- [x] Add explicit `artifacts stage|acquire|show|acquisitions|sources` commands. Administration presents a granted iroh admin key.
 - [x] Require exactly one bounded source-trust path plus a fresh one-attempt filesystem effect capability.
 - [x] Verify SHA-256 sidecars as the package floor and record independent BLAKE3 acquisition evidence.
 - [x] Publish immutable packages under `.mct/children/artifacts/sha256/<component-digest>/` only after durable acquisition/verification facts.
@@ -136,7 +116,7 @@ Completed 2026-07-16 under `layer/surface/build/feat/artifact-acquisition/SPEC.m
 Completed 2026-07-21 under `layer/surface/build/feat/trigger-event-runtime/SPEC.md`:
 
 - [x] Add truthful local-only `CallOrigin::TriggerFiring` and deterministic record/revision/occurrence-scoped identities.
-- [x] Persist owner-authenticated, revisioned trigger authority and schema-v8 occurrence, pending, firing, result, and reconciliation projections.
+- [x] Persist revisioned trigger authority and schema-v8 occurrence, pending, firing, result, and reconciliation projections.
 - [x] Implement explicit missed-fire and overlap matrices in fixed admission order under three named capacity limits.
 - [x] Make authority, pending admission, and firing durable before activation/effect; reconstruct projections from the validated ledger on restart.
 - [x] Prove acquired/approved WIT execution, idempotent same-occurrence evaluation, overlap crash recovery, revocation suppression, terminal non-resurrection, and ordinary-call fairness.
@@ -159,13 +139,7 @@ The three-fixture runtime slice and R3 release-hardening mechanics are complete.
 
 ## JVM SDK
 
-Chosen production ingress:
-
-```text
-POST /calls over .mct/control.sock
-```
-
-The endpoint is synchronous, authenticates the Unix peer UID, applies existing payload and idempotency laws, and returns the caller-safe terminal reply. `mct-daemon jvm call-json <operation-id> <args-json>` remains a one-shot compatibility/development bridge.
+A Child call is a platform-given handle on the iroh path. Administration presents a granted iroh admin key. Same-uid is not the caller. `mct-daemon jvm call-json <operation-id> <args-json>` remains a one-shot compatibility bridge.
 
 Build the production JVM SDK so Java/Kotlin callers can use MCT ergonomically:
 
@@ -177,8 +151,7 @@ client.call("patina:slate/control@0.1.0.list-work", args);
 ### SDK responsibilities
 
 - [ ] Build MCT call envelopes from Java/Kotlin inputs.
-- [ ] Connect to the owner-authenticated UDS `POST /calls` transport.
-- [ ] Treat Unix peer UID as the v0 local caller authentication boundary; do not claim per-application identity.
+- [ ] Present the handle on the iroh call path. Unix peer UID is not caller identity.
 - [ ] Apply deadlines/timeouts consistently.
 - [ ] Use UUID idempotency keys by default and retry only where idempotency makes that safe.
 - [ ] Decode MCT replies and result payloads into Java/Kotlin models.
