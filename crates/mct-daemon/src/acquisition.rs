@@ -19,7 +19,8 @@ use mct_observation::{
     replay_authority_entries,
 };
 use patina_sdk::manifest::ChildManifest as SdkChildManifest;
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
@@ -31,11 +32,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-/// Maximum canonical manifest bytes accepted by staging.
 pub const MCT_CHILD_MANIFEST_MAX_BYTES: usize = 1024 * 1024;
-/// Maximum primary component bytes accepted by staging.
 pub const MCT_COMPONENT_ARTIFACT_MAX_BYTES: usize = 64 * 1024 * 1024;
-/// Fixed direct-operator filesystem acquisition adapter identity.
 pub const MCT_FILESYSTEM_ACQUISITION_ADAPTER: &str = "mct:artifact-acquisition/filesystem@1";
 
 static NEXT_ACQUISITION_ID: AtomicU64 = AtomicU64::new(1);
@@ -291,7 +289,6 @@ fn admit_standing_source_with_hook(
     }
 }
 
-/// Validates one standing source against the hash-validated canonical observation ledger.
 pub fn verify_standing_source_ledger_correlation(
     state_path: &Path,
     ledger_path: &Path,
@@ -345,20 +342,88 @@ pub fn verify_standing_source_ledger_correlation(
     })
 }
 
-/// Inputs for staging raw local build output through one operator-pointed acquisition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MctRootRelativePath(PathBuf);
+
+impl MctRootRelativePath {
+    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        validate_relative_path(path)?;
+        Ok(Self(path.to_path_buf()))
+    }
+
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for MctRootRelativePath {
+    fn as_ref(&self) -> &Path {
+        self.as_path()
+    }
+}
+
+impl Serialize for MctRootRelativePath {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for MctRootRelativePath {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let path = PathBuf::deserialize(deserializer)?;
+        Self::new(path).map_err(D::Error::custom)
+    }
+}
+
+fn serialize_optional_root_relative<S>(
+    path: &Option<MctRootRelativePath>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match path {
+        Some(path) => path.serialize(serializer),
+        None => serializer.serialize_str(""),
+    }
+}
+
+fn deserialize_optional_root_relative<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<MctRootRelativePath>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let path = PathBuf::deserialize(deserializer)?;
+    if path.as_os_str().is_empty() {
+        Ok(None)
+    } else {
+        MctRootRelativePath::new(path)
+            .map(Some)
+            .map_err(D::Error::custom)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MctArtifactStageRequest {
-    /// Canonical local root containing selected build output.
     pub source_root: PathBuf,
-    /// Root-relative source manifest path.
-    pub manifest_path: PathBuf,
-    /// Root-relative source component path.
-    pub component_path: PathBuf,
+    pub manifest_path: MctRootRelativePath,
+    #[serde(
+        serialize_with = "serialize_optional_root_relative",
+        deserialize_with = "deserialize_optional_root_relative"
+    )]
+    pub component_path: Option<MctRootRelativePath>,
     /// Child name claimed before source access.
     pub claimed_child_name: String,
     /// Artifact version claimed before source access.
     pub claimed_artifact_version: String,
-    /// Optional expected algorithm-tagged BLAKE3 component digest.
     pub expected_digest: Option<String>,
     /// Standing source authority id; absent means operator-pointed staging.
     #[serde(default)]
@@ -366,39 +431,24 @@ pub struct MctArtifactStageRequest {
     /// Publisher claim required by standing-source scope.
     #[serde(default)]
     pub claimed_publisher: Option<String>,
-    /// Whether source SHA-256 sidecars must already exist and match.
     #[serde(default)]
     pub require_source_sidecars: bool,
-    /// Immutable package catalog root.
     pub children_dir: PathBuf,
-    /// Runtime state projection path.
     pub state_path: PathBuf,
 }
 
-/// Durable report for a completed artifact acquisition and verification attempt.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MctArtifactAcquisitionReport {
-    /// Immutable acquisition identifier.
     pub acquisition_id: ArtifactAcquisitionId,
-    /// Child name claimed and verified by the package.
     pub child_name: String,
-    /// Artifact version claimed and verified by the package.
     pub artifact_version: String,
-    /// SHA-256 artifact identity when verification succeeded.
     pub artifact_id: Option<String>,
-    /// Exact component byte count when observed.
     pub observed_size_bytes: Option<u64>,
-    /// Algorithm-tagged BLAKE3 component digest when observed.
     pub observed_digest: Option<String>,
-    /// Source adapter outcome.
     pub acquisition_outcome: String,
-    /// Independent verification outcome.
     pub verification_outcome: String,
-    /// Immutable package path when catalog publication succeeded.
     pub package_path: Option<PathBuf>,
-    /// Terminal acquisition observation identifier.
     pub acquisition_observation_id: ObservationId,
-    /// Verification observation identifier when reached.
     pub verification_observation_id: Option<ObservationId>,
 }
 
@@ -414,7 +464,6 @@ pub fn stage_operator_pointed_artifact(
     stage_artifact_with_context(request, &context)
 }
 
-/// Executes an attempt without an external terminal observer.
 pub fn stage_artifact_with_context(
     request: &MctArtifactStageRequest,
     context: &MctArtifactAttemptContext,
@@ -436,9 +485,9 @@ where
     validate_claim(&request.claimed_artifact_version, "artifact version")?;
     validate_expected_digest(request.expected_digest.as_deref())?;
 
-    validate_relative_path(&request.manifest_path)?;
-    if !request.component_path.as_os_str().is_empty() {
-        validate_relative_path(&request.component_path)?;
+    validate_relative_path(request.manifest_path.as_path())?;
+    if let Some(component_path) = request.component_path.as_ref() {
+        validate_relative_path(component_path.as_path())?;
     }
     let claimed_source_root =
         std::path::absolute(&request.source_root).context("make artifact source root absolute")?;
@@ -632,7 +681,7 @@ where
             bail!("acquisition package is outside standing source root");
         }
     }
-    let manifest_path = match canonical_source_file(&source_root, &request.manifest_path) {
+    let manifest_path = match canonical_source_file(&source_root, request.manifest_path.as_path()) {
         Ok(path) => path,
         Err(error) => {
             record_terminal(&failed_acquisition())?;
@@ -640,43 +689,45 @@ where
         }
     };
     let mut preloaded_manifest = None;
-    let selected_component_path = if request.component_path.as_os_str().is_empty() {
-        let bytes = match read_bounded_file(&manifest_path, MCT_CHILD_MANIFEST_MAX_BYTES) {
-            Ok(bytes) => bytes,
-            Err(error) => {
+    let selected_component_path = match &request.component_path {
+        Some(component_path) => component_path.as_path().to_path_buf(),
+        None => {
+            let bytes = match read_bounded_file(&manifest_path, MCT_CHILD_MANIFEST_MAX_BYTES) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    record_terminal(&failed_acquisition())?;
+                    return Err(error).context("acquire bounded package manifest");
+                }
+            };
+            let text = match std::str::from_utf8(&bytes) {
+                Ok(text) => text,
+                Err(error) => {
+                    record_terminal(&failed_acquisition())?;
+                    return Err(error).context("package manifest is not UTF-8");
+                }
+            };
+            let manifest = match SdkChildManifest::from_toml_str(text) {
+                Ok(manifest) => manifest,
+                Err(error) => {
+                    record_terminal(&failed_acquisition())?;
+                    return Err(error)
+                        .context("parse package manifest before component acquisition");
+                }
+            };
+            let declared = match manifest.artifact.wasm {
+                Some(path) => path,
+                None => {
+                    record_terminal(&failed_acquisition())?;
+                    bail!("package-shaped acquisition requires a declared component path");
+                }
+            };
+            if let Err(error) = validate_relative_path(&declared) {
                 record_terminal(&failed_acquisition())?;
-                return Err(error).context("acquire bounded package manifest");
+                return Err(error);
             }
-        };
-        let text = match std::str::from_utf8(&bytes) {
-            Ok(text) => text,
-            Err(error) => {
-                record_terminal(&failed_acquisition())?;
-                return Err(error).context("package manifest is not UTF-8");
-            }
-        };
-        let manifest = match SdkChildManifest::from_toml_str(text) {
-            Ok(manifest) => manifest,
-            Err(error) => {
-                record_terminal(&failed_acquisition())?;
-                return Err(error).context("parse package manifest before component acquisition");
-            }
-        };
-        let declared = match manifest.artifact.wasm {
-            Some(path) => path,
-            None => {
-                record_terminal(&failed_acquisition())?;
-                bail!("package-shaped acquisition requires a declared component path");
-            }
-        };
-        if let Err(error) = validate_relative_path(&declared) {
-            record_terminal(&failed_acquisition())?;
-            return Err(error);
+            preloaded_manifest = Some(bytes);
+            declared
         }
-        preloaded_manifest = Some(bytes);
-        declared
-    } else {
-        request.component_path.clone()
     };
     let component_path = match canonical_source_file(&source_root, &selected_component_path) {
         Ok(path) => path,
@@ -1164,8 +1215,8 @@ allow = ["patina:fixture/control@0.1.0.run"]
         fs::write(source.join("fixture.wasm"), b"real-attempt-bytes").unwrap();
         MctArtifactStageRequest {
             source_root: source,
-            manifest_path: PathBuf::from("child.toml"),
-            component_path: PathBuf::from("fixture.wasm"),
+            manifest_path: MctRootRelativePath::new("child.toml").unwrap(),
+            component_path: Some(MctRootRelativePath::new("fixture.wasm").unwrap()),
             claimed_child_name: "fixture".into(),
             claimed_artifact_version: "1.0.0".into(),
             expected_digest,
@@ -1721,8 +1772,8 @@ allow = ["malformed-operation"]
         let second_root = tempfile::tempdir().unwrap();
         let request = MctArtifactStageRequest {
             source_root: package,
-            manifest_path: PathBuf::from("child.toml"),
-            component_path: PathBuf::new(),
+            manifest_path: MctRootRelativePath::new("child.toml").unwrap(),
+            component_path: None,
             claimed_child_name: "fixture".into(),
             claimed_artifact_version: "1.0.0".into(),
             expected_digest: None,
@@ -1791,6 +1842,37 @@ allow = ["malformed-operation"]
         assert_eq!(
             fs::read_to_string(hash_sidecar_path(&component)).unwrap(),
             format!("{:x}", Sha256::digest(bytes))
+        );
+    }
+
+    #[test]
+    fn root_relative_path_rejects_absolute_and_parent_segments() {
+        assert!(MctRootRelativePath::new("/tmp/child.toml").is_err());
+        assert!(MctRootRelativePath::new("../child.toml").is_err());
+        assert!(MctRootRelativePath::new("dir/../child.toml").is_err());
+        assert!(MctRootRelativePath::new("").is_err());
+        assert_eq!(
+            MctRootRelativePath::new("child.toml").unwrap().as_path(),
+            Path::new("child.toml")
+        );
+
+        let root = tempfile::tempdir().unwrap();
+        let request = raw_request(root.path(), None);
+        let mut escaped = serde_json::to_value(&request).unwrap();
+        escaped["manifest_path"] = serde_json::json!("../child.toml");
+        assert!(serde_json::from_value::<MctArtifactStageRequest>(escaped).is_err());
+
+        let mut absolute = serde_json::to_value(&request).unwrap();
+        absolute["component_path"] = serde_json::json!("/tmp/fixture.wasm");
+        assert!(serde_json::from_value::<MctArtifactStageRequest>(absolute).is_err());
+
+        let mut deferred = serde_json::to_value(&request).unwrap();
+        deferred["component_path"] = serde_json::json!("");
+        let decoded: MctArtifactStageRequest = serde_json::from_value(deferred).unwrap();
+        assert!(decoded.component_path.is_none());
+        assert_eq!(
+            serde_json::to_value(&decoded).unwrap()["component_path"],
+            serde_json::json!("")
         );
     }
 }

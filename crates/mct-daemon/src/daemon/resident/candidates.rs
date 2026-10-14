@@ -1,5 +1,3 @@
-//! Resident local-child and eligible remote-peer candidate sourcing and authority facts.
-
 use super::*;
 
 #[derive(Debug)]
@@ -739,7 +737,6 @@ listens = []
         assert_eq!(plans[0].authority.reason, None);
     }
 
-    /// Phase I proof 10: remote policy compares peer facts to local snapshot policy.
     #[test]
     fn remote_policy_mismatch_denies_even_when_caller_echo_matches_stale_peer() {
         let mut fixture = candidate_fixture();
@@ -766,9 +763,6 @@ listens = []
         );
     }
 
-    /// Covers `PeerOperationalRoleDerivation.EligibleRouteCandidateDerivation`,
-    /// `PeerRelationshipTaxonomy.RolesAreCurrentProjections`, and
-    /// `BilateralExecutableRouting` by removing each current conjunct independently.
     #[test]
     fn eligible_route_candidate_requires_every_current_conjunct() {
         let fixture = candidate_fixture();
@@ -844,7 +838,6 @@ listens = []
         ));
     }
 
-    /// Covers `CapabilityPublicationRelationship.OfferLapsesAtFreshnessBoundary`.
     #[test]
     fn capability_offer_lapses_at_freshness_boundary() {
         let fixture = candidate_fixture();

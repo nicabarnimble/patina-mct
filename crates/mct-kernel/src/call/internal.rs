@@ -144,7 +144,10 @@ fn payload_integrity_safe_message(reason: PayloadIntegrityReason) -> &'static st
 }
 
 fn is_valid_blake3_hex(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 pub(super) fn evaluate_call_protocol_internal(
@@ -277,7 +280,7 @@ pub(super) fn evaluate_call_protocol_internal(
         route_decision_id: None,
         result_ref: None,
         outcome: CallProtocolOutcome::AcceptedForRouting,
-        reason: CallProtocolReason::ResultRecorded,
+        reason: CallProtocolReason::AcceptedForRouting,
         retry_directive: CallProtocolRetryDirective::None,
         safe_message: "accepted for routing".into(),
         observation_id: ids.observation_id,
