@@ -1417,7 +1417,7 @@ impl MctRuntimeStateStore {
             .optional()?;
         match current_json {
             None => {
-                if scope.scope_revision != 1
+                if scope.scope_revision.get() != 1
                     || scope.authority_state != WatchObservationScopeState::Active
                 {
                     bail!("first Watch scope revision must be active revision one");
@@ -1428,7 +1428,7 @@ impl MctRuntimeStateStore {
                 if current.authority_state != WatchObservationScopeState::Active {
                     bail!("terminal Watch scope id cannot be revised or resurrected");
                 }
-                if scope.scope_revision != current.scope_revision + 1 {
+                if scope.scope_revision.get() != current.scope_revision.get() + 1 {
                     bail!("Watch scope revision must exactly increment current revision");
                 }
                 transaction.execute(
@@ -1438,7 +1438,7 @@ impl MctRuntimeStateStore {
                     "#,
                     params![
                         current.watch_scope_id.as_str(),
-                        current.scope_revision as i64
+                        current.scope_revision.get() as i64
                     ],
                 )?;
             }
@@ -1454,7 +1454,7 @@ impl MctRuntimeStateStore {
             "#,
             params![
                 scope.watch_scope_id.as_str(),
-                scope.scope_revision as i64,
+                scope.scope_revision.get() as i64,
                 scope.policy_revision as i64,
                 scope.observer_ref.child_name.as_str(),
                 scope.observer_ref.artifact_id.as_str(),
@@ -1478,7 +1478,7 @@ impl MctRuntimeStateStore {
             "#,
             params![
                 scope.watch_scope_id.as_str(),
-                scope.scope_revision as i64,
+                scope.scope_revision.get() as i64,
                 current_timestamp_string(),
             ],
         )?;
@@ -5870,12 +5870,17 @@ mod tests {
                 scope_mode: WatchScopeMode::Constrained,
                 canonical_root_ref: "file:///tmp/watch-state".into(),
                 traversal_scope: WatchTraversalScope::Recursive,
-                event_classes: vec![WatchEventClass::Created, WatchEventClass::Deleted],
+                event_classes: mct_kernel::watch::WatchEventClasses::new(vec![
+                    WatchEventClass::Created,
+                    WatchEventClass::Deleted,
+                ])
+                .unwrap(),
                 max_events_per_batch: 16,
                 coalescing_policy: WatchCoalescingPolicy::LastPerPath,
                 starts_at: Timestamp::new("2026-07-21T12:00:00Z").unwrap(),
                 expires_at: Timestamp::new("2026-07-21T13:00:00Z").unwrap(),
-                scope_revision: revision,
+                scope_revision: std::num::NonZeroU64::new(revision)
+                    .expect("watch scope revision starts at one"),
                 policy_revision: 1,
                 authority_state: state,
                 authority_observation_id: ObservationId::new(format!("obs-watch-state-{revision}"))
@@ -6033,12 +6038,17 @@ mod tests {
             scope_mode: WatchScopeMode::Constrained,
             canonical_root_ref: "file:///tmp/canonical-watch".into(),
             traversal_scope: WatchTraversalScope::Recursive,
-            event_classes: vec![WatchEventClass::Created, WatchEventClass::Modified],
+            event_classes: mct_kernel::watch::WatchEventClasses::new(vec![
+                WatchEventClass::Created,
+                WatchEventClass::Modified,
+            ])
+            .unwrap(),
             max_events_per_batch: 23,
             coalescing_policy: WatchCoalescingPolicy::LastPerPath,
             starts_at: Timestamp::new("2026-08-05T12:00:00Z").unwrap(),
             expires_at: Timestamp::new("2026-08-05T13:00:00Z").unwrap(),
-            scope_revision: revision,
+            scope_revision: std::num::NonZeroU64::new(revision)
+                .expect("watch scope revision starts at one"),
             policy_revision: 7,
             authority_state: state,
             authority_observation_id: ObservationId::new(format!("obs-{id}-{revision}")).unwrap(),
@@ -6095,7 +6105,6 @@ mod tests {
         }
     }
 
-    /// Phase H2 proof 9: non-authority entries reach the cursor and publication is old-old/new-new.
     #[test]
     fn authority_cursor_reaches_non_authority_head_with_coherent_publication() {
         let dir = tempfile::tempdir().unwrap();
@@ -6147,7 +6156,6 @@ mod tests {
         assert_ne!(new.cursor.projection_hash, old.cursor.projection_hash);
     }
 
-    /// Phase H2 proof 10: D-G8 proof passes only for complete canonical agreement.
     #[test]
     fn usable_authority_projection_proof_is_typed_for_every_mismatch() {
         use mct_observation::{
@@ -6233,7 +6241,6 @@ mod tests {
         );
     }
 
-    /// Phase H2 proof 11: restart changes epoch identity without changing projected grant meaning.
     #[test]
     fn epoch_transition_preserves_projected_grant_meaning() {
         let dir = tempfile::tempdir().unwrap();
@@ -6280,7 +6287,6 @@ mod tests {
         );
     }
 
-    /// Phase H2 proof 12: every unusable live projection is replaced atomically from shadow.
     #[test]
     fn shadow_rebuild_replaces_stale_epoch_mismatched_and_hash_incoherent_projection_atomically() {
         let dir = tempfile::tempdir().unwrap();
@@ -6352,7 +6358,6 @@ mod tests {
         }
     }
 
-    /// Phase H2 proof 13: clean shadow rebuild and advancing replay are byte-truth equivalent.
     #[test]
     fn clean_rebuild_and_incremental_replay_are_projection_equivalent() {
         let dir = tempfile::tempdir().unwrap();
@@ -6411,7 +6416,6 @@ mod tests {
         );
     }
 
-    /// Phase H2 proof 14: projection failure cannot undo a committed authority mutation.
     #[test]
     fn committed_mutation_projection_failure_catches_up_without_undo() {
         use mct_observation::{
@@ -6482,7 +6486,6 @@ mod tests {
         assert_eq!(caught_up.state, canonical.state);
     }
 
-    /// Phase H2 proof 15: ledger quarantine preserves the prior projection and denies use.
     #[test]
     fn quarantined_ledger_refuses_projection_advancement_with_typed_status() {
         use mct_observation::{
@@ -6541,7 +6544,6 @@ mod tests {
         );
     }
 
-    /// Phase I proof 16: pre-Phase-I Watch scopes import and rebuild completely once.
     #[test]
     fn legacy_import_includes_complete_watch_scopes_once_per_canonical_history() {
         let dir = tempfile::tempdir().unwrap();
@@ -6652,7 +6654,6 @@ mod tests {
         );
     }
 
-    /// Phase I proof 17: an unknown additive change blocks projection but not structural ledger use.
     #[test]
     fn unknown_authority_change_variant_blocks_projection_without_ledger_quarantine() {
         let dir = tempfile::tempdir().unwrap();

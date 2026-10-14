@@ -42,8 +42,12 @@ fn run_artifacts_stage(mut args: Vec<String>) -> Result<()> {
     }
     let request = MctArtifactStageRequest {
         source_root: PathBuf::from(args.remove(0)),
-        manifest_path: manifest_path.context("artifacts stage requires --manifest")?,
-        component_path: component_path.context("artifacts stage requires --component")?,
+        manifest_path: MctRootRelativePath::new(
+            manifest_path.context("artifacts stage requires --manifest")?,
+        )?,
+        component_path: Some(MctRootRelativePath::new(
+            component_path.context("artifacts stage requires --component")?,
+        )?),
         claimed_child_name: child.context("artifacts stage requires --child")?,
         claimed_artifact_version: version.context("artifacts stage requires --version")?,
         expected_digest,
@@ -88,8 +92,8 @@ fn run_artifacts_acquire(mut args: Vec<String>) -> Result<()> {
     let package_dir = PathBuf::from(args.remove(0));
     let request = MctArtifactStageRequest {
         source_root: package_dir,
-        manifest_path: PathBuf::from(patina_sdk::manifest::CHILD_MANIFEST_FILE),
-        component_path: PathBuf::new(),
+        manifest_path: MctRootRelativePath::new(patina_sdk::manifest::CHILD_MANIFEST_FILE)?,
+        component_path: None,
         claimed_child_name: child.context("artifacts acquire requires --child")?,
         claimed_artifact_version: version.context("artifacts acquire requires --version")?,
         expected_digest,
