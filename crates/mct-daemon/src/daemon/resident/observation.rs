@@ -38,7 +38,7 @@ enum ResidentLedgerCommand {
         >,
     },
     LegacyAuthorityImport {
-        request: LegacyAuthorityImportRequestV1,
+        request: Box<LegacyAuthorityImportRequestV1>,
         authenticated_principal_ref: String,
         imported_state: AuthorityStateV1,
         decided_at: String,
@@ -440,7 +440,7 @@ impl ResidentLedgerWriter {
                         task_authority_order.commit_mutation(&mutation_id, &(), |_| {
                             let result = if ledger.authority_tenure().is_some() {
                                 let result = ledger.execute_legacy_authority_import(
-                                    request,
+                                    *request,
                                     authenticated_principal_ref,
                                     imported_state,
                                     decided_at,
@@ -591,7 +591,7 @@ impl ResidentLedgerWriter {
         let (ack, rx) = tokio::sync::oneshot::channel();
         self.sender
             .send(ResidentLedgerCommand::LegacyAuthorityImport {
-                request,
+                request: Box::new(request),
                 authenticated_principal_ref,
                 imported_state,
                 decided_at,
