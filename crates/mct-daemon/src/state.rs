@@ -4611,6 +4611,8 @@ impl MctRuntimeStateStore {
                 toy_catalog,
                 toy_grants,
                 watch_scopes,
+                admin_key_grants: std::collections::BTreeMap::new(),
+                pairing_tickets: std::collections::BTreeMap::new(),
             },
             facts,
         }))

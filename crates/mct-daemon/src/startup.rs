@@ -1526,6 +1526,8 @@ pub fn finalize_authority_startup(
             .into_iter()
             .map(|scope| (scope.watch_scope_id.to_string(), scope))
             .collect(),
+        admin_key_grants: std::collections::BTreeMap::new(),
+        pairing_tickets: std::collections::BTreeMap::new(),
     };
     let sqlite_hash = authority_state_hash(&sqlite_authority)?;
     let sqlite_comparison = if !pre_observation_replay.imported
