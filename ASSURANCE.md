@@ -81,9 +81,14 @@ notarization is not activated
   [`scripts/ci-tier0.sh`](scripts/ci-tier0.sh): formatting, release
   consistency/tooling checks, dependency audit, Clippy with warnings denied,
   serialized workspace tests, comparative vocabulary, and Allium validation.
-- **Tier 1** is the GitHub Actions job in
-  [`.github/workflows/ci.yml`](.github/workflows/ci.yml). It installs Rust,
-  Allium, and pinned `cargo-audit 0.22.2`, then runs Tier 0 on Ubuntu.
+  `all` runs every check and reports each result. The same checks are also
+  separate subcommands: `fmt`, `clippy`, `test`, `specs`, and `audit`.
+- **Tier 1** is the set of parallel GitHub Actions jobs in
+  [`.github/workflows/ci.yml`](.github/workflows/ci.yml): fmt, Clippy, tests,
+  Allium/vocabulary/release checks, and `cargo audit`. One job failing does
+  not cancel the others. The audit job installs pinned `cargo-audit 0.22.2`
+  and fails a pull request only when that pull request changes `Cargo.lock`
+  or a `Cargo.toml`. A nightly job on `main` keeps the R2 audit policy strict.
 - **Target release evidence** remains a separate macOS gate: archive/signature
   verification, real launchd smoke, and baseline capture are defined in the
   [R3 contract](layer/surface/build/feat/release-discipline/SPEC.md) and are not

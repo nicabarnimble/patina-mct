@@ -11,15 +11,10 @@ use serde::{Deserialize, Serialize};
 /// Function and resource narrow the interface when a toy exposes multiple
 /// authority-bearing operations.
 pub struct ToyContractIdentity {
-    /// WIT package namespace containing the toy contract.
     pub namespace: String,
-    /// WIT interface name for the toy.
     pub interface_name: String,
-    /// Contract version used by the canonical catalog.
     pub version: String,
-    /// Optional function name when authority is operation-specific.
     pub function_name: Option<String>,
-    /// Optional resource name when authority is resource-specific.
     pub resource_name: Option<String>,
 }
 
@@ -29,15 +24,10 @@ pub struct ToyContractIdentity {
 /// Grant evaluation denies non-catalog toys and catalog entries that are not
 /// authority-bearing.
 pub struct CanonicalToyContract {
-    /// Stable toy identifier used by grants and requests.
     pub toy_id: ToyId,
-    /// WIT contract identity for this catalog entry.
     pub contract: ToyContractIdentity,
-    /// Whether this toy may be authorized through ToyGrant evaluation.
     pub authority_bearing: bool,
-    /// Catalog revision that admitted this entry.
     pub catalog_revision: u64,
-    /// Observation that admitted the toy to the canonical catalog.
     pub admitted_by_observation_id: ObservationId,
 }
 
@@ -47,15 +37,10 @@ pub struct CanonicalToyContract {
 /// Grant subject matching is exact for child name/artifact/version; optional
 /// assignment and caller fields narrow the grant when present.
 pub struct ToyGrantSubject {
-    /// Child name requesting toy access.
     pub child_name: String,
-    /// Artifact identity of the requesting child.
     pub artifact_id: String,
-    /// Artifact version of the requesting child.
     pub artifact_version: String,
-    /// Optional assignment that must match the request when grant-scoped.
     pub assignment_id: Option<ChildAssignmentId>,
-    /// Optional caller node that must match when grant-scoped.
     pub caller_node_id: Option<MctNodeId>,
 }
 
@@ -65,113 +50,71 @@ pub struct ToyGrantSubject {
 /// Optional scope fields are wildcards when absent and exact requirements when
 /// present; `allowed_actions` must contain the requested action.
 pub struct ToyGrantScope {
-    /// Vision in which the grant is valid.
     pub vision_id: VisionId,
-    /// Optional node restriction for the effect.
     pub node_id: Option<MctNodeId>,
-    /// Optional project restriction matched against the call caller.
     pub project_id: Option<ProjectId>,
-    /// Optional data classification restriction matched against payload metadata.
     pub data_classification: Option<String>,
-    /// Optional resource identifier restriction matched against the request.
     pub resource_id: Option<String>,
-    /// Actions permitted by this grant.
     pub allowed_actions: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Time and usage constraints attached to a toy grant.
-///
-/// Evaluation checks `starts_at <= now < expires_at` when bounds are present;
-/// max-use and duration fields are authority facts for adapters to enforce.
+/// Evaluation checks `starts_at <= now < expires_at` when bounds are present.
 pub struct ToyGrantConstraints {
-    /// Earliest time the grant may be used.
     pub starts_at: Option<Timestamp>,
     /// Exclusive expiry time for grant evaluation.
     pub expires_at: Option<Timestamp>,
-    /// Optional maximum uses tracked by adapters or storage.
     pub max_uses: Option<u64>,
-    /// Optional maximum duration for a toy effect.
     pub max_duration_ms: Option<u64>,
-    /// Whether the effect must remain local to the node.
     pub locality_required: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Lifecycle state of a toy grant authority record.
 pub enum ToyGrantState {
     /// Grant was requested but does not authorize effects.
     Requested,
     /// Grant may authorize effects if all other facts match.
     Active,
-    /// Grant is expired by lifecycle state.
     Expired,
-    /// Grant was explicitly revoked.
     Revoked,
-    /// Grant was replaced by a newer authority record.
     Superseded,
-    /// Grant request was denied.
     Denied,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Authority record that may permit a child to use one canonical toy.
-///
-/// Evaluation requires an active grant matching subject, scope, action, policy
-/// revision, grants revision, and time window before minting a toy-call token.
 pub struct ToyGrant {
-    /// Stable grant identifier.
     pub grant_id: ToyGrantId,
-    /// Canonical toy this grant covers.
     pub toy_id: ToyId,
-    /// Child identity eligible to use the grant.
     pub subject: ToyGrantSubject,
-    /// Vision/action/resource scope of the grant.
     pub scope: ToyGrantScope,
-    /// Time and usage constraints for the grant.
     pub constraints: ToyGrantConstraints,
-    /// Lifecycle state used during evaluation.
     pub grant_state: ToyGrantState,
-    /// Authority issuer for audit.
     pub issuer_id: String,
-    /// Policy revision under which the grant was issued.
     pub policy_revision: u64,
-    /// Grants revision under which the grant was issued.
     pub grants_revision: u64,
-    /// Observation that created or updated this authority record.
     pub authority_observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Verdict of evaluating one toy request against catalog and grants.
 pub enum ToyGrantVerdict {
-    /// A grant authorized the requested toy action.
     Allowed,
-    /// No grant authorized the requested toy action.
     Denied,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Audit reason for a toy grant evaluation.
 pub enum ToyGrantReasonCode {
-    /// Active grant matched every authority fact.
     ActiveGrant,
-    /// No grant matched the toy and subject.
     MissingGrant,
     /// Matching grant was expired by state or time window.
     ExpiredGrant,
     /// Matching grant was revoked, superseded, or denied.
     RevokedGrant,
-    /// Matching grant did not cover the requested scope or action.
     WrongScope,
-    /// Requested toy was absent from the canonical catalog.
     UnknownToy,
-    /// Policy or lifecycle state denied use of the toy.
     PolicyDenied,
-    /// Grant revisions did not match the call authority snapshot.
     StaleSnapshot,
 }
 
@@ -181,27 +124,16 @@ pub enum ToyGrantReasonCode {
 /// Allowed evaluations cite the matching grant and can mint an
 /// [`AuthorizedToyCall`]; denied evaluations carry no executable token.
 pub struct ToyGrantEvaluation {
-    /// Evaluation identifier for this toy decision.
     pub evaluation_id: ToyGrantEvaluationId,
-    /// Call whose toy request was evaluated.
     pub call_id: CallId,
-    /// Decision identifier for authority/audit linkage.
     pub decision_id: DecisionId,
-    /// Matching grant, present when a specific grant was considered.
     pub grant_id: Option<ToyGrantId>,
-    /// Requested canonical toy.
     pub toy_id: ToyId,
-    /// Child name from the evaluated subject.
     pub subject_child_name: String,
-    /// Allowed or denied verdict.
     pub verdict: ToyGrantVerdict,
-    /// Typed reason for the verdict.
     pub reason_code: ToyGrantReasonCode,
-    /// Policy revision used by the evaluation.
     pub policy_revision: u64,
-    /// Grants revision used by the evaluation.
     pub grants_revision: u64,
-    /// Observation recording this evaluation.
     pub observation_id: ObservationId,
 }
 
@@ -215,73 +147,43 @@ pub struct ToyGrantEvaluation {
 /// non-`Clone` token remains the session authority and cannot be copied into a
 /// later session.
 pub struct AuthorizedToyCall {
-    /// Unique token identifier for the authorized toy effect.
     authorized_toy_call_id: AuthorizedToyCallId,
-    /// Call during which the toy may be used.
     call_id: CallId,
-    /// Evaluation that minted this token.
     evaluation_id: ToyGrantEvaluationId,
-    /// Grant that authorized the toy effect.
     grant_id: ToyGrantId,
-    /// Toy the token authorizes.
     toy_id: ToyId,
-    /// Child instance allowed to exercise the toy.
     child_instance_id: ChildInstanceId,
-    /// Exact resource authorized by the evaluated grant/request, when scoped.
     resource_id: Option<String>,
-    /// Authority decision tied to this token.
     authority_decision_id: DecisionId,
     /// Token expiry, using grant expiry or call deadline when the grant has none.
     expires_at: Timestamp,
-    /// Policy revision under which this capability was minted.
     policy_revision: u64,
-    /// Grants revision under which this capability was minted.
     grants_revision: u64,
-    /// Complete executing-Mother authority for snapshot-evaluated Toy effects.
     local_execution_authority: Option<LocalExecutionAuthorityTokenV1>,
-    /// Exact canonical Toy catalog record used to mint this token.
     canonical_toy: CanonicalToyContract,
-    /// Exact canonical grant record used to mint this token.
     canonical_grant: ToyGrant,
-    /// Exact subject admitted by evaluation.
     subject: ToyGrantSubject,
-    /// Exact action admitted by evaluation.
     action: String,
-    /// Exact node admitted by evaluation.
     node_id: MctNodeId,
-    /// Exact Vision admitted by evaluation.
     vision_id: VisionId,
-    /// Exact project admitted by evaluation.
     project_id: Option<ProjectId>,
-    /// Exact data classification admitted by evaluation.
     data_classification: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Typed reason current Toy effect authority was denied.
 pub enum ToyEffectAdmissionDenyV1 {
-    /// Token was not minted from local snapshot authority.
     LocalAuthorityUnavailable,
-    /// Supplied call differs from the authorized call.
     CallIdMismatch,
-    /// Effective deadline differs from the minted deadline.
     EffectiveDeadlineMismatch,
-    /// Current local policy identity differs from minted authority.
     PolicyAuthorityMismatch,
-    /// Current namespaced grants identity differs from minted authority.
     GrantsAuthorityMismatch,
     /// Token or effective deadline has expired on the Mother clock.
     TokenExpired,
-    /// Canonical current Toy catalog does not authorize this Toy.
     UnknownToy,
-    /// Exact grant named by the token is absent.
     MissingExactGrant,
-    /// Exact grant is not active.
     InactiveGrant,
-    /// Exact current subject or effect scope differs from the token.
     ExactGrantMismatch,
-    /// Exact grant has not reached its start time.
     GrantNotStarted,
     /// Exact grant reached its exclusive expiry.
     GrantExpired,
@@ -290,18 +192,11 @@ pub enum ToyEffectAdmissionDenyV1 {
 }
 
 #[derive(Debug)]
-/// Proof that a Toy token is bound to the supplied call and its authority
-/// revisions at an effect-admission boundary.
-///
-/// The constructor is private to [`AuthorizedToyCall::admit_effect_for_call_at`]
-/// so daemon Toy paths cannot obtain this proof without performing every
-/// binding and expiry check.
 pub struct AdmittedToyEffect<'a> {
     authorized: &'a AuthorizedToyCall,
 }
 
 impl AdmittedToyEffect<'_> {
-    /// Returns the capability whose exact-call binding was admitted.
     pub fn authorized(&self) -> &AuthorizedToyCall {
         self.authorized
     }
@@ -400,9 +295,6 @@ impl AuthorizedToyCall {
 
     /// Legacy exact-call/time guard retained for compatibility surfaces.
     /// Resident Toy effects must use [`Self::admit_effect_with_snapshot`].
-    /// Admits this token for an effect only when its exact call and authority
-    /// revisions match the supplied call and the executing Mother's current
-    /// time is strictly before token expiry.
     pub fn admit_effect_for_call_at<'a>(
         &'a self,
         call: &MctCall,
@@ -412,112 +304,84 @@ impl AuthorizedToyCall {
             .then_some(AdmittedToyEffect { authorized: self })
     }
 
-    /// Unique token identifier for the authorized toy effect.
     pub fn authorized_toy_call_id(&self) -> &AuthorizedToyCallId {
         &self.authorized_toy_call_id
     }
 
-    /// Call during which the toy may be used.
     pub fn call_id(&self) -> &CallId {
         &self.call_id
     }
 
-    /// Evaluation that minted this token.
     pub fn evaluation_id(&self) -> &ToyGrantEvaluationId {
         &self.evaluation_id
     }
 
-    /// Grant that authorized the toy effect.
     pub fn grant_id(&self) -> &ToyGrantId {
         &self.grant_id
     }
 
-    /// Toy the token authorizes.
     pub fn toy_id(&self) -> &ToyId {
         &self.toy_id
     }
 
-    /// Child instance allowed to exercise the toy.
     pub fn child_instance_id(&self) -> &ChildInstanceId {
         &self.child_instance_id
     }
 
-    /// Exact resource authorized for this token, when one was requested.
     pub fn resource_id(&self) -> Option<&str> {
         self.resource_id.as_deref()
     }
 
-    /// Authority decision tied to this token.
     pub fn authority_decision_id(&self) -> &DecisionId {
         &self.authority_decision_id
     }
 
-    /// Token expiry, using grant expiry or call deadline when the grant has none.
     pub fn expires_at(&self) -> &Timestamp {
         &self.expires_at
     }
 
-    /// Returns the policy revision under which this capability was minted.
     pub fn policy_revision(&self) -> u64 {
         self.policy_revision
     }
 
-    /// Returns the grants revision under which this capability was minted.
     pub fn grants_revision(&self) -> u64 {
         self.grants_revision
     }
 
-    /// Returns complete local authority when snapshot minting produced this token.
     pub fn local_execution_authority(&self) -> Option<&LocalExecutionAuthorityTokenV1> {
         self.local_execution_authority.as_ref()
     }
 
-    /// Returns the exact action admitted by evaluation.
     pub fn action(&self) -> &str {
         &self.action
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Identifiers supplied for toy grant evaluation and token minting.
 pub struct ToyGrantEvaluationIds {
-    /// Identifier for the produced evaluation.
     pub evaluation_id: ToyGrantEvaluationId,
-    /// Decision identifier for authority linkage.
     pub decision_id: DecisionId,
-    /// Observation identifier for evaluation evidence.
     pub observation_id: ObservationId,
-    /// Token identifier used only when authorization succeeds.
     pub authorized_toy_call_id: AuthorizedToyCallId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Facts supplied by an adapter when a child requests a toy effect.
 pub struct ToyGrantEvaluationRequest {
-    /// Toy the child wants to use.
     pub toy_id: ToyId,
-    /// Child identity requesting the effect.
     pub subject: ToyGrantSubject,
-    /// Live child instance requesting the effect.
     pub child_instance_id: ChildInstanceId,
     /// Requested action; must be present in the grant scope.
     pub action: String,
-    /// Optional resource requested by the child.
     pub resource_id: Option<String>,
-    /// Node where the effect would occur.
     pub node_id: MctNodeId,
     /// Adapter-supplied current time for grant window checks.
     pub now: Timestamp,
-    /// Identifiers to stamp on the evaluation and token.
     pub ids: ToyGrantEvaluationIds,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-/// Result of toy grant evaluation, including token only on allow.
 pub struct ToyGrantEvaluationResult {
-    /// Typed evaluation recording verdict and reason.
     pub evaluation: ToyGrantEvaluation,
-    /// Executable toy-call token, present only for allowed evaluations.
     pub authorized: Option<AuthorizedToyCall>,
 }
 
@@ -1448,7 +1312,6 @@ mod tests {
         );
     }
 
-    /// Phase J proofs 9 and 12: Mother time and authority epoch remain independent gates.
     #[test]
     fn toy_effect_uses_mother_time_and_rejects_prior_epoch() {
         let minted_snapshot = snapshot_with_grant(grant(ToyGrantState::Active));
@@ -1481,7 +1344,6 @@ mod tests {
         );
     }
 
-    /// Phase J proof 13: caller authority echoes affect neither Toy mint nor revalidation.
     #[test]
     fn toy_snapshot_mint_and_effect_ignore_hostile_caller_echoes() {
         let snapshot = snapshot_with_grant(grant(ToyGrantState::Active));
