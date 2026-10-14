@@ -17,19 +17,12 @@ use std::path::Path;
 /// Typed fail-closed reason for Mother-local snapshot construction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LocalExecutionAuthoritySnapshotDenyV1 {
-    /// The structurally scanned ledger is quarantined.
     LedgerQuarantined,
-    /// The ledger belongs to another lineage.
     ForeignLineage,
-    /// Current canonical ledger evidence cannot be read.
     LedgerUnavailable,
-    /// Authority facts cannot be replayed at the validated head.
     AuthorityReplayBlocked,
-    /// Exact D-G8 projection proof denied with its original reason.
     AuthorityProjection(AuthorityProjectionDenyReasonV1),
-    /// Complete local Child or peer policy inputs cannot be captured.
     LocalPolicyUnavailable,
-    /// The executing Mother's clock cannot be sampled.
     MotherClockUnavailable,
 }
 
@@ -297,12 +290,16 @@ mod tests {
             scope_mode: WatchScopeMode::Constrained,
             canonical_root_ref: "file:///tmp/snapshot-watch".into(),
             traversal_scope: WatchTraversalScope::Recursive,
-            event_classes: vec![WatchEventClass::Created, WatchEventClass::Modified],
+            event_classes: mct_kernel::watch::WatchEventClasses::new(vec![
+                WatchEventClass::Created,
+                WatchEventClass::Modified,
+            ])
+            .unwrap(),
             max_events_per_batch: 11,
             coalescing_policy: WatchCoalescingPolicy::LastPerPath,
             starts_at: Timestamp::new("2026-08-05T12:00:00Z").unwrap(),
             expires_at: Timestamp::new("2026-08-05T13:00:00Z").unwrap(),
-            scope_revision: 1,
+            scope_revision: std::num::NonZeroU64::MIN,
             policy_revision: 1,
             authority_state: WatchObservationScopeState::Active,
             authority_observation_id: ObservationId::new("obs-snapshot-watch").unwrap(),
@@ -429,7 +426,6 @@ mod tests {
         .unwrap()
     }
 
-    /// Phase I proof 3: every local source and full cursor survives exact D-G8 proof.
     #[test]
     fn usable_dg8_proof_constructs_snapshot_with_exact_sources() {
         let fixture = fixture();
@@ -483,7 +479,6 @@ mod tests {
         );
     }
 
-    /// Phase I proof 4: hostile caller echoes are outside the provider's input type.
     #[test]
     fn arbitrary_call_authority_echoes_cannot_change_snapshot_construction() {
         let fixture = fixture();
@@ -500,7 +495,6 @@ mod tests {
         }
     }
 
-    /// Phase I proof 6: behind projection denies exactly until explicit catch-up.
     #[test]
     fn behind_projection_denies_then_explicit_catchup_restores_snapshot() {
         let mut fixture = fixture();
@@ -558,7 +552,6 @@ mod tests {
         assert_eq!(after.canonical_grants().toy_catalog().len(), 2);
     }
 
-    /// Phase I proof 7: an old epoch projection denies until canonical rebuild.
     #[test]
     fn old_epoch_projection_denies_then_rebuild_restores_grant_meaning() {
         let fixture = fixture();
@@ -600,7 +593,6 @@ mod tests {
         );
     }
 
-    /// Phase I proof 11: every returned concurrent snapshot is entirely pre or post mutation.
     #[test]
     fn concurrent_mutation_never_returns_mixed_identity_grants_or_cursor() {
         let mut fixture = fixture();
@@ -696,7 +688,6 @@ mod tests {
         );
     }
 
-    /// Phase I proof 13: provider API has no call-derived parameter or conversion.
     #[test]
     #[allow(clippy::type_complexity)]
     fn snapshot_provider_api_accepts_only_mother_owned_sources() {

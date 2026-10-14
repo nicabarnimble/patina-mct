@@ -4,191 +4,105 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Trace linkage copied into durable observations.
 pub struct ObservationTraceRef {
-    /// Trace shared by related observations.
     pub trace_id: TraceId,
-    /// Optional span that produced this observation.
     pub span_id: Option<SpanId>,
-    /// Optional parent span for trace reconstruction.
     pub parent_span_id: Option<SpanId>,
-    /// Optional foreign trace identifier from another system.
     pub external_trace_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Stable event taxonomy for observation ledger entries.
 pub enum ObservationKind {
-    /// Records that call received occurred.
     CallReceived,
-    /// Records that call rejected occurred.
     CallRejected,
-    /// Records that call constructed occurred.
     CallConstructed,
-    /// Records that call authorized occurred.
     CallAuthorized,
-    /// Records that call denied occurred.
     CallDenied,
-    /// Records that candidate considered occurred.
     CandidateConsidered,
-    /// Records that candidate eliminated occurred.
     CandidateEliminated,
-    /// Records that route selected occurred.
     RouteSelected,
-    /// Records that no route recorded occurred.
     NoRouteRecorded,
-    /// Records that route revalidated occurred.
     RouteRevalidated,
-    /// Records that result recorded occurred.
     ResultRecorded,
-    /// Records that artifact verified occurred.
     ArtifactVerified,
-    /// Records that artifact rejected occurred.
     ArtifactRejected,
-    /// Records that child approved occurred.
     ChildApproved,
-    /// Records that child revoked occurred.
     ChildRevoked,
-    /// Records that child assigned occurred.
     ChildAssigned,
-    /// Records that child assignment revoked occurred.
     ChildAssignmentRevoked,
-    /// Records that child instance loading occurred.
     ChildInstanceLoading,
-    /// Records that child instance ready occurred.
     ChildInstanceReady,
-    /// Records that child instance degraded occurred.
     ChildInstanceDegraded,
-    /// Records that child instance draining occurred.
     ChildInstanceDraining,
-    /// Records that child instance stopped occurred.
     ChildInstanceStopped,
-    /// Records that child instance failed occurred.
     ChildInstanceFailed,
-    /// Records that child invoked occurred.
     ChildInvoked,
-    /// Records that toy grant allowed occurred.
     ToyGrantAllowed,
-    /// Records that toy grant denied occurred.
     ToyGrantDenied,
-    /// Records that toy grant expired occurred.
     ToyGrantExpired,
-    /// Records that toy grant revoked occurred.
     ToyGrantRevoked,
-    /// Records that toy call started occurred.
     ToyCallStarted,
-    /// Records that toy call completed occurred.
     ToyCallCompleted,
-    /// Records that toy call failed occurred.
     ToyCallFailed,
-    /// Records that data movement allowed occurred.
     DataMovementAllowed,
-    /// Records that data movement denied occurred.
     DataMovementDenied,
-    /// Records that secret access allowed occurred.
     SecretAccessAllowed,
-    /// Records that secret access denied occurred.
     SecretAccessDenied,
-    /// Records that peer connected occurred.
     PeerConnected,
-    /// Records that peer hello received occurred.
     PeerHelloReceived,
-    /// Records that peer protocol negotiated occurred.
     PeerProtocolNegotiated,
-    /// Records that peer hello responded occurred.
     PeerHelloResponded,
-    /// Records that peer binding recorded occurred.
     PeerBindingRecorded,
-    /// Records that peer binding revoked occurred.
     PeerBindingRevoked,
-    /// Records that peer binding expired occurred.
     PeerBindingExpired,
-    /// Records that peer admitted occurred.
     PeerAdmitted,
-    /// Records that peer rejected occurred.
     PeerRejected,
-    /// Records that peer call sent occurred.
     PeerCallSent,
-    /// Records that peer call received occurred.
     PeerCallReceived,
-    /// Records that peer call malformed occurred.
     PeerCallMalformed,
-    /// Records that peer call replied occurred.
     PeerCallReplied,
-    /// Records that peer stream opened occurred.
     PeerStreamOpened,
-    /// Records that peer stream reset occurred.
     PeerStreamReset,
-    /// Records that iroh path observed occurred.
     IrohPathObserved,
-    /// Records that runtime execution started occurred.
     RuntimeExecutionStarted,
-    /// Records that runtime execution completed occurred.
     RuntimeExecutionCompleted,
-    /// Records that runtime execution failed occurred.
     RuntimeExecutionFailed,
-    /// Records that runtime execution trapped occurred.
     RuntimeExecutionTrapped,
-    /// Records that runtime execution timed out occurred.
     RuntimeExecutionTimedOut,
-    /// Records that adapter effect started occurred.
     AdapterEffectStarted,
-    /// Records that adapter effect completed occurred.
     AdapterEffectCompleted,
-    /// Records that adapter effect failed occurred.
     AdapterEffectFailed,
-    /// Records that storage append succeeded occurred.
     StorageAppendSucceeded,
-    /// Records that storage append failed occurred.
     StorageAppendFailed,
-    /// Records that observation backpressure applied occurred.
     ObservationBackpressureApplied,
-    /// Records that lifecycle transition recorded occurred.
     LifecycleTransitionRecorded,
-    /// Records that node health reported occurred.
     NodeHealthReported,
-    /// Records that operator action recorded occurred.
     OperatorActionRecorded,
-    /// Records that telemetry exported occurred.
     TelemetryExported,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Layer that produced the observation fact.
 pub enum SourcePlane {
-    /// Pure kernel decision or projection.
     Kernel,
-    /// Adapter boundary or runtime effect.
     Adapter,
-    /// Peer protocol event.
     Peer,
-    /// Child lifecycle or invocation event.
     Child,
-    /// Toy grant or effect event.
     Toy,
-    /// Storage or ledger event.
     Storage,
-    /// Operator action or health projection.
     Operator,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Outcome class recorded for an observation.
 pub enum ObservationOutcome {
-    /// Authority allowed the action.
     Allowed,
     /// Authority denied or failed closed.
     Denied,
-    /// Effect or execution started.
     Started,
-    /// Effect or execution completed.
     Completed,
-    /// Effect or execution failed.
     Failed,
-    /// Effect or execution timed out.
     TimedOut,
-    /// Effect or execution was cancelled.
     Cancelled,
     /// Fact is informational rather than an authority outcome.
     Informational,
@@ -217,29 +131,18 @@ pub enum ObservationVisibility {
 /// messages and visibility define disclosure; privileged details remain behind
 /// `detail_ref` or typed records elsewhere.
 pub struct MctObservation {
-    /// Unique observation identifier for ledger correlation.
     pub observation_id: ObservationId,
     /// Adapter-supplied time when the fact was observed.
     pub observed_at: Timestamp,
-    /// Event taxonomy value for this fact.
     pub kind: ObservationKind,
-    /// Layer that produced the observation.
     pub source_plane: SourcePlane,
-    /// Trace linkage for reconstructing call flow.
     pub trace: ObservationTraceRef,
-    /// Call associated with the fact, when any.
     pub call_id: Option<CallId>,
-    /// Authority decision associated with the fact, when any.
     pub decision_id: Option<DecisionId>,
-    /// Subject of the fact, such as child, peer, or grant.
     pub subject_id: Option<String>,
-    /// Resource affected or considered by the fact.
     pub resource_id: Option<String>,
-    /// Policy revision relevant to the fact, when any.
     pub policy_revision: Option<u64>,
-    /// Grants revision relevant to the fact, when any.
     pub grants_revision: Option<u64>,
-    /// Outcome class for projection and filtering.
     pub outcome: ObservationOutcome,
     /// Maximum intended audience for this observation.
     pub visibility: ObservationVisibility,
@@ -253,55 +156,33 @@ pub struct MctObservation {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Adapter failure class projected into an observation.
 pub enum AdapterDiagnosticKind {
-    /// Iroh stream reset before protocol completion.
     IrohStreamReset,
-    /// WASM runtime trapped during execution.
     WasmTrap,
-    /// Configured WASM export was absent.
     WasmMissingExport,
-    /// Component requested a missing host import.
     WasmMissingHostImport,
-    /// WIT value conversion failed.
     WasmValueConversionFailure,
-    /// Process child exited unsuccessfully.
     ProcessExitFailure,
-    /// JVM-backed child timed out.
     JvmTimeout,
-    /// Storage append failed.
     StorageAppendFailure,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Input facts for projecting an adapter diagnostic into an observation.
 pub struct AdapterDiagnosticObservationInput {
-    /// Unique observation identifier for ledger correlation.
     pub observation_id: ObservationId,
-    /// Adapter-supplied time when the fact was observed.
     pub observed_at: Timestamp,
-    /// Adapter diagnostic class to project.
     pub diagnostic_kind: AdapterDiagnosticKind,
-    /// Trace linkage for reconstructing call flow.
     pub trace: ObservationTraceRef,
-    /// Call associated with the fact, when any.
     pub call_id: Option<CallId>,
-    /// Authority decision associated with the fact, when any.
     pub decision_id: Option<DecisionId>,
-    /// Subject of the fact, such as child, peer, or grant.
     pub subject_id: Option<String>,
-    /// Resource affected or considered by the fact.
     pub resource_id: Option<String>,
-    /// Policy revision relevant to the fact, when any.
     pub policy_revision: Option<u64>,
-    /// Grants revision relevant to the fact, when any.
     pub grants_revision: Option<u64>,
-    /// Opaque reference to privileged detail outside this record.
     pub detail_ref: Option<String>,
 }
 
 impl MctObservation {
-    /// Builds an internal informational observation with no call or decision context.
     pub fn informational(
         observation_id: ObservationId,
         observed_at: Timestamp,
@@ -334,7 +215,6 @@ impl MctObservation {
     }
 }
 
-/// Projects an adapter diagnostic into the stable observation taxonomy.
 pub fn adapter_diagnostic_observation(input: AdapterDiagnosticObservationInput) -> MctObservation {
     let (kind, source_plane, outcome, safe_message) = match input.diagnostic_kind {
         AdapterDiagnosticKind::IrohStreamReset => (
@@ -406,7 +286,6 @@ pub fn adapter_diagnostic_observation(input: AdapterDiagnosticObservationInput) 
     }
 }
 
-/// Projects a hello admission evaluation into an observation fact.
 pub fn hello_evaluation_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -454,7 +333,6 @@ pub fn hello_evaluation_observation(
     }
 }
 
-/// Projects a peer binding lifecycle state into an observation fact.
 pub fn peer_binding_state_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -515,7 +393,6 @@ pub fn peer_binding_state_observation(
     }
 }
 
-/// Projects candidate consideration into an observation fact.
 pub fn candidate_considered_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -555,7 +432,6 @@ pub fn candidate_considered_observation(
     }
 }
 
-/// Projects candidate elimination into an observation fact with the specific rule class.
 pub fn candidate_eliminated_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -674,7 +550,6 @@ fn route_decision_detail_ref(decision: &RouteDecision) -> Option<String> {
     }
 }
 
-/// Projects a call protocol evaluation into an observation fact.
 pub fn call_protocol_evaluation_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -727,7 +602,6 @@ pub fn call_protocol_evaluation_observation(
     }
 }
 
-/// Projects a child approval authority record into an observation fact.
 pub fn child_approval_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -778,7 +652,6 @@ pub fn child_approval_observation(
     }
 }
 
-/// Projects a child assignment authority record into an observation fact.
 pub fn child_assignment_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -824,7 +697,6 @@ pub fn child_assignment_observation(
     }
 }
 
-/// Projects a child instance lifecycle state into an observation fact.
 pub fn child_instance_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -890,7 +762,6 @@ pub fn child_instance_observation(
     }
 }
 
-/// Projects a child call authority evaluation into an observation fact.
 pub fn child_call_authority_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
@@ -938,7 +809,6 @@ pub fn child_call_authority_observation(
     }
 }
 
-/// Projects a toy grant evaluation into an observation fact.
 pub fn toy_grant_evaluation_observation(
     trace_id: TraceId,
     observed_at: Timestamp,
