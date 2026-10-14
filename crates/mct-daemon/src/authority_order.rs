@@ -1,7 +1,4 @@
-//! Mother-local canonical mutation/effect-start ordering seam.
-//!
-//! Phase H3 intentionally gives this primitive no production consumer. Grants slices 7 and 8
-//! can later adopt the same synchronous handoff at their final adapter-start seams.
+//! Mother-local canonical mutation and effect-start ordering.
 
 use mct_kernel::LocalExecutionAuthoritySnapshot;
 use mct_observation::{
@@ -81,7 +78,6 @@ pub struct MotherAuthorityOrderV1 {
     state: Mutex<MotherAuthorityOrderStateV1>,
 }
 
-/// Unforgeable, non-cloneable admission whose lifetime is tied to the held order position.
 pub struct MotherAuthorityAdmissionV1<'order> {
     expectation: &'order AuthorityProjectionExpectationV1,
     _single_use: PhantomData<&'order mut ()>,
@@ -696,7 +692,6 @@ mod tests {
         );
     }
 
-    /// Phase K proof 10: Phase J replacements remain and the slice-6 echo pin is retired.
     #[test]
     fn phase_j_pin_retirement_maps_each_old_seam_to_proof_or_named_residue() {
         let crate_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));

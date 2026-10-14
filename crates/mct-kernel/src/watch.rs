@@ -3,30 +3,20 @@
 use crate::{
     MctKernelError, MctKernelResult, error::ensure_non_blank, id::*, toy::AuthorizedToyCall,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::{fmt, num::NonZeroU64, ops::Deref};
 
-/// Canonical Watch Toy identifier.
 pub const MCT_WATCH_TOY_ID: &str = "toy:mct:watch-observation";
-/// Canonical Watch Toy resource/action contract.
 pub const MCT_WATCH_TOY_ACTION: &str = "observe";
-/// Maximum eligible events retained by one watch batch.
 pub const MCT_WATCH_MAX_EVENTS_PER_BATCH: u32 = 128;
-/// Maximum encoded watcher message accepted by the child call-out bridge.
 pub const MCT_WATCH_MESSAGE_MAX_BYTES: usize = 65_536;
-/// Maximum metadata pairs accepted on one watcher message.
 pub const MCT_WATCH_METADATA_PAIRS_MAX: usize = 16;
-/// Maximum nested Child call-out depth.
 pub const MCT_CHILD_CALLOUT_MAX_DEPTH: u8 = 1;
-/// Maximum key bytes in the bounded Child keyvalue adapter.
 pub const MCT_KEYVALUE_KEY_MAX_BYTES: usize = 128;
-/// Maximum value bytes in the bounded Child keyvalue adapter.
 pub const MCT_KEYVALUE_VALUE_MAX_BYTES: usize = 262_144;
-/// Maximum keys retained in one Child keyvalue bucket.
 pub const MCT_KEYVALUE_MAX_KEYS_PER_BUCKET: usize = 128;
-/// Maximum keys returned by one lexical list operation.
 pub const MCT_KEYVALUE_LIST_PAGE_MAX: usize = 128;
 
-/// Closed observer placement supported by a Watch scope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WatchObserverShape {
@@ -34,17 +24,14 @@ pub enum WatchObserverShape {
     ChildToy,
 }
 
-/// Breadth classification for a canonical Watch root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WatchScopeMode {
-    /// A narrowly selected application root.
     Constrained,
     /// An operator-explicit broad subtree, still never machine-wide ambient access.
     ExplicitBroad,
 }
 
-/// Traversal requested by the authority record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WatchTraversalScope {
@@ -54,7 +41,6 @@ pub enum WatchTraversalScope {
     Recursive,
 }
 
-/// Closed filesystem event classes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WatchEventClass {
@@ -66,23 +52,20 @@ pub enum WatchEventClass {
     Deleted,
 }
 
-/// Deterministic within-batch coalescing policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WatchCoalescingPolicy {
-    /// Retain every eligible event in canonical order.
-    None,
+    #[serde(rename = "none")]
+    RetainAll,
     /// Retain the final canonical event for each safe relative path.
     LastPerPath,
 }
 
-/// Lifecycle state of one immutable Watch scope revision.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WatchObservationScopeState {
     /// The exact revision may authorize observation while otherwise current.
     Active,
-    /// The revision was explicitly revoked.
     Revoked,
     /// A newer immutable revision replaced this revision.
     Superseded,
@@ -92,47 +75,138 @@ pub enum WatchObservationScopeState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WatchObserverRef {
-    /// Stable Child package name.
     pub child_name: String,
-    /// Exact acquired component artifact.
     pub artifact_id: ComponentArtifactId,
-    /// Exact artifact version.
     pub artifact_version: String,
-    /// Exact current Child assignment.
     pub assignment_id: ChildAssignmentId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CanonicalFileRoot(String);
+
+impl CanonicalFileRoot {
+    pub fn new(value: impl Into<String>) -> MctKernelResult<Self> {
+        let value = value.into();
+        validate_canonical_file_root(&value)?;
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Serialize for CanonicalFileRoot {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for CanonicalFileRoot {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+impl From<&str> for CanonicalFileRoot {
+    fn from(value: &str) -> Self {
+        Self::new(value).expect("watch root must be a canonical file URI")
+    }
+}
+
+impl From<String> for CanonicalFileRoot {
+    fn from(value: String) -> Self {
+        Self::new(value).expect("watch root must be a canonical file URI")
+    }
+}
+
+impl AsRef<str> for CanonicalFileRoot {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl Deref for CanonicalFileRoot {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Display for CanonicalFileRoot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<WatchEventClass>", into = "Vec<WatchEventClass>")]
+pub struct WatchEventClasses(Vec<WatchEventClass>);
+
+impl WatchEventClasses {
+    pub fn new(classes: Vec<WatchEventClass>) -> MctKernelResult<Self> {
+        if classes.is_empty() {
+            return invalid("event_classes", "empty set");
+        }
+        if classes.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return invalid("event_classes", "not unique canonical order");
+        }
+        Ok(Self(classes))
+    }
+
+    pub fn as_slice(&self) -> &[WatchEventClass] {
+        &self.0
+    }
+}
+
+impl TryFrom<Vec<WatchEventClass>> for WatchEventClasses {
+    type Error = MctKernelError;
+
+    fn try_from(value: Vec<WatchEventClass>) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<WatchEventClasses> for Vec<WatchEventClass> {
+    fn from(value: WatchEventClasses) -> Self {
+        value.0
+    }
+}
+
+impl Deref for WatchEventClasses {
+    type Target = [WatchEventClass];
+
+    fn deref(&self) -> &[WatchEventClass] {
+        self.as_slice()
+    }
 }
 
 /// Immutable ledger-backed authority for one Child watch root.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WatchObservationScope {
-    /// Stable scope identifier across revisions.
     pub watch_scope_id: WatchObservationScopeId,
-    /// Observer placement, currently only Child+Toy.
     pub observer_shape: WatchObserverShape,
-    /// Exact Child artifact and assignment.
     pub observer_ref: WatchObserverRef,
-    /// Explicit breadth classification.
     pub scope_mode: WatchScopeMode,
-    /// Credential-free canonical absolute `file:///` URI.
-    pub canonical_root_ref: String,
-    /// Explicit traversal contract.
+    pub canonical_root_ref: CanonicalFileRoot,
     pub traversal_scope: WatchTraversalScope,
-    /// Non-empty, unique, canonical ordered event classes.
-    pub event_classes: Vec<WatchEventClass>,
-    /// Per-record event ceiling.
+    pub event_classes: WatchEventClasses,
     pub max_events_per_batch: u32,
-    /// Explicit deterministic coalescing behavior.
     pub coalescing_policy: WatchCoalescingPolicy,
     /// Inclusive authority start.
     pub starts_at: Timestamp,
     /// Exclusive authority expiry.
     pub expires_at: Timestamp,
-    /// Immutable revision, starting at one.
-    pub scope_revision: u64,
-    /// Policy revision used for current evaluation.
+    pub scope_revision: NonZeroU64,
     pub policy_revision: u64,
-    /// Lifecycle state of this exact revision.
     pub authority_state: WatchObservationScopeState,
     /// Durable authority observation preceding projection.
     pub authority_observation_id: ObservationId,
@@ -160,21 +234,20 @@ struct WatchScopeDigestMaterial<'a> {
 }
 
 impl WatchObservationScope {
-    /// Computes the canonical record digest for this exact revision.
     pub fn expected_record_digest(&self) -> String {
         let bytes = serde_json::to_vec(&WatchScopeDigestMaterial {
             watch_scope_id: &self.watch_scope_id,
             observer_shape: self.observer_shape,
             observer_ref: &self.observer_ref,
             scope_mode: self.scope_mode,
-            canonical_root_ref: &self.canonical_root_ref,
+            canonical_root_ref: self.canonical_root_ref.as_str(),
             traversal_scope: self.traversal_scope,
-            event_classes: &self.event_classes,
+            event_classes: self.event_classes.as_slice(),
             max_events_per_batch: self.max_events_per_batch,
             coalescing_policy: self.coalescing_policy,
             starts_at: &self.starts_at,
             expires_at: &self.expires_at,
-            scope_revision: self.scope_revision,
+            scope_revision: self.scope_revision.get(),
             policy_revision: self.policy_revision,
             authority_state: self.authority_state,
             authority_observation_id: &self.authority_observation_id,
@@ -214,9 +287,6 @@ impl WatchObservationScope {
         if self.starts_at >= self.expires_at {
             return invalid("expires_at", "not after starts_at");
         }
-        if self.scope_revision == 0 {
-            return invalid("scope_revision", "must start at one");
-        }
         if self.policy_revision == 0 {
             return invalid("policy_revision", "must be non-zero");
         }
@@ -246,7 +316,6 @@ impl WatchObservationScope {
 /// Request for composing an already authorized Watch Toy call with current scope law.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WatchObservationSessionRequest {
-    /// Exact current Child artifact and assignment projection.
     pub current_observer: WatchObserverRef,
     /// Current instant for scope and token expiry checks.
     pub now: Timestamp,
@@ -260,7 +329,6 @@ pub struct AuthorizedWatchObservationSession {
 }
 
 impl AuthorizedWatchObservationSession {
-    /// Exact current Watch scope carried by this capability.
     pub fn scope(&self) -> &WatchObservationScope {
         &self.scope
     }
@@ -298,7 +366,6 @@ pub fn authorize_watch_observation_session(
     })
 }
 
-/// Validates one normalized safe root-relative event path.
 pub fn validate_safe_watch_relative_path(path: &str) -> MctKernelResult<()> {
     ensure_non_blank("WatchEventEvidence", "relative_path", path)?;
     if path.starts_with('/')
@@ -320,7 +387,6 @@ pub fn validate_safe_watch_relative_path(path: &str) -> MctKernelResult<()> {
     Ok(())
 }
 
-/// Legacy 0.1.x compatibility validation outcome.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LegacyWatchCompatibilityValidation {
@@ -349,42 +415,26 @@ pub fn validate_legacy_watch_paths(
 /// Durable evidence for one Watch scan batch.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchEventBatchEvidence {
-    /// Deterministic batch identifier.
     pub batch_id: WatchEventBatchId,
-    /// Exact Watch scope.
     pub watch_scope_id: WatchObservationScopeId,
-    /// Exact scope revision.
     pub scope_revision: u64,
-    /// Monotonic per-scope sequence.
     pub sequence: u64,
-    /// Watcher call causing the batch.
     pub parent_call_id: CallId,
-    /// Raw source count.
     pub raw_event_count: u32,
-    /// Eligible safe count.
     pub eligible_event_count: u32,
-    /// Coalesced input count.
     pub coalesced_event_count: u32,
-    /// Excluded input count.
     pub excluded_event_count: u32,
-    /// Capacity-refused input count.
     pub capacity_refused_event_count: u32,
 }
 
 /// Safe causal evidence for one Watch event.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchEventEvidence {
-    /// Deterministic event identifier.
     pub event_id: WatchEventId,
-    /// Containing batch.
     pub batch_id: WatchEventBatchId,
-    /// Stable position in canonical batch order.
     pub batch_position: u32,
-    /// Closed event class.
     pub event_class: WatchEventClass,
-    /// Canonical root-relative subject.
     pub relative_path: String,
-    /// Watcher call causing this event.
     pub causative_call_id: CallId,
     /// Actual trigger firing only for a Trigger parent.
     pub causative_trigger_firing_id: Option<CallTriggerFiringId>,
@@ -392,11 +442,9 @@ pub struct WatchEventEvidence {
     pub causative_adapter_observation_id: Option<ObservationId>,
 }
 
-/// Closed pre-call disposition set for Watch delivery.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WatchEventDisposition {
-    /// A fresh target call was planned.
     Fired,
     /// Input was represented by another deterministic event.
     Coalesced,
@@ -409,11 +457,8 @@ pub enum WatchEventDisposition {
 /// Durable pre-call delivery disposition.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchEventDeliveryDisposition {
-    /// Stable disposition identifier.
     pub disposition_id: WatchEventDeliveryDispositionId,
-    /// Exact source event.
     pub event_id: WatchEventId,
-    /// Closed pre-call disposition.
     pub disposition: WatchEventDisposition,
     /// Planned call, mandatory only for `fired`.
     pub planned_call_id: Option<CallId>,
@@ -424,7 +469,6 @@ pub struct WatchEventDeliveryDisposition {
 }
 
 impl WatchEventDeliveryDisposition {
-    /// Validates planned-call presence against the closed disposition.
     pub fn validate(&self) -> MctKernelResult<()> {
         match (self.disposition, self.planned_call_id.is_some()) {
             (WatchEventDisposition::Fired, true) => Ok(()),
@@ -440,15 +484,10 @@ impl WatchEventDeliveryDisposition {
 /// Durable completion evidence referencing the target call's existing result.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchEventDeliveryEvidence {
-    /// Stable delivery identifier.
     pub delivery_id: WatchEventDeliveryId,
-    /// Fired pre-call disposition.
     pub disposition_id: WatchEventDeliveryDispositionId,
-    /// Exact ordinary target call.
     pub target_call_id: CallId,
-    /// Existing target result reference.
     pub target_result_ref: ResultRef,
-    /// Existing target `ResultRecorded` observation.
     pub target_result_observation_id: ObservationId,
     /// True only when the durable referenced target result is successful.
     pub delivered: bool,
@@ -572,18 +611,19 @@ mod tests {
             observer_shape: WatchObserverShape::ChildToy,
             observer_ref: observer(),
             scope_mode: WatchScopeMode::Constrained,
-            canonical_root_ref: "file:///tmp/watch-root".into(),
+            canonical_root_ref: CanonicalFileRoot::new("file:///tmp/watch-root").unwrap(),
             traversal_scope: WatchTraversalScope::Recursive,
-            event_classes: vec![
+            event_classes: WatchEventClasses::new(vec![
                 WatchEventClass::Created,
                 WatchEventClass::Modified,
                 WatchEventClass::Deleted,
-            ],
+            ])
+            .unwrap(),
             max_events_per_batch: 32,
             coalescing_policy: WatchCoalescingPolicy::LastPerPath,
             starts_at: Timestamp::new("2026-07-21T12:00:00Z").unwrap(),
             expires_at: Timestamp::new("2026-07-21T13:00:00Z").unwrap(),
-            scope_revision: 1,
+            scope_revision: NonZeroU64::MIN,
             policy_revision: 1,
             authority_state: WatchObservationScopeState::Active,
             authority_observation_id: ObservationId::new("obs-watch-authority").unwrap(),
@@ -595,6 +635,10 @@ mod tests {
     #[test]
     fn watch_scope_validation_is_closed_bounded_and_digest_bound() {
         let valid = scope();
+        assert_eq!(
+            valid.canonical_record_digest,
+            "blake3:256d5418218f37991fff75afb7674cca5e9c62d6df310edc75d0c663e0621c35"
+        );
         valid.validate().unwrap();
         assert!(valid.is_current_at(&Timestamp::new("2026-07-21T12:30:00Z").unwrap()));
 
@@ -603,15 +647,18 @@ mod tests {
         invalid_batch = invalid_batch.seal();
         assert!(invalid_batch.validate().is_err());
 
-        let mut unordered = valid.clone();
-        unordered.event_classes = vec![WatchEventClass::Deleted, WatchEventClass::Created];
-        unordered = unordered.seal();
-        assert!(unordered.validate().is_err());
-
-        let mut broad = valid.clone();
-        broad.canonical_root_ref = "file:///".into();
-        broad = broad.seal();
-        assert!(broad.validate().is_err());
+        assert!(
+            WatchEventClasses::new(vec![WatchEventClass::Deleted, WatchEventClass::Created])
+                .is_err()
+        );
+        assert!(CanonicalFileRoot::new("file:///").is_err());
+        let mut zero_revision = serde_json::to_value(&valid).unwrap();
+        zero_revision["scope_revision"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<WatchObservationScope>(zero_revision).is_err());
+        assert_eq!(
+            serde_json::to_value(WatchCoalescingPolicy::RetainAll).unwrap(),
+            serde_json::json!("none")
+        );
 
         let mut tampered = valid;
         tampered.observer_ref.artifact_version = "0.2.0".into();
