@@ -5,6 +5,10 @@
 
 #![forbid(unsafe_code)]
 
+use mct_kernel::admin_key_grant_shape_error;
+pub use mct_kernel::{
+    AdminKeyGrantClassV1, AdminKeyGrantStateV1, AdminKeyGrantV1, AdminKeyScopeV1,
+};
 use mct_kernel::{
     CallId, CanonicalToyContract, MctObservation, ObservationId, ObservationKind,
     ObservationOutcome, ObservationTraceRef, ObservationVisibility, SourcePlane, Timestamp,
@@ -117,69 +121,6 @@ pub enum GrantShapingSourceV1 {
     /// An admin key shaped the mutation. Mother remains the only grantor.
     /// The value is the public half; the secret is not a shaping field.
     AdminKey { public_half: String },
-}
-
-/// Route scope named on an admin-key grant.
-///
-/// The recovery grant carries only [`AdminKeyScopeV1::StartupGate`] and
-/// [`AdminKeyScopeV1::KeyManage`]. A day-to-day grant cannot carry the startup gate.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AdminKeyScopeV1 {
-    ApproveChild,
-    Artifact,
-    AuthorityImport,
-    AuthorizeSecret,
-    AuthorizeSlate,
-    Blob,
-    KeyManage,
-    Lifecycle,
-    PandoRecord,
-    PeerAdd,
-    PeerProof,
-    PeerRemove,
-    PeerRevoke,
-    Registry,
-    RevokeChild,
-    StartupGate,
-    Status,
-    Trigger,
-    WatchGrant,
-    WatchRevoke,
-}
-
-const RECOVERY_GRANT_SCOPES: [AdminKeyScopeV1; 2] =
-    [AdminKeyScopeV1::KeyManage, AdminKeyScopeV1::StartupGate];
-
-/// Day-to-day keys expire. The recovery grant is the startup gate plus key-manage.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AdminKeyGrantClassV1 {
-    DayToDay,
-    Recovery,
-}
-
-/// Active grants authorize. Revoked is terminal for a day-to-day key.
-/// The recovery grant stays active: nothing can revoke it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AdminKeyGrantStateV1 {
-    Active,
-    Revoked,
-}
-
-/// Ledger fact for one admin key. Mother stores the public half only.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AdminKeyGrantV1 {
-    pub grant_id: String,
-    pub public_half: String,
-    pub class: AdminKeyGrantClassV1,
-    pub scopes: Vec<AdminKeyScopeV1>,
-    /// Mandatory for a day-to-day key. Absent on the recovery grant.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<Timestamp>,
-    pub grant_state: AdminKeyGrantStateV1,
 }
 
 /// Single-use pairing ticket. The ledger stores the hash, not the ticket.
@@ -1753,41 +1694,10 @@ fn pairing_ticket_hash_ok(value: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
-fn admin_key_scopes_are_canonical(scopes: &[AdminKeyScopeV1]) -> bool {
-    !scopes.is_empty() && scopes.windows(2).all(|pair| pair[0] < pair[1])
-}
-
 fn validate_admin_key_grant_shape(grant: &AdminKeyGrantV1) -> std::result::Result<(), String> {
-    if !non_empty_token(&grant.grant_id) {
-        return Err("admin key grant id is empty".into());
-    }
-    if !non_empty_token(&grant.public_half) {
-        return Err("admin key grant stores only a non-empty public half".into());
-    }
-    if !admin_key_scopes_are_canonical(&grant.scopes) {
-        return Err("admin key scopes are empty or not strictly ordered".into());
-    }
-    match grant.class {
-        AdminKeyGrantClassV1::DayToDay => {
-            if grant.expires_at.is_none() {
-                return Err("day-to-day admin key grant requires expiry".into());
-            }
-            if grant.scopes.contains(&AdminKeyScopeV1::StartupGate) {
-                return Err("day-to-day admin key grant cannot carry the startup gate".into());
-            }
-            Ok(())
-        }
-        AdminKeyGrantClassV1::Recovery => {
-            if grant.expires_at.is_some() {
-                return Err(
-                    "recovery grant is not a day-to-day key and does not carry an expiry".into(),
-                );
-            }
-            if grant.scopes.as_slice() != RECOVERY_GRANT_SCOPES {
-                return Err("recovery grant is the startup gate plus key-manage".into());
-            }
-            Ok(())
-        }
+    match admin_key_grant_shape_error(grant) {
+        Some(detail) => Err(detail.to_owned()),
+        None => Ok(()),
     }
 }
 
@@ -4914,6 +4824,99 @@ mod tests {
                 .contains("recovery grant cannot be revoked"),
             "{replay_error}"
         );
+    }
+
+    /// Replayed phase-1 grants are what the route-scope check reads.
+    #[test]
+    fn replayed_admin_grants_keep_recovery_locked_and_day_to_day_expiry() {
+        use mct_kernel::{
+            AdminKeyCheckAction, AdminKeyGrantCheckRequest, AdminKeyGrantReason, AdminKeyScopeV1,
+            evaluate_admin_key_grant,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let mut ledger =
+            JsonlObservationLedger::open_authority(&path, "ledger-a", "mother-a").unwrap();
+        commit_authority(
+            &mut ledger,
+            "admin-grants",
+            vec![
+                AuthorityChangeV1::AdminKeyGrantPut {
+                    grant: Box::new(day_to_day_admin_grant()),
+                },
+                AuthorityChangeV1::AdminKeyGrantPut {
+                    grant: Box::new(recovery_admin_grant()),
+                },
+            ],
+            admin_key_source("public-half-recovery"),
+        );
+        let replay = replay_authority_entries(&ledger.entries().unwrap()).unwrap();
+        let grants: Vec<_> = replay.state.admin_key_grants.values().cloned().collect();
+        let generation = replay.current_authority.unwrap().generation;
+        let check = |public_half: &str, action: AdminKeyCheckAction| {
+            evaluate_admin_key_grant(
+                &AdminKeyGrantCheckRequest {
+                    public_half: public_half.into(),
+                    action,
+                    now: Timestamp::new("2026-08-06T12:00:00Z").unwrap(),
+                    presented_generation: generation,
+                    current_generation: generation,
+                },
+                &grants,
+            )
+        };
+
+        assert!(
+            check(
+                "public-half-day",
+                AdminKeyCheckAction::Route(AdminKeyScopeV1::Status),
+            )
+            .is_allowed()
+        );
+        assert_eq!(
+            check(
+                "public-half-day",
+                AdminKeyCheckAction::Route(AdminKeyScopeV1::StartupGate),
+            )
+            .reason,
+            AdminKeyGrantReason::WrongScope
+        );
+        assert!(
+            check(
+                "public-half-recovery",
+                AdminKeyCheckAction::Route(AdminKeyScopeV1::StartupGate),
+            )
+            .is_allowed()
+        );
+        assert_eq!(
+            check(
+                "public-half-recovery",
+                AdminKeyCheckAction::Route(AdminKeyScopeV1::Status),
+            )
+            .reason,
+            AdminKeyGrantReason::WrongScope
+        );
+        let locked = check(
+            "public-half-day",
+            AdminKeyCheckAction::Revoke {
+                target_grant_id: "recovery".into(),
+            },
+        );
+        assert_eq!(locked.reason, AdminKeyGrantReason::RecoveryGrantLocked);
+        assert!(!locked.is_allowed());
+
+        let expired = evaluate_admin_key_grant(
+            &AdminKeyGrantCheckRequest {
+                public_half: "public-half-day".into(),
+                action: AdminKeyCheckAction::Route(AdminKeyScopeV1::Status),
+                now: Timestamp::new("2026-10-14T00:00:00Z").unwrap(),
+                presented_generation: generation,
+                current_generation: generation,
+            },
+            &grants,
+        );
+        assert_eq!(expired.reason, AdminKeyGrantReason::ExpiredGrant);
     }
 
     /// Existing toy-grant replay still succeeds beside the admin-key facts.

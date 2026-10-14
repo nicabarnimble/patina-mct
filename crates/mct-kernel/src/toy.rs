@@ -1,6 +1,7 @@
 use crate::{
     authority::{LocalExecutionAuthoritySnapshot, LocalExecutionAuthorityTokenV1},
     call::*,
+    grant_check::{ExpiryDecision, ExpiryRequirement, action_is_allowed, expiry_decision},
     id::*,
 };
 use serde::{Deserialize, Serialize};
@@ -600,33 +601,12 @@ pub fn evaluate_toy_grant_for_call(
             }
         }
 
-        if grant
-            .constraints
-            .starts_at
-            .as_ref()
-            .is_some_and(|starts_at| request.now < *starts_at)
-        {
+        if let Some(reason) = toy_time_window_denial(&request.now, &grant.constraints) {
             return denied(
                 call,
                 request,
                 Some(grant),
-                ToyGrantReasonCode::PolicyDenied,
-                grant.policy_revision,
-                grant.grants_revision,
-            );
-        }
-
-        if grant
-            .constraints
-            .expires_at
-            .as_ref()
-            .is_some_and(|expires_at| request.now >= *expires_at)
-        {
-            return denied(
-                call,
-                request,
-                Some(grant),
-                ToyGrantReasonCode::ExpiredGrant,
+                reason,
                 grant.policy_revision,
                 grant.grants_revision,
             );
@@ -871,32 +851,12 @@ pub fn evaluate_toy_grant_for_route_snapshot(
                 continue;
             }
         }
-        if grant
-            .constraints
-            .starts_at
-            .as_ref()
-            .is_some_and(|starts_at| request.now < *starts_at)
-        {
+        if let Some(reason) = toy_time_window_denial(&request.now, &grant.constraints) {
             return route_denied(
                 call,
                 request,
                 Some(grant),
-                ToyGrantReasonCode::PolicyDenied,
-                local_policy_revision,
-                local_grants_generation,
-            );
-        }
-        if grant
-            .constraints
-            .expires_at
-            .as_ref()
-            .is_some_and(|expires_at| request.now >= *expires_at)
-        {
-            return route_denied(
-                call,
-                request,
-                Some(grant),
-                ToyGrantReasonCode::ExpiredGrant,
+                reason,
                 local_policy_revision,
                 local_grants_generation,
             );
@@ -1009,10 +969,28 @@ fn scope_matches(
             &Some(call.payload_metadata.data_classification.clone()),
         )
         && option_matches(&scope.resource_id, &request.resource_id)
-        && scope
-            .allowed_actions
-            .iter()
-            .any(|action| action == &request.action)
+        && action_is_allowed(
+            scope.allowed_actions.iter().map(String::as_str),
+            &request.action,
+        )
+}
+
+fn toy_time_window_denial(
+    now: &Timestamp,
+    constraints: &ToyGrantConstraints,
+) -> Option<ToyGrantReasonCode> {
+    match expiry_decision(
+        now,
+        constraints.starts_at.as_ref(),
+        constraints.expires_at.as_ref(),
+        ExpiryRequirement::Optional,
+    ) {
+        ExpiryDecision::Open => None,
+        ExpiryDecision::Expired => Some(ToyGrantReasonCode::ExpiredGrant),
+        ExpiryDecision::NotYet | ExpiryDecision::Missing | ExpiryDecision::PresentButForbidden => {
+            Some(ToyGrantReasonCode::PolicyDenied)
+        }
+    }
 }
 
 fn toy_token_expiry(
@@ -1303,6 +1281,18 @@ mod tests {
             )
         );
         assert!(result.authorized.is_none());
+    }
+
+    #[test]
+    fn toy_grant_without_expiry_still_authorizes() {
+        let mut open = grant(ToyGrantState::Active);
+        open.constraints.expires_at = None;
+        let result = evaluate_toy_grant_for_call(&call(), &request(), &[toy()], &[open]);
+        assert!(result.is_allowed());
+        assert_eq!(
+            result.evaluation.reason_code,
+            ToyGrantReasonCode::ActiveGrant
+        );
     }
 
     #[test]

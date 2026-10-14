@@ -6,6 +6,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+/// Admin-key grant facts and the route-scope check.
+pub mod admin_key;
 /// Artifact source, acquisition, and filesystem effect authority.
 pub mod artifact;
 /// Mother-owned, proof-gated local execution authority snapshots.
@@ -16,6 +18,8 @@ pub mod call;
 pub mod child;
 /// Typed validation and JSON edge errors for malformed kernel inputs.
 pub mod error;
+/// Shared Child and admin-key grant check.
+pub mod grant_check;
 /// Opaque string identifiers and RFC3339 timestamps used by domain records.
 pub mod id;
 /// Observation records and projections from decisions into ledger facts.
@@ -31,6 +35,11 @@ pub mod trigger;
 /// Scoped Child watch authority, event evidence, and call-out identities.
 pub mod watch;
 
+pub use admin_key::{
+    AdminKeyCheckAction, AdminKeyGrantCheckRequest, AdminKeyGrantCheckResult, AdminKeyGrantClassV1,
+    AdminKeyGrantReason, AdminKeyGrantStateV1, AdminKeyGrantV1, AdminKeyGrantVerdict,
+    AdminKeyScopeV1, admin_key_grant_shape_error, evaluate_admin_key_grant, recovery_grant_scopes,
+};
 pub use artifact::{
     ArtifactAcquisition, ArtifactAcquisitionAuthorityPath, ArtifactAcquisitionAuthorityReason,
     ArtifactAcquisitionAuthorityRequest, ArtifactAcquisitionAuthorityResult,
@@ -76,6 +85,7 @@ pub use child::{
     is_allowed_instance_transition, transition_child_instance,
 };
 pub use error::{InvalidFieldReason, MctKernelError, MctKernelResult};
+pub use grant_check::{GrantCheckOutcome, GrantCheckSubject, evaluate_grant_subject};
 pub use id::{
     ArtifactAcquisitionDecisionId, ArtifactAcquisitionId, ArtifactSourceAuthorityId, AuditRef,
     AuthorizedArtifactAcquisitionId, AuthorizedChildInvocationId, AuthorizedRouteExecutionId,
