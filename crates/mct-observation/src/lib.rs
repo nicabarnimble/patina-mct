@@ -22,7 +22,6 @@ use std::{
 };
 use thiserror::Error;
 
-/// Reserved `MctObservation.detail_ref` carrier for inline canonical authority facts.
 pub const AUTHORITY_FACT_DETAIL_PREFIX: &str = "mct-authority-fact-v1:";
 const AUTHORITY_FACT_SCHEMA_V1: &str = "mct-authority-fact/v1";
 const AUTHORITY_EPOCH_PREFIX_V1: &str = "mct-authority-epoch-v1:";
@@ -2420,7 +2419,7 @@ fn open_with_recovery_hook(
         })?;
     let mut file = acquire_writer_lock(&path, file)?;
 
-    let (mut state, recovery_status) = match scan_existing(&path, ledger_id, mother_node_id)? {
+    let (state, recovery_status) = match scan_existing(&path, ledger_id, mother_node_id)? {
         LedgerScan::Ready(mut state) => {
             let status = complete_pending_recovery(
                 &path,
@@ -2457,14 +2456,6 @@ fn open_with_recovery_hook(
         }
     };
 
-    // Pending-recovery completion may append the deterministic recovery fact.
-    state.committed_len = std::fs::metadata(&path)
-        .map_err(|source| ObservationLedgerError::Io {
-            path: path.clone(),
-            source,
-        })?
-        .len();
-
     Ok(JsonlObservationLedger {
         path,
         file,
@@ -2490,7 +2481,8 @@ fn recover_tail(
 ) -> Result<(LedgerScanState, LedgerRecoveryStatus)> {
     let mut status = ensure_residue_forensics(path, ledger_id, mother_node_id, &residue, hook)?;
 
-    file.set_len(residue.state.committed_len)
+    let truncated_len = residue.state.committed_len;
+    file.set_len(truncated_len)
         .map_err(|source| ObservationLedgerError::Io {
             path: path.to_path_buf(),
             source,
@@ -2503,6 +2495,7 @@ fn recover_tail(
     call_recovery_hook(path, hook, RecoveryStage::LedgerTruncated)?;
 
     let mut state = residue.state;
+    state.committed_len = truncated_len;
     append_recovery_observation(file, path, ledger_id, mother_node_id, &status, &mut state)?;
     call_recovery_hook(path, hook, RecoveryStage::RecoveryObservationAppended)?;
 
@@ -2661,10 +2654,14 @@ fn append_recovery_observation(
         export_status: ExportStatus::NotRequired,
     };
     entry.entry_hash = entry_hash(&entry)?;
-    write_entry_durable(file, path, &entry)?;
+    let written = write_entry_durable(file, path, &entry)?;
     state.next_sequence += 1;
     state.previous_hash = Some(entry.entry_hash.clone());
     state.entries.push(entry);
+    state.committed_len = state
+        .committed_len
+        .checked_add(written)
+        .expect("committed ledger length fits in u64");
     Ok(())
 }
 
@@ -2672,12 +2669,13 @@ fn write_entry_durable(
     file: &mut File,
     path: &Path,
     entry: &MctObservationLedgerEntry,
-) -> Result<()> {
+) -> Result<u64> {
     let mut bytes = serde_json::to_vec(entry).map_err(|source| ObservationLedgerError::Json {
         path: path.to_path_buf(),
         source,
     })?;
     bytes.push(b'\n');
+    let written = u64::try_from(bytes.len()).expect("ledger frame length fits in u64");
     file.write_all(&bytes)
         .map_err(|source| ObservationLedgerError::Io {
             path: path.to_path_buf(),
@@ -2687,7 +2685,8 @@ fn write_entry_durable(
         .map_err(|source| ObservationLedgerError::Io {
             path: path.to_path_buf(),
             source,
-        })
+        })?;
+    Ok(written)
 }
 
 fn preserve_quarantine(
@@ -2951,7 +2950,6 @@ fn entry_hash(entry: &MctObservationLedgerEntry) -> Result<String> {
     Ok(blake3::hash(&bytes).to_hex().to_string())
 }
 
-/// Returns the crate version for health and smoke tests.
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
@@ -3273,7 +3271,6 @@ mod tests {
         entry
     }
 
-    /// Proof 1: crash before any new frame bytes leaves exactly the previous committed head.
     #[test]
     fn crash_before_frame_bytes_reopens_at_previous_head() {
         let dir = tempfile::tempdir().unwrap();
@@ -3297,7 +3294,6 @@ mod tests {
         );
     }
 
-    /// Proof 2: a torn final frame is preserved before recovery and never changes the committed prefix.
     #[test]
     fn torn_unterminated_tail_is_preserved_and_recovered() {
         let dir = tempfile::tempdir().unwrap();
@@ -3344,7 +3340,6 @@ mod tests {
         );
     }
 
-    /// Proof 3: an undecodable unterminated final frame is residue under the same rule.
     #[test]
     fn unparseable_unterminated_final_frame_is_residue() {
         let dir = tempfile::tempdir().unwrap();
@@ -3364,7 +3359,6 @@ mod tests {
         assert_eq!(entries.len(), 2);
     }
 
-    /// Proof 4: a terminated malformed final frame quarantines without truncation.
     #[test]
     fn terminated_malformed_frame_quarantines_and_preserves_entire_ledger() {
         let dir = tempfile::tempdir().unwrap();
@@ -3389,7 +3383,6 @@ mod tests {
         );
     }
 
-    /// Proof 5: a mid-file hash break reports first-bad offset and expected/observed evidence.
     #[test]
     fn hash_break_quarantines_with_diagnostic_evidence() {
         let dir = tempfile::tempdir().unwrap();
@@ -3435,7 +3428,6 @@ mod tests {
         assert_eq!(status.observed.as_deref(), Some("forged-entry-hash"));
     }
 
-    /// Proof 6: gaps, duplicates, and regressions quarantine rather than being skipped or renumbered.
     #[test]
     fn every_sequence_discontinuity_quarantines_without_repair() {
         for (name, line_index, expected, sequence) in [
@@ -3484,7 +3476,6 @@ mod tests {
         }
     }
 
-    /// Proof 7: foreign ledger or Mother lineage is typed and is never automatically adopted.
     #[test]
     fn wrong_identity_is_typed_foreign_lineage_without_adoption() {
         for (ledger_id, mother_id) in [("ledger-b", "mother-a"), ("ledger-a", "mother-b")] {
@@ -3507,7 +3498,6 @@ mod tests {
         }
     }
 
-    /// Proof 8: a complete valid unacknowledged frame is recovered as committed, never duplicated.
     #[test]
     fn complete_unacknowledged_final_frame_is_committed_on_rescan() {
         let dir = tempfile::tempdir().unwrap();
@@ -3531,7 +3521,6 @@ mod tests {
         assert_eq!(reopened.entries().unwrap().len(), 2);
     }
 
-    /// Proof 13: interruption at each preservation stage leaves original or preserved bytes and reruns idempotently.
     #[test]
     fn interrupted_recovery_is_idempotent_at_every_preservation_stage() {
         for stage in RecoveryStage::ALL {
@@ -3577,7 +3566,6 @@ mod tests {
         }
     }
 
-    /// Proof 14: encoded entry content cannot create an interior unescaped frame terminator.
     #[test]
     fn escapable_entry_content_round_trips_without_forging_frame_end() {
         let dir = tempfile::tempdir().unwrap();
@@ -3624,7 +3612,6 @@ mod tests {
         files
     }
 
-    /// Proof 9: either write or durability uncertainty poisons all later appends without another byte.
     #[test]
     fn write_and_sync_uncertainty_poison_writer_without_later_file_changes() {
         for fault in [
@@ -3660,7 +3647,6 @@ mod tests {
         }
     }
 
-    /// Proof 10: exclusive reopen resolves uncertain bytes as committed, residue, or quarantine.
     #[test]
     fn poisoned_writer_reopen_resolves_all_three_commit_states() {
         for (fault, expected) in [
@@ -3723,7 +3709,6 @@ mod tests {
         }
     }
 
-    /// Proof 11: an acknowledged batch prefix remains committed and is reported without rollback.
     #[test]
     fn batch_failure_reports_and_preserves_acknowledged_committed_prefix() {
         let dir = tempfile::tempdir().unwrap();
@@ -3766,7 +3751,6 @@ mod tests {
         );
     }
 
-    /// Proof 12: contention is typed and cannot trigger ledger or forensic recovery mutations.
     #[test]
     fn contending_writer_is_typed_and_byte_identical_without_recovery() {
         let dir = tempfile::tempdir().unwrap();
@@ -3873,7 +3857,6 @@ mod tests {
         .seal()
     }
 
-    /// Phase I proof 15: every Watch-scope field is replayed from the canonical change alone.
     #[test]
     fn watch_scope_put_replays_complete_value_without_ordinary_observation() {
         let scope = complete_watch_scope();
@@ -3966,7 +3949,6 @@ mod tests {
         );
     }
 
-    /// Phase H2 proof 4: canonical structured content commits before the legacy write and replays alone.
     #[test]
     fn authority_mutation_fact_precedes_legacy_write_and_reconstructs_state() {
         let dir = tempfile::tempdir().unwrap();
@@ -3991,7 +3973,6 @@ mod tests {
         assert_eq!(replay.current_authority.unwrap().generation, 1);
     }
 
-    /// Phase H2 proof 5: uncertain commit suppresses legacy state and same-ID reopen resolves once.
     #[test]
     fn authority_commit_unknown_suppresses_legacy_and_same_id_retry_deduplicates() {
         let dir = tempfile::tempdir().unwrap();
@@ -4034,7 +4015,6 @@ mod tests {
         assert_eq!(replay.mutations.len(), 1);
     }
 
-    /// Phase H2 proof 6: rejection before append leaves canonical and legacy state untouched.
     #[test]
     fn rejected_authority_mutation_changes_neither_ledger_facts_nor_legacy_state() {
         let dir = tempfile::tempdir().unwrap();
@@ -4061,7 +4041,6 @@ mod tests {
         assert!(!legacy_called.get());
     }
 
-    /// Phase H2 proof 7: canonical commitment survives a distinct projection failure result.
     #[test]
     fn committed_authority_fact_reports_projection_pending_distinctly() {
         let dir = tempfile::tempdir().unwrap();
@@ -4189,7 +4168,6 @@ mod tests {
         );
     }
 
-    /// Phase H2 proof 1: an authority writer exposes only an acknowledged epoch fact.
     #[test]
     fn fresh_authority_tenure_commits_epoch_before_mutation_admission() {
         let dir = tempfile::tempdir().unwrap();
@@ -4219,7 +4197,6 @@ mod tests {
         );
     }
 
-    /// Phase H2 proof 2: each tenure, including a byte-copied restore, receives fresh entropy identity.
     #[test]
     fn authority_tenures_and_byte_copied_restore_use_distinct_epochs() {
         let dir = tempfile::tempdir().unwrap();
@@ -4264,7 +4241,6 @@ mod tests {
         assert_ne!(&second_epoch, restored_epoch);
     }
 
-    /// Phase H2 proof 3: ledger bytes alone reproduce the complete current epoch identity.
     #[test]
     fn epoch_identity_is_replay_complete_from_ledger_bytes() {
         let dir = tempfile::tempdir().unwrap();
