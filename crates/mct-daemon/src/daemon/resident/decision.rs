@@ -1,5 +1,3 @@
-//! Resident admissible-only ranking, route decisions, and local kernel revalidation.
-
 use super::*;
 
 #[derive(Debug)]
@@ -1087,7 +1085,7 @@ listens = []
             ResidentRuntimePaths::new(config_path, children_dir, state_path),
             ledger.clone(),
             request,
-            ResidentPayloadIngress::remote(None),
+            ResidentPayloadIngress::local(None),
         )
         .await;
         assert_eq!(result.outcome, CallProtocolOutcome::Completed);
@@ -1131,7 +1129,7 @@ listens = []
             ResidentRuntimePaths::new(config_path, children_dir, state_path),
             ledger.clone(),
             request,
-            ResidentPayloadIngress::remote(None),
+            ResidentPayloadIngress::local(None),
         )
         .await;
         assert_eq!(result.outcome, CallProtocolOutcome::Denied);
@@ -1145,7 +1143,6 @@ listens = []
         assert!(ledger_text.contains("no_route_recorded"));
     }
 
-    /// Phase I proof 8: caller echoes are correlation evidence, never route authority.
     #[tokio::test]
     async fn caller_echo_matrix_keeps_route_decision_and_durably_records_each_echo() {
         let fixture = decision_fixture();
@@ -1208,7 +1205,6 @@ listens = []
         assert_eq!(recorded_echoes, echoes);
     }
 
-    /// Phase I proof 9: a legacy echo need not equal canonical generation to admit.
     #[test]
     fn current_snapshot_admits_correct_call_when_legacy_echo_differs_from_generation() {
         let fixture = decision_fixture();
@@ -1236,7 +1232,6 @@ listens = []
         );
     }
 
-    /// Phase I proof 12: only the captured Mother clock controls grant windows.
     #[test]
     fn route_grant_window_uses_snapshot_mother_clock_not_caller_deadline_or_echo() {
         let fixture = decision_fixture();
@@ -1285,7 +1280,6 @@ listens = []
         assert_eq!(outcomes, ["denied", "allowed", "denied"]);
     }
 
-    /// Phase I proof 5: canonical revocation plus catch-up denies the next route.
     #[test]
     fn enveloped_required_toy_revocation_denies_next_route_regardless_of_echo() {
         let dir = tempfile::tempdir().unwrap();

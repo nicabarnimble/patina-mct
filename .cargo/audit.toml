@@ -1,11 +1,19 @@
 # R2 dependency-audit policy: every vulnerability and every non-exempt warning fails CI.
+#
+# Each ignore entry needs comment keys on the lines directly above its id:
+#   reason:       why the advisory is ignored
+#   revisit-by:   YYYY-MM-DD, flagged by the nightly audit once the date has passed
+#   revisit-when: a condition that should drop the ignore earlier than the date
+# An entry must have a reason and at least one of revisit-by or revisit-when.
 [advisories]
 ignore = [
-    # Transitive Linux netlink proc-macro; no maintained release is available in the
-    # current netdev/netwatch chain. Revisit when the Iroh network stack advances.
+    # reason: Transitive Linux netlink proc-macro; no maintained release is available in the current netdev/netwatch chain.
+    # revisit-by: 2027-04-14
+    # revisit-when: the Iroh network stack advances
     "RUSTSEC-2024-0436",
-    # Transitive proc-macro warning retained in the lock graph; no runtime code.
-    # Revisit with the next Iroh/dependency refresh.
+    # reason: Transitive proc-macro warning retained in the lock graph; no runtime code.
+    # revisit-by: 2027-04-14
+    # revisit-when: the next Iroh/dependency refresh
     "RUSTSEC-2026-0173",
 ]
 informational_warnings = ["unmaintained", "unsound"]

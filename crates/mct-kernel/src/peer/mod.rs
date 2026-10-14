@@ -3,72 +3,144 @@ use crate::{
     error::{MctKernelResult, ensure_non_blank},
     id::*,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::fmt;
 
 mod internal;
 
-/// ALPN for the hello/admission protocol between Mothers.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct NonBlank(String);
+
+impl NonBlank {
+    pub fn new(value: impl Into<String>) -> MctKernelResult<Self> {
+        let value = value.into();
+        ensure_non_blank("NonBlank", "value", &value)?;
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Serialize for NonBlank {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for NonBlank {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+impl From<&str> for NonBlank {
+    fn from(value: &str) -> Self {
+        Self::new(value).expect("ALPN and relay URL must be non-blank")
+    }
+}
+
+impl From<String> for NonBlank {
+    fn from(value: String) -> Self {
+        Self::new(value).expect("ALPN and relay URL must be non-blank")
+    }
+}
+
+impl AsRef<str> for NonBlank {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Display for NonBlank {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HelloSurfaceVisibility {
+    VisionScoped,
+}
+
+impl HelloSurfaceVisibility {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::VisionScoped => "vision_scoped",
+        }
+    }
+}
+
+impl From<&str> for HelloSurfaceVisibility {
+    fn from(value: &str) -> Self {
+        if value == "vision_scoped" {
+            Self::VisionScoped
+        } else {
+            panic!("hello callable surface visibility must be vision_scoped")
+        }
+    }
+}
+
+impl From<String> for HelloSurfaceVisibility {
+    fn from(value: String) -> Self {
+        Self::from(value.as_str())
+    }
+}
+
+impl PartialEq<str> for HelloSurfaceVisibility {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for HelloSurfaceVisibility {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
 pub const MCT_HELLO_ALPN: &str = "mct/hello/0";
-/// ALPN for submitting calls after hello admission.
 pub const MCT_CALL_ALPN: &str = "mct/call/0";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Direction of a transport connection from the local Mother's perspective.
 pub enum ConnectionSide {
-    /// Peer connected to the local Mother.
     Incoming,
-    /// Local Mother initiated the peer connection.
     Outgoing,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Coarse network path class supplied by the adapter for audit and policy.
 pub enum PathClass {
-    /// Direct endpoint-to-endpoint path.
     Direct,
-    /// Connection used a relay path.
     Relayed,
-    /// Only relay connectivity is available.
     RelayOnly,
-    /// Adapter classified the path as privacy-preserving transport.
     PrivacyTransport,
-    /// Adapter could not classify the path.
     Unknown,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Transport facts observed by the adapter for one Iroh connection.
-///
 /// Endpoint ID proves only possession of the Iroh key. Authority requires a
 /// matching admitted peer binding during hello evaluation.
 pub struct IrohConnectionPresentation {
-    /// Iroh endpoint ID observed on the connection.
     pub endpoint_id: EndpointIdText,
-    /// Negotiated ALPN; must be non-blank.
-    pub alpn: String,
-    /// Whether this endpoint accepted or initiated the connection.
+    pub alpn: NonBlank,
     pub connection_side: ConnectionSide,
-    /// Adapter-supplied network path class for audit/policy.
     pub path_class: PathClass,
-    /// Relay URL used by the connection, if known; if present it must be non-blank.
-    pub relay_url: Option<String>,
-    /// Optional adapter reference to peer capability evidence.
+    pub relay_url: Option<NonBlank>,
     pub presented_capability_ref: Option<String>,
 }
 
 impl IrohConnectionPresentation {
-    /// Validates this domain record and returns typed kernel errors.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed error when required domain fields are invalid.
     pub fn validate(&self) -> MctKernelResult<()> {
-        ensure_non_blank("IrohConnectionPresentation", "alpn", &self.alpn)?;
-        if let Some(relay_url) = &self.relay_url {
-            ensure_non_blank("IrohConnectionPresentation", "relay_url", relay_url)?;
-        }
         if let Some(capability_ref) = &self.presented_capability_ref {
             ensure_non_blank(
                 "IrohConnectionPresentation",
@@ -81,16 +153,11 @@ impl IrohConnectionPresentation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Authority scope granted by a peer binding.
-///
 /// Hello admission intersects requested ALPNs with `allowed_alpns` and binds the
 /// endpoint to exactly one MCT node and Vision.
 pub struct MctPeerBindingScope {
-    /// MCT node identity the endpoint may present.
     pub mct_node_id: MctNodeId,
-    /// Vision boundary in which the binding is valid.
     pub vision_id: VisionId,
-    /// ALPNs the peer may negotiate under this binding.
     pub allowed_alpns: Vec<String>,
     /// Optional data scope for higher-level policy projections.
     pub data_scope: Option<String>,
@@ -100,7 +167,6 @@ pub struct MctPeerBindingScope {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Lifecycle state of a peer binding as authority data.
 pub enum BindingState {
     /// Binding exists but hello admission must retry later.
     Pending,
@@ -108,75 +174,49 @@ pub enum BindingState {
     Admitted,
     /// Binding was denied and is treated as no usable binding.
     Denied,
-    /// Binding is no longer valid by lifecycle state.
     Expired,
-    /// Binding was explicitly revoked.
     Revoked,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Durable authority record tying an Iroh endpoint to an MCT node and Vision.
-///
 /// Hello admission requires `Admitted`, matching endpoint/binding claims, fresh
 /// policy revision, and the mandatory `expires_at > now` time bound.
 pub struct MctPeerBinding {
-    /// Stable identifier for this binding authority record.
     pub binding_id: PeerBindingId,
-    /// Iroh endpoint key text this binding admits.
     pub iroh_endpoint_id: EndpointIdText,
-    /// Node, Vision, and ALPN scope granted by the binding.
     pub scope: MctPeerBindingScope,
-    /// Node that issued this binding.
     pub issuer_node_id: MctNodeId,
-    /// Policy revision under which the binding was issued.
     pub policy_revision: u64,
-    /// Current lifecycle state used by hello admission.
     pub binding_state: BindingState,
-    /// Time the binding was issued, for audit.
     pub issued_at: Timestamp,
     /// Mandatory expiry compared against adapter-supplied `now`.
     pub expires_at: Timestamp,
-    /// Observation that created or admitted this binding.
     pub created_by_observation_id: ObservationId,
-    /// Observation that superseded this binding, if it has been replaced.
     pub superseded_by_observation_id: Option<ObservationId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Current peer-binding authority loaded by an adapter for one protocol evaluation.
-///
 /// The snapshot is not an admission token. Kernel evaluation still checks the
 /// selected binding, its scope and lifecycle, and the current policy revision.
 pub struct MctPeerAuthoritySnapshot {
-    /// Peer bindings current at the adapter boundary.
     pub bindings: Vec<MctPeerBinding>,
-    /// Local policy revision current at the adapter boundary.
     pub policy_revision: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Protocol version requested or negotiated during hello.
-///
-/// Hello accepts only the configured protocol name and major version; minor and
-/// compatibility floor are recorded for negotiation/audit.
+/// Hello accepts only the configured protocol name and major version.
 pub struct MctProtocolVersion {
-    /// Protocol name, normally `mct/hello/0` for hello negotiation.
     pub protocol_name: String,
     /// Major version that must match the local policy.
     pub major: u32,
-    /// Minor version requested or selected.
     pub minor: u32,
-    /// Lowest compatible major/minor floor advertised by the peer.
     pub compatibility_floor: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Binding claims presented by a peer during hello.
-///
 /// Claims are checked against local binding records; omitted node, Vision, or
 /// revision claims do not grant authority, but mismatched claims deny.
 pub struct MctPeerBindingPresentation {
-    /// Optional binding ID used to select a local binding record.
     pub binding_id: Option<PeerBindingId>,
     /// Endpoint the peer claims; must match the observed connection endpoint.
     pub endpoint_id: EndpointIdText,
@@ -186,51 +226,34 @@ pub struct MctPeerBindingPresentation {
     pub vision_id: Option<VisionId>,
     /// Optional policy revision claim checked for staleness.
     pub policy_revision: Option<u64>,
-    /// ALPNs the peer asks to use under this binding.
     pub allowed_alpns_claim: Vec<String>,
-    /// Adapter-managed reference to binding proof material.
     pub signature_ref: Option<String>,
     /// Peer-presented expiry, recorded but local binding expiry controls admission.
     pub expires_at: Option<Timestamp>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// One Vision-scoped callable child operation advertised during hello.
 pub struct MctHelloCallableSurface {
-    /// Publisher-local child name that can execute the operation.
     pub child_name: String,
     /// Canonical WIT operation ID, for example `patina:demo/control@0.1.0.run`.
     pub operation_id: String,
-    /// Runtime class used locally by the publishing Mother.
     pub runtime_kind: RuntimeKind,
-    /// Vision boundary in which this operation is published.
     pub vision_id: VisionId,
-    /// Publisher-local policy revision that produced this surface evidence.
     pub policy_revision: u64,
-    /// Surface visibility label; this phase expects `vision_scoped`.
-    pub visibility: String,
+    pub visibility: HelloSurfaceVisibility,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Peer-advertised capability summary attached to hello for audit/planning.
 pub struct MctHelloCapabilityView {
-    /// Publishing MCT node.
     pub node_id: MctNodeId,
-    /// Vision boundary in which this view is valid.
     pub vision_id: VisionId,
-    /// Publisher timestamp for this view.
     pub published_at: Timestamp,
     /// Publisher-local policy revision used for change detection only.
     pub policy_revision: u64,
-    /// ALPNs the peer says it can speak.
     pub supported_alpns: Vec<String>,
-    /// WIT worlds the peer says it can host or route.
     pub supported_wit_worlds: Vec<String>,
-    /// Observation sharing modes advertised by the peer.
     pub supported_observation_modes: Vec<String>,
-    /// Vision-scoped callable operations published by the peer.
     pub callable_surfaces: Vec<MctHelloCallableSurface>,
-    /// Optional external reference to a fuller capability document.
     pub capability_view_ref: Option<String>,
 }
 
@@ -240,55 +263,36 @@ pub struct MctHelloCapabilityView {
 /// Evaluation admits only the intersection of requested ALPNs, local policy,
 /// and the selected active binding scope.
 pub struct MctHelloRequest {
-    /// Request identifier copied into the evaluation and response.
     pub hello_id: String,
-    /// Adapter-observed transport facts for the hello connection.
     pub received_over: IrohConnectionPresentation,
-    /// Protocol version the peer wants to negotiate.
     pub requested_protocol: MctProtocolVersion,
     /// Optional Vision requested by the peer; if present it must match binding scope.
     pub requested_vision_id: Option<VisionId>,
-    /// ALPNs requested for subsequent protocols.
     pub requested_alpns: Vec<String>,
-    /// Binding claims supplied by the peer.
     pub presented_binding: MctPeerBindingPresentation,
     /// Optional capability summary, recorded but not sufficient for authority.
     pub capability_view: Option<MctHelloCapabilityView>,
-    /// Policy revision the peer says it has seen.
     pub local_policy_revision_seen: Option<u64>,
-    /// Trace joining hello, call, and observations.
     pub trace_id: TraceId,
-    /// Observation recording receipt of the hello request.
     pub received_observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Public outcome class for hello admission and response.
 pub enum HelloOutcome {
-    /// Peer was admitted under a selected binding.
     Admitted,
-    /// Peer was not authorized.
     Denied,
-    /// Peer may retry after a temporary state such as pending binding.
     RetryLater,
-    /// Requested protocol major/name is unsupported.
     UpgradeRequired,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Audit reason for a hello admission decision.
 pub enum HelloReason {
-    /// A matching admitted binding authorized the peer.
     ActiveBinding,
-    /// Presented endpoint did not match the observed connection endpoint.
     EndpointMismatch,
-    /// No local binding matched the presented endpoint or binding ID.
     MissingBinding,
-    /// Matching binding exists but is not yet admitted.
     BindingPending,
-    /// Matching binding has been revoked.
     BindingRevoked,
     /// Matching binding is expired by state or time window.
     BindingExpired,
@@ -300,11 +304,9 @@ pub enum HelloReason {
     VersionUnsupported,
     /// Binding or presented revision is older than local policy.
     PolicyRevisionStale,
-    /// Presented node or capability claim conflicts with the binding.
+    /// Presented node id does not match the selected binding scope.
     CapabilityInvalid,
-    /// Relay/path policy denied this connection class.
     RelayAccessDenied,
-    /// Local policy asks the peer to retry later.
     TemporaryUnavailable,
 }
 
@@ -318,20 +320,15 @@ pub enum SafeHelloReason {
     UnsupportedVersion,
     /// Safe to ask the peer to retry later.
     RetryLater,
-    /// Safe admission message.
     Admitted,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Kernel decision for a hello request.
-///
 /// Admitted evaluations carry selected node, Vision, binding, negotiated
 /// protocol, and accepted ALPNs; denied evaluations leave those authority
 /// grants empty.
 pub struct MctHelloAdmissionEvaluation {
-    /// Decision identifier assigned by the adapter context.
     pub decision_id: DecisionId,
-    /// Hello request identifier being answered.
     pub request_id: String,
     /// Optional lower-level peer decision, reserved for future projections.
     pub peer_admission_decision_id: Option<DecisionId>,
@@ -345,50 +342,35 @@ pub struct MctHelloAdmissionEvaluation {
     pub selected_policy_revision: Option<u64>,
     /// Protocol version negotiated; present only on admission.
     pub negotiated_protocol: Option<MctProtocolVersion>,
-    /// ALPNs admitted for later phases.
     pub accepted_alpns: Vec<String>,
-    /// Public outcome of hello evaluation.
     pub hello_outcome: HelloOutcome,
     /// Full typed reason for observations and audit.
     pub reason: HelloReason,
     /// Caller-safe reason used to build responses.
     pub safe_reason: SafeHelloReason,
-    /// Observation recording this evaluation.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Caller-facing response derived from a hello evaluation.
 pub struct MctHelloResponse {
-    /// Response identifier minted by the serving adapter.
     pub response_id: String,
-    /// Hello request identifier being answered.
     pub request_id: String,
-    /// Hello decision that determined this response.
     pub decision_id: DecisionId,
-    /// Caller-facing admission outcome.
     pub hello_outcome: HelloOutcome,
     /// Negotiated protocol, present only when admitted.
     pub negotiated_protocol: Option<MctProtocolVersion>,
-    /// ALPNs admitted for later protocols.
     pub accepted_alpns: Vec<String>,
     /// Current receiver authority identity, present only for a proof-gated admission.
     pub receiving_grants_authority: Option<GrantsAuthorityIdentity>,
-    /// Safe message derived from [`SafeHelloReason`].
     pub safe_message: String,
-    /// Optional retry time for retry-later responses.
     pub retry_after: Option<Timestamp>,
-    /// Optional capability summary published by the admitting Mother.
     pub capability_view: Option<MctHelloCapabilityView>,
-    /// Observation recording response emission.
     pub response_observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Internal peer admission outcome before hello response projection.
 pub enum PeerAdmissionOutcome {
-    /// Peer admission succeeded.
     Admitted,
     /// Peer admission failed closed.
     Denied,
@@ -396,61 +378,39 @@ pub enum PeerAdmissionOutcome {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Internal reason for peer admission decisions.
 pub enum PeerAdmissionReason {
-    /// A matching admitted binding authorized the peer.
     ActiveBinding,
-    /// Endpoint is unknown to local peer authority.
     UnknownEndpoint,
-    /// No local binding matched the presented endpoint or binding ID.
     MissingBinding,
-    /// Matching binding exists but is not yet admitted.
     BindingPending,
-    /// Matching binding has been revoked.
     BindingRevoked,
-    /// Matching binding is expired by state or time window.
     BindingExpired,
-    /// Requested or presented Vision is outside binding scope.
     VisionNotAllowed,
-    /// Requested ALPNs did not intersect local policy and binding scope.
     AlpnNotAllowed,
-    /// Binding or presented revision is older than local policy.
     PolicyRevisionStale,
-    /// Presented node or capability claim conflicts with the binding.
+    /// Presented node id does not match the selected binding scope.
     CapabilityInvalid,
-    /// Relay/path policy denied this connection class.
     RelayAccessDenied,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Lower-level peer binding decision retained for observation compatibility.
 pub struct MctPeerAdmissionDecision {
-    /// Decision identifier assigned to peer admission.
     pub decision_id: DecisionId,
-    /// Connection facts evaluated for the peer.
     pub presentation: IrohConnectionPresentation,
-    /// Binding considered by the decision, if any.
     pub binding_id: Option<PeerBindingId>,
-    /// Vision requested by the peer, if any.
     pub requested_vision_id: Option<VisionId>,
-    /// Policy revision used for the decision.
     pub policy_revision: u64,
-    /// Admission outcome before safe response projection.
     pub outcome: PeerAdmissionOutcome,
-    /// Typed audit reason for the outcome.
     pub reason: PeerAdmissionReason,
-    /// Observation recording this decision.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Local policy facts used to evaluate hello admission.
 pub struct HelloPolicy {
-    /// Protocol version the local Mother is willing to negotiate.
     pub protocol: MctProtocolVersion,
     /// Minimum policy revision accepted for bindings and presentations.
     pub current_policy_revision: u64,
-    /// ALPNs supported by local policy for hello negotiation.
     pub supported_alpns: Vec<String>,
 }
 
@@ -470,18 +430,13 @@ impl Default for HelloPolicy {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Caller-supplied identifiers for hello evaluation evidence.
 pub struct EvaluationIds {
-    /// Decision identifier assigned to the hello evaluation.
     pub decision_id: DecisionId,
-    /// Observation identifier assigned to the hello evaluation.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Evaluation context supplied by the adapter, including current time.
 pub struct HelloEvaluationContext {
-    /// Identifiers to stamp on the produced evaluation.
     pub ids: EvaluationIds,
     /// Adapter-supplied current time used for expiry checks.
     pub now: Timestamp,
@@ -522,12 +477,10 @@ impl MctHelloAdmissionEvaluation {
         self.safe_reason = SafeHelloReason::RetryLater;
     }
 
-    /// Returns true only when the evaluation grants hello admission.
     pub fn is_admitted(&self) -> bool {
         self.hello_outcome == HelloOutcome::Admitted
     }
 
-    /// Returns true when hello admission included the requested ALPN.
     pub fn admits_alpn(&self, alpn: &str) -> bool {
         self.accepted_alpns.iter().any(|accepted| accepted == alpn)
     }

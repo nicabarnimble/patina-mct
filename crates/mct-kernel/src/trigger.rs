@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 /// Minimum interval admitted by the v1 temporal trigger contract.
 pub const MCT_TRIGGER_MIN_INTERVAL_MS: u64 = 100;
 
-/// Source class for a standing trigger record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CallTriggerClass {
@@ -67,11 +66,9 @@ pub enum CallTriggerAuthorityState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "source_kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CallTriggerSource {
-    /// Anchored fixed-interval temporal source.
     Temporal {
         /// RFC3339 anchor used for nominal occurrence arithmetic.
         anchor_at: Timestamp,
-        /// Fixed interval in milliseconds.
         interval_ms: u64,
     },
     /// Future independently authorized Mother-side event source.
@@ -82,7 +79,6 @@ pub enum CallTriggerSource {
 }
 
 impl CallTriggerSource {
-    /// Returns the closed class represented by this source.
     pub const fn class(&self) -> CallTriggerClass {
         match self {
             Self::Temporal { .. } => CallTriggerClass::Temporal,
@@ -112,7 +108,6 @@ impl CallTriggerSource {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CallTriggerAuthority {
-    /// Stable standing-record identifier.
     pub trigger_authority_id: CallTriggerAuthorityId,
     /// Mother identity on which the record may fire.
     pub mother_node_id: MctNodeId,
@@ -122,7 +117,6 @@ pub struct CallTriggerAuthority {
     pub canonical_caller: CallerIdentity,
     /// One exact WIT operation target.
     pub target: OperationTarget,
-    /// Immutable local content-addressed payload descriptor.
     pub payload_constraint: MctCallPayloadHandle,
     /// Exact temporal or event source.
     pub trigger_source: CallTriggerSource,
@@ -138,13 +132,11 @@ pub struct CallTriggerAuthority {
     pub issuer_principal_ref: String,
     /// Immutable record revision starting at one.
     pub record_revision: u64,
-    /// Policy revision used to evaluate the record.
     pub policy_revision: u64,
     /// Inclusive beginning of the authority window.
     pub starts_at: Timestamp,
     /// Exclusive end of the authority window.
     pub expires_at: Timestamp,
-    /// Current lifecycle state of this revision.
     pub authority_state: CallTriggerAuthorityState,
     /// Durable authority observation that precedes activation.
     pub authority_observation_id: ObservationId,
@@ -174,7 +166,6 @@ struct CallTriggerAuthorityDigestMaterial<'a> {
 }
 
 impl CallTriggerAuthority {
-    /// Computes the canonical digest expected for this exact record revision.
     pub fn expected_record_digest(&self) -> String {
         let material = CallTriggerAuthorityDigestMaterial {
             trigger_authority_id: &self.trigger_authority_id,
@@ -300,7 +291,6 @@ pub struct CallTriggerRepresentedSet {
     pub last_occurrence_id: CallTriggerOccurrenceId,
     /// Number represented, including first and last.
     pub count: u64,
-    /// Stable digest reference for the represented set.
     pub represented_set_ref: String,
 }
 
@@ -398,7 +388,6 @@ fn hash_segments(domain: &str, segments: &[&str]) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
-/// Derives one temporal occurrence identity from exact record and nominal time.
 pub fn derive_temporal_occurrence_identity(
     trigger_authority_id: &str,
     record_revision: u64,
@@ -419,7 +408,6 @@ pub fn derive_temporal_occurrence_identity(
     .expect("generated occurrence identity must be non-empty")
 }
 
-/// Derives a represented-set reference from exact ordered occurrence bounds.
 pub fn derive_represented_set_ref(
     trigger_authority_id: &str,
     record_revision: u64,
@@ -442,7 +430,6 @@ pub fn derive_represented_set_ref(
     )
 }
 
-/// Builds an exact represented set from deterministic bounds and count.
 pub fn trigger_represented_set_from_bounds(
     trigger_authority_id: &CallTriggerAuthorityId,
     record_revision: u64,
@@ -471,7 +458,6 @@ pub fn trigger_represented_set_from_bounds(
     })
 }
 
-/// Derives one representative occurrence identity for an exact coalesced set.
 pub fn derive_coalesced_occurrence_identity(
     represented_set: &CallTriggerRepresentedSet,
 ) -> CallTriggerOccurrenceId {
@@ -485,7 +471,6 @@ pub fn derive_coalesced_occurrence_identity(
     .expect("generated coalesced occurrence identity must be non-empty")
 }
 
-/// Derives the stable firing identity for one occurrence candidate.
 pub fn derive_trigger_firing_identity(
     occurrence_id: &CallTriggerOccurrenceId,
 ) -> CallTriggerFiringId {
@@ -493,13 +478,11 @@ pub fn derive_trigger_firing_identity(
         .expect("generated firing identity must be non-empty")
 }
 
-/// Derives the stable semantic call identity for one trigger occurrence.
 pub fn derive_trigger_call_identity(occurrence_id: &CallTriggerOccurrenceId) -> CallId {
     CallId::new(format!("call-trigger:{occurrence_id}"))
         .expect("generated trigger call identity must be non-empty")
 }
 
-/// Derives the stable pending identity for one trigger occurrence.
 pub fn derive_trigger_pending_identity(
     occurrence_id: &CallTriggerOccurrenceId,
 ) -> CallTriggerPendingOccurrenceId {

@@ -1,5 +1,3 @@
-//! Owner-authenticated trigger authority management and CLI projection.
-
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 

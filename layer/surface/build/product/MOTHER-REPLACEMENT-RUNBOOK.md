@@ -60,7 +60,7 @@ Install creates or validates identity and state under `~/.mct`, writes the owner
 
 ```bash
 ./target/release/mct-daemon start
-./target/release/mct-daemon status --uds ~/.mct/control.sock --json
+./target/release/mct-daemon status --json
 ```
 
 Normal lifecycle commands are:
@@ -84,8 +84,7 @@ cargo run -p mct-daemon -- serve \
   --config .mct/config.json \
   --children-dir .mct/children \
   --state .mct/state.sqlite \
-  --ledger .mct/observations.jsonl \
-  --uds .mct/control.sock
+  --ledger .mct/observations.jsonl
 ```
 
 A managed install refuses manual `serve`; uninstall supervision before returning to foreground operation.
@@ -105,22 +104,13 @@ Remediate with the exact replacement binary:
 
 Do not edit `supervisor.json` or the plist to repair a mismatch. Record revision is the blessing operation.
 
-The resident process owns the Iroh endpoint, authenticated local application-call ingress, current child/config projections, routing/execution state, and the single observation writer. It requires signed peer-binding presentations, executes approved local process/WIT children through routing/revalidation, and records clean shutdown or reconciles an unmatched prior instance on the next start.
+The resident process owns the Iroh endpoint, current child/config projections, routing/execution state, and the single observation writer. It requires signed peer-binding presentations, executes approved local process/WIT children through routing/revalidation, and records clean shutdown or reconciles an unmatched prior instance on the next start.
 
-Submit production local application calls through owner-authenticated UDS `POST /calls`. The body is the `MctResidentCallSubmission` contract from `layer/surface/build/feat/resident-call-ingress/SPEC.md`; caller, origin, and peer authority are derived by Mother and are not accepted from JSON:
-
-```bash
-curl --unix-socket ~/.mct/control.sock \
-  -H 'content-type: application/json' \
-  --data-binary @call.json \
-  http://localhost/calls
-```
-
-The response is synchronous and typed. Retry a lost response with the same fingerprint and idempotency key; matching completed retries replay the durable result without another child effect.
+A Child call is a platform-given handle on the iroh path. Holding the handle is the authorization. Administration presents a granted iroh admin key. The Unix socket, peer credentials, and offline commands are not an authorization path. Caller, origin, and peer authority are not accepted from the call body. A lost response retries with the same fingerprint and idempotency key; a matching completed retry reuses the durable result and does not run the child again.
 
 ### Temporal trigger workflow
 
-A temporal trigger is a separate owner-authenticated, ledger-backed standing authority. Its static payload is ingested into the local CAS, and each nominal occurrence constructs a fresh ordinary governed call. Create it against the running resident with `--uds` (or offline only while no resident owns the writer):
+A temporal trigger is ledger-backed standing authority. Administration presents a granted iroh admin key. Its static payload is ingested into the local CAS, and each nominal occurrence constructs a fresh ordinary governed call.
 
 ```bash
 ./target/release/mct-daemon triggers create <trigger-id> \
@@ -130,14 +120,12 @@ A temporal trigger is a separate owner-authenticated, ledger-backed standing aut
   --interval-ms 60000 \
   --starts-at 2026-07-22T09:00:00Z \
   --expires-at 2026-07-22T17:00:00Z \
-  --uds ~/.mct/control.sock \
   --json
 
 ./target/release/mct-daemon triggers show <trigger-id> --state ~/.mct/state.sqlite --json
 ./target/release/mct-daemon triggers list --state ~/.mct/state.sqlite --json
 ./target/release/mct-daemon triggers revoke <trigger-id> \
   --expected-revision 1 \
-  --uds ~/.mct/control.sock \
   --json
 ```
 
@@ -145,7 +133,7 @@ Omitted missed-fire and overlap policies default to `skip` and `refuse`. Other c
 
 ### Scoped Watch workflow
 
-Watch mutations require the running owner-authenticated resident UDS. After acquiring and exactly approving/assigning the watcher artifact, grant each authority independently:
+Watch grants are administration: each one presents a granted iroh admin key. After acquiring and exactly approving/assigning the watcher artifact, grant each authority independently:
 
 ```bash
 ./target/release/mct-daemon toys grant-watch folder-watch-actor /absolute/watch/root \
@@ -156,16 +144,16 @@ Watch mutations require the running owner-authenticated resident UDS. After acqu
   --coalescing none \
   --starts-at 2026-07-22T09:00:00Z \
   --expires-at 2026-07-22T17:00:00Z \
-  --uds ~/.mct/control.sock --json
+  --json
 
 ./target/release/mct-daemon toys grant-directory-read folder-watch-actor /absolute/watch/root \
-  --expires-at 2026-07-22T17:00:00Z --uds ~/.mct/control.sock --json
+  --expires-at 2026-07-22T17:00:00Z --json
 ./target/release/mct-daemon toys grant-keyvalue folder-watch-actor default \
-  --expires-at 2026-07-22T17:00:00Z --uds ~/.mct/control.sock --json
+  --expires-at 2026-07-22T17:00:00Z --json
 ./target/release/mct-daemon toys grant-observability folder-watch-actor --logging --measure \
-  --expires-at 2026-07-22T17:00:00Z --uds ~/.mct/control.sock --json
+  --expires-at 2026-07-22T17:00:00Z --json
 ./target/release/mct-daemon toys grant-observability watch-null-sink --logging --measure \
-  --expires-at 2026-07-22T17:00:00Z --uds ~/.mct/control.sock --json
+  --expires-at 2026-07-22T17:00:00Z --json
 
 ./target/release/mct-daemon watch scopes show scope:folder-watch \
   --state ~/.mct/state.sqlite --json
@@ -178,7 +166,7 @@ Revoke through the resident before changing roots or artifacts:
 
 ```bash
 ./target/release/mct-daemon toys revoke-watch scope:folder-watch \
-  --expected-revision 1 --uds ~/.mct/control.sock --json
+  --expected-revision 1 --json
 ```
 
 ## Peer setup
@@ -211,19 +199,17 @@ cargo run -p mct-daemon -- jvm call-json patina:slate/control@0.1.0.list-work '[
   --ledger .mct/observations.jsonl
 ```
 
-The adapter constructs one `MctCall` with `origin = jvm_adapter`, sends JSON bytes through the same payload-integrity and routing semantics, and returns caller-safe JSON with result/ref/route fields. It is not the normal resident boundary and must not be presented as independently owning the resident's state or ledger. The future JVM SDK targets UDS `POST /calls`.
+The adapter constructs one `MctCall` with `origin = jvm_adapter`, sends JSON bytes through the same payload-integrity and routing semantics, and returns caller-safe JSON with result/ref/route fields. It is not the normal resident boundary and must not be presented as independently owning the resident's state or ledger. A Child call on the resident path is a platform-given handle. Same-uid is not the caller.
 
 ## Inspection
 
-Use resident projections during normal operation:
+`status --json` reads the resident projection:
 
 ```bash
-cargo run -p mct-daemon -- status --uds .mct/control.sock --json
-curl --unix-socket .mct/control.sock http://localhost/runs
-curl --unix-socket .mct/control.sock http://localhost/snapshot
+cargo run -p mct-daemon -- status --json
 ```
 
-Direct state commands remain useful for offline inspection and compatibility diagnostics:
+These commands read the store. They are not an administration path:
 
 ```bash
 cargo run -p mct-daemon -- state summary --state .mct/state.sqlite --json
@@ -237,5 +223,5 @@ The observation ledger is `.mct/observations.jsonl`; payload bytes and secret va
 
 - Belief/scry/assay/session runtime internals.
 - Linux systemd supervision and macOS headless/SSH-only launchd domains. User launchd in `gui/<uid>` is implemented.
-- Multi-Vision publication and transitive/brokered routing. Bilaterally authorized single-hop cross-Mother forwarding is implemented in v0.
-- Full JVM SDK/client library packaging beyond UDS `POST /calls`; `jvm call-json` remains compatibility/development evidence.
+- Multi-Vision publication. Multi-Mother with per-Mother ledgers is future scale work, not planned now.
+- Full JVM SDK/client library packaging. `jvm call-json` remains compatibility/development evidence. A Child call is a platform-given handle.
