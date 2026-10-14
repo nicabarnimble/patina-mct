@@ -205,14 +205,16 @@ pub(super) fn build_scope_and_grant(
             assignment_id: assignment_id.clone(),
         },
         scope_mode: request.scope_mode,
-        canonical_root_ref: canonical_root_ref(request.canonical_root.clone())?,
+        canonical_root_ref: mct_kernel::watch::CanonicalFileRoot::new(canonical_root_ref(
+            request.canonical_root.clone(),
+        )?)?,
         traversal_scope: request.traversal_scope,
-        event_classes: request.event_classes.clone(),
+        event_classes: mct_kernel::watch::WatchEventClasses::new(request.event_classes.clone())?,
         max_events_per_batch: request.max_events_per_batch,
         coalescing_policy: request.coalescing_policy,
         starts_at: request.starts_at.clone(),
         expires_at: request.expires_at.clone(),
-        scope_revision: 1,
+        scope_revision: std::num::NonZeroU64::MIN,
         policy_revision: identity.policy_revision,
         authority_state: WatchObservationScopeState::Active,
         authority_observation_id: ObservationId::new(format!(
@@ -749,7 +751,7 @@ pub(super) async fn execute_resident_watch_mutation(
             else {
                 return response(404, serde_json::json!({"error": "Watch scope not found"}));
             };
-            if current.scope_revision != request.expected_revision
+            if current.scope_revision.get() != request.expected_revision
                 || current.authority_state != WatchObservationScopeState::Active
             {
                 return response(
@@ -759,7 +761,8 @@ pub(super) async fn execute_resident_watch_mutation(
             }
             let ordinal = NEXT_WATCH_FACT_ID.fetch_add(1, Ordering::Relaxed);
             let mut revoked = current.clone();
-            revoked.scope_revision += 1;
+            revoked.scope_revision = std::num::NonZeroU64::new(revoked.scope_revision.get() + 1)
+                .expect("watch scope revision stays non-zero");
             revoked.authority_state = WatchObservationScopeState::Revoked;
             revoked.authority_observation_id = ObservationId::new(format!(
                 "obs:watch-scope:{}:{}:{ordinal}",
@@ -941,7 +944,7 @@ pub(super) fn run_watch_toy_command(command: &str, mut args: Vec<String>) -> Res
                 .parse::<u32>()
                 .context("parse --max-events-per-batch")?;
             let coalescing_policy = match take_required(&mut args, "--coalescing")?.as_str() {
-                "none" => WatchCoalescingPolicy::None,
+                "none" => WatchCoalescingPolicy::RetainAll,
                 "last-per-path" | "last_per_path" => WatchCoalescingPolicy::LastPerPath,
                 other => bail!("unknown Watch coalescing policy '{other}'"),
             };
@@ -1112,12 +1115,15 @@ mod tests {
             scope_mode: WatchScopeMode::Constrained,
             canonical_root_ref: "file:///tmp/watch-test".into(),
             traversal_scope: WatchTraversalScope::Recursive,
-            event_classes: vec![WatchEventClass::Created],
+            event_classes: mct_kernel::watch::WatchEventClasses::new(vec![
+                WatchEventClass::Created,
+            ])
+            .unwrap(),
             max_events_per_batch: 8,
-            coalescing_policy: WatchCoalescingPolicy::None,
+            coalescing_policy: WatchCoalescingPolicy::RetainAll,
             starts_at: Timestamp::new("2026-07-21T12:00:00Z").unwrap(),
             expires_at: Timestamp::new("2026-07-21T13:00:00Z").unwrap(),
-            scope_revision: 1,
+            scope_revision: std::num::NonZeroU64::MIN,
             policy_revision: 1,
             authority_state: WatchObservationScopeState::Active,
             authority_observation_id: ObservationId::new("obs-watch-test-scope").unwrap(),
@@ -1198,7 +1204,7 @@ mod tests {
         assert_eq!(session.scope(), &scope);
 
         let mut revoked = scope.clone();
-        revoked.scope_revision = 2;
+        revoked.scope_revision = std::num::NonZeroU64::new(2).unwrap();
         revoked.authority_state = WatchObservationScopeState::Revoked;
         revoked.authority_observation_id = ObservationId::new("obs-watch-test-revoked").unwrap();
         revoked = revoked.seal();
@@ -1248,26 +1254,36 @@ mod tests {
         let scope = watch_test_scope();
         state.insert_watch_observation_scope(&scope).unwrap();
         let first = state
-            .reserve_watch_batch_sequence(&scope.watch_scope_id, scope.scope_revision)
+            .reserve_watch_batch_sequence(&scope.watch_scope_id, scope.scope_revision.get())
             .unwrap();
         let second = state
-            .reserve_watch_batch_sequence(&scope.watch_scope_id, scope.scope_revision)
+            .reserve_watch_batch_sequence(&scope.watch_scope_id, scope.scope_revision.get())
             .unwrap();
         assert_eq!((first, second), (1, 2));
         let parent = CallId::new("call-watch-batch").unwrap();
         assert_eq!(
-            derive_watch_batch_id(&scope.watch_scope_id, scope.scope_revision, first, &parent),
-            derive_watch_batch_id(&scope.watch_scope_id, scope.scope_revision, first, &parent)
+            derive_watch_batch_id(
+                &scope.watch_scope_id,
+                scope.scope_revision.get(),
+                first,
+                &parent,
+            ),
+            derive_watch_batch_id(
+                &scope.watch_scope_id,
+                scope.scope_revision.get(),
+                first,
+                &parent,
+            )
         );
         let batch = WatchEventBatchEvidence {
             batch_id: derive_watch_batch_id(
                 &scope.watch_scope_id,
-                scope.scope_revision,
+                scope.scope_revision.get(),
                 first,
                 &parent,
             ),
             watch_scope_id: scope.watch_scope_id,
-            scope_revision: scope.scope_revision,
+            scope_revision: scope.scope_revision.get(),
             sequence: first,
             parent_call_id: parent,
             raw_event_count: MCT_WATCH_MAX_EVENTS_PER_BATCH,
