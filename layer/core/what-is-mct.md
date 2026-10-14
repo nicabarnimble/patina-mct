@@ -165,7 +165,7 @@ law rather than inherited as ontology. Existing `patinaChild` components
 `slate-manager@0.2.0`, `folder-watch-actor@0.1.0`, and
 `watch-null-sink@0.1.0` are required compatibility fixtures.
 
-## Multi-Mother and Vision
+## Vision
 
 Multi-Mother exists to share selected data and compute across nodes under
 explicit authority. Vision is the sharing boundary — it may represent a

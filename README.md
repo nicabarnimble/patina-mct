@@ -52,8 +52,8 @@ explicitly trusted Mother-side adapter; it does not become a local Child.
 - **Observed service and release lifecycle** — macOS user-launchd install/start/
   stop/restart/uninstall, closed ad-hoc-signed archives with SBOM/provenance,
   immutable daemon-release evidence, and digest-exact guided upgrade.
-- **Local control plane** — HTTP or owner-authenticated Unix-socket status,
-  calls, and administrative mutations.
+- **Administration** — a granted iroh admin key. A Child call is a
+  platform-given handle, and holding the handle is the authorization.
 - **Peer protocols (early)** — Iroh-based hello/call slices: a peer Mother is
   admitted only against a persisted binding, and admission never pre-
   authorizes calls.
@@ -91,24 +91,22 @@ Child:
   --children-dir ~/.mct/children \
   --state ~/.mct/state.sqlite \
   --ledger ~/.mct/observations.jsonl \
-  --uds ~/.mct/control.sock \
   --json
 ```
 
 Approve only the exact acquisition-backed digest returned by staging, then
-grant the narrow Slate Toy authority:
+grant the narrow Slate Toy authority. Administration presents a granted iroh
+admin key.
 
 ```bash
 "$MCT" children approve slate-manager ~/.mct/children \
   --artifact sha256:<digest> \
   --strict-integrity \
-  --state ~/.mct/state.sqlite \
-  --uds ~/.mct/control.sock
+  --state ~/.mct/state.sqlite
 
 "$MCT" toys authorize-slate slate-manager /path/to/project \
   --children-dir ~/.mct/children \
-  --state ~/.mct/state.sqlite \
-  --uds ~/.mct/control.sock
+  --state ~/.mct/state.sqlite
 ```
 
 Upgrade is evidence-informed and requires approval equal to the complete
