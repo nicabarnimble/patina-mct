@@ -776,6 +776,8 @@ mod tests {
             toy_catalog: [(contract.toy_id.to_string(), contract)].into(),
             toy_grants: [(grant.grant_id.to_string(), grant)].into(),
             watch_scopes: Default::default(),
+            admin_key_grants: std::collections::BTreeMap::new(),
+            pairing_tickets: std::collections::BTreeMap::new(),
         }
     }
 
