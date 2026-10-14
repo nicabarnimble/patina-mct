@@ -6105,7 +6105,6 @@ mod tests {
         }
     }
 
-    /// Phase H2 proof 9: non-authority entries reach the cursor and publication is old-old/new-new.
     #[test]
     fn authority_cursor_reaches_non_authority_head_with_coherent_publication() {
         let dir = tempfile::tempdir().unwrap();
@@ -6157,7 +6156,6 @@ mod tests {
         assert_ne!(new.cursor.projection_hash, old.cursor.projection_hash);
     }
 
-    /// Phase H2 proof 10: D-G8 proof passes only for complete canonical agreement.
     #[test]
     fn usable_authority_projection_proof_is_typed_for_every_mismatch() {
         use mct_observation::{
@@ -6243,7 +6241,6 @@ mod tests {
         );
     }
 
-    /// Phase H2 proof 11: restart changes epoch identity without changing projected grant meaning.
     #[test]
     fn epoch_transition_preserves_projected_grant_meaning() {
         let dir = tempfile::tempdir().unwrap();
@@ -6290,7 +6287,6 @@ mod tests {
         );
     }
 
-    /// Phase H2 proof 12: every unusable live projection is replaced atomically from shadow.
     #[test]
     fn shadow_rebuild_replaces_stale_epoch_mismatched_and_hash_incoherent_projection_atomically() {
         let dir = tempfile::tempdir().unwrap();
@@ -6362,7 +6358,6 @@ mod tests {
         }
     }
 
-    /// Phase H2 proof 13: clean shadow rebuild and advancing replay are byte-truth equivalent.
     #[test]
     fn clean_rebuild_and_incremental_replay_are_projection_equivalent() {
         let dir = tempfile::tempdir().unwrap();
@@ -6421,7 +6416,6 @@ mod tests {
         );
     }
 
-    /// Phase H2 proof 14: projection failure cannot undo a committed authority mutation.
     #[test]
     fn committed_mutation_projection_failure_catches_up_without_undo() {
         use mct_observation::{
@@ -6492,7 +6486,6 @@ mod tests {
         assert_eq!(caught_up.state, canonical.state);
     }
 
-    /// Phase H2 proof 15: ledger quarantine preserves the prior projection and denies use.
     #[test]
     fn quarantined_ledger_refuses_projection_advancement_with_typed_status() {
         use mct_observation::{
@@ -6551,7 +6544,6 @@ mod tests {
         );
     }
 
-    /// Phase I proof 16: pre-Phase-I Watch scopes import and rebuild completely once.
     #[test]
     fn legacy_import_includes_complete_watch_scopes_once_per_canonical_history() {
         let dir = tempfile::tempdir().unwrap();
@@ -6662,7 +6654,6 @@ mod tests {
         );
     }
 
-    /// Phase I proof 17: an unknown additive change blocks projection but not structural ledger use.
     #[test]
     fn unknown_authority_change_variant_blocks_projection_without_ledger_quarantine() {
         let dir = tempfile::tempdir().unwrap();
