@@ -1,5 +1,3 @@
-//! Owner-authenticated Watch scope and supporting Toy authority surfaces.
-
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 

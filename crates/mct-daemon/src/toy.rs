@@ -1079,7 +1079,6 @@ mod tests {
         assert_eq!(report.observations[0].outcome, ObservationOutcome::Denied);
     }
 
-    /// Phase J proof 9: a running Child's later Toy call observes Mother-clock expiry.
     #[test]
     fn token_expiring_during_child_denies_the_next_toy_backend_effect() {
         let minted_snapshot = snapshot_toy_authority(ToyGrantState::Active, "2026-05-31T00:00:30Z");
@@ -1131,7 +1130,6 @@ mod tests {
         assert_eq!(ordered_starts.load(Ordering::SeqCst), 1);
     }
 
-    /// Phase J proof 7: post-construction revocation denies before order or backend entry.
     #[test]
     fn current_toy_revocation_denies_before_order_and_echo_backend() {
         let minted_snapshot = snapshot_toy_authority(ToyGrantState::Active, "2026-05-31T00:00:30Z");

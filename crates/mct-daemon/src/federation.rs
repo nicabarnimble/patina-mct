@@ -290,7 +290,6 @@ mod tests {
         assert!(view.callable_surfaces.is_empty());
     }
 
-    /// Covers `CapabilityPublicationRelationship.HonestLocalExecutionOffer`.
     #[test]
     fn honest_local_execution_offer_excludes_approved_assigned_non_ready_child() {
         let mut config = MctDaemonConfig::default();

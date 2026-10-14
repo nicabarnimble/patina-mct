@@ -8,7 +8,6 @@ use std::{
 };
 use thiserror::Error;
 
-/// Maximum bytes accepted by the local content-addressed blob store.
 pub const MCT_BLOB_MAX_BYTES: usize = 8 * 1024 * 1024;
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
