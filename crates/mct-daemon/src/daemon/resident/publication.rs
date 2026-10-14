@@ -1,5 +1,3 @@
-//! Resident capability publication and admitted-hello surface refresh.
-
 use super::*;
 
 pub(super) fn resident_hello_capability_view(
