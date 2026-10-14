@@ -173,13 +173,17 @@ pub(super) async fn execute_authorized_resident_remote_call(
                 return MctIrohCallHandlerResult::failed("runtime unavailable");
             }
         };
-    let mut endpoint = match MotherIrohEndpoint::bind(iroh_config(secret_key_hex, false)).await {
-        Ok(endpoint) => endpoint,
-        Err(error) => {
-            eprintln!("resident remote endpoint bind failed: {error}");
-            return MctIrohCallHandlerResult::failed("remote peer unavailable");
-        }
-    };
+    // The outbound endpoint must be able to use the relay the peer advertises; with relay
+    // disabled, a relay-only peer ticket (e.g. a peer behind NAT/Docker) can never connect.
+    let relay_default = !peer_ticket.relay_urls.is_empty();
+    let mut endpoint =
+        match MotherIrohEndpoint::bind(iroh_config(secret_key_hex, relay_default)).await {
+            Ok(endpoint) => endpoint,
+            Err(error) => {
+                eprintln!("resident remote endpoint bind failed: {error}");
+                return MctIrohCallHandlerResult::failed("remote peer unavailable");
+            }
+        };
     let local_endpoint_id = endpoint.snapshot().endpoint_id;
     if local_endpoint_id != authorized.local_identity.endpoint_id {
         endpoint.close().await;
@@ -1131,7 +1135,7 @@ mod tests {
             ),
             mother_a_ledger.clone(),
             call,
-            ResidentPayloadIngress::remote(Some(payload)),
+            ResidentPayloadIngress::local(Some(payload)),
         )
         .await;
         mother_a_ledger.close().await;
@@ -1408,7 +1412,7 @@ mod tests {
             ),
             mother_a_ledger.clone(),
             call,
-            ResidentPayloadIngress::remote(Some(payload.clone())),
+            ResidentPayloadIngress::local(Some(payload.clone())),
         )
         .await;
         assert_eq!(forwarded.outcome, CallProtocolOutcome::Completed);
@@ -1467,7 +1471,7 @@ mod tests {
             ),
             mother_a_ledger.clone(),
             denied_call,
-            ResidentPayloadIngress::remote(Some(payload)),
+            ResidentPayloadIngress::local(Some(payload)),
         )
         .await;
         mother_a_ledger.close().await;
@@ -2017,7 +2021,6 @@ mod tests {
         assert_eq!(forward_count, 1, "the same call_id must be forwarded once");
     }
 
-    /// Covers `PerHopPeerAccountability.UpstreamIdentityRemainsAtItsVerifier`.
     #[test]
     fn forwarded_envelope_clears_upstream_user_identity() {
         let fixture = forwarding_fixture();

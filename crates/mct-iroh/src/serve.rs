@@ -52,17 +52,12 @@ fn single_connection_receiver_authority() -> Option<GrantsAuthorityIdentity> {
     }
 }
 
-/// Mutable state for serving MCT protocols over one Mother-owned endpoint.
-///
-/// Decision and observation IDs minted from this state include a random prefix
-/// generated once in `new`, plus a state-local monotonic counter, so a daemon
-/// restart does not reuse the same IDs after the counter resets.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MctIrohServeState {
     pub last_hello: Option<MctHelloAdmissionEvaluation>,
     hello_by_endpoint: BTreeMap<EndpointIdText, MctHelloAdmissionEvaluation>,
     hello_insertion_order: VecDeque<EndpointIdText>,
-    id_prefix: String,
+    restart_scoped_id_prefix: String,
     next_sequence: u64,
 }
 
@@ -78,7 +73,7 @@ impl MctIrohServeState {
             last_hello: None,
             hello_by_endpoint: BTreeMap::new(),
             hello_insertion_order: VecDeque::new(),
-            id_prefix: random_id_prefix(),
+            restart_scoped_id_prefix: restart_scoped_id_prefix(),
             next_sequence: 0,
         }
     }
@@ -86,7 +81,7 @@ impl MctIrohServeState {
     fn next_suffix(&mut self) -> String {
         let sequence = self.next_sequence;
         self.next_sequence += 1;
-        format!("{}-{sequence}", self.id_prefix)
+        format!("{}-{sequence}", self.restart_scoped_id_prefix)
     }
 
     fn next_decision_id(&mut self, kind: &str) -> DecisionId {
@@ -144,7 +139,7 @@ impl MctIrohServeState {
     }
 }
 
-fn random_id_prefix() -> String {
+fn restart_scoped_id_prefix() -> String {
     let random_bytes = SecretKey::generate().to_bytes();
     encode_hex(&random_bytes[..8])
 }
@@ -152,6 +147,19 @@ fn random_id_prefix() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restart_scoped_serve_id_prefixes_differ() {
+        let first = MctIrohServeState::new();
+        let second = MctIrohServeState::new();
+
+        assert_ne!(
+            first.restart_scoped_id_prefix,
+            second.restart_scoped_id_prefix
+        );
+        assert!(!first.restart_scoped_id_prefix.is_empty());
+        assert!(!second.restart_scoped_id_prefix.is_empty());
+    }
 
     #[test]
     fn serve_state_ids_do_not_collide_across_instances() {
@@ -480,7 +488,6 @@ pub struct MctIrohReceiverAuthorityProvider {
 }
 
 impl MctIrohReceiverAuthorityProvider {
-    /// Creates a provider whose callback returns a proof-gated current identity or `None`.
     pub fn new<F, Fut>(callback: F) -> Self
     where
         F: Fn() -> Fut + Send + Sync + 'static,
@@ -491,7 +498,6 @@ impl MctIrohReceiverAuthorityProvider {
         }
     }
 
-    /// Creates a provider that returns one fixed proven identity.
     pub fn fixed(identity: GrantsAuthorityIdentity) -> Self {
         Self::new(move || {
             let identity = identity.clone();
@@ -581,7 +587,6 @@ impl MctIrohConcurrentServeConfig {
         }
     }
 
-    /// Uses a fixed proven receiver identity, primarily for closed test fixtures.
     pub fn with_fixed_receiver_authority(mut self, identity: GrantsAuthorityIdentity) -> Self {
         self.receiver_authority_provider = MctIrohReceiverAuthorityProvider::fixed(identity);
         self

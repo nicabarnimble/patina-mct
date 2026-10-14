@@ -351,7 +351,9 @@ fn build_wasi_ctx(
         let mut guest_paths = BTreeSet::new();
         for preopen in &config.preopens {
             validate_wasi_preopen(preopen, &mut guest_paths)?;
-            let fs_perms = match preopen.access {
+            // Wasmtime 48 collapsed DirPerms + FilePerms into one preopen bit.
+            // Read-only stays read-only; read-write stays read-write.
+            let perms = match preopen.access {
                 MctWasiPreopenAccess::ReadOnly => FsPerms::ReadOnly,
                 MctWasiPreopenAccess::ReadWrite => FsPerms::ReadWrite,
             };
@@ -372,7 +374,7 @@ fn build_wasi_ctx(
                         })?;
                     authority
                         .admit_order(&snapshot, || {
-                            install_wasi_preopen(&mut builder, preopen, fs_perms)
+                            install_wasi_preopen(&mut builder, preopen, perms)
                         })
                         .map_err(|_| {
                             MctWasmComponentRuntimeError::Configure(
@@ -389,7 +391,7 @@ fn build_wasi_ctx(
                                 "WASI preopen legacy authority denied".into(),
                             )
                         })?;
-                    install_wasi_preopen(&mut builder, preopen, fs_perms)?;
+                    install_wasi_preopen(&mut builder, preopen, perms)?;
                 }
             }
         }
@@ -400,10 +402,10 @@ fn build_wasi_ctx(
 fn install_wasi_preopen(
     builder: &mut WasiCtxBuilder,
     preopen: &MctWasiPreopen,
-    fs_perms: FsPerms,
+    perms: FsPerms,
 ) -> Result<(), MctWasmComponentRuntimeError> {
     builder
-        .preopened_dir(&preopen.host_path, &preopen.guest_path, fs_perms)
+        .preopened_dir(&preopen.host_path, &preopen.guest_path, perms)
         .map_err(|error| {
             MctWasmComponentRuntimeError::Configure(format!(
                 "configure WASI preopen '{}'=>'{}': {error}",
@@ -3712,7 +3714,6 @@ mod tests {
         assert_eq!(report.result.outcome, ResultOutcome::Success);
     }
 
-    /// Phase J proof 10: admitted delegation is retained; subsequent delegation revalidates.
     #[test]
     fn delegated_preopen_survives_revocation_while_new_delegation_denies() {
         let root = tempfile::tempdir().unwrap();

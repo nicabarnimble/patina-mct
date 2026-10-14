@@ -1,5 +1,3 @@
-//! Caller-scoped durable idempotency around resident and standalone execution.
-
 use super::*;
 
 fn resident_idempotency_caller_scope(
@@ -598,7 +596,7 @@ mod tests {
             paths.clone(),
             ledger.clone(),
             request.clone(),
-            ResidentPayloadIngress::remote(Some(payload.clone())),
+            ResidentPayloadIngress::local(Some(payload.clone())),
             now.clone(),
         )
         .await;
@@ -606,7 +604,7 @@ mod tests {
             paths.clone(),
             ledger.clone(),
             request.clone(),
-            ResidentPayloadIngress::remote(Some(payload.clone())),
+            ResidentPayloadIngress::local(Some(payload.clone())),
             now.clone(),
         )
         .await;
@@ -635,7 +633,7 @@ mod tests {
             paths.clone(),
             ledger.clone(),
             other_caller,
-            ResidentPayloadIngress::remote(Some(payload.clone())),
+            ResidentPayloadIngress::local(Some(payload.clone())),
             now.clone(),
         )
         .await;
@@ -648,7 +646,7 @@ mod tests {
             paths.clone(),
             ledger.clone(),
             mismatch,
-            ResidentPayloadIngress::remote(Some(payload.clone())),
+            ResidentPayloadIngress::local(Some(payload.clone())),
             now.clone(),
         )
         .await;
@@ -663,7 +661,7 @@ mod tests {
             paths.clone(),
             ledger.clone(),
             request.clone(),
-            ResidentPayloadIngress::remote(Some(payload.clone())),
+            ResidentPayloadIngress::local(Some(payload.clone())),
             Timestamp::new(
                 now_value
                     .checked_add(jiff::SignedDuration::from_mins(13))
@@ -683,7 +681,7 @@ mod tests {
             paths.clone(),
             ledger.clone(),
             unkeyed.clone(),
-            ResidentPayloadIngress::remote(Some(payload.clone())),
+            ResidentPayloadIngress::local(Some(payload.clone())),
             now.clone(),
         )
         .await;
@@ -691,7 +689,7 @@ mod tests {
             paths,
             ledger.clone(),
             unkeyed,
-            ResidentPayloadIngress::remote(Some(payload)),
+            ResidentPayloadIngress::local(Some(payload)),
             now,
         )
         .await;
@@ -707,7 +705,6 @@ mod tests {
         assert!(!ledger_text.contains(r#"{\"results\":[41]}"#));
     }
 
-    /// Covers `MctCallProtocol.MatchingCompletedRetryReplaysRecordedReply` for cancellation.
     #[tokio::test]
     async fn cancelled_idempotent_reply_replays_cancelled_with_durable_observation() {
         let dir = tempfile::tempdir().unwrap();

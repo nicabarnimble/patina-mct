@@ -1,5 +1,3 @@
-//! Resident observation persistence and Iroh durability adaptation.
-
 use super::*;
 use mct_daemon::{
     MotherAuthorityAdmissionDenyV1, MotherAuthorityCommitOutcomeV1, MotherAuthorityOrderV1,
@@ -876,7 +874,6 @@ mod tests {
         Timestamp::new("2099-01-01T00:00:00Z").unwrap()
     }
 
-    /// Covers `MctLocalFirstObservationLedger.BufferedEffectsAreBounded`.
     #[tokio::test]
     async fn resident_observation_queue_is_bounded_and_acknowledged() {
         let dir = tempfile::tempdir().unwrap();

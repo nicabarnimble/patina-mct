@@ -62,6 +62,9 @@ pub enum MotherIrohEndpointError {
         source: BindError,
     },
 
+    #[error("Mother-owned Iroh endpoint relay was not ready")]
+    RelayNotReady,
+
     #[error("Mother-owned Iroh endpoint is closed")]
     EndpointClosed,
 
@@ -225,12 +228,10 @@ pub struct MotherIrohEndpoint {
 }
 
 impl MotherIrohEndpoint {
-    /// Bind a local relay-disabled endpoint that accepts MCT peer ALPNs.
     pub async fn bind_local_mct() -> MotherIrohEndpointResult<Self> {
         Self::bind(MotherIrohEndpointConfig::local_mct()).await
     }
 
-    /// Bind a Mother-owned endpoint from explicit adapter configuration.
     pub async fn bind(config: MotherIrohEndpointConfig) -> MotherIrohEndpointResult<Self> {
         if config.accepted_alpns.is_empty() {
             return Err(MotherIrohEndpointError::EmptyAcceptedAlpns);
@@ -277,6 +278,14 @@ impl MotherIrohEndpoint {
             .bind()
             .await
             .map_err(|source| MotherIrohEndpointError::Bind { source })?;
+        if !matches!(relay_mode, MotherIrohRelayMode::Disabled) {
+            let relay_ready =
+                tokio::time::timeout(std::time::Duration::from_secs(10), endpoint.online()).await;
+            if relay_ready.is_err() {
+                endpoint.close().await;
+                return Err(MotherIrohEndpointError::RelayNotReady);
+            }
+        }
         let endpoint_addr = endpoint.addr();
         let snapshot = MotherIrohEndpointSnapshot {
             endpoint_id: EndpointIdText::new(endpoint.id().to_string())

@@ -195,7 +195,7 @@ async fn execute_watch_callouts(
                 WatchEventClass::Deleted => {
                     if !state.watch_subject_was_present(
                         &scope.watch_scope_id,
-                        scope.scope_revision,
+                        scope.scope_revision.get(),
                         &wire.relative_path,
                     )? {
                         bail!("deleted Watch subject has no prior in-scope identity");
@@ -217,17 +217,17 @@ async fn execute_watch_callouts(
         bail!("Watch scope batch capacity exceeded");
     }
     let sequence =
-        state.reserve_watch_batch_sequence(&scope.watch_scope_id, scope.scope_revision)?;
+        state.reserve_watch_batch_sequence(&scope.watch_scope_id, scope.scope_revision.get())?;
     let batch_id = derive_watch_batch_id(
         &scope.watch_scope_id,
-        scope.scope_revision,
+        scope.scope_revision.get(),
         sequence,
         &parent.call_id,
     );
     let batch = WatchEventBatchEvidence {
         batch_id: batch_id.clone(),
         watch_scope_id: scope.watch_scope_id.clone(),
-        scope_revision: scope.scope_revision,
+        scope_revision: scope.scope_revision.get(),
         sequence,
         parent_call_id: parent.call_id.clone(),
         raw_event_count: parsed.len() as u32,
@@ -313,7 +313,7 @@ async fn execute_watch_callouts(
     for event in &events {
         state.record_watch_subject_presence(
             &scope.watch_scope_id,
-            scope.scope_revision,
+            scope.scope_revision.get(),
             &event.event_id,
             &event.relative_path,
             event.event_class != WatchEventClass::Deleted,
@@ -472,8 +472,8 @@ pub(crate) enum ResidentCallIngressContext {
         firing_id: CallTriggerFiringId,
         occurrence_id: CallTriggerOccurrenceId,
     },
-    #[allow(dead_code)] // Ratified D1B interface; implemented only after Part A lands.
     ChildCallOut {
+        #[allow(dead_code)]
         parent_call_id: CallId,
         parent_firing_id: Option<CallTriggerFiringId>,
         depth: u8,
@@ -1161,14 +1161,21 @@ mod tests {
                 assignment_id: ChildAssignmentId::new("assignment:folder-watch-actor").unwrap(),
             },
             scope_mode: WatchScopeMode::Constrained,
-            canonical_root_ref: format!("file://{}", root.canonicalize().unwrap().display()),
+            canonical_root_ref: mct_kernel::watch::CanonicalFileRoot::new(format!(
+                "file://{}",
+                root.canonicalize().unwrap().display()
+            ))
+            .unwrap(),
             traversal_scope: WatchTraversalScope::Recursive,
-            event_classes: vec![WatchEventClass::Created],
+            event_classes: mct_kernel::watch::WatchEventClasses::new(vec![
+                WatchEventClass::Created,
+            ])
+            .unwrap(),
             max_events_per_batch: 8,
-            coalescing_policy: WatchCoalescingPolicy::None,
+            coalescing_policy: WatchCoalescingPolicy::RetainAll,
             starts_at: Timestamp::new("2026-01-01T00:00:00Z").unwrap(),
             expires_at: Timestamp::new("2099-01-01T00:00:00Z").unwrap(),
-            scope_revision: 1,
+            scope_revision: std::num::NonZeroU64::MIN,
             policy_revision: 1,
             authority_state: WatchObservationScopeState::Active,
             authority_observation_id: ObservationId::new("obs-scope-append-failure").unwrap(),
@@ -1254,7 +1261,6 @@ mod tests {
         );
     }
 
-    /// Proof 15: failed BeforeEffect acknowledgement returns observation-unavailable and starts no Child effect.
     #[tokio::test]
     async fn before_effect_append_failure_suppresses_child_effect() {
         let dir = tempfile::tempdir().unwrap();

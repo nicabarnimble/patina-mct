@@ -4,50 +4,174 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [patina, main, master]
+  schedule:
+    - cron: "17 4 * * *"
 
 permissions:
   contents: read
 
 jobs:
-  tier-1-specs-and-rust:
-    name: Tier 1 — Allium specs and Rust workspace
+  fmt:
+    name: fmt
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          components: rustfmt, clippy
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+
+      - name: cargo fmt --check
+        run: bash scripts/ci-tier0.sh fmt
+
+  clippy:
+    name: clippy
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+
+      - name: cargo clippy
+        run: bash scripts/ci-tier0.sh clippy
+
+  test:
+    name: test
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+
+      - name: cargo test
+        run: bash scripts/ci-tier0.sh test
+
+  specs:
+    name: allium, vocabulary, release
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
 
       - name: Install Allium
         run: scripts/install-allium-ci.sh
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked --version 0.22.2
+      - name: Ensure ripgrep
+        run: |
+          if ! command -v rg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ripgrep
+          fi
+
+      - name: Allium, vocabulary, and release checks
+        run: bash scripts/ci-tier0.sh specs
 
       - name: Install documentation tools
         run: scripts/install-docs-tools.sh
-
-      - name: Check Allium specs and Rust tests
-        run: scripts/ci-tier0.sh
 
       - name: Build and check product and API documentation
         run: scripts/build-docs.sh
 
   ledger-benchmark:
     name: Ledger open benchmark
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
 
       - name: Streaming ledger open at 10k and 100k
         run: cargo run -p mct-observation --release --bin ledger-bench -- --sizes 10000,100000 --check
+
+  audit:
+    name: audit
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          install-audit: "true"
+
+      - name: Check ignore metadata
+        run: |
+          python3 scripts/check-audit-ignores.py --self-test
+          python3 scripts/check-audit-ignores.py
+          bash scripts/ci-audit.sh --self-test
+
+      - name: Audit dependency changes
+        env:
+          AUDIT_EVENT: ${{ github.event_name }}
+          AUDIT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          AUDIT_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash scripts/ci-audit.sh changed --event "$AUDIT_EVENT" "$AUDIT_BASE" "$AUDIT_HEAD"
+
+  dependency-audit:
+    name: nightly dependency audit
+    if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          install-audit: "true"
+
+      - name: Strict audit
+        id: strict-audit
+        run: |
+          set +e
+          python3 scripts/check-audit-ignores.py --overdue > "$RUNNER_TEMP/ignores.txt" 2>&1
+          ignore_status=$?
+          cat "$RUNNER_TEMP/ignores.txt"
+          bash scripts/ci-audit.sh strict > "$RUNNER_TEMP/audit.txt" 2>&1
+          audit_status=$?
+          cat "$RUNNER_TEMP/audit.txt"
+          if [[ $ignore_status -ne 0 || $audit_status -ne 0 ]]; then
+            exit 1
+          fi
+
+      - name: Open or update the dependency advisories issue
+        if: failure() && steps.strict-audit.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/update-dependency-advisory-issue.sh "$RUNNER_TEMP/audit.txt" "$RUNNER_TEMP/ignores.txt"
