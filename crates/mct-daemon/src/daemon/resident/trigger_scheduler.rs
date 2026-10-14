@@ -1,5 +1,3 @@
-//! Durable bounded temporal trigger scheduling for the resident Mother.
-
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -2046,8 +2044,8 @@ mod tests {
 
         let stage = MctArtifactStageRequest {
             source_root: source_package,
-            manifest_path: PathBuf::from("child.toml"),
-            component_path: PathBuf::from("trigger-wit.wasm"),
+            manifest_path: MctRootRelativePath::new("child.toml").unwrap(),
+            component_path: Some(MctRootRelativePath::new("trigger-wit.wasm").unwrap()),
             claimed_child_name: "trigger-wit".into(),
             claimed_artifact_version: "0.1.0".into(),
             expected_digest: Some(format!("blake3:{component_blake3}")),
@@ -2185,8 +2183,6 @@ mod tests {
         .await;
         assert_eq!(durable_first.occurrence_id, first_occurrence.occurrence_id);
 
-        // Re-evaluating the same injected nominal instant remains terminal and
-        // cannot create a second call or target effect.
         assert_eq!(
             MctRuntimeStateStore::open(&state_path)
                 .unwrap()
@@ -2201,9 +2197,6 @@ mod tests {
         shutdown.send(()).unwrap();
         server.await.unwrap().unwrap();
 
-        // Model the append/project crash seam exactly: one later firing is
-        // durable but not spawned, and the following occurrence is admitted
-        // under overlap before the process disappears.
         let (crash_firing, expected_pending) =
             admit_crash_firing_and_overlap_pending(&paths, &ledger_path, clock.clone(), &created)
                 .await;
@@ -2372,8 +2365,6 @@ mod tests {
         restart_shutdown.send(()).unwrap();
         restarted.await.unwrap().unwrap();
 
-        // A second restart retains all terminal sets and still cannot resurrect
-        // the crash-seam firing, pending occurrence, or revoked nominal work.
         let (final_shutdown, final_resident) = start_test_resident(
             paths,
             identity_path,

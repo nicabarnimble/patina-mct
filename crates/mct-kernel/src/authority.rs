@@ -1,7 +1,5 @@
 //! Provenance-separated authority values assembled only after daemon-side projection proof.
 
-#![allow(missing_docs)]
-
 use crate::{
     BindingState, CanonicalToyContract, ChildApproval, ChildAssignment, ChildInstance,
     ComponentArtifact, EndpointIdText, MctNodeId, MctPeerBinding, NetworkPathClass, PeerBindingId,

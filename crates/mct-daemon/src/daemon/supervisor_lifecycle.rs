@@ -1,5 +1,3 @@
-//! Ledger-backed daemon supervision and macOS launchd adapter.
-
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -3806,8 +3804,8 @@ mod tests {
         let state_path = root.path().join("state.sqlite");
         let request = MctArtifactStageRequest {
             source_root: source,
-            manifest_path: PathBuf::from("slate-manager.toml"),
-            component_path: PathBuf::from("slate-manager.wasm"),
+            manifest_path: MctRootRelativePath::new("slate-manager.toml").unwrap(),
+            component_path: Some(MctRootRelativePath::new("slate-manager.wasm").unwrap()),
             claimed_child_name: "slate-manager".into(),
             claimed_artifact_version: "0.2.0".into(),
             expected_digest: None,
@@ -4152,8 +4150,8 @@ status = "active"
 
         let stage_request = serde_json::to_value(MctArtifactStageRequest {
             source_root: source_root.clone(),
-            manifest_path: PathBuf::from("slate-manager.toml"),
-            component_path: PathBuf::from("slate-manager.wasm"),
+            manifest_path: MctRootRelativePath::new("slate-manager.toml").unwrap(),
+            component_path: Some(MctRootRelativePath::new("slate-manager.wasm").unwrap()),
             claimed_child_name: "slate-manager".into(),
             claimed_artifact_version: "0.2.0".into(),
             expected_digest: Some(
@@ -4461,8 +4459,8 @@ status = "active"
             .unwrap();
             let stage = serde_json::to_value(MctArtifactStageRequest {
                 source_root: source,
-                manifest_path: PathBuf::from("child.toml"),
-                component_path: PathBuf::from(component_name),
+                manifest_path: MctRootRelativePath::new("child.toml").unwrap(),
+                component_path: Some(MctRootRelativePath::new(component_name).unwrap()),
                 claimed_child_name: child_name.into(),
                 claimed_artifact_version: "0.1.0".into(),
                 expected_digest: None,

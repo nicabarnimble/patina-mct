@@ -47,10 +47,11 @@ pub use acquisition::fuzz_child_package_manifest;
 pub use acquisition::{
     MCT_CHILD_MANIFEST_MAX_BYTES, MCT_COMPONENT_ARTIFACT_MAX_BYTES,
     MCT_FILESYSTEM_ACQUISITION_ADAPTER, MctArtifactAcquisitionReport, MctArtifactAttemptContext,
-    MctArtifactStageRequest, MctStandingSourceLedgerProof, StandingSourceAdmissionDenyReasonV1,
-    StandingSourceAdmissionV1, admit_standing_source, new_artifact_attempt_context,
-    stage_artifact_with_context, stage_artifact_with_context_and_observer,
-    stage_operator_pointed_artifact, verify_standing_source_ledger_correlation,
+    MctArtifactStageRequest, MctRootRelativePath, MctStandingSourceLedgerProof,
+    StandingSourceAdmissionDenyReasonV1, StandingSourceAdmissionV1, admit_standing_source,
+    new_artifact_attempt_context, stage_artifact_with_context,
+    stage_artifact_with_context_and_observer, stage_operator_pointed_artifact,
+    verify_standing_source_ledger_correlation,
 };
 pub use authority_order::{
     MotherAuthorityAdmissionDenyV1, MotherAuthorityCommitOutcomeV1, MotherAuthorityFenceReasonV1,
@@ -188,7 +189,6 @@ pub use wasm::{
     wasm_component_runtime_error_observation, wit_operation_id_from_target,
 };
 
-/// Returns the crate version for health and smoke tests.
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }

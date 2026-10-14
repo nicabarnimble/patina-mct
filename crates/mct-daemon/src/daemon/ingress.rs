@@ -1050,8 +1050,6 @@ mod tests {
         assert!(!ledger_text.contains(secret.trim()));
     }
 
-    /// Covers `OperatorPointedSubmissionIsDistinct` and
-    /// `MctIrohPeerBindingAuthority.OperatorPointedEgressIsOneObservedDecision`.
     #[tokio::test]
     async fn operator_pointed_egress_is_durable_before_send() {
         use std::sync::Arc;

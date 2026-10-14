@@ -1,0 +1,48 @@
+name: Setup pinned Rust
+description: Install the rust-toolchain.toml compiler and restore the cargo cache.
+inputs:
+  install-audit:
+    description: Cache and install cargo-audit 0.22.2 when the binary cache misses.
+    required: false
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: Install pinned Rust
+      # 1.96.0 matches rust-toolchain.toml. @stable installs rustc 1.99.0
+      # (2026-09-28) as the rustup default and the toolchain file overrides it.
+      uses: dtolnay/rust-toolchain@1.96.0
+      with:
+        components: rustfmt, clippy
+
+    - name: Confirm rustc matches rust-toolchain.toml
+      shell: bash
+      run: |
+        pinned=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml","rb"))["toolchain"]["channel"])')
+        echo "rust-toolchain.toml channel ${pinned}"
+        rustc --version
+        rustc --version | grep -q "^rustc ${pinned} "
+
+    - name: Cache cargo registry and build outputs
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      with:
+        cache-on-failure: "true"
+        cache-bin: "false"
+
+    - name: Cache cargo-audit
+      id: cargo-audit-cache
+      if: inputs.install-audit == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cargo/bin/cargo-audit
+        key: cargo-audit-0.22.2-${{ runner.os }}-${{ runner.arch }}
+
+    - name: Install cargo-audit
+      if: inputs.install-audit == 'true' && steps.cargo-audit-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: cargo install cargo-audit --locked --version 0.22.2
+
+    - name: Check cargo-audit
+      if: inputs.install-audit == 'true'
+      shell: bash
+      run: cargo audit --version

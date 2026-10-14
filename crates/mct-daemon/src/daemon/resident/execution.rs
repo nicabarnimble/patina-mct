@@ -1,5 +1,3 @@
-//! Resident local effect-boundary revision guard, child delivery, dispatch, and result projection.
-
 use super::*;
 use mct_daemon::{MctToyEffectAuthorityV1, MotherAuthorityAdmissionDenyV1};
 
@@ -364,7 +362,7 @@ fn resident_watch_host_adapters(
         .resource_id()
         .map(str::to_owned)
         .unwrap_or_default();
-    if content_resource != scope.canonical_root_ref {
+    if content_resource != scope.canonical_root_ref.as_str() {
         return Err(CliToyAuthorizationError {
             safe_message: "content-read root must equal the v1 Watch root".into(),
             observations,
@@ -1077,7 +1075,7 @@ mod tests {
             ResidentRuntimePaths::new(config_path, children_dir, state_path),
             ledger.clone(),
             request,
-            ResidentPayloadIngress::remote(Some(payload)),
+            ResidentPayloadIngress::local(Some(payload)),
         )
         .await;
         assert_eq!(result.outcome, CallProtocolOutcome::Completed);
@@ -1141,7 +1139,7 @@ mod tests {
             ResidentRuntimePaths::new(config_path, children_dir, state_path),
             ledger.clone(),
             request,
-            ResidentPayloadIngress::remote(Some(payload)),
+            ResidentPayloadIngress::local(Some(payload)),
         )
         .await;
         assert_eq!(result.outcome, CallProtocolOutcome::Failed);
@@ -1180,7 +1178,7 @@ mod tests {
             ResidentRuntimePaths::new(config_path, children_dir, state_path),
             ledger.clone(),
             request,
-            ResidentPayloadIngress::remote(None),
+            ResidentPayloadIngress::local(None),
         )
         .await;
         assert_eq!(result.outcome, CallProtocolOutcome::Completed);
@@ -1211,7 +1209,6 @@ mod tests {
         );
     }
 
-    /// Phase J proofs 3 and 15: full resident post-mint mutation denies without refresh.
     #[tokio::test]
     async fn full_resident_post_mint_mutation_denies_then_retry_remints() {
         let dir = tempfile::tempdir().unwrap();
@@ -1243,7 +1240,7 @@ mod tests {
             paths.clone(),
             ledger.clone(),
             resident_test_protocol_request(first_call),
-            ResidentPayloadIngress::remote(None),
+            ResidentPayloadIngress::local(None),
             AuthorityMutationRequestV1 {
                 mutation_id: "phase-j-post-mint-unrelated-grant-change".into(),
                 changes: vec![AuthorityChangeV1::ToyCatalogPut {
@@ -1279,7 +1276,7 @@ mod tests {
             paths,
             ledger.clone(),
             resident_test_protocol_request(retry_call),
-            ResidentPayloadIngress::remote(None),
+            ResidentPayloadIngress::local(None),
         )
         .await;
         assert_eq!(retry.outcome, CallProtocolOutcome::Completed);
@@ -1451,7 +1448,6 @@ mod tests {
         assert_eq!(observation.resource_id, Some("child:resident-echo".into()));
     }
 
-    /// Covers `MctResultTerminality.ClosedOutcomeSet`.
     #[test]
     fn cancelled_result_projection_preserves_cancelled_outcome() {
         let result = MctResult {

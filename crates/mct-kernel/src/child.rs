@@ -10,13 +10,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// Child authority requires the artifact primary export to contain the requested operation.
 pub struct ComponentWitExport {
-    /// WIT namespace for the exported interface.
     pub namespace: String,
-    /// WIT interface name exported by the component.
     pub interface_name: String,
-    /// Version of the exported WIT interface.
     pub version: String,
-    /// Functions exported by this WIT interface.
     pub function_names: Vec<String>,
 }
 
@@ -86,18 +82,10 @@ pub fn component_wit_exports_from_operation_ids(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Persisted execution-substrate record for a component artifact.
-///
-/// Only `WasmComponent` converts to current local execution; the other values
-/// remain decodeable for historical evidence.
 pub enum ComponentRuntimeShape {
-    /// Current WASM component runtime.
     WasmComponent,
-    /// Retired JVM-backed local runtime record.
     JvmChild,
-    /// Retired process-backed local runtime record.
     ProcessChild,
-    /// Historical remote-child substrate record.
     RemoteChild,
 }
 
@@ -158,43 +146,30 @@ impl TryFrom<ComponentRuntimeShape> for LocalChildRuntime {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// How a child accepts calls at its component boundary.
 pub enum ChildIngressMode {
-    /// Only WIT-shaped exports are used for ingress.
     WitOnly,
-    /// WIT ingress plus compatibility lifecycle/handle exports.
     Hybrid,
-    /// Legacy handle-style ingress.
     Handle,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Whether legacy lifecycle exports are expected from the child.
 pub enum LifecycleExports {
-    /// Lifecycle exports must be present.
     Required,
-    /// Lifecycle exports may be present.
     Optional,
-    /// Lifecycle exports are not required.
     AbsentAllowed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Integrity and manifest verification state for an artifact.
 pub enum VerificationStatus {
-    /// Artifact integrity and manifest checks passed.
     Verified,
-    /// Artifact verification failed.
     Rejected,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Whether an artifact has post-law acquisition evidence.
 pub enum ArtifactProvenanceStatus {
-    /// At least one successful verified acquisition references this artifact.
     AcquisitionBacked,
     /// The artifact predates acquisition law and has no fabricated equivalent evidence.
     HistoricalUnknown,
@@ -205,39 +180,24 @@ pub enum ArtifactProvenanceStatus {
 ///
 /// Child call authority requires a verified artifact matching the selected assignment, approval, and instance, and exporting the requested operation.
 pub struct ComponentArtifact {
-    /// Artifact identifier that must match approvals, assignments, and instances.
     pub artifact_id: ComponentArtifactId,
-    /// Stable child name used in authority matching.
     pub child_name: String,
-    /// Artifact version pinned by approval and assignment.
     pub artifact_version: String,
-    /// Digest of the artifact contents.
     pub content_hash: String,
-    /// Digest of the child manifest used for verification.
     pub manifest_hash: String,
-    /// Primary WIT export used to match call targets.
     pub primary_export: ComponentWitExport,
-    /// Further WIT interfaces this artifact exports besides [`Self::primary_export`].
     #[serde(default)]
     pub additional_exports: Vec<ComponentWitExport>,
-    /// Runtime substrate declared for this artifact.
     pub runtime_shape: ComponentRuntimeShape,
-    /// Call ingress shape supported by this artifact.
     pub ingress_mode: ChildIngressMode,
-    /// Lifecycle export policy for this artifact.
     pub lifecycle_exports: LifecycleExports,
-    /// Verification result used by authority evaluation.
     pub verification_status: VerificationStatus,
-    /// Whether this artifact is backed by acquisition evidence or explicitly historical.
     pub provenance_status: ArtifactProvenanceStatus,
-    /// Successful acquisition facts referenced by this artifact.
     pub acquisition_ids: Vec<crate::ArtifactAcquisitionId>,
-    /// Observation that recorded creation of this artifact fact.
     pub created_by_observation_id: ObservationId,
 }
 
 impl ComponentArtifact {
-    /// Returns true when any declared WIT export exposes the requested call target.
     pub fn exports_operation(&self, target: &OperationTarget) -> bool {
         std::iter::once(&self.primary_export)
             .chain(self.additional_exports.iter())
@@ -258,15 +218,11 @@ fn wit_export_matches(export: &ComponentWitExport, target: &OperationTarget) -> 
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Lifecycle state of approval authority for an artifact.
 pub enum ChildApprovalState {
     /// Approval exists but grants no execution authority yet.
     Candidate,
-    /// Artifact is approved for matching scoped calls.
     Approved,
-    /// Approval blocks use.
     Blocked,
-    /// Authority was revoked.
     Revoked,
     /// Approval remains visible but should not authorize new use.
     Deprecated,
@@ -277,35 +233,25 @@ pub enum ChildApprovalState {
 ///
 /// Evaluation accepts only `Approved` records whose artifact, child, version, scope, and policy revision match the call and assignment.
 pub struct ChildApproval {
-    /// Approval considered by the evaluation.
     pub approval_id: ChildApprovalId,
-    /// Artifact identifier that must match approvals, assignments, and instances.
     pub artifact_id: ComponentArtifactId,
-    /// Stable child name used in authority matching.
     pub child_name: String,
-    /// Artifact version pinned by approval and assignment.
     pub artifact_version: String,
-    /// Vision scope in which approval is valid.
     pub scope_vision_id: Option<VisionId>,
     /// Optional node scope; absent means any node in the Vision.
     pub scope_node_id: Option<MctNodeId>,
     /// Optional project scope; absent means any project in the Vision.
     pub scope_project_id: Option<ProjectId>,
-    /// Approval lifecycle state used during child authority checks.
     pub approval_state: ChildApprovalState,
-    /// Policy revision under which this authority fact was issued.
     pub policy_revision: u64,
-    /// Observation that recorded this authority fact.
     pub authority_observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Lifecycle state of a child placement assignment.
 pub enum ChildAssignmentState {
     /// Assignment or grant may authorize if other facts match.
     Active,
-    /// Authority was revoked.
     Revoked,
 }
 
@@ -314,43 +260,26 @@ pub enum ChildAssignmentState {
 ///
 /// Assignment is not approval by itself; child call authority also requires a matching approval, artifact, and ready instance.
 pub struct ChildAssignment {
-    /// Assignment identifier referenced by instances and evaluations.
     pub assignment_id: ChildAssignmentId,
-    /// Approval considered by the evaluation.
     pub approval_id: ChildApprovalId,
-    /// Artifact identifier that must match approvals, assignments, and instances.
     pub artifact_id: ComponentArtifactId,
-    /// Stable child name used in authority matching.
     pub child_name: String,
-    /// Vision scope for placement or authority matching.
     pub vision_id: VisionId,
-    /// Node constraint or requested execution node.
     pub node_id: Option<MctNodeId>,
-    /// Optional project scope for placement or caller matching.
     pub project_id: Option<ProjectId>,
-    /// Assignment lifecycle state used during authority checks.
     pub assignment_state: ChildAssignmentState,
-    /// Artifact version this assignment is pinned to.
     pub pinned_artifact_version: String,
-    /// Observation that recorded this assignment.
     pub assignment_observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Runtime readiness state of one child generation.
 pub enum ChildInstanceState {
-    /// Instance is starting and not ready for calls.
     Loading,
-    /// Instance may serve calls if authority matches.
     Ready,
-    /// Instance is unhealthy but may transition.
     Degraded,
-    /// Instance is draining before stop.
     Draining,
-    /// Instance is stopped.
     Stopped,
-    /// Instance failed.
     Failed,
 }
 
@@ -359,100 +288,61 @@ pub enum ChildInstanceState {
 ///
 /// Only `Ready` instances on the requested node can produce an authorized child invocation.
 pub struct ChildInstance {
-    /// Child instance considered for execution.
     pub instance_id: ChildInstanceId,
-    /// Assignment identifier referenced by instances and evaluations.
     pub assignment_id: ChildAssignmentId,
-    /// Artifact identifier that must match approvals, assignments, and instances.
     pub artifact_id: ComponentArtifactId,
-    /// Stable child name used in authority matching.
     pub child_name: String,
-    /// Runtime generation number for replacement and drain flows.
     pub generation: u64,
-    /// Node constraint or requested execution node.
     pub node_id: MctNodeId,
-    /// Readiness state used during child authority checks.
     pub instance_state: ChildInstanceState,
-    /// Observation that marked the instance ready, if any.
     pub readiness_observation_id: Option<ObservationId>,
-    /// Most recent lifecycle transition observation for this instance.
     pub last_lifecycle_observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Reason a child instance state transition was accepted or rejected.
 pub enum ChildLifecycleTransitionReason {
-    /// Authority or transition succeeded.
     Allowed,
-    /// Requested lifecycle transition is not permitted.
     IllegalTransition,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Observation-ready record of an attempted child instance state transition.
 pub struct ChildLifecycleTransition {
-    /// Child instance considered for execution.
     pub instance_id: ChildInstanceId,
-    /// State before the attempted transition.
     pub from_state: ChildInstanceState,
-    /// State requested by the transition.
     pub to_state: ChildInstanceState,
-    /// Typed reason for the transition decision.
     pub reason: ChildLifecycleTransitionReason,
-    /// Whether the transition changed the instance state.
     pub allowed: bool,
-    /// Caller-safe or operator-safe message for projections.
     pub safe_message: String,
-    /// Observation recording this fact.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Verdict of child call authority evaluation.
 pub enum ChildCallVerdict {
-    /// Authority or transition succeeded.
     Allowed,
-    /// Authority check failed closed.
     Denied,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Typed reason produced by child call authority evaluation.
 pub enum ChildCallReasonCode {
-    /// Ready instance matched assignment, approval, artifact, scope, export, and policy.
     ReadyAuthorizedInstance,
-    /// Requested instance was not found.
     UnknownInstance,
-    /// Instance assignment was not found.
     MissingAssignment,
-    /// Assignment was not active.
     AssignmentRevoked,
-    /// Assignment approval was not found.
     MissingApproval,
-    /// Approval state was not approved.
     ApprovalNotApproved,
     /// Approval or assignment scope did not match the call.
     ApprovalScopeMismatch,
-    /// Assigned artifact was not found.
     ArtifactMissing,
-    /// Artifact verification was not successful.
     ArtifactRejected,
-    /// Artifact runtime shape is historical, retired, or non-local.
     UnsupportedLocalRuntime,
-    /// Artifact does not export the requested operation.
     OperationNotExported,
-    /// Instance state was not ready.
     InstanceNotReady,
-    /// Instance or assignment node did not match the request.
     WrongNode,
-    /// Assignment project did not match the call project.
     WrongProject,
-    /// Approval policy revision did not match the call snapshot.
     StalePolicy,
-    /// Artifact, approval, assignment, or instance versions did not agree.
     VersionMismatch,
 }
 
@@ -461,29 +351,17 @@ pub enum ChildCallReasonCode {
 ///
 /// Allowed evaluations cite instance, assignment, approval, and artifact evidence; denied evaluations preserve the first missing or mismatched authority fact.
 pub struct ChildCallAuthorityEvaluation {
-    /// Evaluation identifier for this authority decision.
     pub evaluation_id: ChildCallEvaluationId,
-    /// Call being evaluated or authorized.
     pub call_id: CallId,
-    /// Decision identifier for authority and observation linkage.
     pub decision_id: DecisionId,
-    /// Child instance considered for execution.
     pub instance_id: Option<ChildInstanceId>,
-    /// Assignment identifier referenced by instances and evaluations.
     pub assignment_id: Option<ChildAssignmentId>,
-    /// Approval considered by the evaluation.
     pub approval_id: Option<ChildApprovalId>,
-    /// Artifact identifier that must match approvals, assignments, and instances.
     pub artifact_id: Option<ComponentArtifactId>,
-    /// Stable child name used in authority matching.
     pub child_name: Option<String>,
-    /// Allowed or denied outcome.
     pub verdict: ChildCallVerdict,
-    /// Typed reason for the verdict.
     pub reason_code: ChildCallReasonCode,
-    /// Policy revision under which this authority fact was issued.
     pub policy_revision: u64,
-    /// Observation recording this fact.
     pub observation_id: ObservationId,
 }
 
@@ -494,63 +372,39 @@ pub struct ChildCallAuthorityEvaluation {
 /// Adapters consume it when invoking the child; persisted state stores
 /// provenance facts instead of rehydrating this executable authority.
 pub struct AuthorizedChildInvocation {
-    /// Token identifier minted only when child authority succeeds.
     authorized_child_invocation_id: AuthorizedChildInvocationId,
-    /// Call being evaluated or authorized.
     call_id: CallId,
-    /// Evaluation identifier for this authority decision.
     evaluation_id: ChildCallEvaluationId,
-    /// Assignment identifier referenced by instances and evaluations.
     assignment_id: ChildAssignmentId,
-    /// Approval considered by the evaluation.
     approval_id: ChildApprovalId,
-    /// Artifact identifier that must match approvals, assignments, and instances.
     artifact_id: ComponentArtifactId,
-    /// Child instance authorized to execute the call.
     child_instance_id: ChildInstanceId,
-    /// Stable child name used in authority matching.
     child_name: String,
-    /// Decision that minted this authorization token.
     authority_decision_id: DecisionId,
-    /// Policy revision under which this capability was minted.
     policy_revision: u64,
-    /// Complete executing-Mother authority bound during snapshot route revalidation.
     local_execution_authority: Option<LocalExecutionAuthorityTokenV1>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Typed reason current Child effect authority was denied.
 pub enum ChildEffectAdmissionDenyV1 {
     /// The capability did not pass snapshot-sourced route minting.
     LocalAuthorityUnavailable,
-    /// The supplied call was not the exact authorized call.
     CallIdMismatch,
-    /// The effective deadline changed after minting.
     EffectiveDeadlineMismatch,
-    /// Current local Child policy identity differs from minted authority.
     PolicyAuthorityMismatch,
-    /// Current namespaced grants authority differs from minted authority.
     GrantsAuthorityMismatch,
     /// The executing Mother reached the exclusive deadline.
     Expired,
-    /// Exact artifact, approval, assignment, or instance authority is no longer current.
     ChildAuthorityMismatch,
 }
 
 #[derive(Debug)]
-/// Proof that a child invocation token is bound to the supplied call and fresh
-/// executing-Mother authority at an effect-admission boundary.
-///
-/// The constructor is private to [`AuthorizedChildInvocation::admit_effect_for_call`]
-/// so daemon effect paths cannot obtain this proof without performing both
-/// checks.
 pub struct AdmittedChildEffect<'a> {
     authorized: &'a AuthorizedChildInvocation,
 }
 
 impl AdmittedChildEffect<'_> {
-    /// Returns the capability whose exact-call binding was admitted.
     pub fn authorized(&self) -> &AuthorizedChildInvocation {
         self.authorized
     }
@@ -640,92 +494,69 @@ impl AuthorizedChildInvocation {
         (self.call_id == call.call_id).then_some(AdmittedChildEffect { authorized: self })
     }
 
-    /// Returns the token identifier minted for this single child invocation.
     pub fn authorized_child_invocation_id(&self) -> &AuthorizedChildInvocationId {
         &self.authorized_child_invocation_id
     }
 
-    /// Returns the call authorized for execution.
     pub fn call_id(&self) -> &CallId {
         &self.call_id
     }
 
-    /// Returns the evaluation that produced this capability.
     pub fn evaluation_id(&self) -> &ChildCallEvaluationId {
         &self.evaluation_id
     }
 
-    /// Returns the assignment whose active binding authorized the instance.
     pub fn assignment_id(&self) -> &ChildAssignmentId {
         &self.assignment_id
     }
 
-    /// Returns the approval that authorized the artifact.
     pub fn approval_id(&self) -> &ChildApprovalId {
         &self.approval_id
     }
 
-    /// Returns the verified artifact authorized for execution.
     pub fn artifact_id(&self) -> &ComponentArtifactId {
         &self.artifact_id
     }
 
-    /// Returns the child instance authorized to execute.
     pub fn child_instance_id(&self) -> &ChildInstanceId {
         &self.child_instance_id
     }
 
-    /// Returns the stable child name authorized for execution.
     pub fn child_name(&self) -> &str {
         &self.child_name
     }
 
-    /// Returns the decision that minted this capability.
     pub fn authority_decision_id(&self) -> &DecisionId {
         &self.authority_decision_id
     }
 
-    /// Returns the policy revision under which this capability was minted.
     pub fn policy_revision(&self) -> u64 {
         self.policy_revision
     }
 
-    /// Returns complete local authority when this token passed snapshot route revalidation.
     pub fn local_execution_authority(&self) -> Option<&LocalExecutionAuthorityTokenV1> {
         self.local_execution_authority.as_ref()
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Identifiers supplied for child call authority evaluation and token minting.
 pub struct ChildCallAuthorityIds {
-    /// Evaluation identifier for this authority decision.
     pub evaluation_id: ChildCallEvaluationId,
-    /// Decision identifier for authority and observation linkage.
     pub decision_id: DecisionId,
-    /// Observation recording this fact.
     pub observation_id: ObservationId,
-    /// Token identifier minted only when child authority succeeds.
     pub authorized_child_invocation_id: AuthorizedChildInvocationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Adapter-supplied facts naming the child instance and node requested for execution.
 pub struct ChildCallAuthorityRequest {
-    /// Child instance considered for execution.
     pub instance_id: ChildInstanceId,
-    /// Node constraint or requested execution node.
     pub node_id: MctNodeId,
-    /// Identifiers to stamp on the produced evaluation and token.
     pub ids: ChildCallAuthorityIds,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-/// Result of child call authority evaluation, including a token only on allow.
 pub struct ChildCallAuthorityResult {
-    /// Typed authority evaluation result.
     pub evaluation: ChildCallAuthorityEvaluation,
-    /// Executable child invocation token, present only on allow.
     pub authorized: Option<AuthorizedChildInvocation>,
 }
 
@@ -736,9 +567,6 @@ impl ChildCallAuthorityResult {
     }
 }
 
-/// Attempts a child lifecycle transition and records whether it was allowed.
-///
-/// The instance state changes only for transitions accepted by [`is_allowed_instance_transition`]; illegal transitions return the original instance with a denial transition record.
 pub fn transition_child_instance(
     instance: &ChildInstance,
     to_state: ChildInstanceState,
@@ -776,9 +604,6 @@ pub fn transition_child_instance(
     (next, transition)
 }
 
-/// Returns whether a lifecycle state change is valid for child instances.
-///
-/// The transition graph permits restart from stopped/failed through loading, readiness changes from loading/degraded, and drain/stop/fail paths; all other changes fail closed.
 pub fn is_allowed_instance_transition(
     from_state: ChildInstanceState,
     to_state: ChildInstanceState,
