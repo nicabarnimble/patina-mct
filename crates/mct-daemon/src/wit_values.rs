@@ -199,7 +199,8 @@ fn shape_from_type(ty: &Type, path: &str) -> ConvResult<ConversionShape> {
         Type::Flags(flags_ty) => {
             ConversionShape::Flags(flags_ty.names().map(|s| s.to_string()).collect())
         }
-        Type::Map(_)
+        Type::FixedLengthList(_)
+        | Type::Map(_)
         | Type::Own(_)
         | Type::Borrow(_)
         | Type::Future(_)
@@ -756,7 +757,12 @@ fn lift_component_val_to_json(value: &Val) -> ConvResult<Value> {
                 .map(serde_json::Value::String)
                 .collect(),
         ),
-        Val::Map(_) | Val::Resource(_) | Val::Future(_) | Val::Stream(_) | Val::ErrorContext(_) => {
+        Val::FixedLengthList(_)
+        | Val::Map(_)
+        | Val::Resource(_)
+        | Val::Future(_)
+        | Val::Stream(_)
+        | Val::ErrorContext(_) => {
             return Err(err(
                 ConversionErrorCode::UnsupportedType,
                 "unsupported component result type for JSON lift",
