@@ -4,7 +4,6 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
-/// Scope mode for a standing artifact source authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactSourceScopeMode {
@@ -14,7 +13,6 @@ pub enum ArtifactSourceScopeMode {
     ExplicitBroad,
 }
 
-/// Explicit artifact, publisher, namespace, and action source scope.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactSourceScope {
     /// Whether values are exact-only or may contain an explicit `*`.
@@ -25,30 +23,24 @@ pub struct ArtifactSourceScope {
     pub publisher_scope: Vec<String>,
     /// Exact WIT namespaces or explicit `*` values.
     pub namespace_scope: Vec<String>,
-    /// Actions admitted by this source record.
     pub allowed_actions: Vec<String>,
 }
 
-/// Current lifecycle state of a standing source authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactSourceAuthorityState {
-    /// Record has not become active.
     Pending,
     /// Record may be evaluated while current and in scope.
     Active,
     /// A later operator fact revoked the record.
     Revoked,
-    /// The record's time bound elapsed.
     Expired,
-    /// A later record superseded this one.
     Superseded,
 }
 
 /// Standing, scoped authority to trust claims from one artifact source.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactSourceAuthority {
-    /// Immutable source authority identifier.
     pub source_authority_id: ArtifactSourceAuthorityId,
     /// Credential-free canonical source reference.
     pub source_ref: String,
@@ -60,19 +52,14 @@ pub struct ArtifactSourceAuthority {
     pub provenance_policy_ref: Option<String>,
     /// Authenticated issuer principal reference.
     pub issuer_principal_ref: String,
-    /// Policy revision under which the record was issued.
     pub policy_revision: u64,
-    /// Current projected record state.
     pub authority_state: ArtifactSourceAuthorityState,
-    /// Issuance instant.
     pub issued_at: Timestamp,
     /// Mandatory expiry instant.
     pub expires_at: Timestamp,
-    /// Durable authority observation.
     pub authority_observation_id: ObservationId,
 }
 
-/// Current lifecycle state of an operator-pointed acquisition decision.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OperatorPointedAcquisitionState {
@@ -82,14 +69,12 @@ pub enum OperatorPointedAcquisitionState {
     Consumed,
     /// A later operator fact revoked the decision.
     Revoked,
-    /// The decision elapsed before use.
     Expired,
 }
 
 /// One artifact-specific operator-pointed source-trust decision.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OperatorPointedArtifactAcquisitionDecision {
-    /// Immutable decision identifier.
     pub decision_id: ArtifactAcquisitionDecisionId,
     /// Credential-free canonical source reference.
     pub source_ref: String,
@@ -101,21 +86,16 @@ pub struct OperatorPointedArtifactAcquisitionDecision {
     pub expected_digest: Option<String>,
     /// Authenticated issuer principal reference.
     pub issuer_principal_ref: String,
-    /// Policy revision under which the decision was made.
     pub policy_revision: u64,
     /// Current projected one-shot state.
     pub decision_state: OperatorPointedAcquisitionState,
-    /// Durable authority observation.
     pub authority_observation_id: ObservationId,
 }
 
-/// The source-trust path used by one acquisition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactAcquisitionAuthorityPath {
-    /// A current standing source record supplied source trust.
     StandingSource,
-    /// An artifact-specific operator decision supplied source trust.
     OperatorPointed,
 }
 
@@ -144,9 +124,7 @@ pub enum ArtifactVerificationOutcome {
 /// Immutable evidence for one attempted artifact acquisition.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactAcquisition {
-    /// Immutable acquisition identifier.
     pub acquisition_id: ArtifactAcquisitionId,
-    /// Source-trust path used by the attempt.
     pub authority_path: ArtifactAcquisitionAuthorityPath,
     /// Standing source id when that path was used.
     pub standing_source_authority_id: Option<ArtifactSourceAuthorityId>,
@@ -164,7 +142,6 @@ pub struct ArtifactAcquisition {
     pub observed_size_bytes: Option<u64>,
     /// Algorithm-tagged BLAKE3 digest when observed.
     pub observed_digest: Option<String>,
-    /// Source adapter outcome.
     pub acquisition_outcome: ArtifactAcquisitionOutcome,
     /// Independent verification outcome.
     pub verification_outcome: ArtifactVerificationOutcome,
@@ -200,11 +177,9 @@ pub struct FilesystemAcquisitionEffectAuthority {
 /// Claims evaluated before one filesystem acquisition effect.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArtifactAcquisitionAuthorityRequest {
-    /// Source reference requested from the adapter.
     pub source_ref: String,
     /// Claimed `name@version` identity.
     pub artifact: String,
-    /// Claimed publisher identity, when standing scope requires it.
     pub publisher: Option<String>,
     /// Expected digest supplied for this exact request.
     pub expected_digest: Option<String>,
@@ -212,11 +187,9 @@ pub struct ArtifactAcquisitionAuthorityRequest {
     pub authenticated_uid: u32,
     /// WIT namespaces claimed by the package.
     pub namespaces: Vec<String>,
-    /// Requested source action.
     pub action: String,
     /// Current policy revision.
     pub policy_revision: u64,
-    /// Evaluation instant.
     pub now: Timestamp,
     /// Acquisition attempt bound to the effect.
     pub attempt_id: ArtifactAcquisitionId,
@@ -224,7 +197,6 @@ pub struct ArtifactAcquisitionAuthorityRequest {
     pub authorized_id: AuthorizedArtifactAcquisitionId,
 }
 
-/// Typed denial class for acquisition authority evaluation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArtifactAcquisitionAuthorityReason {
     /// Source trust and effect authority both matched.
@@ -261,27 +233,22 @@ pub struct AuthorizedFilesystemArtifactAcquisition {
 }
 
 impl AuthorizedFilesystemArtifactAcquisition {
-    /// Returns the acquisition attempt bound to this capability.
     pub fn acquisition_id(&self) -> &ArtifactAcquisitionId {
         &self.acquisition_id
     }
 
-    /// Returns the exact canonical source bound to this capability.
     pub fn source_ref(&self) -> &str {
         &self.source_ref
     }
 
-    /// Returns the durable direct-operator effect authority reference.
     pub fn authority_ref(&self) -> &ObservationId {
         &self.authority_ref
     }
 
-    /// Returns the current policy revision at minting.
     pub fn policy_revision(&self) -> u64 {
         self.policy_revision
     }
 
-    /// Returns this one-shot capability identifier.
     pub fn authorized_id(&self) -> &AuthorizedArtifactAcquisitionId {
         &self.authorized_id
     }
@@ -306,7 +273,10 @@ pub fn evaluate_artifact_acquisition_authority(
     }
 
     let source_allowed = if let Some(source) = standing {
-        standing_source_allows(source, request)
+        request
+            .publisher
+            .as_deref()
+            .is_some_and(|publisher| standing_source_allows(source, request, publisher))
     } else if let Some(decision) = operator {
         decision.decision_state == OperatorPointedAcquisitionState::Active
             && decision.source_ref == request.source_ref
@@ -360,6 +330,7 @@ pub fn evaluate_artifact_acquisition_authority(
 fn standing_source_allows(
     source: &ArtifactSourceAuthority,
     request: &ArtifactAcquisitionAuthorityRequest,
+    publisher: &str,
 ) -> bool {
     source.authority_state == ArtifactSourceAuthorityState::Active
         && source.source_ref == request.source_ref
@@ -367,12 +338,13 @@ fn standing_source_allows(
         && source.issued_at <= request.now
         && source.expires_at > request.now
         && source.integrity_policy_ref == "sha256-sidecars-v1"
-        && scope_matches(&source.scope, request)
+        && scope_matches(&source.scope, request, publisher)
 }
 
 fn scope_matches(
     scope: &ArtifactSourceScope,
     request: &ArtifactAcquisitionAuthorityRequest,
+    publisher: &str,
 ) -> bool {
     if scope.artifact_scope.is_empty()
         || scope.publisher_scope.is_empty()
@@ -385,9 +357,6 @@ fn scope_matches(
         values.iter().any(|candidate| candidate == value)
             || (scope.scope_mode == ArtifactSourceScopeMode::ExplicitBroad
                 && values.iter().any(|candidate| candidate == "*"))
-    };
-    let Some(publisher) = request.publisher.as_deref() else {
-        return false;
     };
     permit(&scope.artifact_scope, &request.artifact)
         && permit(&scope.publisher_scope, publisher)
@@ -469,6 +438,18 @@ mod tests {
             evaluate_artifact_acquisition_authority(&request, None, Some(&operator), Some(&effect))
                 .authorized
                 .is_some()
+        );
+        let mut missing_publisher = request.clone();
+        missing_publisher.publisher = None;
+        assert_eq!(
+            evaluate_artifact_acquisition_authority(
+                &missing_publisher,
+                None,
+                Some(&operator),
+                Some(&effect)
+            )
+            .reason,
+            ArtifactAcquisitionAuthorityReason::Allowed
         );
         assert_eq!(
             evaluate_artifact_acquisition_authority(&request, None, Some(&operator), None).reason,
@@ -604,6 +585,18 @@ mod tests {
             evaluate_artifact_acquisition_authority(&request, Some(&source), None, Some(&effect()))
                 .authorized
                 .is_some()
+        );
+        let mut missing_publisher = request.clone();
+        missing_publisher.publisher = None;
+        assert_eq!(
+            evaluate_artifact_acquisition_authority(
+                &missing_publisher,
+                Some(&source),
+                None,
+                Some(&effect())
+            )
+            .reason,
+            ArtifactAcquisitionAuthorityReason::StandingSourceNotCurrentOrInScope
         );
         source.scope.publisher_scope.clear();
         assert!(
