@@ -4,35 +4,23 @@
 //! Wasmtime, storage, telemetry, or daemon implementation types in its public API.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 /// Admin-key grant facts and the route-scope check.
 pub mod admin_key;
-/// Artifact source, acquisition, and filesystem effect authority.
 pub mod artifact;
 /// Mother-owned, proof-gated local execution authority snapshots.
 pub mod authority;
-/// Call records, JSON edge validation, and call protocol admission decisions.
 pub mod call;
-/// Child artifact, approval, assignment, lifecycle, and invocation authority.
 pub mod child;
-/// Typed validation and JSON edge errors for malformed kernel inputs.
 pub mod error;
 /// Shared Child and admin-key grant check.
 pub mod grant_check;
-/// Opaque string identifiers and RFC3339 timestamps used by domain records.
 pub mod id;
-/// Observation records and projections from decisions into ledger facts.
 pub mod observation;
-/// Peer binding, hello negotiation, and ALPN admission decisions.
 pub mod peer;
-/// Route candidate filtering and execution-time revalidation authority.
 pub mod route;
-/// Canonical toy contracts, grants, and toy-call authorization tokens.
 pub mod toy;
-/// Standing trigger authority, occurrence identity, and admission policy.
 pub mod trigger;
-/// Scoped Child watch authority, event evidence, and call-out identities.
 pub mod watch;
 
 pub use admin_key::{
@@ -157,7 +145,6 @@ pub use watch::{
     validate_safe_watch_relative_path,
 };
 
-/// Returns the crate version for health and smoke tests.
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }

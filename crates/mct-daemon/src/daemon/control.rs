@@ -3782,7 +3782,7 @@ listens = []
             paths.clone(),
             ledger.clone(),
             request.clone(),
-            crate::resident::ResidentPayloadIngress::remote(None),
+            crate::resident::ResidentPayloadIngress::local(None),
         )
         .await;
         assert_eq!(before.outcome, CallProtocolOutcome::Completed);
@@ -3807,7 +3807,7 @@ listens = []
             paths,
             ledger.clone(),
             request,
-            crate::resident::ResidentPayloadIngress::remote(None),
+            crate::resident::ResidentPayloadIngress::local(None),
         )
         .await;
         assert_eq!(after.outcome, CallProtocolOutcome::Denied);
@@ -3864,8 +3864,8 @@ listens = []
         );
         let request = MctArtifactStageRequest {
             source_root: source,
-            manifest_path: PathBuf::from("child.toml"),
-            component_path: PathBuf::from("child.wasm"),
+            manifest_path: MctRootRelativePath::new("child.toml").unwrap(),
+            component_path: Some(MctRootRelativePath::new("child.wasm").unwrap()),
             claimed_child_name: "fixture".into(),
             claimed_artifact_version: "1.0.0".into(),
             expected_digest: None,
@@ -3946,8 +3946,8 @@ listens = []
 
         let request = MctArtifactStageRequest {
             source_root,
-            manifest_path: PathBuf::from("child.toml"),
-            component_path: PathBuf::from("resident-echo.wasm"),
+            manifest_path: MctRootRelativePath::new("child.toml").unwrap(),
+            component_path: Some(MctRootRelativePath::new("resident-echo.wasm").unwrap()),
             claimed_child_name: "resident-echo".into(),
             claimed_artifact_version: "0.1.0".into(),
             expected_digest: None,
@@ -4010,8 +4010,8 @@ listens = []
         );
         let request = MctArtifactStageRequest {
             source_root: source,
-            manifest_path: PathBuf::from("slate-manager.toml"),
-            component_path: PathBuf::from("slate-manager.wasm"),
+            manifest_path: MctRootRelativePath::new("slate-manager.toml").unwrap(),
+            component_path: Some(MctRootRelativePath::new("slate-manager.wasm").unwrap()),
             claimed_child_name: "slate-manager".into(),
             claimed_artifact_version: "0.2.0".into(),
             expected_digest: None,
@@ -4174,12 +4174,16 @@ listens = []
             scope_mode: WatchScopeMode::ExplicitBroad,
             canonical_root_ref: "file:///tmp/legacy-watch".into(),
             traversal_scope: WatchTraversalScope::Recursive,
-            event_classes: vec![WatchEventClass::Created, WatchEventClass::Deleted],
+            event_classes: mct_kernel::watch::WatchEventClasses::new(vec![
+                WatchEventClass::Created,
+                WatchEventClass::Deleted,
+            ])
+            .unwrap(),
             max_events_per_batch: 19,
             coalescing_policy: WatchCoalescingPolicy::LastPerPath,
             starts_at: Timestamp::new("2026-08-05T12:00:00Z").unwrap(),
             expires_at: Timestamp::new("2026-08-05T13:00:00Z").unwrap(),
-            scope_revision: 1,
+            scope_revision: std::num::NonZeroU64::MIN,
             policy_revision: 3,
             authority_state: WatchObservationScopeState::Active,
             authority_observation_id: ObservationId::new("obs-legacy-watch").unwrap(),
@@ -4198,7 +4202,6 @@ listens = []
         );
     }
 
-    /// Phase I proof 1: every D-R2.7 mutation surface commits one fact and generation.
     #[tokio::test]
     async fn authority_mutation_surface_matrix_commits_exactly_one_fact_and_generation() {
         let dir = tempfile::tempdir().unwrap();
@@ -4428,7 +4431,6 @@ listens = []
         ledger.close().await;
     }
 
-    /// Phase I proof 2: every Watch surface suppresses all legacy rows on commit failure.
     #[tokio::test]
     async fn watch_surfaces_leave_legacy_rows_unchanged_without_acknowledged_commit() {
         #[derive(Clone, Copy, Debug)]
@@ -4502,7 +4504,7 @@ listens = []
                     traversal_scope: WatchTraversalScope::Recursive,
                     event_classes: vec![WatchEventClass::Created],
                     max_events_per_batch: 8,
-                    coalescing_policy: WatchCoalescingPolicy::None,
+                    coalescing_policy: WatchCoalescingPolicy::RetainAll,
                     starts_at: Timestamp::new("2026-08-05T12:00:00Z").unwrap(),
                     expires_at: Timestamp::new("2026-08-05T13:00:00Z").unwrap(),
                 };
@@ -4723,7 +4725,6 @@ listens = []
         assert!(!locked_state.exists());
     }
 
-    /// Phase H2 proof 8: owner-gated import is canonical, one-time, and blocks unimported mutation.
     #[tokio::test]
     async fn operator_imports_legacy_toy_authority_once_before_enveloped_mutation() {
         let dir = tempfile::tempdir().unwrap();

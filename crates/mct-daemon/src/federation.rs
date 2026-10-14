@@ -145,7 +145,7 @@ pub fn hello_capability_view_from_federation_view(
                 runtime_kind: surface.runtime_kind,
                 vision_id: surface.vision_id.clone(),
                 policy_revision: surface.policy_revision,
-                visibility: surface.visibility.clone(),
+                visibility: surface.visibility.clone().into(),
             })
             .collect(),
         capability_view_ref: None,
@@ -290,7 +290,6 @@ mod tests {
         assert!(view.callable_surfaces.is_empty());
     }
 
-    /// Covers `CapabilityPublicationRelationship.HonestLocalExecutionOffer`.
     #[test]
     fn honest_local_execution_offer_excludes_approved_assigned_non_ready_child() {
         let mut config = MctDaemonConfig::default();

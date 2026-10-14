@@ -1,5 +1,3 @@
-//! Authenticated UDS application-call translation into the resident pipeline.
-
 use super::*;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::{Deserialize, Serialize};

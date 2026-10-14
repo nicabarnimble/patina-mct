@@ -71,7 +71,7 @@ open question "Confirm the one-sentence product statement for MCT."
 -- Decision: MCT is a whole-app, local-first Mother/Child/Toy runtime: a Mother carries local authority, observation ledger, child runtime, ToyGrant checks, and peer protocols in the same deployable node instead of treating a hidden SaaS backend as the source of truth.
 -- Decision: Iroh supplies the public-key-addressed connectivity substrate for whole-app nodes; MCT supplies the application/runtime/authority layer above that substrate.
 -- Decision: Managed or hosted infrastructure may improve relay, metrics, diagnostics, and support, but it must remain optional infrastructure rather than the MCT authority root.
--- Decision: Multi-Mother exists primarily to share selected data and compute across nodes under explicit Mother authority.
+-- Decision: Multi-Mother with per-Mother ledgers is future scale work, not planned now.
 -- Decision: MCT should choose the fastest authorized execution path for a task, not always send compute to data or data to compute.
 -- Decision: Path choice is environment-aware: node capability, hardware class, locality, network conditions, data size, secret/data authority, and child/toy availability all matter.
 -- Decision: Example distinction: a Raspberry Pi and a Mac Studio may both be Mothers, but routing should account for their different compute, storage, network, and device/locality roles.
