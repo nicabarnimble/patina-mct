@@ -1732,7 +1732,7 @@ pub fn apply_authority_changes(
                 let scope_id = scope.watch_scope_id.to_string();
                 match state.watch_scopes.get(&scope_id) {
                     None => {
-                        if scope.scope_revision != 1
+                        if scope.scope_revision.get() != 1
                             || scope.authority_state != WatchObservationScopeState::Active
                         {
                             return Err(AuthorityReplayError::Incoherent {
@@ -1749,7 +1749,9 @@ pub fn apply_authority_changes(
                                     .into(),
                             });
                         }
-                        if current.scope_revision.checked_add(1) != Some(scope.scope_revision) {
+                        if current.scope_revision.get().checked_add(1)
+                            != Some(scope.scope_revision.get())
+                        {
                             return Err(AuthorityReplayError::Incoherent {
                                 sequence: 0,
                                 detail: "Watch scope revision is not exactly prior plus one".into(),
@@ -3840,15 +3842,16 @@ mod tests {
             scope_mode: mct_kernel::WatchScopeMode::Constrained,
             canonical_root_ref: "file:///tmp/canonical-watch".into(),
             traversal_scope: mct_kernel::WatchTraversalScope::Recursive,
-            event_classes: vec![
+            event_classes: mct_kernel::watch::WatchEventClasses::new(vec![
                 mct_kernel::WatchEventClass::Created,
                 mct_kernel::WatchEventClass::Modified,
-            ],
+            ])
+            .unwrap(),
             max_events_per_batch: 17,
             coalescing_policy: mct_kernel::WatchCoalescingPolicy::LastPerPath,
             starts_at: Timestamp::new("2026-08-05T12:00:00Z").unwrap(),
             expires_at: Timestamp::new("2026-08-05T13:00:00Z").unwrap(),
-            scope_revision: 1,
+            scope_revision: std::num::NonZeroU64::MIN,
             policy_revision: 9,
             authority_state: mct_kernel::WatchObservationScopeState::Active,
             authority_observation_id: ObservationId::new("obs-watch-scope-canonical").unwrap(),
@@ -3884,7 +3887,7 @@ mod tests {
             AuthorityMutationResultV1::CommittedProjectionPending { .. }
         ));
         let mut revoked = scope.clone();
-        revoked.scope_revision = 2;
+        revoked.scope_revision = std::num::NonZeroU64::new(2).unwrap();
         revoked.authority_state = mct_kernel::WatchObservationScopeState::Revoked;
         revoked.authority_observation_id =
             ObservationId::new("obs-watch-scope-canonical-revoked").unwrap();
