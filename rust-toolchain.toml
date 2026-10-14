@@ -1,3 +1,8 @@
+# Cargo in CI already selects this file over the rustup default. The workflow
+# ref dtolnay/rust-toolchain@stable installs current stable as that default
+# (rustc 1.99.0, 2026-09-28, in the latest Tier 1 log) and this pin overrides
+# it to 1.96.0. The workflow installs dtolnay/rust-toolchain@1.96.0 so the
+# action and this file are the same compiler.
 [toolchain]
 channel = "1.96.0"
 components = ["rustfmt", "clippy"]
