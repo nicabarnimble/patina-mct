@@ -771,7 +771,7 @@ mod tests {
             known("occurrence-3", "2026-07-21T12:00:03Z"),
         ];
         let skipped = evaluate_missed_fire_policy(&id, 1, MissedFirePolicy::Skip, &occurrences, 2);
-        assert!(skipped.candidates.is_empty());
+        assert_eq!(skipped.candidates, Vec::new());
         assert_eq!(skipped.terminal[0].represented_set.count, 3);
 
         let coalesced =

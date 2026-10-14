@@ -7,7 +7,8 @@
 
 use mct_kernel::admin_key_grant_shape_error;
 pub use mct_kernel::{
-    AdminKeyGrantClassV1, AdminKeyGrantStateV1, AdminKeyGrantV1, AdminKeyScopeV1,
+    AdminKeyGrantClassV1, AdminKeyGrantStateV1, AdminKeyGrantV1, AdminKeyPublicHalf,
+    AdminKeyScopeV1,
 };
 use mct_kernel::{
     CallId, CanonicalToyContract, MctObservation, ObservationId, ObservationKind,
@@ -119,8 +120,8 @@ pub enum GrantShapingSourceV1 {
         authority_observation_id: String,
     },
     /// An admin key shaped the mutation. Mother remains the only grantor.
-    /// The value is the public half; the secret is not a shaping field.
-    AdminKey { public_half: String },
+    /// The value is the public half. Raw key material cannot be represented.
+    AdminKey { public_half: AdminKeyPublicHalf },
 }
 
 /// Single-use pairing ticket. The ledger stores the hash, not the ticket.
@@ -1676,7 +1677,9 @@ fn authority_change_sort_key(change: &AuthorityChangeV1) -> (&'static str, &str)
 
 fn grant_shaping_source_is_complete(source: &GrantShapingSourceV1) -> bool {
     match source {
-        GrantShapingSourceV1::AdminKey { public_half } => non_empty_token(public_half),
+        GrantShapingSourceV1::AdminKey { public_half } => {
+            mct_kernel::admin_key_public_half_error(public_half.as_str()).is_none()
+        }
         GrantShapingSourceV1::OperatorDecision { .. }
         | GrantShapingSourceV1::ChildApproval { .. }
         | GrantShapingSourceV1::ChildAssignment { .. } => true,
@@ -4546,16 +4549,69 @@ mod tests {
         assert!(matches!(result, Err(ObservationLedgerError::Io { .. })));
     }
 
+    fn assert_pending_commit(
+        result: &AuthorityMutationResultV1,
+        mutation_id: &str,
+        fact_sequence: u64,
+        ledger: &JsonlObservationLedger,
+    ) {
+        match result {
+            AuthorityMutationResultV1::CommittedProjectionPending {
+                mutation_id: committed_id,
+                resolution,
+                fact_sequence: committed_sequence,
+                fact_entry_hash,
+                grants_authority,
+                pending_reason,
+            } => {
+                assert_eq!(committed_id, mutation_id);
+                assert_eq!(*resolution, AuthorityMutationResolutionV1::NewlyCommitted);
+                assert_eq!(*committed_sequence, fact_sequence);
+                assert_eq!(
+                    *pending_reason,
+                    AuthorityProjectionPendingReasonV1::ProjectionNotAttempted
+                );
+                let entry = ledger
+                    .entries()
+                    .expect("ledger entries")
+                    .into_iter()
+                    .find(|entry| entry.local_sequence == fact_sequence)
+                    .expect("committed sequence");
+                assert_eq!(fact_entry_hash, &entry.entry_hash);
+                assert_eq!(grants_authority.mother_node_id, "mother-a");
+                assert_eq!(grants_authority.generation, fact_sequence);
+                assert_eq!(
+                    grants_authority.source_authority_observation_id,
+                    format!("obs:authority-mutation:{mutation_id}")
+                );
+                assert_eq!(
+                    grants_authority.authority_epoch,
+                    ledger
+                        .authority_tenure()
+                        .expect("tenure")
+                        .fact
+                        .resulting_authority
+                        .authority_epoch
+                );
+            }
+            other => panic!("expected pending commit of {mutation_id}, got {other:?}"),
+        }
+    }
+
+    fn half(value: &str) -> AdminKeyPublicHalf {
+        AdminKeyPublicHalf::new(value).expect("public half")
+    }
+
     fn admin_key_source(public_half: &str) -> GrantShapingSourceV1 {
         GrantShapingSourceV1::AdminKey {
-            public_half: public_half.into(),
+            public_half: half(public_half),
         }
     }
 
     fn day_to_day_admin_grant() -> AdminKeyGrantV1 {
         AdminKeyGrantV1 {
             grant_id: "day-to-day".into(),
-            public_half: "public-half-day".into(),
+            public_half: half("public-half-day"),
             class: AdminKeyGrantClassV1::DayToDay,
             scopes: vec![AdminKeyScopeV1::KeyManage, AdminKeyScopeV1::Status],
             expires_at: Some(Timestamp::new("2026-10-14T00:00:00Z").unwrap()),
@@ -4566,7 +4622,7 @@ mod tests {
     fn recovery_admin_grant() -> AdminKeyGrantV1 {
         AdminKeyGrantV1 {
             grant_id: "recovery".into(),
-            public_half: "public-half-recovery".into(),
+            public_half: half("public-half-recovery"),
             class: AdminKeyGrantClassV1::Recovery,
             scopes: vec![AdminKeyScopeV1::KeyManage, AdminKeyScopeV1::StartupGate],
             expires_at: None,
@@ -4613,33 +4669,35 @@ mod tests {
             ],
             admin_key_source("public-half-recovery"),
         );
-        assert!(matches!(
-            result,
-            AuthorityMutationResultV1::CommittedProjectionPending { .. }
-        ));
+        assert_pending_commit(&result, "admin-grants", 1, &ledger);
 
         let replay = replay_authority_entries(&ledger.entries().unwrap()).unwrap();
         let replayed_day = replay.state.admin_key_grants.get("day-to-day").unwrap();
         let replayed_recovery = replay.state.admin_key_grants.get("recovery").unwrap();
         assert_eq!(replayed_day, &day);
         assert_eq!(replayed_recovery, &recovery);
-        assert_eq!(replayed_day.public_half, "public-half-day");
-        assert!(replayed_day.expires_at.is_some());
-        assert!(replayed_recovery.expires_at.is_none());
         assert_eq!(
-            replayed_recovery.scopes,
-            vec![AdminKeyScopeV1::KeyManage, AdminKeyScopeV1::StartupGate]
+            serde_json::to_value(replayed_day).unwrap(),
+            serde_json::json!({
+                "grant_id": "day-to-day",
+                "public_half": "public-half-day",
+                "class": "day_to_day",
+                "scopes": ["key_manage", "status"],
+                "expires_at": "2026-10-14T00:00:00Z",
+                "grant_state": "active"
+            })
         );
-        let day_json = serde_json::to_value(replayed_day).unwrap();
-        let recovery_json = serde_json::to_value(replayed_recovery).unwrap();
-        for value in [&day_json, &recovery_json] {
-            assert!(value.get("secret").is_none());
-            assert!(value.get("private_key").is_none());
-            assert!(value.get("fingerprint").is_none());
-            assert!(value.get("public_half").is_some());
-        }
-        assert!(recovery_json.get("expires_at").is_none());
-        assert!(matches!(
+        assert_eq!(
+            serde_json::to_value(replayed_recovery).unwrap(),
+            serde_json::json!({
+                "grant_id": "recovery",
+                "public_half": "public-half-recovery",
+                "class": "recovery",
+                "scopes": ["key_manage", "startup_gate"],
+                "grant_state": "active"
+            })
+        );
+        assert_eq!(
             replay
                 .mutations
                 .get("admin-grants")
@@ -4647,8 +4705,8 @@ mod tests {
                 .fact
                 .grant_shaping_sources
                 .as_slice(),
-            [GrantShapingSourceV1::AdminKey { public_half }] if public_half == "public-half-recovery"
-        ));
+            &[admin_key_source("public-half-recovery")]
+        );
     }
 
     /// A pairing ticket is a hash. Replay rejects a second consume of that hash.
@@ -4667,10 +4725,7 @@ mod tests {
             }],
             admin_key_source("public-half-day"),
         );
-        assert!(matches!(
-            issued,
-            AuthorityMutationResultV1::CommittedProjectionPending { .. }
-        ));
+        assert_pending_commit(&issued, "ticket-issue", 1, &ledger);
         let consumed = commit_authority(
             &mut ledger,
             "ticket-consume",
@@ -4679,16 +4734,17 @@ mod tests {
             }],
             admin_key_source("public-half-day"),
         );
-        assert!(matches!(
-            consumed,
-            AuthorityMutationResultV1::CommittedProjectionPending { .. }
-        ));
+        assert_pending_commit(&consumed, "ticket-consume", 2, &ledger);
 
         let entries = ledger.entries().unwrap();
         let replay = replay_authority_entries(&entries).unwrap();
-        let ticket = replay.state.pairing_tickets.get(ticket_hash).unwrap();
-        assert_eq!(ticket.state, PairingTicketStateV1::Consumed);
-        assert_eq!(ticket.ticket_hash, ticket_hash);
+        assert_eq!(
+            replay.state.pairing_tickets.get(ticket_hash),
+            Some(&PairingTicketV1 {
+                ticket_hash: ticket_hash.into(),
+                state: PairingTicketStateV1::Consumed,
+            })
+        );
 
         let before = std::fs::read(&path).unwrap();
         let second = commit_authority(
@@ -4699,13 +4755,13 @@ mod tests {
             }],
             admin_key_source("public-half-day"),
         );
-        assert!(matches!(
+        assert_eq!(
             second,
             AuthorityMutationResultV1::RejectedBeforeCommit {
+                mutation_id: "ticket-consume-again".into(),
                 reason: AuthorityMutationRejectionReasonV1::InvalidRequest,
-                ..
             }
-        ));
+        );
         assert_eq!(std::fs::read(&path).unwrap(), before);
         let replay_after_reject = replay_authority_entries(&ledger.entries().unwrap()).unwrap();
         assert_eq!(
@@ -4721,11 +4777,9 @@ mod tests {
         let mut duplicated = entries;
         duplicated.push(duplicated.last().unwrap().clone());
         let replay_error = replay_authority_entries(&duplicated).unwrap_err();
-        assert!(
-            replay_error
-                .to_string()
-                .contains("pairing ticket hash was already consumed"),
-            "{replay_error}"
+        assert_eq!(
+            replay_error.to_string(),
+            "canonical authority fact is incoherent at sequence 2: canonical authority fact is incoherent at sequence 0: pairing ticket hash was already consumed"
         );
     }
 
@@ -4749,10 +4803,7 @@ mod tests {
             ],
             admin_key_source("public-half-recovery"),
         );
-        assert!(matches!(
-            granted,
-            AuthorityMutationResultV1::CommittedProjectionPending { .. }
-        ));
+        assert_pending_commit(&granted, "admin-grants", 1, &ledger);
 
         let before = std::fs::read(&path).unwrap();
         let revoke = commit_authority(
@@ -4763,13 +4814,13 @@ mod tests {
             }],
             admin_key_source("public-half-day"),
         );
-        assert!(matches!(
+        assert_eq!(
             revoke,
             AuthorityMutationResultV1::RejectedBeforeCommit {
+                mutation_id: "revoke-recovery".into(),
                 reason: AuthorityMutationRejectionReasonV1::InvalidRequest,
-                ..
             }
-        ));
+        );
         assert_eq!(std::fs::read(&path).unwrap(), before);
 
         let entries = ledger.entries().unwrap();
@@ -4777,7 +4828,7 @@ mod tests {
         let recovery = replay.state.admin_key_grants.get("recovery").unwrap();
         assert_eq!(recovery.grant_state, AdminKeyGrantStateV1::Active);
         assert_eq!(recovery.class, AdminKeyGrantClassV1::Recovery);
-        assert_eq!(recovery.public_half, "public-half-recovery");
+        assert_eq!(recovery, &recovery_admin_grant());
 
         let fact_id = "obs:authority-mutation:revoke-recovery";
         let fact = AuthorityMutationFactV1 {
@@ -4818,11 +4869,9 @@ mod tests {
         let mut with_revoke = entries;
         with_revoke.push(revoked_entry);
         let replay_error = replay_authority_entries(&with_revoke).unwrap_err();
-        assert!(
-            replay_error
-                .to_string()
-                .contains("recovery grant cannot be revoked"),
-            "{replay_error}"
+        assert_eq!(
+            replay_error.to_string(),
+            "canonical authority fact is incoherent at sequence 1: canonical authority fact is incoherent at sequence 0: recovery grant cannot be revoked"
         );
     }
 
@@ -4830,9 +4879,26 @@ mod tests {
     #[test]
     fn replayed_admin_grants_keep_recovery_locked_and_day_to_day_expiry() {
         use mct_kernel::{
-            AdminKeyCheckAction, AdminKeyGrantCheckRequest, AdminKeyGrantReason, AdminKeyScopeV1,
-            evaluate_admin_key_grant,
+            AdminKeyCheckAction, AdminKeyGrantCheckRequest, AdminKeyGrantCheckResult,
+            AdminKeyGrantReason, AdminKeyGrantVerdict, AdminKeyScopeV1, evaluate_admin_key_grant,
         };
+
+        fn allow(grant_id: &str, scope: AdminKeyScopeV1) -> AdminKeyGrantCheckResult {
+            AdminKeyGrantCheckResult {
+                verdict: AdminKeyGrantVerdict::Allowed,
+                reason: AdminKeyGrantReason::ActiveGrant,
+                grant_id: Some(grant_id.to_owned()),
+                admitted_scope: Some(scope),
+            }
+        }
+        fn deny(reason: AdminKeyGrantReason, grant_id: Option<&str>) -> AdminKeyGrantCheckResult {
+            AdminKeyGrantCheckResult {
+                verdict: AdminKeyGrantVerdict::Denied,
+                reason,
+                grant_id: grant_id.map(str::to_owned),
+                admitted_scope: None,
+            }
+        }
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("observations.jsonl");
@@ -4854,10 +4920,11 @@ mod tests {
         let replay = replay_authority_entries(&ledger.entries().unwrap()).unwrap();
         let grants: Vec<_> = replay.state.admin_key_grants.values().cloned().collect();
         let generation = replay.current_authority.unwrap().generation;
+        assert_eq!(generation, 1);
         let check = |public_half: &str, action: AdminKeyCheckAction| {
             evaluate_admin_key_grant(
                 &AdminKeyGrantCheckRequest {
-                    public_half: public_half.into(),
+                    public_half: half(public_half),
                     action,
                     now: Timestamp::new("2026-08-06T12:00:00Z").unwrap(),
                     presented_generation: generation,
@@ -4867,56 +4934,56 @@ mod tests {
             )
         };
 
-        assert!(
+        assert_eq!(
             check(
                 "public-half-day",
                 AdminKeyCheckAction::Route(AdminKeyScopeV1::Status),
-            )
-            .is_allowed()
+            ),
+            allow("day-to-day", AdminKeyScopeV1::Status)
         );
         assert_eq!(
             check(
                 "public-half-day",
                 AdminKeyCheckAction::Route(AdminKeyScopeV1::StartupGate),
-            )
-            .reason,
-            AdminKeyGrantReason::WrongScope
+            ),
+            deny(AdminKeyGrantReason::WrongScope, Some("day-to-day"))
         );
-        assert!(
+        assert_eq!(
             check(
                 "public-half-recovery",
                 AdminKeyCheckAction::Route(AdminKeyScopeV1::StartupGate),
-            )
-            .is_allowed()
+            ),
+            allow("recovery", AdminKeyScopeV1::StartupGate)
         );
         assert_eq!(
             check(
                 "public-half-recovery",
                 AdminKeyCheckAction::Route(AdminKeyScopeV1::Status),
-            )
-            .reason,
-            AdminKeyGrantReason::WrongScope
+            ),
+            deny(AdminKeyGrantReason::WrongScope, Some("recovery"))
         );
-        let locked = check(
-            "public-half-day",
-            AdminKeyCheckAction::Revoke {
-                target_grant_id: "recovery".into(),
-            },
+        assert_eq!(
+            check(
+                "public-half-day",
+                AdminKeyCheckAction::Revoke {
+                    target_grant_id: "recovery".into(),
+                },
+            ),
+            deny(AdminKeyGrantReason::RecoveryGrantLocked, Some("recovery"))
         );
-        assert_eq!(locked.reason, AdminKeyGrantReason::RecoveryGrantLocked);
-        assert!(!locked.is_allowed());
-
-        let expired = evaluate_admin_key_grant(
-            &AdminKeyGrantCheckRequest {
-                public_half: "public-half-day".into(),
-                action: AdminKeyCheckAction::Route(AdminKeyScopeV1::Status),
-                now: Timestamp::new("2026-10-14T00:00:00Z").unwrap(),
-                presented_generation: generation,
-                current_generation: generation,
-            },
-            &grants,
+        assert_eq!(
+            evaluate_admin_key_grant(
+                &AdminKeyGrantCheckRequest {
+                    public_half: half("public-half-day"),
+                    action: AdminKeyCheckAction::Route(AdminKeyScopeV1::Status),
+                    now: Timestamp::new("2026-10-14T00:00:00Z").unwrap(),
+                    presented_generation: generation,
+                    current_generation: generation,
+                },
+                &grants,
+            ),
+            deny(AdminKeyGrantReason::ExpiredGrant, Some("day-to-day"))
         );
-        assert_eq!(expired.reason, AdminKeyGrantReason::ExpiredGrant);
     }
 
     /// Existing toy-grant replay still succeeds beside the admin-key facts.
@@ -4930,15 +4997,19 @@ mod tests {
             .execute_authority_mutation(authority_mutation_request("toy-grant-replay"), |_| {
                 Ok(None)
             });
-        assert!(matches!(
-            result,
-            AuthorityMutationResultV1::CommittedProjectionPending { .. }
-        ));
+        assert_pending_commit(&result, "toy-grant-replay", 1, &ledger);
         let replay = replay_authority_entries(&ledger.entries().unwrap()).unwrap();
-        assert_eq!(replay.state.toy_grants.len(), 1);
-        assert!(replay.state.toy_grants.contains_key("grant-a"));
-        assert!(replay.state.admin_key_grants.is_empty());
-        assert!(replay.state.pairing_tickets.is_empty());
+        let grant = replay.state.toy_grants.get("grant-a").unwrap();
+        assert_eq!(grant.grant_id.as_str(), "grant-a");
+        assert_eq!(grant.toy_id.as_str(), "toy-a");
+        assert_eq!(grant.subject.child_name, "child-a");
+        assert_eq!(grant.scope.allowed_actions, vec!["run".to_owned()]);
+        assert_eq!(grant.scope.resource_id.as_deref(), Some("resource-a"));
+        assert_eq!(grant.grant_state, ToyGrantState::Active);
+        assert_eq!(grant.issuer_id, "mother-a");
+        assert_eq!(grant.grants_revision, 1);
+        assert_eq!(replay.state.admin_key_grants, BTreeMap::new());
+        assert_eq!(replay.state.pairing_tickets, BTreeMap::new());
         assert_eq!(replay.current_authority.unwrap().generation, 1);
     }
 }

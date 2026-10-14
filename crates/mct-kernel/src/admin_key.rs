@@ -7,7 +7,8 @@
 
 use crate::grant_check::{ExpiryDecision, ExpiryRequirement, action_is_allowed, expiry_decision};
 use crate::id::Timestamp;
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// Route scope named on an admin-key grant.
 ///
@@ -115,14 +116,67 @@ pub enum AdminKeyGrantStateV1 {
     Revoked,
 }
 
+/// Public half of an admin key.
+///
+/// The secret and any armored raw key are not representable. Hex and other
+/// unarmored public halves stay. A Child that deserializes a grant or a
+/// shaping source therefore cannot receive raw key material through this type.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct AdminKeyPublicHalf(String);
+
+impl AdminKeyPublicHalf {
+    /// Accepts one non-empty public half.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `value` is empty, contains whitespace, or is
+    /// armored raw key material such as a private-key PEM.
+    pub fn new(value: impl AsRef<str>) -> Result<Self, &'static str> {
+        let value = value.as_ref();
+        if let Some(error) = admin_key_public_half_error(value) {
+            return Err(error);
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    /// Returns the public half text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for AdminKeyPublicHalf {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::new(value).map_err(D::Error::custom)
+    }
+}
+
+/// Why a public-half string is not admissible.
+///
+/// `None` means the text is a public half, not a secret and not raw key material.
+pub fn admin_key_public_half_error(value: &str) -> Option<&'static str> {
+    if !non_empty_token(value) {
+        return Some("admin key grant stores only a non-empty public half");
+    }
+    if public_half_is_raw_key(value) {
+        return Some("admin key grant stores a public half, not raw key material");
+    }
+    None
+}
+
 /// Ledger fact for one admin key. Mother stores the public half only.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdminKeyGrantV1 {
     /// Stable grant identifier.
     pub grant_id: String,
-    /// Public half. The secret is not a field of this fact.
-    pub public_half: String,
+    /// Public half. Raw key material cannot be stored in this field.
+    pub public_half: AdminKeyPublicHalf,
     /// Day-to-day or recovery.
     pub class: AdminKeyGrantClassV1,
     /// Route scopes, strictly ordered and non-empty.
@@ -141,8 +195,8 @@ pub fn admin_key_grant_shape_error(grant: &AdminKeyGrantV1) -> Option<&'static s
     if !non_empty_token(&grant.grant_id) {
         return Some("admin key grant id is empty");
     }
-    if !non_empty_token(&grant.public_half) {
-        return Some("admin key grant stores only a non-empty public half");
+    if let Some(error) = admin_key_public_half_error(grant.public_half.as_str()) {
+        return Some(error);
     }
     if !admin_key_scopes_are_canonical(&grant.scopes) {
         return Some("admin key scopes are empty or not strictly ordered");
@@ -187,8 +241,8 @@ pub enum AdminKeyCheckAction {
 /// Facts for one admin-key grant check.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AdminKeyGrantCheckRequest {
-    /// Presented public half. A secret is not accepted here.
-    pub public_half: String,
+    /// Presented public half. A secret cannot be represented here.
+    pub public_half: AdminKeyPublicHalf,
     /// Route scope, or a revoke of one grant.
     pub action: AdminKeyCheckAction,
     /// Mother clock used for mandatory day-to-day expiry.
@@ -269,7 +323,7 @@ pub fn evaluate_admin_key_grant(
     if request.presented_generation != request.current_generation {
         return deny(AdminKeyGrantReason::StaleGeneration, None);
     }
-    if !non_empty_token(&request.public_half) {
+    if admin_key_public_half_error(request.public_half.as_str()).is_some() {
         return deny(AdminKeyGrantReason::WrongKey, None);
     }
 
@@ -318,7 +372,7 @@ fn decide_route(
 fn decide_revoke(
     presenter: &AdminKeyGrantCheckResult,
     grants: &[AdminKeyGrantV1],
-    presenter_public_half: &str,
+    presenter_public_half: &AdminKeyPublicHalf,
     target_grant_id: &str,
 ) -> AdminKeyGrantCheckResult {
     let Some(presenter_grant_id) = presenter.grant_id.clone() else {
@@ -336,7 +390,7 @@ fn decide_revoke(
             Some(target.grant_id.clone()),
         );
     }
-    if target.public_half == presenter_public_half {
+    if &target.public_half == presenter_public_half {
         return deny(
             AdminKeyGrantReason::PolicyDenied,
             Some(target.grant_id.clone()),
@@ -456,6 +510,23 @@ fn non_empty_token(value: &str) -> bool {
     !value.is_empty() && !value.chars().any(char::is_whitespace)
 }
 
+/// A public half is not a PEM or other armored private key.
+///
+/// Hex-encoded public halves stay. Armor such as `BEGIN PRIVATE KEY` is raw
+/// key material and is not a grant fact a Child, or the ledger, can hold.
+fn public_half_is_raw_key(value: &str) -> bool {
+    let compact: String = value
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .flat_map(char::to_uppercase)
+        .collect();
+    compact.contains("PRIVATEKEY")
+        || compact.contains("SECRETKEY")
+        || compact.contains("BEGINOPENSSH")
+        || compact.contains("BEGINRSA")
+        || compact.contains("BEGINEC")
+}
+
 fn admin_key_scopes_are_canonical(scopes: &[AdminKeyScopeV1]) -> bool {
     !scopes.is_empty() && scopes.windows(2).all(|pair| pair[0] < pair[1])
 }
@@ -472,10 +543,14 @@ mod tests {
         Timestamp::new("2026-10-14T00:00:00Z").unwrap()
     }
 
+    fn half(value: &str) -> AdminKeyPublicHalf {
+        AdminKeyPublicHalf::new(value).expect("public half")
+    }
+
     fn day_to_day(scopes: Vec<AdminKeyScopeV1>) -> AdminKeyGrantV1 {
         AdminKeyGrantV1 {
             grant_id: "day-to-day".into(),
-            public_half: "public-half-day".into(),
+            public_half: half("public-half-day"),
             class: AdminKeyGrantClassV1::DayToDay,
             scopes,
             expires_at: Some(later()),
@@ -486,7 +561,7 @@ mod tests {
     fn recovery() -> AdminKeyGrantV1 {
         AdminKeyGrantV1 {
             grant_id: "recovery".into(),
-            public_half: "public-half-recovery".into(),
+            public_half: half("public-half-recovery"),
             class: AdminKeyGrantClassV1::Recovery,
             scopes: recovery_grant_scopes().to_vec(),
             expires_at: None,
@@ -496,11 +571,29 @@ mod tests {
 
     fn request(public_half: &str, action: AdminKeyCheckAction) -> AdminKeyGrantCheckRequest {
         AdminKeyGrantCheckRequest {
-            public_half: public_half.into(),
+            public_half: half(public_half),
             action,
             now: now(),
             presented_generation: 4,
             current_generation: 4,
+        }
+    }
+
+    fn allow(grant_id: &str, scope: AdminKeyScopeV1) -> AdminKeyGrantCheckResult {
+        AdminKeyGrantCheckResult {
+            verdict: AdminKeyGrantVerdict::Allowed,
+            reason: AdminKeyGrantReason::ActiveGrant,
+            grant_id: Some(grant_id.to_owned()),
+            admitted_scope: Some(scope),
+        }
+    }
+
+    fn deny(reason: AdminKeyGrantReason, grant_id: Option<&str>) -> AdminKeyGrantCheckResult {
+        AdminKeyGrantCheckResult {
+            verdict: AdminKeyGrantVerdict::Denied,
+            reason,
+            grant_id: grant_id.map(str::to_owned),
+            admitted_scope: None,
         }
     }
 
@@ -514,10 +607,7 @@ mod tests {
             ),
             std::slice::from_ref(&grant),
         );
-        assert!(allowed.is_allowed());
-        assert_eq!(allowed.reason, AdminKeyGrantReason::ActiveGrant);
-        assert_eq!(allowed.admitted_scope, Some(AdminKeyScopeV1::Status));
-        assert_eq!(allowed.grant_id.as_deref(), Some("day-to-day"));
+        assert_eq!(allowed, allow("day-to-day", AdminKeyScopeV1::Status));
 
         let denied = evaluate_admin_key_grant(
             &request(
@@ -526,9 +616,10 @@ mod tests {
             ),
             &[grant],
         );
-        assert!(!denied.is_allowed());
-        assert_eq!(denied.reason, AdminKeyGrantReason::WrongScope);
-        assert!(denied.admitted_scope.is_none());
+        assert_eq!(
+            denied,
+            deny(AdminKeyGrantReason::WrongScope, Some("day-to-day"))
+        );
     }
 
     #[test]
@@ -541,8 +632,7 @@ mod tests {
             ),
             std::slice::from_ref(&grant),
         );
-        assert_eq!(wrong_key.reason, AdminKeyGrantReason::WrongKey);
-        assert!(!wrong_key.is_allowed());
+        assert_eq!(wrong_key, deny(AdminKeyGrantReason::WrongKey, None));
 
         let mut revoked = grant.clone();
         revoked.grant_state = AdminKeyGrantStateV1::Revoked;
@@ -553,7 +643,10 @@ mod tests {
             ),
             &[revoked],
         );
-        assert_eq!(revoked_result.reason, AdminKeyGrantReason::RevokedGrant);
+        assert_eq!(
+            revoked_result,
+            deny(AdminKeyGrantReason::RevokedGrant, Some("day-to-day"))
+        );
 
         let mut stale = request(
             "public-half-day",
@@ -561,8 +654,10 @@ mod tests {
         );
         stale.presented_generation = 3;
         let stale_result = evaluate_admin_key_grant(&stale, &[grant]);
-        assert_eq!(stale_result.reason, AdminKeyGrantReason::StaleGeneration);
-        assert!(stale_result.grant_id.is_none());
+        assert_eq!(
+            stale_result,
+            deny(AdminKeyGrantReason::StaleGeneration, None)
+        );
     }
 
     #[test]
@@ -576,8 +671,10 @@ mod tests {
             ),
             &[permanent],
         );
-        assert_eq!(missing.reason, AdminKeyGrantReason::PolicyDenied);
-        assert!(!missing.is_allowed());
+        assert_eq!(
+            missing,
+            deny(AdminKeyGrantReason::PolicyDenied, Some("day-to-day"))
+        );
 
         let mut expired = day_to_day(vec![AdminKeyScopeV1::Status]);
         expired.expires_at = Some(now());
@@ -588,7 +685,10 @@ mod tests {
             ),
             &[expired],
         );
-        assert_eq!(at_expiry.reason, AdminKeyGrantReason::ExpiredGrant);
+        assert_eq!(
+            at_expiry,
+            deny(AdminKeyGrantReason::ExpiredGrant, Some("day-to-day"))
+        );
     }
 
     #[test]
@@ -601,8 +701,7 @@ mod tests {
             ),
             std::slice::from_ref(&grant),
         );
-        assert!(gate.is_allowed());
-        assert_eq!(gate.admitted_scope, Some(AdminKeyScopeV1::StartupGate));
+        assert_eq!(gate, allow("recovery", AdminKeyScopeV1::StartupGate));
 
         let manage = evaluate_admin_key_grant(
             &request(
@@ -611,7 +710,7 @@ mod tests {
             ),
             std::slice::from_ref(&grant),
         );
-        assert!(manage.is_allowed());
+        assert_eq!(manage, allow("recovery", AdminKeyScopeV1::KeyManage));
 
         let status = evaluate_admin_key_grant(
             &request(
@@ -620,14 +719,20 @@ mod tests {
             ),
             std::slice::from_ref(&grant),
         );
-        assert_eq!(status.reason, AdminKeyGrantReason::WrongScope);
+        assert_eq!(
+            status,
+            deny(AdminKeyGrantReason::WrongScope, Some("recovery"))
+        );
 
         let mut far_future = request(
             "public-half-recovery",
             AdminKeyCheckAction::Route(AdminKeyScopeV1::StartupGate),
         );
         far_future.now = Timestamp::new("2099-01-01T00:00:00Z").unwrap();
-        assert!(evaluate_admin_key_grant(&far_future, std::slice::from_ref(&grant)).is_allowed());
+        assert_eq!(
+            evaluate_admin_key_grant(&far_future, std::slice::from_ref(&grant)),
+            allow("recovery", AdminKeyScopeV1::StartupGate)
+        );
 
         grant.expires_at = Some(later());
         let dated = evaluate_admin_key_grant(
@@ -637,8 +742,10 @@ mod tests {
             ),
             &[grant],
         );
-        assert_eq!(dated.reason, AdminKeyGrantReason::PolicyDenied);
-        assert!(!dated.is_allowed());
+        assert_eq!(
+            dated,
+            deny(AdminKeyGrantReason::PolicyDenied, Some("recovery"))
+        );
     }
 
     #[test]
@@ -651,7 +758,10 @@ mod tests {
             ),
             std::slice::from_ref(&grant),
         );
-        assert_eq!(gate.reason, AdminKeyGrantReason::WrongScope);
+        assert_eq!(
+            gate,
+            deny(AdminKeyGrantReason::WrongScope, Some("day-to-day"))
+        );
 
         let mut carries_gate = grant;
         carries_gate.scopes = vec![AdminKeyScopeV1::StartupGate, AdminKeyScopeV1::Status];
@@ -662,7 +772,10 @@ mod tests {
             ),
             &[carries_gate],
         );
-        assert_eq!(malformed.reason, AdminKeyGrantReason::PolicyDenied);
+        assert_eq!(
+            malformed,
+            deny(AdminKeyGrantReason::PolicyDenied, Some("day-to-day"))
+        );
     }
 
     #[test]
@@ -678,10 +791,10 @@ mod tests {
             ),
             &[day.clone(), recovery.clone()],
         );
-        assert!(!revoked.is_allowed());
-        assert_eq!(revoked.reason, AdminKeyGrantReason::RecoveryGrantLocked);
-        assert_eq!(revoked.grant_id.as_deref(), Some("recovery"));
-        assert!(revoked.admitted_scope.is_none());
+        assert_eq!(
+            revoked,
+            deny(AdminKeyGrantReason::RecoveryGrantLocked, Some("recovery"))
+        );
 
         let outcome = crate::evaluate_grant_subject(crate::GrantCheckSubject::AdminKey {
             request: &request(
@@ -692,10 +805,13 @@ mod tests {
             ),
             grants: &[day, recovery],
         });
-        let crate::GrantCheckOutcome::AdminKey(through_subject) = outcome else {
-            panic!("an admin-key subject is not a Child toy call");
-        };
-        assert_eq!(through_subject, revoked);
+        assert_eq!(
+            outcome,
+            crate::GrantCheckOutcome::AdminKey(deny(
+                AdminKeyGrantReason::RecoveryGrantLocked,
+                Some("recovery"),
+            ))
+        );
     }
 
     #[test]
@@ -711,7 +827,10 @@ mod tests {
             ),
             &[day.clone(), recovery.clone()],
         );
-        assert_eq!(self_revoke.reason, AdminKeyGrantReason::RecoveryGrantLocked);
+        assert_eq!(
+            self_revoke,
+            deny(AdminKeyGrantReason::RecoveryGrantLocked, Some("recovery"))
+        );
 
         let revoke_day = evaluate_admin_key_grant(
             &request(
@@ -722,16 +841,14 @@ mod tests {
             ),
             &[day, recovery],
         );
-        assert!(revoke_day.is_allowed());
-        assert_eq!(revoke_day.admitted_scope, Some(AdminKeyScopeV1::KeyManage));
-        assert_eq!(revoke_day.grant_id.as_deref(), Some("recovery"));
+        assert_eq!(revoke_day, allow("recovery", AdminKeyScopeV1::KeyManage));
     }
 
     #[test]
     fn day_to_day_key_cannot_revoke_itself_and_can_revoke_another_day_to_day_key() {
         let mut other = day_to_day(vec![AdminKeyScopeV1::Status]);
         other.grant_id = "other-day".into();
-        other.public_half = "public-half-other".into();
+        other.public_half = half("public-half-other");
         let holder = day_to_day(vec![AdminKeyScopeV1::KeyManage]);
         let self_revoke = evaluate_admin_key_grant(
             &request(
@@ -742,7 +859,10 @@ mod tests {
             ),
             &[holder.clone(), other.clone()],
         );
-        assert_eq!(self_revoke.reason, AdminKeyGrantReason::PolicyDenied);
+        assert_eq!(
+            self_revoke,
+            deny(AdminKeyGrantReason::PolicyDenied, Some("day-to-day"))
+        );
 
         let revoke_other = evaluate_admin_key_grant(
             &request(
@@ -753,7 +873,10 @@ mod tests {
             ),
             &[holder, other],
         );
-        assert!(revoke_other.is_allowed());
+        assert_eq!(
+            revoke_other,
+            allow("day-to-day", AdminKeyScopeV1::KeyManage)
+        );
     }
 
     #[test]
@@ -768,8 +891,10 @@ mod tests {
             ),
             &[grant],
         );
-        assert_eq!(revoke.reason, AdminKeyGrantReason::WrongScope);
-        assert!(!revoke.is_allowed());
+        assert_eq!(
+            revoke,
+            deny(AdminKeyGrantReason::WrongScope, Some("day-to-day"))
+        );
     }
 
     #[test]
@@ -781,7 +906,57 @@ mod tests {
             ),
             &[],
         );
-        assert_eq!(denied.reason, AdminKeyGrantReason::WrongKey);
-        assert!(!denied.is_allowed());
+        assert_eq!(denied, deny(AdminKeyGrantReason::WrongKey, None));
+    }
+
+    #[test]
+    fn admin_grant_json_is_the_public_half_and_rejects_raw_key_material() {
+        let grant = day_to_day(vec![AdminKeyScopeV1::Status]);
+        assert_eq!(
+            serde_json::to_value(&grant).unwrap(),
+            serde_json::json!({
+                "grant_id": "day-to-day",
+                "public_half": "public-half-day",
+                "class": "day_to_day",
+                "scopes": ["status"],
+                "expires_at": "2026-10-14T00:00:00Z",
+                "grant_state": "active"
+            })
+        );
+
+        assert_eq!(
+            AdminKeyPublicHalf::new("-----BEGINPRIVATEKEY-----abc"),
+            Err("admin key grant stores a public half, not raw key material")
+        );
+        assert_eq!(
+            AdminKeyPublicHalf::new("-----BEGIN PRIVATE KEY-----\nabc"),
+            Err("admin key grant stores only a non-empty public half")
+        );
+        assert_eq!(
+            AdminKeyPublicHalf::new("-----BEGINPUBLICKEY-----abc")
+                .expect("unarmored public key text")
+                .as_str(),
+            "-----BEGINPUBLICKEY-----abc"
+        );
+        let armored = r#"{
+            "grant_id": "day-to-day",
+            "public_half": "-----BEGINPRIVATEKEY-----abc",
+            "class": "day_to_day",
+            "scopes": ["status"],
+            "expires_at": "2026-10-14T00:00:00Z",
+            "grant_state": "active"
+        }"#;
+        assert_eq!(
+            serde_json::from_str::<AdminKeyGrantV1>(armored)
+                .unwrap_err()
+                .to_string(),
+            "admin key grant stores a public half, not raw key material at line 3 column 57"
+        );
+        assert_eq!(
+            AdminKeyPublicHalf::new("aabbccddeeff")
+                .expect("hex public half")
+                .as_str(),
+            "aabbccddeeff"
+        );
     }
 }

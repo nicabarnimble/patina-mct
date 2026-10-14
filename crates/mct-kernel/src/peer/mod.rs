@@ -741,7 +741,12 @@ mod tests {
         let mut value = serde_json::to_value(binding(BindingState::Admitted)).unwrap();
         value.as_object_mut().unwrap().remove("expires_at");
 
-        assert!(serde_json::from_value::<MctPeerBinding>(value).is_err());
+        assert_eq!(
+            serde_json::from_value::<MctPeerBinding>(value)
+                .unwrap_err()
+                .to_string(),
+            "missing field `expires_at`"
+        );
     }
 
     #[test]
