@@ -35,10 +35,7 @@ pub(crate) fn run_fake_end_to_end_status_slice(
     })
 }
 
-/// Run the first fake local vertical slice without real networking.
-///
-/// This proves composition before adding the Iroh adapter:
-/// peer binding → `mct/hello/0` → `mct/call/0` → fake echo handler → observations.
+/// Run the fake local vertical slice without real networking.
 pub(crate) fn run_fake_echo_slice(ledger_path: impl AsRef<Path>) -> Result<FakeEchoReport> {
     let mut ledger = JsonlObservationLedger::open(ledger_path, "ledger-dev", "mother-a")
         .context("open fake echo observation ledger")?;
