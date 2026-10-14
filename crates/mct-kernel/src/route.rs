@@ -3,75 +3,48 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Coarse path class used when comparing candidate routes.
 pub enum NetworkPathClass {
-    /// Peer is reachable directly.
     Direct,
-    /// Peer route traverses a relay.
     Relayed,
-    /// Work stays on the local Mother.
     Local,
-    /// Path class is not known to the adapter.
     Unknown,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Possible execution path before authority filtering.
-///
 /// A candidate is not executable authority; it must appear as admissible in a
 /// route decision and pass revalidation immediately before execution.
 pub struct CandidateRoute {
-    /// Planner-local identifier for this candidate.
     pub candidate_id: String,
-    /// Node that would execute or receive the call.
     pub node_id: MctNodeId,
-    /// Child selected by the route, when child execution is required.
     pub child_id: Option<ChildId>,
-    /// Runtime class for the candidate execution path.
     pub runtime_kind: RuntimeKind,
-    /// Network locality class for route planning and audit.
     pub network_path: NetworkPathClass,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Authority filtering outcome for one candidate route.
 pub enum CandidateAuthorityOutcome {
-    /// Candidate survived authority filtering.
     Admissible,
-    /// Candidate was removed from the feasible set.
     Eliminated,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Typed reason a candidate route was removed from consideration.
 pub enum CandidateEliminationReason {
-    /// Data classification or placement policy denied the route.
     DataPolicyDenied,
-    /// Vision policy denied the route.
     VisionPolicyDenied,
-    /// Remote peer was not admitted for this call.
     PeerNotAdmitted,
-    /// Child approval or assignment authority was absent.
     ChildNotApproved,
-    /// Required toy grant was absent or denied.
     ToyGrantMissing,
-    /// Secret-scoped payload was forbidden for this route.
     SecretScopeForbidden,
-    /// Policy revision did not match the call authority snapshot.
     PolicyRevisionStale,
-    /// Grants revision did not match the call authority snapshot.
     GrantsRevisionStale,
-    /// Revalidation facts did not match the selected route.
     RouteMismatch,
-    /// Required runtime or route capability was unavailable.
     CapabilityUnavailable,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Product-map denial class for candidate elimination audit records.
 pub enum CandidateEliminationClass {
     /// Authority structure/policy denied the route until authority changes.
     Structural,
@@ -80,7 +53,6 @@ pub enum CandidateEliminationClass {
 }
 
 impl CandidateEliminationClass {
-    /// Stable text used in observation detail references.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Structural => "structural",
@@ -90,7 +62,6 @@ impl CandidateEliminationClass {
 }
 
 impl CandidateEliminationReason {
-    /// Classifies elimination reasons according to the product-map denial taxonomy.
     pub fn denial_class(self) -> CandidateEliminationClass {
         match self {
             Self::CapabilityUnavailable => CandidateEliminationClass::Temporal,
@@ -109,109 +80,73 @@ impl CandidateEliminationReason {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Whether a route decision is initial planning or execution-time revalidation.
 pub enum RouteDecisionKind {
-    /// Initial two-phase route selection decision.
     Initial,
-    /// Decision made immediately before execution.
     Revalidation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Result reason for execution-time route revalidation.
 pub enum RouteRevalidationReason {
-    /// Selected route and all execution authorities still match.
     Revalidated,
-    /// Initial decision had no selected route.
     InitialDecisionNotSelected,
-    /// Initial decision was for a different call.
     CallIdMismatch,
-    /// Selected route was not recorded as admissible in the initial decision.
     SelectedRouteNotAdmissible,
-    /// Authorized child invocation did not match the selected child.
     SelectedChildMismatch,
-    /// Child authority token was absent or denied.
     ChildAuthorityDenied,
-    /// At least one required toy grant was absent or denied.
     ToyGrantDenied,
-    /// Policy revision did not match the call authority snapshot.
     PolicyRevisionStale,
-    /// Grants revision did not match the call authority snapshot.
     GrantsRevisionStale,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Authority result for one route candidate at one revision pair.
 pub struct CandidateAuthorityEvaluation {
-    /// Candidate route being judged.
     pub candidate: CandidateRoute,
-    /// Whether the candidate remains feasible.
     pub outcome: CandidateAuthorityOutcome,
     /// Elimination reason, present only for eliminated candidates.
     pub reason: Option<CandidateEliminationReason>,
     /// Caller-safe/operator-safe summary for projections.
     pub safe_message: String,
-    /// Policy revision used for the candidate judgment.
     pub policy_revision: u64,
-    /// Grants revision used for toy-related candidate judgment.
     pub grants_revision: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-/// Final outcome of route selection or revalidation.
 pub enum RouteDecisionOutcome {
-    /// A route was selected and remains eligible.
     RouteSelected,
-    /// No route may be executed.
     NoRoute,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Two-phase routing authority decision for an MCT call.
-///
 /// Optimization may select only among candidates represented by admissible
 /// authority evaluations. `NoRoute` is the fail-closed default when no
 /// candidate remains or revalidation fails.
 pub struct RouteDecision {
-    /// Unique decision identifier.
     pub decision_id: DecisionId,
-    /// Call whose route is being selected or revalidated.
     pub call_id: CallId,
-    /// Initial planning or revalidation phase.
     pub decision_kind: RouteDecisionKind,
-    /// Initial decision referenced by revalidation decisions.
     pub initial_decision_id: Option<DecisionId>,
-    /// Per-candidate authority evidence used by this decision.
     pub authority_evaluations: Vec<CandidateAuthorityEvaluation>,
     /// Selected route, present only when outcome is `RouteSelected`.
     pub selected_route: Option<CandidateRoute>,
-    /// Route decision outcome.
     pub outcome: RouteDecisionOutcome,
     /// Reason no route exists, present only for no-route decisions.
     pub no_route_reason: Option<CandidateEliminationReason>,
     /// Caller-safe message for result projection.
     pub safe_message: String,
-    /// Observation recording this route decision.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Identifiers assigned to an initial route decision.
 pub struct RouteDecisionIds {
-    /// Decision identifier to stamp on the route decision.
     pub decision_id: DecisionId,
-    /// Observation identifier to stamp on route evidence.
     pub observation_id: ObservationId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Identifiers assigned during execution-time route revalidation.
 pub struct RouteRevalidationIds {
-    /// Decision identifier to stamp on the route decision.
     pub decision_id: DecisionId,
-    /// Observation identifier to stamp on route evidence.
     pub observation_id: ObservationId,
     /// Token identifier minted only when revalidation succeeds.
     pub authorized_route_execution_id: AuthorizedRouteExecutionId,
@@ -223,105 +158,80 @@ pub struct RouteRevalidationIds {
 /// Adapters should execute only when this record is present in a successful
 /// revalidation result.
 pub struct AuthorizedRouteExecution {
-    /// Unique identifier for this execution authorization.
     authorized_route_execution_id: AuthorizedRouteExecutionId,
-    /// Call authorized for execution.
     call_id: CallId,
-    /// Initial route decision being revalidated.
     initial_decision_id: DecisionId,
-    /// Revalidation decision that minted this token.
     revalidation_decision_id: DecisionId,
-    /// Route authorized for execution.
     route: CandidateRoute,
-    /// Child invocation token for the selected child.
     child_invocation: AuthorizedChildInvocation,
-    /// Toy call tokens that survived revalidation.
     toy_calls: Vec<AuthorizedToyCall>,
-    /// Policy revision under which this capability was minted.
     policy_revision: u64,
-    /// Grants revision under which this capability was minted.
     grants_revision: u64,
     /// Complete executing-Mother authority for snapshot-revalidated production routes.
     local_execution_authority: Option<LocalExecutionAuthorityTokenV1>,
 }
 
 impl AuthorizedRouteExecution {
-    /// Unique identifier for this execution authorization.
     pub fn authorized_route_execution_id(&self) -> &AuthorizedRouteExecutionId {
         &self.authorized_route_execution_id
     }
 
-    /// Call authorized for execution.
     pub fn call_id(&self) -> &CallId {
         &self.call_id
     }
 
-    /// Initial route decision being revalidated.
     pub fn initial_decision_id(&self) -> &DecisionId {
         &self.initial_decision_id
     }
 
-    /// Revalidation decision that minted this token.
     pub fn revalidation_decision_id(&self) -> &DecisionId {
         &self.revalidation_decision_id
     }
 
-    /// Route authorized for execution.
     pub fn route(&self) -> &CandidateRoute {
         &self.route
     }
 
-    /// Child invocation token for the selected child.
     pub fn child_invocation(&self) -> &AuthorizedChildInvocation {
         &self.child_invocation
     }
 
-    /// Toy call tokens that survived revalidation.
     pub fn toy_calls(&self) -> &[AuthorizedToyCall] {
         &self.toy_calls
     }
 
-    /// Consumes this route capability and returns the selected child invocation token.
     pub fn into_child_invocation(self) -> AuthorizedChildInvocation {
         self.child_invocation
     }
 
-    /// Returns the policy revision under which this capability was minted.
     pub fn policy_revision(&self) -> u64 {
         self.policy_revision
     }
 
-    /// Returns the grants revision under which this capability was minted.
     pub fn grants_revision(&self) -> u64 {
         self.grants_revision
     }
 
-    /// Returns complete local authority when this route was snapshot-revalidated.
     pub fn local_execution_authority(&self) -> Option<&LocalExecutionAuthorityTokenV1> {
         self.local_execution_authority.as_ref()
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
-/// Result of checking selected route authority immediately before execution.
 pub struct RouteRevalidationResult {
-    /// Revalidation route decision, selected or no-route.
     pub decision: RouteDecision,
-    /// Typed reason for authorization or denial.
     pub reason: RouteRevalidationReason,
     /// Execution authorization token, present only when revalidated.
     pub authorized: Option<AuthorizedRouteExecution>,
 }
 
 impl RouteRevalidationResult {
-    /// Returns true only when revalidation minted an execution token.
     pub fn is_authorized(&self) -> bool {
         self.reason == RouteRevalidationReason::Revalidated && self.authorized.is_some()
     }
 }
 
 impl CandidateAuthorityEvaluation {
-    /// Builds an admissible candidate evaluation at the supplied revisions.
     pub fn admissible(
         candidate: CandidateRoute,
         policy_revision: u64,
@@ -356,7 +266,6 @@ impl CandidateAuthorityEvaluation {
 }
 
 impl RouteDecision {
-    /// Builds an initial decision selecting one route from authority evaluations.
     pub fn selected(
         call: &MctCall,
         selected_route: CandidateRoute,
@@ -398,7 +307,6 @@ impl RouteDecision {
         }
     }
 
-    /// Returns true when this decision denies execution because no route remains.
     pub fn is_no_route(&self) -> bool {
         self.outcome == RouteDecisionOutcome::NoRoute
     }
@@ -409,9 +317,9 @@ impl RouteDecision {
 /// Authority facts are the original call, initial route decision, child
 /// authority result, toy grant results, and caller-supplied IDs. It returns an
 /// execution token only when the initial decision selected an admissible route,
-/// the child invocation matches the selected child and call, all revisions match
-/// the call authority snapshot, and every toy grant is allowed. Any mismatch is
-/// a no-route decision with no token.
+/// the child invocation matches the selected child and call, the child and toy
+/// policy revisions match the call authority context, and every toy grant is
+/// allowed. Any mismatch is a no-route decision with no token.
 pub fn revalidate_route_for_execution(
     call: &MctCall,
     initial: &RouteDecision,

@@ -1417,7 +1417,7 @@ impl MctRuntimeStateStore {
             .optional()?;
         match current_json {
             None => {
-                if scope.scope_revision != 1
+                if scope.scope_revision.get() != 1
                     || scope.authority_state != WatchObservationScopeState::Active
                 {
                     bail!("first Watch scope revision must be active revision one");
@@ -1428,7 +1428,7 @@ impl MctRuntimeStateStore {
                 if current.authority_state != WatchObservationScopeState::Active {
                     bail!("terminal Watch scope id cannot be revised or resurrected");
                 }
-                if scope.scope_revision != current.scope_revision + 1 {
+                if scope.scope_revision.get() != current.scope_revision.get() + 1 {
                     bail!("Watch scope revision must exactly increment current revision");
                 }
                 transaction.execute(
@@ -1438,7 +1438,7 @@ impl MctRuntimeStateStore {
                     "#,
                     params![
                         current.watch_scope_id.as_str(),
-                        current.scope_revision as i64
+                        current.scope_revision.get() as i64
                     ],
                 )?;
             }
@@ -1454,7 +1454,7 @@ impl MctRuntimeStateStore {
             "#,
             params![
                 scope.watch_scope_id.as_str(),
-                scope.scope_revision as i64,
+                scope.scope_revision.get() as i64,
                 scope.policy_revision as i64,
                 scope.observer_ref.child_name.as_str(),
                 scope.observer_ref.artifact_id.as_str(),
@@ -1478,7 +1478,7 @@ impl MctRuntimeStateStore {
             "#,
             params![
                 scope.watch_scope_id.as_str(),
-                scope.scope_revision as i64,
+                scope.scope_revision.get() as i64,
                 current_timestamp_string(),
             ],
         )?;
@@ -5870,12 +5870,17 @@ mod tests {
                 scope_mode: WatchScopeMode::Constrained,
                 canonical_root_ref: "file:///tmp/watch-state".into(),
                 traversal_scope: WatchTraversalScope::Recursive,
-                event_classes: vec![WatchEventClass::Created, WatchEventClass::Deleted],
+                event_classes: mct_kernel::watch::WatchEventClasses::new(vec![
+                    WatchEventClass::Created,
+                    WatchEventClass::Deleted,
+                ])
+                .unwrap(),
                 max_events_per_batch: 16,
                 coalescing_policy: WatchCoalescingPolicy::LastPerPath,
                 starts_at: Timestamp::new("2026-07-21T12:00:00Z").unwrap(),
                 expires_at: Timestamp::new("2026-07-21T13:00:00Z").unwrap(),
-                scope_revision: revision,
+                scope_revision: std::num::NonZeroU64::new(revision)
+                    .expect("watch scope revision starts at one"),
                 policy_revision: 1,
                 authority_state: state,
                 authority_observation_id: ObservationId::new(format!("obs-watch-state-{revision}"))
@@ -6033,12 +6038,17 @@ mod tests {
             scope_mode: WatchScopeMode::Constrained,
             canonical_root_ref: "file:///tmp/canonical-watch".into(),
             traversal_scope: WatchTraversalScope::Recursive,
-            event_classes: vec![WatchEventClass::Created, WatchEventClass::Modified],
+            event_classes: mct_kernel::watch::WatchEventClasses::new(vec![
+                WatchEventClass::Created,
+                WatchEventClass::Modified,
+            ])
+            .unwrap(),
             max_events_per_batch: 23,
             coalescing_policy: WatchCoalescingPolicy::LastPerPath,
             starts_at: Timestamp::new("2026-08-05T12:00:00Z").unwrap(),
             expires_at: Timestamp::new("2026-08-05T13:00:00Z").unwrap(),
-            scope_revision: revision,
+            scope_revision: std::num::NonZeroU64::new(revision)
+                .expect("watch scope revision starts at one"),
             policy_revision: 7,
             authority_state: state,
             authority_observation_id: ObservationId::new(format!("obs-{id}-{revision}")).unwrap(),

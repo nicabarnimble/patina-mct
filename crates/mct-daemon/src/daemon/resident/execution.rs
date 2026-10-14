@@ -416,7 +416,7 @@ fn resident_watch_host_adapters(
         .resource_id()
         .map(str::to_owned)
         .unwrap_or_default();
-    if content_resource != scope.canonical_root_ref {
+    if content_resource != scope.canonical_root_ref.as_str() {
         return Err(CliToyAuthorizationError {
             safe_message: "content-read root must equal the v1 Watch root".into(),
             observations,
