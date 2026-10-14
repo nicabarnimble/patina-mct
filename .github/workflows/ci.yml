@@ -107,6 +107,7 @@ jobs:
         run: |
           python3 scripts/check-audit-ignores.py --self-test
           python3 scripts/check-audit-ignores.py
+          bash scripts/ci-audit.sh --self-test
 
       - name: Audit dependency changes
         env:
