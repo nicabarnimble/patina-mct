@@ -3655,7 +3655,6 @@ mod tests {
         assert_eq!(report.result.outcome, ResultOutcome::Success);
     }
 
-    /// Phase J proof 10: admitted delegation is retained; subsequent delegation revalidates.
     #[test]
     fn delegated_preopen_survives_revocation_while_new_delegation_denies() {
         let root = tempfile::tempdir().unwrap();

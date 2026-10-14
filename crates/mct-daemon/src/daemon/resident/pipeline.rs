@@ -461,8 +461,8 @@ pub(crate) enum ResidentCallIngressContext {
         firing_id: CallTriggerFiringId,
         occurrence_id: CallTriggerOccurrenceId,
     },
-    #[allow(dead_code)] // Ratified D1B interface; implemented only after Part A lands.
     ChildCallOut {
+        #[allow(dead_code)]
         parent_call_id: CallId,
         parent_firing_id: Option<CallTriggerFiringId>,
         depth: u8,
@@ -1290,7 +1290,6 @@ listens = []
         );
     }
 
-    /// Proof 15: failed BeforeEffect acknowledgement returns observation-unavailable and starts no Child effect.
     #[tokio::test]
     async fn before_effect_append_failure_suppresses_child_effect() {
         let dir = tempfile::tempdir().unwrap();

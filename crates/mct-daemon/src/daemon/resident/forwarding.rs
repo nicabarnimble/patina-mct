@@ -1192,7 +1192,7 @@ listens = []
             ),
             mother_a_ledger.clone(),
             call,
-            ResidentPayloadIngress::remote(Some(payload)),
+            ResidentPayloadIngress::local(Some(payload)),
         )
         .await;
         mother_a_ledger.close().await;
@@ -1764,7 +1764,6 @@ listens = []
         assert_eq!(forward_count, 1, "the same call_id must be forwarded once");
     }
 
-    /// Covers `PerHopPeerAccountability.UpstreamIdentityRemainsAtItsVerifier`.
     #[test]
     fn forwarded_envelope_clears_upstream_user_identity() {
         let fixture = forwarding_fixture();
