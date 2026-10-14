@@ -3,7 +3,7 @@ id: adapter-pattern
 layer: core
 status: active
 created: 2026-05-31
-revised: 2026-05-31
+revised: 2026-10-14
 tags: [architecture, mct, mother, adapters, authority, rust]
 references: [dependable-rust, unix-philosophy, mct-build-boundaries, mother-kernel-decides-adapters-perform, iroh-provides-connectivity-not-authority]
 ---
@@ -32,7 +32,7 @@ An adapter is code that crosses from MCT domain logic into an external system or
 - filesystem/database persistence
 - secret storage
 - telemetry export
-- local CLI/control socket
+- iroh administration and Child call handles
 
 Adapters translate between external details and MCT domain records. They must not invent permission, rewrite policy, or leak implementation types into the kernel.
 
@@ -66,7 +66,7 @@ These are adapters:
 | Observation sink | JSONL/fsync/backpressure | append and validate `MctObservation` facts |
 | Toy backend | filesystem, git, messaging, state, network, secrets | `AuthorizedToyCall`-guarded effect |
 | Telemetry exporter | OTel/Prometheus/qlog dashboards | projection from local ledger |
-| Control adapter | CLI/UDS/HTTP local control | local request translated to `MctCall` or operator action |
+| Control adapter | Iroh admin key and Child handle | an admin call presents a granted key; a Child call presents a platform-given handle |
 
 ## The MCT Rules
 
