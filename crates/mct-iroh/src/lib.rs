@@ -44,7 +44,6 @@ pub(crate) fn test_grants_authority_identity() -> mct_kernel::GrantsAuthorityIde
     }
 }
 
-/// Returns the crate version for health and smoke tests.
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
@@ -639,9 +638,6 @@ mod tests {
         serve_task.abort();
     }
 
-    /// Covers `MctResultTerminality.ClosedOutcomeSet`,
-    /// `MctCallProtocol.RouteTakenReplyPresenceFollowsExecution`, and
-    /// `MctObservationSubsystemCoverage.ResultCoverage` for cancellation.
     #[tokio::test]
     async fn cancelled_call_preserves_wire_outcome_route_absence_and_buffered_observations() {
         let server = MotherIrohEndpoint::bind_local_mct().await.unwrap();
