@@ -1,15 +1,18 @@
-//! Resident payload ingress, local-CAS resolution, integrity facts, and payload handles.
-
+use super::serving::IrohVerifiedInlineBytes;
 use super::*;
 
 #[derive(Clone, Debug)]
 pub(crate) enum ResidentPayloadIngress {
-    Local { inline_payload: Option<Vec<u8>> },
-    Remote { inline_payload: Option<Vec<u8>> },
+    Local {
+        inline_payload: Option<Vec<u8>>,
+    },
+    Remote {
+        inline_payload: IrohVerifiedInlineBytes,
+    },
 }
 
 impl ResidentPayloadIngress {
-    pub(crate) fn remote(inline_payload: Option<Vec<u8>>) -> Self {
+    pub(crate) fn remote(inline_payload: IrohVerifiedInlineBytes) -> Self {
         Self::Remote { inline_payload }
     }
 
@@ -20,7 +23,7 @@ impl ResidentPayloadIngress {
     fn into_parts(self) -> (Option<Vec<u8>>, bool) {
         match self {
             Self::Local { inline_payload } => (inline_payload, true),
-            Self::Remote { inline_payload } => (inline_payload, false),
+            Self::Remote { inline_payload } => (inline_payload.into_bytes(), false),
         }
     }
 }
@@ -182,7 +185,6 @@ pub(super) async fn resolve_resident_request_payload(
 ) -> std::result::Result<VerifiedRequestPayload, PayloadFailure> {
     let (inline_payload, local_ingress) = payload.into_parts();
     if !local_ingress {
-        // The Iroh adapter has already verified remote inline bytes before this pipeline.
         return Ok(VerifiedRequestPayload(inline_payload));
     }
     if !matches!(

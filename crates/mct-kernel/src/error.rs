@@ -1,6 +1,5 @@
 use thiserror::Error;
 
-/// Kernel result type that preserves typed authority and validation failures.
 pub type MctKernelResult<T> = std::result::Result<T, MctKernelError>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,69 +29,49 @@ impl std::fmt::Display for InvalidFieldReason {
 /// failures, and serialization faults at the protocol edge.
 pub enum MctKernelError {
     #[error("invalid {record}.{field}: {reason}")]
-    /// A required string field was empty or blank.
     InvalidField {
-        /// Name of the kernel record being validated.
         record: &'static str,
-        /// Field within the record that violated the invariant.
         field: &'static str,
-        /// Whether the value was empty or whitespace-only.
         reason: InvalidFieldReason,
     },
 
     #[error("invalid Timestamp '{value}': {reason}")]
     /// Timestamp text was not a valid RFC3339 instant accepted by the kernel.
-    InvalidTimestamp {
-        /// Timestamp string that failed validation.
-        value: String,
-        /// Parser or range failure reason.
-        reason: String,
-    },
+    InvalidTimestamp { value: String, reason: String },
 
     #[error(
         "MCT call payload metadata size {call_size_bytes} does not match payload handle size {handle_size_bytes}"
     )]
-    /// Call metadata and payload handle disagreed about payload size.
     PayloadSizeMismatch {
-        /// Size declared in [`crate::MctCall::payload_metadata`].
         call_size_bytes: u64,
-        /// Size carried by the protocol payload handle.
         handle_size_bytes: u64,
     },
 
     #[error("invalid {record}.{field}: {reason}")]
     /// A closed trigger or watch authority constraint was malformed.
     InvalidConstraint {
-        /// Name of the kernel record being validated.
         record: &'static str,
-        /// Field within the record that violated the invariant.
         field: &'static str,
         /// Stable caller-safe description of the failed constraint.
         reason: &'static str,
     },
 
     #[error("failed to encode MCT call protocol JSON edge value: {source}")]
-    /// Serialization failed while emitting a validated call protocol edge value.
     EncodeCallProtocolJson {
         #[source]
-        /// Serde source error preserved for diagnostics.
         source: serde_json::Error,
     },
 
     #[error("invalid {record}.route_taken for {outcome} reply outcome")]
     /// A caller-safe reply carried a route projection for an outcome that must hide it.
     InvalidRouteTakenPresence {
-        /// Name of the kernel record being validated.
         record: &'static str,
-        /// Reply outcome whose route projection invariant was violated.
         outcome: &'static str,
     },
 
     #[error("failed to decode MCT call protocol JSON edge value: {source}")]
-    /// Deserialization failed before a call protocol edge value could be validated.
     DecodeCallProtocolJson {
         #[source]
-        /// Serde source error preserved for diagnostics.
         source: serde_json::Error,
     },
 }
