@@ -4172,12 +4172,16 @@ listens = []
             scope_mode: WatchScopeMode::ExplicitBroad,
             canonical_root_ref: "file:///tmp/legacy-watch".into(),
             traversal_scope: WatchTraversalScope::Recursive,
-            event_classes: vec![WatchEventClass::Created, WatchEventClass::Deleted],
+            event_classes: mct_kernel::watch::WatchEventClasses::new(vec![
+                WatchEventClass::Created,
+                WatchEventClass::Deleted,
+            ])
+            .unwrap(),
             max_events_per_batch: 19,
             coalescing_policy: WatchCoalescingPolicy::LastPerPath,
             starts_at: Timestamp::new("2026-08-05T12:00:00Z").unwrap(),
             expires_at: Timestamp::new("2026-08-05T13:00:00Z").unwrap(),
-            scope_revision: 1,
+            scope_revision: std::num::NonZeroU64::MIN,
             policy_revision: 3,
             authority_state: WatchObservationScopeState::Active,
             authority_observation_id: ObservationId::new("obs-legacy-watch").unwrap(),
@@ -4500,7 +4504,7 @@ listens = []
                     traversal_scope: WatchTraversalScope::Recursive,
                     event_classes: vec![WatchEventClass::Created],
                     max_events_per_batch: 8,
-                    coalescing_policy: WatchCoalescingPolicy::None,
+                    coalescing_policy: WatchCoalescingPolicy::RetainAll,
                     starts_at: Timestamp::new("2026-08-05T12:00:00Z").unwrap(),
                     expires_at: Timestamp::new("2026-08-05T13:00:00Z").unwrap(),
                 };
