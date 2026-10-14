@@ -4,7 +4,6 @@
 //! Wasmtime, storage, telemetry, or daemon implementation types in its public API.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 /// Artifact source, acquisition, and filesystem effect authority.
 pub mod artifact;
