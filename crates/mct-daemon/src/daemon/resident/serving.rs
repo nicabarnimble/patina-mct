@@ -1,6 +1,19 @@
-//! Resident Mother process bootstrap, endpoint/control/event tasks, shutdown, and status.
-
 use super::*;
+
+#[derive(Clone, Debug)]
+pub(crate) struct IrohVerifiedInlineBytes {
+    bytes: Option<Vec<u8>>,
+}
+
+impl IrohVerifiedInlineBytes {
+    fn from_serve_callback(bytes: Option<Vec<u8>>) -> Self {
+        Self { bytes }
+    }
+
+    pub(crate) fn into_bytes(self) -> Option<Vec<u8>> {
+        self.bytes
+    }
+}
 
 pub(crate) async fn run_serve(mut args: Vec<String>) -> Result<()> {
     let supervisor_record_path = take_option(&mut args, "--supervisor-record").map(PathBuf::from);
@@ -784,7 +797,9 @@ where
                         execution_paths,
                         execution_ledger,
                         request,
-                        ResidentPayloadIngress::remote(inline_payload),
+                        ResidentPayloadIngress::remote(
+                            IrohVerifiedInlineBytes::from_serve_callback(inline_payload),
+                        ),
                     )
                     .await
                 }
