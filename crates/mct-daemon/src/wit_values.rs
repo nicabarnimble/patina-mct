@@ -669,10 +669,6 @@ fn lower_json_with_shape(value: &Value, shape: &ConversionShape, path: &str) -> 
     })
 }
 
-/// Lift a component value into JSON transport shape.
-///
-/// For variants without payload, the JSON form is normalized to
-/// `{"case": "<name>", "value": null}`.
 fn lift_component_val_to_json(value: &Val) -> ConvResult<Value> {
     Ok(match value {
         Val::Bool(v) => serde_json::json!(v),
