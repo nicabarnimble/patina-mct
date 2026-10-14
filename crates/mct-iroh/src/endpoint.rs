@@ -236,7 +236,8 @@ impl MotherIrohEndpoint {
             .map_err(|source| MotherIrohEndpointError::Bind { source })?;
         if !matches!(relay_mode, MotherIrohRelayMode::Disabled) {
             // Wait (bounded) for a home relay so the ticket carries a relay URL.
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(10), endpoint.online()).await;
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(10), endpoint.online()).await;
         }
         let endpoint_addr = endpoint.addr();
         let snapshot = MotherIrohEndpointSnapshot {
