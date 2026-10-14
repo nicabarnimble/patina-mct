@@ -3,7 +3,7 @@ id: what-is-mct
 layer: core
 status: active
 created: 2026-06-09
-revised: 2026-07-14
+revised: 2026-10-14
 tags: [mct, product, mother, child, toy, authority, iroh, observations]
 references: [mct-build-boundaries, spec-driven-design, adapter-pattern, safety-boundaries, migration-vocabulary]
 ---
@@ -123,7 +123,7 @@ A peer Mother invokes `patina:slate/control@0.1.0#complete-work` on your node:
 7. **MctResult returns.** Closed outcome set — success, denied, failed,
    timed_out, cancelled — with a caller-safe message and opaque audit ref.
 8. **Throughout:** every step emits typed `MctObservation` facts into an
-   append-only, hash-chained, per-Mother ledger. Authority-critical
+   append-only, hash-chained ledger. Authority-critical
    observations are durable before their effect proceeds (fail closed). The
    whole story reconstructs from the ledger alone.
 
@@ -157,16 +157,16 @@ law rather than inherited as ontology. Existing `patinaChild` components
 `slate-manager@0.2.0`, `folder-watch-actor@0.1.0`, and
 `watch-null-sink@0.1.0` are required compatibility fixtures.
 
-## Multi-Mother and Vision
+## Vision
 
-Multi-Mother exists to share selected data and compute across nodes under
-explicit authority. Vision is the sharing boundary — it may represent a
-tenant, institution, business unit, environment, compliance zone, data
-domain, or application fabric; do not collapse it to "tenant" early. Nodes
-are heterogeneous (a Raspberry Pi and a Mac Studio are both Mothers);
-capability publication is per-Vision and policy-filtered; cross-Vision
-sharing requires explicit grants. JVM ecosystems (banking is the adoption
-example) integrate as WIT children, not as a second call model.
+Vision is the sharing boundary. It may represent a tenant, institution,
+business unit, environment, compliance zone, data domain, or application
+fabric; do not collapse it to "tenant" early. Capability publication is
+per-Vision and policy-filtered; cross-Vision sharing requires explicit
+grants. Nodes differ in compute, storage, and locality, and routing accounts
+for that. Multi-Mother with per-Mother ledgers is future scale work, not
+planned now. JVM ecosystems (banking is the adoption example) integrate as
+WIT children, not as a second call model.
 
 ## What MCT is not
 
