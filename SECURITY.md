@@ -64,7 +64,7 @@ The repository policy is [`.cargo/audit.toml`](.cargo/audit.toml):
 
 - warnings are denied;
 - unmaintained and unsound informational advisories are evaluated;
-- `RUSTSEC-2024-0436` and `RUSTSEC-2026-0173` are explicitly ignored with
+- `RUSTSEC-2024-0436` is explicitly ignored with
   transitive-dependency rationale, a revisit date, and a revisit condition in
   the policy file; and
 - yanked-package checking is disabled with the pinned `spin 0.10.0` transitive
