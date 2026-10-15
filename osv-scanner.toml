@@ -1,0 +1,6 @@
+# Mirrors the ignores in .cargo/audit.toml. Keep both lists in sync.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+ignoreUntil = 2027-04-14
+reason = "paste (unmaintained): transitive Linux netlink proc-macro; no maintained release is available in the current netdev/netwatch chain. Revisit when the Iroh network stack advances."
