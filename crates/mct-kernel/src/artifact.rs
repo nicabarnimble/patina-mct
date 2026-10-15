@@ -434,10 +434,16 @@ mod tests {
         let request = request();
         let operator = operator();
         let effect = effect();
-        assert!(
-            evaluate_artifact_acquisition_authority(&request, None, Some(&operator), Some(&effect))
+        let allowed =
+            evaluate_artifact_acquisition_authority(&request, None, Some(&operator), Some(&effect));
+        assert_eq!(allowed.reason, ArtifactAcquisitionAuthorityReason::Allowed);
+        assert_eq!(
+            allowed
                 .authorized
-                .is_some()
+                .expect("operator path admits")
+                .acquisition_id()
+                .as_str(),
+            "acquisition-1"
         );
         let mut missing_publisher = request.clone();
         missing_publisher.publisher = None;
@@ -581,10 +587,16 @@ mod tests {
             expires_at: timestamp("2026-07-16T13:00:00Z"),
             authority_observation_id: ObservationId::new("obs-source-1").unwrap(),
         };
-        assert!(
-            evaluate_artifact_acquisition_authority(&request, Some(&source), None, Some(&effect()))
+        let allowed =
+            evaluate_artifact_acquisition_authority(&request, Some(&source), None, Some(&effect()));
+        assert_eq!(allowed.reason, ArtifactAcquisitionAuthorityReason::Allowed);
+        assert_eq!(
+            allowed
                 .authorized
-                .is_some()
+                .expect("standing source admits")
+                .acquisition_id()
+                .as_str(),
+            "acquisition-1"
         );
         let mut missing_publisher = request.clone();
         missing_publisher.publisher = None;
@@ -599,11 +611,13 @@ mod tests {
             ArtifactAcquisitionAuthorityReason::StandingSourceNotCurrentOrInScope
         );
         source.scope.publisher_scope.clear();
-        assert!(
-            evaluate_artifact_acquisition_authority(&request, Some(&source), None, Some(&effect()))
-                .authorized
-                .is_none()
+        let denied =
+            evaluate_artifact_acquisition_authority(&request, Some(&source), None, Some(&effect()));
+        assert_eq!(
+            denied.reason,
+            ArtifactAcquisitionAuthorityReason::StandingSourceNotCurrentOrInScope
         );
+        assert_eq!(denied.authorized, None);
     }
 
     #[test]

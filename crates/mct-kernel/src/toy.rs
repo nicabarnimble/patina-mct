@@ -1,6 +1,7 @@
 use crate::{
     authority::{LocalExecutionAuthoritySnapshot, LocalExecutionAuthorityTokenV1},
     call::*,
+    grant_check::{ExpiryDecision, ExpiryRequirement, action_is_allowed, expiry_decision},
     id::*,
 };
 use serde::{Deserialize, Serialize};
@@ -465,33 +466,12 @@ pub fn evaluate_toy_grant_for_call(
             }
         }
 
-        if grant
-            .constraints
-            .starts_at
-            .as_ref()
-            .is_some_and(|starts_at| request.now < *starts_at)
-        {
+        if let Some(reason) = toy_time_window_denial(&request.now, &grant.constraints) {
             return denied(
                 call,
                 request,
                 Some(grant),
-                ToyGrantReasonCode::PolicyDenied,
-                grant.policy_revision,
-                grant.grants_revision,
-            );
-        }
-
-        if grant
-            .constraints
-            .expires_at
-            .as_ref()
-            .is_some_and(|expires_at| request.now >= *expires_at)
-        {
-            return denied(
-                call,
-                request,
-                Some(grant),
-                ToyGrantReasonCode::ExpiredGrant,
+                reason,
                 grant.policy_revision,
                 grant.grants_revision,
             );
@@ -742,32 +722,12 @@ pub fn evaluate_toy_grant_for_route_snapshot(
                 continue;
             }
         }
-        if grant
-            .constraints
-            .starts_at
-            .as_ref()
-            .is_some_and(|starts_at| request.now < *starts_at)
-        {
+        if let Some(reason) = toy_time_window_denial(&request.now, &grant.constraints) {
             return route_denied(
                 call,
                 request,
                 Some(grant),
-                ToyGrantReasonCode::PolicyDenied,
-                local_policy_revision,
-                local_grants_generation,
-            );
-        }
-        if grant
-            .constraints
-            .expires_at
-            .as_ref()
-            .is_some_and(|expires_at| request.now >= *expires_at)
-        {
-            return route_denied(
-                call,
-                request,
-                Some(grant),
-                ToyGrantReasonCode::ExpiredGrant,
+                reason,
                 local_policy_revision,
                 local_grants_generation,
             );
@@ -884,10 +844,28 @@ fn scope_matches(
             &Some(call.payload_metadata.data_classification.clone()),
         )
         && option_matches(&scope.resource_id, &request.resource_id)
-        && scope
-            .allowed_actions
-            .iter()
-            .any(|action| action == &request.action)
+        && action_is_allowed(
+            scope.allowed_actions.iter().map(String::as_str),
+            &request.action,
+        )
+}
+
+fn toy_time_window_denial(
+    now: &Timestamp,
+    constraints: &ToyGrantConstraints,
+) -> Option<ToyGrantReasonCode> {
+    match expiry_decision(
+        now,
+        constraints.starts_at.as_ref(),
+        constraints.expires_at.as_ref(),
+        ExpiryRequirement::Optional,
+    ) {
+        ExpiryDecision::Open => None,
+        ExpiryDecision::Expired => Some(ToyGrantReasonCode::ExpiredGrant),
+        ExpiryDecision::NotYet | ExpiryDecision::Missing | ExpiryDecision::PresentButForbidden => {
+            Some(ToyGrantReasonCode::PolicyDenied)
+        }
+    }
 }
 
 fn toy_token_expiry(
@@ -916,6 +894,7 @@ fn option_matches<T: Eq>(grant_value: &Option<T>, request_value: &Option<T>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     fn call() -> MctCall {
         MctCall {
@@ -1136,24 +1115,26 @@ mod tests {
             &[grant(ToyGrantState::Active)],
         );
 
-        assert!(!result.is_allowed());
         assert_eq!(result.evaluation.verdict, ToyGrantVerdict::Denied);
         assert_eq!(
             result.evaluation.reason_code,
             ToyGrantReasonCode::UnknownToy
         );
-        assert!(result.authorized.is_none());
+        assert_eq!(result.evaluation.grant_id, None);
+        assert_eq!(result.authorized, None);
     }
 
     #[test]
     fn manifest_need_without_grant_denies_as_missing_grant() {
         let result = evaluate_toy_grant_for_call(&call(), &request(), &[toy()], &[]);
 
+        assert_eq!(result.evaluation.verdict, ToyGrantVerdict::Denied);
         assert_eq!(
             result.evaluation.reason_code,
             ToyGrantReasonCode::MissingGrant
         );
-        assert!(result.authorized.is_none());
+        assert_eq!(result.evaluation.grant_id, None);
+        assert_eq!(result.authorized, None);
     }
 
     #[test]
@@ -1177,7 +1158,30 @@ mod tests {
                     .expect("string ID literal/generated value must be non-empty")
             )
         );
-        assert!(result.authorized.is_none());
+        assert_eq!(result.authorized, None);
+    }
+
+    #[test]
+    fn toy_grant_without_expiry_still_authorizes() {
+        let mut open = grant(ToyGrantState::Active);
+        open.constraints.expires_at = None;
+        let result = evaluate_toy_grant_for_call(&call(), &request(), &[toy()], &[open]);
+        assert_eq!(result.evaluation.verdict, ToyGrantVerdict::Allowed);
+        assert_eq!(
+            result.evaluation.reason_code,
+            ToyGrantReasonCode::ActiveGrant
+        );
+        assert_eq!(
+            result.evaluation.grant_id.as_ref().map(ToyGrantId::as_str),
+            Some("grant-logging")
+        );
+        let authorized = result.authorized.expect("open toy grant mints a token");
+        assert_eq!(
+            authorized.expires_at(),
+            &Timestamp::new("2026-05-31T00:10:00Z").unwrap()
+        );
+        assert_eq!(authorized.grant_id().as_str(), "grant-logging");
+        assert_eq!(authorized.action(), "write");
     }
 
     #[test]
@@ -1191,11 +1195,16 @@ mod tests {
             &[grant(ToyGrantState::Active)],
         );
 
+        assert_eq!(result.evaluation.verdict, ToyGrantVerdict::Denied);
         assert_eq!(
             result.evaluation.reason_code,
             ToyGrantReasonCode::ExpiredGrant
         );
-        assert!(result.authorized.is_none());
+        assert_eq!(
+            result.evaluation.grant_id.as_ref().map(ToyGrantId::as_str),
+            Some("grant-logging")
+        );
+        assert_eq!(result.authorized, None);
     }
 
     #[test]
@@ -1244,11 +1253,16 @@ mod tests {
             &[grant(ToyGrantState::Active)],
         );
 
+        assert_eq!(result.evaluation.verdict, ToyGrantVerdict::Denied);
         assert_eq!(
             result.evaluation.reason_code,
             ToyGrantReasonCode::WrongScope
         );
-        assert!(result.authorized.is_none());
+        assert_eq!(
+            result.evaluation.grant_id.as_ref().map(ToyGrantId::as_str),
+            Some("grant-logging")
+        );
+        assert_eq!(result.authorized, None);
     }
 
     #[test]
@@ -1257,11 +1271,24 @@ mod tests {
         current.grants_revision = 6;
         let result = evaluate_toy_grant_for_call(&call(), &request(), &[toy()], &[current]);
 
+        assert_eq!(result.evaluation.verdict, ToyGrantVerdict::Allowed);
         assert_eq!(
             result.evaluation.reason_code,
             ToyGrantReasonCode::ActiveGrant
         );
-        assert!(result.authorized.is_some());
+        assert_eq!(result.evaluation.grants_revision, 6);
+        assert_eq!(
+            result.evaluation.grant_id.as_ref().map(ToyGrantId::as_str),
+            Some("grant-logging")
+        );
+        let authorized = result
+            .authorized
+            .expect("revision echo still mints a token");
+        assert_eq!(
+            authorized.expires_at(),
+            &Timestamp::new("2026-05-31T00:05:00Z").unwrap()
+        );
+        assert_eq!(authorized.grants_revision(), 6);
     }
 
     fn snapshot_with(
@@ -1425,11 +1452,11 @@ mod tests {
         let admitted = evaluate_toy_grant_for_snapshot(&call(), &request(), &unbounded_snapshot)
             .authorized
             .expect("max_uses None mints current Toy authority");
-        assert!(
-            admitted
-                .admit_effect_with_snapshot(&call(), &unbounded_snapshot)
-                .is_ok()
-        );
+        assert_eq!(admitted.grant_id().as_str(), "grant-logging");
+        assert_eq!(admitted.action(), "write");
+        admitted
+            .admit_effect_with_snapshot(&call(), &unbounded_snapshot)
+            .expect("unbounded grant admits the effect");
 
         let mut metered_grant = grant(ToyGrantState::Active);
         metered_grant.constraints.max_uses = Some(1);
@@ -1448,5 +1475,37 @@ mod tests {
     fn toy_grant_reason_uses_snake_case_wire_names() {
         let encoded = serde_json::to_string(&ToyGrantReasonCode::MissingGrant).unwrap();
         assert_eq!(encoded, "\"missing_grant\"");
+    }
+
+    #[test]
+    fn toy_grant_json_has_no_key_material_fields() {
+        let grant = grant(ToyGrantState::Active);
+        let value = serde_json::to_value(&grant).unwrap();
+        let keys: BTreeSet<_> = value.as_object().unwrap().keys().cloned().collect();
+        assert_eq!(
+            keys,
+            BTreeSet::from([
+                "authority_observation_id".to_owned(),
+                "constraints".to_owned(),
+                "grant_id".to_owned(),
+                "grant_state".to_owned(),
+                "grants_revision".to_owned(),
+                "issuer_id".to_owned(),
+                "policy_revision".to_owned(),
+                "scope".to_owned(),
+                "subject".to_owned(),
+                "toy_id".to_owned(),
+            ])
+        );
+        assert_eq!(value["grant_id"], "grant-logging");
+        assert_eq!(value["scope"]["resource_id"], "log:project");
+        assert_eq!(
+            value["scope"]["allowed_actions"],
+            serde_json::json!(["write"])
+        );
+        let text = serde_json::to_string(&value).unwrap();
+        assert!(!text.contains("private_key"));
+        assert!(!text.contains("public_half"));
+        assert!(!text.contains("\"secret\""));
     }
 }

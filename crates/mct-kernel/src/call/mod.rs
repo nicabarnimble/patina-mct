@@ -1185,13 +1185,23 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("expected_receiver_grants_authority");
-        assert!(decode_call_protocol_request_json(&serde_json::to_vec(&absent).unwrap()).is_err());
+        assert_eq!(
+            decode_call_protocol_request_json(&serde_json::to_vec(&absent).unwrap())
+                .unwrap_err()
+                .to_string(),
+            "failed to decode MCT call protocol JSON edge value: missing field `expected_receiver_grants_authority` at line 1 column 182"
+        );
 
         let mut integer = serde_json::to_value(&request).unwrap();
         integer["authority"]["expected_receiver_grants_authority"] = serde_json::json!(1);
         integer["call"]["authority_context"]["expected_receiver_grants_authority"] =
             serde_json::json!(1);
-        assert!(decode_call_protocol_request_json(&serde_json::to_vec(&integer).unwrap()).is_err());
+        assert_eq!(
+            decode_call_protocol_request_json(&serde_json::to_vec(&integer).unwrap())
+                .unwrap_err()
+                .to_string(),
+            "failed to decode MCT call protocol JSON edge value: invalid type: integer `1`, expected struct GrantsAuthorityIdentity at line 1 column 108"
+        );
 
         let mut malformed = serde_json::to_value(&request).unwrap();
         malformed["authority"]["expected_receiver_grants_authority"]["authority_epoch"] =
@@ -1243,7 +1253,12 @@ mod tests {
         );
         assert!(CallOrigin::TriggerFiring.allows_remote_candidate_sourcing());
         assert!(!CallOrigin::Iroh.allows_remote_candidate_sourcing());
-        assert!(serde_json::from_str::<CallOrigin>("\"trigger\"").is_err());
+        assert_eq!(
+            serde_json::from_str::<CallOrigin>("\"trigger\"")
+                .unwrap_err()
+                .to_string(),
+            "unknown variant `trigger`, expected one of `iroh`, `jvm_adapter`, `wasm_host`, `process_harness`, `cli`, `trigger_firing` at line 1 column 9"
+        );
     }
 
     #[test]
@@ -1833,14 +1848,19 @@ mod tests {
             reply_observation_id: ObservationId::new("obs-reply-cancelled-route")
                 .expect("string ID literal/generated value must be non-empty"),
         };
-        assert!(cancelled_with_route.validate().is_err());
+        assert_eq!(
+            cancelled_with_route.validate().unwrap_err().to_string(),
+            "invalid MctCallProtocolReply.route_taken for cancelled reply outcome"
+        );
 
         let cancelled_without_route = MctCallProtocolReply {
             route_taken: None,
             reply_outcome: CallProtocolReplyOutcome::Cancelled,
             ..cancelled_with_route
         };
-        assert!(cancelled_without_route.validate().is_ok());
+        cancelled_without_route
+            .validate()
+            .expect("cancelled reply without a route");
     }
 
     #[test]
