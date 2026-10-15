@@ -5,12 +5,16 @@
 
 #![forbid(unsafe_code)]
 
+/// Admin-key grant facts and the route-scope check.
+pub mod admin_key;
 pub mod artifact;
 /// Mother-owned, proof-gated local execution authority snapshots.
 pub mod authority;
 pub mod call;
 pub mod child;
 pub mod error;
+/// Shared Child and admin-key grant check.
+pub mod grant_check;
 pub mod id;
 pub mod observation;
 pub mod peer;
@@ -19,6 +23,13 @@ pub mod toy;
 pub mod trigger;
 pub mod watch;
 
+pub use admin_key::{
+    AdminKeyCheckAction, AdminKeyGrantCheckRequest, AdminKeyGrantCheckResult, AdminKeyGrantClassV1,
+    AdminKeyGrantReason, AdminKeyGrantStateV1, AdminKeyGrantV1, AdminKeyGrantVerdict,
+    AdminKeyPublicHalf, AdminKeySchemeV1, AdminKeyScopeV1, Ed25519VerifyingKey,
+    admin_key_grant_shape_error, admin_key_public_half_error, evaluate_admin_key_grant,
+    recovery_grant_scopes,
+};
 pub use artifact::{
     ArtifactAcquisition, ArtifactAcquisitionAuthorityPath, ArtifactAcquisitionAuthorityReason,
     ArtifactAcquisitionAuthorityRequest, ArtifactAcquisitionAuthorityResult,
@@ -64,6 +75,7 @@ pub use child::{
     is_allowed_instance_transition, transition_child_instance,
 };
 pub use error::{InvalidFieldReason, MctKernelError, MctKernelResult};
+pub use grant_check::{GrantCheckOutcome, GrantCheckSubject, evaluate_grant_subject};
 pub use id::{
     ArtifactAcquisitionDecisionId, ArtifactAcquisitionId, ArtifactSourceAuthorityId, AuditRef,
     AuthorizedArtifactAcquisitionId, AuthorizedChildInvocationId, AuthorizedRouteExecutionId,
