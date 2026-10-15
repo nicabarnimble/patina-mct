@@ -2316,6 +2316,7 @@ name = "mct-kernel"
 version = "0.2.0"
 dependencies = [
  "blake3",
+ "ed25519-dalek",
  "jiff",
  "serde",
  "serde_json",
