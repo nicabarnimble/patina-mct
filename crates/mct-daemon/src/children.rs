@@ -748,7 +748,7 @@ fn digest_bytes_with_sidecar(
     bytes: &[u8],
     integrity_mode: MctChildIntegrityMode,
 ) -> Result<MctChildFileDigest, MctChildLoadError> {
-    let actual = format!("{:x}", Sha256::digest(bytes));
+    let actual = crate::hex::encode_hex(Sha256::digest(bytes).as_ref());
     let sidecar = hash_sidecar_path(path);
     if !sidecar.exists() {
         if integrity_mode == MctChildIntegrityMode::RequireSidecars {
@@ -848,7 +848,7 @@ listens = ["events.changed"]
         let bytes = fs::read(path).unwrap();
         fs::write(
             hash_sidecar_path(path),
-            format!("{:x}", Sha256::digest(bytes)),
+            crate::hex::encode_hex(Sha256::digest(bytes).as_ref()),
         )
         .unwrap();
     }

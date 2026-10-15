@@ -126,6 +126,10 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+#[path = "hex.rs"]
+mod hex;
+
 #[path = "daemon/cli_artifacts.rs"]
 mod cli_artifacts;
 use cli_artifacts::*;

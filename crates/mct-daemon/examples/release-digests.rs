@@ -2,6 +2,16 @@ use anyhow::{Context as _, Result, bail};
 use sha2::{Digest as _, Sha256};
 use std::{fs, path::PathBuf};
 
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
 fn main() -> Result<()> {
     let paths = std::env::args()
         .skip(1)
@@ -16,7 +26,7 @@ fn main() -> Result<()> {
         records.push(serde_json::json!({
             "path": path,
             "size": bytes.len(),
-            "sha256": format!("{:x}", Sha256::digest(&bytes)),
+            "sha256": encode_hex(Sha256::digest(&bytes).as_ref()),
             "blake3": blake3::hash(&bytes).to_hex().to_string(),
         }));
     }

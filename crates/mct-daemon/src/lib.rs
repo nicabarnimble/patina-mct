@@ -19,6 +19,7 @@ mod cycle;
 #[cfg(test)]
 mod fake;
 mod federation;
+mod hex;
 mod inspector;
 mod lifecycle;
 mod metrics;

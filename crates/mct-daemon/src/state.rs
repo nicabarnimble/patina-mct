@@ -2638,7 +2638,7 @@ impl MctRuntimeStateStore {
                 acquisition.source_ref,
                 acquisition.claimed_child_name,
                 acquisition.claimed_artifact_version,
-                acquisition.observed_size_bytes,
+                sql_i64_from_optional_u64(acquisition.observed_size_bytes)?,
                 acquisition.observed_digest,
                 json_atom(&acquisition.acquisition_outcome)?,
                 json_atom(&acquisition.verification_outcome)?,
@@ -2683,7 +2683,7 @@ impl MctRuntimeStateStore {
                 decision.claimed_artifact_version,
                 decision.expected_digest,
                 decision.issuer_principal_ref,
-                decision.policy_revision,
+                sql_i64_from_u64(decision.policy_revision)?,
                 json_atom(&decision.decision_state)?,
                 decision.authority_observation_id.as_str(),
                 current_timestamp_string(),
@@ -2929,7 +2929,7 @@ impl MctRuntimeStateStore {
                 decision.source_ref,
                 decision.target_triple,
                 decision.authenticated_uid,
-                decision.policy_revision,
+                sql_i64_from_u64(decision.policy_revision)?,
                 decision.deadline,
                 decision.decision_state,
                 decision.authority_observation_id,
@@ -3212,7 +3212,7 @@ impl MctRuntimeStateStore {
                 source.integrity_policy_ref,
                 source.provenance_policy_ref,
                 source.issuer_principal_ref,
-                source.policy_revision,
+                sql_i64_from_u64(source.policy_revision)?,
                 json_atom(&source.authority_state)?,
                 source.issued_at.as_str(),
                 source.expires_at.as_str(),
@@ -3268,7 +3268,7 @@ impl MctRuntimeStateStore {
                 approval.scope_node_id.as_ref().map(MctNodeId::as_str),
                 approval.scope_project_id.as_ref().map(ProjectId::as_str),
                 json_atom(&approval.approval_state)?,
-                approval.policy_revision,
+                sql_i64_from_u64(approval.policy_revision)?,
                 approval.authority_observation_id.as_str(),
                 current_timestamp_string(),
             ],
@@ -3384,7 +3384,7 @@ impl MctRuntimeStateStore {
                 peer.vision_id.as_str(),
                 peer.ticket.as_ref().map(json_string).transpose()?,
                 json_atom(&peer.binding_state)?,
-                peer.policy_revision,
+                sql_i64_from_u64(peer.policy_revision)?,
                 peer.updated_at,
             ],
         )?;
@@ -3438,7 +3438,7 @@ impl MctRuntimeStateStore {
                 view.vision_id.as_str(),
                 binding_id.as_str(),
                 endpoint_id.as_str(),
-                view.policy_revision,
+                sql_i64_from_u64(view.policy_revision)?,
                 view.published_at.as_str(),
                 received_at.as_str(),
                 stale_at.as_str(),
@@ -3462,9 +3462,9 @@ impl MctRuntimeStateStore {
                     surface.operation_id.as_str(),
                     binding_id.as_str(),
                     endpoint_id.as_str(),
-                    view.policy_revision,
+                    sql_i64_from_u64(view.policy_revision)?,
                     json_atom(&surface.runtime_kind)?,
-                    surface.policy_revision,
+                    sql_i64_from_u64(surface.policy_revision)?,
                     surface.visibility.as_str(),
                     received_at.as_str(),
                     stale_at.as_str(),
@@ -4028,8 +4028,8 @@ impl MctRuntimeStateStore {
                 source.source_id,
                 source.source_path.display().to_string(),
                 source.last_sync_at,
-                source.last_loaded,
-                source.last_failed,
+                sql_i64_from_u64(source.last_loaded)?,
+                sql_i64_from_u64(source.last_failed)?,
                 source.state,
             ],
         )?;
@@ -4079,7 +4079,7 @@ impl MctRuntimeStateStore {
                 } else {
                     0_i64
                 },
-                contract.catalog_revision,
+                sql_i64_from_u64(contract.catalog_revision)?,
                 contract.admitted_by_observation_id.as_str(),
                 current_timestamp_string(),
             ],
@@ -4128,8 +4128,8 @@ impl MctRuntimeStateStore {
                 json_string(&grant.constraints)?,
                 json_atom(&grant.grant_state)?,
                 grant.issuer_id,
-                grant.policy_revision,
-                grant.grants_revision,
+                sql_i64_from_u64(grant.policy_revision)?,
+                sql_i64_from_u64(grant.grants_revision)?,
                 grant.authority_observation_id.as_str(),
                 current_timestamp_string(),
             ],
@@ -4831,7 +4831,7 @@ fn insert_acquisition_on(
             acquisition.source_ref,
             acquisition.claimed_child_name,
             acquisition.claimed_artifact_version,
-            acquisition.observed_size_bytes,
+            sql_i64_from_optional_u64(acquisition.observed_size_bytes)?,
             acquisition.observed_digest,
             json_atom(&acquisition.acquisition_outcome)?,
             json_atom(&acquisition.verification_outcome)?,
@@ -4980,7 +4980,7 @@ fn acquisition_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArtifactAcq
         source_ref: row.get(5)?,
         claimed_child_name: row.get(6)?,
         claimed_artifact_version: row.get(7)?,
-        observed_size_bytes: row.get(8)?,
+        observed_size_bytes: optional_u64_from_sql_i64(8, row.get(8)?)?,
         observed_digest: row.get(9)?,
         acquisition_outcome: from_json_atom(&acquisition_outcome).map_err(to_sql_error)?,
         verification_outcome: from_json_atom(&verification_outcome).map_err(to_sql_error)?,
@@ -5009,7 +5009,7 @@ fn source_authority_from_row(
             integrity_policy_ref: row.get(3)?,
             provenance_policy_ref: row.get(4)?,
             issuer_principal_ref: row.get(5)?,
-            policy_revision: row.get(6)?,
+            policy_revision: u64_from_sql_i64(6, row.get(6)?)?,
             authority_state: from_json_atom(&authority_state).map_err(to_sql_error)?,
             issued_at: Timestamp::new(row.get::<_, String>(8)?)
                 .expect("stored issuance timestamp is RFC3339"),
@@ -5233,7 +5233,7 @@ fn upsert_child_instance_on(connection: &Connection, instance: &ChildInstance) -
             instance.assignment_id.as_str(),
             instance.artifact_id.as_str(),
             instance.child_name,
-            instance.generation,
+            sql_i64_from_u64(instance.generation)?,
             instance.node_id.as_str(),
             json_atom(&instance.instance_state)?,
             instance
@@ -5270,6 +5270,28 @@ fn from_json_atom<T: DeserializeOwned>(value: &str) -> Result<T> {
 
 fn to_sql_error(error: anyhow::Error) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, error.into())
+}
+
+fn sql_i64_from_u64(value: u64) -> Result<i64> {
+    i64::try_from(value).with_context(|| format!("value {value} does not fit in a SQLite integer"))
+}
+
+fn sql_i64_from_optional_u64(value: Option<u64>) -> Result<Option<i64>> {
+    value.map(sql_i64_from_u64).transpose()
+}
+
+fn u64_from_sql_i64(column: usize, value: i64) -> rusqlite::Result<u64> {
+    u64::try_from(value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Integer,
+            Box::new(error),
+        )
+    })
+}
+
+fn optional_u64_from_sql_i64(column: usize, value: Option<i64>) -> rusqlite::Result<Option<u64>> {
+    value.map(|value| u64_from_sql_i64(column, value)).transpose()
 }
 
 fn component_export_from_allowed_operations(allowed_operations: &[String]) -> ComponentWitExport {
@@ -5325,6 +5347,27 @@ pub fn default_state_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sqlite_u64_conversion_rejects_values_outside_i64() {
+        let error = sql_i64_from_u64(u64::MAX).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("does not fit in a SQLite integer")
+        );
+        let max_i64 = u64::try_from(i64::MAX).unwrap();
+        assert_eq!(sql_i64_from_u64(max_i64).unwrap(), i64::MAX);
+        assert!(sql_i64_from_u64(max_i64 + 1).is_err());
+        assert_eq!(sql_i64_from_u64(42).unwrap(), 42);
+        assert_eq!(sql_i64_from_optional_u64(None).unwrap(), None);
+        assert_eq!(sql_i64_from_optional_u64(Some(7)).unwrap(), Some(7));
+        assert!(u64_from_sql_i64(0, -1).is_err());
+        assert_eq!(u64_from_sql_i64(6, 9).unwrap(), 9);
+        assert_eq!(optional_u64_from_sql_i64(8, None).unwrap(), None);
+        assert_eq!(optional_u64_from_sql_i64(8, Some(12)).unwrap(), Some(12));
+        assert!(optional_u64_from_sql_i64(8, Some(-1)).is_err());
+    }
 
     fn trigger_authority(revision: u64, state: CallTriggerAuthorityState) -> CallTriggerAuthority {
         CallTriggerAuthority {
@@ -6015,7 +6058,9 @@ mod tests {
             .conn
             .prepare("SELECT generation, instance_state FROM child_instances ORDER BY generation")
             .unwrap()
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .query_map([], |row| {
+                Ok((u64_from_sql_i64(0, row.get(0)?)?, row.get(1)?))
+            })
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();

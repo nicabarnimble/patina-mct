@@ -1806,7 +1806,7 @@ listens = []
             sidecar.push(".sha256");
             std::fs::write(
                 PathBuf::from(sidecar),
-                format!("{:x}", Sha256::digest(bytes)),
+                crate::hex::encode_hex(Sha256::digest(bytes).as_ref()),
             )
             .unwrap();
         }
@@ -1869,7 +1869,7 @@ listens = []
             sidecar.push(".sha256");
             std::fs::write(
                 PathBuf::from(sidecar),
-                format!("{:x}", Sha256::digest(bytes)),
+                crate::hex::encode_hex(Sha256::digest(bytes).as_ref()),
             )
             .unwrap();
         }

@@ -2477,7 +2477,7 @@ mod tests {
 
     fn sha256_hex(bytes: &[u8]) -> String {
         use sha2::{Digest as _, Sha256};
-        format!("{:x}", Sha256::digest(bytes))
+        crate::hex::encode_hex(Sha256::digest(bytes).as_ref())
     }
 
     #[test]
@@ -4075,11 +4075,11 @@ mod tests {
         let component_bytes = fs::read(&component).unwrap();
         assert_eq!(component_bytes.len(), 1_338_615);
         assert_eq!(
-            format!("{:x}", Sha256::digest(&manifest_bytes)),
+            crate::hex::encode_hex(Sha256::digest(&manifest_bytes).as_ref()),
             "b6d7b4e532df5b787acd37f3ae8c25ed093552097e5cf6dbc5c7eaca360e4919"
         );
         assert_eq!(
-            format!("{:x}", Sha256::digest(&component_bytes)),
+            crate::hex::encode_hex(Sha256::digest(&component_bytes).as_ref()),
             "76b568f40491d7e3bd1dcb55644ec7c42dbc393642a5a7a2ba5b1daa1ea6966a"
         );
         assert_eq!(

@@ -338,7 +338,7 @@ allow = ["patina/echo@0.1.0.echo"]
     }
 
     fn sha256_file(path: &Path) -> String {
-        format!("{:x}", Sha256::digest(fs::read(path).unwrap()))
+        crate::hex::encode_hex(Sha256::digest(fs::read(path).unwrap()).as_ref())
     }
 
     #[test]

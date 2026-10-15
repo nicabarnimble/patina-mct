@@ -876,7 +876,7 @@ fn hash_file(path: &Path) -> Result<(String, String, u64)> {
         blake3.update(&buffer[..read]);
     }
     Ok((
-        format!("{:x}", sha256.finalize()),
+        crate::hex::encode_hex(sha256.finalize().as_ref()),
         blake3.finalize().to_hex().to_string(),
         total,
     ))
@@ -996,7 +996,7 @@ fn scan_archive_reader(reader: impl Read, expected_target: &str) -> Result<Archi
                 bail!("release archive entry size does not match header");
             }
             (
-                Some(format!("{:x}", sha.finalize())),
+                Some(crate::hex::encode_hex(sha.finalize().as_ref())),
                 Some(b3.finalize().to_hex().to_string()),
                 bytes,
             )
@@ -1388,7 +1388,7 @@ fn extract_verified_archive(
                 sha.update(&buffer[..read]);
                 b3.update(&buffer[..read]);
             }
-            let sha = format!("{:x}", sha.finalize());
+            let sha = crate::hex::encode_hex(sha.finalize().as_ref());
             let b3 = b3.finalize().to_hex().to_string();
             if total != fact.size
                 || fact.sha256.as_deref() != Some(sha.as_str())
@@ -1780,7 +1780,7 @@ mod acquisition_tests {
     }
 
     fn sha_hex(bytes: &[u8]) -> String {
-        format!("{:x}", Sha256::digest(bytes))
+        crate::hex::encode_hex(Sha256::digest(bytes).as_ref())
     }
 
     fn tagged_sha(bytes: &[u8]) -> String {
