@@ -3,7 +3,7 @@ id: what-is-mct
 layer: core
 status: active
 created: 2026-06-09
-revised: 2026-08-26
+revised: 2026-10-14
 tags: [mct, product, mother, child, toy, authority, iroh, observations]
 references: [mct-build-boundaries, spec-driven-design, adapter-pattern, safety-boundaries, migration-vocabulary]
 ---
@@ -167,15 +167,15 @@ law rather than inherited as ontology. Existing `patinaChild` components
 
 ## Vision
 
-Multi-Mother exists to share selected data and compute across nodes under
-explicit authority. Vision is the sharing boundary — it may represent a
-tenant, institution, business unit, environment, compliance zone, data
-domain, or application fabric; do not collapse it to "tenant" early. Nodes
-are heterogeneous (a Raspberry Pi and a Mac Studio are both Mothers);
-capability publication is per-Vision and policy-filtered; cross-Vision
-sharing requires explicit grants. JVM ecosystems (banking is the adoption
-example) integrate through WIT-shaped external ingress, trusted Mother
-adapters, or remote Mothers—not as a second call model or local Child runtime.
+Vision is the sharing boundary. It may represent a tenant, institution,
+business unit, environment, compliance zone, data domain, or application
+fabric; do not collapse it to "tenant" early. Capability publication is
+per-Vision and policy-filtered; cross-Vision sharing requires explicit
+grants. Nodes differ in compute, storage, and locality, and routing accounts
+for that. Multi-Mother with per-Mother ledgers is future scale work, not
+planned now. JVM ecosystems (banking is the adoption example) integrate
+through WIT-shaped external ingress, trusted Mother adapters, or remote
+Mothers—not as a second call model or local Child runtime.
 
 ## What MCT is not
 

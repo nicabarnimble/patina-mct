@@ -1,6 +1,6 @@
 # MCT product roadmap — from runtime kernel to working product
 
-Status assessment date: 2026-08-26 (WASM-only local Child transition).
+Status assessment date: 2026-10-14 (WASM-only local Child transition; reconciled after #36).
 This document records where MCT stands as a product and the ordered TODO to
 close the gap. Update the checkboxes as phases land; each phase gets its own
 task file under `layer/surface/build/feat/<name>/` following the proven
@@ -28,6 +28,7 @@ integrations, remote Mother workloads, or trusted Mother adapters—not local
 Children. Historical process/JVM records remain inspectable but inert. Run
 records, control-plane snapshots (HTTP/UDS), and the hash-chained ledger
 provide inspection of MCT-mediated activity.
+Administration presents a granted iroh admin key.
 
 ### Proven as slices, not product-wired
 
