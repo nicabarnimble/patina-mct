@@ -2,8 +2,7 @@ name: CI
 
 on:
   push:
-    tags-ignore:
-      - "v*"
+    branches: [main]
   pull_request:
     branches: [patina, main, master]
   schedule:
@@ -86,6 +85,29 @@ jobs:
 
       - name: Allium, vocabulary, and release checks
         run: bash scripts/ci-tier0.sh specs
+
+      - name: Install documentation tools
+        run: scripts/install-docs-tools.sh
+
+      - name: Build and check product and API documentation
+        run: scripts/build-docs.sh
+
+  ledger-benchmark:
+    name: Ledger open benchmark
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+
+      - name: Streaming ledger open at 10k and 100k
+        run: cargo run -p mct-observation --release --bin ledger-bench -- --sizes 10000,100000 --check
 
   audit:
     name: audit

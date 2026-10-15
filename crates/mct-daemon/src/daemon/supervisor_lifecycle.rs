@@ -2655,6 +2655,7 @@ mod tests {
                 version: "0.1.0".into(),
                 function_names: vec!["verify".into()],
             },
+            additional_exports: Vec::new(),
             runtime_shape: ComponentRuntimeShape::WasmComponent,
             ingress_mode: ChildIngressMode::WitOnly,
             lifecycle_exports: LifecycleExports::AbsentAllowed,
