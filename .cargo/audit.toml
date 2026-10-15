@@ -11,10 +11,6 @@ ignore = [
     # revisit-by: 2027-04-14
     # revisit-when: the Iroh network stack advances
     "RUSTSEC-2024-0436",
-    # reason: Transitive proc-macro warning retained in the lock graph; no runtime code.
-    # revisit-by: 2027-04-14
-    # revisit-when: the next Iroh/dependency refresh
-    "RUSTSEC-2026-0173",
 ]
 informational_warnings = ["unmaintained", "unsound"]
 
