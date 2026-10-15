@@ -5845,6 +5845,285 @@ mod tests {
         );
     }
 
+    /// A day-to-day grant without expiry is refused at admission and on replay.
+    #[test]
+    fn day_to_day_grant_without_expiry_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let mut ledger =
+            JsonlObservationLedger::open_authority(&path, "ledger-a", "mother-a").unwrap();
+        let mut permanent = day_to_day_admin_grant();
+        permanent.expires_at = None;
+        let before = std::fs::read(&path).unwrap();
+        let rejected = commit_authority(
+            &mut ledger,
+            "permanent-day",
+            vec![AuthorityChangeV1::AdminKeyGrantPut {
+                grant: Box::new(permanent.clone()),
+            }],
+            admin_key_source(RECOVERY_PK),
+        );
+        assert_eq!(
+            rejected,
+            AuthorityMutationResultV1::RejectedBeforeCommit {
+                mutation_id: "permanent-day".into(),
+                reason: AuthorityMutationRejectionReasonV1::InvalidRequest,
+            }
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+
+        let granted = commit_authority(
+            &mut ledger,
+            "admin-grants",
+            vec![AuthorityChangeV1::AdminKeyGrantPut {
+                grant: Box::new(recovery_admin_grant()),
+            }],
+            admin_key_source(RECOVERY_PK),
+        );
+        assert_pending_commit(&granted, "admin-grants", 1, &ledger);
+        let entries = ledger.entries().unwrap();
+        let fact_id = "obs:authority-mutation:permanent-day";
+        let prior_replay = replay_authority_entries(&entries).unwrap();
+        let fact = AuthorityMutationFactV1 {
+            mutation_id: "permanent-day".into(),
+            mutation_intent_hash: "not-compared-when-apply-refuses".into(),
+            mother_node_id: "mother-a".into(),
+            ledger_id: "ledger-a".into(),
+            authority_epoch: prior_replay
+                .current_authority
+                .as_ref()
+                .unwrap()
+                .authority_epoch
+                .clone(),
+            prior_state: prior_replay
+                .mutations
+                .get("admin-grants")
+                .unwrap()
+                .fact
+                .resulting_state
+                .clone(),
+            changes: vec![AuthorityChangeV1::AdminKeyGrantPut {
+                grant: Box::new(permanent),
+            }],
+            grant_shaping_sources: vec![admin_key_source(RECOVERY_PK)],
+            resulting_state: prior_replay
+                .mutations
+                .get("admin-grants")
+                .unwrap()
+                .fact
+                .resulting_state
+                .clone(),
+            decided_at: "2026-08-06T12:05:00Z".into(),
+        };
+        let mut bad = entries.last().unwrap().clone();
+        bad.observation.observation_id = ObservationId::new(fact_id).unwrap();
+        bad.observation.detail_ref =
+            Some(encode_authority_fact("authority_mutation", fact_id, &fact).unwrap());
+        let mut with_bad = entries;
+        with_bad.push(bad);
+        let replay_error = replay_authority_entries(&with_bad).unwrap_err();
+        assert_eq!(
+            replay_error.to_string(),
+            "canonical authority fact is incoherent at sequence 1: canonical authority fact is incoherent at sequence 0: day-to-day admin key grant requires expiry"
+        );
+    }
+
+    /// A revoked day-to-day grant stays revoked after replay and cannot be put again.
+    #[test]
+    fn revoked_day_to_day_grant_stays_revoked_after_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let mut ledger =
+            JsonlObservationLedger::open_authority(&path, "ledger-a", "mother-a").unwrap();
+        let granted = commit_authority(
+            &mut ledger,
+            "admin-grants",
+            vec![
+                AuthorityChangeV1::AdminKeyGrantPut {
+                    grant: Box::new(day_to_day_admin_grant()),
+                },
+                AuthorityChangeV1::AdminKeyGrantPut {
+                    grant: Box::new(recovery_admin_grant()),
+                },
+            ],
+            admin_key_source(RECOVERY_PK),
+        );
+        assert_pending_commit(&granted, "admin-grants", 1, &ledger);
+        let revoked = commit_authority(
+            &mut ledger,
+            "revoke-day",
+            vec![AuthorityChangeV1::AdminKeyGrantRevoke {
+                grant_id: "day-to-day".into(),
+            }],
+            admin_key_source(RECOVERY_PK),
+        );
+        assert_pending_commit(&revoked, "revoke-day", 2, &ledger);
+
+        let entries = ledger.entries().unwrap();
+        assert!(entries.len() >= 3);
+        for window in entries.windows(2) {
+            assert_eq!(
+                window[1].previous_entry_hash.as_deref(),
+                Some(window[0].entry_hash.as_str())
+            );
+        }
+
+        let replay = replay_authority_entries(&entries).unwrap();
+        let day = replay.state.admin_key_grants.get("day-to-day").unwrap();
+        assert_eq!(day.grant_state, AdminKeyGrantStateV1::Revoked);
+        assert_eq!(day.class, AdminKeyGrantClassV1::DayToDay);
+        assert_eq!(day.public_half, half(DAY_PK));
+        assert_eq!(
+            replay
+                .state
+                .admin_key_grants
+                .get("recovery")
+                .unwrap()
+                .grant_state,
+            AdminKeyGrantStateV1::Active
+        );
+
+        let before = std::fs::read(&path).unwrap();
+        let resurrect = commit_authority(
+            &mut ledger,
+            "resurrect-day",
+            vec![AuthorityChangeV1::AdminKeyGrantPut {
+                grant: Box::new(day_to_day_admin_grant()),
+            }],
+            admin_key_source(RECOVERY_PK),
+        );
+        assert_eq!(
+            resurrect,
+            AuthorityMutationResultV1::RejectedBeforeCommit {
+                mutation_id: "resurrect-day".into(),
+                reason: AuthorityMutationRejectionReasonV1::InvalidRequest,
+            }
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let replay_after = replay_authority_entries(&ledger.entries().unwrap()).unwrap();
+        assert_eq!(
+            replay_after
+                .state
+                .admin_key_grants
+                .get("day-to-day")
+                .unwrap()
+                .grant_state,
+            AdminKeyGrantStateV1::Revoked
+        );
+    }
+
+    /// Admin-key and pairing-ticket mutations keep the blake3 previous-hash chain intact.
+    #[test]
+    fn admin_key_and_pairing_ticket_mutations_keep_hash_chain_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let mut ledger =
+            JsonlObservationLedger::open_authority(&path, "ledger-a", "mother-a").unwrap();
+        let ticket_hash = "abcdef01";
+        assert_pending_commit(
+            &commit_authority(
+                &mut ledger,
+                "admin-grants",
+                vec![
+                    AuthorityChangeV1::AdminKeyGrantPut {
+                        grant: Box::new(day_to_day_admin_grant()),
+                    },
+                    AuthorityChangeV1::AdminKeyGrantPut {
+                        grant: Box::new(recovery_admin_grant()),
+                    },
+                ],
+                admin_key_source(RECOVERY_PK),
+            ),
+            "admin-grants",
+            1,
+            &ledger,
+        );
+        assert_pending_commit(
+            &commit_authority(
+                &mut ledger,
+                "ticket-issue",
+                vec![AuthorityChangeV1::PairingTicketIssued {
+                    ticket_hash: ticket_hash.into(),
+                }],
+                admin_key_source(DAY_PK),
+            ),
+            "ticket-issue",
+            2,
+            &ledger,
+        );
+        assert_pending_commit(
+            &commit_authority(
+                &mut ledger,
+                "ticket-consume",
+                vec![AuthorityChangeV1::PairingTicketConsumed {
+                    ticket_hash: ticket_hash.into(),
+                }],
+                admin_key_source(DAY_PK),
+            ),
+            "ticket-consume",
+            3,
+            &ledger,
+        );
+        assert_pending_commit(
+            &commit_authority(
+                &mut ledger,
+                "revoke-day",
+                vec![AuthorityChangeV1::AdminKeyGrantRevoke {
+                    grant_id: "day-to-day".into(),
+                }],
+                admin_key_source(RECOVERY_PK),
+            ),
+            "revoke-day",
+            4,
+            &ledger,
+        );
+
+        let entries = ledger.entries().unwrap();
+        assert!(entries[0].previous_entry_hash.is_none());
+        for window in entries.windows(2) {
+            assert_eq!(
+                window[1].previous_entry_hash.as_deref(),
+                Some(window[0].entry_hash.as_str()),
+                "broken hash link at sequence {}",
+                window[1].local_sequence
+            );
+        }
+        let replay = replay_authority_entries(&entries).unwrap();
+        assert_eq!(
+            replay
+                .state
+                .admin_key_grants
+                .get("day-to-day")
+                .unwrap()
+                .grant_state,
+            AdminKeyGrantStateV1::Revoked
+        );
+        assert_eq!(
+            replay.state.pairing_tickets.get(ticket_hash).unwrap().state,
+            PairingTicketStateV1::Consumed
+        );
+        assert_eq!(replay.current_authority.unwrap().generation, 4);
+
+        drop(ledger);
+        let reader = JsonlObservationLedger::open_read_only(&path, "ledger-a", "mother-a").unwrap();
+        let reopened_entries = reader.entries().unwrap();
+        assert_eq!(reopened_entries.len(), entries.len());
+        for (left, right) in entries.iter().zip(reopened_entries.iter()) {
+            assert_eq!(left.entry_hash, right.entry_hash);
+            assert_eq!(left.previous_entry_hash, right.previous_entry_hash);
+        }
+        let reopened_replay = replay_authority_entries(&reopened_entries).unwrap();
+        assert_eq!(reopened_replay.state, replay.state);
+        assert_eq!(
+            reopened_replay
+                .current_authority
+                .as_ref()
+                .unwrap()
+                .generation,
+            4
+        );
+    }
+
     /// Existing toy-grant replay still succeeds beside the admin-key facts.
     #[test]
     fn toy_grant_replay_still_succeeds() {
