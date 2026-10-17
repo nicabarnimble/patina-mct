@@ -501,6 +501,10 @@ pub struct AuthorityReplayV1 {
     pub canonical_fact_count: usize,
     /// `(signer_grant_id, nonce)` pairs already accepted. Replay rejects a reuse.
     pub admin_signature_nonces: BTreeSet<(String, u64)>,
+    /// True while every replayed entry is a valid tail-recovery fact
+    /// ([`is_valid_tail_recovery_entry`]); vacuously true for an empty ledger.
+    /// It is the only non-empty prefix over which an operator-gated epoch is legal.
+    pub tail_recovery_only: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -978,7 +982,10 @@ impl JsonlObservationLedger {
                     && no_operator_evidence
             }
             AuthorityStartupClassV1::OperatorGatedNonvirgin => {
-                empty
+                // Empty, or holding nothing but valid tail-recovery facts: a
+                // crash on the very first write leaves only recovery evidence,
+                // which is not continuity evidence for a prior history.
+                (empty || replay.tail_recovery_only)
                     && replay.current_authority.is_none()
                     && startup.expected_predecessor
                         == AuthorityEpochPredecessorV1::NoneAfterOperatorReinitialization
@@ -2555,6 +2562,105 @@ pub fn is_tail_recovery_entry(entry: &MctObservationLedgerEntry) -> bool {
             .is_some_and(|detail| detail.starts_with("ledger-tail-recovery-v1:"))
 }
 
+const TAIL_RECOVERY_SAFE_MESSAGE: &str = "observation ledger tail recovered";
+
+/// Residue offset and digest named by a tail-recovery observation id
+/// `ledger-tail-recovery-{offset}-{digest}`, in canonical form only.
+fn tail_recovery_identity(entry: &MctObservationLedgerEntry) -> Option<(u64, &str)> {
+    let rest = entry
+        .observation
+        .observation_id
+        .as_str()
+        .strip_prefix("ledger-tail-recovery-")?;
+    let (offset_text, digest) = rest.split_once('-')?;
+    let offset: u64 = offset_text.parse().ok()?;
+    let canonical_digest = digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    (offset.to_string() == offset_text && canonical_digest).then_some((offset, digest))
+}
+
+/// True when `entry` is exactly the observation the ratified residue path
+/// appends (see `append_recovery_observation`): every carrier field matches,
+/// and the id and detail name the same residue digest. A recovery-looking
+/// entry that differs in any field is not a recovery fact.
+pub fn is_valid_tail_recovery_entry(entry: &MctObservationLedgerEntry) -> bool {
+    let Some((_, digest)) = tail_recovery_identity(entry) else {
+        return false;
+    };
+    let observation = &entry.observation;
+    let id = observation.observation_id.as_str();
+    is_tail_recovery_entry(entry)
+        && observation.detail_ref.as_deref()
+            == Some(format!("ledger-tail-recovery-v1:{digest}").as_str())
+        && observation.trace.trace_id.as_str() == format!("trace-{id}")
+        && observation.trace.span_id.is_none()
+        && observation.trace.parent_span_id.is_none()
+        && observation.trace.external_trace_id.is_none()
+        && observation.call_id.is_none()
+        && observation.decision_id.is_none()
+        && observation.subject_id.as_deref() == Some(entry.mother_node_id.as_str())
+        && observation.resource_id.as_deref() == Some(entry.ledger_id.as_str())
+        && observation.policy_revision.is_none()
+        && observation.grants_revision.is_none()
+        && observation.outcome == ObservationOutcome::Completed
+        && observation.visibility == ObservationVisibility::NodeOperator
+        && observation.safe_message == TAIL_RECOVERY_SAFE_MESSAGE
+        && observation.observed_at.as_str() == entry.appended_at
+        && entry.durability_class == DurabilityClass::BeforeEffect
+        && entry.export_status == ExportStatus::NotRequired
+}
+
+/// True when the private forensics for a valid tail-recovery fact are intact:
+/// the completed diagnostic record for that residue case names this ledger,
+/// and the preserved residue bytes still hash to the recorded digest.
+///
+/// # Errors
+///
+/// Returns an error only for an unreadable forensic directory; a missing or
+/// mismatched case is `Ok(false)`.
+pub fn tail_recovery_forensics_intact(
+    ledger_path: &Path,
+    ledger_id: &str,
+    mother_node_id: &str,
+    entry: &MctObservationLedgerEntry,
+) -> Result<bool> {
+    if !is_valid_tail_recovery_entry(entry)
+        || entry.ledger_id != ledger_id
+        || entry.mother_node_id != mother_node_id
+    {
+        return Ok(false);
+    }
+    let Some((offset, digest)) = tail_recovery_identity(entry) else {
+        return Ok(false);
+    };
+    let case_dir = forensic_root_path(ledger_path).join(format!("tail-{offset}-{digest}"));
+    let record_path = case_dir.join("record.json");
+    let source_path = case_dir.join("source.bin");
+    if !record_path.is_file() || !source_path.is_file() {
+        return Ok(false);
+    }
+    let Ok(status) = read_recovery_status(&record_path) else {
+        return Ok(false);
+    };
+    let bytes = std::fs::read(&source_path).map_err(|source| ObservationLedgerError::Io {
+        path: source_path.clone(),
+        source,
+    })?;
+    Ok(status.recovery_complete
+        && status.ledger_path == ledger_path
+        && status.source_ledger_id == ledger_id
+        && status.source_mother_node_id == mother_node_id
+        && status.residue_offset == offset
+        && status.residue_digest == digest
+        && status.recovery_decision_id == entry.observation.observation_id.as_str()
+        && status.recovery_time == entry.appended_at
+        && status.preserved_bytes_path == source_path
+        && status.residue_length == bytes.len() as u64
+        && blake3::hash(&bytes).to_hex().as_str() == digest)
+}
+
 pub fn replay_authority_entries(
     entries: &[MctObservationLedgerEntry],
 ) -> std::result::Result<AuthorityReplayV1, AuthorityReplayError> {
@@ -2585,6 +2691,7 @@ fn empty_authority_replay() -> AuthorityReplayV1 {
         facts: Vec::new(),
         canonical_fact_count: 0,
         admin_signature_nonces: BTreeSet::new(),
+        tail_recovery_only: true,
     }
 }
 
@@ -2709,6 +2816,19 @@ fn record_admin_signature_nonces(
 }
 
 fn fold_authority_entry(
+    replay: &mut AuthorityReplayV1,
+    used_epochs: &mut BTreeSet<String>,
+    previous: Option<(u64, &str)>,
+    entry: &MctObservationLedgerEntry,
+) -> std::result::Result<(), AuthorityReplayError> {
+    fold_authority_entry_body(replay, used_epochs, previous, entry)?;
+    // Updated after the entry is validated, so the entry is judged against
+    // the prefix before it.
+    replay.tail_recovery_only = replay.tail_recovery_only && is_valid_tail_recovery_entry(entry);
+    Ok(())
+}
+
+fn fold_authority_entry_body(
     replay: &mut AuthorityReplayV1,
     used_epochs: &mut BTreeSet<String>,
     previous: Option<(u64, &str)>,
@@ -2862,6 +2982,15 @@ fn validate_epoch_fact(
             fact.predecessor == AuthorityEpochPredecessorV1::NoneForVirgin && no_operator_evidence
         }
         (None, None, AuthorityStartupClassV1::OperatorGatedNonvirgin) => {
+            fact.predecessor == AuthorityEpochPredecessorV1::NoneAfterOperatorReinitialization
+                && complete_operator_evidence
+        }
+        // The only non-empty prefix an operator-gated epoch may follow is one
+        // made entirely of valid tail-recovery facts. Those facts stay in the
+        // chain; this epoch's entry hash-chains after the last of them.
+        (None, Some(_), AuthorityStartupClassV1::OperatorGatedNonvirgin)
+            if replay.tail_recovery_only =>
+        {
             fact.predecessor == AuthorityEpochPredecessorV1::NoneAfterOperatorReinitialization
                 && complete_operator_evidence
         }
@@ -3468,7 +3597,7 @@ fn append_recovery_observation(
         grants_revision: None,
         outcome: ObservationOutcome::Completed,
         visibility: ObservationVisibility::NodeOperator,
-        safe_message: "observation ledger tail recovered".into(),
+        safe_message: TAIL_RECOVERY_SAFE_MESSAGE.into(),
         detail_ref: Some(format!("ledger-tail-recovery-v1:{}", status.residue_digest)),
     };
     let mut entry = MctObservationLedgerEntry {
@@ -5391,6 +5520,172 @@ mod tests {
             replayed.canonical_record_digest,
             revoked.canonical_record_digest
         );
+    }
+
+    fn gated_startup() -> AuthorityTenureStartupEvidenceV1 {
+        AuthorityTenureStartupEvidenceV1 {
+            startup_class: AuthorityStartupClassV1::OperatorGatedNonvirgin,
+            expected_predecessor: AuthorityEpochPredecessorV1::NoneAfterOperatorReinitialization,
+            expected_prior_authority: None,
+            expected_authority_state_hash: authority_state_hash(&AuthorityStateV1::default())
+                .unwrap(),
+            inventory_hash: "inventory-1".into(),
+            operator_gate_decision_id: Some("decision:reinit".into()),
+            authenticated_principal_ref: Some("os-uid:501".into()),
+        }
+    }
+
+    fn rechain(entries: &mut [MctObservationLedgerEntry]) {
+        let mut previous: Option<String> = None;
+        for (sequence, entry) in entries.iter_mut().enumerate() {
+            entry.local_sequence = sequence as u64;
+            entry.previous_entry_hash = previous.clone();
+            entry.entry_hash = entry_hash(entry).unwrap();
+            previous = Some(entry.entry_hash.clone());
+        }
+    }
+
+    #[test]
+    fn operator_gated_epoch_replays_only_after_a_recovery_only_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        std::fs::write(&path, br#"{"ledger_id":"ledger-a","mother_"#).unwrap();
+        JsonlObservationLedger::recover_residue_for_startup(&path, "ledger-a", "mother-a")
+            .unwrap()
+            .expect("torn first frame recovers");
+        let ledger = JsonlObservationLedger::open_authority_with_startup(
+            &path,
+            "ledger-a",
+            "mother-a",
+            gated_startup(),
+        )
+        .unwrap();
+        let entries = ledger.entries().unwrap();
+        drop(ledger);
+        assert_eq!(entries.len(), 2);
+        assert!(is_valid_tail_recovery_entry(&entries[0]));
+        assert_eq!(
+            entries[1].previous_entry_hash.as_deref(),
+            Some(entries[0].entry_hash.as_str())
+        );
+        let replay = replay_authority_entries(&entries).unwrap();
+        assert!(replay.current_authority.is_some());
+
+        // The same epoch after any other entry is not legal.
+        let mut other = entries[0].clone();
+        other.observation.observation_id = ObservationId::new("obs:other").unwrap();
+        other.observation.detail_ref = None;
+        let mut with_other = vec![entries[0].clone(), other, entries[1].clone()];
+        rechain(&mut with_other);
+        assert!(replay_authority_entries(&with_other).is_err());
+
+        // Nor after a recovery-looking entry that is not exactly a recovery fact.
+        let mut forged = entries[0].clone();
+        forged.observation.safe_message = "observation ledger tail recovered!".into();
+        assert!(is_tail_recovery_entry(&forged));
+        assert!(!is_valid_tail_recovery_entry(&forged));
+        let mut with_forged = vec![forged, entries[1].clone()];
+        rechain(&mut with_forged);
+        assert!(replay_authority_entries(&with_forged).is_err());
+
+        // Two recovery facts (two crashes before any epoch) still admit it.
+        let mut second = entries[0].clone();
+        let digest = "b".repeat(64);
+        let id = format!("ledger-tail-recovery-100-{digest}");
+        second.observation.observation_id = ObservationId::new(id.clone()).unwrap();
+        second.observation.trace.trace_id = TraceId::new(format!("trace-{id}")).unwrap();
+        second.observation.detail_ref = Some(format!("ledger-tail-recovery-v1:{digest}"));
+        assert!(is_valid_tail_recovery_entry(&second));
+        let mut two = vec![entries[0].clone(), second, entries[1].clone()];
+        rechain(&mut two);
+        assert!(replay_authority_entries(&two).is_ok());
+
+        // A non-gated class over a recovery-only prefix is unchanged by the amendment.
+        let mut virgin_over_recovery = entries.clone();
+        let detail = virgin_over_recovery[1]
+            .observation
+            .detail_ref
+            .clone()
+            .unwrap()
+            .replace("operator_gated_nonvirgin", "virgin")
+            .replace("none_after_operator_reinitialization", "none_for_virgin")
+            .replace("\"decision:reinit\"", "null")
+            .replace("\"os-uid:501\"", "null");
+        assert!(!detail.contains("decision:reinit") && !detail.contains("os-uid:501"));
+        virgin_over_recovery[1].observation.detail_ref = Some(detail);
+        rechain(&mut virgin_over_recovery);
+        assert!(replay_authority_entries(&virgin_over_recovery).is_err());
+    }
+
+    #[test]
+    fn strict_tail_recovery_identity_rejects_noncanonical_ids() {
+        let digest = "c".repeat(64);
+        let valid = MctObservationLedgerEntry {
+            ledger_id: "ledger-a".into(),
+            mother_node_id: "mother-a".into(),
+            local_sequence: 0,
+            observation: MctObservation {
+                observation_id: ObservationId::new(format!("ledger-tail-recovery-0-{digest}"))
+                    .unwrap(),
+                observed_at: Timestamp::new("2026-10-17T00:00:00Z").unwrap(),
+                kind: ObservationKind::StorageAppendSucceeded,
+                source_plane: SourcePlane::Storage,
+                trace: ObservationTraceRef {
+                    trace_id: TraceId::new(format!("trace-ledger-tail-recovery-0-{digest}"))
+                        .unwrap(),
+                    span_id: None,
+                    parent_span_id: None,
+                    external_trace_id: None,
+                },
+                call_id: None,
+                decision_id: None,
+                subject_id: Some("mother-a".into()),
+                resource_id: Some("ledger-a".into()),
+                policy_revision: None,
+                grants_revision: None,
+                outcome: ObservationOutcome::Completed,
+                visibility: ObservationVisibility::NodeOperator,
+                safe_message: TAIL_RECOVERY_SAFE_MESSAGE.into(),
+                detail_ref: Some(format!("ledger-tail-recovery-v1:{digest}")),
+            },
+            previous_entry_hash: None,
+            entry_hash: String::new(),
+            appended_at: "2026-10-17T00:00:00Z".into(),
+            durability_class: DurabilityClass::BeforeEffect,
+            export_status: ExportStatus::NotRequired,
+        };
+        assert!(is_valid_tail_recovery_entry(&valid));
+        let with_id = |id: String| {
+            let mut entry = valid.clone();
+            entry.observation.trace.trace_id = TraceId::new(format!("trace-{id}")).unwrap();
+            entry.observation.observation_id = ObservationId::new(id).unwrap();
+            entry
+        };
+        for bad in [
+            format!("ledger-tail-recovery-00-{digest}"),
+            format!("ledger-tail-recovery-+0-{digest}"),
+            format!("ledger-tail-recovery-0-{}", "C".repeat(64)),
+            format!("ledger-tail-recovery-0-{}", "c".repeat(63)),
+            format!("ledger-tail-recovery-0-{digest}-x"),
+        ] {
+            assert!(
+                !is_valid_tail_recovery_entry(&with_id(bad.clone())),
+                "{bad}"
+            );
+        }
+        let mut other_digest = valid.clone();
+        other_digest.observation.detail_ref =
+            Some(format!("ledger-tail-recovery-v1:{}", "d".repeat(64)));
+        assert!(!is_valid_tail_recovery_entry(&other_digest));
+        let mut other_subject = valid.clone();
+        other_subject.observation.subject_id = Some("mother-b".into());
+        assert!(!is_valid_tail_recovery_entry(&other_subject));
+        let mut with_call = valid.clone();
+        with_call.observation.call_id = Some(CallId::new("call-1").unwrap());
+        assert!(!is_valid_tail_recovery_entry(&with_call));
+        let mut after_effect = valid;
+        after_effect.durability_class = DurabilityClass::Buffered;
+        assert!(!is_valid_tail_recovery_entry(&after_effect));
     }
 
     #[test]

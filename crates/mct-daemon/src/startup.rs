@@ -11,7 +11,7 @@ use mct_observation::{
     AuthorityStateV1, AuthorityTenureStartupEvidenceV1, GrantsAuthorityIdentityV1,
     JsonlObservationLedger, LedgerQuarantineStatus, LedgerRecoveryStatus, ObservationLedgerError,
     UsableAuthorityProjectionProofV1, authority_state_hash, is_tail_recovery_entry,
-    replay_authority_entries,
+    is_valid_tail_recovery_entry, replay_authority_entries, tail_recovery_forensics_intact,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -755,14 +755,34 @@ pub fn accept_operator_startup_gate(
         return Err(refuse("operator gate inventory changed"));
     }
     if evidence.ledger_entry_count != 0 {
-        // The ratified epoch relation admits `none_after_operator_reinitialization`
-        // only over an empty ledger. Reinitializing over committed
-        // tail-recovery facts needs a ledger-law amendment; until then this
-        // refuses before any durable write instead of failing mid-open.
-        return Err(refuse(
-            "ledger holds only tail-recovery facts; operator reinitialization over \
-             committed recovery history is not ratified",
-        ));
+        // D-H3.5: `none_after_operator_reinitialization` is legal over an empty
+        // ledger or over one holding nothing but valid tail-recovery facts
+        // whose private forensics are intact. Anything else, including a
+        // recovery-looking entry that is not exactly a ratified recovery fact,
+        // refuses here before any durable write. The exclusive open below
+        // re-proves the same relation under the writer lock.
+        let entries =
+            JsonlObservationLedger::open_read_only(&paths.ledger, ledger_id, mother_node_id)
+                .and_then(|ledger| ledger.entries())
+                .map_err(MctStartupClassificationErrorV1::LedgerUnavailable)?;
+        if entries.len() != evidence.ledger_entry_count {
+            return Err(refuse("operator gate ledger changed"));
+        }
+        for entry in &entries {
+            if !is_valid_tail_recovery_entry(entry) {
+                return Err(refuse(
+                    "ledger holds an entry that is not a valid tail-recovery fact",
+                ));
+            }
+            let intact =
+                tail_recovery_forensics_intact(&paths.ledger, ledger_id, mother_node_id, entry)
+                    .map_err(MctStartupClassificationErrorV1::LedgerUnavailable)?;
+            if !intact {
+                return Err(refuse(
+                    "tail-recovery forensics are missing or do not match the recovery fact",
+                ));
+            }
+        }
     }
     let gate = MctAcceptedStartupGateV1 {
         decision_id: request.decision_id.clone(),
@@ -1891,7 +1911,6 @@ mod tests {
             .expect("startup recovers the torn first frame");
         assert_eq!(recovery.residue_offset, 0);
         assert_eq!(fs::read(&recovery.preserved_bytes_path).unwrap(), torn);
-        let ledger_after_recovery = fs::read(&paths.ledger).unwrap();
 
         let evidence = classify_authority_startup(&paths, "ledger-a", "mother-a").unwrap();
         assert_eq!(evidence.ledger_entry_count, 1, "only the recovery fact");
@@ -1909,29 +1928,6 @@ mod tests {
             open_classified_authority(&paths, "ledger-a", "mother-a", &evidence),
             Err(MctStartupClassificationErrorV1::OperatorGateRequired)
         ));
-
-        // The gate refuses before any durable write: the ratified epoch
-        // relation admits operator reinitialization only over an empty ledger.
-        let request = MctOperatorStartupGateRequestV1 {
-            schema: "mct-operator-startup-gate-request/v1".into(),
-            decision_id: "decision:gate-torn".into(),
-            expected_mother_node_id: "mother-a".into(),
-            expected_ledger_id: "ledger-a".into(),
-            expected_inventory_hash: evidence.inventory.inventory_hash.clone(),
-            confirmation: MCT_OPERATOR_REINITIALIZATION_CONFIRMATION_V1.into(),
-        };
-        assert!(matches!(
-            accept_operator_startup_gate(
-                &paths,
-                "ledger-a",
-                "mother-a",
-                &request,
-                "os-uid:501",
-                "os-uid:501",
-            ),
-            Err(MctStartupClassificationErrorV1::OperatorGateRefused(_))
-        ));
-        assert_eq!(fs::read(&paths.ledger).unwrap(), ledger_after_recovery);
 
         // Recovery is idempotent and the class is stable across restarts.
         assert!(
@@ -1982,6 +1978,278 @@ mod tests {
             opened.authority_tenure().unwrap().fact.predecessor,
             AuthorityEpochPredecessorV1::NoneForVirgin
         );
+    }
+
+    fn gate_request(
+        evidence: &MctAuthorityStartupEvidenceV1,
+        decision: &str,
+    ) -> MctOperatorStartupGateRequestV1 {
+        MctOperatorStartupGateRequestV1 {
+            schema: "mct-operator-startup-gate-request/v1".into(),
+            decision_id: decision.into(),
+            expected_mother_node_id: "mother-a".into(),
+            expected_ledger_id: "ledger-a".into(),
+            expected_inventory_hash: evidence.inventory.inventory_hash.clone(),
+            confirmation: MCT_OPERATOR_REINITIALIZATION_CONFIRMATION_V1.into(),
+        }
+    }
+
+    fn gate(
+        paths: &MctStartupPaths,
+        request: &MctOperatorStartupGateRequestV1,
+    ) -> Result<JsonlObservationLedger, MctStartupClassificationErrorV1> {
+        accept_operator_startup_gate(
+            paths,
+            "ledger-a",
+            "mother-a",
+            request,
+            "os-uid:501",
+            "os-uid:501",
+        )
+    }
+
+    /// Non-virgin install whose very first ledger frame was torn, recovered at
+    /// startup. Returns the paths' tempdir and the recovered ledger bytes.
+    fn recovery_only_ledger() -> (tempfile::TempDir, MctStartupPaths, Vec<u8>) {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        touch(&paths.state);
+        let torn = br#"{"ledger_id":"ledger-a","mother_node_id":"mother-a","local_seq"#;
+        fs::write(&paths.ledger, torn).unwrap();
+        recover_startup_ledger_residue(&paths, "ledger-a", "mother-a")
+            .unwrap()
+            .expect("startup recovers the torn first frame");
+        let bytes = fs::read(&paths.ledger).unwrap();
+        (dir, paths, bytes)
+    }
+
+    fn plain_observation(id: &str) -> MctObservation {
+        MctObservation {
+            observation_id: ObservationId::new(id).unwrap(),
+            observed_at: Timestamp::new("2026-10-17T00:00:00Z").unwrap(),
+            kind: ObservationKind::StorageAppendSucceeded,
+            source_plane: SourcePlane::Storage,
+            trace: ObservationTraceRef {
+                trace_id: TraceId::new(format!("trace-{id}")).unwrap(),
+                span_id: None,
+                parent_span_id: None,
+                external_trace_id: None,
+            },
+            call_id: None,
+            decision_id: None,
+            subject_id: Some("mother-a".into()),
+            resource_id: Some("ledger-a".into()),
+            policy_revision: None,
+            grants_revision: None,
+            outcome: ObservationOutcome::Completed,
+            visibility: ObservationVisibility::NodeOperator,
+            safe_message: "plain observation".into(),
+            detail_ref: None,
+        }
+    }
+
+    #[test]
+    fn operator_gate_reinitializes_over_a_recovery_only_ledger_and_keeps_the_evidence() {
+        let (_dir, paths, recovered) = recovery_only_ledger();
+        let before = JsonlObservationLedger::open_read_only(&paths.ledger, "ledger-a", "mother-a")
+            .unwrap()
+            .entries()
+            .unwrap();
+        assert_eq!(before.len(), 1);
+        let recovery = before[0].clone();
+        assert!(mct_observation::is_valid_tail_recovery_entry(&recovery));
+
+        let evidence = classify_authority_startup(&paths, "ledger-a", "mother-a").unwrap();
+        assert_eq!(
+            evidence.startup_class,
+            AuthorityStartupClassV1::OperatorGatedNonvirgin
+        );
+        // Without the gate it still refuses: no automatic start.
+        assert!(matches!(
+            open_classified_authority(&paths, "ledger-a", "mother-a", &evidence),
+            Err(MctStartupClassificationErrorV1::OperatorGateRequired)
+        ));
+
+        let ledger = gate(&paths, &gate_request(&evidence, "decision:gate-torn")).unwrap();
+        let tenure = ledger.authority_tenure().unwrap();
+        assert_eq!(
+            tenure.fact.establishment.startup_class,
+            AuthorityStartupClassV1::OperatorGatedNonvirgin
+        );
+        assert_eq!(
+            tenure.fact.predecessor,
+            AuthorityEpochPredecessorV1::NoneAfterOperatorReinitialization
+        );
+        assert_eq!(tenure.fact.generation_baseline, 0);
+        assert!(tenure.fact.prior_authority.is_none());
+        assert_eq!(
+            tenure
+                .fact
+                .establishment
+                .operator_gate_decision_id
+                .as_deref(),
+            Some("decision:gate-torn")
+        );
+        let entries = ledger.entries().unwrap();
+        drop(ledger);
+        // The recovery fact stays first and unchanged; the epoch chains after it.
+        assert!(fs::read(&paths.ledger).unwrap().starts_with(&recovered));
+        assert_eq!(entries[0], recovery);
+        assert_eq!(entries[1].local_sequence, 1);
+        assert_eq!(
+            entries[1].previous_entry_hash.as_deref(),
+            Some(recovery.entry_hash.as_str())
+        );
+        assert_eq!(
+            entries[1].observation.observation_id.as_str(),
+            tenure_source_id(&entries)
+        );
+        assert_eq!(entries.len(), 4, "recovery, epoch, gate accepted, startup");
+        // Full replay of the whole chain accepts the amended relation.
+        let replay = replay_authority_entries(&entries).unwrap();
+        assert!(replay.current_authority.is_some());
+        assert!(!replay.tail_recovery_only);
+        // Forensics are untouched.
+        assert!(
+            tail_recovery_forensics_intact(&paths.ledger, "ledger-a", "mother-a", &recovery)
+                .unwrap()
+        );
+
+        // The next boot is an ordinary reopen over the same chain.
+        let next = classify_authority_startup(&paths, "ledger-a", "mother-a").unwrap();
+        assert_eq!(next.startup_class, AuthorityStartupClassV1::OrdinaryReopen);
+        let reopened = open_classified_authority(&paths, "ledger-a", "mother-a", &next).unwrap();
+        assert!(matches!(
+            reopened.authority_tenure().unwrap().fact.predecessor,
+            AuthorityEpochPredecessorV1::ValidatedHead { .. }
+        ));
+    }
+
+    fn tenure_source_id(entries: &[mct_observation::MctObservationLedgerEntry]) -> String {
+        replay_authority_entries(&entries[..2])
+            .unwrap()
+            .current_authority
+            .unwrap()
+            .source_authority_observation_id
+    }
+
+    #[test]
+    fn operator_gate_refuses_recovery_facts_plus_any_other_entry() {
+        let (_dir, paths, _) = recovery_only_ledger();
+        let mut writer =
+            JsonlObservationLedger::open(&paths.ledger, "ledger-a", "mother-a").unwrap();
+        writer
+            .append_before_effect(plain_observation("obs:other"), "2026-10-17T00:00:00Z")
+            .unwrap();
+        drop(writer);
+        let after_append = fs::read(&paths.ledger).unwrap();
+
+        // A non-recovery entry is history: the gate is not the legal path.
+        let evidence = classify_authority_startup(&paths, "ledger-a", "mother-a").unwrap();
+        assert_ne!(
+            evidence.startup_class,
+            AuthorityStartupClassV1::OperatorGatedNonvirgin
+        );
+        assert!(matches!(
+            gate(&paths, &gate_request(&evidence, "decision:gate-other")),
+            Err(MctStartupClassificationErrorV1::OperatorGateRefused(_))
+        ));
+        assert_eq!(fs::read(&paths.ledger).unwrap(), after_append);
+
+        // Forced operator-gated evidence is refused by the exclusive rescan too.
+        let forced = MctAuthorityStartupEvidenceV1 {
+            startup_class: AuthorityStartupClassV1::OperatorGatedNonvirgin,
+            ..evidence
+        };
+        let accepted = MctAcceptedStartupGateV1 {
+            decision_id: "decision:forced".into(),
+            authenticated_principal_ref: "os-uid:501".into(),
+            inventory_hash: forced.inventory.inventory_hash.clone(),
+        };
+        assert!(
+            JsonlObservationLedger::open_authority_with_startup(
+                &paths.ledger,
+                "ledger-a",
+                "mother-a",
+                forced.tenure_evidence(Some(&accepted)).unwrap(),
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(&paths.ledger).unwrap(), after_append);
+    }
+
+    #[test]
+    fn operator_gate_refuses_a_forged_recovery_looking_entry() {
+        // A recovery-looking entry with a field the residue path never writes.
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        touch(&paths.state);
+        let digest = "a".repeat(64);
+        let mut forged = plain_observation(&format!("ledger-tail-recovery-0-{digest}"));
+        forged.detail_ref = Some(format!("ledger-tail-recovery-v1:{digest}"));
+        let mut writer =
+            JsonlObservationLedger::open(&paths.ledger, "ledger-a", "mother-a").unwrap();
+        let entry = writer
+            .append_before_effect(forged, "2026-10-17T00:00:00Z")
+            .unwrap();
+        drop(writer);
+        assert!(is_tail_recovery_entry(&entry));
+        assert!(!is_valid_tail_recovery_entry(&entry));
+        let bytes = fs::read(&paths.ledger).unwrap();
+        let evidence = classify_authority_startup(&paths, "ledger-a", "mother-a").unwrap();
+        assert_eq!(
+            evidence.startup_class,
+            AuthorityStartupClassV1::OperatorGatedNonvirgin,
+            "a recovery-looking ledger is still never an automatic start"
+        );
+        assert!(matches!(
+            gate(&paths, &gate_request(&evidence, "decision:gate-forged")),
+            Err(MctStartupClassificationErrorV1::OperatorGateRefused(_))
+        ));
+        assert_eq!(fs::read(&paths.ledger).unwrap(), bytes);
+
+        // Structurally exact, but with no preserved forensics behind it.
+        let dir = tempfile::tempdir().unwrap();
+        let paths = self::paths(dir.path());
+        touch(&paths.state);
+        let id = format!("ledger-tail-recovery-0-{digest}");
+        let mut exact = plain_observation(&id);
+        exact.safe_message = "observation ledger tail recovered".into();
+        exact.detail_ref = Some(format!("ledger-tail-recovery-v1:{digest}"));
+        let mut writer =
+            JsonlObservationLedger::open(&paths.ledger, "ledger-a", "mother-a").unwrap();
+        let entry = writer
+            .append_before_effect(exact, "2026-10-17T00:00:00Z")
+            .unwrap();
+        drop(writer);
+        assert!(is_valid_tail_recovery_entry(&entry));
+        assert!(
+            !tail_recovery_forensics_intact(&paths.ledger, "ledger-a", "mother-a", &entry).unwrap()
+        );
+        let bytes = fs::read(&paths.ledger).unwrap();
+        let evidence = classify_authority_startup(&paths, "ledger-a", "mother-a").unwrap();
+        assert!(matches!(
+            gate(
+                &paths,
+                &gate_request(&evidence, "decision:gate-no-forensics")
+            ),
+            Err(MctStartupClassificationErrorV1::OperatorGateRefused(_))
+        ));
+        assert_eq!(fs::read(&paths.ledger).unwrap(), bytes);
+    }
+
+    #[test]
+    fn operator_gate_refuses_when_recovery_forensics_were_tampered() {
+        let (_dir, paths, recovered) = recovery_only_ledger();
+        let root = mct_observation::forensic_root_path(&paths.ledger);
+        let case = fs::read_dir(&root).unwrap().next().unwrap().unwrap().path();
+        fs::write(case.join("source.bin"), b"not the torn bytes").unwrap();
+        let evidence = classify_authority_startup(&paths, "ledger-a", "mother-a").unwrap();
+        assert!(matches!(
+            gate(&paths, &gate_request(&evidence, "decision:gate-tampered")),
+            Err(MctStartupClassificationErrorV1::OperatorGateRefused(_))
+        ));
+        assert_eq!(fs::read(&paths.ledger).unwrap(), recovered);
     }
 
     #[test]
