@@ -1,0 +1,13 @@
+[package]
+name = "phase3-measure"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Phase 3 hybrid admin signature ledger size and timing harness"
+publish = false
+
+[dependencies]
+mct-kernel = { path = "../mct-kernel" }
+mct-observation = { path = "../mct-observation" }

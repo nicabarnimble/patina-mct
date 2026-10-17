@@ -15,8 +15,10 @@ pub use segment::{
 
 use mct_kernel::admin_key_grant_shape_error;
 pub use mct_kernel::{
-    AdminKeyGrantClassV1, AdminKeyGrantStateV1, AdminKeyGrantV1, AdminKeyPublicHalf,
-    AdminKeyScopeV1,
+    AdminHybridSigningKey, AdminKeyGrantClassV1, AdminKeyGrantStateV1, AdminKeyGrantV1,
+    AdminKeyPublicHalf, AdminKeyScopeV1, AdminSignatureError, AdminSignatureSchemeV1,
+    AdminSignatureV1, AdminSignedMessageParts, MlDsa65PublicKey, admin_signed_message,
+    verify_admin_hybrid_signature,
 };
 use mct_kernel::{
     CallId, CanonicalToyContract, MctObservation, ObservationId, ObservationKind,
@@ -165,11 +167,23 @@ pub enum PairingTicketStateV1 {
 }
 
 /// Hash-only pairing-ticket record. A consumed hash cannot be consumed again.
+///
+/// Scheme v1 also records the peer endpoint and the expiry window. Pre-scheme
+/// facts omit those fields. The ticket value itself is never stored.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PairingTicketV1 {
     pub ticket_hash: String,
     pub state: PairingTicketStateV1,
+    /// Peer endpoint the ticket was issued for. Absent on a pre-scheme fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_endpoint_id: Option<String>,
+    /// Start of the redemption window. Absent on a pre-scheme fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_starts_at: Option<Timestamp>,
+    /// End of the redemption window. Absent on a pre-scheme fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_expires_at: Option<Timestamp>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,15 +219,40 @@ pub enum AuthorityChangeV1 {
     },
     AdminKeyGrantPut {
         grant: Box<AdminKeyGrantV1>,
+        /// Scheme v1 signature of this command plus the signer grant.
+        /// Absent on a pre-scheme fact.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<AdminSignatureV1>,
     },
     AdminKeyGrantRevoke {
         grant_id: String,
+        /// Scheme v1 signature of this command plus the signer grant.
+        /// Absent on a pre-scheme fact.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<AdminSignatureV1>,
     },
     PairingTicketIssued {
         ticket_hash: String,
+        /// Peer endpoint id. Required when `signature` is present.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        peer_endpoint_id: Option<String>,
+        /// Start of the expiry window. Required when `signature` is present.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window_starts_at: Option<Timestamp>,
+        /// End of the expiry window. Required when `signature` is present.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window_expires_at: Option<Timestamp>,
+        /// Scheme v1 signature of this command plus the signer grant.
+        /// Absent on a pre-scheme fact.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<AdminSignatureV1>,
     },
     PairingTicketConsumed {
         ticket_hash: String,
+        /// Scheme v1 signature of this command plus the signer grant.
+        /// Absent on a pre-scheme fact.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<AdminSignatureV1>,
     },
 }
 
@@ -460,6 +499,8 @@ pub struct AuthorityReplayV1 {
     pub mutations: BTreeMap<String, CommittedAuthorityMutationV1>,
     pub facts: Vec<AuthorityCanonicalFactRecordV1>,
     pub canonical_fact_count: usize,
+    /// `(signer_grant_id, nonce)` pairs already accepted. Replay rejects a reuse.
+    pub admin_signature_nonces: BTreeSet<(String, u64)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1087,6 +1128,20 @@ impl JsonlObservationLedger {
                 AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
             );
         };
+        if verify_admin_change_signatures(
+            &replay.state,
+            &replay.admin_signature_nonces,
+            &self.mother_node_id,
+            &self.ledger_id,
+            &request.changes,
+        )
+        .is_err()
+        {
+            return rejected_mutation(
+                mutation_id,
+                AuthorityMutationRejectionReasonV1::InvalidRequest,
+            );
+        }
         let mut resulting_state = replay.state.clone();
         if apply_authority_changes(&mut resulting_state, &request.changes).is_err() {
             return rejected_mutation(
@@ -1910,16 +1965,16 @@ fn authority_change_sort_key(change: &AuthorityChangeV1) -> (&'static str, &str)
         AuthorityChangeV1::WatchScopePut { scope } => {
             ("watch_scope_put", scope.watch_scope_id.as_str())
         }
-        AuthorityChangeV1::AdminKeyGrantPut { grant } => {
+        AuthorityChangeV1::AdminKeyGrantPut { grant, .. } => {
             ("admin_key_grant_put", grant.grant_id.as_str())
         }
-        AuthorityChangeV1::AdminKeyGrantRevoke { grant_id } => {
+        AuthorityChangeV1::AdminKeyGrantRevoke { grant_id, .. } => {
             ("admin_key_grant_revoke", grant_id.as_str())
         }
-        AuthorityChangeV1::PairingTicketIssued { ticket_hash } => {
+        AuthorityChangeV1::PairingTicketIssued { ticket_hash, .. } => {
             ("pairing_ticket_issued", ticket_hash.as_str())
         }
-        AuthorityChangeV1::PairingTicketConsumed { ticket_hash } => {
+        AuthorityChangeV1::PairingTicketConsumed { ticket_hash, .. } => {
             ("pairing_ticket_consumed", ticket_hash.as_str())
         }
     }
@@ -2028,11 +2083,31 @@ fn apply_admin_key_grant_revoke(
 fn apply_pairing_ticket_issued(
     state: &mut AuthorityStateV1,
     ticket_hash: &str,
+    peer_endpoint_id: Option<&str>,
+    window_starts_at: Option<&Timestamp>,
+    window_expires_at: Option<&Timestamp>,
+    signed: bool,
 ) -> std::result::Result<(), AuthorityReplayError> {
     if !pairing_ticket_hash_ok(ticket_hash) {
         return Err(authority_incoherent(
             "pairing ticket fact stores a hash only",
         ));
+    }
+    if signed {
+        let endpoint = peer_endpoint_id.unwrap_or("");
+        if !non_empty_token(endpoint) {
+            return Err(authority_incoherent(
+                "pairing ticket carries the peer endpoint id",
+            ));
+        }
+        match (window_starts_at, window_expires_at) {
+            (Some(starts), Some(expires)) if expires > starts => {}
+            _ => {
+                return Err(authority_incoherent(
+                    "pairing ticket carries an expiry window",
+                ));
+            }
+        }
     }
     if state.pairing_tickets.contains_key(ticket_hash) {
         return Err(authority_incoherent(
@@ -2044,6 +2119,9 @@ fn apply_pairing_ticket_issued(
         PairingTicketV1 {
             ticket_hash: ticket_hash.to_owned(),
             state: PairingTicketStateV1::Issued,
+            peer_endpoint_id: peer_endpoint_id.map(str::to_owned),
+            window_starts_at: window_starts_at.cloned(),
+            window_expires_at: window_expires_at.cloned(),
         },
     );
     Ok(())
@@ -2068,13 +2146,15 @@ fn apply_pairing_ticket_consumed(
             "pairing ticket hash was already consumed",
         )),
         Some(PairingTicketStateV1::Issued) => {
-            state.pairing_tickets.insert(
-                ticket_hash.to_owned(),
-                PairingTicketV1 {
-                    ticket_hash: ticket_hash.to_owned(),
-                    state: PairingTicketStateV1::Consumed,
-                },
-            );
+            let mut consumed = state
+                .pairing_tickets
+                .get(ticket_hash)
+                .expect("issued ticket")
+                .clone();
+            consumed.state = PairingTicketStateV1::Consumed;
+            state
+                .pairing_tickets
+                .insert(ticket_hash.to_owned(), consumed);
             Ok(())
         }
     }
@@ -2223,16 +2303,34 @@ pub fn apply_authority_changes(
                 }
                 state.watch_scopes.insert(scope_id, scope.as_ref().clone());
             }
-            AuthorityChangeV1::AdminKeyGrantPut { grant } => {
+            AuthorityChangeV1::AdminKeyGrantPut { grant, signature } => {
+                if signature.is_some() && grant.ml_dsa65_public_key.is_none() {
+                    return Err(authority_incoherent(
+                        "scheme v1 grant put records the ML-DSA-65 public key beside Ed25519",
+                    ));
+                }
                 apply_admin_key_grant_put(state, grant)?;
             }
-            AuthorityChangeV1::AdminKeyGrantRevoke { grant_id } => {
+            AuthorityChangeV1::AdminKeyGrantRevoke { grant_id, .. } => {
                 apply_admin_key_grant_revoke(state, grant_id)?;
             }
-            AuthorityChangeV1::PairingTicketIssued { ticket_hash } => {
-                apply_pairing_ticket_issued(state, ticket_hash)?;
+            AuthorityChangeV1::PairingTicketIssued {
+                ticket_hash,
+                peer_endpoint_id,
+                window_starts_at,
+                window_expires_at,
+                signature,
+            } => {
+                apply_pairing_ticket_issued(
+                    state,
+                    ticket_hash,
+                    peer_endpoint_id.as_deref(),
+                    window_starts_at.as_ref(),
+                    window_expires_at.as_ref(),
+                    signature.is_some(),
+                )?;
             }
-            AuthorityChangeV1::PairingTicketConsumed { ticket_hash } => {
+            AuthorityChangeV1::PairingTicketConsumed { ticket_hash, .. } => {
                 apply_pairing_ticket_consumed(state, ticket_hash)?;
             }
         }
@@ -2486,6 +2584,127 @@ fn empty_authority_replay() -> AuthorityReplayV1 {
         mutations: BTreeMap::new(),
         facts: Vec::new(),
         canonical_fact_count: 0,
+        admin_signature_nonces: BTreeSet::new(),
+    }
+}
+
+fn change_signature(change: &AuthorityChangeV1) -> Option<&AdminSignatureV1> {
+    match change {
+        AuthorityChangeV1::AdminKeyGrantPut { signature, .. }
+        | AuthorityChangeV1::AdminKeyGrantRevoke { signature, .. }
+        | AuthorityChangeV1::PairingTicketIssued { signature, .. }
+        | AuthorityChangeV1::PairingTicketConsumed { signature, .. } => signature.as_ref(),
+        _ => None,
+    }
+}
+
+fn command_without_signature(change: &AuthorityChangeV1) -> AuthorityChangeV1 {
+    let mut stripped = change.clone();
+    match &mut stripped {
+        AuthorityChangeV1::AdminKeyGrantPut { signature, .. }
+        | AuthorityChangeV1::AdminKeyGrantRevoke { signature, .. }
+        | AuthorityChangeV1::PairingTicketIssued { signature, .. }
+        | AuthorityChangeV1::PairingTicketConsumed { signature, .. } => *signature = None,
+        _ => {}
+    }
+    stripped
+}
+
+fn signer_grant<'a>(
+    prior: &'a AuthorityStateV1,
+    change: &'a AuthorityChangeV1,
+    signer_grant_id: &str,
+) -> std::result::Result<&'a AdminKeyGrantV1, String> {
+    if let AuthorityChangeV1::AdminKeyGrantPut { grant, .. } = change
+        && grant.grant_id == signer_grant_id
+    {
+        return Ok(grant);
+    }
+    match prior.admin_key_grants.get(signer_grant_id) {
+        Some(grant) if grant.grant_state == AdminKeyGrantStateV1::Active => Ok(grant),
+        Some(_) => Err(format!(
+            "admin signature signer grant '{signer_grant_id}' is not active"
+        )),
+        None => Err(format!(
+            "admin signature signer grant '{signer_grant_id}' is not in the ledger"
+        )),
+    }
+}
+
+/// Canonical bytes a scheme v1 admin signature covers: the command plus the grant.
+///
+/// # Errors
+///
+/// Returns an error when the grant or the command cannot be encoded.
+pub fn admin_change_signing_message(
+    mother_node_id: &str,
+    ledger_id: &str,
+    nonce: u64,
+    signer_grant: &AdminKeyGrantV1,
+    change: &AuthorityChangeV1,
+) -> Result<Vec<u8>> {
+    let grant_bytes = canonical_json_bytes(signer_grant)?;
+    let command_bytes = canonical_json_bytes(&command_without_signature(change))?;
+    Ok(admin_signed_message(AdminSignedMessageParts {
+        scheme: AdminSignatureSchemeV1::Ed25519MlDsa65V1,
+        mother_node_id,
+        ledger_id,
+        nonce,
+        signer_grant_canonical: &grant_bytes,
+        command_canonical: &command_bytes,
+    }))
+}
+
+fn verify_admin_change_signatures(
+    prior: &AuthorityStateV1,
+    used_nonces: &BTreeSet<(String, u64)>,
+    mother_node_id: &str,
+    ledger_id: &str,
+    changes: &[AuthorityChangeV1],
+) -> std::result::Result<(), String> {
+    let mut seen = BTreeSet::new();
+    for change in changes {
+        let Some(signature) = change_signature(change) else {
+            continue;
+        };
+        let nonce_key = (signature.signer_grant_id.clone(), signature.nonce);
+        if used_nonces.contains(&nonce_key) || !seen.insert(nonce_key) {
+            return Err(format!(
+                "admin signature nonce {} was already used for grant '{}'",
+                signature.nonce, signature.signer_grant_id
+            ));
+        }
+        let grant = signer_grant(prior, change, &signature.signer_grant_id)?;
+        let Some(ml_dsa) = grant.ml_dsa65_public_key.as_ref() else {
+            return Err(
+                "scheme v1 signature requires the ML-DSA-65 public key on the signer grant".into(),
+            );
+        };
+        let grant_bytes = canonical_json_bytes(grant).map_err(|error| error.to_string())?;
+        let command_bytes = canonical_json_bytes(&command_without_signature(change))
+            .map_err(|error| error.to_string())?;
+        let message = admin_signed_message(AdminSignedMessageParts {
+            scheme: signature.scheme,
+            mother_node_id,
+            ledger_id,
+            nonce: signature.nonce,
+            signer_grant_canonical: &grant_bytes,
+            command_canonical: &command_bytes,
+        });
+        verify_admin_hybrid_signature(&grant.public_half, ml_dsa, &message, &signature.signature)
+            .map_err(|error: AdminSignatureError| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn record_admin_signature_nonces(
+    used: &mut BTreeSet<(String, u64)>,
+    changes: &[AuthorityChangeV1],
+) {
+    for change in changes {
+        if let Some(signature) = change_signature(change) {
+            used.insert((signature.signer_grant_id.clone(), signature.nonce));
+        }
     }
 }
 
@@ -2543,6 +2762,7 @@ fn fold_authority_entry(
                     }
                 })?;
             let resulting_state = validate_authority_mutation_fact(entry, replay, &fact)?;
+            record_admin_signature_nonces(&mut replay.admin_signature_nonces, &fact.changes);
             if replay.mutations.contains_key(&fact.mutation_id) {
                 return Err(AuthorityReplayError::Incoherent {
                     sequence: entry.local_sequence,
@@ -2776,6 +2996,14 @@ fn validate_authority_mutation_fact(
         authority_mutation_intent_hash(&request).map_err(|error| incoherent(&error.to_string()))?;
     let prior_hash =
         authority_state_hash(&replay.state).map_err(|error| incoherent(&error.to_string()))?;
+    verify_admin_change_signatures(
+        &replay.state,
+        &replay.admin_signature_nonces,
+        &fact.mother_node_id,
+        &fact.ledger_id,
+        &fact.changes,
+    )
+    .map_err(|detail| incoherent(&detail))?;
     let mut resulting_state = replay.state.clone();
     apply_authority_changes(&mut resulting_state, &fact.changes).map_err(|error| {
         AuthorityReplayError::Incoherent {
@@ -5690,6 +5918,7 @@ mod tests {
         AdminKeyGrantV1 {
             grant_id: "day-to-day".into(),
             public_half: half(DAY_PK),
+            ml_dsa65_public_key: None,
             class: AdminKeyGrantClassV1::DayToDay,
             scopes: vec![AdminKeyScopeV1::KeyManage, AdminKeyScopeV1::Status],
             expires_at: Some(Timestamp::new("2026-10-14T00:00:00Z").unwrap()),
@@ -5701,6 +5930,7 @@ mod tests {
         AdminKeyGrantV1 {
             grant_id: "recovery".into(),
             public_half: half(RECOVERY_PK),
+            ml_dsa65_public_key: None,
             class: AdminKeyGrantClassV1::Recovery,
             scopes: vec![AdminKeyScopeV1::KeyManage, AdminKeyScopeV1::StartupGate],
             expires_at: None,
@@ -5740,9 +5970,13 @@ mod tests {
             vec![
                 AuthorityChangeV1::AdminKeyGrantPut {
                     grant: Box::new(day.clone()),
+
+                    signature: None,
                 },
                 AuthorityChangeV1::AdminKeyGrantPut {
                     grant: Box::new(recovery.clone()),
+
+                    signature: None,
                 },
             ],
             admin_key_source(RECOVERY_PK),
@@ -5800,6 +6034,11 @@ mod tests {
             "ticket-issue",
             vec![AuthorityChangeV1::PairingTicketIssued {
                 ticket_hash: ticket_hash.into(),
+
+                peer_endpoint_id: None,
+                window_starts_at: None,
+                window_expires_at: None,
+                signature: None,
             }],
             admin_key_source(DAY_PK),
         );
@@ -5809,6 +6048,8 @@ mod tests {
             "ticket-consume",
             vec![AuthorityChangeV1::PairingTicketConsumed {
                 ticket_hash: ticket_hash.into(),
+
+                signature: None,
             }],
             admin_key_source(DAY_PK),
         );
@@ -5821,6 +6062,10 @@ mod tests {
             Some(&PairingTicketV1 {
                 ticket_hash: ticket_hash.into(),
                 state: PairingTicketStateV1::Consumed,
+
+                peer_endpoint_id: None,
+                window_starts_at: None,
+                window_expires_at: None,
             })
         );
 
@@ -5830,6 +6075,8 @@ mod tests {
             "ticket-consume-again",
             vec![AuthorityChangeV1::PairingTicketConsumed {
                 ticket_hash: ticket_hash.into(),
+
+                signature: None,
             }],
             admin_key_source(DAY_PK),
         );
@@ -5874,9 +6121,13 @@ mod tests {
             vec![
                 AuthorityChangeV1::AdminKeyGrantPut {
                     grant: Box::new(day_to_day_admin_grant()),
+
+                    signature: None,
                 },
                 AuthorityChangeV1::AdminKeyGrantPut {
                     grant: Box::new(recovery_admin_grant()),
+
+                    signature: None,
                 },
             ],
             admin_key_source(RECOVERY_PK),
@@ -5889,6 +6140,8 @@ mod tests {
             "revoke-recovery",
             vec![AuthorityChangeV1::AdminKeyGrantRevoke {
                 grant_id: "recovery".into(),
+
+                signature: None,
             }],
             admin_key_source(DAY_PK),
         );
@@ -5929,6 +6182,8 @@ mod tests {
                 .clone(),
             changes: vec![AuthorityChangeV1::AdminKeyGrantRevoke {
                 grant_id: "recovery".into(),
+
+                signature: None,
             }],
             grant_shaping_sources: vec![admin_key_source(DAY_PK)],
             resulting_state: replay
@@ -5988,9 +6243,13 @@ mod tests {
             vec![
                 AuthorityChangeV1::AdminKeyGrantPut {
                     grant: Box::new(day_to_day_admin_grant()),
+
+                    signature: None,
                 },
                 AuthorityChangeV1::AdminKeyGrantPut {
                     grant: Box::new(recovery_admin_grant()),
+
+                    signature: None,
                 },
             ],
             admin_key_source(RECOVERY_PK),
@@ -6076,6 +6335,8 @@ mod tests {
             "permanent-day",
             vec![AuthorityChangeV1::AdminKeyGrantPut {
                 grant: Box::new(permanent.clone()),
+
+                signature: None,
             }],
             admin_key_source(RECOVERY_PK),
         );
@@ -6093,6 +6354,8 @@ mod tests {
             "admin-grants",
             vec![AuthorityChangeV1::AdminKeyGrantPut {
                 grant: Box::new(recovery_admin_grant()),
+
+                signature: None,
             }],
             admin_key_source(RECOVERY_PK),
         );
@@ -6120,6 +6383,8 @@ mod tests {
                 .clone(),
             changes: vec![AuthorityChangeV1::AdminKeyGrantPut {
                 grant: Box::new(permanent),
+
+                signature: None,
             }],
             grant_shaping_sources: vec![admin_key_source(RECOVERY_PK)],
             resulting_state: prior_replay
@@ -6157,9 +6422,13 @@ mod tests {
             vec![
                 AuthorityChangeV1::AdminKeyGrantPut {
                     grant: Box::new(day_to_day_admin_grant()),
+
+                    signature: None,
                 },
                 AuthorityChangeV1::AdminKeyGrantPut {
                     grant: Box::new(recovery_admin_grant()),
+
+                    signature: None,
                 },
             ],
             admin_key_source(RECOVERY_PK),
@@ -6170,6 +6439,8 @@ mod tests {
             "revoke-day",
             vec![AuthorityChangeV1::AdminKeyGrantRevoke {
                 grant_id: "day-to-day".into(),
+
+                signature: None,
             }],
             admin_key_source(RECOVERY_PK),
         );
@@ -6205,6 +6476,8 @@ mod tests {
             "resurrect-day",
             vec![AuthorityChangeV1::AdminKeyGrantPut {
                 grant: Box::new(day_to_day_admin_grant()),
+
+                signature: None,
             }],
             admin_key_source(RECOVERY_PK),
         );
@@ -6243,9 +6516,13 @@ mod tests {
                 vec![
                     AuthorityChangeV1::AdminKeyGrantPut {
                         grant: Box::new(day_to_day_admin_grant()),
+
+                        signature: None,
                     },
                     AuthorityChangeV1::AdminKeyGrantPut {
                         grant: Box::new(recovery_admin_grant()),
+
+                        signature: None,
                     },
                 ],
                 admin_key_source(RECOVERY_PK),
@@ -6260,6 +6537,11 @@ mod tests {
                 "ticket-issue",
                 vec![AuthorityChangeV1::PairingTicketIssued {
                     ticket_hash: ticket_hash.into(),
+
+                    peer_endpoint_id: None,
+                    window_starts_at: None,
+                    window_expires_at: None,
+                    signature: None,
                 }],
                 admin_key_source(DAY_PK),
             ),
@@ -6273,6 +6555,8 @@ mod tests {
                 "ticket-consume",
                 vec![AuthorityChangeV1::PairingTicketConsumed {
                     ticket_hash: ticket_hash.into(),
+
+                    signature: None,
                 }],
                 admin_key_source(DAY_PK),
             ),
@@ -6286,6 +6570,8 @@ mod tests {
                 "revoke-day",
                 vec![AuthorityChangeV1::AdminKeyGrantRevoke {
                     grant_id: "day-to-day".into(),
+
+                    signature: None,
                 }],
                 admin_key_source(RECOVERY_PK),
             ),

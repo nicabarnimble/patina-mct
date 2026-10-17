@@ -4,3 +4,8 @@
 id = "RUSTSEC-2024-0436"
 ignoreUntil = 2027-04-14
 reason = "paste (unmaintained): transitive Linux netlink proc-macro; no maintained release is available in the current netdev/netwatch chain. Revisit when the Iroh network stack advances."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0173"
+ignoreUntil = 2027-04-14
+reason = "proc-macro-error2 (unmaintained) via libcrux-ml-dsa -> core-models -> hax-lib-macros, only under cfg(hax); never compiled in our builds, present in Cargo.lock only. Revisit when libcrux-ml-dsa drops core-models/hax-lib 0.3, or hax-lib-macros drops proc-macro-error2."

@@ -11,6 +11,10 @@ ignore = [
     # revisit-by: 2027-04-14
     # revisit-when: the Iroh network stack advances
     "RUSTSEC-2024-0436",
+    # reason: proc-macro-error2 (unmaintained) via libcrux-ml-dsa -> core-models -> hax-lib-macros, only under cfg(hax); never compiled in our builds, present in Cargo.lock only.
+    # revisit-by: 2027-04-14
+    # revisit-when: libcrux-ml-dsa drops core-models/hax-lib 0.3, or hax-lib-macros drops proc-macro-error2
+    "RUSTSEC-2026-0173",
 ]
 informational_warnings = ["unmaintained", "unsound"]
 
