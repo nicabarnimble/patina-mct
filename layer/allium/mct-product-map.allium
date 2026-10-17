@@ -1890,7 +1890,7 @@ entity MctCallProtocolEvaluation {
     route_decision_id: String?
     result_ref: String?
     outcome: accepted_for_routing | malformed | denied | failed | timed_out | cancelled | completed
-    reason: hello_not_admitted | alpn_not_admitted | endpoint_mismatch | binding_revoked | binding_expired | policy_revision_stale | expected_receiver_authority_stale | receiver_authority_unavailable | malformed_call | payload_metadata_mismatch | authority_denied | no_route | execution_failed | execution_timed_out | result_recorded | idempotency_key_reuse_mismatch | idempotency_budget_full | idempotency_in_progress | idempotency_replay_completed
+    reason: hello_not_admitted | alpn_not_admitted | endpoint_mismatch | binding_revoked | binding_expired | policy_revision_stale | expected_receiver_authority_stale | receiver_authority_unavailable | malformed_call | payload_metadata_mismatch | authority_denied | no_route | execution_failed | execution_timed_out | execution_interrupted | result_recorded | idempotency_key_reuse_mismatch | idempotency_budget_full | idempotency_in_progress | idempotency_replay_completed
     retry_directive: none | refresh_hello | retry_later
     safe_message: String
     observation_id: String
@@ -2019,6 +2019,14 @@ surface MctCallProtocolReplyProjection {
 -- `idempotency_budget_full`, `idempotency_in_progress`, and
 -- `idempotency_replay_completed`. Cross-Mother replay after forwarding failover is excluded from
 -- request-scoped idempotency and remains a federation follow-on.
+-- Decision: A call a Mother restart cut off is closed once by restart recovery with outcome
+-- `failed` and the distinct 0.x reason `execution_interrupted`: its outcome is unknown and it is
+-- never re-executed. This includes a call whose result was recorded but whose inline result bytes
+-- did not survive the restart. A same-key replay of that reply keeps `execution_interrupted`
+-- instead of `idempotency_replay_completed`, since that is the fact the retrying caller needs;
+-- the ledger still records the replay. A call the ledger had already denied closes as `denied`.
+-- The peer `mct/call/0` reply carries no reason field, so peers see it as a failed,
+-- non-retryable reply with its safe message.
 
 contract MctCallProtocol {
     @invariant RequiresHelloAdmission

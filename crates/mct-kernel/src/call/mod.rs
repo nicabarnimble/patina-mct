@@ -671,6 +671,10 @@ pub enum CallProtocolReason {
     NoRoute,
     ExecutionFailed,
     ExecutionTimedOut,
+    /// Execution was cut off by a Mother restart, so its outcome is unknown.
+    /// Restart recovery closes such a call once and never re-executes it; a
+    /// same-key retry replays this reason rather than running the call again.
+    ExecutionInterrupted,
     AcceptedForRouting,
     ResultRecorded,
 }
@@ -1146,6 +1150,58 @@ mod tests {
             );
             assert!(evaluation.route_decision_id.is_none());
         }
+    }
+
+    #[test]
+    fn execution_interrupted_reason_round_trips_on_the_wire() {
+        let reason = CallProtocolReason::ExecutionInterrupted;
+        let encoded = serde_json::to_string(&reason).unwrap();
+        assert_eq!(encoded, "\"execution_interrupted\"");
+        assert_eq!(
+            serde_json::from_str::<CallProtocolReason>(&encoded).unwrap(),
+            reason
+        );
+        assert_ne!(
+            encoded,
+            serde_json::to_string(&CallProtocolReason::ExecutionFailed).unwrap(),
+            "interrupted is distinct from failed"
+        );
+
+        // The served evaluation carries the handler's reason, as `mct/call/0`
+        // serving sets it, and keeps it across an encode/decode.
+        let mut evaluation =
+            evaluate_call_protocol(&protocol_request(), &admitted_hello(), eval_ids());
+        evaluation.outcome = CallProtocolOutcome::Failed;
+        evaluation.reason = reason;
+        evaluation.retry_directive = CallProtocolRetryDirective::None;
+        evaluation.safe_message = "call interrupted by Mother restart; outcome unknown".into();
+        let wire = serde_json::to_value(&evaluation).unwrap();
+        assert_eq!(wire["reason"], "execution_interrupted");
+        assert_eq!(wire["outcome"], "failed");
+        let decoded: MctCallProtocolEvaluation = serde_json::from_value(wire).unwrap();
+        assert_eq!(decoded, evaluation);
+
+        // The peer reply projects it as a failed, non-retryable reply.
+        let reply = call_reply_from_evaluation_with_result_payload_and_route(
+            ReplyId::new("reply-interrupted").unwrap(),
+            &decoded,
+            None,
+            MctCallPayloadHandle::Empty,
+            None,
+            ObservationId::new("obs-reply-interrupted").unwrap(),
+        );
+        reply.validate().unwrap();
+        let decoded_reply: MctCallProtocolReply =
+            serde_json::from_str(&serde_json::to_string(&reply).unwrap()).unwrap();
+        assert_eq!(decoded_reply, reply);
+        assert_eq!(
+            decoded_reply.reply_outcome,
+            CallProtocolReplyOutcome::Failed
+        );
+        assert_eq!(
+            decoded_reply.retry_directive,
+            CallProtocolRetryDirective::None
+        );
     }
 
     #[test]

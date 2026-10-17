@@ -68,6 +68,67 @@ fn idempotency_expiry(now: &Timestamp) -> Result<Timestamp> {
     Timestamp::new(expires.to_string()).map_err(anyhow::Error::from)
 }
 
+/// A refusal that tells the caller to retry later and that provably began no
+/// effect: no route was taken and no result exists.
+fn is_transient_refusal_before_effect(result: &MctIrohCallHandlerResult) -> bool {
+    result.retry_directive == CallProtocolRetryDirective::RetryLater
+        && result.route_taken.is_none()
+        && result.result_ref.is_none()
+}
+
+fn transient_release_observation(
+    request: &MctCallProtocolRequest,
+    caller_scope: &str,
+    fingerprint: &MctIdempotencyFingerprint,
+    now: &Timestamp,
+) -> MctObservation {
+    MctObservation {
+        observation_id: ObservationId::new(format!(
+            "obs:idempotency_released_retry_later:{}:{}",
+            request.protocol_request_id,
+            blake3_hex(format!("{caller_scope}\n{}\n{now}", request.call.call_id).as_bytes())
+        ))
+        .expect("generated observation ID must be non-empty"),
+        observed_at: current_timestamp(),
+        kind: ObservationKind::CallDenied,
+        source_plane: SourcePlane::Kernel,
+        trace: ObservationTraceRef {
+            trace_id: request.call.trace_context.trace_id.clone(),
+            span_id: Some(request.call.trace_context.span_id.clone()),
+            parent_span_id: None,
+            external_trace_id: None,
+        },
+        call_id: Some(request.call.call_id.clone()),
+        decision_id: None,
+        subject_id: Some(format!(
+            "scope-blake3:{}",
+            blake3_hex(caller_scope.as_bytes())
+        )),
+        resource_id: Some(format!(
+            "fingerprint-blake3:{}",
+            blake3_hex(
+                format!(
+                    "{}:{}:{}",
+                    fingerprint.target, fingerprint.call_id, fingerprint.payload_digest
+                )
+                .as_bytes()
+            )
+        )),
+        policy_revision: Some(request.call.authority_context.policy_revision),
+        grants_revision: Some(
+            request
+                .call
+                .authority_context
+                .expected_receiver_grants_authority
+                .generation,
+        ),
+        outcome: ObservationOutcome::Denied,
+        visibility: ObservationVisibility::InternalOnly,
+        safe_message: "receiver authority unavailable; idempotency key released for retry".into(),
+        detail_ref: Some("idempotency_reason:released_retry_later".into()),
+    }
+}
+
 fn handler_result_to_recorded_reply(result: &MctIrohCallHandlerResult) -> MctRecordedCallReply {
     MctRecordedCallReply {
         result_ref: result.result_ref.clone(),
@@ -93,6 +154,19 @@ fn recorded_reply_to_handler_result(reply: MctRecordedCallReply) -> MctIrohCallH
         retry_directive: CallProtocolRetryDirective::None,
         safe_message: reply.safe_message,
     }
+}
+
+/// A replayed reply discloses `idempotency_replay_completed`, except a
+/// restart-interrupted reply: that call never completed, and its unknown
+/// outcome is the one fact the retrying caller needs, so its
+/// `execution_interrupted` reason replays unchanged. The ledger records the
+/// replay itself either way.
+fn replayed_reply_to_handler_result(reply: MctRecordedCallReply) -> MctIrohCallHandlerResult {
+    let reason = match reply.protocol_reason {
+        Some(CallProtocolReason::ExecutionInterrupted) => CallProtocolReason::ExecutionInterrupted,
+        _ => CallProtocolReason::IdempotencyReplayCompleted,
+    };
+    recorded_reply_to_handler_result(reply).with_protocol_reason(reason)
 }
 
 fn idempotency_refusal_result(reason: MctIdempotencyReason) -> MctIrohCallHandlerResult {
@@ -300,8 +374,7 @@ where
                 eprintln!("resident idempotency replay observation failed: {error}");
                 return MctIrohCallHandlerResult::failed("observation ledger unavailable");
             }
-            recorded_reply_to_handler_result(*reply)
-                .with_protocol_reason(CallProtocolReason::IdempotencyReplayCompleted)
+            replayed_reply_to_handler_result(*reply)
         }
         MctIdempotencyReservation::Refused(reason) => {
             if let Err(error) = ledger
@@ -323,6 +396,32 @@ where
             let result = execute().await;
             if ledger.is_fenced() {
                 return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+            }
+            if is_transient_refusal_before_effect(&result) {
+                // A retry-later refusal is not this key's outcome: nothing ran,
+                // so the key is released for the caller's retry rather than
+                // pinned to the refusal for the whole TTL. The fact comes
+                // first; if it cannot be written the reservation stays in
+                // flight and the next startup settles it.
+                if let Err(error) = ledger
+                    .append(vec![transient_release_observation(
+                        &request,
+                        &caller_scope,
+                        &fingerprint,
+                        &now,
+                    )])
+                    .await
+                {
+                    eprintln!("resident idempotency release observation failed: {error}");
+                    return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+                }
+                if let Err(error) = MctRuntimeStateStore::open(&state_path).and_then(|state| {
+                    state.release_call_idempotency(&caller_scope, &idempotency_key, &fingerprint)
+                }) {
+                    eprintln!("resident idempotency release failed: {error}");
+                    return MctIrohCallHandlerResult::failed("runtime unavailable");
+                }
+                return result;
             }
             let recorded = handler_result_to_recorded_reply(&result);
             if let Err(error) = MctRuntimeStateStore::open(&state_path).and_then(|state| {
@@ -703,6 +802,136 @@ mod tests {
         assert!(ledger_text.contains("idempotency_key_reuse_mismatch"));
         assert!(!ledger_text.contains("same-key"));
         assert!(!ledger_text.contains(r#"{\"results\":[41]}"#));
+    }
+
+    #[tokio::test]
+    async fn retry_later_refusal_releases_the_key_instead_of_caching_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
+        let mut request = resident_test_protocol_request(resident_test_call(
+            TraceId::new("trace-idempotency-retry-later").unwrap(),
+        ));
+        request.idempotency_key = Some("retry-later-key".into());
+        let execution_count = Arc::new(AtomicU64::new(0));
+        let now = Timestamp::new("2026-07-10T00:00:00Z").unwrap();
+        let run = |result: MctIrohCallHandlerResult| {
+            let execution_count = Arc::clone(&execution_count);
+            execute_idempotent_call(
+                state_path.clone(),
+                ledger.clone(),
+                request.clone(),
+                now.clone(),
+                move || async move {
+                    execution_count.fetch_add(1, Ordering::SeqCst);
+                    result
+                },
+            )
+        };
+
+        let refused = run(super::super::receiver_authority_unavailable_before_effect()).await;
+        assert_eq!(
+            refused.retry_directive,
+            CallProtocolRetryDirective::RetryLater
+        );
+        assert_eq!(
+            MctRuntimeStateStore::open(&state_path)
+                .unwrap()
+                .call_idempotency_entry_state(
+                    &resident_idempotency_caller_scope(
+                        &request,
+                        &ResidentCallIngressContext::ordinary(&request).unwrap()
+                    ),
+                    "retry-later-key"
+                )
+                .unwrap(),
+            None,
+            "a retry-later refusal must not occupy the key"
+        );
+        let retried = run(MctIrohCallHandlerResult::completed(
+            ResultRef::new("result-retry-later").unwrap(),
+        ))
+        .await;
+        assert_eq!(retried.outcome, CallProtocolOutcome::Completed);
+        let replay = run(MctIrohCallHandlerResult::failed("must not execute")).await;
+        assert_eq!(replay.outcome, CallProtocolOutcome::Completed);
+        assert_eq!(
+            replay.protocol_reason,
+            Some(CallProtocolReason::IdempotencyReplayCompleted)
+        );
+        assert_eq!(execution_count.load(Ordering::SeqCst), 2);
+        ledger.close().await;
+        let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
+        assert_eq!(
+            ledger_text
+                .matches("idempotency_reason:released_retry_later")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn interrupted_reply_replays_its_reason_and_never_reexecutes() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
+        let mut request = resident_test_protocol_request(resident_test_call(
+            TraceId::new("trace-idempotency-interrupted").unwrap(),
+        ));
+        request.idempotency_key = Some("interrupted-key".into());
+        let execution_count = Arc::new(AtomicU64::new(0));
+        let now = Timestamp::new("2026-07-10T00:00:00Z").unwrap();
+        let run = |result: MctIrohCallHandlerResult| {
+            let execution_count = Arc::clone(&execution_count);
+            execute_idempotent_call(
+                state_path.clone(),
+                ledger.clone(),
+                request.clone(),
+                now.clone(),
+                move || async move {
+                    execution_count.fetch_add(1, Ordering::SeqCst);
+                    result
+                },
+            )
+        };
+
+        // The reply restart recovery records for an interrupted call.
+        let first = run(MctIrohCallHandlerResult::failed(
+            "call interrupted by Mother restart; outcome unknown",
+        )
+        .with_protocol_reason(CallProtocolReason::ExecutionInterrupted))
+        .await;
+        assert_eq!(
+            first.protocol_reason,
+            Some(CallProtocolReason::ExecutionInterrupted)
+        );
+        for _ in 0..2 {
+            let replay = run(MctIrohCallHandlerResult::completed(
+                ResultRef::new("result-must-not-execute").unwrap(),
+            ))
+            .await;
+            assert_eq!(replay.outcome, CallProtocolOutcome::Failed);
+            assert_eq!(
+                replay.protocol_reason,
+                Some(CallProtocolReason::ExecutionInterrupted),
+                "the replay must keep the machine-readable interrupted reason"
+            );
+            assert_eq!(replay.retry_directive, CallProtocolRetryDirective::None);
+            assert_eq!(replay.safe_message, first.safe_message);
+        }
+        assert_eq!(execution_count.load(Ordering::SeqCst), 1);
+        ledger.close().await;
+        let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
+        assert_eq!(
+            ledger_text
+                .lines()
+                .filter(|line| line.contains("idempotency_replay_completed"))
+                .count(),
+            2,
+            "the ledger records each replay"
+        );
     }
 
     #[tokio::test]

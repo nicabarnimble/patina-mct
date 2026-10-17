@@ -114,22 +114,18 @@ pub(super) async fn execute_authorized_resident_remote_call(
     inline_payload: Option<Vec<u8>>,
     ledger: ResidentLedgerWriter,
 ) -> MctIrohCallHandlerResult {
-    if ledger
-        .publish_authority_projection(paths.state_path().to_path_buf())
+    let projected = match ledger
+        .projected_authority(paths.state_path().to_path_buf())
         .await
-        .is_err()
     {
-        return MctIrohCallHandlerResult::failed("runtime unavailable");
-    }
-    let (head, replay) = match ledger.verified_authority().await {
-        Ok(view) => view,
+        Ok(projected) => projected,
         Err(error) => {
             eprintln!("resident remote authority view failed: {error}");
-            return MctIrohCallHandlerResult::failed("runtime unavailable");
+            return receiver_authority_unavailable_before_effect();
         }
     };
     let revalidation =
-        match revalidate_resident_remote_route(&paths, head, replay, &execution, &request.call) {
+        match revalidate_resident_remote_route(&paths, projected, &execution, &request.call) {
             Ok(revalidation) => revalidation,
             Err(error) => {
                 eprintln!("resident remote route revalidation failed: {error}");
@@ -302,19 +298,11 @@ pub(super) async fn execute_authorized_resident_remote_call(
 
 fn revalidate_resident_remote_route(
     paths: &ResidentRuntimePaths,
-    head: mct_observation::LedgerVerifiedHead,
-    replay: mct_observation::AuthorityReplayV1,
+    projected: ResidentProjectedAuthority,
     execution: &RemoteExecutionPlan,
     call: &MctCall,
 ) -> Result<RemoteRevalidation> {
-    let snapshot = match mct_daemon::local_execution_authority_snapshot_from_verified(
-        head,
-        replay,
-        paths.config_path(),
-        paths.children_dir(),
-        paths.state_path(),
-        Ok(current_timestamp()),
-    ) {
+    let snapshot = match projected.snapshot(paths, current_timestamp()) {
         Ok(snapshot) => snapshot,
         Err(_) => {
             return Ok(RemoteRevalidation::Denied(Box::new(

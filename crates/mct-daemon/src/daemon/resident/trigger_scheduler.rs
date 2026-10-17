@@ -1240,13 +1240,37 @@ async fn complete_trigger_firing_projection(
     route_decision_id: Option<DecisionId>,
 ) -> Result<()> {
     let completed_at = current_timestamp();
+    let completion = trigger_firing_completion_observation(
+        authority,
+        firing,
+        &target_result_ref,
+        outcome,
+        route_decision_id,
+        &completed_at,
+    )?;
+    ledger.append(vec![completion]).await?;
+    MctRuntimeStateStore::open(state_path)?.complete_call_trigger_firing(
+        &firing.firing_id,
+        Some(&target_result_ref),
+        &completed_at,
+    )
+}
+
+fn trigger_firing_completion_observation(
+    authority: &CallTriggerAuthority,
+    firing: &MctTriggerFiringRecord,
+    target_result_ref: &ResultRef,
+    outcome: CallProtocolOutcome,
+    route_decision_id: Option<DecisionId>,
+    completed_at: &Timestamp,
+) -> Result<MctObservation> {
     let completion_evidence = TriggerFiringCompletedProjectionEvidence {
         firing_id: firing.firing_id.clone(),
         target_result_ref: target_result_ref.clone(),
         completed_at: completed_at.clone(),
     };
     let completion = MctObservation {
-        observation_id: ObservationId::new(format!("obs:trigger:terminal:{}", firing.firing_id))?,
+        observation_id: ObservationId::new(trigger_terminal_observation_id(firing))?,
         observed_at: current_timestamp(),
         kind: ObservationKind::LifecycleTransitionRecorded,
         source_plane: SourcePlane::Kernel,
@@ -1280,12 +1304,95 @@ async fn complete_trigger_firing_projection(
             serde_json::to_string(&completion_evidence)?
         )),
     };
-    ledger.append(vec![completion]).await?;
-    MctRuntimeStateStore::open(state_path)?.complete_call_trigger_firing(
+    Ok(completion)
+}
+
+/// Closes an active firing whose call a previous Mother tenure left
+/// interrupted, or whose denial the ledger already recorded, without
+/// executing anything.
+///
+/// The firing's target result is the call's run. When the call never had a
+/// local run (it was forwarded to a peer, or denied before its run record,
+/// when Mother died), a terminal Mother-internal run record carrying the
+/// closing result is created for it, as a pre-execution denial does, so the
+/// reference resolves.
+/// The terminal firing fact is appended at most once: when an earlier,
+/// crashed attempt already recorded it, only the projection is completed.
+/// `run_label` names the synthetic run created when none exists
+/// (`run-trigger-{label}:`), and `closing_result` supplies the result for a
+/// run with none recorded.
+pub(super) async fn close_unfinished_trigger_firing(
+    paths: &ResidentRuntimePaths,
+    ledger: &ResidentLedgerWriter,
+    authority: &CallTriggerAuthority,
+    firing: &MctTriggerFiringRecord,
+    run_label: &str,
+    closing_result: impl FnOnce(&mct_daemon::MctRuntimeRunRecord) -> MctResult,
+    terminal_already_recorded: bool,
+) -> Result<()> {
+    let state = MctRuntimeStateStore::open(paths.state_path())?;
+    let run = match state.get_run_by_call_id(&firing.call_id)? {
+        Some(run) => run,
+        None => {
+            let run_id = format!("run-trigger-{run_label}:{}", firing.call_id);
+            let expected_receiver_grants_authority =
+                fresh_resident_receiver_identity(paths, ledger).await?;
+            let request = trigger_protocol_request(
+                authority,
+                firing,
+                derive_trigger_idempotency_key(
+                    &authority.trigger_authority_id,
+                    authority.record_revision,
+                    &firing.occurrence_id,
+                ),
+                MctDaemonConfigStore::new(paths.config_path())
+                    .load()?
+                    .local_identity
+                    .context("trigger interruption identity unavailable")?
+                    .endpoint_id,
+                expected_receiver_grants_authority,
+            )?;
+            state.insert_run_started(
+                &run_id,
+                &request.call,
+                RuntimeKind::Internal,
+                None,
+                current_timestamp_string(),
+            )?
+        }
+    };
+    let result = match run.result.clone() {
+        Some(result) => result,
+        None => {
+            let result = closing_result(&run);
+            state.complete_run(&run.run_id, &result, current_timestamp_string())?;
+            result
+        }
+    };
+    drop(state);
+    let target_result_ref = ResultRef::new(format!("result-resident:{}", firing.call_id))?;
+    let completed_at = current_timestamp();
+    if !terminal_already_recorded {
+        ledger
+            .append(vec![trigger_firing_completion_observation(
+                authority,
+                firing,
+                &target_result_ref,
+                protocol_outcome_from_result(result.outcome),
+                Some(result.authority_decision_ref.clone()),
+                &completed_at,
+            )?])
+            .await?;
+    }
+    MctRuntimeStateStore::open(paths.state_path())?.complete_call_trigger_firing(
         &firing.firing_id,
         Some(&target_result_ref),
         &completed_at,
     )
+}
+
+pub(super) fn trigger_terminal_observation_id(firing: &MctTriggerFiringRecord) -> String {
+    format!("obs:trigger:terminal:{}", firing.firing_id)
 }
 
 async fn deny_trigger_firing_before_execution(
@@ -2907,6 +3014,425 @@ mod tests {
         );
         drop(scheduler);
         ledger.close().await;
+    }
+
+    /// A firing whose call was forwarded to a peer, with no local run, when
+    /// Mother died. Restart recovery must close it once, through the ledger,
+    /// and never re-submit the call.
+    #[tokio::test]
+    async fn restart_recovery_closes_an_interrupted_forwarded_firing_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        std::fs::create_dir_all(&children_dir).unwrap();
+        MctDaemonConfigStore::new(&config_path)
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        // One active firing per authority, so two authorities.
+        let first = crate::triggers::authority_for_scheduler_test();
+        let mut second = first.clone();
+        second.trigger_authority_id = CallTriggerAuthorityId::new("trigger-scheduler-b").unwrap();
+        second.canonical_record_digest = String::new();
+        let authorities = [first, second.seal()];
+        for authority in &authorities {
+            MctRuntimeStateStore::open(&state_path)
+                .unwrap()
+                .insert_call_trigger_authority(authority)
+                .unwrap();
+        }
+        let paths = ResidentRuntimePaths::new(config_path, children_dir, state_path.clone());
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
+        let clock = ManualClock::new("2026-07-21T12:00:00Z");
+
+        // Two firings of the dead tenure, each forwarded to a peer. For the
+        // second, the previous recovery attempt already wrote the terminal
+        // fact and then crashed before completing the projection.
+        let mut firings = Vec::new();
+        for authority in &authorities {
+            let (candidate, at) = singleton_candidate(authority, 0).unwrap();
+            clock.set(at.as_str());
+            let call_id = derive_trigger_call_identity(&candidate.occurrence_id);
+            let key = derive_trigger_idempotency_key(
+                &authority.trigger_authority_id,
+                authority.record_revision,
+                &candidate.occurrence_id,
+            );
+            let mut observation = trigger_observation(
+                authority,
+                &candidate.occurrence_id,
+                &candidate.represented_set,
+                Some(&at),
+                ObservationKind::CallConstructed,
+                ObservationOutcome::Allowed,
+                "trigger firing constructed durable call",
+                "firing",
+                Some(call_id.clone()),
+            );
+            let occurrence = occurrence_record(
+                authority,
+                &candidate,
+                Some(at),
+                "live",
+                Some("fire_now".into()),
+                MctTriggerOccurrenceDisposition::Fired,
+                observation.observation_id.clone(),
+                clock.now(),
+            );
+            let firing = MctTriggerFiringRecord {
+                firing_id: derive_trigger_firing_identity(&candidate.occurrence_id),
+                occurrence_id: candidate.occurrence_id,
+                trigger_authority_id: authority.trigger_authority_id.clone(),
+                record_revision: authority.record_revision,
+                policy_revision: authority.policy_revision,
+                call_id: call_id.clone(),
+                idempotency_key_ref: format!("blake3:{}", blake3_hex(key.as_bytes())),
+                firing_observation_id: observation.observation_id.clone(),
+                target_result_ref: None,
+                state: "active".into(),
+                fired_at: clock.now(),
+                completed_at: None,
+            };
+            observation.detail_ref = Some(format!(
+                "call-trigger-firing-v1:{}",
+                serde_json::to_string(&TriggerFiringProjectionEvidence {
+                    occurrence: occurrence.clone(),
+                    firing: firing.clone(),
+                })
+                .unwrap()
+            ));
+            let mut sent = observation.clone();
+            sent.observation_id =
+                ObservationId::new(format!("obs-peer-call-sent:{call_id}")).unwrap();
+            sent.kind = ObservationKind::PeerCallSent;
+            sent.detail_ref = None;
+            ledger.append(vec![observation, sent]).await.unwrap();
+            let state = MctRuntimeStateStore::open(&state_path).unwrap();
+            state
+                .insert_call_trigger_firing(&occurrence, &firing)
+                .unwrap();
+            assert_eq!(
+                state
+                    .reserve_call_idempotency(
+                        &format!("trigger:{}", authority.trigger_authority_id),
+                        &key,
+                        &MctIdempotencyFingerprint {
+                            target: "patina:watch/control@0.1.0.scan-now".into(),
+                            call_id: call_id.clone(),
+                            payload_digest: "empty".into(),
+                        },
+                        &Timestamp::new("2026-07-21T12:00:00Z").unwrap(),
+                        &Timestamp::new("2026-07-21T12:12:00Z").unwrap(),
+                        64,
+                    )
+                    .unwrap(),
+                mct_daemon::MctIdempotencyReservation::ExecuteFresh
+            );
+            firings.push(firing);
+        }
+        ledger
+            .append(vec![
+                trigger_firing_completion_observation(
+                    &authorities[1],
+                    &firings[1],
+                    &ResultRef::new(format!("result-resident:{}", firings[1].call_id)).unwrap(),
+                    CallProtocolOutcome::Failed,
+                    None,
+                    &current_timestamp(),
+                )
+                .unwrap(),
+            ])
+            .await
+            .unwrap();
+
+        let report = settle_prior_tenure_calls(&paths, &ledger_path, "local-mct", &ledger)
+            .await
+            .unwrap();
+        assert_eq!(report.interrupted, 2);
+        assert_eq!(report.trigger_firings_closed, 2);
+        let again = settle_prior_tenure_calls(&paths, &ledger_path, "local-mct", &ledger)
+            .await
+            .unwrap();
+        assert!(again.is_empty(), "a second recovery redid work: {again:?}");
+        ledger.close().await;
+
+        let state = MctRuntimeStateStore::open(&state_path).unwrap();
+        assert!(state.active_call_trigger_firings().unwrap().is_empty());
+        let entries =
+            JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
+                .unwrap()
+                .entries()
+                .unwrap();
+        for firing in &firings {
+            let stored = state
+                .call_trigger_firings()
+                .unwrap()
+                .into_iter()
+                .find(|stored| stored.firing_id == firing.firing_id)
+                .unwrap();
+            let result_ref = format!("result-resident:{}", firing.call_id);
+            assert_ne!(stored.state, "active");
+            assert_eq!(
+                stored.target_result_ref.as_ref().map(ToString::to_string),
+                Some(result_ref)
+            );
+            // The reference resolves to a terminal, interrupted record.
+            let run = state.get_run_by_call_id(&firing.call_id).unwrap().unwrap();
+            assert_eq!(
+                run.run_id,
+                format!("run-trigger-interrupted:{}", firing.call_id)
+            );
+            assert_eq!(run.runtime_kind, RuntimeKind::Internal);
+            let result = run.result.unwrap();
+            assert_eq!(result.outcome, ResultOutcome::Failed);
+            assert!(
+                result
+                    .requester_message
+                    .contains("interrupted by Mother restart")
+            );
+            let for_call = |predicate: &dyn Fn(&MctObservation) -> bool| {
+                entries
+                    .iter()
+                    .filter(|entry| {
+                        entry.observation.call_id.as_ref() == Some(&firing.call_id)
+                            && predicate(&entry.observation)
+                    })
+                    .count()
+            };
+            assert_eq!(
+                for_call(&|observation| observation.observation_id.as_str()
+                    == trigger_terminal_observation_id(firing)),
+                1,
+                "terminal firing fact for {}",
+                firing.firing_id
+            );
+            assert_eq!(
+                for_call(&|observation| observation
+                    .observation_id
+                    .as_str()
+                    .starts_with("obs:call-restart-interrupted:")),
+                1
+            );
+            // Never re-submitted: no new routing, execution or peer send.
+            assert_eq!(
+                for_call(&|observation| matches!(
+                    observation.kind,
+                    ObservationKind::RouteSelected
+                        | ObservationKind::RuntimeExecutionStarted
+                        | ObservationKind::CallReceived
+                )),
+                0
+            );
+            assert_eq!(
+                for_call(&|observation| observation.kind == ObservationKind::PeerCallSent),
+                1
+            );
+        }
+    }
+
+    /// A firing whose fresh-law denial was already in the ledger when Mother
+    /// died: once before any run record, once after the run record started
+    /// but before it completed. Restart recovery must close both as Denied,
+    /// never as interrupted, once and without executing anything.
+    #[tokio::test]
+    async fn restart_recovery_closes_a_denied_firing_as_denied() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        std::fs::create_dir_all(&children_dir).unwrap();
+        MctDaemonConfigStore::new(&config_path)
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        let first = crate::triggers::authority_for_scheduler_test();
+        let mut second = first.clone();
+        second.trigger_authority_id = CallTriggerAuthorityId::new("trigger-scheduler-b").unwrap();
+        second.canonical_record_digest = String::new();
+        let authorities = [first, second.seal()];
+        for authority in &authorities {
+            MctRuntimeStateStore::open(&state_path)
+                .unwrap()
+                .insert_call_trigger_authority(authority)
+                .unwrap();
+        }
+        let paths = ResidentRuntimePaths::new(config_path, children_dir, state_path.clone());
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
+        let clock = ManualClock::new("2026-07-21T12:00:00Z");
+
+        let mut firings = Vec::new();
+        for (index, authority) in authorities.iter().enumerate() {
+            let (candidate, at) = singleton_candidate(authority, 0).unwrap();
+            clock.set(at.as_str());
+            let call_id = derive_trigger_call_identity(&candidate.occurrence_id);
+            let key = derive_trigger_idempotency_key(
+                &authority.trigger_authority_id,
+                authority.record_revision,
+                &candidate.occurrence_id,
+            );
+            let mut observation = trigger_observation(
+                authority,
+                &candidate.occurrence_id,
+                &candidate.represented_set,
+                Some(&at),
+                ObservationKind::CallConstructed,
+                ObservationOutcome::Allowed,
+                "trigger firing constructed durable call",
+                "firing",
+                Some(call_id.clone()),
+            );
+            let occurrence = occurrence_record(
+                authority,
+                &candidate,
+                Some(at),
+                "live",
+                Some("fire_now".into()),
+                MctTriggerOccurrenceDisposition::Fired,
+                observation.observation_id.clone(),
+                clock.now(),
+            );
+            let firing = MctTriggerFiringRecord {
+                firing_id: derive_trigger_firing_identity(&candidate.occurrence_id),
+                occurrence_id: candidate.occurrence_id,
+                trigger_authority_id: authority.trigger_authority_id.clone(),
+                record_revision: authority.record_revision,
+                policy_revision: authority.policy_revision,
+                call_id: call_id.clone(),
+                idempotency_key_ref: format!("blake3:{}", blake3_hex(key.as_bytes())),
+                firing_observation_id: observation.observation_id.clone(),
+                target_result_ref: None,
+                state: "active".into(),
+                fired_at: clock.now(),
+                completed_at: None,
+            };
+            observation.detail_ref = Some(format!(
+                "call-trigger-firing-v1:{}",
+                serde_json::to_string(&TriggerFiringProjectionEvidence {
+                    occurrence: occurrence.clone(),
+                    firing: firing.clone(),
+                })
+                .unwrap()
+            ));
+            // The fact `deny_trigger_firing_before_execution` writes first.
+            let mut denied = observation.clone();
+            denied.observation_id =
+                ObservationId::new(format!("obs:result-trigger-denied:{}", firing.firing_id))
+                    .unwrap();
+            denied.kind = ObservationKind::ResultRecorded;
+            denied.outcome = ObservationOutcome::Denied;
+            denied.decision_id = Some(
+                DecisionId::new(format!("decision:trigger-denied:{}", firing.firing_id)).unwrap(),
+            );
+            denied.detail_ref = Some("trigger_denial_reason:test".into());
+            ledger.append(vec![observation, denied]).await.unwrap();
+            let state = MctRuntimeStateStore::open(&state_path).unwrap();
+            state
+                .insert_call_trigger_firing(&occurrence, &firing)
+                .unwrap();
+            if index == 1 {
+                // The second crash came after the denied run record started.
+                let request = trigger_protocol_request(
+                    authority,
+                    &firing,
+                    key.clone(),
+                    MctDaemonConfigStore::new(paths.config_path())
+                        .load()
+                        .unwrap()
+                        .local_identity
+                        .unwrap()
+                        .endpoint_id,
+                    fresh_resident_receiver_identity(&paths, &ledger)
+                        .await
+                        .unwrap(),
+                )
+                .unwrap();
+                state
+                    .insert_run_started(
+                        format!("run-trigger-denied:{call_id}"),
+                        &request.call,
+                        RuntimeKind::Internal,
+                        None,
+                        current_timestamp_string(),
+                    )
+                    .unwrap();
+            }
+            firings.push(firing);
+        }
+
+        let report = settle_prior_tenure_calls(&paths, &ledger_path, "local-mct", &ledger)
+            .await
+            .unwrap();
+        assert_eq!(
+            report.interrupted, 0,
+            "a recorded denial is not an interruption"
+        );
+        assert_eq!(report.denied, 1, "the started denied run closes as denied");
+        assert_eq!(report.trigger_firings_closed, 2);
+        let again = settle_prior_tenure_calls(&paths, &ledger_path, "local-mct", &ledger)
+            .await
+            .unwrap();
+        assert!(again.is_empty(), "a second recovery redid work: {again:?}");
+        ledger.close().await;
+
+        let state = MctRuntimeStateStore::open(&state_path).unwrap();
+        assert!(state.active_call_trigger_firings().unwrap().is_empty());
+        assert!(state.unfinished_runs().unwrap().is_empty());
+        let entries =
+            JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
+                .unwrap()
+                .entries()
+                .unwrap();
+        for firing in &firings {
+            let run = state.get_run_by_call_id(&firing.call_id).unwrap().unwrap();
+            assert_eq!(run.run_id, format!("run-trigger-denied:{}", firing.call_id));
+            let result = run.result.unwrap();
+            assert_eq!(result.outcome, ResultOutcome::Denied);
+            assert_eq!(
+                result.authority_decision_ref.as_str(),
+                format!("decision:trigger-denied:{}", firing.firing_id)
+            );
+            let for_call = |predicate: &dyn Fn(&MctObservation) -> bool| {
+                entries
+                    .iter()
+                    .filter(|entry| {
+                        entry.observation.call_id.as_ref() == Some(&firing.call_id)
+                            && predicate(&entry.observation)
+                    })
+                    .count()
+            };
+            assert_eq!(
+                for_call(&|observation| observation.observation_id.as_str()
+                    == trigger_terminal_observation_id(firing)
+                    && observation.outcome == ObservationOutcome::Denied),
+                1,
+                "one Denied terminal fact for {}",
+                firing.firing_id
+            );
+            assert_eq!(
+                for_call(&|observation| observation
+                    .observation_id
+                    .as_str()
+                    .starts_with("obs:call-restart-interrupted:")),
+                0
+            );
+            assert_eq!(
+                for_call(&|observation| matches!(
+                    observation.kind,
+                    ObservationKind::RouteSelected
+                        | ObservationKind::RuntimeExecutionStarted
+                        | ObservationKind::CallReceived
+                        | ObservationKind::PeerCallSent
+                )),
+                0
+            );
+        }
     }
 
     #[tokio::test]
