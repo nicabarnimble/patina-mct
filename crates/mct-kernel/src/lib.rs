@@ -7,6 +7,8 @@
 
 /// Admin-key grant facts and the route-scope check.
 pub mod admin_key;
+/// Scheme v1 admin signatures: Ed25519 AND ML-DSA-65.
+pub mod admin_sig;
 pub mod artifact;
 /// Mother-owned, proof-gated local execution authority snapshots.
 pub mod authority;
@@ -29,6 +31,11 @@ pub use admin_key::{
     AdminKeyPublicHalf, AdminKeySchemeV1, AdminKeyScopeV1, Ed25519VerifyingKey,
     admin_key_grant_shape_error, admin_key_public_half_error, evaluate_admin_key_grant,
     recovery_grant_scopes,
+};
+pub use admin_sig::{
+    ADMIN_HYBRID_SIGNATURE_LEN, ADMIN_SIG_CONTEXT, ADMIN_SIGNED_MESSAGE_DOMAIN,
+    AdminHybridSigningKey, AdminSignatureError, AdminSignatureSchemeV1, AdminSignatureV1,
+    AdminSignedMessageParts, MlDsa65PublicKey, admin_signed_message, verify_admin_hybrid_signature,
 };
 pub use artifact::{
     ArtifactAcquisition, ArtifactAcquisitionAuthorityPath, ArtifactAcquisitionAuthorityReason,

@@ -8,11 +8,21 @@ repository.workspace = true
 
 [dependencies]
 blake3.workspace = true
+const-hex.workspace = true
 ed25519-dalek.workspace = true
+getrandom.workspace = true
 jiff.workspace = true
+libcrux-ml-dsa = { workspace = true, features = ["std", "mldsa65"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+libcrux-ml-dsa = { workspace = true, features = ["simd256"] }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+libcrux-ml-dsa = { workspace = true, features = ["simd128"] }
+
 [dev-dependencies]
+ml-dsa.workspace = true
 serde_json.workspace = true

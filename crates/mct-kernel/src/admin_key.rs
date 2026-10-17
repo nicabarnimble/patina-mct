@@ -119,8 +119,8 @@ pub enum AdminKeyGrantStateV1 {
 
 /// Scheme of an admin-key public half.
 ///
-/// `Ed25519` is the only scheme this phase stores. Ed25519+ML-DSA-65 is the
-/// next scheme and is not a variant yet.
+/// The public half stays Ed25519 so iroh transport never sees ML-DSA. The
+/// ML-DSA-65 verifying key sits beside it on the grant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AdminKeySchemeV1 {
     /// One Ed25519 verifying key.
@@ -161,10 +161,10 @@ impl Ed25519VerifyingKey {
 
 /// Versioned public half of an admin key.
 ///
-/// The only variant is an Ed25519 verifying key. A later variant can carry
-/// the Ed25519+ML-DSA-65 public key. This phase does not parse or verify
-/// ML-DSA. Construction rejects text that is not a canonical Ed25519 point,
-/// including armored secrets, empty text, and hex that does not decompress.
+/// The only variant is an Ed25519 verifying key. ML-DSA-65 is not folded into
+/// this encoding: it is a sibling field on the grant. Construction rejects
+/// text that is not a canonical Ed25519 point, including armored secrets,
+/// empty text, and hex that does not decompress.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum AdminKeyPublicHalf {
     /// Canonical Ed25519 public key.
@@ -312,6 +312,10 @@ pub struct AdminKeyGrantV1 {
     pub grant_id: String,
     /// Ed25519 verifying key. Raw key material cannot be stored in this field.
     pub public_half: AdminKeyPublicHalf,
+    /// ML-DSA-65 verifying key. Absent on a pre-scheme grant. A rotation writes
+    /// this key and the Ed25519 key together; one cannot be replaced alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ml_dsa65_public_key: Option<crate::admin_sig::MlDsa65PublicKey>,
     /// Day-to-day or recovery.
     pub class: AdminKeyGrantClassV1,
     /// Route scopes, strictly ordered and non-empty.
@@ -675,6 +679,7 @@ mod tests {
         AdminKeyGrantV1 {
             grant_id: "day-to-day".into(),
             public_half: half(DAY_PK),
+            ml_dsa65_public_key: None,
             class: AdminKeyGrantClassV1::DayToDay,
             scopes,
             expires_at: Some(later()),
@@ -686,6 +691,7 @@ mod tests {
         AdminKeyGrantV1 {
             grant_id: "recovery".into(),
             public_half: half(RECOVERY_PK),
+            ml_dsa65_public_key: None,
             class: AdminKeyGrantClassV1::Recovery,
             scopes: recovery_grant_scopes().to_vec(),
             expires_at: None,

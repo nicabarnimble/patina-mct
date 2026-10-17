@@ -5,6 +5,7 @@ members = [
     "crates/mct-iroh",
     "crates/mct-daemon",
     "crates/mct-trace",
+    "crates/phase3-measure",
 ]
 resolver = "2"
 
@@ -19,10 +20,13 @@ repository = "https://github.com/nicabarnimble/patina-mct"
 anyhow = "1.0.103"
 base64 = "0.22.1"
 blake3 = "1.8.3"
+const-hex = { version = "=1.19.3", default-features = false, features = ["alloc"] }
 ed25519-dalek = "=3.0.0"
 flate2 = "1.1.5"
 getrandom = "0.3.4"
 jiff = "0.2.15"
+libcrux-ml-dsa = { version = "=0.0.11", default-features = false }
+ml-dsa = "=0.1.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 sha2 = "0.10.9"
