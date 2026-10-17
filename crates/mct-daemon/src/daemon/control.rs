@@ -2295,6 +2295,8 @@ pub(super) fn execute_offline_administrative_mutation(
         root.join("logs/mother.stdout.log"),
         root.join("logs/mother.stderr.log"),
     );
+    mct_daemon::recover_startup_ledger_residue(&startup_paths, "ledger-local", "local-mct")
+        .context("recover observation ledger crash residue before offline classification")?;
     let startup = classify_authority_startup(&startup_paths, "ledger-local", "local-mct")
         .context("classify offline Mother authority before opening writer")?;
     let mut ledger = mct_daemon::open_classified_authority(

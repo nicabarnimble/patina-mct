@@ -35,7 +35,7 @@ pub(crate) async fn run_serve(mut args: Vec<String>) -> Result<()> {
         bail!("supervised serve paths come only from the governing supervisor record");
     }
     let supervisor = match supervisor_record_path.as_deref() {
-        Some(path) => match validate_supervisor_record(path, false) {
+        Some(path) => match validate_supervised_boot_record(path, false) {
             Ok(record) => Some(record),
             Err(error) => {
                 let _ = record_supervised_boot_refusal(path, &error.to_string());
@@ -269,7 +269,7 @@ pub(crate) async fn run_test_supervised_resident_mother<S>(
 where
     S: std::future::Future<Output = ()> + Send,
 {
-    let record = validate_supervisor_record(record_path, true)?;
+    let record = validate_supervised_boot_record(record_path, true)?;
     run_resident_mother(
         ResidentMotherConfig {
             config_path: record.config_path.clone(),
@@ -574,6 +574,19 @@ where
         })
         .unwrap_or_else(|| "local-mct".into());
     let startup_paths = resident_startup_paths(&config);
+    if let Some(recovery) =
+        mct_daemon::recover_startup_ledger_residue(&startup_paths, "ledger-local", &mother_node_id)
+            .context("recover observation ledger crash residue before startup classification")?
+    {
+        eprintln!(
+            "mct resident mother recovered an unterminated ledger tail: offset={} length={} digest={} decision={} preserved={}",
+            recovery.residue_offset,
+            recovery.residue_length,
+            recovery.residue_digest,
+            recovery.recovery_decision_id,
+            recovery.preserved_bytes_path.display()
+        );
+    }
     let startup_result =
         classify_authority_startup(&startup_paths, "ledger-local", &mother_node_id);
     #[cfg(not(test))]
@@ -695,6 +708,30 @@ where
             )
             .await;
         }
+    }
+    // Calls the previous writer tenure left unfinished are settled before any
+    // endpoint, control surface, or trigger scheduler can accept new work.
+    let prior_tenure_calls = settle_prior_tenure_calls(
+        &ResidentRuntimePaths::new(
+            config.config_path.clone(),
+            config.children_dir.clone(),
+            config.state_path.clone(),
+        ),
+        &config.ledger_path,
+        &mother_node_id,
+        &ledger,
+    )
+    .await
+    .context("settle calls left unfinished by the previous Mother tenure")?;
+    if !prior_tenure_calls.is_empty() {
+        eprintln!(
+            "mct resident mother settled prior-tenure calls: interrupted={} denied={} released={} results_recovered={} trigger_firings_closed={}",
+            prior_tenure_calls.interrupted,
+            prior_tenure_calls.denied,
+            prior_tenure_calls.released,
+            prior_tenure_calls.results_recovered,
+            prior_tenure_calls.trigger_firings_closed
+        );
     }
     let secret_key_hex = load_or_create_node_secret_key_hex(&config.identity_path)?;
     let mut endpoint = MotherIrohEndpoint::bind(iroh_config_with_bind(
@@ -840,12 +877,9 @@ where
         let paths = receiver_authority_paths.clone();
         let ledger = receiver_authority_ledger.clone();
         async move {
-            ledger
-                .publish_authority_projection(paths.3.clone())
-                .await
-                .ok()?;
-            let (_head, replay) = ledger.verified_authority().await.ok()?;
-            replay
+            let projected = ledger.projected_authority(paths.3.clone()).await.ok()?;
+            projected
+                .replay
                 .current_authority
                 .map(|authority| GrantsAuthorityIdentity {
                     mother_node_id: authority.mother_node_id,

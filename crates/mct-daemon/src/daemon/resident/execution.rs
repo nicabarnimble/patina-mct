@@ -536,20 +536,13 @@ fn resident_toy_effect_authority(
     Ok(MctToyEffectAuthorityV1::new(
         move || {
             snapshot_ledger
-                .publish_authority_projection_blocking(snapshot_paths.state_path().to_path_buf())
-                .map_err(|error| error.to_string())?;
-            let (head, replay) = snapshot_ledger
-                .verified_authority_blocking()
-                .map_err(|error| error.to_string())?;
-            mct_daemon::local_execution_authority_snapshot_from_verified(
-                head,
-                replay,
-                snapshot_paths.config_path(),
-                snapshot_paths.children_dir(),
-                snapshot_paths.state_path(),
-                Ok(time_override.clone().unwrap_or_else(current_timestamp)),
-            )
-            .map_err(|error| format!("{error:?}"))
+                .projected_authority_blocking(snapshot_paths.state_path().to_path_buf())
+                .map_err(|error| error.to_string())?
+                .snapshot(
+                    &snapshot_paths,
+                    time_override.clone().unwrap_or_else(current_timestamp),
+                )
+                .map_err(|error| format!("{error:?}"))
         },
         move |snapshot, start| {
             order_ledger
@@ -1207,6 +1200,131 @@ mod tests {
             }),
             "{trace_entries:?}"
         );
+    }
+
+    fn ordinary_test_observation(id: &str) -> MctObservation {
+        MctObservation {
+            observation_id: ObservationId::new(id).unwrap(),
+            observed_at: current_timestamp(),
+            kind: ObservationKind::CallReceived,
+            source_plane: SourcePlane::Kernel,
+            trace: ObservationTraceRef {
+                trace_id: TraceId::new(format!("trace-{id}")).unwrap(),
+                span_id: None,
+                parent_span_id: None,
+                external_trace_id: None,
+            },
+            call_id: None,
+            decision_id: None,
+            subject_id: None,
+            resource_id: None,
+            policy_revision: None,
+            grants_revision: None,
+            outcome: ObservationOutcome::Informational,
+            visibility: ObservationVisibility::InternalOnly,
+            safe_message: "unrelated ordinary observation".into(),
+            detail_ref: None,
+        }
+    }
+
+    /// Concurrent calls keep appending ordinary facts and republishing the
+    /// projection at newer heads between one call's snapshot and its effect
+    /// start. That must not refuse the effect; an authority mutation must.
+    #[tokio::test]
+    async fn effect_admission_survives_ordinary_appends_but_not_authority_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        write_test_wasm_child(&children_dir, "resident-echo");
+        let loaded = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone()));
+        let config_store = MctDaemonConfigStore::new(&config_path);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity").join("iroh-secret.hex"),
+            )
+            .unwrap();
+        config_store
+            .approve_and_assign_loaded_child(&loaded.children[0], MctOperatorChildScope::default())
+            .unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
+        let paths = ResidentRuntimePaths::new(config_path, children_dir, state_path.clone());
+        let snapshot = ledger
+            .projected_authority(state_path.clone())
+            .await
+            .unwrap()
+            .snapshot(&paths, current_timestamp())
+            .unwrap();
+        let through = snapshot.projection().through_sequence();
+        for index in 0..3 {
+            ledger
+                .append(vec![ordinary_test_observation(&format!(
+                    "obs-admission-ordinary-{index}"
+                ))])
+                .await
+                .unwrap();
+            // Another call republishes at its newer head.
+            ledger
+                .projected_authority(state_path.clone())
+                .await
+                .unwrap();
+        }
+        assert!(
+            MctRuntimeStateStore::open(&state_path)
+                .unwrap()
+                .authority_projection_snapshot()
+                .unwrap()
+                .unwrap()
+                .cursor
+                .through_sequence
+                > through
+        );
+        let admit = |snapshot: LocalExecutionAuthoritySnapshot| {
+            let ledger = ledger.clone();
+            let state_path = state_path.clone();
+            tokio::task::spawn_blocking(move || ledger.admit_effect(&snapshot, &state_path))
+        };
+        assert_eq!(admit(snapshot.clone()).await.unwrap(), Ok(()));
+
+        let mutation = ledger
+            .commit_authority_mutation(
+                AuthorityMutationRequestV1 {
+                    mutation_id: "admission-head-authority-change".into(),
+                    changes: vec![AuthorityChangeV1::ToyCatalogPut {
+                        toy_id: "toy-admission-head".into(),
+                        contract: ToyContractIdentity {
+                            namespace: "patina".into(),
+                            interface_name: "unrelated".into(),
+                            version: "0.1.0".into(),
+                            function_name: Some("observe".into()),
+                            resource_name: None,
+                        },
+                        authority_bearing: true,
+                        catalog_revision: 1,
+                        admitted_by_observation_id: "obs-admission-head-change".into(),
+                    }],
+                    grant_shaping_sources: vec![GrantShapingSourceV1::OperatorDecision {
+                        decision_id: "decision-admission-head-change".into(),
+                        authenticated_principal_ref: "test:admission-head".into(),
+                        command_kind: GrantShapingCommandKindV1::CatalogChange,
+                    }],
+                    decided_at: current_timestamp_string(),
+                },
+                state_path.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            mutation,
+            AuthorityMutationResultV1::Committed { .. }
+        ));
+        assert_eq!(
+            admit(snapshot).await.unwrap(),
+            Err(MotherAuthorityAdmissionDenyV1::ExactAuthorityStateMismatch)
+        );
+        ledger.close().await;
     }
 
     #[tokio::test]

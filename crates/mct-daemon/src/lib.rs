@@ -56,11 +56,13 @@ pub use acquisition::{
 pub use authority_order::{
     MotherAuthorityAdmissionDenyV1, MotherAuthorityCommitOutcomeV1, MotherAuthorityFenceReasonV1,
     MotherAuthorityOrderV1, MotherAuthorityRecoveryDenyV1, authority_expectation_from_ledger,
-    authority_expectation_from_snapshot,
+    authority_expectation_from_snapshot, same_authority_state,
 };
 pub use authority_snapshot::{
-    LocalExecutionAuthoritySnapshotDenyV1, local_execution_authority_snapshot,
-    local_execution_authority_snapshot_at, local_execution_authority_snapshot_from_verified,
+    LocalExecutionAuthoritySnapshotDenyV1, ProvenAuthorityProjectionV1,
+    authority_projection_expectation_from_verified, local_execution_authority_snapshot,
+    local_execution_authority_snapshot_at, local_execution_authority_snapshot_from_proven,
+    local_execution_authority_snapshot_from_verified, prove_authority_projection,
 };
 pub use blob_store::{
     MCT_BLOB_MAX_BYTES, MctLocalBlobStore, MctLocalBlobStoreError, content_addressed_blob_handle,
@@ -153,12 +155,13 @@ pub use startup::{
     MctStartupClassificationErrorV1, MctStartupPaths, MctStartupPlaneResponseV1,
     MctStartupPostureV1, MctStartupRefusalKindV1, MctStartupRefusalV1,
     accept_operator_startup_gate, classify_authority_startup, classify_startup_artifacts,
-    finalize_authority_startup, open_classified_authority,
+    finalize_authority_startup, open_classified_authority, recover_startup_ledger_residue,
 };
 pub use state::{
-    ChildInvocationProvenance, MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER, MCT_IDEMPOTENCY_TTL_SECONDS,
-    MctArtifactPackageRecord, MctCompositionRunRecord, MctIdempotencyReservation, MctMetricPoint,
-    MctQueuedTaskRecord, MctRecordedCallReply, MctRegistrySourceRecord,
+    AuthorityProjectionSnapshotV1, ChildInvocationProvenance,
+    MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER, MCT_IDEMPOTENCY_TTL_SECONDS, MctArtifactPackageRecord,
+    MctCompositionRunRecord, MctIdempotencyReservation, MctInFlightCallIdempotencyEntry,
+    MctMetricPoint, MctQueuedTaskRecord, MctRecordedCallReply, MctRegistrySourceRecord,
     MctRemoteCallableSurfaceRecord, MctRemoteSurfaceRefresh, MctRuntimeRunRecord,
     MctRuntimeRunState, MctRuntimeStateStore, MctRuntimeStateSummary, MctTaskIntentRecord,
     MctTaskStatus, MctTriggerFiringRecord, MctTriggerOccurrenceDisposition,

@@ -10,7 +10,8 @@ use mct_observation::{
     AuthorityProjectionExpectationV1, AuthorityProjectionLedgerEvidenceV1, AuthorityStartupClassV1,
     AuthorityStateV1, AuthorityTenureStartupEvidenceV1, GrantsAuthorityIdentityV1,
     JsonlObservationLedger, LedgerQuarantineStatus, LedgerRecoveryStatus, ObservationLedgerError,
-    UsableAuthorityProjectionProofV1, authority_state_hash, replay_authority_entries,
+    UsableAuthorityProjectionProofV1, authority_state_hash, is_tail_recovery_entry,
+    replay_authority_entries,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -604,6 +605,27 @@ pub fn classify_startup_artifacts(
     })
 }
 
+/// Runs the ratified R2-L1 residue path before disk-first classification.
+///
+/// Startup classification reads the ledger read-only, and read-only access never
+/// recovers, so an unterminated final frame left by a crash inside a frame write
+/// would make every boot refuse with `UnterminatedTail`. The Phase H3 startup table
+/// routes that state through "recover only by the already-ratified residue path,
+/// then reclassify the surviving ledger". This performs exactly that recovery under
+/// the exclusive writer lock (forensic preservation first, then set-aside, then one
+/// recovery observation) and releases the lock; the caller then classifies the
+/// surviving ledger with [`classify_authority_startup`]. Every other ledger state,
+/// including quarantine and foreign lineage, is left byte-identical for the
+/// classifier. Contention with a live writer fails without any mutation.
+pub fn recover_startup_ledger_residue(
+    paths: &MctStartupPaths,
+    ledger_id: &str,
+    mother_node_id: &str,
+) -> Result<Option<LedgerRecoveryStatus>, MctStartupClassificationErrorV1> {
+    JsonlObservationLedger::recover_residue_for_startup(&paths.ledger, ledger_id, mother_node_id)
+        .map_err(MctStartupClassificationErrorV1::LedgerUnavailable)
+}
+
 pub fn classify_authority_startup(
     paths: &MctStartupPaths,
     ledger_id: &str,
@@ -643,7 +665,14 @@ pub fn classify_authority_startup(
     let replay = replay_authority_entries(&entries).map_err(|error| {
         MctStartupClassificationErrorV1::AuthorityReplayBlocked(error.to_string())
     })?;
-    let startup_class = if entries.is_empty() {
+    // D-H3.3: only an intact non-empty canonical history is continuity
+    // evidence for `legacy_ledger_upgrade`. A ledger whose only entries are
+    // tail-recovery facts (for example a torn very first frame) carries no
+    // prior history, so it is classified with the missing/empty-ledger row:
+    // the operator gate, never an automatic upgrade. The ledger file and its
+    // forensics are durable artifacts, so such a ledger never proves virgin.
+    let no_canonical_history = entries.iter().all(is_tail_recovery_entry);
+    let startup_class = if no_canonical_history {
         if ledger_entry.state == MctStartupArtifactStateV1::Absent && inventory.proves_virgin() {
             AuthorityStartupClassV1::Virgin
         } else {
@@ -724,6 +753,16 @@ pub fn accept_operator_startup_gate(
     }
     if request.expected_inventory_hash != evidence.inventory.inventory_hash {
         return Err(refuse("operator gate inventory changed"));
+    }
+    if evidence.ledger_entry_count != 0 {
+        // The ratified epoch relation admits `none_after_operator_reinitialization`
+        // only over an empty ledger. Reinitializing over committed
+        // tail-recovery facts needs a ledger-law amendment; until then this
+        // refuses before any durable write instead of failing mid-open.
+        return Err(refuse(
+            "ledger holds only tail-recovery facts; operator reinitialization over \
+             committed recovery history is not ratified",
+        ));
     }
     let gate = MctAcceptedStartupGateV1 {
         decision_id: request.decision_id.clone(),
@@ -1763,6 +1802,189 @@ mod tests {
     }
 
     #[test]
+    fn torn_final_frame_is_recovered_before_classification_then_reopens_ordinarily() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let evidence = classify_authority_startup(&paths, "ledger-a", "mother-a").unwrap();
+        let first = open_classified_authority(&paths, "ledger-a", "mother-a", &evidence).unwrap();
+        let first_authority = first
+            .authority_tenure()
+            .unwrap()
+            .fact
+            .resulting_authority
+            .clone();
+        drop(first);
+        let committed = fs::read(&paths.ledger).unwrap();
+        let residue = &committed[..committed.len() / 2];
+        let mut torn = committed.clone();
+        torn.extend_from_slice(residue);
+        fs::write(&paths.ledger, &torn).unwrap();
+
+        // Read-only classification refuses and does not recover.
+        assert!(matches!(
+            classify_authority_startup(&paths, "ledger-a", "mother-a"),
+            Err(MctStartupClassificationErrorV1::LedgerUnavailable(
+                ObservationLedgerError::UnterminatedTail { .. }
+            ))
+        ));
+        assert_eq!(fs::read(&paths.ledger).unwrap(), torn);
+
+        let recovery = recover_startup_ledger_residue(&paths, "ledger-a", "mother-a")
+            .unwrap()
+            .expect("startup recovers the residue");
+        assert_eq!(fs::read(&recovery.preserved_bytes_path).unwrap(), residue);
+        assert_eq!(recovery.residue_offset, committed.len() as u64);
+        let recovered = fs::read(&paths.ledger).unwrap();
+        assert!(recovered.starts_with(&committed));
+
+        let reclassified = classify_authority_startup(&paths, "ledger-a", "mother-a").unwrap();
+        assert_eq!(
+            reclassified.startup_class,
+            AuthorityStartupClassV1::OrdinaryReopen
+        );
+        assert_eq!(
+            reclassified.prior_authority.as_ref(),
+            Some(&first_authority)
+        );
+        assert!(reclassified.inventory.entries.iter().any(|entry| {
+            entry.artifact_class == MctStartupArtifactClassV1::LedgerRecoveryForensics
+                && entry.state == MctStartupArtifactStateV1::Present
+        }));
+        let reopened =
+            open_classified_authority(&paths, "ledger-a", "mother-a", &reclassified).unwrap();
+        let entries = reopened.entries().unwrap();
+        let recovery_entry = &entries[entries.len() - 2];
+        assert_eq!(
+            recovery_entry.observation.observation_id.as_str(),
+            recovery.recovery_decision_id
+        );
+        assert_eq!(
+            reopened.authority_tenure().unwrap().fact.predecessor,
+            AuthorityEpochPredecessorV1::ValidatedHead {
+                sequence: recovery_entry.local_sequence,
+                entry_hash: recovery_entry.entry_hash.clone(),
+            }
+        );
+        drop(reopened);
+        let after_reopen = fs::read(&paths.ledger).unwrap();
+        assert!(
+            recover_startup_ledger_residue(&paths, "ledger-a", "mother-a")
+                .unwrap()
+                .is_none(),
+            "a recovered ledger needs no second recovery"
+        );
+        assert_eq!(fs::read(&paths.ledger).unwrap(), after_reopen);
+    }
+
+    #[test]
+    fn torn_first_frame_on_a_nonvirgin_install_is_gated_never_a_legacy_upgrade() {
+        // Non-virgin install: prior durable state exists, and the very first
+        // ledger frame was torn by a crash, so no frame ever committed.
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        touch(&paths.state);
+        let torn = br#"{"ledger_id":"ledger-a","mother_node_id":"mother-a","local_seq"#;
+        fs::write(&paths.ledger, torn).unwrap();
+
+        let recovery = recover_startup_ledger_residue(&paths, "ledger-a", "mother-a")
+            .unwrap()
+            .expect("startup recovers the torn first frame");
+        assert_eq!(recovery.residue_offset, 0);
+        assert_eq!(fs::read(&recovery.preserved_bytes_path).unwrap(), torn);
+        let ledger_after_recovery = fs::read(&paths.ledger).unwrap();
+
+        let evidence = classify_authority_startup(&paths, "ledger-a", "mother-a").unwrap();
+        assert_eq!(evidence.ledger_entry_count, 1, "only the recovery fact");
+        assert_eq!(
+            evidence.startup_class,
+            AuthorityStartupClassV1::OperatorGatedNonvirgin,
+            "a recovery-only ledger is not continuity evidence"
+        );
+        assert_ne!(
+            evidence.startup_class,
+            AuthorityStartupClassV1::LegacyLedgerUpgrade
+        );
+        assert!(evidence.prior_authority.is_none());
+        assert!(matches!(
+            open_classified_authority(&paths, "ledger-a", "mother-a", &evidence),
+            Err(MctStartupClassificationErrorV1::OperatorGateRequired)
+        ));
+
+        // The gate refuses before any durable write: the ratified epoch
+        // relation admits operator reinitialization only over an empty ledger.
+        let request = MctOperatorStartupGateRequestV1 {
+            schema: "mct-operator-startup-gate-request/v1".into(),
+            decision_id: "decision:gate-torn".into(),
+            expected_mother_node_id: "mother-a".into(),
+            expected_ledger_id: "ledger-a".into(),
+            expected_inventory_hash: evidence.inventory.inventory_hash.clone(),
+            confirmation: MCT_OPERATOR_REINITIALIZATION_CONFIRMATION_V1.into(),
+        };
+        assert!(matches!(
+            accept_operator_startup_gate(
+                &paths,
+                "ledger-a",
+                "mother-a",
+                &request,
+                "os-uid:501",
+                "os-uid:501",
+            ),
+            Err(MctStartupClassificationErrorV1::OperatorGateRefused(_))
+        ));
+        assert_eq!(fs::read(&paths.ledger).unwrap(), ledger_after_recovery);
+
+        // Recovery is idempotent and the class is stable across restarts.
+        assert!(
+            recover_startup_ledger_residue(&paths, "ledger-a", "mother-a")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            classify_authority_startup(&paths, "ledger-a", "mother-a")
+                .unwrap()
+                .startup_class,
+            AuthorityStartupClassV1::OperatorGatedNonvirgin
+        );
+
+        // Even with no other artifact, the recovered ledger and its forensics
+        // are durable artifacts, so a torn first frame never proves virgin.
+        let bare = tempfile::tempdir().unwrap();
+        let bare_paths = self::paths(bare.path());
+        fs::write(&bare_paths.ledger, torn).unwrap();
+        recover_startup_ledger_residue(&bare_paths, "ledger-a", "mother-a")
+            .unwrap()
+            .expect("recovers");
+        assert_eq!(
+            classify_authority_startup(&bare_paths, "ledger-a", "mother-a")
+                .unwrap()
+                .startup_class,
+            AuthorityStartupClassV1::OperatorGatedNonvirgin
+        );
+
+        // A genuinely virgin install still classifies and opens as virgin.
+        let virgin = tempfile::tempdir().unwrap();
+        let virgin_paths = self::paths(virgin.path());
+        assert!(
+            recover_startup_ledger_residue(&virgin_paths, "ledger-a", "mother-a")
+                .unwrap()
+                .is_none()
+        );
+        let virgin_evidence =
+            classify_authority_startup(&virgin_paths, "ledger-a", "mother-a").unwrap();
+        assert_eq!(
+            virgin_evidence.startup_class,
+            AuthorityStartupClassV1::Virgin
+        );
+        let opened =
+            open_classified_authority(&virgin_paths, "ledger-a", "mother-a", &virgin_evidence)
+                .unwrap();
+        assert_eq!(
+            opened.authority_tenure().unwrap().fact.predecessor,
+            AuthorityEpochPredecessorV1::NoneForVirgin
+        );
+    }
+
+    #[test]
     fn operator_gate_refusals_are_prewrite_and_acceptance_embeds_authenticated_decision() {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(dir.path());
@@ -2222,7 +2444,7 @@ mod tests {
     #[test]
     fn immutable_prewrite_snapshot_selects_all_four_startup_classes() {
         let virgin = tempfile::tempdir().unwrap();
-        let virgin_paths = paths(virgin.path());
+        let virgin_paths = self::paths(virgin.path());
         let before = fs::read_dir(virgin.path()).unwrap().count();
         let evidence = classify_authority_startup(&virgin_paths, "ledger-a", "mother-a").unwrap();
         assert_eq!(evidence.startup_class, AuthorityStartupClassV1::Virgin);

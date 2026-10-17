@@ -1,12 +1,9 @@
 use super::*;
 use mct_daemon::{
     MotherAuthorityAdmissionDenyV1, MotherAuthorityCommitOutcomeV1, MotherAuthorityOrderV1,
-    authority_expectation_from_ledger, authority_expectation_from_snapshot,
+    authority_expectation_from_ledger, authority_expectation_from_snapshot, same_authority_state,
 };
-use mct_observation::{
-    AuthorityProjectionDenyReasonV1, AuthorityProjectionLedgerEvidenceV1,
-    UsableAuthorityProjectionProofV1,
-};
+use mct_observation::UsableAuthorityProjectionProofV1;
 
 const RESIDENT_LEDGER_QUEUE_CAPACITY: usize = 256;
 
@@ -60,10 +57,6 @@ enum ResidentLedgerCommand {
         state_path: PathBuf,
         ack: tokio::sync::oneshot::Sender<AuthorityMutationResultV1>,
     },
-    PublishAuthorityProjection {
-        state_path: PathBuf,
-        ack: tokio::sync::oneshot::Sender<std::result::Result<(), String>>,
-    },
     FinalizeStartup {
         state_path: PathBuf,
         config_path: PathBuf,
@@ -79,18 +72,71 @@ enum ResidentLedgerCommand {
         state_path: PathBuf,
         ack: tokio::sync::oneshot::Sender<AuthorityMutationResultV1>,
     },
-    VerifiedAuthority {
-        ack: tokio::sync::oneshot::Sender<
-            std::result::Result<
-                (
-                    mct_observation::LedgerVerifiedHead,
-                    mct_observation::AuthorityReplayV1,
-                ),
-                String,
-            >,
-        >,
+    /// Publishes the authority projection through the writer's verified head
+    /// and proves it for that same head, in one serialized step.
+    ProjectedAuthority {
+        state_path: PathBuf,
+        ack: tokio::sync::oneshot::Sender<std::result::Result<ResidentProjectedAuthority, String>>,
     },
     Shutdown(tokio::sync::oneshot::Sender<()>),
+}
+
+/// The writer's verified head and replay, with the authority projection
+/// published and proven for exactly that head.
+///
+/// `proven` is `Err` when the projection cannot be proven usable (a typed,
+/// fail-closed reason); the writer itself answered.
+#[derive(Clone, Debug)]
+pub(crate) struct ResidentProjectedAuthority {
+    pub(crate) head: mct_observation::LedgerVerifiedHead,
+    pub(crate) replay: mct_observation::AuthorityReplayV1,
+    pub(crate) proven: std::result::Result<
+        mct_daemon::ProvenAuthorityProjectionV1,
+        mct_daemon::LocalExecutionAuthoritySnapshotDenyV1,
+    >,
+}
+
+impl ResidentProjectedAuthority {
+    /// A Mother-local snapshot built from this proof. The projection is not
+    /// re-read, so later appends cannot pair it with another head.
+    pub(crate) fn snapshot(
+        self,
+        paths: &ResidentRuntimePaths,
+        mother_time: Timestamp,
+    ) -> std::result::Result<
+        LocalExecutionAuthoritySnapshot,
+        mct_daemon::LocalExecutionAuthoritySnapshotDenyV1,
+    > {
+        mct_daemon::local_execution_authority_snapshot_from_proven(
+            self.proven?,
+            paths.config_path(),
+            paths.children_dir(),
+            paths.state_path(),
+            Ok(mother_time),
+        )
+    }
+}
+
+fn projected_authority(
+    ledger: &JsonlObservationLedger,
+    state_path: &Path,
+) -> std::result::Result<ResidentProjectedAuthority, String> {
+    let head = ledger.verified_head().map_err(|error| error.to_string())?;
+    let replay = ledger
+        .verified_replay()
+        .map_err(|error| error.to_string())?
+        .clone();
+    let state = MctRuntimeStateStore::open(state_path).map_err(|error| error.to_string())?;
+    state
+        .publish_authority_projection_from_replay(&head, &replay)
+        .map_err(|error| error.to_string())?;
+    let proven = mct_daemon::authority_projection_expectation_from_verified(&head, &replay)
+        .and_then(|expectation| mct_daemon::prove_authority_projection(&state, expectation));
+    Ok(ResidentProjectedAuthority {
+        head,
+        replay,
+        proven,
+    })
 }
 
 #[cfg(test)]
@@ -233,10 +279,6 @@ impl ResidentLedgerWriter {
                             reason: AuthorityMutationRejectionReasonV1::WriterPoisoned,
                         });
                     }
-                    ResidentLedgerCommand::PublishAuthorityProjection { ack, .. } => {
-                        task_fenced.store(true, Ordering::SeqCst);
-                        let _ = ack.send(Err("injected resident writer loss".into()));
-                    }
                     ResidentLedgerCommand::FinalizeStartup { ack, .. } => {
                         task_fenced.store(true, Ordering::SeqCst);
                         let _ = ack.send(Err("injected resident writer loss".into()));
@@ -248,7 +290,7 @@ impl ResidentLedgerWriter {
                             reason: AuthorityMutationRejectionReasonV1::WriterPoisoned,
                         });
                     }
-                    ResidentLedgerCommand::VerifiedAuthority { ack } => {
+                    ResidentLedgerCommand::ProjectedAuthority { ack, .. } => {
                         let _ = ack.send(Err("injected resident writer loss".into()));
                     }
                     ResidentLedgerCommand::Shutdown(ack) => {
@@ -307,9 +349,6 @@ impl ResidentLedgerWriter {
                             .ack
                             .send(Err("unexpected write after authority refusal".into()));
                     }
-                    ResidentLedgerCommand::PublishAuthorityProjection { ack, .. } => {
-                        let _ = ack.send(Err("scripted authority writer".into()));
-                    }
                     ResidentLedgerCommand::FinalizeStartup { ack, .. } => {
                         let _ = ack.send(Err("scripted authority writer".into()));
                     }
@@ -319,7 +358,7 @@ impl ResidentLedgerWriter {
                             reason: AuthorityMutationRejectionReasonV1::InvalidRequest,
                         });
                     }
-                    ResidentLedgerCommand::VerifiedAuthority { ack } => {
+                    ResidentLedgerCommand::ProjectedAuthority { ack, .. } => {
                         let _ = ack.send(Err("scripted authority writer".into()));
                     }
                     ResidentLedgerCommand::Shutdown(ack) => {
@@ -413,17 +452,6 @@ impl ResidentLedgerWriter {
                         publish_cached_tip(&ledger, &task_cached_tip);
                         let _ = write.ack.send(result);
                     }
-                    ResidentLedgerCommand::VerifiedAuthority { ack } => {
-                        let result = ledger
-                            .verified_head()
-                            .and_then(|head| {
-                                ledger
-                                    .verified_replay()
-                                    .map(|replay| (head, replay.clone()))
-                            })
-                            .map_err(|error| error.to_string());
-                        let _ = ack.send(result);
-                    }
                     ResidentLedgerCommand::AuthorityMutation {
                         request,
                         state_path,
@@ -465,27 +493,8 @@ impl ResidentLedgerWriter {
                         publish_cached_tip(&ledger, &task_cached_tip);
                         let _ = ack.send(result);
                     }
-                    ResidentLedgerCommand::PublishAuthorityProjection { state_path, ack } => {
-                        let result = ledger
-                            .verified_head()
-                            .and_then(|head| {
-                                ledger
-                                    .verified_replay()
-                                    .map(|replay| (head, replay.clone()))
-                            })
-                            .map_err(|error| error.to_string())
-                            .and_then(|(head, replay)| {
-                                MctRuntimeStateStore::open(&state_path)
-                                    .and_then(|state| {
-                                        state
-                                            .publish_authority_projection_from_replay(
-                                                &head, &replay,
-                                            )
-                                            .map(|_| ())
-                                    })
-                                    .map_err(|error| error.to_string())
-                            });
-                        let _ = ack.send(result);
+                    ResidentLedgerCommand::ProjectedAuthority { state_path, ack } => {
+                        let _ = ack.send(projected_authority(&ledger, &state_path));
                     }
                     ResidentLedgerCommand::FinalizeStartup {
                         state_path,
@@ -587,96 +596,81 @@ impl ResidentLedgerWriter {
         self.admit_effect_start(snapshot, state_path, &mut || {})
     }
 
+    /// Admits one effect start for `snapshot` under the authority order.
+    ///
+    /// Ordinary observations keep moving the ledger head while a call runs,
+    /// so the snapshot's head is usually behind by the time the effect is
+    /// about to start. The proof is therefore taken fresh from the writer
+    /// (published and proven for its current head in one serialized step),
+    /// and admission requires that the snapshot and that fresh proof name
+    /// the same authority identity and state. The order lock then rejects
+    /// any authority mutation that committed after the proof. The proof is
+    /// taken before the lock: the writer locks the order to commit
+    /// mutations, so asking it while holding the lock could deadlock.
     pub(crate) fn admit_effect_start(
         &self,
         snapshot: &LocalExecutionAuthoritySnapshot,
         state_path: &Path,
         start: &mut dyn FnMut(),
     ) -> std::result::Result<(), MotherAuthorityAdmissionDenyV1> {
-        let expectation = authority_expectation_from_snapshot(snapshot);
+        let snapshot_expectation = authority_expectation_from_snapshot(snapshot);
+        let projected = self
+            .projected_authority_blocking(state_path.to_path_buf())
+            .map_err(|_| MotherAuthorityAdmissionDenyV1::AuthorityStateUnavailable)?;
+        let current = match projected.proven {
+            Ok(proven) => proven.cursor,
+            Err(mct_daemon::LocalExecutionAuthoritySnapshotDenyV1::AuthorityProjection(reason)) => {
+                return Err(MotherAuthorityAdmissionDenyV1::Projection(reason));
+            }
+            Err(_) => return Err(MotherAuthorityAdmissionDenyV1::AuthorityStateUnavailable),
+        };
+        let current_expectation = mct_daemon::authority_projection_expectation_from_verified(
+            &projected.head,
+            &projected.replay,
+        )
+        .map_err(|_| MotherAuthorityAdmissionDenyV1::AuthorityStateUnavailable)?;
+        if !same_authority_state(&snapshot_expectation, &current_expectation) {
+            return Err(MotherAuthorityAdmissionDenyV1::ExactAuthorityStateMismatch);
+        }
         self.authority_order.admit_effect(
-            &expectation,
-            || {
-                MctRuntimeStateStore::open(state_path)
-                    .ok()
-                    .and_then(|state| {
-                        state
-                            .usable_authority_projection_proof(
-                                &AuthorityProjectionLedgerEvidenceV1::Validated(
-                                    expectation.clone(),
-                                ),
-                            )
-                            .ok()
-                    })
-                    .unwrap_or(UsableAuthorityProjectionProofV1::Denied {
-                        reason: AuthorityProjectionDenyReasonV1::ProjectionNotCurrent,
-                    })
+            &current_expectation,
+            || UsableAuthorityProjectionProofV1::Usable {
+                cursor: Box::new(current),
             },
             |_| start(),
         )
     }
 
-    pub(crate) fn publish_authority_projection_blocking(&self, state_path: PathBuf) -> Result<()> {
-        if self.is_fenced() {
-            bail!("resident observation writer is fenced");
-        }
-        let (ack, rx) = tokio::sync::oneshot::channel();
-        self.sender
-            .blocking_send(ResidentLedgerCommand::PublishAuthorityProjection { state_path, ack })
-            .context("send blocking authority projection publication")?;
-        rx.blocking_recv()
-            .context("receive blocking authority projection publication")?
-            .map_err(anyhow::Error::msg)
-    }
-
-    pub(crate) fn verified_authority_blocking(
+    pub(crate) fn projected_authority_blocking(
         &self,
-    ) -> Result<(
-        mct_observation::LedgerVerifiedHead,
-        mct_observation::AuthorityReplayV1,
-    )> {
+        state_path: PathBuf,
+    ) -> Result<ResidentProjectedAuthority> {
         if self.is_fenced() {
             bail!("resident observation writer is fenced");
         }
         let (ack, rx) = tokio::sync::oneshot::channel();
         self.sender
-            .blocking_send(ResidentLedgerCommand::VerifiedAuthority { ack })
-            .context("send blocking verified authority read")?;
+            .blocking_send(ResidentLedgerCommand::ProjectedAuthority { state_path, ack })
+            .context("send blocking projected authority read")?;
         rx.blocking_recv()
-            .context("receive blocking verified authority read")?
+            .context("receive blocking projected authority read")?
             .map_err(anyhow::Error::msg)
     }
 
-    pub(crate) async fn verified_authority(
+    pub(crate) async fn projected_authority(
         &self,
-    ) -> Result<(
-        mct_observation::LedgerVerifiedHead,
-        mct_observation::AuthorityReplayV1,
-    )> {
+        state_path: PathBuf,
+    ) -> Result<ResidentProjectedAuthority> {
         if self.is_fenced() {
             bail!("resident observation writer is fenced");
         }
         let (ack, rx) = tokio::sync::oneshot::channel();
         self.sender
-            .send(ResidentLedgerCommand::VerifiedAuthority { ack })
+            .send(ResidentLedgerCommand::ProjectedAuthority { state_path, ack })
             .await
-            .context("send verified authority read to resident ledger writer")?;
+            .context("send projected authority read to resident ledger writer")?;
         rx.await
-            .context("receive verified authority read")?
-            .map_err(anyhow::Error::msg)
-    }
-
-    pub(crate) async fn publish_authority_projection(&self, state_path: PathBuf) -> Result<()> {
-        if self.is_fenced() {
-            bail!("resident observation writer is fenced");
-        }
-        let (ack, rx) = tokio::sync::oneshot::channel();
-        self.sender
-            .send(ResidentLedgerCommand::PublishAuthorityProjection { state_path, ack })
-            .await
-            .context("send authority projection publication to resident ledger writer")?;
-        rx.await
-            .context("receive authority projection publication acknowledgement")?
+            .context("receive projected authority read")?
             .map_err(anyhow::Error::msg)
     }
 

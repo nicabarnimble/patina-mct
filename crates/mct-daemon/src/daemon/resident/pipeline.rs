@@ -19,26 +19,24 @@ fn mother_internal_authority_context(
     )
 }
 
+/// Mother could not prove her own current authority before any effect began.
+/// The caller may retry; the idempotency layer releases the key for it.
+pub(super) fn receiver_authority_unavailable_before_effect() -> MctIrohCallHandlerResult {
+    MctIrohCallHandlerResult::denied()
+        .with_protocol_reason(CallProtocolReason::ReceiverAuthorityUnavailable)
+        .with_safe_message("receiver authority unavailable; retry later")
+}
+
 pub(super) async fn fresh_resident_receiver_identity(
     paths: &ResidentRuntimePaths,
     ledger: &ResidentLedgerWriter,
 ) -> Result<GrantsAuthorityIdentity> {
-    ledger
-        .publish_authority_projection(paths.state_path().to_path_buf())
+    let projected = ledger
+        .projected_authority(paths.state_path().to_path_buf())
         .await?;
-    let (head, replay) = ledger.verified_authority().await?;
-    let config_path = paths.config_path().to_path_buf();
-    let children_dir = paths.children_dir().to_path_buf();
-    let state_path = paths.state_path().to_path_buf();
+    let paths = paths.clone();
     let snapshot = tokio::task::spawn_blocking(move || {
-        mct_daemon::local_execution_authority_snapshot_from_verified(
-            head,
-            replay,
-            &config_path,
-            &children_dir,
-            &state_path,
-            Ok(mct_daemon::current_timestamp()),
-        )
+        projected.snapshot(&paths, mct_daemon::current_timestamp())
     })
     .await
     .context("join resident receiver identity")?
@@ -848,19 +846,12 @@ async fn execute_resident_call_after_payload(
     if ledger.path().is_none() {
         return MctIrohCallHandlerResult::failed("runtime unavailable");
     };
-    if ledger
-        .publish_authority_projection(paths.state_path().to_path_buf())
-        .await
-        .is_err()
-    {
-        return MctIrohCallHandlerResult::failed("runtime unavailable");
-    }
     let authorization =
         match authorize_resident_child(paths.clone(), ledger.clone(), request.call.clone()).await {
             Ok(authorization) => authorization,
             Err(error) => {
                 eprintln!("resident child authorization unavailable: {error}");
-                return MctIrohCallHandlerResult::failed("runtime unavailable");
+                return receiver_authority_unavailable_before_effect();
             }
         };
 
@@ -947,42 +938,29 @@ async fn execute_resident_call_after_payload(
                     return MctIrohCallHandlerResult::failed("test authority mutation unavailable");
                 }
             }
-            if ledger
-                .publish_authority_projection(paths.state_path().to_path_buf())
+            let projected = match ledger
+                .projected_authority(paths.state_path().to_path_buf())
                 .await
-                .is_err()
             {
-                return MctIrohCallHandlerResult::failed("runtime unavailable");
-            }
-            let (head, replay) = match ledger.verified_authority().await {
-                Ok(view) => view,
+                Ok(projected) => projected,
                 Err(error) => {
                     eprintln!("resident Child effect authority unavailable: {error}");
-                    return MctIrohCallHandlerResult::failed("runtime unavailable");
+                    return receiver_authority_unavailable_before_effect();
                 }
             };
-            let config_path = paths.config_path().to_path_buf();
-            let children_dir = paths.children_dir().to_path_buf();
-            let state_path = paths.state_path().to_path_buf();
+            let snapshot_paths = paths.clone();
             let evaluated_at = effect_time_override
                 .clone()
                 .unwrap_or_else(current_timestamp);
             let effect_snapshot = match tokio::task::spawn_blocking(move || {
-                mct_daemon::local_execution_authority_snapshot_from_verified(
-                    head,
-                    replay,
-                    &config_path,
-                    &children_dir,
-                    &state_path,
-                    Ok(evaluated_at),
-                )
+                projected.snapshot(&snapshot_paths, evaluated_at)
             })
             .await
             {
                 Ok(Ok(snapshot)) => snapshot,
                 Ok(Err(error)) => {
                     eprintln!("resident Child effect authority unavailable: {error:?}");
-                    return MctIrohCallHandlerResult::failed("runtime unavailable");
+                    return receiver_authority_unavailable_before_effect();
                 }
                 Err(error) => {
                     eprintln!("resident Child effect authority task failed: {error}");
