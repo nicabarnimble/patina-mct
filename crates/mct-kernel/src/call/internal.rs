@@ -371,7 +371,8 @@ fn denied(
             | CallProtocolReason::ChildPayloadContentTypeUnsupported
             | CallProtocolReason::ResultPayloadTooLarge
             | CallProtocolReason::ResultPayloadIntegrityMismatch
-            | CallProtocolReason::ExecutionFailed => CallProtocolOutcome::Failed,
+            | CallProtocolReason::ExecutionFailed
+            | CallProtocolReason::ExecutionInterrupted => CallProtocolOutcome::Failed,
             CallProtocolReason::ExecutionTimedOut => CallProtocolOutcome::TimedOut,
             _ => CallProtocolOutcome::Denied,
         },

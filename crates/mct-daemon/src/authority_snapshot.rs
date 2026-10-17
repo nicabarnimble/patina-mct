@@ -1,3 +1,4 @@
+use crate::state::AuthorityProjectionSnapshotV1;
 use crate::{
     MctChildLoadOptions, MctDaemonConfigStore, MctRuntimeStateStore, current_timestamp,
     load_children_from_dir, outbound_peer_binding_for_local,
@@ -8,7 +9,7 @@ use mct_kernel::{
     Timestamp, assemble_local_execution_authority_snapshot,
 };
 use mct_observation::{
-    AuthorityProjectionDenyReasonV1, AuthorityProjectionExpectationV1,
+    AuthorityProjectionCursorV1, AuthorityProjectionDenyReasonV1, AuthorityProjectionExpectationV1,
     AuthorityProjectionLedgerEvidenceV1, ObservationLedgerError, UsableAuthorityProjectionProofV1,
     authority_state_hash,
 };
@@ -85,47 +86,46 @@ pub fn local_execution_authority_snapshot_at(
     )
 }
 
-/// Builds a snapshot from an already verified writer head and replay.
+/// Authority projection proven usable through one verified ledger head.
 ///
-/// The resident call path uses this so it does not re-read or re-hash the ledger
-/// prefix. External readers still use [`local_execution_authority_snapshot`], which
-/// full-verifies on checkpoint mismatch and fails closed on a suffix break.
-pub fn local_execution_authority_snapshot_from_verified(
-    head: mct_observation::LedgerVerifiedHead,
-    replay: mct_observation::AuthorityReplayV1,
-    config_path: &Path,
-    children_dir: &Path,
-    state_path: &Path,
-    mother_time: Result<Timestamp, LocalExecutionAuthoritySnapshotDenyV1>,
-) -> Result<LocalExecutionAuthoritySnapshot, LocalExecutionAuthoritySnapshotDenyV1> {
-    let evaluated_at =
-        mother_time.map_err(|_| LocalExecutionAuthoritySnapshotDenyV1::MotherClockUnavailable)?;
-    let config = MctDaemonConfigStore::new(config_path)
-        .load()
-        .map_err(|_| LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?;
-    let identity = config
-        .local_identity
-        .as_ref()
-        .ok_or(LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?;
+/// The resident ledger writer captures this in one serialized step: it
+/// publishes the projection through its verified head and proves that same
+/// projection before any other append or publication can move either. A
+/// snapshot built from it therefore never pairs one head with another head's
+/// projection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProvenAuthorityProjectionV1 {
+    pub cursor: AuthorityProjectionCursorV1,
+    pub projection: AuthorityProjectionSnapshotV1,
+}
+
+/// The projection expectation a verified writer head and replay establish.
+pub fn authority_projection_expectation_from_verified(
+    head: &mct_observation::LedgerVerifiedHead,
+    replay: &mct_observation::AuthorityReplayV1,
+) -> Result<AuthorityProjectionExpectationV1, LocalExecutionAuthoritySnapshotDenyV1> {
     let authority = replay
         .current_authority
+        .clone()
         .ok_or(LocalExecutionAuthoritySnapshotDenyV1::AuthorityReplayBlocked)?;
     let expected_state_hash = authority_state_hash(&replay.state)
         .map_err(|_| LocalExecutionAuthoritySnapshotDenyV1::AuthorityReplayBlocked)?;
-    let expectation = AuthorityProjectionExpectationV1 {
+    Ok(AuthorityProjectionExpectationV1 {
         source_mother_node_id: head.mother_node_id.clone(),
         source_ledger_id: head.ledger_id.clone(),
         through_sequence: head.local_sequence,
-        through_entry_hash: head.entry_hash,
+        through_entry_hash: head.entry_hash.clone(),
         grants_authority: authority,
         authority_state_hash: expected_state_hash,
-    };
-    let state = MctRuntimeStateStore::open(state_path).map_err(|_| {
-        LocalExecutionAuthoritySnapshotDenyV1::AuthorityProjection(
-            AuthorityProjectionDenyReasonV1::ProjectionMissing,
-        )
-    })?;
-    let proven_cursor = match state
+    })
+}
+
+/// Proves the stored projection usable for exactly `expectation`.
+pub fn prove_authority_projection(
+    state: &MctRuntimeStateStore,
+    expectation: AuthorityProjectionExpectationV1,
+) -> Result<ProvenAuthorityProjectionV1, LocalExecutionAuthoritySnapshotDenyV1> {
+    let cursor = match state
         .usable_authority_projection_proof(&AuthorityProjectionLedgerEvidenceV1::Validated(
             expectation,
         ))
@@ -151,14 +151,80 @@ pub fn local_execution_authority_snapshot_from_verified(
         .ok_or(LocalExecutionAuthoritySnapshotDenyV1::AuthorityProjection(
             AuthorityProjectionDenyReasonV1::ProjectionMissing,
         ))?;
-    if projection.cursor != proven_cursor
+    if projection.cursor != cursor
         || authority_state_hash(&projection.state).ok().as_deref()
-            != Some(proven_cursor.authority_state_hash.as_str())
+            != Some(cursor.authority_state_hash.as_str())
     {
         return Err(LocalExecutionAuthoritySnapshotDenyV1::AuthorityProjection(
             AuthorityProjectionDenyReasonV1::ProjectionNotCurrent,
         ));
     }
+    Ok(ProvenAuthorityProjectionV1 { cursor, projection })
+}
+
+/// Builds a snapshot from an already verified writer head and replay.
+///
+/// The resident call path uses this so it does not re-read or re-hash the ledger
+/// prefix. External readers still use [`local_execution_authority_snapshot`], which
+/// full-verifies on checkpoint mismatch and fails closed on a suffix break.
+pub fn local_execution_authority_snapshot_from_verified(
+    head: mct_observation::LedgerVerifiedHead,
+    replay: mct_observation::AuthorityReplayV1,
+    config_path: &Path,
+    children_dir: &Path,
+    state_path: &Path,
+    mother_time: Result<Timestamp, LocalExecutionAuthoritySnapshotDenyV1>,
+) -> Result<LocalExecutionAuthoritySnapshot, LocalExecutionAuthoritySnapshotDenyV1> {
+    let evaluated_at =
+        mother_time.map_err(|_| LocalExecutionAuthoritySnapshotDenyV1::MotherClockUnavailable)?;
+    // Policy availability is checked before the projection, as before.
+    MctDaemonConfigStore::new(config_path)
+        .load()
+        .map_err(|_| LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?
+        .local_identity
+        .ok_or(LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?;
+    let expectation = authority_projection_expectation_from_verified(&head, &replay)?;
+    let state = MctRuntimeStateStore::open(state_path).map_err(|_| {
+        LocalExecutionAuthoritySnapshotDenyV1::AuthorityProjection(
+            AuthorityProjectionDenyReasonV1::ProjectionMissing,
+        )
+    })?;
+    let proven = prove_authority_projection(&state, expectation)?;
+    drop(state);
+    local_execution_authority_snapshot_from_proven(
+        proven,
+        config_path,
+        children_dir,
+        state_path,
+        Ok(evaluated_at),
+    )
+}
+
+/// Builds a snapshot from a projection the resident writer already proved
+/// for its head. Nothing here re-reads the authority projection, so a later
+/// append or publication cannot pair this snapshot with a different head.
+pub fn local_execution_authority_snapshot_from_proven(
+    proven: ProvenAuthorityProjectionV1,
+    config_path: &Path,
+    children_dir: &Path,
+    state_path: &Path,
+    mother_time: Result<Timestamp, LocalExecutionAuthoritySnapshotDenyV1>,
+) -> Result<LocalExecutionAuthoritySnapshot, LocalExecutionAuthoritySnapshotDenyV1> {
+    let evaluated_at =
+        mother_time.map_err(|_| LocalExecutionAuthoritySnapshotDenyV1::MotherClockUnavailable)?;
+    let config = MctDaemonConfigStore::new(config_path)
+        .load()
+        .map_err(|_| LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?;
+    let identity = config
+        .local_identity
+        .as_ref()
+        .ok_or(LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?;
+    let ProvenAuthorityProjectionV1 {
+        cursor: proven_cursor,
+        projection,
+    } = proven;
+    let state = MctRuntimeStateStore::open(state_path)
+        .map_err(|_| LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?;
 
     if identity.node_id.as_str() != proven_cursor.source_mother_node_id {
         return Err(LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable);

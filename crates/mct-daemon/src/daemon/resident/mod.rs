@@ -4,7 +4,9 @@ mod observation;
 #[cfg(test)]
 pub(crate) use observation::TestAuthorityMutationFailure;
 use observation::resident_endpoint_observation;
-pub(super) use observation::{ResidentLedgerWriter, resident_iroh_observation_sink};
+pub(super) use observation::{
+    ResidentLedgerWriter, ResidentProjectedAuthority, resident_iroh_observation_sink,
+};
 
 mod payload;
 pub(super) use payload::{ResidentPayloadIngress, blake3_hex};
@@ -46,19 +48,23 @@ mod forwarding;
 use forwarding::*;
 
 mod pipeline;
-use pipeline::fresh_resident_receiver_identity;
 pub(super) use pipeline::{
     ResidentCallIngressContext, ResidentRuntimePaths, execute_resident_call,
     execute_resident_call_with_context,
 };
 #[cfg(test)]
 use pipeline::{execute_resident_call_at, execute_resident_call_with_post_mint_mutation};
+use pipeline::{fresh_resident_receiver_identity, receiver_authority_unavailable_before_effect};
 
 mod trigger_scheduler;
 use trigger_scheduler::{
-    SystemTriggerClock, TriggerClock, TriggerLimits, reconcile_trigger_projection,
-    run_trigger_scheduler_with_runtime,
+    SystemTriggerClock, TriggerClock, TriggerLimits, close_unfinished_trigger_firing,
+    reconcile_trigger_projection, run_trigger_scheduler_with_runtime,
+    trigger_terminal_observation_id,
 };
+
+mod restart_recovery;
+use restart_recovery::settle_prior_tenure_calls;
 
 mod serving;
 #[cfg(test)]

@@ -374,7 +374,11 @@ pub fn authority_expectation_from_ledger(
     })
 }
 
-fn same_authority_state(
+/// Whether two expectations name the same authority identity and state,
+/// whatever ledger head each was taken at. An ordinary observation moves the
+/// head without changing either.
+#[doc(hidden)]
+pub fn same_authority_state(
     left: &AuthorityProjectionExpectationV1,
     right: &AuthorityProjectionExpectationV1,
 ) -> bool {

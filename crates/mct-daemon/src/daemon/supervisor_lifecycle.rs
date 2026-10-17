@@ -1793,8 +1793,59 @@ pub(super) fn record_supervised_boot_refusal(record_path: &Path, safe_message: &
     Ok(())
 }
 
+/// Recovers crash residue on a supervised service ledger before anything
+/// validates the supervisor record against it.
+///
+/// Record validation reads the ledger read-only, and read-only access never
+/// recovers, so an unterminated final frame would refuse the boot before the
+/// resident's own startup recovery could run. This is the same step resident
+/// startup takes: the ratified residue path under the exclusive writer lock,
+/// which preserves the torn bytes as forensics and records one recovery fact,
+/// after which the surviving ledger is read (and later classified) again.
+///
+/// The ledger path comes from the record's own service root, as for a boot
+/// refusal, never from unvalidated record contents. A live writer owns its
+/// own tail: if the lock is held, nothing is recovered here.
+pub(super) fn recover_supervised_ledger_residue(
+    record_path: &Path,
+) -> Result<Option<mct_observation::LedgerRecoveryStatus>> {
+    let root = record_path
+        .parent()
+        .context("supervisor record path has no service root")?;
+    match JsonlObservationLedger::recover_residue_for_startup(
+        root.join("observations.jsonl"),
+        "ledger-local",
+        "local-mct",
+    ) {
+        Ok(status) => Ok(status),
+        Err(mct_observation::ObservationLedgerError::WriterContended { .. }) => Ok(None),
+        Err(error) => {
+            Err(anyhow::Error::from(error).context("recover supervised ledger crash residue"))
+        }
+    }
+}
+
+/// Validates the governing record for a supervised boot, after recovering
+/// any crash residue the previous process left on the service ledger.
+pub(super) fn validate_supervised_boot_record(
+    record_path: &Path,
+    simulated_context: bool,
+) -> Result<SupervisorRecordV1> {
+    if let Some(recovery) = recover_supervised_ledger_residue(record_path)? {
+        eprintln!(
+            "mct supervised boot recovered an unterminated ledger tail: offset={} length={} digest={} decision={} preserved={}",
+            recovery.residue_offset,
+            recovery.residue_length,
+            recovery.residue_digest,
+            recovery.recovery_decision_id,
+            recovery.preserved_bytes_path.display()
+        );
+    }
+    validate_supervisor_record(record_path, simulated_context)
+}
+
 fn validate_direct_start_record(paths: &SupervisorPaths) -> Result<SupervisorRecordV1> {
-    match validate_supervisor_record(&paths.record, true) {
+    match validate_supervised_boot_record(&paths.record, true) {
         Ok(record) => Ok(record),
         Err(error) => {
             let safe_message = error.to_string();
@@ -2664,6 +2715,100 @@ mod tests {
             acquisition_ids: Vec::new(),
             created_by_observation_id: ObservationId::new("obs-supervisor-proof-artifact").unwrap(),
         }
+    }
+
+    /// Platform-neutral: exercises the supervised (launchd) boot validation
+    /// with a simulated process context, so it runs on Linux too.
+    #[test]
+    fn supervised_boot_recovers_a_torn_final_frame_before_validating_the_record() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, record) = install_supervisor_for_test(root.path()).unwrap();
+        let committed = fs::read(&paths.ledger).unwrap();
+        let committed_lines = committed.iter().filter(|byte| **byte == b'\n').count() as u64;
+        let last = committed[..committed.len() - 1]
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |index| index + 1);
+        let torn = committed[last..committed.len() - 1][..20].to_vec();
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&paths.ledger)
+            .unwrap();
+        file.write_all(&torn).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        let on_disk = fs::read(&paths.ledger).unwrap();
+
+        // Read-only validation alone refuses and leaves the evidence intact.
+        assert!(validate_supervisor_record(&paths.record, true).is_err());
+        assert_eq!(fs::read(&paths.ledger).unwrap(), on_disk);
+
+        // The supervised boot recovers first, then validates the survivor.
+        let validated = validate_supervised_boot_record(&paths.record, true).unwrap();
+        assert_eq!(validated, record);
+        let after = fs::read(&paths.ledger).unwrap();
+        assert!(
+            after.starts_with(&committed),
+            "recovery rewrote committed bytes"
+        );
+        let entries = entries(&paths.ledger);
+        let recovery = entries
+            .iter()
+            .filter(|entry| {
+                entry
+                    .observation
+                    .observation_id
+                    .as_str()
+                    .starts_with("ledger-tail-recovery-")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(recovery.len(), 1);
+        assert_eq!(recovery[0].local_sequence, committed_lines);
+        let forensics = mct_observation::forensic_root_path(&paths.ledger);
+        let tail_dirs = fs::read_dir(&forensics)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(tail_dirs.len(), 1);
+        assert_eq!(fs::read(tail_dirs[0].join("source.bin")).unwrap(), torn);
+        assert!(tail_dirs[0].join("record.json").is_file());
+        // No boot-refusal fact was written for the residue.
+        assert!(!entries.iter().any(|entry| {
+            entry
+                .observation
+                .safe_message
+                .contains("supervised-boot-refused")
+                || entry
+                    .observation
+                    .observation_id
+                    .as_str()
+                    .starts_with("obs-supervised-boot-refused")
+        }));
+
+        // Idempotent: a second boot recovers nothing and changes nothing.
+        assert!(
+            recover_supervised_ledger_residue(&paths.record)
+                .unwrap()
+                .is_none()
+        );
+        validate_supervised_boot_record(&paths.record, true).unwrap();
+        assert_eq!(fs::read(&paths.ledger).unwrap(), after);
+
+        // A live writer owns its tail: with the lock held, nothing recovers.
+        let held =
+            JsonlObservationLedger::open(&paths.ledger, "ledger-local", "local-mct").unwrap();
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&paths.ledger)
+            .unwrap();
+        file.write_all(b"{\"partial").unwrap();
+        drop(file);
+        assert!(
+            recover_supervised_ledger_residue(&paths.record)
+                .unwrap()
+                .is_none()
+        );
+        drop(held);
     }
 
     #[test]

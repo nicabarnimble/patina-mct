@@ -85,17 +85,13 @@ pub(super) async fn authorize_resident_child(
     ledger: ResidentLedgerWriter,
     call: MctCall,
 ) -> Result<RouteDisposition> {
-    let (head, replay) = ledger.verified_authority().await?;
+    let projected = ledger
+        .projected_authority(paths.state_path().to_path_buf())
+        .await?;
     tokio::task::spawn_blocking(move || {
-        let snapshot = mct_daemon::local_execution_authority_snapshot_from_verified(
-            head,
-            replay,
-            paths.config_path(),
-            paths.children_dir(),
-            paths.state_path(),
-            Ok(mct_daemon::current_timestamp()),
-        )
-        .map_err(|deny| anyhow::anyhow!("local execution authority unavailable: {deny:?}"))?;
+        let snapshot = projected
+            .snapshot(&paths, mct_daemon::current_timestamp())
+            .map_err(|deny| anyhow::anyhow!("local execution authority unavailable: {deny:?}"))?;
         let load_report =
             load_children_from_dir(MctChildLoadOptions::new(paths.children_dir().to_path_buf()));
         authorize_resident_child_from_snapshot(&snapshot, load_report.children, &call)

@@ -818,6 +818,51 @@ impl JsonlObservationLedger {
         JsonlObservationLedgerReader::open(path, ledger_id, mother_node_id)
     }
 
+    /// Startup entry to the R2-L1 residue path for a writer that has not opened yet.
+    ///
+    /// Read-only access classifies but never recovers, so a Mother that classifies its
+    /// disk before opening authority would otherwise refuse forever on crash residue.
+    /// When a read-only scan finds an unterminated final frame, or a residue case whose
+    /// recovery was interrupted before completion, this takes the exclusive writer lock,
+    /// rescans under it, and runs the ratified recovery: exact residue bytes and the
+    /// diagnostic record are preserved durably, only then are the bytes set aside, and
+    /// one recovery observation is appended. The lock is released before returning so
+    /// the caller can reclassify the surviving ledger. Clean, missing, non-regular,
+    /// quarantined, and foreign ledgers are left untouched and return `Ok(None)`; their
+    /// classification stays with the caller.
+    pub fn recover_residue_for_startup(
+        path: impl AsRef<Path>,
+        ledger_id: impl Into<String>,
+        mother_node_id: impl Into<String>,
+    ) -> Result<Option<LedgerRecoveryStatus>> {
+        let path = path.as_ref();
+        let ledger_id = ledger_id.into();
+        let mother_node_id = mother_node_id.into();
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_file() => {}
+            Ok(_) => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => {
+                return Err(ObservationLedgerError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                });
+            }
+        }
+        let needs_recovery = match scan_existing(path, &ledger_id, &mother_node_id)? {
+            LedgerScan::Residue(_) => true,
+            LedgerScan::Ready(_) => {
+                pending_tail_recovery_exists(path, &ledger_id, &mother_node_id)?
+            }
+            LedgerScan::Quarantine(_) | LedgerScan::ForeignLineage(_) => false,
+        };
+        if !needs_recovery {
+            return Ok(None);
+        }
+        let ledger = Self::open(path, ledger_id, mother_node_id)?;
+        Ok(ledger.recovery_status().cloned())
+    }
+
     pub fn recovery_status(&self) -> Option<&LedgerRecoveryStatus> {
         self.recovery_status.as_ref()
     }
@@ -2394,6 +2439,24 @@ pub fn authority_projection_hash(input: &AuthorityProjectionHashInputV1) -> Resu
     )
 }
 
+/// True when `entry` is a ledger-tail recovery fact: the observation the
+/// ratified residue path appends after preserving an unterminated final frame.
+/// Such a fact records crash residue handling; it is never continuity
+/// evidence for a prior canonical history.
+pub fn is_tail_recovery_entry(entry: &MctObservationLedgerEntry) -> bool {
+    let observation = &entry.observation;
+    observation
+        .observation_id
+        .as_str()
+        .starts_with("ledger-tail-recovery-")
+        && observation.kind == ObservationKind::StorageAppendSucceeded
+        && observation.source_plane == SourcePlane::Storage
+        && observation
+            .detail_ref
+            .as_deref()
+            .is_some_and(|detail| detail.starts_with("ledger-tail-recovery-v1:"))
+}
+
 pub fn replay_authority_entries(
     entries: &[MctObservationLedgerEntry],
 ) -> std::result::Result<AuthorityReplayV1, AuthorityReplayError> {
@@ -3243,6 +3306,37 @@ fn preserve_quarantine(
     status.diagnostic_record_path = Some(diagnostic_record_path.clone());
     write_json_durable(&diagnostic_record_path, &status)?;
     Ok(status)
+}
+
+/// True when this ledger has a residue case whose recovery did not complete.
+fn pending_tail_recovery_exists(
+    path: &Path,
+    ledger_id: &str,
+    mother_node_id: &str,
+) -> Result<bool> {
+    let root = forensic_root_path(path);
+    let cases = match std::fs::read_dir(&root) {
+        Ok(cases) => cases,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(source) => return Err(ObservationLedgerError::Io { path: root, source }),
+    };
+    for case in cases.filter_map(std::result::Result::ok) {
+        let record_path = case.path().join("record.json");
+        if !record_path.is_file() {
+            continue;
+        }
+        let Ok(status) = read_recovery_status(&record_path) else {
+            continue;
+        };
+        if status.ledger_path == path
+            && status.source_ledger_id == ledger_id
+            && status.source_mother_node_id == mother_node_id
+            && !status.recovery_complete
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn read_recovery_status(path: &Path) -> Result<LedgerRecoveryStatus> {
@@ -4563,6 +4657,128 @@ mod tests {
                 "stage {stage:?} duplicated recovery"
             );
         }
+    }
+
+    #[test]
+    fn startup_residue_recovery_runs_the_ratified_path_and_leaves_other_ledgers_alone() {
+        // Missing ledger: nothing is created.
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.jsonl");
+        assert!(
+            JsonlObservationLedger::recover_residue_for_startup(&missing, "ledger-a", "mother-a")
+                .unwrap()
+                .is_none()
+        );
+        assert!(!missing.exists());
+        assert!(!forensic_root_path(&missing).exists());
+
+        // Clean ledger: byte-identical, no forensic root.
+        let clean = dir.path().join("clean.jsonl");
+        append_fixture_entry(&clean, "obs-clean");
+        let clean_before = std::fs::read(&clean).unwrap();
+        assert!(
+            JsonlObservationLedger::recover_residue_for_startup(&clean, "ledger-a", "mother-a")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(std::fs::read(&clean).unwrap(), clean_before);
+        assert!(!forensic_root_path(&clean).exists());
+
+        // Terminated corruption stays the classifier's quarantine case.
+        let corrupt = dir.path().join("corrupt.jsonl");
+        append_fixture_entry(&corrupt, "obs-before-corruption");
+        append_raw(&corrupt, b"not-json\n");
+        let corrupt_before = std::fs::read(&corrupt).unwrap();
+        assert!(
+            JsonlObservationLedger::recover_residue_for_startup(&corrupt, "ledger-a", "mother-a")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(std::fs::read(&corrupt).unwrap(), corrupt_before);
+        assert!(!forensic_root_path(&corrupt).exists());
+
+        // Torn tail: preserved exactly, set aside, one recovery observation, then readable.
+        let torn = dir.path().join("torn.jsonl");
+        let first = append_fixture_entry(&torn, "obs-before-startup-torn-tail");
+        let committed = std::fs::read(&torn).unwrap();
+        let residue = br#"{"ledger_id":"ledger-a","mother_node_id":"mo"#;
+        append_raw(&torn, residue);
+        let status =
+            JsonlObservationLedger::recover_residue_for_startup(&torn, "ledger-a", "mother-a")
+                .unwrap()
+                .expect("startup recovery reports the residue case");
+        assert!(status.recovery_complete);
+        assert_eq!(status.residue_offset, committed.len() as u64);
+        assert_eq!(
+            std::fs::read(&status.preserved_bytes_path).unwrap(),
+            residue
+        );
+        assert_eq!(status.last_committed_sequence, Some(0));
+        assert_eq!(
+            status.last_committed_hash.as_deref(),
+            Some(first.entry_hash.as_str())
+        );
+        let after = std::fs::read(&torn).unwrap();
+        assert!(after.starts_with(&committed));
+        let entries = JsonlObservationLedger::open_read_only(&torn, "ledger-a", "mother-a")
+            .expect("recovered ledger classifies read-only")
+            .entries()
+            .unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0], first);
+        assert_eq!(
+            entries[1].observation.observation_id.as_str(),
+            status.recovery_decision_id
+        );
+
+        // Idempotent: a second startup changes nothing.
+        assert!(
+            JsonlObservationLedger::recover_residue_for_startup(&torn, "ledger-a", "mother-a")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(std::fs::read(&torn).unwrap(), after);
+    }
+
+    #[test]
+    fn startup_residue_recovery_completes_an_interrupted_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        append_fixture_entry(&path, "obs-before-interrupted-startup-recovery");
+        let residue = b"unterminated-startup-residue".to_vec();
+        append_raw(&path, &residue);
+        // Interrupt after truncation: the scan is clean, but the case is incomplete.
+        let result = open_with_recovery_hook(&path, "ledger-a", "mother-a", |stage| {
+            if stage == RecoveryStage::LedgerTruncated {
+                return Err(std::io::Error::other("injected interruption"));
+            }
+            Ok(())
+        });
+        assert!(result.is_err());
+        drop(result);
+        assert!(JsonlObservationLedger::open_read_only(&path, "ledger-a", "mother-a").is_ok());
+        let status =
+            JsonlObservationLedger::recover_residue_for_startup(&path, "ledger-a", "mother-a")
+                .unwrap()
+                .expect("interrupted recovery is completed at startup");
+        assert!(status.recovery_complete);
+        let entries = JsonlObservationLedger::open_read_only(&path, "ledger-a", "mother-a")
+            .unwrap()
+            .entries()
+            .unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.observation.observation_id.as_str()
+                    == status.recovery_decision_id)
+                .count(),
+            1
+        );
+        assert!(
+            JsonlObservationLedger::recover_residue_for_startup(&path, "ledger-a", "mother-a")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

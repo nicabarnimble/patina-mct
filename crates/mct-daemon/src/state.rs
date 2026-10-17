@@ -44,6 +44,15 @@ pub struct MctRecordedCallReply {
     pub safe_message: String,
 }
 
+/// An idempotency reservation still marked in flight, as read back from storage.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MctInFlightCallIdempotencyEntry {
+    pub caller_scope: String,
+    pub idempotency_key: String,
+    pub fingerprint: MctIdempotencyFingerprint,
+    pub created_at: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MctIdempotencyReservation {
     ExecuteFresh,
@@ -2548,6 +2557,96 @@ impl MctRuntimeStateStore {
             bail!("idempotency completion did not match one in-flight reservation");
         }
         Ok(())
+    }
+
+    /// Every reservation still marked in flight, oldest first. Unlike
+    /// [`Self::reserve_call_idempotency`] this applies no TTL eviction: a
+    /// restarting Mother must see each reservation a prior tenure left open.
+    pub fn in_flight_call_idempotency_entries(
+        &self,
+    ) -> Result<Vec<MctInFlightCallIdempotencyEntry>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT caller_scope, idempotency_key, target_identity, call_id,
+                   payload_digest, created_at
+            FROM call_idempotency_entries
+            WHERE entry_state = 'in_flight'
+            ORDER BY created_at, caller_scope, idempotency_key
+            "#,
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(
+                |(caller_scope, idempotency_key, target, call_id, payload_digest, created_at)| {
+                    Ok(MctInFlightCallIdempotencyEntry {
+                        caller_scope,
+                        idempotency_key,
+                        fingerprint: MctIdempotencyFingerprint {
+                            target,
+                            call_id: CallId::new(call_id)?,
+                            payload_digest,
+                        },
+                        created_at,
+                    })
+                },
+            )
+            .collect()
+    }
+
+    /// Drops one in-flight reservation so the same key may be reserved again.
+    ///
+    /// Only for a reservation whose call provably began no effect; a completed
+    /// entry or one with a different fingerprint is never touched. Returns
+    /// whether a reservation was released.
+    pub fn release_call_idempotency(
+        &self,
+        caller_scope: &str,
+        idempotency_key: &str,
+        fingerprint: &MctIdempotencyFingerprint,
+    ) -> Result<bool> {
+        let changed = self.conn.execute(
+            r#"
+            DELETE FROM call_idempotency_entries
+            WHERE caller_scope = ?1 AND idempotency_key = ?2
+              AND target_identity = ?3 AND call_id = ?4 AND payload_digest = ?5
+              AND entry_state = 'in_flight'
+            "#,
+            params![
+                caller_scope,
+                idempotency_key,
+                fingerprint.target,
+                fingerprint.call_id.as_str(),
+                fingerprint.payload_digest,
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Run records that never reached a terminal result.
+    pub fn unfinished_runs(&self) -> Result<Vec<MctRuntimeRunRecord>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT run_id, call_id, runtime_kind, child_name, child_instance_id,
+                   authority_decision_id, trace_id, state, started_at, completed_at,
+                   call_json, child_invocation_provenance_json, result_json
+            FROM runtime_runs WHERE completed_at IS NULL OR result_json IS NULL
+            ORDER BY started_at, run_id
+            "#,
+        )?;
+        stmt.query_map([], run_from_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("list unfinished runtime runs")
     }
 
     pub fn upsert_artifact(&self, artifact: &ComponentArtifact) -> Result<()> {
