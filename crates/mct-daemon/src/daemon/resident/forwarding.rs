@@ -6,6 +6,7 @@
 //! promoting this layer would leak daemon policy into a library adapter.
 
 use super::*;
+use mct_kernel::CallProtocolReplyReason;
 
 fn resident_forwarded_call_sent_observation(
     call: &MctCall,
@@ -88,9 +89,26 @@ fn resident_remote_reply_observation(
         visibility: ObservationVisibility::InternalOnly,
         safe_message: reply.safe_message.clone(),
         detail_ref: Some(format!(
-            "forwarded_from:{forwarded_from};forwarded_to:{forwarded_to};candidate:{};remote_reply:{:?};remote_decision:{};remote_reply_id:{}",
-            candidate.candidate_id, reply.reply_outcome, reply.decision_id, reply.reply_id
+            "forwarded_from:{forwarded_from};forwarded_to:{forwarded_to};candidate:{};remote_reply:{:?};remote_reason:{};remote_decision:{};remote_reply_id:{}",
+            candidate.candidate_id,
+            reply.reply_outcome,
+            remote_reason_label(reply.reason.as_ref()),
+            reply.decision_id,
+            reply.reply_id
         )),
+    }
+}
+
+/// Ledger label for a peer reply reason. An unrecognized reason is recorded as
+/// `unrecognized`, never echoed, so peer-chosen text does not enter the ledger.
+fn remote_reason_label(reason: Option<&CallProtocolReplyReason>) -> String {
+    match reason {
+        None => "none".into(),
+        Some(CallProtocolReplyReason::Known(reason)) => serde_json::to_value(reason)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_else(|| "unrecognized".into()),
+        Some(CallProtocolReplyReason::Unrecognized(_)) => "unrecognized".into(),
     }
 }
 
@@ -592,6 +610,37 @@ fn remote_reply_to_call_handler_result(
     route_decision_id: DecisionId,
     route_taken: RouteTaken,
 ) -> MctIrohCallHandlerResult {
+    // Only an execution-class reason on a failed or timed-out reply is kept.
+    // Any other reason, including one this build does not recognize, is
+    // dropped and the reply keeps today's generic meaning for its outcome.
+    // A success reply carrying any reason is incoherent and is a failure,
+    // never a success (inbound validation already refuses it).
+    let peer_reason = match reply.reply.reply_outcome {
+        CallProtocolReplyOutcome::Failed | CallProtocolReplyOutcome::TimedOut => reply
+            .reply
+            .reason
+            .as_ref()
+            .and_then(CallProtocolReplyReason::peer_safe),
+        _ => None,
+    };
+    if reply.reply.reply_outcome == CallProtocolReplyOutcome::Success
+        && reply.reply.reason.is_some()
+    {
+        return MctIrohCallHandlerResult::failed("remote peer reply was incoherent")
+            .with_route(Some(route_decision_id), Some(route_taken));
+    }
+    let result = remote_reply_outcome_to_call_handler_result(reply, route_decision_id, route_taken);
+    match peer_reason {
+        Some(reason) => result.with_protocol_reason(reason),
+        None => result,
+    }
+}
+
+fn remote_reply_outcome_to_call_handler_result(
+    reply: MctIrohCallPayloadReply,
+    route_decision_id: DecisionId,
+    route_taken: RouteTaken,
+) -> MctIrohCallHandlerResult {
     match reply.reply.reply_outcome {
         CallProtocolReplyOutcome::Success => {
             let result_ref = reply.reply.result_ref.unwrap_or_else(|| {
@@ -760,6 +809,7 @@ mod tests {
                 result_payload: MctCallPayloadHandle::Empty,
                 route_taken: None,
                 reply_outcome,
+                reason: None,
                 retry_directive: CallProtocolRetryDirective::None,
                 safe_message: safe_message.into(),
                 reply_observation_id: ObservationId::new("obs-reply-remote-fixture")
@@ -1704,6 +1754,184 @@ mod tests {
         let text = std::fs::read_to_string(ledger_path).unwrap();
         assert!(text.contains("remote_reply:Cancelled"));
         assert!(text.contains("\"outcome\":\"cancelled\""));
+    }
+
+    /// The executor's handler returns exactly what its restart recovery replays
+    /// for a call a crash cut off (`execution_interrupted`, failed, no retry).
+    /// The reason crosses the real Iroh `mct/call/0` hop and the forwarding
+    /// Mother hands it to its own caller and records it.
+    #[tokio::test]
+    async fn two_mother_forwarding_carries_execution_interrupted_from_the_executor() {
+        let mut fixture = forwarding_fixture();
+        let executor = MotherIrohEndpoint::bind(iroh_config(fixture.remote_secret.clone(), false))
+            .await
+            .unwrap();
+        let executor_ticket = executor.ticket();
+        let config_store = MctDaemonConfigStore::new(&fixture.config_path);
+        let mut peer = fixture.config.peers["remote-mct"].clone();
+        peer.ticket = Some(executor_ticket);
+        fixture.config = config_store.upsert_peer(peer).unwrap();
+
+        let received_at = current_timestamp();
+        let stale_at = remote_surface_stale_at(&received_at).unwrap();
+        let peer = fixture.config.peers["remote-mct"].clone();
+        let surface_view = hello_capability_view(
+            &peer.peer_node_id,
+            &peer.vision_id,
+            1,
+            &["patina:demo/control@0.1.0.run"],
+        );
+        fixture
+            .state
+            .refresh_remote_callable_surfaces(MctRemoteSurfaceRefresh {
+                peer_node_id: &peer.peer_node_id,
+                binding_id: &peer.binding_id,
+                endpoint_id: &peer.endpoint_id,
+                view: &surface_view,
+                received_at: &received_at,
+                stale_at: &stale_at,
+                view_observation_id: &ObservationId::new("obs-forward-interrupted-surface")
+                    .expect("string ID literal/generated value must be non-empty"),
+            })
+            .unwrap();
+
+        let local_identity = fixture.config.local_identity.as_ref().unwrap();
+        let outbound = peer.outbound_binding.as_ref().unwrap();
+        let executor_binding =
+            outbound_peer_binding_for_local(local_identity, &peer, outbound).unwrap();
+        let executor_task = tokio::spawn(async move {
+            executor
+                .serve_concurrent_with_call_handler(
+                    MctIrohServeState::new(),
+                    vec![executor_binding],
+                    MctIrohConcurrentServeConfig {
+                        require_binding_signature: true,
+                        receiver_authority_provider: test_receiver_authority_provider(),
+                        ..MctIrohConcurrentServeConfig::new(test_iroh_observation_sink())
+                    },
+                    current_timestamp,
+                    |_, _, _| async {
+                        MctIrohCallHandlerResult::failed(
+                            "call interrupted by Mother restart; outcome unknown",
+                        )
+                        .with_protocol_reason(CallProtocolReason::ExecutionInterrupted)
+                    },
+                )
+                .await
+        });
+
+        let outcome = authorize_resident_child_from_loaded_with_state(
+            &fixture.config,
+            Some(&fixture.state),
+            Vec::new(),
+            &fixture.call,
+            current_timestamp(),
+        )
+        .unwrap();
+        let RouteDisposition::Remote {
+            plan: execution,
+            observations,
+        } = outcome
+        else {
+            panic!("fresh published executor should be selected");
+        };
+        let ledger_path = fixture
+            ._dir
+            .path()
+            .join("interrupted-forwarding-observations.jsonl");
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
+        ledger.append(observations).await.unwrap();
+        let result = execute_authorized_resident_remote_call(
+            ResidentRuntimePaths::new(
+                fixture.config_path.clone(),
+                fixture._dir.path().join("children"),
+                fixture.state_path.clone(),
+            ),
+            *execution,
+            resident_test_protocol_request(fixture.call.clone()),
+            None,
+            ledger.clone(),
+        )
+        .await;
+        ledger.close().await;
+        executor_task.abort();
+
+        assert_eq!(result.outcome, CallProtocolOutcome::Failed);
+        assert_eq!(
+            result.protocol_reason,
+            Some(CallProtocolReason::ExecutionInterrupted)
+        );
+        assert_eq!(result.retry_directive, CallProtocolRetryDirective::None);
+        assert_eq!(
+            result.safe_message,
+            "call interrupted by Mother restart; outcome unknown"
+        );
+        let text = std::fs::read_to_string(ledger_path).unwrap();
+        assert!(text.contains("remote_reply:Failed;remote_reason:execution_interrupted"));
+    }
+
+    fn fixture_with_reason(
+        outcome: CallProtocolReplyOutcome,
+        reason: Option<CallProtocolReplyReason>,
+    ) -> MctIrohCallPayloadReply {
+        let mut reply = remote_reply_fixture(outcome, "remote message");
+        reply.reply.reason = reason;
+        reply
+    }
+
+    #[test]
+    fn remote_reply_reason_maps_only_execution_reasons_and_never_to_success() {
+        let map = |outcome, reason| {
+            remote_reply_to_call_handler_result(
+                fixture_with_reason(outcome, reason),
+                DecisionId::new("decision-route").unwrap(),
+                remote_route_taken_fixture(),
+            )
+        };
+        let interrupted = Some(CallProtocolReplyReason::Known(
+            CallProtocolReason::ExecutionInterrupted,
+        ));
+        let result = map(CallProtocolReplyOutcome::Failed, interrupted.clone());
+        assert_eq!(result.outcome, CallProtocolOutcome::Failed);
+        assert_eq!(
+            result.protocol_reason,
+            Some(CallProtocolReason::ExecutionInterrupted)
+        );
+
+        // Old peer: no reason is today's generic failure.
+        let result = map(CallProtocolReplyOutcome::Failed, None);
+        assert_eq!(result.outcome, CallProtocolOutcome::Failed);
+        assert_eq!(result.protocol_reason, None);
+
+        // Unknown, or known but not peer-disclosable: generic failure.
+        for reason in [
+            CallProtocolReplyReason::Unrecognized("some_future_reason".into()),
+            CallProtocolReplyReason::Known(CallProtocolReason::AuthorityDenied),
+            CallProtocolReplyReason::Known(CallProtocolReason::IdempotencyReplayCompleted),
+        ] {
+            let result = map(CallProtocolReplyOutcome::Failed, Some(reason));
+            assert_eq!(result.outcome, CallProtocolOutcome::Failed);
+            assert_eq!(result.protocol_reason, None);
+        }
+
+        // A reason never changes a denial and never rides on a success.
+        let result = map(CallProtocolReplyOutcome::Denied, interrupted.clone());
+        assert_eq!(result.outcome, CallProtocolOutcome::Denied);
+        assert_eq!(result.protocol_reason, None);
+        for reason in [
+            interrupted,
+            Some(CallProtocolReplyReason::Unrecognized("ok".into())),
+        ] {
+            let result = map(CallProtocolReplyOutcome::Success, reason);
+            assert_eq!(result.outcome, CallProtocolOutcome::Failed);
+            assert!(result.result_ref.is_none());
+        }
+        assert_eq!(
+            remote_reason_label(Some(&CallProtocolReplyReason::Unrecognized(
+                "peer-chosen text".into()
+            ))),
+            "unrecognized"
+        );
     }
 
     #[tokio::test]

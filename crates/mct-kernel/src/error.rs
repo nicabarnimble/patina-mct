@@ -69,6 +69,13 @@ pub enum MctKernelError {
         outcome: &'static str,
     },
 
+    #[error("invalid {record}.reason for {outcome} reply outcome")]
+    /// A caller-safe reply carried a reason on a success outcome.
+    InvalidReplyReasonPresence {
+        record: &'static str,
+        outcome: &'static str,
+    },
+
     #[error("failed to decode MCT call protocol JSON edge value: {source}")]
     DecodeCallProtocolJson {
         #[source]

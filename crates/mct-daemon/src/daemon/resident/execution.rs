@@ -1553,6 +1553,7 @@ mod tests {
             result_payload: MctCallPayloadHandle::Empty,
             route_taken: None,
             reply_outcome: CallProtocolReplyOutcome::Cancelled,
+            reason: None,
             retry_directive: CallProtocolRetryDirective::None,
             safe_message: "cancelled".into(),
             reply_observation_id: ObservationId::new("obs-reply-cancelled-route")

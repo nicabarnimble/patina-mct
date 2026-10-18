@@ -745,14 +745,124 @@ pub struct MctCallProtocolReply {
     pub result_payload: MctCallPayloadHandle,
     pub route_taken: Option<RouteTaken>,
     pub reply_outcome: CallProtocolReplyOutcome,
+    /// Machine-readable reason for a failed or timed-out execution. Optional
+    /// and additive on `mct/call/0`: peers that omit it decode as `None`, and
+    /// peers that predate it ignore it. Only [`peer_reply_reason`] values are
+    /// sent; authority, denial, and routing reasons stay in observations.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_reply_reason"
+    )]
+    pub reason: Option<CallProtocolReplyReason>,
     pub retry_directive: CallProtocolRetryDirective,
     pub safe_message: String,
     pub reply_observation_id: ObservationId,
 }
 
+/// Reason carried on a peer reply, as decoded.
+///
+/// `Unrecognized` holds a reason this build does not know (bounded to
+/// [`MAX_UNRECOGNIZED_REPLY_REASON_LEN`] bytes). Receivers treat it as no
+/// reason: a generic failure of the reply's outcome class, never success.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CallProtocolReplyReason {
+    Known(CallProtocolReason),
+    Unrecognized(String),
+}
+
+pub const MAX_UNRECOGNIZED_REPLY_REASON_LEN: usize = 64;
+
+impl CallProtocolReplyReason {
+    /// The reason when it is one a peer may send, otherwise `None`.
+    pub fn peer_safe(&self) -> Option<CallProtocolReason> {
+        match self {
+            Self::Known(reason) if is_peer_reply_reason(*reason) => Some(*reason),
+            Self::Known(_) | Self::Unrecognized(_) => None,
+        }
+    }
+}
+
+impl Serialize for CallProtocolReplyReason {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Known(reason) => reason.serialize(serializer),
+            Self::Unrecognized(text) => serializer.serialize_str(text),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CallProtocolReplyReason {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(reply_reason_from_value(value))
+    }
+}
+
+fn reply_reason_from_value(value: serde_json::Value) -> CallProtocolReplyReason {
+    match serde_json::from_value::<CallProtocolReason>(value.clone()) {
+        Ok(reason) => CallProtocolReplyReason::Known(reason),
+        Err(_) => {
+            let mut text = match value {
+                serde_json::Value::String(text) => text,
+                _ => "non-string".to_owned(),
+            };
+            if text.len() > MAX_UNRECOGNIZED_REPLY_REASON_LEN {
+                let mut end = MAX_UNRECOGNIZED_REPLY_REASON_LEN;
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                text.truncate(end);
+            }
+            CallProtocolReplyReason::Unrecognized(text)
+        }
+    }
+}
+
+/// Lenient decode: a missing or `null` reason is `None`; any other value,
+/// including an unknown string or a non-string, decodes rather than failing
+/// the whole reply.
+fn deserialize_reply_reason<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<CallProtocolReplyReason>, D::Error> {
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.map(reply_reason_from_value))
+}
+
+/// Reasons a Mother may put on a peer `mct/call/0` reply: execution-class
+/// reasons for a failed or timed-out execution only. Denial, authority,
+/// routing, payload, and idempotency reasons are not disclosed to peers.
+pub fn is_peer_reply_reason(reason: CallProtocolReason) -> bool {
+    matches!(
+        reason,
+        CallProtocolReason::ExecutionFailed
+            | CallProtocolReason::ExecutionTimedOut
+            | CallProtocolReason::ExecutionInterrupted
+    )
+}
+
+/// The reason a reply with `outcome` may carry for an evaluation `reason`.
+pub fn peer_reply_reason(
+    outcome: CallProtocolReplyOutcome,
+    reason: CallProtocolReason,
+) -> Option<CallProtocolReplyReason> {
+    let execution_outcome = matches!(
+        outcome,
+        CallProtocolReplyOutcome::Failed | CallProtocolReplyOutcome::TimedOut
+    );
+    (execution_outcome && is_peer_reply_reason(reason))
+        .then_some(CallProtocolReplyReason::Known(reason))
+}
+
 impl MctCallProtocolReply {
     pub fn validate(&self) -> MctKernelResult<()> {
         ensure_non_blank("MctCallProtocolReply", "safe_message", &self.safe_message)?;
+        if self.reason.is_some() && self.reply_outcome == CallProtocolReplyOutcome::Success {
+            return Err(MctKernelError::InvalidReplyReasonPresence {
+                record: "MctCallProtocolReply",
+                outcome: self.reply_outcome.as_str(),
+            });
+        }
         self.result_payload.validate()?;
         if self.route_taken.is_some()
             && matches!(
@@ -917,6 +1027,7 @@ pub fn call_reply_from_evaluation_with_result_payload_and_route(
         result_payload,
         route_taken,
         reply_outcome,
+        reason: peer_reply_reason(reply_outcome, evaluation.reason),
         retry_directive: evaluation.retry_directive,
         safe_message: evaluation.safe_message.clone(),
         reply_observation_id,
@@ -1201,6 +1312,196 @@ mod tests {
         assert_eq!(
             decoded_reply.retry_directive,
             CallProtocolRetryDirective::None
+        );
+        assert_eq!(
+            decoded_reply.reason,
+            Some(CallProtocolReplyReason::Known(
+                CallProtocolReason::ExecutionInterrupted
+            ))
+        );
+    }
+
+    fn interrupted_reply() -> MctCallProtocolReply {
+        let mut evaluation =
+            evaluate_call_protocol(&protocol_request(), &admitted_hello(), eval_ids());
+        evaluation.outcome = CallProtocolOutcome::Failed;
+        evaluation.reason = CallProtocolReason::ExecutionInterrupted;
+        evaluation.retry_directive = CallProtocolRetryDirective::None;
+        evaluation.safe_message = "call interrupted by Mother restart; outcome unknown".into();
+        call_reply_from_evaluation(
+            ReplyId::new("reply-reason").unwrap(),
+            &evaluation,
+            None,
+            ObservationId::new("obs-reply-reason").unwrap(),
+        )
+    }
+
+    /// The reply wire shape before the reason field existed.
+    #[derive(Debug, Deserialize)]
+    struct PreReasonReply {
+        reply_id: ReplyId,
+        protocol_request_id: ProtocolRequestId,
+        decision_id: DecisionId,
+        result_ref: Option<ResultRef>,
+        result_payload: MctCallPayloadHandle,
+        route_taken: Option<RouteTaken>,
+        reply_outcome: CallProtocolReplyOutcome,
+        retry_directive: CallProtocolRetryDirective,
+        safe_message: String,
+        reply_observation_id: ObservationId,
+    }
+
+    #[test]
+    fn peer_reply_reason_round_trips_and_is_additive() {
+        let reply = interrupted_reply();
+        reply.validate().unwrap();
+        let wire = serde_json::to_value(&reply).unwrap();
+        assert_eq!(wire["reason"], "execution_interrupted");
+        let decoded: MctCallProtocolReply = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(decoded, reply);
+
+        // Old peer to new: no reason field, or an explicit null, is `None`.
+        let mut old_wire = wire.clone();
+        old_wire.as_object_mut().unwrap().remove("reason");
+        let from_old: MctCallProtocolReply = serde_json::from_value(old_wire.clone()).unwrap();
+        assert_eq!(from_old.reason, None);
+        assert_eq!(from_old.reply_outcome, CallProtocolReplyOutcome::Failed);
+        from_old.validate().unwrap();
+        let mut null_wire = wire.clone();
+        null_wire["reason"] = serde_json::Value::Null;
+        let from_null: MctCallProtocolReply = serde_json::from_value(null_wire).unwrap();
+        assert_eq!(from_null.reason, None);
+
+        // A reply with no reason serializes exactly as before.
+        let mut no_reason = reply.clone();
+        no_reason.reason = None;
+        assert_eq!(serde_json::to_value(&no_reason).unwrap(), old_wire);
+
+        // New peer to old: the old shape ignores the extra field.
+        let old: PreReasonReply = serde_json::from_value(wire).unwrap();
+        assert_eq!(old.reply_outcome, CallProtocolReplyOutcome::Failed);
+        assert_eq!(old.retry_directive, CallProtocolRetryDirective::None);
+        assert_eq!(old.safe_message, reply.safe_message);
+        assert_eq!(old.reply_id, reply.reply_id);
+        assert_eq!(old.protocol_request_id, reply.protocol_request_id);
+        assert_eq!(old.decision_id, reply.decision_id);
+        assert_eq!(old.result_ref, reply.result_ref);
+        assert_eq!(old.result_payload, reply.result_payload);
+        assert_eq!(old.route_taken, reply.route_taken);
+        assert_eq!(old.reply_observation_id, reply.reply_observation_id);
+    }
+
+    #[test]
+    fn unknown_peer_reply_reasons_decode_as_unrecognized_and_never_mean_success() {
+        let mut wire = serde_json::to_value(interrupted_reply()).unwrap();
+        wire["reason"] = "some_future_reason".into();
+        let decoded: MctCallProtocolReply = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(
+            decoded.reason,
+            Some(CallProtocolReplyReason::Unrecognized(
+                "some_future_reason".into()
+            ))
+        );
+        assert_eq!(decoded.reason.as_ref().unwrap().peer_safe(), None);
+        assert_eq!(decoded.reply_outcome, CallProtocolReplyOutcome::Failed);
+        decoded.validate().unwrap();
+
+        wire["reason"] = serde_json::json!(42);
+        let non_string: MctCallProtocolReply = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(
+            non_string.reason,
+            Some(CallProtocolReplyReason::Unrecognized("non-string".into()))
+        );
+
+        wire["reason"] = "é".repeat(100).into();
+        let long: MctCallProtocolReply = serde_json::from_value(wire.clone()).unwrap();
+        let Some(CallProtocolReplyReason::Unrecognized(text)) = long.reason else {
+            panic!("long reason must be unrecognized");
+        };
+        assert!(text.len() <= MAX_UNRECOGNIZED_REPLY_REASON_LEN);
+
+        // Any reason on a success reply, known or not, fails validation.
+        wire["reply_outcome"] = "success".into();
+        for reason in [
+            serde_json::json!("some_future_reason"),
+            serde_json::json!("execution_interrupted"),
+            serde_json::json!("result_recorded"),
+        ] {
+            wire["reason"] = reason;
+            let success: MctCallProtocolReply = serde_json::from_value(wire.clone()).unwrap();
+            assert!(matches!(
+                success.validate(),
+                Err(MctKernelError::InvalidReplyReasonPresence { .. })
+            ));
+        }
+
+        // A known reason peers may not send is decoded but not acted on.
+        let not_peer_safe = CallProtocolReplyReason::Known(CallProtocolReason::AuthorityDenied);
+        assert_eq!(not_peer_safe.peer_safe(), None);
+    }
+
+    #[test]
+    fn peer_replies_disclose_only_execution_class_reasons() {
+        use CallProtocolReason as R;
+        use CallProtocolReplyOutcome as O;
+        for reason in [
+            R::ExecutionFailed,
+            R::ExecutionTimedOut,
+            R::ExecutionInterrupted,
+        ] {
+            assert_eq!(
+                peer_reply_reason(O::Failed, reason),
+                Some(CallProtocolReplyReason::Known(reason))
+            );
+            assert_eq!(
+                peer_reply_reason(O::TimedOut, reason),
+                Some(CallProtocolReplyReason::Known(reason))
+            );
+            for outcome in [O::Success, O::Denied, O::Cancelled, O::Malformed] {
+                assert_eq!(peer_reply_reason(outcome, reason), None);
+            }
+        }
+        for reason in [
+            R::AuthorityDenied,
+            R::NoRoute,
+            R::BindingRevoked,
+            R::PolicyRevisionStale,
+            R::ExpectedReceiverAuthorityStale,
+            R::ReceiverAuthorityUnavailable,
+            R::MalformedCall,
+            R::PayloadDigestMismatch,
+            R::IdempotencyInProgress,
+            R::IdempotencyReplayCompleted,
+            R::ResultRecorded,
+            R::AcceptedForRouting,
+        ] {
+            for outcome in [
+                O::Success,
+                O::Denied,
+                O::Failed,
+                O::TimedOut,
+                O::Cancelled,
+                O::Malformed,
+            ] {
+                assert_eq!(peer_reply_reason(outcome, reason), None, "{reason:?}");
+            }
+        }
+        // A denied evaluation never leaks its reason through the reply.
+        let mut revoked = eval_ids();
+        revoked.current_peer_authority.bindings[0].binding_state = BindingState::Revoked;
+        let evaluation = evaluate_call_protocol(&protocol_request(), &admitted_hello(), revoked);
+        let reply = call_reply_from_evaluation(
+            ReplyId::new("reply-denied").unwrap(),
+            &evaluation,
+            None,
+            ObservationId::new("obs-reply-denied").unwrap(),
+        );
+        assert_eq!(reply.reason, None);
+        assert!(
+            serde_json::to_value(&reply)
+                .unwrap()
+                .get("reason")
+                .is_none()
         );
     }
 
@@ -1899,6 +2200,7 @@ mod tests {
             result_payload: MctCallPayloadHandle::Empty,
             route_taken: Some(route_taken.clone()),
             reply_outcome: CallProtocolReplyOutcome::Cancelled,
+            reason: None,
             retry_directive: CallProtocolRetryDirective::None,
             safe_message: "cancelled".into(),
             reply_observation_id: ObservationId::new("obs-reply-cancelled-route")
@@ -1912,6 +2214,7 @@ mod tests {
         let cancelled_without_route = MctCallProtocolReply {
             route_taken: None,
             reply_outcome: CallProtocolReplyOutcome::Cancelled,
+            reason: None,
             ..cancelled_with_route
         };
         cancelled_without_route
