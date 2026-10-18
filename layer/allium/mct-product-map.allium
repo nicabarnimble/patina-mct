@@ -3118,6 +3118,11 @@ contract MctAuthorityEpochContinuity {
         -- Mother is virgin only when every daemon-written durable artifact is absent; otherwise
         -- initialization requires an operator gate.
 
+    @invariant OperatorGateAdmitsOnlyRecoveryEvidence
+        -- An operator-gated reinitialization epoch is legal only over an empty ledger or a ledger
+        -- whose every entry is a valid tail-recovery fact with intact preserved forensics. Any other
+        -- fact refuses. The recovery facts stay in the chain and the epoch fact chains after them.
+
     @invariant WriterTenureUsesFreshEpoch
         -- Every successful exclusive writer tenure establishes a fresh non-repeating authority epoch
         -- before authority evaluation or advertisement becomes available.

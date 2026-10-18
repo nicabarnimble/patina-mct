@@ -841,16 +841,48 @@ import under the standard gate and a fresh operator decision. The SPEC
 states this explicitly so "one-time" reads as
 one-time-per-canonical-history, never one-time-per-Mother-forever.
 
+### D-H3.5 (operator gate over a recovery-only ledger)
+
+A crash on the very first ledger write leaves, after the ratified residue
+path, a ledger whose only entry is the tail-recovery fact. D-H3.3 already
+classifies such a ledger as `operator_gated_nonvirgin` (recovery facts are
+not continuity evidence), but the epoch relation admitted
+`none_after_operator_reinitialization` only over an empty ledger, so the
+gate refused and Mother could never start. The relation is amended:
+`operator_gated_nonvirgin` with `none_after_operator_reinitialization` is
+legal over an empty ledger or over a ledger whose every entry is a valid
+tail-recovery fact, and nothing else.
+
+- A valid tail-recovery fact is exactly the observation the residue path
+  appends: id `ledger-tail-recovery-{offset}-{digest}` in canonical form
+  (decimal offset, 64 lowercase hex digest), detail
+  `ledger-tail-recovery-v1:{digest}` naming the same digest, and every other
+  carrier field as written by that path. A recovery-looking entry that
+  differs in any field is not a recovery fact.
+- Any other entry of any kind (authority, grant, admin, epoch, or ordinary
+  observation) makes the relation illegal, exactly as before.
+- Before any durable write the gate also requires each recovery fact's
+  private forensics to be intact: the completed diagnostic record names this
+  ledger, offset, digest, decision id, and recovery time, and the preserved
+  residue bytes still hash to the digest. Missing or mismatched forensics
+  refuse.
+- The recovery facts stay in the chain unchanged. The epoch fact is the
+  tenure's first append and hash-chains after the last recovery fact; its
+  predecessor stays `none_after_operator_reinitialization`, since recovery
+  facts name no prior authority.
+- Replay enforces the same relation, so a ledger that reaches it any other
+  way is rejected on every later open.
+
 ## Amended epoch-establishment semantics
 
-The Phase H2 `EpochEstablishedFactV1` schema above is amended in place by D-H3.1 through D-H3.3. The complete predecessor/startup relation is:
+The Phase H2 `EpochEstablishedFactV1` schema above is amended in place by D-H3.1 through D-H3.3 and D-H3.5. The complete predecessor/startup relation is:
 
 | Startup class | Predecessor | Replayed prior authority | Baseline | Operator evidence in epoch fact |
 |---|---|---|---:|---|
 | `virgin` | `none_for_virgin` | absent | 0 | absent |
 | `ordinary_reopen` | exact `validated_head` | present | latest replayed generation | absent |
 | `legacy_ledger_upgrade` | exact `validated_head` | absent | 0 | absent |
-| `operator_gated_nonvirgin` | `none_after_operator_reinitialization` | absent | 0 | authenticated decision id and principal, both present |
+| `operator_gated_nonvirgin` | `none_after_operator_reinitialization` (ledger empty, or only valid tail-recovery facts per D-H3.5) | absent | 0 | authenticated decision id and principal, both present |
 
 `none_for_virgin` proves the full disk-derived virgin conjunction, not merely an empty ledger. `none_after_operator_reinitialization` proves that continuity was unavailable and an authenticated owner deliberately admitted a fresh canonical history. Neither variant may be inferred from configuration, SQLite, a projection, timestamps, or a missing read result.
 
@@ -901,7 +933,7 @@ The classifier returns an ordered, canonical `StartupArtifactInventoryV1` contai
 | Disk/ledger/projection state | Detection | Transition | Daemon posture | Authority readiness |
 |---|---|---|---|---|
 | Missing ledger; every durable artifact class absent | complete inventory; ledger `NotFound`; no transient active owner | create one exclusive writer; first append is fresh `virgin` epoch with `none_for_virgin`, empty state, baseline 0 | bootstrap, then ordinary service only after observations/projection complete | pending until current D-G8 proof; then ready |
-| Missing or empty ledger; any durable artifact present | complete inventory plus no canonical entry | expose owner-only gate; require exact inventory hash, explicit confirmation, unique decision id, and UDS-authenticated principal; accepted decision establishes `operator_gated_nonvirgin` with `none_after_operator_reinitialization` | degraded deny while pending/refused; no identity/config/state/import mutation before accepted epoch | not ready until accepted epoch, optional standard import/reconciliation, current projection, and no authority-bearing drift |
+| Missing or empty ledger, or a ledger holding only tail-recovery facts (D-H3.5); any durable artifact present | complete inventory plus no canonical entry | expose owner-only gate; require exact inventory hash, explicit confirmation, unique decision id, and UDS-authenticated principal; accepted decision establishes `operator_gated_nonvirgin` with `none_after_operator_reinitialization` | degraded deny while pending/refused; no identity/config/state/import mutation before accepted epoch | not ready until accepted epoch, optional standard import/reconciliation, current projection, and no authority-bearing drift |
 | Valid non-empty ledger; canonical replay has no authority history | maximal validated non-empty head plus empty authority replay | auto-establish `legacy_ledger_upgrade` with `validated_head`, no operator gate, empty state, baseline 0 | upgrading; then ordinary service after projection/import posture resolves | pending, then ready; standard import is available under D-H3.4 |
 | Valid ledger; canonical replay has current authority | maximal validated head and current replay identity | establish `ordinary_reopen` with exact `validated_head` and replayed baseline/state | ordinary reopen | pending until projection reaches the post-startup head and proof is usable |
 | Unterminated final residue | R2-L1 scan under exclusive lock and completed forensic preservation | recover only by the already-ratified residue path, then reclassify the surviving ledger using the rows above | recovery, never early readiness | not ready during recovery |
