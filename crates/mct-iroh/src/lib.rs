@@ -1996,6 +1996,7 @@ mod tests {
             },
             route_taken: None,
             reply_outcome: CallProtocolReplyOutcome::Success,
+            reason: None,
             retry_directive: CallProtocolRetryDirective::None,
             safe_message: "call completed".into(),
             reply_observation_id: ObservationId::new("obs-reply-digest")
@@ -2025,6 +2026,7 @@ mod tests {
             result_payload: inline_payload_handle("result-oversized", &oversized),
             route_taken: None,
             reply_outcome: CallProtocolReplyOutcome::Success,
+            reason: None,
             retry_directive: CallProtocolRetryDirective::None,
             safe_message: "call completed".into(),
             reply_observation_id: ObservationId::new("obs-reply-oversized")
@@ -2039,5 +2041,66 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn caller_decodes_reply_reasons_leniently_and_refuses_reason_on_success() {
+        let reply = |outcome: CallProtocolReplyOutcome| MctCallProtocolReply {
+            reply_id: ReplyId::new("reply-reason").unwrap(),
+            protocol_request_id: ProtocolRequestId::new("proto-reply-reason").unwrap(),
+            decision_id: DecisionId::new("decision-reply-reason").unwrap(),
+            result_ref: None,
+            result_payload: MctCallPayloadHandle::Empty,
+            route_taken: None,
+            reply_outcome: outcome,
+            reason: None,
+            retry_directive: CallProtocolRetryDirective::None,
+            safe_message: "call failed".into(),
+            reply_observation_id: ObservationId::new("obs-reply-reason").unwrap(),
+        };
+        let encode = |reply: MctCallProtocolReply, reason: serde_json::Value| {
+            let mut envelope = serde_json::to_value(reply).unwrap();
+            if !reason.is_null() {
+                envelope["reason"] = reason;
+            }
+            serde_json::to_vec(&envelope).unwrap()
+        };
+
+        let decoded = crate::serve::decode_call_reply_envelope(&encode(
+            reply(CallProtocolReplyOutcome::Failed),
+            serde_json::json!("execution_interrupted"),
+        ))
+        .unwrap();
+        assert_eq!(
+            decoded.reply.reason,
+            Some(mct_kernel::CallProtocolReplyReason::Known(
+                mct_kernel::CallProtocolReason::ExecutionInterrupted
+            ))
+        );
+        let old = crate::serve::decode_call_reply_envelope(&encode(
+            reply(CallProtocolReplyOutcome::Failed),
+            serde_json::Value::Null,
+        ))
+        .unwrap();
+        assert_eq!(old.reply.reason, None);
+        let unknown = crate::serve::decode_call_reply_envelope(&encode(
+            reply(CallProtocolReplyOutcome::Failed),
+            serde_json::json!("some_future_reason"),
+        ))
+        .unwrap();
+        assert_eq!(
+            unknown.reply.reason,
+            Some(mct_kernel::CallProtocolReplyReason::Unrecognized(
+                "some_future_reason".into()
+            ))
+        );
+        assert!(
+            crate::serve::decode_call_reply_envelope(&encode(
+                reply(CallProtocolReplyOutcome::Success),
+                serde_json::json!("some_future_reason"),
+            ))
+            .is_err(),
+            "a reason on a success reply must never decode as success"
+        );
     }
 }

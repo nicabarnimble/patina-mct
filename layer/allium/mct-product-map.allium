@@ -1903,6 +1903,7 @@ entity MctCallProtocolReply {
     result_ref: String?
     route_taken: RouteTaken?
     reply_outcome: success | denied | failed | timed_out | cancelled | malformed
+    reason: (execution_failed | execution_timed_out | execution_interrupted)?
     retry_directive: none | refresh_hello | retry_later
     safe_message: String
     reply_observation_id: String
@@ -1986,6 +1987,7 @@ surface MctCallProtocolReplyProjection {
         reply.route_taken.child_id
         reply.route_taken.runtime_kind
         reply.reply_outcome
+        reply.reason
         reply.retry_directive
         reply.safe_message
         reply.reply_observation_id
@@ -2025,8 +2027,14 @@ surface MctCallProtocolReplyProjection {
 -- did not survive the restart. A same-key replay of that reply keeps `execution_interrupted`
 -- instead of `idempotency_replay_completed`, since that is the fact the retrying caller needs;
 -- the ledger still records the replay. A call the ledger had already denied closes as `denied`.
--- The peer `mct/call/0` reply carries no reason field, so peers see it as a failed,
--- non-retryable reply with its safe message.
+-- Decision: The peer `mct/call/0` reply carries an optional `reason`, additive within 0.x with no
+-- protocol version bump. A Mother sends it only on a failed or timed-out reply and only for the
+-- execution-class reasons `execution_failed`, `execution_timed_out`, and `execution_interrupted`,
+-- so a forwarding peer sees `execution_interrupted` for a call a restart cut off. Denial,
+-- authority, routing, payload, and idempotency reasons stay in observations, as before. A reply
+-- without the field means no reason. A reason the receiver does not recognize, or one it may not
+-- act on, is dropped and the reply keeps the generic meaning of its outcome. A success reply
+-- carrying any reason is refused, so a reason can never turn into success.
 
 contract MctCallProtocol {
     @invariant RequiresHelloAdmission
