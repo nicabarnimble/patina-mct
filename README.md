@@ -210,6 +210,10 @@ matching the deployed `/docs/` and `/api/` layout. Start with the
 
 ## Learn more
 
+New reviewer or agent? Start with [`docs/START-HERE.md`](docs/START-HERE.md):
+what MCT is, what is decided versus built, the decision log, open questions,
+and how to report findings.
+
 The `layer/` directory is the project's knowledge base:
 
 - [What is MCT](layer/core/what-is-mct.md) — the full narrative: the model,
