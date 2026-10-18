@@ -3,8 +3,9 @@
 Design notes imported on 2026-10-18 from working discussions that were not in
 the repository. Each note keeps its original body apart from link fixes, and
 starts with a banner giving its status and what has changed on `main` since it
-was written. Where a note and the Allium spec disagree, the spec wins. Where a
-note and [../DECISIONS.md](../DECISIONS.md) disagree, the decision log is newer.
+was written. Where a note and [../DECISIONS.md](../DECISIONS.md) disagree, the
+decision log is newer. The frozen Allium maps are historical context and no
+longer override either source.
 
 | Note | Written | Status |
 | --- | --- | --- |
@@ -17,7 +18,7 @@ note and [../DECISIONS.md](../DECISIONS.md) disagree, the decision log is newer.
 
 Design material that was already in the repository stays where it is:
 
-- [`layer/allium/`](../../layer/allium/): product and peer law.
+- [`layer/allium/`](../../layer/allium/): frozen historical product and peer maps.
 - [`layer/core/`](../../layer/core/): doctrine.
 - [`layer/surface/build/feat/`](../../layer/surface/build/feat/): one spec per build slice, with numbered decisions.
 - [`layer/surface/build/product/`](../../layer/surface/build/product/): roadmap, next-build TODO, runbooks.

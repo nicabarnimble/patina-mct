@@ -40,7 +40,7 @@ Policy snapshots win.
 
 ```text
 layer/core/                    hardened build principles
-layer/allium/                  MCT product/domain behavior
+layer/allium/                  frozen historical behavior maps
 layer/slate/work/              build queue, dependencies, proof plans
 layer/surface/                 active evidence and product notes
 layer/surface/epistemic/       beliefs and rationale
@@ -59,14 +59,15 @@ Key beliefs currently shaping the build:
 - [[mct-call-protocol-wraps-semantic-call]]
 - [[mother-kernel-decides-adapters-perform]]
 
-These beliefs guide implementation, but code still traces to Allium/Slate.
+These beliefs guide implementation, but code still traces to settled decisions,
+active slices, and executable tests.
 
 ## Knowledge Flow
 
 ```text
 session discussion
   → evidence artifact or belief
-  → Allium/Slate update
+  → decision or bounded-slice update when needed
   → implementation
   → observations/tests/commit
   → session update
@@ -79,7 +80,7 @@ session discussion
 - **Surface → Core**: a pattern is repeatedly used and stable enough to guide future work.
 - **Surface → Dust**: a pattern failed, became obsolete, or was superseded.
 - **Session → Belief**: a repeated principle or strong decision becomes reusable rationale.
-- **Belief → Allium/Slate**: rationale becomes executable design scope.
+- **Belief → decision/slice**: rationale becomes reviewable design scope.
 
 The docs in `layer/core/` are build laws. They should be fewer, stronger, and more stable than session notes.
 

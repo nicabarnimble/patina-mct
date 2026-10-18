@@ -4,7 +4,8 @@ This page is for a reviewer, human or agent, who has the repository and nothing
 else. Read it first. It tells you what MCT is, where the rules are written, what
 is built and what is only decided, and how to report what you find.
 
-State described here: `main` at `49dfacd` (2026-10-17, after PR #69).
+State described here: `main` after PR #70 and the 2026-10-18 Allium
+retirement decision.
 
 ## What MCT is
 
@@ -41,9 +42,10 @@ running.**
 **Mother decides. Children compute. Toys effect.**
 
 The longer narrative is [`layer/core/what-is-mct.md`](../layer/core/what-is-mct.md).
-The formal specification is
-[`layer/allium/mct-product-map.allium`](../layer/allium/mct-product-map.allium).
-Where prose and the Allium spec disagree, the spec wins.
+Settled intent is recorded in [DECISIONS.md](DECISIONS.md); active ratified
+slice specifications define the boundary of current work. The former Allium
+maps under `layer/allium/` are frozen historical evidence and no longer govern
+implementation or CI.
 
 ## Decided versus built
 
@@ -73,7 +75,7 @@ The full list, with dates and reasons, is [DECISIONS.md](DECISIONS.md).
 | `crates/mct-trace` | Verifies and projects published session traces into the docs book. |
 | `crates/phase3-measure` | Benchmark for hybrid signature cost and ledger size. Not shipped. |
 | `fuzz/` | cargo-fuzz targets over hostile inputs. |
-| `layer/allium/` | Allium specs. `mct-product-map.allium` is the product law. `mct-peer-ontology.allium` is the peer law. |
+| `layer/allium/` | Frozen historical behavior maps retained for provenance; not a current development gate or authority source. |
 | `layer/core/` | Doctrine: what MCT is, reliability doctrine, safety boundaries, dependable Rust, vocabulary. |
 | `layer/surface/build/feat/<slice>/` | One spec (and sometimes design or closeout) per build slice. Slice specs carry numbered decisions such as `D-H3.5`. |
 | `layer/surface/build/product/` | `ROADMAP.md`, `MCT-NEXT-BUILD-TODO.md`, release checklists, the Mother replacement runbook, baselines. |
@@ -83,8 +85,9 @@ The full list, with dates and reasons, is [DECISIONS.md](DECISIONS.md).
 | `docs/DECISIONS.md`, `docs/OPEN-QUESTIONS.md`, `docs/PRIOR-ART.md` | Decision log, open questions, prior-art research. |
 | `ASSURANCE.md`, `SECURITY.md` | Security evidence and reporting. |
 
-Where to look for a rule, in order: the Allium spec, then the slice `SPEC.md`,
-then `layer/core/`, then the design notes, then code comments.
+Where to look for a rule, in order: [DECISIONS.md](DECISIONS.md), the active
+ratified slice `SPEC.md`, `layer/core/`, then design notes. Tests and source
+show what is built; they do not silently rewrite a settled decision.
 
 ## Build and test
 
@@ -95,7 +98,7 @@ cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace -- --test-threads=1
 ./scripts/ci-tier0.sh            # fmt, specs, clippy, test, audit
-./scripts/ci-tier0.sh specs      # release, vocabulary and Allium checks
+./scripts/ci-tier0.sh specs      # release and vocabulary checks
 ./scripts/build-docs.sh          # needs ./scripts/install-docs-tools.sh first
 ```
 
@@ -117,8 +120,8 @@ single-threaded. `scripts/install-hooks.sh` installs a pre-commit hook that runs
   author or committer is not on its allowlist, and any `Co-authored-by` trailer.
 - Do not delete a branch after merge without the owner's say-so.
 - A failing check is fixed in the change, never by weakening the check.
-- A behavior change updates the Allium spec or the slice spec in the same PR,
-  or says why it does not need to.
+- A behavior change updates the relevant decision or active slice spec in the
+  same PR, or records why no governance document changes.
 
 ## What a review should look for
 
@@ -135,7 +138,8 @@ The owner wants cold, blunt reviews. Useful questions:
    ledger disagree?
 5. Can replay restore authority that was revoked, or accept a fact it should
    refuse?
-6. Do the docs, the Allium spec and the code say the same thing?
+6. Do the settled decisions, active slice specs, tests, documentation, and code
+   agree about what is intended and what is built?
 7. Is there a simpler or cheaper design that keeps every guarantee? See
    [PRIOR-ART.md](PRIOR-ART.md) for what we already compared.
 

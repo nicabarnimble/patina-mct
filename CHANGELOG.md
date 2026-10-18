@@ -14,6 +14,7 @@ Release-discipline work after PR #29 remains unreleased until it has a reviewabl
 
 - **Breaking (pre-GA):** made WASM components the only locally executable Child substrate; removed `process call`, `iroh serve-process`, handle-only ingress, resident process dispatch, and the public process Child harness ([#35](https://github.com/nicabarnimble/patina-mct/pull/35)).
 - Kept persisted process/JVM runtime values readable as historical evidence while refusing their conversion into current approval, routing, or execution authority ([#35](https://github.com/nicabarnimble/patina-mct/pull/35)).
+- Retired Allium from the required development and CI path while preserving the existing maps as frozen historical evidence.
 
 ### Security
 

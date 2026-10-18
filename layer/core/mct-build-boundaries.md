@@ -108,8 +108,8 @@ Until separately specified:
 
 Before writing code for a slice:
 
-- [ ] Which Allium anchors authorize it?
-- [ ] Which Slate work item owns it?
+- [ ] Which settled decision and active slice specification authorize it?
+- [ ] Which Slate work item owns it, when Slate tracking is used?
 - [ ] Which belief/evidence explains it?
 - [ ] Which observations prove it?
 - [ ] What is the smallest integration test?

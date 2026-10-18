@@ -27,7 +27,7 @@ or establish peer authority.
 
 ## Development checkout
 
-Contributors need the pinned Rust toolchain and the Allium CLI used by CI:
+Contributors need the pinned Rust toolchain:
 
 ```bash
 cargo test --workspace

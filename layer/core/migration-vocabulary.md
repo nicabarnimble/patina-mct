@@ -15,9 +15,10 @@ from the integrated Patina architecture into MCT. This is a transitional
 communication convention, not a request to rename Rust types, protocols,
 Allium entities, or ordinary MCT terminology.
 
-Semantic law: `layer/allium/mct-patina-migration.allium`. This document explains
-how to apply that law in prose. The Allium contracts govern meaning; the CI
-vocabulary check catches ambiguous terms in living comparative documents.
+This document is the active vocabulary contract for comparative prose. The CI
+vocabulary check catches ambiguous terms in living comparative documents. The
+former `layer/allium/mct-patina-migration.allium` map is retained as frozen
+historical evidence.
 
 ## Context determines the vocabulary
 

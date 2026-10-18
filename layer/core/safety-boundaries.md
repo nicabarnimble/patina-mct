@@ -89,7 +89,8 @@ Before implementing a path, ask:
 4. What happens if observation or adapter effect fails?
 5. What does the caller safely learn?
 
-If those answers are absent, update Allium/Slate before coding.
+If those answers are absent, record the missing decision or amend the active
+slice before coding.
 
 ## References
 

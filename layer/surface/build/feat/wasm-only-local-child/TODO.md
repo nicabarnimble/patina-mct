@@ -753,6 +753,7 @@ No nondeterministic flake was accepted. Deterministic gate failures encountered 
 
 ### Follow-ups
 
-- Decide whether to reduce or retire Allium based on demonstrated value, separately from Option C.
+- [x] Retire Allium from the active development path under D-50; preserve the
+  maps as frozen historical evidence.
 - Expand native/JVM external-integration guidance only from concrete consumer requirements.
 - Open the eventual `patina -> main` integration PR only under the integration/release plan that also disposes the paused Perf Phase 0 state.
