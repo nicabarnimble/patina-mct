@@ -25,6 +25,8 @@
 //! `inflight_child_call_is_resumed_or_marked_interrupted_after_sigkill`,
 //! `torn_final_ledger_frame_is_recovered_on_restart`, and the no-crash
 //! control `concurrent_children_calls_are_not_refused_without_a_crash`.
+//! `crash_on_first_ledger_write_recovers_then_operator_gate_starts_mother`
+//! pins the operator-gate path over a recovery-only ledger (D-H3.5).
 //!
 //! Knobs: `MCT_RESTART_SEED` (default 0x6d63_7421), `MCT_RESTART_ITERATIONS`
 //! (default 3 for the CI test, 24 for the ignored long test), and
@@ -1658,4 +1660,112 @@ fn concurrent_children_calls_are_not_refused_without_a_crash() {
         steps.len(),
         refused.join("\n")
     );
+}
+
+/// A crash on the very first ledger write leaves a ledger holding only the
+/// tail-recovery fact. Mother must not start on its own (no continuity
+/// evidence), the owner's operator gate must be able to reinitialize over that
+/// recovery evidence, and the next boot must come up ready with the recovery
+/// fact still first in the verified chain.
+#[test]
+fn crash_on_first_ledger_write_recovers_then_operator_gate_starts_mother() {
+    let layout = Layout::new();
+    let torn = br#"{"ledger_id":"ledger-local","mother_node_id":"local-mct","local_seq"#;
+    std::fs::write(layout.ledger(), torn).unwrap();
+
+    // Boot 1 recovers the torn frame and waits behind the operator gate.
+    let mut gated = Mother::spawn(&layout, 1);
+    let deadline = Instant::now() + READY_TIMEOUT;
+    let startup = loop {
+        assert!(
+            gated.process.try_wait().unwrap().is_none(),
+            "Mother exited before exposing the operator gate; log:\n{}",
+            gated.log(&layout)
+        );
+        if let Ok((200, body)) = uds(
+            &layout.socket(),
+            "GET",
+            "/startup",
+            None,
+            Duration::from_secs(2),
+        ) && body["startup_posture"] == "operator_gate_required"
+        {
+            break body;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no operator gate; log:\n{}",
+            gated.log(&layout)
+        );
+        thread::sleep(Duration::from_millis(25));
+    };
+    assert_eq!(startup["startup_class"], "operator_gated_nonvirgin");
+    let recovered = std::fs::read(layout.ledger()).unwrap();
+    let before_gate = ledger_lines(&recovered);
+    assert_eq!(before_gate.len(), 1, "only the recovery fact");
+    assert!(mct_observation::is_valid_tail_recovery_entry(
+        &before_gate[0]
+    ));
+    let source = forensic_listing(&layout)
+        .into_iter()
+        .find(|(path, _)| path.ends_with("source.bin"))
+        .expect("torn bytes preserved");
+    assert_eq!(std::fs::read(&source.0).unwrap(), torn);
+
+    let request = json!({
+        "schema": "mct-operator-startup-gate-request/v1",
+        "decision_id": "decision:first-write-crash",
+        "expected_mother_node_id": MOTHER_NODE_ID,
+        "expected_ledger_id": LEDGER_ID,
+        "expected_inventory_hash": startup["inventory"]["inventory_hash"],
+        "confirmation": mct_daemon::MCT_OPERATOR_REINITIALIZATION_CONFIRMATION_V1,
+    });
+    let (status, body) = uds(
+        &layout.socket(),
+        "POST",
+        "/startup/operator-gate",
+        Some(&request),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    assert_eq!(status, 200, "gate refused: {body:#}");
+    // The isolated plane ends after an accepted gate.
+    let exit_deadline = Instant::now() + READY_TIMEOUT;
+    while gated.process.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < exit_deadline, "gated Mother did not exit");
+        thread::sleep(Duration::from_millis(25));
+    }
+    drop(gated);
+
+    // Boot 2 is an ordinary reopen and becomes ready.
+    let _mother = Mother::start(&layout, 2).unwrap_or_else(|error| panic!("{error}"));
+    let entries = verify_chain(&layout, "after operator gate");
+    assert!(
+        std::fs::read(layout.ledger())
+            .unwrap()
+            .starts_with(&recovered),
+        "the recovery fact was rewritten"
+    );
+    assert_eq!(entries[0], before_gate[0]);
+    let epochs: Vec<_> = entries
+        .iter()
+        .filter(|entry| {
+            entry
+                .observation
+                .observation_id
+                .as_str()
+                .starts_with("obs:authority-epoch:")
+        })
+        .collect();
+    assert!(epochs.len() >= 2, "gate epoch plus the reopen epoch");
+    assert_eq!(
+        epochs[0].local_sequence, 1,
+        "gate epoch chains after recovery"
+    );
+    let gate_detail = epochs[0].observation.detail_ref.as_deref().unwrap();
+    assert!(gate_detail.contains("\"operator_gated_nonvirgin\""));
+    assert!(gate_detail.contains("\"none_after_operator_reinitialization\""));
+    assert!(gate_detail.contains("decision:first-write-crash"));
+    let reopen_detail = epochs[1].observation.detail_ref.as_deref().unwrap();
+    assert!(reopen_detail.contains("\"ordinary_reopen\""));
 }
