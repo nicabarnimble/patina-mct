@@ -139,6 +139,29 @@ complete-frame replay, partial-tail preservation, poisoning and no replayed
 replacement; strict parser fuzz smoke and old hash compatibility. Full roster
 revision, runtime admission fencing and real-process tests remain later work.
 
+## Slice 3 planning: protected policy edits
+
+D-54 already settles active-roster changes: current owner plus current quorum,
+newcomer acceptance, 24-hour delay, no edits during recovery, and quorum-controlled
+cancellation. Those rules are not being reopened.
+
+**An implementation authority question remains:** after an authorized delayed
+*disablement*, does the former roster still control re-enablement? D-54 does not
+explicitly choose between a dormant control roster and termination of guardian
+control. See `docs/OPEN-QUESTIONS.md`, question 13. Neither interpretation is
+implemented; do not silently encode either as an accepted default.
+
+The recommendation, pending explicit owner approval, is termination: old guardians
+remain audit history, not future authority; re-enablement requires current owner,
+all three new acceptances, and a 24-hour delay. Temporary suspension with retained
+control would be a distinct feature, not an overloaded meaning of disabled.
+
+The implementation must preserve slice-2 absent-extension hashes and corpus
+replay, retain consumed edit IDs, sign exact next policy/bindings/generation, deny
+new members voting themselves in, and cover restart, cancellation/activation
+ordering and acknowledgement-loss replay. This planning section is not an
+implementation or a ratification of post-disablement authority.
+
 ## Subsequent slices (required, not implemented by kernel checks)
 
 1. Versioned canonical genesis/OwnerBinding, guardian acceptance and policy

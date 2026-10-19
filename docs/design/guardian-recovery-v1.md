@@ -1,6 +1,6 @@
 # Voice-bound guardian recovery v1: ratified owner contract
 
-**Status: ratified by the owner (D-54), 2026-10-19; not yet implemented.**
+**Status: ratified by the owner (D-54), 2026-10-19; partially implemented, live recovery disabled.**
 The owner approved this complete first-decision contract and requested building
 it. Recommendations/defaults below are accepted policy; implementation details
 must preserve them. D-53 records the preceding design direction. Supporting research: [[recovery-signal-iroh-research]],
@@ -92,6 +92,12 @@ shared administrative accounts, control planes, secrets, and backups.
   necessary. This availability cost is an intentional proposed tradeoff.
 - Cancellation of a pending roster edit uses the existing quorum. The owner
   must not bypass that rule by restarting or reverting config.
+
+Implementation clarification pending: the authority retained by a disabled roster
+when protection is later re-enabled is not explicit in this contract. See
+[open question 13](../OPEN-QUESTIONS.md#13-guardian-authority-after-an-authorized-disablement).
+The active-policy rules above remain ratified; neither post-disablement rule has
+been silently selected.
 
 ## 5. Recovery request and approval
 
