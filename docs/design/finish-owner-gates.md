@@ -1,6 +1,6 @@
 # Finish-line owner gates
 
-**Status: recovery ratified in D-54/D-55; issuance ceilings in D-56. Gates 3–5 remain pending.**
+**Status: recovery ratified in D-54/D-55; issuance in D-56; strict hybrid/fresh cutover in D-57. Gates 4–5 remain pending.**
 These are decisions already called
 out by `SECURITY-BOUNDARIES.md`, `OPEN-QUESTIONS.md`, and D-52, not an expansion
 of the finish line. The owner requested completion and a push only when all
@@ -49,7 +49,7 @@ still need to be specified; this does not authorize deployment.
    bounded kernel evaluator and canonical issuance proofs. This is separate from
    the route evaluator and does not enable the still-gated authenticated runtime.
 
-3. **Strict hybrid administration and fresh cutover.** Require both signature
+3. **Strict hybrid administration and fresh cutover (ratified D-57).** Require both signature
    halves and authorized issuance on new admin commands. Proof of possession
    alone is insufficient. Self-signing is allowed only for the explicit virgin
    bootstrap root; subsequent issuance requires an admitted issuer. Follow
@@ -75,7 +75,7 @@ still need to be specified; this does not authorize deployment.
    action, not an ongoing alternate admin interface.
 
 Approval should name any changes to these recommendations before implementation.
-Gates 1 and 2 are decided by D-54/D-55 and D-56 respectively; no gate is marked fully implemented here.
+Gates 1–3 are decided by D-54/D-55, D-56 and D-57 respectively; no gate is marked fully implemented here.
 
 ## Canonical-authority implementation boundary
 

@@ -733,3 +733,28 @@ All six were locked on 2026-10-14 in the admin-keys design. Full text:
 - **Scope:** settles owner gate 2. It does not ratify gate 3's signature/legacy
   cutover, recipient-bound Child handles, supervisor trust or deployment access.
   Release remains gated on complete executable evidence, not this decision alone.
+
+### D-57 Strict hybrid administration and fresh cutover
+
+- **Status:** ratified by the owner after the Signal/Argent/Iroh comparison and
+  explicit recommendation. Settles owner gate 3, not gates 4–5.
+- **Authentication:** new administrative commands require both Ed25519 and
+  ML-DSA-65 verification and current canonical authorization. Possession alone,
+  an Iroh EndpointId, a cached connection, or an OS UID does not grant authority.
+- **Bootstrap:** self-signing is limited to the explicit trusted virgin-root
+  bootstrap. A separately pinned root and verified virgin disk evidence are
+  required; being first to connect never appoints an owner. Bootstrap cannot
+  replace missing/nonvirgin history or become a second root-rotation mechanism.
+- **Cutover:** authenticated Iroh administration replaces UID/offline alternatives
+  under D-15. A local CLI uses that same authenticated path. Supervisor and
+  trusted setup implementation remain bounded by the separately pending gate 5.
+- **Legacy:** preserve unsigned histories for inspection, without silently
+  activating their grants, configuration permissions or self-signed assertions
+  as new authority. A signed migration, if desired, requires separate approval.
+- **Continuity:** D-54/D-55 guardian recovery and D-56 issuance limits remain in
+  force. Each Mother enforces its own canonical history; no fleet consensus or
+  central account service is added. Hybrid signatures do not upgrade Iroh's
+  transport to post-quantum security.
+- **Evidence:** bounded bootstrap/replay and denial proofs precede live ingress.
+  Keep administration/release obligations open until the full cutover is proven;
+  no early push, deployment, or compatibility-mode authorization bypass.

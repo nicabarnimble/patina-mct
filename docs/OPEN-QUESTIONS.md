@@ -131,8 +131,9 @@ is open. See [FINISH.md](FINISH.md) for remaining operations and failure tests.
 The review identified concrete decisions needed before broader implementation:
 
 - [Current security boundaries](SECURITY-BOUNDARIES.md): portable handle semantics,
-  trusted supervisor lifecycle, and signature/rollback trust remain open. D-56
-  settles node-wide issuance ceilings; D-54/D-55 settle recovery policy. Their
+  trusted supervisor lifecycle, and independent rollback anchors remain open.
+  D-57 settles strict hybrid/fresh cutover, D-56 node-wide issuance ceilings, and
+  D-54/D-55 recovery policy. Their
   bounded canonical implementations do not complete the authenticated runtime.
 - [Durable task boundary proposal](design/durable-task-boundary.md): task versus
   invocation versus effect identity, unknown-outcome recovery, checkpoint and

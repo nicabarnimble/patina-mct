@@ -31,8 +31,8 @@ open. No permanent failing completion job is added to ordinary CI.
 [finish-owner-gates.md](design/finish-owner-gates.md) proposes explicit choices
 for recovery compromise, issuance ceilings, signature/legacy handling,
 recipient-bound handles, and trusted supervisor lifecycle. Recovery is ratified
-in D-54/D-55 and issuance ceilings in D-56. Signature/legacy handling, handles and
-supervisor gates remain pending owner confirmation. Multi-host
+in D-54/D-55, issuance ceilings in D-56, and strict hybrid/fresh cutover in D-57.
+Child-handle and trusted-supervisor gates remain pending owner confirmation. Multi-host
 partition and upgrade evidence also requires approved disposable test hosts.
 Remote macOS execution is to be handed off to Devin with explicit actions and
 required evidence, not assumed direct access from this session.
@@ -98,7 +98,7 @@ Status: `keyed-retry-fence` is implemented on the inherited branch;
 
 ### 3. Administration and recovery cutover
 
-- Implement D-56 issuance ceilings, settle signature enforcement, implement authenticated
+- Implement D-56 issuance ceilings and D-57 strict hybrid/fresh cutover, with authenticated
   Iroh administration, and remove the old bypass paths in the same cutover.
 - Prove bootstrap, expiry, delegation, revocation, and no resurrection.
 - Implement D-54's explicit Voice-bound guardian recovery exception, preserving
@@ -110,6 +110,11 @@ force until explicitly amended. A completion request is not approval of an
 unrecorded key-policy redesign.
 
 ### 4. Operator lifecycle and distributed failure matrix
+
+D-57 validation also observed an intermittent control-socket readiness failure
+in restart and fleet tests. Final reruns passed, but the cause is not established;
+retain it as a release investigation, not a fixed bug. See
+[strict-cutover evidence](../layer/surface/build/feat/strict-admin-cutover/EVIDENCE.md).
 
 - Provision multiple instances without service-label/path/key collisions.
 - Provide inventory/inspection tooling without creating a runtime coordinator

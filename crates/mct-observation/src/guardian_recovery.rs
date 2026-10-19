@@ -74,6 +74,20 @@ pub(super) fn apply(
 ) -> std::result::Result<(), AuthorityReplayError> {
     let denied = |e: &str| authority_incoherent(e);
     let before_hash = authority_state_hash(state).map_err(|e| denied(&e.to_string()))?;
+    if let Some(birth) = &state.admin_genesis {
+        let floor = state
+            .admin_issuance
+            .values()
+            .map(|record| &record.decided_at)
+            .chain(std::iter::once(&birth.decided_at))
+            .max()
+            .expect("birth supplies floor");
+        if &clock.wall_time < floor {
+            return Err(denied(
+                "strict recovery clock regressed behind canonical authority",
+            ));
+        }
+    }
     let root = state
         .admin_key_grants
         .values()

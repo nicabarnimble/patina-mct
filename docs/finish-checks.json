@@ -4,7 +4,7 @@
     {"id": "independent-policy", "status": "implemented", "title": "Issuer-scoped policy revisions and stale-authority denial", "proofs": ["revisions", "local-stale", "fleet"], "evidence": ["layer/surface/build/feat/federation-finish/EVIDENCE.md"]},
     {"id": "fleet-baseline", "status": "implemented", "title": "Six processes, single-hop federation, four/five survivors, restart and revocation", "proofs": ["fleet", "two-mother", "refresh"], "evidence": ["layer/surface/build/feat/federation-finish/EVIDENCE.md"]},
     {"id": "keyed-retry-fence", "status": "implemented", "title": "Caller-scoped dispatch fence against lost SQLite history, bounded to 720 seconds", "proofs": ["dispatch-parser", "dispatch-writer", "sqlite-rollback"], "evidence": ["layer/surface/build/feat/ledger-first-call-recovery/EVIDENCE.md"]},
-    {"id": "administration", "status": "open", "title": "Admin issuance ceilings, signature policy, Iroh transport and hard removal of old admin paths", "proofs": ["issuance-kernel", "issuance-writer", "issuance-runtime-deny"], "evidence": ["layer/surface/build/feat/admin-issuance-ceilings/EVIDENCE.md"]},
+    {"id": "administration", "status": "open", "title": "Admin issuance ceilings, signature policy, Iroh transport and hard removal of old admin paths", "proofs": ["issuance-kernel", "issuance-writer", "issuance-runtime-deny", "genesis-writer", "genesis-runtime-deny", "recovery-writer"], "evidence": ["layer/surface/build/feat/admin-issuance-ceilings/EVIDENCE.md", "layer/surface/build/feat/strict-admin-cutover/EVIDENCE.md"]},
     {"id": "canonical-authority", "status": "open", "title": "Child/peer authority reconstructs from canonical facts, not surviving configuration", "proofs": [], "evidence": []},
     {"id": "final-admission", "status": "open", "title": "Final Child/effect admission ordering and explicit task/invocation/effect recovery boundaries", "proofs": [], "evidence": []},
     {"id": "key-recovery", "status": "open", "title": "D-54 Voice-bound 2-of-3 guardian enrollment, delayed recovery, cancellation, restart and safe resumption", "proofs": ["recovery-kernel", "recovery-writer", "recovery-policy", "recovery-runtime-deny"], "evidence": ["layer/surface/build/feat/voice-guardian-recovery/EVIDENCE.md"]},
@@ -14,7 +14,9 @@
     {"id": "release-evidence", "status": "open", "title": "Reviewed deployment matrix, current release artifacts, security/upgrade docs and operator acceptance", "proofs": [], "evidence": []}
   ],
   "proofs": {
-    "recovery-writer": {"package": "mct-observation", "target": ["--lib"], "filter": "guardian_recovery_tests::canonical_recovery_", "minimum_tests": 17},
+    "genesis-writer": {"package": "mct-observation", "target": ["--lib"], "filter": "admin_genesis_tests::", "minimum_tests": 17},
+    "genesis-runtime-deny": {"target": ["--lib"], "filter": "strict_admin_genesis_cannot_start_through_legacy_runtime", "minimum_tests": 1},
+    "recovery-writer": {"package": "mct-observation", "target": ["--lib"], "filter": "guardian_recovery_tests::canonical_recovery_", "minimum_tests": 18},
     "recovery-policy": {"package": "mct-observation", "target": ["--lib"], "filter": "guardian_recovery_tests::policy_tests::", "minimum_tests": 18},
     "issuance-kernel": {"package": "mct-kernel", "target": ["--lib"], "filter": "admin_issuance::", "minimum_tests": 15},
     "issuance-writer": {"package": "mct-observation", "target": ["--lib"], "filter": "admin_issuance_tests::", "minimum_tests": 19},

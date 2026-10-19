@@ -55,53 +55,61 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_strict_origin(false)
+    }
+    fn with_strict_origin(strict: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ledger.jsonl");
-        let mut writer =
-            JsonlObservationLedger::open_authority(&path, "ledger-a", "mother-a").unwrap();
-        let mut changes = Vec::new();
-        for (id, seed, class) in [
-            ("day-a", 20, AdminKeyGrantClassV1::DayToDay),
-            ("day-b", 21, AdminKeyGrantClassV1::DayToDay),
-            ("root", 2, AdminKeyGrantClassV1::Recovery),
-        ] {
-            changes.push(AuthorityChangeV1::AdminKeyGrantPut {
-                grant: Box::new(AdminKeyGrantV1 {
-                    grant_id: id.into(),
-                    issuance_ceiling: None,
-                    public_half: public(seed).ed25519,
-                    ml_dsa65_public_key: Some(public(seed).ml_dsa65),
-                    class,
-                    scopes: if class == AdminKeyGrantClassV1::Recovery {
-                        mct_kernel::recovery_grant_scopes().to_vec()
-                    } else {
-                        vec![AdminKeyScopeV1::Status]
-                    },
-                    expires_at: (class == AdminKeyGrantClassV1::DayToDay)
-                        .then(|| time(RECOVERY_DELAY_MS * 30)),
-                    grant_state: AdminKeyGrantStateV1::Active,
-                }),
+        let mut writer = if strict {
+            crate::admin_genesis_tests::bootstrap_writer(&path).0
+        } else {
+            JsonlObservationLedger::open_authority(&path, "ledger-a", "mother-a").unwrap()
+        };
+        if !strict {
+            let mut changes = Vec::new();
+            for (id, seed, class) in [
+                ("day-a", 20, AdminKeyGrantClassV1::DayToDay),
+                ("day-b", 21, AdminKeyGrantClassV1::DayToDay),
+                ("root", 2, AdminKeyGrantClassV1::Recovery),
+            ] {
+                changes.push(AuthorityChangeV1::AdminKeyGrantPut {
+                    grant: Box::new(AdminKeyGrantV1 {
+                        grant_id: id.into(),
+                        issuance_ceiling: None,
+                        public_half: public(seed).ed25519,
+                        ml_dsa65_public_key: Some(public(seed).ml_dsa65),
+                        class,
+                        scopes: if class == AdminKeyGrantClassV1::Recovery {
+                            mct_kernel::recovery_grant_scopes().to_vec()
+                        } else {
+                            vec![AdminKeyScopeV1::Status]
+                        },
+                        expires_at: (class == AdminKeyGrantClassV1::DayToDay)
+                            .then(|| time(RECOVERY_DELAY_MS * 30)),
+                        grant_state: AdminKeyGrantStateV1::Active,
+                    }),
+                    signature: None,
+                });
+            }
+            changes.push(AuthorityChangeV1::PairingTicketIssued {
+                ticket_hash: "ab".into(),
+                peer_endpoint_id: None,
+                window_starts_at: None,
+                window_expires_at: None,
                 signature: None,
             });
+            committed(writer.execute_authority_mutation(
+                AuthorityMutationRequestV1 {
+                    mutation_id: "seed-existing-admin".into(),
+                    changes,
+                    decided_at: time(0).to_string(),
+                    grant_shaping_sources: vec![GrantShapingSourceV1::AdminKey {
+                        public_half: public(2).ed25519,
+                    }],
+                },
+                |_| Ok(None),
+            ));
         }
-        changes.push(AuthorityChangeV1::PairingTicketIssued {
-            ticket_hash: "ab".into(),
-            peer_endpoint_id: None,
-            window_starts_at: None,
-            window_expires_at: None,
-            signature: None,
-        });
-        committed(writer.execute_authority_mutation(
-            AuthorityMutationRequestV1 {
-                mutation_id: "seed-existing-admin".into(),
-                changes,
-                decided_at: time(0).to_string(),
-                grant_shaping_sources: vec![GrantShapingSourceV1::AdminKey {
-                    public_half: public(2).ed25519,
-                }],
-            },
-            |_| Ok(None),
-        ));
         let genesis = VoiceGenesisV1 {
             public_key: public(1),
             possession: sign(1, &VoiceGenesisV1::signing_message(&public(1)).unwrap()),
@@ -367,6 +375,85 @@ fn canonical_recovery_replaces_root_and_all_day_grants_atomically_then_requires_
     );
     let f = f.reopen();
     assert_eq!(f.recovery().binding.root_key, public(6));
+}
+
+#[test]
+fn canonical_recovery_strict_origin_is_history_not_an_old_root_veto_or_grant() {
+    let mut f = Fixture::with_strict_origin(true);
+    let origin = f.state().admin_genesis.unwrap();
+    let too_early = f.command(Action::Enroll {
+        enrollment: Box::new(f.enrollment.clone()),
+    });
+    denied(f.writer.execute_guardian_recovery_with_clock(
+        "before-birth".into(),
+        too_early,
+        Some((Timestamp::new("2026-10-18T23:59:59Z").unwrap(), 0)),
+    ));
+    f.enroll();
+    let stale = crate::admin_genesis_tests::leaf_request(&f.writer, 1);
+    f.begin();
+    f.challenge();
+    committed(f.run(
+        "complete",
+        f.completion(),
+        RECOVERY_DELAY_MS,
+        RECOVERY_DELAY_MS,
+    ));
+    assert_eq!(f.state().admin_genesis.as_ref(), Some(&origin));
+    assert!(!f.state().admin_key_grants.contains_key("root"));
+    denied(
+        f.writer
+            .execute_admin_key_issuance_at(stale.clone(), time(RECOVERY_DELAY_MS)),
+    );
+    let snapshot = authority_state_hash(&f.state()).unwrap();
+    let signature = sign(6, &f.recovery().resume_signing_message(&snapshot).unwrap());
+    committed(f.run(
+        "resume",
+        Action::Resume {
+            authority_snapshot: snapshot,
+            signature,
+        },
+        RECOVERY_DELAY_MS,
+        RECOVERY_DELAY_MS,
+    ));
+    let mut new_issue = stale;
+    let replay = f.writer.cached_replay().unwrap();
+    new_issue.intent.expected_authority = AuthorityStateReferenceV1 {
+        grants_authority: replay.current_authority.clone().unwrap(),
+        authority_state_hash: authority_state_hash(&replay.state).unwrap(),
+    };
+    new_issue.intent.issuer_grant_id = "recovered:owner-a:2".into();
+    new_issue.intent.grant.expires_at = Some(time(2 * RECOVERY_DELAY_MS));
+    new_issue.signature.signer_grant_id = new_issue.intent.issuer_grant_id.clone();
+    let message = admin_change_signing_message(
+        "mother-a",
+        "ledger-a",
+        1,
+        &replay.state.admin_key_grants["recovered:owner-a:2"],
+        &AuthorityChangeV1::AdminKeyIssue {
+            request: Box::new(new_issue.clone()),
+            decided_at: time(RECOVERY_DELAY_MS),
+        },
+    )
+    .unwrap();
+    new_issue.signature.signature = key(6).sign_hex(&message);
+    committed(
+        f.writer
+            .execute_admin_key_issuance_at(new_issue, time(RECOVERY_DELAY_MS)),
+    );
+    let entries = f.writer.entries().unwrap();
+    assert_eq!(
+        f.writer
+            .execute_admin_genesis_at(
+                &crate::admin_genesis_tests::setup(),
+                origin.request.clone(),
+                time(RECOVERY_DELAY_MS)
+            )
+            .unwrap(),
+        entries[0]
+    );
+    assert_eq!(f.writer.entries().unwrap(), entries);
+    assert_eq!(f.reopen().state().admin_genesis.as_ref(), Some(&origin));
 }
 
 #[test]

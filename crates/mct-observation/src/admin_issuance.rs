@@ -109,6 +109,7 @@ pub(super) fn apply(
         .admin_issuance
         .values()
         .map(|record| &record.decided_at)
+        .chain(state.admin_genesis.iter().map(|birth| &birth.decided_at))
         .chain(
             state
                 .guardian_recovery

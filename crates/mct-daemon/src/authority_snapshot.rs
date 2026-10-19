@@ -458,6 +458,7 @@ mod tests {
             pairing_tickets: std::collections::BTreeMap::new(),
             guardian_recovery: None,
             admin_issuance: Default::default(),
+            admin_genesis: None,
         }
     }
 

@@ -668,6 +668,11 @@ pub fn classify_authority_startup(
     // Recovery facts are understood by storage but live canonical consumers and
     // authenticated ingress are not enabled yet. Never serve legacy UID/admin
     // paths through this authority; unsupported is not absent or virgin.
+    if replay.state.admin_genesis.is_some() {
+        return Err(MctStartupClassificationErrorV1::AuthorityReplayBlocked(
+            "strict admin genesis requires the authenticated cutover runtime".into(),
+        ));
+    }
     if replay.state.guardian_recovery.is_some() {
         return Err(MctStartupClassificationErrorV1::AuthorityReplayBlocked(
             "guardian recovery authority requires the authenticated recovery runtime".into(),
@@ -1602,6 +1607,7 @@ pub fn finalize_authority_startup(
         pairing_tickets: std::collections::BTreeMap::new(),
         guardian_recovery: None,
         admin_issuance: Default::default(),
+        admin_genesis: None,
     };
     let sqlite_hash = authority_state_hash(&sqlite_authority)?;
     let sqlite_comparison = if !pre_observation_replay.imported
@@ -2059,6 +2065,35 @@ mod tests {
             matches!(classify_authority_startup(&paths, "ledger-a", "mother-a"),
             Err(MctStartupClassificationErrorV1::AuthorityReplayBlocked(detail))
                 if detail.contains("authenticated admin runtime"))
+        );
+        assert_eq!(fs::read(&paths.ledger).unwrap(), bytes);
+    }
+
+    #[test]
+    fn strict_admin_genesis_cannot_start_through_legacy_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let entries: Vec<mct_observation::MctObservationLedgerEntry> = serde_json::from_str(
+            include_str!("../../../fuzz/corpus/admin_genesis/genesis-only.json"),
+        )
+        .unwrap();
+        let replay = replay_authority_entries(&entries).unwrap();
+        assert!(replay.state.admin_genesis.is_some());
+        assert!(replay.state.admin_issuance.is_empty());
+        assert!(replay.state.guardian_recovery.is_none());
+        let bytes: Vec<u8> = entries
+            .iter()
+            .flat_map(|entry| {
+                let mut frame = serde_json::to_vec(entry).unwrap();
+                frame.push(b'\n');
+                frame
+            })
+            .collect();
+        fs::write(&paths.ledger, &bytes).unwrap();
+        assert!(
+            matches!(classify_authority_startup(&paths, "ledger-a", "mother-a"),
+            Err(MctStartupClassificationErrorV1::AuthorityReplayBlocked(detail))
+                if detail.contains("authenticated cutover runtime"))
         );
         assert_eq!(fs::read(&paths.ledger).unwrap(), bytes);
     }

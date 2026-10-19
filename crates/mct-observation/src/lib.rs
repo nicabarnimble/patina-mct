@@ -5,6 +5,12 @@
 
 #![forbid(unsafe_code)]
 
+mod admin_genesis;
+pub use admin_genesis::{
+    AdminGenesisFactV1, AdminGenesisIntentV1, AdminGenesisRequestV1, AdminGenesisSetupV1,
+};
+#[cfg(test)]
+mod admin_genesis_tests;
 mod admin_issuance;
 mod guardian_recovery;
 pub use admin_issuance::{AdminKeyIssuanceRecordV1, AdminKeyIssueIntentV1, AdminKeyIssueRequestV1};
@@ -429,6 +435,8 @@ pub struct AuthorityStateV1 {
     pub guardian_recovery: Option<Box<GuardianRecoveryStateV1>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub admin_issuance: BTreeMap<String, AdminKeyIssuanceRecordV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_genesis: Option<Box<AdminGenesisFactV1>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -747,6 +755,8 @@ pub enum ExportStatus {
 pub struct JsonlObservationLedger {
     path: PathBuf,
     file: File,
+    /// Atomic file-creation evidence for this handle, not evidence of virgin host inventory.
+    created_new: bool,
     ledger_id: String,
     mother_node_id: String,
     next_sequence: u64,
@@ -1170,7 +1180,9 @@ impl JsonlObservationLedger {
             }
         };
         if !typed_path
-            && (replay.state.guardian_recovery.is_some() || !replay.state.admin_issuance.is_empty())
+            && (replay.state.guardian_recovery.is_some()
+                || !replay.state.admin_issuance.is_empty()
+                || replay.state.admin_genesis.is_some())
         {
             return rejected_mutation(
                 mutation_id,
@@ -1391,7 +1403,9 @@ impl JsonlObservationLedger {
                 AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
             );
         };
-        if imported_state.guardian_recovery.is_some()
+        if imported_state.admin_genesis.is_some()
+            || replay.state.admin_genesis.is_some()
+            || imported_state.guardian_recovery.is_some()
             || replay.state.guardian_recovery.is_some()
             || !imported_state.admin_issuance.is_empty()
             || !replay.state.admin_issuance.is_empty()
@@ -2305,7 +2319,10 @@ pub fn apply_authority_changes(
         };
         return guardian_recovery::apply(state, command, clock);
     }
-    if state.guardian_recovery.is_some() || !state.admin_issuance.is_empty() {
+    if state.guardian_recovery.is_some()
+        || !state.admin_issuance.is_empty()
+        || state.admin_genesis.is_some()
+    {
         return Err(authority_incoherent(
             "enrolled recovery authority requires the new runtime path",
         ));
@@ -2645,6 +2662,7 @@ pub fn authority_state_hash(state: &AuthorityStateV1) -> Result<String> {
         .map_err(|detail| ObservationLedgerError::AuthorityReplay { detail })?;
     admin_issuance::validate_state(state)
         .map_err(|detail| ObservationLedgerError::AuthorityReplay { detail })?;
+    admin_genesis::validate_state(state)?;
     #[derive(Serialize)]
     struct HashableAuthorityState<'a> {
         toy_catalog: Vec<&'a CanonicalToyContract>,
@@ -2663,6 +2681,16 @@ pub fn authority_state_hash(state: &AuthorityStateV1) -> Result<String> {
         admin_key_grants: state.admin_key_grants.values().collect(),
         pairing_tickets: state.pairing_tickets.values().collect(),
     };
+    if state.admin_genesis.is_some() {
+        let bytes = canonical_json_bytes(&(
+            "mct-strict-admin-authority-state/v1",
+            &hashable,
+            &state.guardian_recovery,
+            &state.admin_issuance,
+            &state.admin_genesis,
+        ))?;
+        return Ok(blake3::hash(&bytes).to_hex().to_string());
+    }
     if !state.admin_issuance.is_empty() {
         let bytes = canonical_json_bytes(&(
             "mct-admin-issuance-authority-state/v1",
@@ -3042,6 +3070,16 @@ fn fold_authority_entry_body(
     let fact_kind = envelope.fact_kind.clone();
     let fact_id = envelope.fact_id.clone();
     match fact_kind.as_str() {
+        "admin_genesis" => {
+            let fact: AdminGenesisFactV1 =
+                serde_json::from_value(envelope.body).map_err(|error| {
+                    AuthorityReplayError::Malformed {
+                        sequence: entry.local_sequence,
+                        detail: error.to_string(),
+                    }
+                })?;
+            admin_genesis::replay_genesis(replay, used_epochs, previous, entry, fact)?;
+        }
         "epoch_established" => {
             let fact: EpochEstablishedFactV1 =
                 serde_json::from_value(envelope.body).map_err(|error| {
@@ -3241,7 +3279,9 @@ fn validate_legacy_import_fact(
         sequence: entry.local_sequence,
         detail: detail.to_owned(),
     };
-    if replay.state.guardian_recovery.is_some()
+    if replay.state.admin_genesis.is_some()
+        || fact.imported_state.admin_genesis.is_some()
+        || replay.state.guardian_recovery.is_some()
         || fact.imported_state.guardian_recovery.is_some()
         || !replay.state.admin_issuance.is_empty()
         || !fact.imported_state.admin_issuance.is_empty()
@@ -3570,15 +3610,33 @@ fn open_with_recovery_hook(
         })?;
     }
 
-    let file = OpenOptions::new()
+    // Distinguish atomic creation from opening an existing zero-byte file.
+    // Only the creator may attempt strict genesis; reopen never re-proves birth.
+    let (file, created_new) = match OpenOptions::new()
         .read(true)
         .append(true)
-        .create(true)
+        .create_new(true)
         .open(&path)
-        .map_err(|source| ObservationLedgerError::Io {
-            path: path.clone(),
-            source,
-        })?;
+    {
+        Ok(file) => (file, true),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (
+            OpenOptions::new()
+                .read(true)
+                .append(true)
+                .open(&path)
+                .map_err(|source| ObservationLedgerError::Io {
+                    path: path.clone(),
+                    source,
+                })?,
+            false,
+        ),
+        Err(source) => {
+            return Err(ObservationLedgerError::Io {
+                path: path.clone(),
+                source,
+            });
+        }
+    };
     let mut file = acquire_writer_lock(&path, file)?;
 
     let (state, recovery_status) = match scan_existing(&path, ledger_id, mother_node_id)? {
@@ -3621,6 +3679,7 @@ fn open_with_recovery_hook(
     Ok(JsonlObservationLedger {
         path,
         file,
+        created_new,
         ledger_id: ledger_id.to_owned(),
         mother_node_id: mother_node_id.to_owned(),
         next_sequence: state.next_sequence,
