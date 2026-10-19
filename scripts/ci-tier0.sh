@@ -42,6 +42,8 @@ run_specs() {
   local status=0
   run_release || status=1
   run_vocabulary || status=1
+  python3 scripts/check-finish.py validate || status=1
+  python3 scripts/test-check-finish.py || status=1
   return "$status"
 }
 

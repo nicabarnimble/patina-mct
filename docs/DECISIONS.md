@@ -457,7 +457,7 @@ All six were locked on 2026-10-14 in the admin-keys design. Full text:
   Vision. A connection alone earns no trust.
 - **Source:** [`multi-mother-route-forwarding/`](../layer/surface/build/feat/multi-mother-route-forwarding/), [`mct-peer-ontology.allium`](../layer/allium/mct-peer-ontology.allium).
 
-### D-38 Multi-Mother with per-Mother ledgers is future scale work
+### D-38 Cluster/replica Mothers remain future scale work
 
 - **Date:** 2026-10-14 (#46), restored 2026-10-15 (#59) after #36 reverted the wording.
 - **Status:** future, not planned now.
@@ -465,6 +465,9 @@ All six were locked on 2026-10-14 in the admin-keys design. Full text:
   quorums and shared ledgers are not current scope. Only single-hop peer
   federation is real code (`forwarding.rs`, `candidates.rs`,
   `publication.rs`, `crates/mct-daemon/src/federation.rs`, `mct-iroh`).
+- **2026-10-19 scope clarification (D-52):** finishing direct federation across
+  4–6 independent Mothers is now a release target. The exclusions above still
+  apply; independent per-Mother ledgers do not imply a shared/replicated ledger.
 
 ### D-39 No allow-by-default egress
 
@@ -601,3 +604,23 @@ All six were locked on 2026-10-14 in the admin-keys design. Full text:
 - **Source:** owner request to implement the architecture review on a branch;
   exact choices and tests in
   [`ledger-first-call-recovery/SPEC.md`](../layer/surface/build/feat/ledger-first-call-recovery/SPEC.md).
+
+### D-52 Finish independent Mothers and bounded federation together
+
+- **Date:** 2026-10-19.
+- **Status:** owner-directed completion scope; implementation in progress on
+  `feat/finish-mct-federation`, not a released capability claim.
+- **Decision:** finish single-node administration, canonical authority,
+  execution/recovery, and operations alongside direct cooperation of 4–6
+  independent Mothers in one explicitly agreed Vision. Each Mother owns its
+  identity, state, ledger, and local authorization. Unavailable peers must not
+  stop unrelated local work. No shared global policy-revision counter.
+- **Boundary:** D-09 no-failover and D-37 single-hop remain. No takeover,
+  clustering, guardian quorum, shared ledger, or whole-Pi port prerequisite.
+  Existing one-local-Vision constraints remain for this bounded release.
+  Unsettled admin issuance, key compromise, and final admission contracts are
+  explicit blockers, not implicitly ratified by this completion direction.
+- **Source:** owner accepted the 4–6-Mother finish direction and requested a
+  new branch/clone and executable check. [FINISH.md](FINISH.md) tracks all exit
+  obligations; the first bounded implementation contract is
+  [federation-finish/SPEC.md](../layer/surface/build/feat/federation-finish/SPEC.md).

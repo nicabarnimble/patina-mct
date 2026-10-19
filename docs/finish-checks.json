@@ -1,0 +1,26 @@
+{
+  "schema": "mct-finish-check/v1",
+  "requirements": [
+    {"id": "independent-policy", "status": "implemented", "title": "Issuer-scoped policy revisions and stale-authority denial", "proofs": ["revisions", "local-stale", "fleet"], "evidence": ["layer/surface/build/feat/federation-finish/EVIDENCE.md"]},
+    {"id": "fleet-baseline", "status": "implemented", "title": "Six processes, single-hop federation, four/five survivors, restart and revocation", "proofs": ["fleet", "two-mother", "refresh"], "evidence": ["layer/surface/build/feat/federation-finish/EVIDENCE.md"]},
+    {"id": "keyed-retry-fence", "status": "implemented", "title": "Caller-scoped dispatch fence against lost SQLite history, bounded to 720 seconds", "proofs": ["dispatch-parser", "dispatch-writer", "sqlite-rollback"], "evidence": ["layer/surface/build/feat/ledger-first-call-recovery/EVIDENCE.md"]},
+    {"id": "administration", "status": "open", "title": "Admin issuance ceilings, signature policy, Iroh transport and hard removal of old admin paths", "proofs": [], "evidence": []},
+    {"id": "canonical-authority", "status": "open", "title": "Child/peer authority reconstructs from canonical facts, not surviving configuration", "proofs": [], "evidence": []},
+    {"id": "final-admission", "status": "open", "title": "Final Child/effect admission ordering and explicit task/invocation/effect recovery boundaries", "proofs": [], "evidence": []},
+    {"id": "key-recovery", "status": "decision_required", "title": "Owner-reviewed key loss/compromise response without silently replacing the settled recovery-grant contract", "proofs": [], "evidence": []},
+    {"id": "fleet-operations", "status": "open", "title": "Provision, inspect, revoke, shutdown, quarantine, recover and upgrade multiple instances on supported hosts", "proofs": [], "evidence": []},
+    {"id": "distributed-failures", "status": "open", "title": "Multi-host partitions, stale grants, lost responses, retry correlation and rolling upgrades", "proofs": [], "evidence": []},
+    {"id": "useful-workflow", "status": "open", "title": "Real artifact-producing workflow with independently enforced exact-artifact publication approval", "proofs": [], "evidence": []},
+    {"id": "release-evidence", "status": "open", "title": "Reviewed deployment matrix, current release artifacts, security/upgrade docs and operator acceptance", "proofs": [], "evidence": []}
+  ],
+  "proofs": {
+    "revisions": {"target": ["--bin", "mct-daemon"], "filter": "federation_revision_", "minimum_tests": 3},
+    "local-stale": {"target": ["--bin", "mct-daemon"], "filter": "remote_policy_mismatch_denies_even_when_caller_echo_matches_stale_peer", "minimum_tests": 1},
+    "fleet": {"target": ["--test", "federation_fleet"], "filter": "six_mothers_independent_revisions_survive_peer_loss_and_restart", "minimum_tests": 1},
+    "two-mother": {"target": ["--bin", "mct-daemon"], "filter": "two_mother", "minimum_tests": 11},
+    "refresh": {"target": ["--bin", "mct-daemon"], "filter": "federation_refresh_", "minimum_tests": 4},
+    "dispatch-parser": {"target": ["--lib"], "filter": "call_dispatch", "minimum_tests": 5},
+    "dispatch-writer": {"target": ["--bin", "mct-daemon"], "filter": "call_dispatch", "minimum_tests": 4},
+    "sqlite-rollback": {"target": ["--test", "mother_restart"], "filter": "sqlite_rollback", "minimum_tests": 2}
+  }
+}

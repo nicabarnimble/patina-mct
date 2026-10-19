@@ -4,9 +4,12 @@ This page is for a reviewer, human or agent, who has the repository and nothing
 else. Read it first. It tells you what MCT is, where the rules are written, what
 is built and what is only decided, and how to report what you find.
 
-Baseline: `main` at `4330876`, plus the ledger-first-call-recovery review
-branch. See [SECURITY-BOUNDARIES.md](SECURITY-BOUNDARIES.md) for the exact
-limits of the security claims below.
+Baseline: `main` at `4330876`, plus ledger-first-call-recovery (`ba685af`) and
+local completion work on `feat/finish-mct-federation`. See
+[FINISH.md](FINISH.md) for the bounded 4–6-Mother completion checklist and
+executable check. Passing implemented proofs does not mean release-ready.
+See [SECURITY-BOUNDARIES.md](SECURITY-BOUNDARIES.md) for the exact limits of the
+security claims below.
 
 ## What MCT is
 
