@@ -38,8 +38,10 @@ D-16 intentionally provides no in-epoch revocation or replacement of the
 recovery grant. Lost recovery custody does not revoke still-valid day-to-day
 keys, but removes the recovery path. Compromise is different: there is no
 implemented way to retire the stolen recovery credential within that history.
-The owner must explicitly accept epoch retirement or approve a different
-recovery/rotation design before relying on this operationally.
+D-54 now approves a bounded Voice-bound guardian replacement path, but it is
+not implemented. Until its canonical enrollment/recovery and operational proofs
+exist, the runtime still has this limitation. D-54 does not recover compromised
+hosts or lost canonical history.
 
 `key-manage` is root-like when it can issue broad grants: denying a direct
 route does not eliminate the indirect authority to issue a key for that route.
@@ -56,7 +58,8 @@ in isolation.
 
 ## Decisions still required before admin cutover
 
-1. Recovery-key compromise response and custody/backup drill.
+1. D-54 settles recovery policy; implementation and custody/backup drills remain
+   required evidence, not additional permission inferred from tests.
 2. Issuance authority: node-wide versus resource-scoped administration, maximum
    issuable rights/expiry, and the bootstrap exception.
 3. Portable Child handle: bearer versus recipient-bound proof, issuer/epoch,

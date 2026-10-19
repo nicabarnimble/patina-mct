@@ -1,14 +1,31 @@
 # Finish-line owner gates
 
-**Status: proposed choices, not ratified.** These are decisions already called
+**Status: recovery gate ratified in D-54; other choices remain pending.**
+These are decisions already called
 out by `SECURITY-BOUNDARIES.md`, `OPEN-QUESTIONS.md`, and D-52, not an expansion
 of the finish line. The owner requested completion and a push only when all
 checks are green. That is not permission to waive the completion inventory or
 silently replace settled authority contracts.
 
-## Recommended security choices requiring confirmation
+## Active recovery design update (D-53)
 
-1. **Recovery compromise means retiring the Mother.** Keep D-16: no in-history
+The owner has requested guardian recovery receive active attention during this
+multi-Mother completion effort, informed by Signal, Iroh, and Argent research.
+[guardian-recovery-v1.md](guardian-recovery-v1.md) is now ratified by D-54:
+Voice-bound, same-Voice 2-of-3 guardian recovery with explicit enrollment,
+delays, quorum cancellation, and preserved canonical history. The original
+retirement-only recommendation below is superseded for this enrolled path.
+The runtime still enforces D-16 until implementation; the completion obligation
+remains open. Other owner gates remain pending except for recovery-specific
+choices explicitly settled by D-54.
+
+Remote macOS validation will be handed off to **Devin**, not performed through
+assumed direct host access here. Approved hosts/actions and returned evidence
+still need to be specified; this does not authorize deployment.
+
+## Original security recommendations requiring confirmation
+
+1. **Historical proposal: retirement only (superseded in scope by D-54).** Keep D-16: no in-history
    revocation/replacement of the recovery grant. Lost recovery custody leaves
    no recovery path; existing valid day-to-day grants are not automatically
    revoked. If recovery custody is compromised, stop and retire that identity,
@@ -54,7 +71,7 @@ silently replace settled authority contracts.
    action, not an ongoing alternate admin interface.
 
 Approval should name any changes to these recommendations before implementation.
-None is marked decided or complete by this document.
+Only gate 1 has been decided by D-54; no gate is marked implemented here.
 
 ## Canonical-authority implementation boundary
 

@@ -7,7 +7,7 @@
     {"id": "administration", "status": "open", "title": "Admin issuance ceilings, signature policy, Iroh transport and hard removal of old admin paths", "proofs": [], "evidence": []},
     {"id": "canonical-authority", "status": "open", "title": "Child/peer authority reconstructs from canonical facts, not surviving configuration", "proofs": [], "evidence": []},
     {"id": "final-admission", "status": "open", "title": "Final Child/effect admission ordering and explicit task/invocation/effect recovery boundaries", "proofs": [], "evidence": []},
-    {"id": "key-recovery", "status": "decision_required", "title": "Owner-reviewed key loss/compromise response without silently replacing the settled recovery-grant contract", "proofs": [], "evidence": []},
+    {"id": "key-recovery", "status": "open", "title": "D-54 Voice-bound 2-of-3 guardian enrollment, delayed recovery, cancellation, restart and safe resumption", "proofs": [], "evidence": []},
     {"id": "fleet-operations", "status": "open", "title": "Provision, inspect, revoke, shutdown, quarantine, recover and upgrade multiple instances on supported hosts", "proofs": [], "evidence": []},
     {"id": "distributed-failures", "status": "open", "title": "Multi-host partitions, stale grants, lost responses, retry correlation and rolling upgrades", "proofs": [], "evidence": []},
     {"id": "useful-workflow", "status": "open", "title": "Real artifact-producing workflow with independently enforced exact-artifact publication approval", "proofs": [], "evidence": []},

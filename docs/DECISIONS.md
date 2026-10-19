@@ -213,7 +213,9 @@ All six were locked on 2026-10-14 in the admin-keys design. Full text:
 ### D-16 Losing the recovery key is a lockout
 
 - **Date:** 2026-10-14 to 2026-10-15 (exact day not recorded).
-- **Status:** decided; the "nothing revokes the recovery grant" rule is built (#48, #51).
+- **Status:** historical contract, built (#48, #51); D-54 explicitly amends the
+  absolute no-replacement rule for enrolled Voice-bound guardian recovery.
+  Until that path is built, the existing runtime still enforces lockout.
 - **Decision:** a day-to-day key cannot revoke or replace the recovery key. If
   the recovery secret is lost, that Mother stays unadministrable for the rest of
   the epoch. Wiping the ledger makes a new Mother; it is not a way back in.
@@ -468,6 +470,9 @@ All six were locked on 2026-10-14 in the admin-keys design. Full text:
 - **2026-10-19 scope clarification (D-52):** finishing direct federation across
   4–6 independent Mothers is now a release target. The exclusions above still
   apply; independent per-Mother ledgers do not imply a shared/replicated ledger.
+- **2026-10-19 design clarification (D-53):** guardian recovery is now under
+  active completion design, not an indefinitely deferred topic. Other scale
+  exclusions remain; a guardian runtime contract is not yet ratified.
 
 ### D-39 No allow-by-default egress
 
@@ -497,7 +502,9 @@ All six were locked on 2026-10-14 in the admin-keys design. Full text:
 
 ### D-41 Recovery through a quorum of Mothers
 
-- **Status:** future, multi-Mother work.
+- **Status:** originally future; D-53 brought this into active design and D-54
+  ratifies bounded Voice-bound guardian recovery for this release. Not built.
+  The historical paths below are alternatives, not the D-54 implementation.
 - **Paths:** (1) Signal-style delayed visible reset: about seven days, every
   admin device warned, cancellable. (2) Argent-style guardian quorum of Mothers.
   FROST is classical-only and there is no threshold ML-DSA, so a FROST quorum
@@ -624,3 +631,71 @@ All six were locked on 2026-10-14 in the admin-keys design. Full text:
   new branch/clone and executable check. [FINISH.md](FINISH.md) tracks all exit
   obligations; the first bounded implementation contract is
   [federation-finish/SPEC.md](../layer/surface/build/feat/federation-finish/SPEC.md).
+- **Subsequent owner direction (D-53):** reconsider the guardian-recovery
+  exclusion during this completion effort. This authorizes active design;
+  protocol and release-obligation amendments must be explicit before building.
+
+### D-53 Bring guardian recovery into active multi-Mother completion design
+
+- **Date:** 2026-10-19.
+- **Status:** owner-directed design scope; concrete policy proposed, not built.
+- **Decision:** investigate and shape guardian recovery now alongside finishing
+  multiple Mothers, rather than parking it at an indefinite future milestone.
+  Lean on researched Signal, Iroh, and Argent/Argent X patterns. The owner asks
+  the assistant to recommend the concrete design.
+- **Boundary:** this revises D-41's deferral and D-52's exclusion for design
+  consideration. It does not ratify a quorum threshold, delay, cancellation
+  rule, runtime root replacement, or restoration of a destroyed/compromised
+  host. D-16 remains the runtime contract until explicitly amended. No work
+  takeover, shared ledger, implicit guardian rights for peers, or production
+  deployment is authorized.
+- **Recommendation under review:** recovery-only guardians for an intact,
+  trusted Mother, locally committed recovery transitions, explicit prior
+  appointment, and separate hybrid approvals. Target inclusion in this effort
+  through a bounded slice, not by claiming federation tests prove recovery.
+- **Source:** owner discussion following Signal/Iroh and Argent research;
+  [guardian-recovery-v1.md](design/guardian-recovery-v1.md),
+  [guardian-recovery-research.md](design/guardian-recovery-research.md), and
+  [recovery-signal-iroh-research.md](design/recovery-signal-iroh-research.md).
+- **Follow-through:** D-54 ratifies the concrete first-gate contract following
+  the Voice history review; D-53's pending-policy wording above is historical.
+
+### D-54 Voice-bound guardian recovery in the completion release
+
+- **Date:** 2026-10-19.
+- **Status:** decided, not built. Owner explicitly approved the complete
+  first-decision contract and requested implementation.
+- **Decision:** adopt [guardian-recovery-v1.md](design/guardian-recovery-v1.md):
+  one administrative owner Voice per Mother, stable Voice identity separate
+  from transport and credentials, explicit same-Voice bindings, and 2-of-3
+  explicitly appointed/accepting guardian Mothers with distinct hybrid keys.
+  Recovery changes only the affected Voice–Mother administrative binding.
+- **Enrollment:** initial activation requires current-owner authorization and
+  all three guardian acceptances. Later roster changes/removal/disablement
+  require the current owner and existing quorum, acceptance by added guardians,
+  and a 24-hour delay. No roster edits during recovery. A peer or matching
+  Voice label is not a guardian; old Patina UID files are not identity proofs.
+- **Recovery:** target-local canonical maintenance transition; exact replacement
+  keys with proof of possession; separate hybrid quorum signatures; 24-hour
+  minimum delay, seven-day completion window, short-lived approvals (maximum
+  ten minutes), and a fresh completion quorum. No unverifiable offline wait.
+  The old root can alarm but cannot unilaterally veto; cancellation uses quorum.
+- **Completion:** atomically replace the root, advance authority, consume the
+  recovery request, and invalidate old day grants without erasing history.
+  Restore administrative access first; require explicit approval of the exact
+  authority snapshot before ordinary work resumes.
+- **Amendments:** supersedes D-16 only for this explicitly enrolled path, brings
+  D-41 into implementation scope, and removes D-52's guardian exclusion for this
+  bounded release. Ordinary admin revocation remains unable to replace the root.
+  No usable backups/quorum still means lockout. Host/endpoint compromise,
+  destroyed canonical state, or unverifiable continuity require separate
+  restoration proof or explicit quarantine/retirement, not invented recovery.
+- **Limits:** no Child takeover, shared ledger, global Voice-key rotation,
+  guardian co-signing of ordinary work, or claim that hybrid signatures make
+  Iroh transport post-quantum-secure. Two colluding guardians have recovery power;
+  shared administrative custody weakens independence. Other owner gates remain
+  pending except where this contract explicitly settles recovery behavior.
+- **Evidence obligation:** implement through bounded specs, strict replay and
+  negative/crash/race proofs, then real-process and Devin-run disposable-host
+  drills. Keep `key-recovery` open until the complete path has real evidence.
+  This approval does not authorize an early push, merge, or live deployment.

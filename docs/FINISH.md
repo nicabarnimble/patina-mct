@@ -30,9 +30,17 @@ open. No permanent failing completion job is added to ordinary CI.
 
 [finish-owner-gates.md](design/finish-owner-gates.md) proposes explicit choices
 for recovery compromise, issuance ceilings, signature/legacy handling,
-recipient-bound handles, and trusted supervisor lifecycle. They remain pending
-owner confirmation; the implementation must not guess at them. Multi-host
+recipient-bound handles, and trusted supervisor lifecycle. Recovery is ratified in D-54; the other gates remain pending owner confirmation
+except for recovery-specific choices explicitly settled there. Multi-host
 partition and upgrade evidence also requires approved disposable test hosts.
+Remote macOS execution is to be handed off to Devin with explicit actions and
+required evidence, not assumed direct access from this session.
+
+D-54 ratifies [guardian-recovery-v1.md](design/guardian-recovery-v1.md) for this
+completion effort: same-Voice 2-of-3 recovery of an administrative OwnerBinding.
+This supersedes retirement-only policy for the explicitly enrolled path, not
+for compromised hosts or missing canonical history. Implementation and release
+proofs remain open; the completion inventory remains red.
 
 The owner requested pushing `feat/finish-mct-federation` to `origin` only when
 complete. Run the full `release` check before that push; do not substitute an
@@ -92,8 +100,9 @@ Status: `keyed-retry-fence` is implemented on the inherited branch;
 - Settle issuance ceilings and signature enforcement, implement authenticated
   Iroh administration, and remove the old bypass paths in the same cutover.
 - Prove bootstrap, expiry, delegation, revocation, and no resurrection.
-- Resolve or explicitly accept the current recovery-key loss/compromise
-  boundary. Do not silently make the irrevocable recovery grant replaceable.
+- Implement D-54's explicit Voice-bound guardian recovery exception, preserving
+  ordinary-admin denial of root replacement, loss/compromise boundaries,
+  canonical enrollment, delayed quorum recovery and exact-snapshot resumption.
 
 Status: `administration`, `key-recovery`. Existing settled decisions stay in
 force until explicitly amended. A completion request is not approval of an
@@ -125,8 +134,9 @@ Status: `useful-workflow`, `release-evidence`.
 ## Excluded, not silently deferred blockers
 
 No consensus, shared/replicated ledger, HA takeover, cross-Vision federation,
-arbitrary multi-hop routing, guardian quorum, cluster scheduler, full Pi WASM
-port, or every proposed Toy. Existing preopen lifetime, secret-value-return and
+arbitrary multi-hop routing, cluster scheduler, full Pi WASM port, or every
+proposed Toy. D-54 explicitly includes bounded Voice-bound guardian recovery;
+it does not authorize cluster consensus, takeover, or shared state. Existing preopen lifetime, secret-value-return and
 application/sandbox boundaries remain documented limits, not stronger claims.
 
 The finish line is the inventory above. Adding another architecture programme

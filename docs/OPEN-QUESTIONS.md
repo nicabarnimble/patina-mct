@@ -122,16 +122,18 @@ D-52 now includes direct federation of 4–6 independent Mothers in the completi
 target. The local branch proves six separate processes with distinct identities
 and policy counters, receiver revocation, and independent work during peer loss.
 This is not a shared ledger, takeover, quorum, or multi-host release proof.
-Clustering/standby and guardian recovery remain outside scope (D-38/D-41).
-See [FINISH.md](FINISH.md) for the remaining operations and failure tests.
+Clustering/standby remain outside scope. D-54 explicitly brings Voice-bound
+guardian recovery into this release; its policy is settled and implementation
+is open. See [FINISH.md](FINISH.md) for remaining operations and failure tests.
 
 ## 11. Remaining architecture boundaries
 
 The review identified concrete decisions needed before broader implementation:
 
-- [Current security boundaries](SECURITY-BOUNDARIES.md): recovery-key compromise,
-  admin issuance ceilings/resource scopes, portable handle semantics, trusted
-  supervisor lifecycle, and signature/rollback trust.
+- [Current security boundaries](SECURITY-BOUNDARIES.md): admin issuance
+  ceilings/resource scopes, portable handle semantics, trusted supervisor
+  lifecycle, and signature/rollback trust. Recovery policy is settled by D-54;
+  see its ratified contract, not the superseded retirement-only proposal.
 - [Durable task boundary proposal](design/durable-task-boundary.md): task versus
   invocation versus effect identity, unknown-outcome recovery, checkpoint and
   crash semantics, deterministic inputs, result retention, and code upgrades.
