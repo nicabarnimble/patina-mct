@@ -118,9 +118,12 @@ ledger would be failover of a Child's work, which (c) forbids.
 
 ## 10. Multi-Mother
 
-Future scale work, not planned now (D-38). Nothing to decide yet. Known
-constraints for when it comes: per-Mother ledgers versus (c), and a FROST
-guardian quorum not covering the ML-DSA half.
+D-52 now includes direct federation of 4–6 independent Mothers in the completion
+target. The local branch proves six separate processes with distinct identities
+and policy counters, receiver revocation, and independent work during peer loss.
+This is not a shared ledger, takeover, quorum, or multi-host release proof.
+Clustering/standby and guardian recovery remain outside scope (D-38/D-41).
+See [FINISH.md](FINISH.md) for the remaining operations and failure tests.
 
 ## 11. Remaining architecture boundaries
 
@@ -139,8 +142,9 @@ The review identified concrete decisions needed before broader implementation:
   bounded lifetime of already-admitted capabilities (D-G7).
 
 These are proposed clarification/implementation boundaries, not new owner
-rulings. Capability checks alone do not provide general information-flow
-security.
+rulings. [Finish-line owner gates](design/finish-owner-gates.md) collects concrete
+recommended choices for confirmation before the admin/authority cutover.
+Capability checks alone do not provide general information-flow security.
 
 ## 12. Smaller open items
 

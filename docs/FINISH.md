@@ -26,6 +26,18 @@ through the workspace suite. Tier 0 is allowed to pass during development; the
 separate **completion** check deliberately remains red while obligations are
 open. No permanent failing completion job is added to ordinary CI.
 
+## Current owner and environment gates
+
+[finish-owner-gates.md](design/finish-owner-gates.md) proposes explicit choices
+for recovery compromise, issuance ceilings, signature/legacy handling,
+recipient-bound handles, and trusted supervisor lifecycle. They remain pending
+owner confirmation; the implementation must not guess at them. Multi-host
+partition and upgrade evidence also requires approved disposable test hosts.
+
+The owner requested pushing `feat/finish-mct-federation` to `origin` only when
+complete. Run the full `release` check before that push; do not substitute an
+ordinary passing Tier-0 run or waive open inventory requirements.
+
 ## Bounded deployment contract
 
 - Each Mother owns a distinct identity/key, exclusive ledger writer, runtime
