@@ -61,13 +61,13 @@ exit_criteria:
     checked: false
     verify: Inspect attribution.json durability_classes and the profile report Durability-class accounting table.
   - id: workspace-validation
-    text: Every phase commit passes workspace tests, warnings-denied all-target Clippy, and Tier 0; final close-out also passes Allium, this spec check, and diff checking under the recorded flake protocol.
+    text: Every phase commit passes workspace tests, warnings-denied all-target Clippy, and Tier 0; final close-out also passes this spec check and diff checking under the recorded flake protocol.
     checked: false
-    verify: cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh && allium check layer/allium && patina spec check perf-phase-0 --json && git diff --check
-  - id: map-waiver
-    text: Close-out records the map tend-or-waiver disposition; the expected waiver says this phase adds measurement evidence over existing contracts, no invariant or authority surface, and therefore no LEDGER row.
+    verify: cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && ./scripts/ci-tier0.sh && patina spec check perf-phase-0 --json && git diff --check
+  - id: historical-map-waiver
+    text: Close-out records that the evidence-only phase makes no authority or behavioral change and therefore requires no decision, active-slice, or Track 3 amendment; frozen historical Allium maps remain unchanged.
     checked: false
-    verify: Inspect the SPEC Phase 0 close-out evidence Map-tend waiver subsection and confirm git diff ead8796d5143d0f9da623057dadc5c920c47bf2b..HEAD -- layer/allium layer/surface/build/spec-drift-audit/track3/LEDGER.md is empty.
+    verify: Inspect the SPEC Phase 0 close-out evidence governance-waiver subsection and confirm git diff ead8796d5143d0f9da623057dadc5c920c47bf2b..HEAD -- layer/allium layer/surface/build/spec-drift-audit/track3/LEDGER.md is empty.
 ---
 
 # feat: MCT Perf Phase 0 — profile the covered revision
@@ -241,15 +241,21 @@ A failed test is rerun in isolation. If it passes isolated, the verbatim first-r
 Final close-out additionally runs:
 
 ```bash
-allium check layer/allium
 patina spec check perf-phase-0 --json
 git diff --check
 git diff ead8796d5143d0f9da623057dadc5c920c47bf2b..HEAD -- crates/
 ```
 
-## Map tend-or-waiver at G1
+## Governance waiver at G1
 
-**Proposed waiver:** no `mct-product-map.allium` tend and no Track 3 LEDGER attribution row. This phase produces measurement evidence over already-landed routing, authority-freshness, Child lifecycle, immutability, local-ingress, and durability contracts. It adds no structural obligation, entity, surface, authority source, durability choice, or behavior. This mirrors the post-R3 credibility evidence-only waiver. If implementation or findings would change an invariant, authority semantic, observation law, or durability behavior, the phase stops instead of tending the map inside a profiling slice.
+**Proposed waiver:** no decision, active-slice, frozen-map, or Track 3 LEDGER
+amendment. This phase produces measurement evidence over already-landed
+routing, authority-freshness, Child lifecycle, immutability, local-ingress, and
+durability contracts. It adds no structural obligation, entity, surface,
+authority source, durability choice, or behavior. If implementation or
+findings would change an invariant, authority semantic, observation law, or
+durability behavior, the phase stops for an explicit decision rather than
+changing a frozen historical map inside a profiling slice.
 
 ## Gate G1
 

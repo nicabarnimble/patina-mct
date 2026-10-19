@@ -10,7 +10,8 @@ references: [spec-driven-design, oxidized-knowledge]
 
 # MCT Session Capture
 
-**Purpose:** Preserve why MCT decisions were made, which git range they cover, and which Allium/Slate/belief artifacts changed.
+**Purpose:** Preserve why MCT decisions were made, which git range they cover,
+and which decision, slice, work, or belief artifacts changed.
 
 ---
 
@@ -23,12 +24,13 @@ They capture:
 - user intent;
 - questions and disagreements;
 - evidence reviewed;
-- Allium and Slate changes;
+- decision, slice-specification, and Slate changes;
 - beliefs created or revised;
 - git range and commits;
 - handoff context for the next run.
 
-Sessions are evidence. They are not implementation authority by themselves. Non-trivial code still needs Allium/Slate scope.
+Sessions are evidence. They are not implementation authority by themselves.
+Non-trivial code still needs a settled decision and bounded work scope.
 
 ## Runtime-Specific Workflow
 
@@ -43,8 +45,8 @@ Session updates should mention:
 
 - active git range;
 - files changed;
-- Allium anchors touched;
-- Slate work items touched;
+- decisions or active slice specifications touched;
+- Slate work items touched, when used;
 - beliefs created/used;
 - validation commands run;
 - recommended next step.
@@ -63,7 +65,8 @@ Use wikilinks where possible so Patina scrape can trace the graph:
 Use code formatting for paths:
 
 ```text
-`layer/allium/mct-product-map.allium`
+`docs/DECISIONS.md`
+`layer/surface/build/feat/<slice>/SPEC.md`
 `layer/slate/work/mct-iroh-substrate/work.toml`
 ```
 
@@ -73,8 +76,8 @@ Good:
 
 ```text
 Defined mct/call/0 as a peer transport envelope around semantic MctCall.
-Updated Allium anchors MctCallProtocol* and Slate work mct-call-envelope.
-Ran allium check and patina scrape. Next: implement mct-kernel records.
+Updated the active call-envelope slice and its executable proof plan.
+Ran targeted tests and repository checks. Next: implement mct-kernel records.
 ```
 
 Weak:

@@ -177,4 +177,4 @@ If the sentence is vague, split the module or keep it as explicit glue rather th
 - [Adapter Pattern](./adapter-pattern.md)
 - [Spec-Driven Design](./spec-driven-design.md)
 - [MCT Build Boundaries](./mct-build-boundaries.md)
-- [MCT product map](../allium/mct-product-map.allium)
+- [`docs/DECISIONS.md`](../../docs/DECISIONS.md)

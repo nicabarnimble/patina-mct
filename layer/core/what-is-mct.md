@@ -11,8 +11,9 @@ references: [mct-build-boundaries, spec-driven-design, adapter-pattern, safety-b
 # What Is MCT
 
 **Purpose:** The narrative answer to "what is MCT?" for humans reading this
-repo. The semantic law is `layer/allium/mct-product-map.allium`; this document
-explains it. Where they disagree, the Allium spec wins.
+repo. Settled decisions live in `docs/DECISIONS.md`; active ratified slice
+specifications govern current work. This document explains those decisions.
+The frozen maps under `layer/allium/` are historical evidence, not current law.
 
 ---
 
@@ -186,10 +187,13 @@ Mothers—not as a second call model or local Child runtime.
 
 ## Where the truth lives
 
-- Semantic law: `layer/allium/mct-product-map.allium`
+- Settled intent and status: `docs/DECISIONS.md`
+- Current work boundaries: active ratified specifications under
+  `layer/surface/build/feat/`
 - Build discipline: [MCT Build Boundaries](./mct-build-boundaries.md)
-- Design rationale narrative: `layer/sessions/` (esp. the 20260529 Allium
-  foundation elicitation)
+- Built reality: Rust source plus executable tests
+- Design rationale narrative: `layer/sessions/`
+- Frozen historical behavior maps: `layer/allium/`
 - Comparison against `patinaMother`:
   `layer/surface/mct-vs-patina-mother-deep-dive-report.html`
 - Transitional terms for comparative migration work:

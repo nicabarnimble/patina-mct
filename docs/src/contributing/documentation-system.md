@@ -7,12 +7,15 @@ render static HTML; presentation code never owns product knowledge.
 
 The documentation system preserves these boundaries:
 
-1. Allium specifications define product semantics.
-2. Rust source defines implementation and public API behavior.
+1. Settled decisions and active ratified slice specifications define intended
+   product behavior.
+2. Rust source and executable tests establish implementation behavior and
+   rustdoc defines public APIs.
 3. Authored files under `docs/src/` explain supported product behavior.
 4. Generated references project implementation-owned CLI, configuration,
    protocol, and schema surfaces.
-5. Agent traces, Patina sessions, events, and Git history provide evidence.
+5. Agent traces, Patina sessions, events, Git history, and frozen Allium maps
+   provide historical evidence.
 
 Generated trace narratives cannot override authored documentation or code.
 When sources disagree, contributors resolve the disagreement at its authority

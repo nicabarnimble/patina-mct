@@ -6,8 +6,9 @@ close the gap. Update the checkboxes as phases land; each phase gets its own
 task file under `layer/surface/build/feat/<name>/` following the proven
 PHASE-file pattern from `layer/surface/build/audit-remediation/`.
 
-The vision this measures against: `layer/core/what-is-mct.md` and
-`layer/allium/mct-product-map.allium`.
+The vision this measures against: `docs/DECISIONS.md`,
+`layer/core/what-is-mct.md`, and the active ratified build slices. The former
+Allium product map is frozen historical evidence.
 
 ---
 

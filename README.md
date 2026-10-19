@@ -220,5 +220,7 @@ The `layer/` directory is the project's knowledge base:
   the anatomy of a peer call, multi-node Visions, and what MCT is not.
 - [Dependable Rust](layer/core/dependable-rust.md) — the code discipline this
   workspace is built under.
-- `layer/allium/mct-product-map.allium` — the semantic specification; where
-  prose and spec disagree, the spec wins.
+- [`docs/DECISIONS.md`](docs/DECISIONS.md) — settled product decisions and
+  their built, proposed, or deferred status.
+- `layer/allium/` — frozen historical behavior maps retained for provenance;
+  they are no longer a development gate or current authority source.

@@ -66,7 +66,8 @@ docs/
 └── generated/
 ```
 
-The final layout must account for the existing `docs/allium-training.md` before moving or replacing anything.
+The original `docs/allium-training.md` compatibility page was retired under
+D-50 after the documentation-system migration completed.
 
 ## Open trace contract
 
@@ -244,7 +245,8 @@ Transparency is the default. Safety checks must prevent accidental credential pu
 - [x] Ratify stable trace identifier format after reviewing the implemented contract.
 - [x] Ratify archive, manifest, normalization, and redaction contracts after reviewing the schemas.
 - [x] Ratify authored documentation information architecture after reviewing the initial book.
-- [x] Keep `docs/allium-training.md` as a compatibility pointer and maintain its content in `docs/src/contributing/allium-training.md`.
+- [x] Retire the Allium training page and compatibility pointer under D-50;
+  Git preserves their former content.
 
 ### Phase 2: minimal static documentation
 

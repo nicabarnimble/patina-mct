@@ -36,7 +36,7 @@ Do not hide multiple responsibilities behind names like "manager", "runtime", or
 
 ```text
 layer/core/              build laws and project patterns
-layer/allium/            product/domain behavior
+layer/allium/            frozen historical behavior maps
 layer/slate/work/        executable work and proof plans
 layer/surface/           evidence, beliefs, product notes
 layer/sessions/          discussion and git-range context
@@ -160,4 +160,4 @@ Each part has one job. The function composes them.
 - [Dependable Rust](./dependable-rust.md)
 - [Adapter Pattern](./adapter-pattern.md)
 - [MCT Build Boundaries](./mct-build-boundaries.md)
-- [MCT product map](../allium/mct-product-map.allium)
+- [`docs/DECISIONS.md`](../../docs/DECISIONS.md)

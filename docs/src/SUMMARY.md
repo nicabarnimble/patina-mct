@@ -21,7 +21,6 @@
 
 - [Contributing](contributing/index.md)
   - [Documentation system](contributing/documentation-system.md)
-  - [Allium training](contributing/allium-training.md)
 - [Provenance](provenance/index.md)
   - [Open trace contract](provenance/open-trace-contract.md)
   - [Published sessions](provenance/sessions.md)

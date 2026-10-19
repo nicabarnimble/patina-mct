@@ -46,9 +46,11 @@ shipped capability.
 The published book explains the product. It does not replace the sources that
 govern implementation:
 
-1. `layer/allium/mct-product-map.allium` is semantic law.
-2. Rust source implements that law and rustdoc describes public APIs.
-3. Authored Markdown explains supported use and operation.
-4. Generated references project implementation-owned surfaces.
-5. Traces, sessions, and event logs are public evidence, not authority by
-   themselves.
+1. `docs/DECISIONS.md` records settled product decisions and their status.
+2. Active ratified slice specifications define the boundary of current work.
+3. Rust source and executable tests establish what is built; rustdoc describes
+   public APIs.
+4. Authored Markdown explains supported use and operation.
+5. Generated references project implementation-owned surfaces.
+6. Traces, sessions, event logs, and the frozen Allium maps are historical
+   evidence, not current authority by themselves.

@@ -18,7 +18,8 @@ timestamps. Entries whose only source was the owner's chat with an agent say
 so; those are the ones most worth confirming.
 
 Abbreviations: "(a)–(f)" are the six locked decisions in
-[design/admin-keys.md](design/admin-keys.md#decided). "Product map" is
+[design/admin-keys.md](design/admin-keys.md#decided). Historical entries that
+say "Product map" refer to the now-frozen
 [`layer/allium/mct-product-map.allium`](../layer/allium/mct-product-map.allium).
 
 ---
@@ -562,3 +563,22 @@ All six were locked on 2026-10-14 in the admin-keys design. Full text:
 - **Status:** built.
 - **Decision:** the repo is private, so Scorecard cannot publish results. The
   workflow is gone.
+
+### D-50 Allium retired from the active development path
+
+- **Date:** 2026-10-18.
+- **Status:** built.
+- **Decision:** Allium is no longer semantic law, a required development
+  phase, or a CI dependency. Existing files under `layer/allium/` are frozen
+  in place as historical evidence so prior sessions, audits, and commits keep
+  valid references. Settled decisions, active ratified slice specifications,
+  standing core doctrine, and executable tests now carry the active product
+  contract. Restoring Allium requires a new explicit governance decision.
+- **Why:** the repository now has a durable decision log, explicit built versus
+  proposed status, bounded slice specifications, and extensive executable
+  proof. The Allium checker remained pre-release, did not evaluate much of the
+  prose contract corpus, and returned no findings over the large MCT maps;
+  mandatory Allium workflows added ceremony without enough unique signal.
+- **Rejected:** immediate deletion of the maps and history. Git and the frozen
+  files preserve the prior model while removing it from the critical path.
+- **Source:** owner decision following the PR #70 design-history review.

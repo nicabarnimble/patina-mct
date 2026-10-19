@@ -48,7 +48,7 @@ claim of exhaustive vulnerability absence.
 ## Dependency-audit policy
 
 GitHub CI installs exactly `cargo-audit 0.22.2`. Fmt, Clippy, tests, the
-Allium/vocabulary/release checks, and `cargo audit` are separate jobs in
+vocabulary/release/documentation checks, and `cargo audit` are separate jobs in
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml), so one failure does not
 hide the others. [`scripts/ci-tier0.sh`](scripts/ci-tier0.sh) still runs the
 same checks; `audit` is one of its subcommands.

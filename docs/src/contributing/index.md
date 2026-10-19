@@ -1,8 +1,8 @@
 # Contributing
 
-Before changing MCT, read the relevant material under `layer/`. Product
-behavior is scoped by Allium and active build specifications; code alone does
-not redefine the product.
+Before changing MCT, read `docs/DECISIONS.md` and the relevant material under
+`layer/`. Product behavior is scoped by settled decisions and active ratified
+build specifications; code alone does not redefine the product.
 
 Run the standard checks before landing a change:
 

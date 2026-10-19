@@ -33,8 +33,11 @@ candidate execution.
 
 ## Knowledge boundaries
 
-- Allium defines semantic law.
-- Rust implements it.
+- Settled decisions and active ratified slice specifications define intended
+  behavior.
+- Rust and executable tests establish what is built.
 - `layer/` retains internal doctrine, specifications, evidence, and sessions.
+- Frozen Allium maps remain historical provenance and are not a development
+  gate.
 - This book explains supported product behavior.
 - [Provenance](../provenance/index.md) connects explanations to public evidence.

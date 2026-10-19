@@ -38,15 +38,10 @@ run_vocabulary() {
   bash scripts/check-comparative-vocabulary.sh
 }
 
-run_allium() {
-  allium check layer/allium
-}
-
 run_specs() {
   local status=0
   run_release || status=1
   run_vocabulary || status=1
-  run_allium || status=1
   return "$status"
 }
 

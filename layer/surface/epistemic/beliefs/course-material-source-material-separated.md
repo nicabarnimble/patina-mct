@@ -3,11 +3,11 @@ type: belief
 id: course-material-source-material-separated
 persona: mct-operator
 facets: [allium, training, documentation, repository-boundaries]
-entrenchment: high
-status: active
-endorsed: true
+entrenchment: low
+status: superseded
+endorsed: false
 extracted: 2026-07-08
-revised: 2026-07-08
+revised: 2026-10-18
 ---
 
 # course-material-source-material-separated
@@ -36,9 +36,12 @@ Course material should live in a dedicated learning repo, while product repos sh
 
 ## Applied-In
 
-- `docs/allium-training.md` in Patina now points learners to https://github.com/nicabarnimble/learn-allium while keeping `layer/allium/mother/*.allium` as source material.
-- `docs/allium-training.md` in MCT now points learners to https://github.com/nicabarnimble/learn-allium while linking `layer/allium/mct-product-map.allium`, `scripts/install-allium-ci.sh`, `scripts/ci-tier0.sh`, and `layer/core/spec-driven-design.md` as real-world references.
+- Historical: `docs/allium-training.md` once pointed to the standalone
+  curriculum. MCT retired that pointer and its Allium development dependency
+  under D-50 while preserving the former artifacts in Git.
 
 ## Revision Log
 
 - 2026-07-08: Created — metrics computed by `patina scrape`
+- 2026-10-18: Superseded by D-50 after Allium was removed from MCT's active
+  development and CI path.

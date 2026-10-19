@@ -18,6 +18,10 @@ Goal: build the next operational layer after the v0 `patinaMother` replacement b
    - [x] Post-R3 credibility slice landed 2026-07-23: `ASSURANCE.md`/`SECURITY.md` evidence docs with GitHub private vulnerability reporting (`bec8434`), Tier-0 python3>=3.11 dependency removal/guard (`70930dd`), digest-pinned OpenSSF Scorecard workflow (`b4bd807`), and hostile-input fuzz coverage: a standalone cargo-fuzz workspace with `uds_control_request`, `release_archive`, `child_package_manifest`, and `pando_manifest` targets over committed corpora, plus the bounded digest-pinned `fuzz.yml` CI smoke (`79b009f`, `a958b84`, `83c0c99`, `163d6d1`, `fe74ebf`, `b47be97`). Map-tend waiver: no product-map change — the fuzz targets are test evidence over existing landed parse contracts and add no new invariants or authority surfaces.
       - [x] After operator-approved push/merge and the first default-branch Scorecard workflow run, record the initial observed score in `feat/post-r3-credibility/CLOSEOUT.md`: **5.1** at `2026-07-25T02:02:28Z`.
    - [ ] R5/into-the-wild work remains separate: exact publication tag/release, update-channel authority, network acquisition, notarization activation, and 1.0.0 GA are not implied by R3.
+9. [x] Retire Allium from the active development path on 2026-10-18. The
+   existing maps remain frozen historical evidence; decisions, active ratified
+   slices, core doctrine, and executable tests carry the current contract.
+   Tier 0 and contributor workflows no longer install or invoke Allium.
 
 ## Completed: single-hop forwarding
 
