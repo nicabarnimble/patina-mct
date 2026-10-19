@@ -172,7 +172,11 @@ pub(super) fn validate_policy(policy: &GuardianRecoveryPolicyV1) -> Result<(), R
     Ok(())
 }
 
-fn validate_interval(start: &Timestamp, end: &Timestamp, max_ms: u64) -> Result<(), RecoveryError> {
+pub(super) fn validate_interval(
+    start: &Timestamp,
+    end: &Timestamp,
+    max_ms: u64,
+) -> Result<(), RecoveryError> {
     let upper = start
         .checked_add_milliseconds(max_ms)
         .ok_or(RecoveryError::TimeInvalid)?;

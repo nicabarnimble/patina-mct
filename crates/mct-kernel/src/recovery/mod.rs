@@ -7,10 +7,16 @@
 
 mod internal;
 mod lifecycle;
+mod policy;
 pub use lifecycle::{
     GuardianEnrollmentV1, GuardianRecoveryActionV1, GuardianRecoveryCommandV1,
     GuardianRecoveryStateV1, PendingGuardianRecoveryV1, RecoveryChallengeV1, RecoveryClockV1,
     evaluate_guardian_recovery,
+};
+pub use policy::{
+    GuardianPolicyAcceptanceV1, GuardianPolicyApprovalPurposeV1, GuardianPolicyEditV1,
+    GuardianPolicyProposalV1, GuardianPolicyStateV1, PendingGuardianPolicyV1,
+    guardian_policy_approval_message, guardian_policy_state_is_consistent,
 };
 #[cfg(test)]
 mod tests;

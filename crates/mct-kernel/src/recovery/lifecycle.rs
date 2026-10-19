@@ -130,6 +130,8 @@ pub struct GuardianRecoveryStateV1 {
     pub consumed_challenges: BTreeSet<String>,
     pub retired_root_keys: Vec<RecoveryPublicKeyV1>,
     pub maintenance: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_edits: Option<Box<GuardianPolicyStateV1>>,
 }
 
 /// Strict wire commands: empty STRUCT variants deliberately reject extra fields.
@@ -137,6 +139,14 @@ pub struct GuardianRecoveryStateV1 {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GuardianRecoveryActionV1 {
+    ProposePolicy {
+        proposal: Box<GuardianPolicyProposalV1>,
+    },
+    CancelPolicy {
+        owner_signature: Option<RecoverySignatureV1>,
+        approvals: Vec<GuardianRecoveryApprovalV1>,
+    },
+    ActivatePolicy {},
     Enroll {
         enrollment: Box<GuardianEnrollmentV1>,
     },
@@ -239,6 +249,7 @@ pub fn evaluate_guardian_recovery(
             consumed_challenges: BTreeSet::new(),
             retired_root_keys: Vec::new(),
             maintenance: false,
+            policy_edits: None,
         });
     };
     let new_tenure = clock.writer_epoch != current.clock.writer_epoch;
@@ -254,9 +265,25 @@ pub fn evaluate_guardian_recovery(
         .checked_add(1)
         .ok_or(RecoveryError::Malformed)?;
     match &command.action {
+        GuardianRecoveryActionV1::ProposePolicy { proposal } => {
+            super::policy::propose(current, &mut next, proposal, clock)?
+        }
+        GuardianRecoveryActionV1::CancelPolicy {
+            owner_signature,
+            approvals,
+        } => super::policy::cancel(
+            current,
+            &mut next,
+            owner_signature.as_ref(),
+            approvals,
+            clock,
+        )?,
+        GuardianRecoveryActionV1::ActivatePolicy {} => super::policy::activate(&mut next, clock)?,
         GuardianRecoveryActionV1::Enroll { .. } => return Err(RecoveryError::StaleAuthority),
         GuardianRecoveryActionV1::Initiate { request, approvals } => {
-            if next.pending.is_some()
+            if !next.recovery_enabled()
+                || next.pending_policy_edit().is_some()
+                || next.pending.is_some()
                 || next
                     .consumed_request_ids
                     .contains(&request.intent.request_id)
@@ -273,10 +300,15 @@ pub fn evaluate_guardian_recovery(
                     &request.intent.replacement_key,
                 )
                 || next
-                    .enrollment
-                    .guardian_bindings
+                    .guardian_bindings()
                     .iter()
                     .any(|b| shares_key_half(&b.root_key, &request.intent.replacement_key))
+                || next.policy_edits.as_ref().is_some_and(|edits| {
+                    edits
+                        .retired_guardian_keys
+                        .iter()
+                        .any(|key| shares_key_half(key, &request.intent.replacement_key))
+                })
             {
                 return Err(RecoveryError::ReplacementNotFresh);
             }
@@ -313,6 +345,9 @@ pub fn evaluate_guardian_recovery(
                 // The hard deadline never moves; frequent restarts may expire it.
                 pending.wait_origin = clock.clone();
                 pending.challenge = None;
+            }
+            if let Some(pending) = next.policy_edits.as_mut().and_then(|s| s.pending.as_mut()) {
+                pending.wait_origin = clock.clone();
             }
         }
         GuardianRecoveryActionV1::IssueChallenge { challenge } => {

@@ -161,27 +161,3 @@ Capability checks alone do not provide general information-flow security.
   How grants get proposed and approved at scale is unanswered. Only the opening
   of that post was read.
 - Ideas from prior art, none decided: [PRIOR-ART.md](PRIOR-ART.md#ideas-worth-borrowing-not-decided).
-
-## 13. Guardian authority after an authorized disablement
-
-Discovered while implementing D-54 after the canonical lifecycle commit
-`fe579eb`. The active-roster authorization, quorum, delay and cancellation rules
-are settled. The contract does not explicitly define **re-enablement after
-owner + current quorum authorize disablement and its 24-hour delay completes**.
-
-- **Dormant control:** old guardians retain a veto over re-enablement. This avoids
-  owner-only selection of a new roster, but creates an indefinite dependency on
-  keys whose holders may reasonably retire them after approving disablement.
-- **Released control (recommended, not ratified):** disablement explicitly ends
-  the old roster's authority. Retain it only in audit history. Re-enablement
-  requires current owner authorization, acceptance by all three proposed
-  guardians, and a 24-hour delay; no old approvals carry forward.
-
-Released control means a subsequently compromised owner can choose new guardians.
-The old quorum knowingly authorized leaving protection, however; while active,
-owner + quorum could already authorize replacing the whole roster. It avoids
-silently making disabled protection an irreversible guardian dependency.
-
-Do not infer either rule from “initial activation” or “once protection is active.”
-Owner clarification is needed before implementing the disabled/re-enabled states.
-Temporary suspension with retained control would be a distinct operation.

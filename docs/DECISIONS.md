@@ -699,3 +699,20 @@ All six were locked on 2026-10-14 in the admin-keys design. Full text:
   negative/crash/race proofs, then real-process and Devin-run disposable-host
   drills. Keep `key-recovery` open until the complete path has real evidence.
   This approval does not authorize an early push, merge, or live deployment.
+
+### D-55 Disabled guardian protection releases the former roster
+
+- **Status:** ratified by the owner after explicit recommendation; implementation
+  follows the bounded recovery slice. Resolves former open question 13.
+- **Decision:** after current-owner + existing-quorum authorization and the
+  24-hour disablement delay commit, the former roster has no remaining authority.
+  Its records remain audit history, not a dormant veto or a recovery capability.
+- **Re-enablement:** current owner authorization, acceptance by all three
+  proposed guardians, and a fresh 24-hour delay. No old approvals carry forward.
+  Disabled protection is not absent history or permission to reset generations.
+- **Tradeoff accepted:** a subsequently compromised owner may select a new roster;
+  the prior quorum deliberately authorized leaving protection. Avoid permanent
+  dependence on old guardian keys after their holders approved disablement.
+- **Scope:** clarifies D-54 without changing its active-roster quorum, delay or
+  cancellation rules. Temporary suspension with retained guardian control is not
+  implemented by overloading disablement. Other release gates remain open.

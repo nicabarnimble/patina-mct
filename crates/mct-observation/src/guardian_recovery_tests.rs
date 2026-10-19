@@ -1,4 +1,6 @@
 use super::*;
+#[path = "guardian_policy_tests.rs"]
+mod policy_tests;
 use mct_kernel::recovery::GuardianRecoveryActionV1 as Action;
 use mct_kernel::{MctNodeId, recovery::*};
 

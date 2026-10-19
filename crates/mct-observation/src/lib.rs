@@ -743,6 +743,10 @@ pub struct JsonlObservationLedger {
     recovery_status: Option<LedgerRecoveryStatus>,
     authority_tenure: Option<AuthorityWriterTenureV1>,
     recovery_clock_origin: std::time::Instant,
+    // Durability latency is not credit toward a newly accepted 24-hour wait.
+    recovery_wait_offset_ms: u64,
+    #[cfg(test)]
+    recovery_test_ack_delay_ms: u64,
     writer_state: LedgerWriterState,
     authority_replay: std::result::Result<AuthorityReplayV1, String>,
     used_epochs: BTreeSet<String>,
@@ -3522,6 +3526,9 @@ fn open_with_recovery_hook(
         recovery_status,
         authority_tenure: None,
         recovery_clock_origin: std::time::Instant::now(),
+        recovery_wait_offset_ms: 0,
+        #[cfg(test)]
+        recovery_test_ack_delay_ms: 0,
         writer_state: LedgerWriterState::Ready,
         authority_replay: state.authority_replay,
         used_epochs: state.used_epochs,

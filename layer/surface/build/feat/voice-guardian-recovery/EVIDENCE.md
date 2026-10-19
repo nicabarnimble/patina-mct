@@ -105,10 +105,65 @@ not portable release receipts. The source tests and committed corpus reproduce
 these boundaries; regenerate corpus with `MCT_RECOVERY_CORPUS_OUT` and the
 `canonical_recovery_corpus_records_replay` test.
 
+## Slice 3: protected policy edits and D-55
+
+Owner ratified released control after disablement (D-55). Implemented signed
+active-roster edits, delayed disablement, fresh delayed re-enablement, and the
+corresponding cancellation/withdrawal rules in `recovery/policy.rs` and the
+existing exclusive canonical writer. No live ingress has been enabled.
+
+- Active edits require current owner plus old/current quorum. Added or changed
+  guardians accept under both their local owner and dedicated guardian keys.
+- Disabled rosters cannot recover, authorize edits or veto re-enablement. Fresh
+  owner authorization and all three acceptances are required even for the same
+  roster. Existing records and consumed IDs remain, with monotonic generations.
+- Proposal, acceptance, quorum and cancellation use separate purpose-bound
+  transcripts. New members cannot install themselves. Invalid, expired, duplicate,
+  cross-binding, stale, no-op and overflowing-generation proposals deny.
+- Activation/cancellation are serialized facts; rebase restarts the full 24-hour
+  delay. Pending edits exclude recovery, and recovery maintenance excludes edits.
+- Added a writer-owned acknowledgement-latency floor for both policy and recovery
+  waits: time spent writing/syncing acceptance cannot count toward 24 hours after
+  durability acknowledgement. Production rounds conservatively; injected clocks
+  and durability-stall tests do not create an ingress bypass. Reopen always rebases.
+- Guardian-key history prevents reusing those keys as replacement target roots;
+  it is not a permanent ban on reappointing a guardian with fresh consent.
+
+### Results
+
+- Tier-0: **683 passed, 0 failed, 2 existing ignored**; formatting, workspace
+  warnings-denied Clippy, policy checks and audit passed.
+- Completion proofs: **11 groups / 92 passed**, including **35 canonical recovery
+  tests** (18 added in this slice). Completion runner unit tests: **17 passed**.
+- Documentation build, inventory validation and diff check passed.
+- Fuzz smoke: **25,000 runs / 14 seconds, no failure**, with three additional
+  committed policy-edit seeds. The four prior seeds are unchanged.
+- Actual prior revision `fe579eb`, built in a detached disposable worktree,
+  rejected the new canonical policy prefix with `unknown variant propose_policy`.
+  It did not resurrect the historical active roster. The worktree was removed.
+  Reproduce using `scripts/fixtures/guardian-policy-downgrade.rs` as an integration
+  test in that revision's `mct-observation/tests/`, with `MCT_NEW_POLICY_PREFIX`
+  pointing to this revision's committed `fuzz/corpus/guardian_recovery/policy-prefix.json`.
+  Use an isolated Cargo target directory for the old revision.
+
+Crash tests exercise torn frames and complete surviving frames on both sides of
+acknowledgement for proposal, activation, active cancellation, disabled-owner
+withdrawal and clock rebase. Complete frames replay once; incomplete frames retain
+forensics without consuming uncommitted IDs. Tests also cover cancellation versus
+activation ordering, stale votes after restart, preserved admin grants, and policy
+control under the recovered root rather than genesis/retired root credentials.
+
+The first proof-run invocation encountered stale cross-revision build artifacts
+following the old-reader check's reuse of the build cache. After cleaning only
+`mct-kernel`/`mct-observation` artifacts, the complete Tier-0, proof runner and docs
+build were rerun sequentially and passed. No code or test assertion was relaxed.
+Scratch diagnostics: `/tmp/mct-guardian-evidence/slice3-{tests,tier0,proofs,docs,fuzz,downgrade}.log`
+and `slice3-proofs-cache-failure.log`.
+
 ## Still required
 
 Authenticated cross-Mother same-Voice admission and current-binding exchange,
-roster changes/removal/disablement and delayed activation, Iroh-only admin and
+Iroh-only admin and
 restricted recovery serving, final-admission maintenance fencing, canonical
 runtime consumers, real-process quorum/outage fixtures, production parser byte
 limits, and Devin/operator host/custody/upgrade drills. Storage APIs are not a

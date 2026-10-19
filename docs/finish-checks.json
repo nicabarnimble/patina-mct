@@ -14,7 +14,7 @@
     {"id": "release-evidence", "status": "open", "title": "Reviewed deployment matrix, current release artifacts, security/upgrade docs and operator acceptance", "proofs": [], "evidence": []}
   ],
   "proofs": {
-    "recovery-writer": {"package": "mct-observation", "target": ["--lib"], "filter": "guardian_recovery_tests::", "minimum_tests": 17},
+    "recovery-writer": {"package": "mct-observation", "target": ["--lib"], "filter": "guardian_recovery_tests::", "minimum_tests": 35},
     "recovery-runtime-deny": {"target": ["--lib"], "filter": "enrolled_guardian_recovery_ledger_cannot_start_through_legacy_runtime", "minimum_tests": 1},
     "recovery-kernel": {"package": "mct-kernel", "target": ["--lib"], "filter": "recovery::", "minimum_tests": 25},
     "revisions": {"target": ["--bin", "mct-daemon"], "filter": "federation_revision_", "minimum_tests": 3},

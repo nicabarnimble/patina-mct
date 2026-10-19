@@ -9,9 +9,10 @@ pub(super) fn validate_state(state: &AuthorityStateV1) -> std::result::Result<()
         return Ok(());
     };
     recovery.policy.validate().map_err(|e| e.to_string())?;
+    mct_kernel::recovery::guardian_policy_state_is_consistent(recovery)
+        .map_err(|e| e.to_string())?;
     if recovery.binding != recovery.policy.target
         || recovery.binding.root_generation != recovery.retired_root_keys.len() as u64 + 1
-        || recovery.policy.generation != recovery.binding.root_generation
         || recovery.pending.is_some() && !recovery.maintenance
         || !state.admin_key_grants.values().any(|grant| {
             grant.class == AdminKeyGrantClassV1::Recovery
@@ -151,7 +152,10 @@ impl JsonlObservationLedger {
     ) -> AuthorityMutationResultV1 {
         if matches!(
             command.action,
-            Action::RebaseWait {} | Action::IssueChallenge { .. } | Action::Expire {}
+            Action::RebaseWait {}
+                | Action::IssueChallenge { .. }
+                | Action::Expire {}
+                | Action::ActivatePolicy {}
         ) {
             return rejected_mutation(
                 mutation_id,
@@ -159,6 +163,22 @@ impl JsonlObservationLedger {
             );
         }
         self.execute_guardian_recovery_with_clock(mutation_id, command, None)
+    }
+
+    /// Activate a previously authorized policy edit after the writer-owned delay.
+    pub fn activate_guardian_policy(
+        &mut self,
+        mutation_id: String,
+        expected_state: RecoveryDigestV1,
+    ) -> AuthorityMutationResultV1 {
+        self.execute_guardian_recovery_with_clock(
+            mutation_id,
+            GuardianRecoveryCommandV1 {
+                expected_state: Some(expected_state),
+                action: Action::ActivatePolicy {},
+            },
+            None,
+        )
     }
 
     /// Record a new writer tenure conservatively, with zero inherited wait credit.
@@ -252,6 +272,11 @@ impl JsonlObservationLedger {
                 AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
             );
         };
+        let injected_clock = injected.is_some();
+        let starts_wait = matches!(
+            command.action,
+            Action::Initiate { .. } | Action::ProposePolicy { .. } | Action::RebaseWait {}
+        );
         let (wall_time, monotonic_ms) = injected.unwrap_or_else(|| {
             (
                 Timestamp::new(jiff::Timestamp::now().to_string()).expect("system timestamp"),
@@ -261,7 +286,7 @@ impl JsonlObservationLedger {
         let mut clock = RecoveryClockV1 {
             writer_epoch: tenure.fact.authority_epoch.clone(),
             wall_time,
-            monotonic_ms,
+            monotonic_ms: monotonic_ms.saturating_sub(self.recovery_wait_offset_ms),
         };
         // A lost acknowledgement resolves against the exact committed command,
         // not a newly sampled clock. A different payload under the ID conflicts.
@@ -298,6 +323,52 @@ impl JsonlObservationLedger {
                 command_kind: GrantShapingCommandKindV1::GrantChange,
             }],
         };
-        self.execute_authority_mutation_inner(request, |_| Ok(None), true)
+        let result = self.execute_authority_mutation_inner(request, |_| Ok(None), true);
+        let newly_committed = matches!(
+            result,
+            AuthorityMutationResultV1::Committed {
+                resolution: AuthorityMutationResolutionV1::NewlyCommitted,
+                ..
+            } | AuthorityMutationResultV1::CommittedProjectionPending {
+                resolution: AuthorityMutationResolutionV1::NewlyCommitted,
+                ..
+            }
+        );
+        if newly_committed {
+            let waiting = self
+                .cached_replay()
+                .ok()
+                .and_then(|r| r.state.guardian_recovery.as_ref())
+                .is_some_and(|r| r.pending.is_some() || r.pending_policy_edit().is_some());
+            if !waiting {
+                self.recovery_wait_offset_ms = 0;
+            } else if starts_wait {
+                let ack_delay = if injected_clock {
+                    #[cfg(test)]
+                    {
+                        self.recovery_test_ack_delay_ms
+                    }
+                    #[cfg(not(test))]
+                    {
+                        0
+                    }
+                } else {
+                    u64::try_from(
+                        self.recovery_clock_origin
+                            .elapsed()
+                            .as_millis()
+                            .saturating_add(1),
+                    )
+                    .unwrap_or(u64::MAX)
+                    .saturating_sub(monotonic_ms)
+                };
+                // This conservative in-tenure floor is deliberately not portable.
+                // Lost acknowledgement/reopen requires a new full wait instead.
+                // Exact retries never reset it or credit the original disk stall.
+                self.recovery_wait_offset_ms =
+                    self.recovery_wait_offset_ms.saturating_add(ack_delay);
+            }
+        }
+        result
     }
 }

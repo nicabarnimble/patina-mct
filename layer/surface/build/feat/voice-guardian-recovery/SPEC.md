@@ -19,6 +19,10 @@ exit_criteria:
     text: Exclusive canonical recovery transitions preserve delay, consumed IDs, atomic replacement and snapshot review across lost acknowledgements and restart, with live runtime disabled.
     checked: true
     verify: cargo test -p mct-observation guardian_recovery_tests:: -- --test-threads=1
+  - id: protected-policy-edits
+    text: D-54 and D-55 roster changes, disablement and fresh re-enablement preserve authority separation, delay, consumed IDs and crash/replay ordering.
+    checked: true
+    verify: cargo test -p mct-observation guardian_recovery_tests::policy_tests:: -- --test-threads=1
   - id: canonical-state-machine
     text: Canonical owner/guardian enrollment, delayed recovery and cancellation, atomic replacement and exact-snapshot resumption survive crash/race/replay.
     checked: false
@@ -115,6 +119,9 @@ existing OperatorActionRecorded observations and BeforeEffect durability.
   restarts at a full 24 hours, challenge is discarded, and the original hard
   expiry never extends. UTC rollback denies until time catches up; forward wall
   jumps alone never satisfy the monotonic wait. Both clocks must pass the delay.
+  The writer removes pre-acknowledgement write/sync latency from credited monotonic
+  elapsed time for newly committed waits, rounding conservatively. This in-tenure
+  floor is not portable or persisted as restart credit; reopen requires rebase.
 - Completion challenge is writer-issued after the delay, never reused, valid at
   most ten minutes. A live challenge cannot be replaced; after expiry a fresh
   challenge may be issued without another same-tenure delay. Completion approvals
@@ -139,36 +146,56 @@ complete-frame replay, partial-tail preservation, poisoning and no replayed
 replacement; strict parser fuzz smoke and old hash compatibility. Full roster
 revision, runtime admission fencing and real-process tests remain later work.
 
-## Slice 3 planning: protected policy edits
+## Slice 3: protected policy edits (D-54, D-55)
 
-D-54 already settles active-roster changes: current owner plus current quorum,
-newcomer acceptance, 24-hour delay, no edits during recovery, and quorum-controlled
-cancellation. Those rules are not being reopened.
+Active-roster changes require current owner plus current quorum, newcomer
+acceptance, 24-hour delay, no edits during recovery, and quorum-controlled
+cancellation. D-55 ratifies termination of guardian authority after an authorized
+and delayed disablement. Re-enablement requires current owner, fresh acceptance
+from all three proposed guardians, and a fresh 24-hour delay. Former guardians
+are history only; they cannot initiate recovery, authorize edits or cancel the
+re-enablement proposal. While disabled, the current owner controls withdrawal of
+its own pending re-enablement proposal; no proposed guardian has authority yet.
 
-**An implementation authority question remains:** after an authorized delayed
-*disablement*, does the former roster still control re-enablement? D-54 does not
-explicitly choose between a dormant control roster and termination of guardian
-control. See `docs/OPEN-QUESTIONS.md`, question 13. Neither interpretation is
-implemented; do not silently encode either as an accepted default.
+Typed proposals sign exact current state digest, next policy/bindings/generation,
+enablement, consumed edit ID and a maximum ten-minute authorization interval.
+Owner proposal, guardian acceptance, quorum proposal and cancellation have
+separate transcript domains/purposes. Active edits use the old/current roster
+for quorum. Re-enablement accepts no old-quorum votes and requires all three
+fresh acceptances even if the same guardians are selected again.
 
-The recommendation, pending explicit owner approval, is termination: old guardians
-remain audit history, not future authority; re-enablement requires current owner,
-all three new acceptances, and a 24-hour delay. Temporary suspension with retained
-control would be a distinct feature, not an overloaded meaning of disabled.
+Only one pending edit or recovery is permitted. A committed proposal consumes
+its ID immediately. Writer activation follows a full dual-clock 24-hour wait;
+restart rebases the wait without credit for offline time. The short signatures
+are checked at durable proposal; the pending authorization remains canonical
+until activation/cancellation. No test clock enters production ingress.
+Disablement is an explicit operation, not a simultaneous roster replacement;
+replacing a member while enabled retains exactly three distinct members.
 
-The implementation must preserve slice-2 absent-extension hashes and corpus
-replay, retain consumed edit IDs, sign exact next policy/bindings/generation, deny
-new members voting themselves in, and cover restart, cancellation/activation
-ordering and acknowledgement-loss replay. This planning section is not an
-implementation or a ratification of post-disablement authority.
+An additive optional boxed policy-edit projection preserves slice-2 hashes when
+absent and retains generations, consumed IDs and retired guardian keys thereafter.
+The last disabled roster is retained for audit but is gated out of every authority
+check. Retained guardian keys cannot become replacement target roots; they may
+still be explicitly reappointed as guardians with fresh required acceptance.
+Policy generations advance independently of root generations. Ordinary
+admin/root grants are not mutated by roster edits. Existing OperatorActionRecorded
+BeforeEffect facts serialize activation/cancellation and exact retries.
 
-## Subsequent slices (required, not implemented by kernel checks)
+Required tests: owner-only bypass, new members voting themselves in, missing
+acceptances, disable/re-enable authority separation, consumed edits, delay,
+restart, cancellation/activation ordering, partial frames and acknowledgement-loss
+replay. Old corpus replay and new policy-edit fuzz corpus must pass. Live runtime
+activation remains disabled pending authenticated cross-Mother binding exchange
+and the other admin gates.
 
-1. Versioned canonical genesis/OwnerBinding, guardian acceptance and policy
-   activation/revision facts; bootstrap and legacy deny rules; no sparse-history
-   inference. Protect active roster with owner + quorum and delayed activation.
-2. Writer-owned pending state, monotonic/UTC restart classification, notices,
-   quorum cancellation/completion, root/day-grant invalidation and consumed IDs.
+## Remaining integration slices
+
+1. Authenticated cross-Mother same-Voice endorsements, explicit target bootstrap,
+   current-binding exchange, and guardian-side acceptance/approval facts. Do not
+   promote unsigned legacy histories, copied UID selectors or sparse history.
+2. Live recovery serving, durable target/guardian notices and best-effort owner
+   alerts, integrated clock handling and canonical runtime consumers. The tested
+   storage lifecycle is not itself a remotely callable recovery service.
 3. Iroh admin/recovery integration and final-admission maintenance fencing;
    canonical consumers; approved exact-snapshot readiness and external-credential
    remediation instructions. Other owner gates must be explicitly settled.

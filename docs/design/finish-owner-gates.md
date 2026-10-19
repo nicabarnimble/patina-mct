@@ -1,6 +1,6 @@
 # Finish-line owner gates
 
-**Status: recovery gate ratified in D-54; other choices remain pending.**
+**Status: recovery gate ratified in D-54/D-55; other choices remain pending.**
 These are decisions already called
 out by `SECURITY-BOUNDARIES.md`, `OPEN-QUESTIONS.md`, and D-52, not an expansion
 of the finish line. The owner requested completion and a push only when all
@@ -17,7 +17,10 @@ delays, quorum cancellation, and preserved canonical history. The original
 retirement-only recommendation below is superseded for this enrolled path.
 The runtime still enforces D-16 until implementation; the completion obligation
 remains open. Other owner gates remain pending except for recovery-specific
-choices explicitly settled by D-54.
+choices explicitly settled by D-54/D-55. Canonical recovery and protected policy
+edits now have executable evidence; authenticated live ingress remains disabled.
+D-55 releases former guardians' authority after authorized delayed disablement;
+re-enablement requires current owner, all three fresh acceptances and a new delay.
 
 Remote macOS validation will be handed off to **Devin**, not performed through
 assumed direct host access here. Approved hosts/actions and returned evidence
@@ -71,7 +74,7 @@ still need to be specified; this does not authorize deployment.
    action, not an ongoing alternate admin interface.
 
 Approval should name any changes to these recommendations before implementation.
-Only gate 1 has been decided by D-54; no gate is marked implemented here.
+Only gate 1 has been decided by D-54/D-55; no gate is marked fully implemented here.
 
 ## Canonical-authority implementation boundary
 

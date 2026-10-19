@@ -93,11 +93,12 @@ shared administrative accounts, control planes, secrets, and backups.
 - Cancellation of a pending roster edit uses the existing quorum. The owner
   must not bypass that rule by restarting or reverting config.
 
-Implementation clarification pending: the authority retained by a disabled roster
-when protection is later re-enabled is not explicit in this contract. See
-[open question 13](../OPEN-QUESTIONS.md#13-guardian-authority-after-an-authorized-disablement).
-The active-policy rules above remain ratified; neither post-disablement rule has
-been silently selected.
+**D-55 clarification, ratified:** authorized delayed disablement ends the old
+roster's authority; it remains audit history only. Re-enablement requires current
+owner authorization, all three proposed guardians' acceptance, and a fresh
+24-hour delay. No old approvals carry forward. Disabled does not mean erased
+history or reset generations. Temporary suspension with retained guardian control
+is a different operation, not part of this release profile.
 
 ## 5. Recovery request and approval
 
