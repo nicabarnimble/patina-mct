@@ -38,6 +38,7 @@ fn grant_from(
 ) -> AdminKeyGrantV1 {
     AdminKeyGrantV1 {
         grant_id: grant_id.into(),
+        issuance_ceiling: None,
         public_half: key.public_half(),
         ml_dsa65_public_key: Some(key.ml_dsa65_public_key()),
         class,

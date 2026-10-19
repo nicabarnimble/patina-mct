@@ -1,8 +1,8 @@
 # Current security boundaries
 
 This page distinguishes guarantees from their limits. Baseline: `4330876` plus
-the ledger-first-call-recovery slice on this branch. It clarifies existing
-contracts; proposals below do not supersede decisions.
+this branch's ledger-first, canonical guardian recovery and bounded issuance
+slices. Ratified decisions govern; unfinished runtime boundaries remain explicit.
 
 ## What is protected, and when
 
@@ -12,8 +12,8 @@ contracts; proposals below do not supersede decisions.
 | Authority | Kernel evaluation before mediated admission | An allow is not evidence that an effect completed |
 | Revocation | New mediated admissions check current authority | Already-admitted WASI preopens survive until bounded expiry (D-G7); external effects are not undone |
 | Credentials | No ambient guest credentials; secret observations omit values | The secrets backend returns explicitly requested values; universal opaque-use-only access is not built |
-| Administration | Owner-authenticated UDS mutations; admin-key facts and route evaluator | Iroh admin transport, signed issuance authorization, and hard cutover remain incomplete |
-| Admin scope | Command/route-class scopes and day-to-day expiry | Project/resource scope and issuance ceilings are not specified by the current grant type |
+| Administration | Existing owner-authenticated UDS runtime; new canonical signed issuance path has bounded-policy tests | New issuance ledgers refuse old runtime; Iroh ingress and the signature/legacy cutover remain incomplete |
+| Admin scope | D-56 explicit issuance ceilings, separate from execution scopes, with bounded recipient expiry | Node-wide scopes only; no project/resource isolation or live cutover claim |
 | Hash chain | Detects invalid framing, sequence, identity, and hash linkage | No claim of detecting coherent rollback of all local evidence without an independent trusted anchor |
 | Hybrid signatures | Verifies both halves when a scheme-v1 signature is present | Unsigned admin facts still replay; self-signing proves possession, not authorization; iroh transport is classical |
 | Keyed retry | Durable dispatch fence survives lost SQLite call rows within the existing TTL | Lost results become unknown/interrupted, not reconstructed successes; old calls without facts and unkeyed calls do not gain this protection |
@@ -37,10 +37,10 @@ A digest of a signature cannot verify it without the original signature bytes.
 D-16 intentionally provides no in-epoch revocation or replacement of the
 recovery grant. Lost recovery custody does not revoke still-valid day-to-day
 keys, but removes the recovery path. Compromise is different: there is no
-implemented way to retire the stolen recovery credential within that history.
-D-54 now approves a bounded Voice-bound guardian replacement path, but it is
-not implemented. Until its canonical enrollment/recovery and operational proofs
-exist, the runtime still has this limitation. D-54 does not recover compromised
+live authenticated service yet for retiring the stolen credential in that history.
+D-54/D-55 approve a bounded Voice-bound guardian replacement path. Canonical
+recovery and protected roster transitions now have executable evidence, but the
+live authenticated runtime and operational proofs remain incomplete. D-54 does not recover compromised
 hosts or lost canonical history.
 
 `key-manage` is root-like when it can issue broad grants: denying a direct
@@ -60,8 +60,9 @@ in isolation.
 
 1. D-54 settles recovery policy; implementation and custody/backup drills remain
    required evidence, not additional permission inferred from tests.
-2. Issuance authority: node-wide versus resource-scoped administration, maximum
-   issuable rights/expiry, and the bootstrap exception.
+2. D-56 settles explicit issuance ceilings and node-wide scope. Global signature
+   cutover and supported virgin bootstrap still require gate 3; new issuance
+   policy tests do not authorize promoting legacy authority.
 3. Portable Child handle: bearer versus recipient-bound proof, issuer/epoch,
    operation/resource, expiry, and cascading delegation checks.
 4. Trusted supervisor lifecycle: install/start when Mother is stopped, endpoint

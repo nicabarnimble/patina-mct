@@ -32,10 +32,15 @@ class CompletionCheckTests(unittest.TestCase):
             CHECK.validate(self.data)
 
     def test_claiming_implementation_requires_proofs_and_evidence(self):
-        row = next(row for row in self.data["requirements"] if row["status"] == "open")
-        row["status"] = "implemented"
-        with self.assertRaisesRegex(ValueError, "lacks proof/evidence"):
-            CHECK.validate(self.data)
+        # Open requirements may legitimately have partial evidence. Construct
+        # the missing-field cases explicitly instead of depending on row order.
+        for field in ["proofs", "evidence"]:
+            data = copy.deepcopy(self.data)
+            row = data["requirements"][0]
+            row["status"] = "implemented"
+            row[field] = []
+            with self.assertRaisesRegex(ValueError, "lacks proof/evidence"):
+                CHECK.validate(data)
 
     def test_unknown_status_is_not_completion(self):
         self.data["requirements"][0]["status"] = "done"

@@ -1,4 +1,6 @@
 use super::*;
+#[path = "admin_issuance_tests.rs"]
+mod admin_issuance_tests;
 #[path = "guardian_policy_tests.rs"]
 mod policy_tests;
 use mct_kernel::recovery::GuardianRecoveryActionV1 as Action;
@@ -66,6 +68,7 @@ impl Fixture {
             changes.push(AuthorityChangeV1::AdminKeyGrantPut {
                 grant: Box::new(AdminKeyGrantV1 {
                     grant_id: id.into(),
+                    issuance_ceiling: None,
                     public_half: public(seed).ed25519,
                     ml_dsa65_public_key: Some(public(seed).ml_dsa65),
                     class,

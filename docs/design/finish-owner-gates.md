@@ -1,6 +1,6 @@
 # Finish-line owner gates
 
-**Status: recovery gate ratified in D-54/D-55; other choices remain pending.**
+**Status: recovery ratified in D-54/D-55; issuance ceilings in D-56. Gates 3–5 remain pending.**
 These are decisions already called
 out by `SECURITY-BOUNDARIES.md`, `OPEN-QUESTIONS.md`, and D-52, not an expansion
 of the finish line. The owner requested completion and a push only when all
@@ -16,8 +16,8 @@ Voice-bound, same-Voice 2-of-3 guardian recovery with explicit enrollment,
 delays, quorum cancellation, and preserved canonical history. The original
 retirement-only recommendation below is superseded for this enrolled path.
 The runtime still enforces D-16 until implementation; the completion obligation
-remains open. Other owner gates remain pending except for recovery-specific
-choices explicitly settled by D-54/D-55. Canonical recovery and protected policy
+remains open. D-56 also settles issuance ceilings; the remaining owner gates are
+listed below. Canonical recovery and protected policy
 edits now have executable evidence; authenticated live ingress remains disabled.
 D-55 releases former guardians' authority after authorized delayed disablement;
 re-enablement requires current owner, all three fresh acceptances and a new delay.
@@ -38,15 +38,16 @@ still need to be specified; this does not authorize deployment.
    This is an operational response, not a promise that an attacker-controlled
    host can be remotely erased or made to stop.
 
-2. **Explicit issuance ceilings, separate from execution scopes.** Keep the
+2. **Explicit issuance ceilings, separate from execution scopes (ratified D-56).** Keep the
    current node-wide route-class scopes for this release; do not claim project
    or resource isolation for admin keys. Recovery can issue explicitly scoped,
    expiring day-to-day grants but cannot directly execute their routes.
    Day-to-day `key-manage` must have an explicit delegation ceiling, cannot
    issue outside that ceiling or beyond its own expiry, and cannot create a
    recovery grant or delegate a larger ceiling. Merely possessing `key-manage`
-   is not unlimited issuance authority. This needs an explicit grant-schema
-   change; it must not be inferred from today's route evaluator.
+   is not unlimited issuance authority. D-56 now has an explicit grant-schema,
+   bounded kernel evaluator and canonical issuance proofs. This is separate from
+   the route evaluator and does not enable the still-gated authenticated runtime.
 
 3. **Strict hybrid administration and fresh cutover.** Require both signature
    halves and authorized issuance on new admin commands. Proof of possession
@@ -74,7 +75,7 @@ still need to be specified; this does not authorize deployment.
    action, not an ongoing alternate admin interface.
 
 Approval should name any changes to these recommendations before implementation.
-Only gate 1 has been decided by D-54/D-55; no gate is marked fully implemented here.
+Gates 1 and 2 are decided by D-54/D-55 and D-56 respectively; no gate is marked fully implemented here.
 
 ## Canonical-authority implementation boundary
 

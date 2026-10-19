@@ -325,6 +325,9 @@ pub struct AdminKeyGrantV1 {
     pub expires_at: Option<Timestamp>,
     /// Active or revoked.
     pub grant_state: AdminKeyGrantStateV1,
+    /// D-56 explicit day-key issuance limit; absence never means unlimited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuance_ceiling: Option<crate::AdminIssuanceCeilingV1>,
 }
 
 /// Why an admin-key grant fact is not admissible.
@@ -339,6 +342,13 @@ pub fn admin_key_grant_shape_error(grant: &AdminKeyGrantV1) -> Option<&'static s
     }
     if !admin_key_scopes_are_canonical(&grant.scopes) {
         return Some("admin key scopes are empty or not strictly ordered");
+    }
+    if let Some(ceiling) = &grant.issuance_ceiling
+        && (grant.class != AdminKeyGrantClassV1::DayToDay
+            || !grant.scopes.contains(&AdminKeyScopeV1::KeyManage)
+            || !ceiling.is_canonical())
+    {
+        return Some("issuance ceiling requires day key-manage, ordered unique non-startup scopes");
     }
     match grant.class {
         AdminKeyGrantClassV1::DayToDay => {
@@ -678,6 +688,7 @@ mod tests {
     fn day_to_day(scopes: Vec<AdminKeyScopeV1>) -> AdminKeyGrantV1 {
         AdminKeyGrantV1 {
             grant_id: "day-to-day".into(),
+            issuance_ceiling: None,
             public_half: half(DAY_PK),
             ml_dsa65_public_key: None,
             class: AdminKeyGrantClassV1::DayToDay,
@@ -690,6 +701,7 @@ mod tests {
     fn recovery() -> AdminKeyGrantV1 {
         AdminKeyGrantV1 {
             grant_id: "recovery".into(),
+            issuance_ceiling: None,
             public_half: half(RECOVERY_PK),
             ml_dsa65_public_key: None,
             class: AdminKeyGrantClassV1::Recovery,

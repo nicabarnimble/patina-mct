@@ -4,6 +4,9 @@ use mct_kernel::recovery::{
     GuardianRecoveryActionV1 as Action, RecoveryDigestV1, evaluate_guardian_recovery,
 };
 
+/// Reserved for writer-generated replacement roots, never caller-issued day grants.
+pub(super) const RECOVERED_ROOT_GRANT_PREFIX: &str = "recovered:";
+
 pub(super) fn validate_state(state: &AuthorityStateV1) -> std::result::Result<(), String> {
     let Some(recovery) = &state.guardian_recovery else {
         return Ok(());
@@ -109,7 +112,7 @@ pub(super) fn apply(
         // One canonical fact replaces the root and revokes ALL old day grants.
         // The old root's complete record remains in the append-only history.
         let grant_id = format!(
-            "recovered:{}:{}",
+            "{RECOVERED_ROOT_GRANT_PREFIX}{}:{}",
             next.binding.binding_id, next.binding.root_generation
         );
         if proposed.admin_key_grants.contains_key(&grant_id) {
@@ -123,6 +126,7 @@ pub(super) fn apply(
             grant_id.clone(),
             AdminKeyGrantV1 {
                 grant_id,
+                issuance_ceiling: None,
                 public_half: next.binding.root_key.ed25519,
                 ml_dsa65_public_key: Some(next.binding.root_key.ml_dsa65.clone()),
                 class: AdminKeyGrantClassV1::Recovery,

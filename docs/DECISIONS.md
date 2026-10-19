@@ -716,3 +716,20 @@ All six were locked on 2026-10-14 in the admin-keys design. Full text:
 - **Scope:** clarifies D-54 without changing its active-roster quorum, delay or
   cancellation rules. Temporary suspension with retained guardian control is not
   implemented by overloading disablement. Other release gates remain open.
+
+### D-56 Explicit administrative issuance ceilings
+
+- **Status:** ratified by the owner; implement through the bounded issuance slice.
+- **Decision:** retain node-wide administrative route scopes for this release,
+  without claiming project/resource isolation. Issuance authority is distinct
+  from permission to execute those routes.
+- **Root:** a current recovery root may authorize explicitly scoped, expiring
+  day-to-day grants, but does not directly execute their administrative routes.
+  Ordinary issuance never creates or replaces a recovery root.
+- **Delegation:** day-to-day key-manage needs an explicit issuance ceiling. It
+  cannot issue execution scopes or a delegated ceiling outside that ceiling,
+  extend a recipient beyond its own expiry, or create a recovery grant. Merely
+  having key-manage is not unbounded issuance authority.
+- **Scope:** settles owner gate 2. It does not ratify gate 3's signature/legacy
+  cutover, recipient-bound Child handles, supervisor trust or deployment access.
+  Release remains gated on complete executable evidence, not this decision alone.

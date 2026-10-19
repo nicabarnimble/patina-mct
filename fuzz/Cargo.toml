@@ -22,6 +22,13 @@ path = "src/lib.rs"
 members = ["."]
 
 [[bin]]
+name = "admin_issuance"
+path = "fuzz_targets/admin_issuance.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "guardian_recovery"
 path = "fuzz_targets/guardian_recovery.rs"
 test = false

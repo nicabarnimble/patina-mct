@@ -30,8 +30,9 @@ open. No permanent failing completion job is added to ordinary CI.
 
 [finish-owner-gates.md](design/finish-owner-gates.md) proposes explicit choices
 for recovery compromise, issuance ceilings, signature/legacy handling,
-recipient-bound handles, and trusted supervisor lifecycle. Recovery is ratified in D-54; the other gates remain pending owner confirmation
-except for recovery-specific choices explicitly settled there. Multi-host
+recipient-bound handles, and trusted supervisor lifecycle. Recovery is ratified
+in D-54/D-55 and issuance ceilings in D-56. Signature/legacy handling, handles and
+supervisor gates remain pending owner confirmation. Multi-host
 partition and upgrade evidence also requires approved disposable test hosts.
 Remote macOS execution is to be handed off to Devin with explicit actions and
 required evidence, not assumed direct access from this session.
@@ -97,7 +98,7 @@ Status: `keyed-retry-fence` is implemented on the inherited branch;
 
 ### 3. Administration and recovery cutover
 
-- Settle issuance ceilings and signature enforcement, implement authenticated
+- Implement D-56 issuance ceilings, settle signature enforcement, implement authenticated
   Iroh administration, and remove the old bypass paths in the same cutover.
 - Prove bootstrap, expiry, delegation, revocation, and no resurrection.
 - Implement D-54's explicit Voice-bound guardian recovery exception, preserving
