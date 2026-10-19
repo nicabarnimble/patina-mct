@@ -28,7 +28,7 @@ An adapter is code that crosses from MCT domain logic into an external system or
 
 - Iroh/noq networking
 - WASM/WASI component runtime
-- process or JVM execution
+- explicitly trusted native/JVM integration (not a local Child)
 - filesystem/database persistence
 - secret storage
 - telemetry export
@@ -104,7 +104,7 @@ MCT examples:
 
 - Keep one concrete append-only JSONL observation ledger until another sink is real.
 - Keep one concrete Iroh adapter until another transport is real.
-- Keep WASM/process runtime composition concrete inside the daemon until a split is earned.
+- Keep WASM runtime composition concrete inside the daemon until a split is earned.
 - Add traits only after the seam is proven.
 
 ### 4. Adapters emit observations

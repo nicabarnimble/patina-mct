@@ -52,8 +52,10 @@ explicitly trusted Mother-side adapter; it does not become a local Child.
 - **Observed service and release lifecycle** — macOS user-launchd install/start/
   stop/restart/uninstall, closed ad-hoc-signed archives with SBOM/provenance,
   immutable daemon-release evidence, and digest-exact guided upgrade.
-- **Administration** — a granted iroh admin key. A Child call is a
-  platform-given handle, and holding the handle is the authorization.
+- **Administration today** — owner-authenticated UDS mutations and local
+  calls. Admin-key ledger facts and scope checks exist, but iroh admin
+  transport and portable Child handles are not yet implemented. The hard
+  cutover is decided, not shipped (D-08, D-10, D-15).
 - **Peer protocols (early)** — Iroh-based hello/call slices: a peer Mother is
   admitted only against a persisted binding, and admission never pre-
   authorizes calls.
@@ -95,8 +97,8 @@ Child:
 ```
 
 Approve only the exact acquisition-backed digest returned by staging, then
-grant the narrow Slate Toy authority. Administration presents a granted iroh
-admin key.
+grant the narrow Slate Toy authority. These commands currently use the
+owner-authenticated local administration path, not the planned iroh admin path.
 
 ```bash
 "$MCT" children approve slate-manager ~/.mct/children \
@@ -146,6 +148,13 @@ The guarantees MCT is built to give you:
 - **Fail closed.** Unknown, expired, revoked, mismatched, or malformed state
   becomes a typed denial — never a permissive default. Unconfigured WIT
   imports refuse to instantiate.
+- **Revocation has a boundary.** New mediated admissions recheck authority.
+  Already-admitted WASI filesystem preopens remain usable until their bounded
+  lifetime ends; per-operation revocation is not implemented (D-G7).
+- **Credential confinement is not universal.** The planned model gateway keeps
+  credentials host-side. The existing secrets Toy backend instead returns a
+  granted secret value while excluding it from observations; do not treat
+  observation redaction as proof that a guest can never receive credentials.
 - **Verified before approved.** Approval cannot persist unless the child's
   manifest and artifact hashes verify against their sidecars.
 - **Optimization cannot grant authority.** Routing ranks only candidates that

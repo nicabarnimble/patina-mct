@@ -280,7 +280,8 @@ All six were locked on 2026-10-14 in the admin-keys design. Full text:
   `libcrux-ml-dsa → core-models → hax-lib-macros` only under `cfg(hax)` and is
   never compiled in our builds. Revisit by 2027-04-14, or earlier when libcrux
   or hax drops it.
-- **Drift:** `SECURITY.md` lists only `RUSTSEC-2024-0436` as ignored. It does not mention this one.
+- **Documentation:** the design-hardening branch reconciles `SECURITY.md`
+  with both recorded exceptions; no audit policy is weakened.
 
 ## 4. Children, Toys and handles
 
@@ -582,3 +583,21 @@ All six were locked on 2026-10-14 in the admin-keys design. Full text:
 - **Rejected:** immediate deletion of the maps and history. Git and the frozen
   files preserve the prior model while removing it from the critical path.
 - **Source:** owner decision following the PR #70 design-history review.
+
+### D-51 Caller-scoped durable dispatch fence (review branch)
+
+- **Status:** proposed contract, implemented on the design-hardening branch for
+  owner review; not a claim that current releases contain it.
+- **Scope:** preserve existing keyed/unkeyed and caller-scope semantics while
+  preventing lost SQLite history from authorizing a second keyed dispatch
+  within its 720-second window. A durable reservation precedes entry to the
+  existing authority pipeline. If the result projection is lost, refuse with
+  `execution_interrupted` rather than guessing or re-executing.
+- **Tradeoff:** one additional synced fact per fresh keyed dispatch; a crash
+  before actual launch may conservatively interrupt work that never ran.
+- **Boundary:** this does not grant authority, prove Child launch, reconstruct
+  result bytes, or implement D-30 task resume. D-40 remains proposed. No
+  signature, recovery-key, or portable-handle policy changes are implied.
+- **Source:** owner request to implement the architecture review on a branch;
+  exact choices and tests in
+  [`ledger-first-call-recovery/SPEC.md`](../layer/surface/build/feat/ledger-first-call-recovery/SPEC.md).

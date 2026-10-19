@@ -20,7 +20,7 @@ Patina MCT is a whole-app, local-first Mother/Child/Toy runtime over Iroh.
 
 ```text
 Mother  = local authority, ledger, peer protocols, runtime host
-Child   = WIT/WASI component or WIT-shaped adapter
+Child   = local WASM component with a WIT contract
 Toy     = explicit host capability governed by ToyGrant
 Iroh    = public-key-addressed connectivity substrate
 Ledger  = local-first MctObservation truth
@@ -102,7 +102,7 @@ Until separately specified:
 - full banking/domain-specific model;
 - multiple storage backends;
 - complex UI/inspector surfaces;
-- additional WASM/runtime backend depth beyond the current typed WIT and process slices.
+- additional local execution substrates beyond WASM components.
 
 ## First Implementation Checklist
 

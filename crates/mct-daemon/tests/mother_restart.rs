@@ -1324,6 +1324,109 @@ fn run_loop(default_iterations: u64) {
     );
 }
 
+/// Simulate loss of recent NORMAL-synchronous SQLite commits without rolling
+/// back the independently synced canonical ledger. All paths are test-private.
+fn sqlite_rollback_case(kill_inflight: bool) {
+    let layout = Layout::new();
+    let mut mother = Mother::start(&layout, 0).unwrap();
+    provision(&layout, false);
+    let snapshot = layout.work.join("before-call.sqlite");
+    rusqlite::Connection::open(layout.state())
+        .unwrap()
+        .execute("VACUUM INTO ?1", [snapshot.to_str().unwrap()])
+        .unwrap();
+    let step = Step {
+        child: 1,
+        last: true,
+        spin: if kill_inflight { 1_500 } else { 1 },
+        call_id: "call-sqlite-rollback".into(),
+        key: "key-sqlite-rollback".into(),
+        state: StepState::InFlight,
+    };
+    if kill_inflight {
+        let workload = Workload::start(layout.socket(), vec![vec![step.clone()]]);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let started = MctRuntimeStateStore::open(layout.state())
+                .unwrap()
+                .get_run_by_call_id(&CallId::new(&step.call_id).unwrap())
+                .unwrap()
+                .is_some();
+            if started {
+                break;
+            }
+            assert!(Instant::now() < deadline, "run never started");
+            thread::sleep(Duration::from_millis(5));
+        }
+        thread::sleep(Duration::from_millis(100));
+        mother.sigkill();
+        assert_eq!(workload.join()[0].state, StepState::InFlight);
+    } else {
+        assert!(matches!(
+            submit(&layout.socket(), &step).unwrap(),
+            StepState::Completed { .. }
+        ));
+        mother.sigkill();
+    }
+    drop(mother);
+    let before = verify_chain(&layout, "before SQLite rollback");
+    let routes_before = before
+        .iter()
+        .filter(|entry| {
+            entry.observation.call_id.as_ref().map(CallId::as_str) == Some(step.call_id.as_str())
+                && entry.observation.kind == ObservationKind::RouteSelected
+        })
+        .count();
+    assert_eq!(routes_before, 1);
+    for suffix in ["-wal", "-shm"] {
+        let path = PathBuf::from(format!("{}{suffix}", layout.state().display()));
+        if path.exists() {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+    std::fs::copy(&snapshot, layout.state()).unwrap();
+    assert!(
+        MctRuntimeStateStore::open(layout.state())
+            .unwrap()
+            .get_run_by_call_id(&CallId::new(&step.call_id).unwrap())
+            .unwrap()
+            .is_none()
+    );
+
+    for boot in 1..=2 {
+        let mut mother = Mother::start(&layout, boot).unwrap();
+        let retry = submit(&layout.socket(), &step).unwrap();
+        assert!(
+            matches!(&retry, StepState::Refused { body } if body.contains("execution_interrupted")),
+            "lost SQLite history must not authorize another execution: {retry:?}"
+        );
+        mother.sigkill();
+        let entries = verify_chain(&layout, "after SQLite rollback retry");
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| {
+                    entry.observation.call_id.as_ref().map(CallId::as_str)
+                        == Some(step.call_id.as_str())
+                        && entry.observation.kind == ObservationKind::RouteSelected
+                })
+                .count(),
+            routes_before,
+            "retry re-entered execution routing"
+        );
+    }
+}
+
+#[test]
+fn sqlite_rollback_after_completed_call_never_reexecutes() {
+    sqlite_rollback_case(false);
+}
+
+#[test]
+fn sqlite_rollback_after_sigkill_never_reexecutes() {
+    sqlite_rollback_case(true);
+}
+
 #[test]
 fn mother_survives_sigkill_mid_run_with_active_children() {
     run_loop(3);

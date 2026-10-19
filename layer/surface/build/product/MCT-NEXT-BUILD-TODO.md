@@ -2,7 +2,20 @@
 
 Goal: build the next operational layer after the v0 `patinaMother` replacement boundary. MCT becomes the complete Mother/Child/Toy product; belief/scry/assay/spec/session meaning remains Patina application behavior rather than `mctMother` internals.
 
-## Execution order
+## Current next work
+
+The older completed entries below retain their historical sequence. Current
+priority is: accurate capability claims; ledger-first keyed dispatch recovery;
+admin trust/issuance/handle decisions and cutover; then a bounded durable-task
+proof before broader agent integration. See
+[`ledger-first-call-recovery/SPEC.md`](../feat/ledger-first-call-recovery/SPEC.md)
+and [`docs/OPEN-QUESTIONS.md`](../../../../docs/OPEN-QUESTIONS.md).
+
+Iroh admin keys and portable Child handles described below are target
+architecture, not current administration. The UDS owner check and offline
+commands remain until the explicit hard cutover.
+
+## Historical execution order
 
 1. [x] Single-hop route forwarding landed 2026-07-09. Multi-Mother with per-Mother ledgers is future scale work, not planned now.
 2. [x] Audit `patinaMother` routing and record translate/rebuild/replace decisions. See audit snapshot below.

@@ -51,7 +51,7 @@ crates/mct-iroh/         Iroh endpoint and ALPN protocol adapter
 crates/mct-daemon/       process lifecycle and composition
 ```
 
-The current workspace keeps WASM/process runtimes, toy backends, SQLite state,
+The current workspace keeps the WASM runtime, toy backends, SQLite state,
 control surfaces, and CLI composition inside `crates/mct-daemon/`. Split them
 only after a second concrete implementation proves the seam.
 

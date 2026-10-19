@@ -2432,6 +2432,7 @@ mod tests {
                 ObservationKind::PeerCallReceived,
                 ObservationKind::CallConstructed,
                 ObservationKind::CallAuthorized,
+                ObservationKind::CallConstructed, // durable keyed dispatch, before route/effect
                 ObservationKind::RouteRevalidated,
                 ObservationKind::RouteSelected,
                 ObservationKind::RouteRevalidated,

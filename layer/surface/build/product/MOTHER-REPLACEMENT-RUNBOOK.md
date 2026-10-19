@@ -2,6 +2,13 @@
 
 Purpose: run MCT as the replacement-ready Mother/Child/Toy product without pulling belief/scry/assay/session semantics into `mctMother`.
 
+Current-state correction (baseline `4330876`): the commands below use the
+owner-authenticated local administration path, including existing offline
+operations where applicable. Iroh admin keys and portable Child handles are
+decided but not wired. References below to that target architecture must not
+be used as evidence that UDS/uid/offline paths have been removed. See
+[`docs/START-HERE.md`](../../../../docs/START-HERE.md).
+
 ## Boundary
 
 This is the v0 runtime replacement boundary:
@@ -104,13 +111,19 @@ Remediate with the exact replacement binary:
 
 Do not edit `supervisor.json` or the plist to repair a mismatch. Record revision is the blessing operation.
 
-The resident process owns the Iroh endpoint, current child/config projections, routing/execution state, and the single observation writer. It requires signed peer-binding presentations, executes approved local process/WIT children through routing/revalidation, and records clean shutdown or reconciles an unmatched prior instance on the next start.
+The resident process owns the Iroh endpoint, current child/config projections, routing/execution state, and the single observation writer. It requires signed peer-binding presentations, executes approved local WASM/WIT Children through routing/revalidation, and records clean shutdown or reconciles an unmatched prior instance on the next start.
 
-A Child call is a platform-given handle on the iroh path. Holding the handle is the authorization. Administration presents a granted iroh admin key. The Unix socket, peer credentials, and offline commands are not an authorization path. Caller, origin, and peer authority are not accepted from the call body. A lost response retries with the same fingerprint and idempotency key; a matching completed retry reuses the durable result and does not run the child again.
+Current local calls and administration use the owner-authenticated UDS path;
+peer calls use signed binding admission over iroh. Portable Child handles and
+iroh admin-key transport remain the target hard cutover. Caller, origin, and
+peer authority are not accepted from the local call body. A lost response retries with the same fingerprint and idempotency key; a matching completed retry reuses the durable result and does not run the child again.
 
 ### Temporal trigger workflow
 
-A temporal trigger is ledger-backed standing authority. Administration presents a granted iroh admin key. Its static payload is ingested into the local CAS, and each nominal occurrence constructs a fresh ordinary governed call.
+A temporal trigger is ledger-backed standing authority. Creation/revision uses
+the current owner-authenticated administration path. Its static payload is
+ingested into the local CAS, and each nominal occurrence constructs a fresh
+ordinary governed call.
 
 ```bash
 ./target/release/mct-daemon triggers create <trigger-id> \
@@ -133,7 +146,9 @@ Omitted missed-fire and overlap policies default to `skip` and `refuse`. Other c
 
 ### Scoped Watch workflow
 
-Watch grants are administration: each one presents a granted iroh admin key. After acquiring and exactly approving/assigning the watcher artifact, grant each authority independently:
+Watch grants use the current owner-authenticated administration path. After
+acquiring and exactly approving/assigning the watcher artifact, grant each
+authority independently:
 
 ```bash
 ./target/release/mct-daemon toys grant-watch folder-watch-actor /absolute/watch/root \

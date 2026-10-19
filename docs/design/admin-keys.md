@@ -1,6 +1,11 @@
 # Admin keys
 
-> **Imported 2026-10-18** from working notes (last edited 2026-10-17). Body unchanged apart from link fixes.
+> **Imported 2026-10-18** from working notes (last edited 2026-10-17). Body retained as historical rationale apart from link fixes.
+> Review correction: the signature-digest suggestion below is not a valid
+> stand-alone optimization. Verification requires the actual signature bytes;
+> detached storage would need its own durability and authenticity contract.
+> The file-writing-process security claim also requires an explicit trusted-host
+> and anti-rollback boundary, not merely removal of offline CLI commands.
 > Status: decisions (a)–(f), the October 15 scheme v1 decisions, recovery-key lockout and hard cutover are **decided**. The decision model, replay Toy and WIT composition sections are **proposed** or **open** exactly as labelled inside.
 > The "What exists" section describes `main` at `784c5ed` (2026-10-14). Since then: admin-key ledger facts (#48, #64), the route-scope grant check (#51), and optional hybrid scheme v1 signatures (#67) merged. The iroh admin ALPN, pairing redeem over iroh, and the hard cutover (deleting UDS / `peer_cred` / `open_local` / `execute_offline_*`) are **not built yet** on `main` at `49dfacd`. See [../DECISIONS.md](../DECISIONS.md).
 

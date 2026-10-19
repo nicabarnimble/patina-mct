@@ -4,7 +4,7 @@ Questions the owner has not settled, with the current proposal where there is
 one. A proposal here is not a decision. When one is settled, move it to
 [DECISIONS.md](DECISIONS.md) and delete it here.
 
-State: `main` at `49dfacd`, 2026-10-18.
+Baseline: `main` at `4330876`; review-branch dispositions are explicitly labelled.
 
 ## 1. Child-start ledger fact (double-run on power loss)
 
@@ -14,6 +14,13 @@ SQLite, which runs WAL with `synchronous = NORMAL`. That survives a process kill
 but can lose recent commits on power loss or an OS crash. After that, a
 same-key retry finds no reservation and runs the Child a second time. This
 breaks "no retry executes the child twice". SIGKILL tests do not catch it.
+
+**Review-branch progress.** The [ledger-first-call-recovery slice](../layer/surface/build/feat/ledger-first-call-recovery/SPEC.md)
+adds an independent caller-scoped dispatch fence for keyed retries. Its
+SQLite-rollback regression reproduces the original bug and passes with the
+fence. It does not implement final Child-start ordering, unkeyed dedup, or
+reconstruction of lost run/result projections. The seven Option D questions
+below remain open; do not mark D-40 built.
 
 **Proposal.** Option D in
 [design/child-start-ledger-fact.md](design/child-start-ledger-fact.md): the
@@ -115,12 +122,33 @@ Future scale work, not planned now (D-38). Nothing to decide yet. Known
 constraints for when it comes: per-Mother ledgers versus (c), and a FROST
 guardian quorum not covering the ML-DSA half.
 
-## 11. Smaller open items
+## 11. Remaining architecture boundaries
+
+The review identified concrete decisions needed before broader implementation:
+
+- [Current security boundaries](SECURITY-BOUNDARIES.md): recovery-key compromise,
+  admin issuance ceilings/resource scopes, portable handle semantics, trusted
+  supervisor lifecycle, and signature/rollback trust.
+- [Durable task boundary proposal](design/durable-task-boundary.md): task versus
+  invocation versus effect identity, unknown-outcome recovery, checkpoint and
+  crash semantics, deterministic inputs, result retention, and code upgrades.
+- Secrets: opaque use-only credentials versus an explicitly authorized reveal
+  operation. The current value-returning backend is not a universal no-raw-key
+  guarantee.
+- Delegation: cascading revocation must state how it interacts with the
+  bounded lifetime of already-admitted capabilities (D-G7).
+
+These are proposed clarification/implementation boundaries, not new owner
+rulings. Capability checks alone do not provide general information-flow
+security.
+
+## 12. Smaller open items
 
 - Linux systemd supervision and macOS headless launchd: separately gated.
 - Network and storage Toys: designed in outline (D-39), not built.
-- Signature size: if ledger size ever matters, store a digest of each hybrid
-  signature instead of the whole signature.
+- Signature size: a digest cannot replace a verifiable signature. Any detached
+  signature design must retain the actual signature bytes with authenticated,
+  durable availability; no such design is adopted.
 - Live node identity rotation needs endpoint rebind and peer re-admission.
 - Kenton Varda argued (June 2026) that hand-configuring each agent's permissions
   means you have already lost. MCT grants per Child and per task by hand today.

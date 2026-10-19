@@ -4,8 +4,9 @@ This page is for a reviewer, human or agent, who has the repository and nothing
 else. Read it first. It tells you what MCT is, where the rules are written, what
 is built and what is only decided, and how to report what you find.
 
-State described here: `main` after PR #70 and the 2026-10-18 Allium
-retirement decision.
+Baseline: `main` at `4330876`, plus the ledger-first-call-recovery review
+branch. See [SECURITY-BOUNDARIES.md](SECURITY-BOUNDARIES.md) for the exact
+limits of the security claims below.
 
 ## What MCT is
 
@@ -17,13 +18,17 @@ running.**
   decision in her ledger before the effect happens.
 - A **Child** is a WASM component. It computes. It has no ambient filesystem,
   network, secrets, processes or database. Its only reach is the handles Mother
-  gives it. A Child never sees a raw key or credential.
+  gives it. Credentials are not ambient. The intended model gateway keeps
+  credentials host-side, but the existing secrets backend has an explicit
+  value-returning `get` contract; opaque use versus authorized disclosure still
+  needs a product decision.
 - A **Toy** is a capability Mother grants to a Child: one directory, one
   secret, one logging sink, one Git repo. A `ToyGrant` names which Child may do
   which action, in which scope, until when. No grant, no Toy.
-- A **handle** is how anything reaches a Child. Holding a platform-given handle
-  is the authorization. A Child never mints a handle. When one Child shares with
-  another, Mother mints the narrowed handle and records it (the courier rule).
+- A **handle** is the decided future external capability for reaching a Child.
+  Today the kernel mints in-process execution capabilities; a portable handle
+  protocol and Mother-mediated delegation are not built. The courier rule
+  requires Mother, not a Child, to mint every borrowed handle.
 - The **ledger** (`mct-observation`) is an append-only, BLAKE3 hash-chained
   JSONL file with one writer. It is the source of truth for authority. Facts
   that must exist before an effect are fsynced before the effect starts; if the
@@ -34,7 +39,9 @@ running.**
   [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md#1-child-start-ledger-fact-double-run-on-power-loss)).
 - **Fail closed.** Unknown, expired, revoked, stale, mismatched or malformed
   state is a typed denial, never a permissive default. Mother unreachable is a
-  hard stop for a Child's work, not failover.
+  hard stop for new protected work, not permission to fail over. Already-issued
+  WASI preopens survive revocation until their bounded lifetime ends (D-G7);
+  immediate per-operation revocation and cooperative freeze are not built.
 - Mothers talk to each other over **iroh** (QUIC with Ed25519 endpoint
   identities). A peer is admitted only against a signed binding, and admission
   never pre-authorizes a call.
@@ -59,7 +66,7 @@ Do not assume a decision is code. These are the main gaps on `main` today:
 | Child call is a platform handle on the iroh path | Yes | Peer calls use iroh. Local `POST /calls` still uses the UDS peer-credential preflight. |
 | Wake check-in, checkpoints, freeze (decisions e, f) | Yes | No. Build plan phases 5–10. |
 | Restart recovery, interrupted calls, torn-tail recovery | Yes | Yes (#66, #68). |
-| Ledger fact proving a Child launch started | Proposed | No. Known double-run hole on power loss. |
+| Ledger fact proving final Child launch admission | Proposed | Not built. This branch instead adds a caller-scoped keyed dispatch fence against lost SQLite call history; it does not prove launch or protect repeated unkeyed calls. |
 | Multi-Mother clustering, standby, quorum, shared ledgers | Future, not planned | No. Only single-hop peer forwarding is real. |
 
 The full list, with dates and reasons, is [DECISIONS.md](DECISIONS.md).

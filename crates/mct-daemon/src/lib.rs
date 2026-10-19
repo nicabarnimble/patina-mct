@@ -11,6 +11,7 @@ mod authority_snapshot;
 #[cfg(test)]
 mod authority_test_fixture;
 mod blob_store;
+pub mod call_dispatch;
 mod children;
 mod composition;
 mod config;

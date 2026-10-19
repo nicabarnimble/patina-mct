@@ -16,6 +16,13 @@ longer override either source.
 | [pi-durable-handoff.md](pi-durable-handoff.md) | 2026-10-14 | Notes from a call: older Child versus "uncle/aunt", pending speed levers. |
 | [child-start-ledger-fact.md](child-start-ledger-fact.md) | 2026-10-18 | Proposed fix for the double-run-on-power-loss bug. Seven open questions. |
 
+New review material (not part of the historical import):
+
+- [durable-task-boundary.md](durable-task-boundary.md) — proposed task,
+  invocation, effect, and checkpoint contract; not ratified or implemented.
+- [../SECURITY-BOUNDARIES.md](../SECURITY-BOUNDARIES.md) — current guarantees,
+  limitations, and decisions still needed before admin cutover.
+
 Design material that was already in the repository stays where it is:
 
 - [`layer/allium/`](../../layer/allium/): frozen historical product and peer maps.
