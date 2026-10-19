@@ -15,6 +15,10 @@ exit_criteria:
     text: Typed Voice genesis and exact-intent hybrid quorum validation deny malformed, cross-Voice, stale, duplicate, altered, expired and wrong-purpose evidence.
     checked: true
     verify: cargo test -p mct-kernel recovery:: -- --test-threads=1
+  - id: canonical-lifecycle-core
+    text: Exclusive canonical recovery transitions preserve delay, consumed IDs, atomic replacement and snapshot review across lost acknowledgements and restart, with live runtime disabled.
+    checked: true
+    verify: cargo test -p mct-observation guardian_recovery_tests:: -- --test-threads=1
   - id: canonical-state-machine
     text: Canonical owner/guardian enrollment, delayed recovery and cancellation, atomic replacement and exact-snapshot resumption survive crash/race/replay.
     checked: false
@@ -86,6 +90,54 @@ Canonical JSON means struct declaration field order, fixed enum tags, typed
 key encodings and explicit timestamp spelling. There are no maps or floats.
 Signatures bind that exact spelling; chronology uses parsed timestamps. Existing
 ledger state hash generations and optional legacy signatures are untouched.
+
+## Slice 2: canonical lifecycle
+
+D-54 authorizes this bounded writer/replay implementation; no remote enrollment
+or live recovery surface is enabled by it. A new exclusive authority change
+records signed enrollment, pending recovery, clock rebasing, target challenges,
+quorum cancellation/completion, expiry and exact-snapshot resumption. It uses
+existing OperatorActionRecorded observations and BeforeEffect durability.
+
+- Enrollment binds genesis, the exact local binding/policy and all three guardian
+  owner bindings. Genesis and current local root sign; all guardian owners and
+  distinct guardian approval keys accept. The local root must already be the
+  sole canonical hybrid recovery grant. This is not a fleet join protocol:
+  authenticated current-binding exchange and same-Voice admission at guardians
+  remain required before a runtime may expose enrollment.
+- Commands name the exact recovery state digest. Enrollment cannot overwrite a
+  binding. No ordinary mutation or legacy import may smuggle in recovery state.
+- Existing empty-extension hashes remain byte-identical; enrolled state has a
+  separately domain-tagged hash including the complete recovery projection.
+- The enrollment epoch is stable binding identity; writer tenure epochs rotate.
+  Monotonic readings are meaningful only within one writer tenure. A new tenure
+  must commit a clock rebase before another recovery transition. Pending delay
+  restarts at a full 24 hours, challenge is discarded, and the original hard
+  expiry never extends. UTC rollback denies until time catches up; forward wall
+  jumps alone never satisfy the monotonic wait. Both clocks must pass the delay.
+- Completion challenge is writer-issued after the delay, never reused, valid at
+  most ten minutes. A live challenge cannot be replaced; after expiry a fresh
+  challenge may be issued without another same-tenure delay. Completion approvals
+  must be issued after its issuance and
+  expire no later than it. Expired requests are terminated by a writer fact;
+  cancellation need not override expired approval rules. IDs stay consumed.
+- Cancellation/expiry retain maintenance until authenticated exact-snapshot
+  review, or a new quorum starts another recovery. Neither silently resumes work.
+- Completion mechanically advances root and policy generations without changing
+  guardian membership. It replaces the active root record, revokes every day
+  grant, consumes pairing tickets and retains prior facts and retired key history.
+  Ordinary key-manage still cannot revoke or replace the root.
+- Snapshot review signs the whole canonical authority hash and recovery state
+  digest under the current root. Pending recovery cannot be resumed around.
+- Until authenticated runtime/canonical consumers are finished, an enrolled
+  ledger is deliberately unsupported by daemon startup and ordinary authority
+  mutation. This prevents old UID/admin paths from serving through the new state.
+
+Required proofs: deterministic timing and stale-command denials; root/quorum
+separation; exact-snapshot signatures; append acknowledgement loss and reopen;
+complete-frame replay, partial-tail preservation, poisoning and no replayed
+replacement; strict parser fuzz smoke and old hash compatibility. Full roster
+revision, runtime admission fencing and real-process tests remain later work.
 
 ## Subsequent slices (required, not implemented by kernel checks)
 

@@ -5,7 +5,14 @@
 
 #![forbid(unsafe_code)]
 
+mod guardian_recovery;
+#[cfg(test)]
+mod guardian_recovery_tests;
 mod segment;
+
+pub use mct_kernel::recovery::{
+    GuardianRecoveryCommandV1, GuardianRecoveryStateV1, RecoveryClockV1,
+};
 
 pub use segment::{
     SEGMENT_CHECKPOINT_PREFIX, SealedSegment, SegmentCheckpointV1, SegmentedLedgerReport,
@@ -187,8 +194,12 @@ pub struct PairingTicketV1 {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "change_kind", rename_all = "snake_case")]
+#[serde(tag = "change_kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AuthorityChangeV1 {
+    GuardianRecovery {
+        command: Box<GuardianRecoveryCommandV1>,
+        clock: RecoveryClockV1,
+    },
     ToyCatalogPut {
         toy_id: String,
         contract: ToyContractIdentity,
@@ -408,6 +419,8 @@ pub struct AuthorityStateV1 {
     pub admin_key_grants: BTreeMap<String, AdminKeyGrantV1>,
     #[serde(default)]
     pub pairing_tickets: BTreeMap<String, PairingTicketV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guardian_recovery: Option<Box<GuardianRecoveryStateV1>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -729,6 +742,7 @@ pub struct JsonlObservationLedger {
     previous_hash: Option<String>,
     recovery_status: Option<LedgerRecoveryStatus>,
     authority_tenure: Option<AuthorityWriterTenureV1>,
+    recovery_clock_origin: std::time::Instant,
     writer_state: LedgerWriterState,
     authority_replay: std::result::Result<AuthorityReplayV1, String>,
     used_epochs: BTreeSet<String>,
@@ -1083,7 +1097,30 @@ impl JsonlObservationLedger {
     where
         F: FnOnce(&AuthorityStateV1) -> std::result::Result<Option<String>, String>,
     {
+        self.execute_authority_mutation_inner(request, legacy_projection_write, false)
+    }
+
+    fn execute_authority_mutation_inner<F>(
+        &mut self,
+        request: AuthorityMutationRequestV1,
+        legacy_projection_write: F,
+        recovery_path: bool,
+    ) -> AuthorityMutationResultV1
+    where
+        F: FnOnce(&AuthorityStateV1) -> std::result::Result<Option<String>, String>,
+    {
         let mutation_id = request.mutation_id.clone();
+        if !recovery_path
+            && request
+                .changes
+                .iter()
+                .any(|change| matches!(change, AuthorityChangeV1::GuardianRecovery { .. }))
+        {
+            return rejected_mutation(
+                mutation_id,
+                AuthorityMutationRejectionReasonV1::InvalidRequest,
+            );
+        }
         if self.authority_tenure.is_none() {
             return rejected_mutation(
                 mutation_id,
@@ -1114,6 +1151,12 @@ impl JsonlObservationLedger {
                 );
             }
         };
+        if !recovery_path && replay.state.guardian_recovery.is_some() {
+            return rejected_mutation(
+                mutation_id,
+                AuthorityMutationRejectionReasonV1::InvalidRequest,
+            );
+        }
         if let Some(existing) = replay.mutations.get(&request.mutation_id) {
             if existing.fact.mutation_intent_hash != intent_hash {
                 return rejected_mutation(
@@ -1135,6 +1178,20 @@ impl JsonlObservationLedger {
                 AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
             );
         };
+        if guardian_recovery::validate_context(
+            &replay.state,
+            &request.changes,
+            &prior_authority,
+            &self.ledger_id,
+            &request.decided_at,
+        )
+        .is_err()
+        {
+            return rejected_mutation(
+                mutation_id,
+                AuthorityMutationRejectionReasonV1::InvalidRequest,
+            );
+        }
         if verify_admin_change_signatures(
             &replay.state,
             &replay.admin_signature_nonces,
@@ -1299,6 +1356,12 @@ impl JsonlObservationLedger {
                 AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
             );
         };
+        if imported_state.guardian_recovery.is_some() || replay.state.guardian_recovery.is_some() {
+            return rejected_mutation(
+                mutation_id,
+                AuthorityMutationRejectionReasonV1::InvalidRequest,
+            );
+        }
         let imported_hash = match authority_state_hash(&imported_state) {
             Ok(hash) => hash,
             Err(_) => {
@@ -1965,6 +2028,7 @@ fn authority_mutation_intent_hash(request: &AuthorityMutationRequestV1) -> Resul
 
 fn authority_change_sort_key(change: &AuthorityChangeV1) -> (&'static str, &str) {
     match change {
+        AuthorityChangeV1::GuardianRecovery { .. } => ("guardian_recovery", ""),
         AuthorityChangeV1::ToyCatalogPut { toy_id, .. } => ("toy_catalog_put", toy_id),
         AuthorityChangeV1::ToyCatalogRemove { toy_id } => ("toy_catalog_remove", toy_id),
         AuthorityChangeV1::ToyGrantPut { grant_id, .. } => ("toy_grant_put", grant_id),
@@ -2171,8 +2235,27 @@ pub fn apply_authority_changes(
     state: &mut AuthorityStateV1,
     changes: &[AuthorityChangeV1],
 ) -> std::result::Result<(), AuthorityReplayError> {
+    if changes
+        .iter()
+        .any(|change| matches!(change, AuthorityChangeV1::GuardianRecovery { .. }))
+    {
+        let [AuthorityChangeV1::GuardianRecovery { command, clock }] = changes else {
+            return Err(authority_incoherent(
+                "recovery must be an exclusive authority transition",
+            ));
+        };
+        return guardian_recovery::apply(state, command, clock);
+    }
+    if state.guardian_recovery.is_some() {
+        return Err(authority_incoherent(
+            "enrolled recovery authority requires the new runtime path",
+        ));
+    }
     for change in changes {
         match change {
+            AuthorityChangeV1::GuardianRecovery { .. } => {
+                unreachable!("exclusive recovery handled above")
+            }
             AuthorityChangeV1::ToyCatalogPut {
                 toy_id,
                 contract,
@@ -2493,6 +2576,8 @@ pub fn authority_state_hash(state: &AuthorityStateV1) -> Result<String> {
         .map_err(|detail| ObservationLedgerError::AuthorityReplay { detail })?;
     validate_admin_authority_state(state)
         .map_err(|detail| ObservationLedgerError::AuthorityReplay { detail })?;
+    guardian_recovery::validate_state(state)
+        .map_err(|detail| ObservationLedgerError::AuthorityReplay { detail })?;
     #[derive(Serialize)]
     struct HashableAuthorityState<'a> {
         toy_catalog: Vec<&'a CanonicalToyContract>,
@@ -2511,9 +2596,13 @@ pub fn authority_state_hash(state: &AuthorityStateV1) -> Result<String> {
         admin_key_grants: state.admin_key_grants.values().collect(),
         pairing_tickets: state.pairing_tickets.values().collect(),
     };
-    Ok(blake3::hash(&canonical_json_bytes(&hashable)?)
-        .to_hex()
-        .to_string())
+    let bytes = match &state.guardian_recovery {
+        None => canonical_json_bytes(&hashable)?,
+        Some(recovery) => {
+            canonical_json_bytes(&("mct-guardian-authority-state/v1", &hashable, recovery))?
+        }
+    };
+    Ok(blake3::hash(&bytes).to_hex().to_string())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -3059,6 +3148,11 @@ fn validate_legacy_import_fact(
         sequence: entry.local_sequence,
         detail: detail.to_owned(),
     };
+    if replay.state.guardian_recovery.is_some() || fact.imported_state.guardian_recovery.is_some() {
+        return Err(incoherent(
+            "legacy import cannot introduce or overwrite recovery authority",
+        ));
+    }
     let Some(prior_authority) = replay.current_authority.as_ref() else {
         return Err(incoherent("legacy import precedes epoch establishment"));
     };
@@ -3131,6 +3225,14 @@ fn validate_authority_mutation_fact(
         &fact.mother_node_id,
         &fact.ledger_id,
         &fact.changes,
+    )
+    .map_err(|detail| incoherent(&detail))?;
+    guardian_recovery::validate_context(
+        &replay.state,
+        &fact.changes,
+        prior_authority,
+        &entry.ledger_id,
+        &fact.decided_at,
     )
     .map_err(|detail| incoherent(&detail))?;
     let mut resulting_state = replay.state.clone();
@@ -3419,6 +3521,7 @@ fn open_with_recovery_hook(
         previous_hash: state.previous_hash,
         recovery_status,
         authority_tenure: None,
+        recovery_clock_origin: std::time::Instant::now(),
         writer_state: LedgerWriterState::Ready,
         authority_replay: state.authority_replay,
         used_epochs: state.used_epochs,

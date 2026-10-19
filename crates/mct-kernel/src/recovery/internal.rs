@@ -87,7 +87,7 @@ pub(super) fn digest<T: Serialize>(
     ))
 }
 
-fn validate_key(key: &RecoveryPublicKeyV1) -> Result<(), RecoveryError> {
+pub(super) fn validate_key(key: &RecoveryPublicKeyV1) -> Result<(), RecoveryError> {
     let crate::AdminKeyPublicHalf::Ed25519(ed) = key.ed25519;
     if ed.verifying_key().is_weak() {
         return Err(RecoveryError::Malformed);
@@ -110,7 +110,7 @@ pub(super) fn genesis_message(key: &RecoveryPublicKeyV1) -> Result<Vec<u8>, Reco
     transcript("mct-voice-genesis/v1", key)
 }
 
-fn validate_id(id: &str) -> Result<(), RecoveryError> {
+pub(super) fn validate_id(id: &str) -> Result<(), RecoveryError> {
     if id.is_empty()
         || id.len() > 128
         || !id
@@ -122,7 +122,7 @@ fn validate_id(id: &str) -> Result<(), RecoveryError> {
     Ok(())
 }
 
-fn validate_binding(binding: &OwnerBindingV1) -> Result<(), RecoveryError> {
+pub(super) fn validate_binding(binding: &OwnerBindingV1) -> Result<(), RecoveryError> {
     for id in [
         binding.mother_node_id.as_str(),
         &binding.ledger_id,
@@ -137,7 +137,7 @@ fn validate_binding(binding: &OwnerBindingV1) -> Result<(), RecoveryError> {
     validate_key(&binding.root_key)
 }
 
-fn shares_key_half(a: &RecoveryPublicKeyV1, b: &RecoveryPublicKeyV1) -> bool {
+pub(super) fn shares_key_half(a: &RecoveryPublicKeyV1, b: &RecoveryPublicKeyV1) -> bool {
     a.ed25519 == b.ed25519 || a.ml_dsa65 == b.ml_dsa65
 }
 

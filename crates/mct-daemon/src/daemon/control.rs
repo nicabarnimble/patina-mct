@@ -2050,6 +2050,7 @@ fn legacy_authority_state(state_path: &Path) -> Result<AuthorityStateV1> {
             .collect(),
         admin_key_grants: std::collections::BTreeMap::new(),
         pairing_tickets: std::collections::BTreeMap::new(),
+        guardian_recovery: None,
     })
 }
 

@@ -10,6 +10,9 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+mct-kernel = { path = "../crates/mct-kernel" }
+mct-observation = { path = "../crates/mct-observation" }
+serde_json = "1"
 mct-daemon = { path = "../crates/mct-daemon", features = ["fuzzing"] }
 
 [lib]
@@ -17,6 +20,13 @@ path = "src/lib.rs"
 
 [workspace]
 members = ["."]
+
+[[bin]]
+name = "guardian_recovery"
+path = "fuzz_targets/guardian_recovery.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "uds_control_request"

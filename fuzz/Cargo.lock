@@ -2551,6 +2551,9 @@ version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
  "mct-daemon",
+ "mct-kernel",
+ "mct-observation",
+ "serde_json",
 ]
 
 [[package]]

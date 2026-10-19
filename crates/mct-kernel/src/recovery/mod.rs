@@ -1,11 +1,17 @@
-//! Voice-bound guardian recovery evidence (D-54).
+//! Voice-bound guardian recovery evidence and proposed transitions (D-54).
 //!
-//! These checks prove possession and a bounded quorum over an exact intent.
-//! They do not enroll a Voice, authorize a guardian, commit recovery, enforce
-//! the recovery delay, or mint an execution capability. The canonical writer
-//! must supply current authority and enforce the state machine before effect.
+//! Cryptographic checks and a deterministic lifecycle evaluator remain distinct
+//! from runtime authority. The canonical writer must supply current authority,
+//! trusted clock readings and the exact snapshot, then commit the complete
+//! transition before effect. Kernel values alone mint no execution capability.
 
 mod internal;
+mod lifecycle;
+pub use lifecycle::{
+    GuardianEnrollmentV1, GuardianRecoveryActionV1, GuardianRecoveryCommandV1,
+    GuardianRecoveryStateV1, PendingGuardianRecoveryV1, RecoveryChallengeV1, RecoveryClockV1,
+    evaluate_guardian_recovery,
+};
 #[cfg(test)]
 mod tests;
 
@@ -16,7 +22,7 @@ pub use internal::verify_recovery_quorum;
 
 /// Maximum lifetime of an individual guardian approval.
 pub const RECOVERY_APPROVAL_MAX_MS: u64 = 600_000;
-/// Minimum production recovery delay, enforced by the later canonical writer.
+/// Minimum production recovery delay, checked by the canonical lifecycle.
 pub const RECOVERY_DELAY_MS: u64 = 86_400_000;
 /// Completion window after the minimum recovery delay.
 pub const RECOVERY_COMPLETION_WINDOW_MS: u64 = 604_800_000;

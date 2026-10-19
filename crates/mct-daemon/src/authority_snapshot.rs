@@ -456,6 +456,7 @@ mod tests {
             watch_scopes: [(scope.watch_scope_id.to_string(), scope)].into(),
             admin_key_grants: std::collections::BTreeMap::new(),
             pairing_tickets: std::collections::BTreeMap::new(),
+            guardian_recovery: None,
         }
     }
 
