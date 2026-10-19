@@ -16,10 +16,20 @@ fn main() -> Result<()> {
         records.push(serde_json::json!({
             "path": path,
             "size": bytes.len(),
-            "sha256": format!("{:x}", Sha256::digest(&bytes)),
+            "sha256": sha256_hex(&bytes),
             "blake3": blake3::hash(&bytes).to_hex().to_string(),
         }));
     }
     println!("{}", serde_json::to_string(&records)?);
     Ok(())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        write!(&mut encoded, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    encoded
 }

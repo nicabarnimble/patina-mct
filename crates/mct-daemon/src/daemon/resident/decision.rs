@@ -980,7 +980,7 @@ mod tests {
         sidecar.push(".sha256");
         std::fs::write(
             PathBuf::from(sidecar),
-            format!("{:x}", Sha256::digest(bytes)),
+            crate::lower_hex(Sha256::digest(bytes)),
         )
         .unwrap();
     }

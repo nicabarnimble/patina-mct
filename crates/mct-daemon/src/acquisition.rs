@@ -1118,7 +1118,7 @@ fn write_sha256_sidecar(path: &Path) -> Result<()> {
     let bytes = fs::read(path)?;
     write_new_file(
         &hash_sidecar_path(path),
-        format!("{:x}", Sha256::digest(bytes)).as_bytes(),
+        crate::lower_hex(Sha256::digest(bytes)).as_bytes(),
     )
 }
 
@@ -1126,7 +1126,7 @@ fn verify_source_sidecar(path: &Path, bytes: &[u8]) -> Result<()> {
     let sidecar = hash_sidecar_path(path);
     let expected = fs::read_to_string(&sidecar)
         .with_context(|| format!("read required source sidecar {}", sidecar.display()))?;
-    if expected.trim() != format!("{:x}", Sha256::digest(bytes)) {
+    if expected.trim() != crate::lower_hex(Sha256::digest(bytes)) {
         bail!("source SHA-256 sidecar does not match acquired bytes");
     }
     Ok(())
@@ -1837,11 +1837,11 @@ allow = ["malformed-operation"]
         let component = package.join("artifact/fixture.wasm");
         assert_eq!(
             fs::read_to_string(hash_sidecar_path(&manifest)).unwrap(),
-            format!("{:x}", Sha256::digest(fs::read(&manifest).unwrap()))
+            crate::lower_hex(Sha256::digest(fs::read(&manifest).unwrap()))
         );
         assert_eq!(
             fs::read_to_string(hash_sidecar_path(&component)).unwrap(),
-            format!("{:x}", Sha256::digest(bytes))
+            crate::lower_hex(Sha256::digest(bytes))
         );
     }
 

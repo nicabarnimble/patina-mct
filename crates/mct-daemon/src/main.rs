@@ -137,7 +137,7 @@ toys = []
         sidecar.push(".sha256");
         std::fs::write(
             PathBuf::from(sidecar),
-            format!("{:x}", Sha256::digest(bytes)),
+            crate::lower_hex(Sha256::digest(bytes)),
         )
         .unwrap();
     }
@@ -185,7 +185,7 @@ toys = []
         sidecar.push(".sha256");
         std::fs::write(
             PathBuf::from(sidecar),
-            format!("{:x}", Sha256::digest(bytes)),
+            crate::lower_hex(Sha256::digest(bytes)),
         )
         .unwrap();
     }
@@ -233,6 +233,16 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+pub(crate) fn lower_hex(bytes: impl AsRef<[u8]>) -> String {
+    let bytes = bytes.as_ref();
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut encoded, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    encoded
 }
 
 #[path = "daemon/cli_artifacts.rs"]

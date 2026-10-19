@@ -32,6 +32,16 @@ mod toy;
 mod wasm;
 mod wit_values;
 
+pub(crate) fn lower_hex(bytes: impl AsRef<[u8]>) -> String {
+    let bytes = bytes.as_ref();
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut encoded, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    encoded
+}
+
 #[cfg(test)]
 fn test_grants_authority_identity(generation: u64) -> mct_kernel::GrantsAuthorityIdentity {
     mct_kernel::GrantsAuthorityIdentity {
