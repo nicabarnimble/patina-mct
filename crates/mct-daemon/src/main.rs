@@ -235,6 +235,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn lower_hex(bytes: impl AsRef<[u8]>) -> String {
     let bytes = bytes.as_ref();
     let mut encoded = String::with_capacity(bytes.len() * 2);
