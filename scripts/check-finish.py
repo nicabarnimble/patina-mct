@@ -18,6 +18,7 @@ REQUIRED = {
     "distributed-failures", "useful-workflow", "release-evidence",
 }
 STATUSES = {"open", "decision_required", "implemented"}
+PROOF_PACKAGES = {"mct-daemon", "mct-kernel", "mct-observation"}
 NAME = re.compile(r"[A-Za-z0-9_:-]+\Z")
 RESULT = re.compile(
     r"test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured;"
@@ -62,6 +63,9 @@ def validate(data, root=ROOT):
     for identifier, proof in proofs.items():
         if not isinstance(proof, dict):
             raise ValueError(f"invalid proof: {identifier}")
+        package = proof.get("package", "mct-daemon")
+        if not isinstance(package, str) or package not in PROOF_PACKAGES:
+            raise ValueError(f"invalid cargo proof package: {identifier}")
         target = proof.get("target")
         valid_target = target == ["--lib"] or (
             isinstance(target, list) and len(target) == 2
@@ -128,7 +132,8 @@ def run_proofs(data):
     failures = []
     for identifier, proof in data["proofs"].items():
         print(f"\n=== completion proof: {identifier} ===", flush=True)
-        cargo = ["cargo", "test", "--locked", "-p", "mct-daemon", *proof["target"], proof["filter"]]
+        cargo = ["cargo", "test", "--locked", "-p", proof.get("package", "mct-daemon"),
+                 *proof["target"], proof["filter"]]
         try:
             selected = registered_count(command(cargo + ["--", "--list"]), proof["minimum_tests"])
             verify_result(command(cargo + ["--", "--nocapture", "--test-threads=1"]), selected)

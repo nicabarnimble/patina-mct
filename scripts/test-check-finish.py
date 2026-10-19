@@ -90,6 +90,41 @@ class CompletionCheckTests(unittest.TestCase):
                 self.assertTrue(spawn.call_args.kwargs["start_new_session"])
                 kill.assert_called_once_with(12345, CHECK.signal.SIGKILL)
 
+    def test_proof_package_is_allowlisted_and_defaults_to_daemon(self):
+        proof = next(iter(self.data["proofs"].values()))
+        for package in CHECK.PROOF_PACKAGES:
+            proof["package"] = package
+            CHECK.validate(self.data)
+        for bad in ["--help", "other-package", None, [], "mct-kernel;exit 0"]:
+            proof["package"] = bad
+            with self.assertRaisesRegex(ValueError, "invalid cargo proof package"):
+                CHECK.validate(self.data)
+        proof.pop("package")
+        CHECK.validate(self.data)
+
+    def test_proofs_execute_the_declared_package_and_default_package(self):
+        for package in [None, "mct-kernel", "mct-observation"]:
+            proof = {"target": ["--lib"], "filter": "recovery::", "minimum_tests": 1}
+            if package is not None:
+                proof["package"] = package
+            with patch.object(CHECK, "command", side_effect=[
+                "recovery::one: test\n",
+                "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured;",
+            ]) as command, contextlib.redirect_stdout(io.StringIO()):
+                self.assertTrue(CHECK.run_proofs({"proofs": {"kernel": proof}}))
+                expected = ["cargo", "test", "--locked", "-p", package or "mct-daemon",
+                            "--lib", "recovery::"]
+                self.assertEqual(command.call_args_list[0].args[0], expected + ["--", "--list"])
+                self.assertEqual(command.call_args_list[1].args[0],
+                                 expected + ["--", "--nocapture", "--test-threads=1"])
+
+    def test_partial_recovery_evidence_does_not_complete_release(self):
+        recovery = next(row for row in self.data["requirements"] if row["id"] == "key-recovery")
+        recovery["status"] = "open"
+        self.assertTrue(recovery["proofs"])
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertFalse(CHECK.inventory(self.data))
+
     def test_proof_cannot_disable_test_count_or_change_command(self):
         proof = next(iter(self.data["proofs"].values()))
         proof["minimum_tests"] = 0

@@ -20,6 +20,8 @@ pub mod grant_check;
 pub mod id;
 pub mod observation;
 pub mod peer;
+/// Voice-bound guardian recovery identity and bounded quorum evidence.
+pub mod recovery;
 pub mod route;
 pub mod toy;
 pub mod trigger;
