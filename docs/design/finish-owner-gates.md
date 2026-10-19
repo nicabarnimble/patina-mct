@@ -1,11 +1,10 @@
-# Finish-line owner gates
+# Remaining owner decisions
 
-**Status: recovery ratified in D-54/D-55; issuance in D-56; strict hybrid/fresh cutover in D-57. Gates 4–5 remain pending.**
-These are decisions already called
-out by `SECURITY-BOUNDARIES.md`, `OPEN-QUESTIONS.md`, and D-52, not an expansion
-of the finish line. The owner requested completion and a push only when all
-checks are green. That is not permission to waive the completion inventory or
-silently replace settled authority contracts.
+**Status: recovery ratified in D-54/D-55; issuance in D-56; strict hybrid/fresh cutover in D-57. Decisions 4–5 remain pending.**
+These are decisions already called out by `SECURITY-BOUNDARIES.md`,
+`OPEN-QUESTIONS.md`, and D-52, not an expansion of the finish line. Draft
+publication is now authorized, as recorded in `docs/FINISH.md`; it does not
+waive the completion inventory or replace settled authority contracts.
 
 ## Active recovery design update (D-53)
 
@@ -16,7 +15,7 @@ Voice-bound, same-Voice 2-of-3 guardian recovery with explicit enrollment,
 delays, quorum cancellation, and preserved canonical history. The original
 retirement-only recommendation below is superseded for this enrolled path.
 The runtime still enforces D-16 until implementation; the completion obligation
-remains open. D-56 also settles issuance ceilings; the remaining owner gates are
+remains open. D-56 also settles issuance ceilings; the remaining owner decisions are
 listed below. Canonical recovery and protected policy
 edits now have executable evidence; authenticated live ingress remains disabled.
 D-55 releases former guardians' authority after authorized delayed disablement;
@@ -75,7 +74,7 @@ still need to be specified; this does not authorize deployment.
    action, not an ongoing alternate admin interface.
 
 Approval should name any changes to these recommendations before implementation.
-Gates 1–3 are decided by D-54/D-55, D-56 and D-57 respectively; no gate is marked fully implemented here.
+Decisions 1–3 are settled by D-54/D-55, D-56 and D-57 respectively; their complete runtime integration is not claimed here.
 
 ## Canonical-authority implementation boundary
 
@@ -108,8 +107,9 @@ The external Patina spec-manager is also currently unavailable. Local tests
 remain executable without it; no daemon should be started simply to satisfy
 that external check.
 
-## Push condition
+## Publication is not release
 
+The owner authorized publishing `feat/finish-mct-federation` as unfinished work
+on 2026-10-19. Keep the PR draft and its blockers explicit. Before release,
 `python3 scripts/check-finish.py release` must pass with every completion
-obligation genuinely supported by evidence before pushing
-`feat/finish-mct-federation` to `origin`. Ordinary Tier-0 green is not sufficient.
+obligation genuinely supported by evidence. Ordinary Tier-0 green is not sufficient.

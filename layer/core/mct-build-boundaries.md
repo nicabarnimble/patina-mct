@@ -3,14 +3,14 @@ id: mct-build-boundaries
 layer: core
 status: active
 created: 2026-05-31
-revised: 2026-05-31
+revised: 2026-10-19
 tags: [mct, build, authority, iroh, wasm, observations]
 references: [spec-driven-design, adapter-pattern, dependable-rust, safety-boundaries, mct-builds-on-iroh-substrate]
 ---
 
 # MCT Build Boundaries
 
-**Purpose:** State what Patina MCT is building and what must stay out of the first implementation slice.
+**Purpose:** State MCT's enduring responsibilities and product boundaries.
 
 ---
 
@@ -74,23 +74,7 @@ Children do not receive raw substrate power. They call WIT interfaces and receiv
 
 MCT does not rely on logs as truth. Authority decisions and adapter effects create `MctObservation` facts that can reconstruct traces.
 
-### 5. Build the vertical spine first
-
-The first implementation should prove:
-
-```text
-kernel records
-  → observation ledger
-  → peer binding evaluation
-  → mct/hello/0 admission
-  → mct/call/0 to fake handler
-  → caller-safe result
-  → trace reconstruction
-```
-
-Only after that should we deepen thought mesh, federation, additional storage backends, rich CLI surfaces, or further runtime splits.
-
-## Do Not Build Yet
+## Outside the Current Product Scope
 
 Until separately specified:
 
@@ -103,17 +87,6 @@ Until separately specified:
 - multiple storage backends;
 - complex UI/inspector surfaces;
 - additional local execution substrates beyond WASM components.
-
-## First Implementation Checklist
-
-Before writing code for a slice:
-
-- [ ] Which settled decision and active slice specification authorize it?
-- [ ] Which Slate work item owns it, when Slate tracking is used?
-- [ ] Which belief/evidence explains it?
-- [ ] Which observations prove it?
-- [ ] What is the smallest integration test?
-- [ ] What stays fake/concrete until the seam is proven?
 
 ## References
 

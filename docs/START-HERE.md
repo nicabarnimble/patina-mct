@@ -113,8 +113,8 @@ cargo test --workspace -- --test-threads=1
 ```
 
 The resident tests own real Unix sockets and iroh endpoints, so CI runs tests
-single-threaded. `scripts/install-hooks.sh` installs a pre-commit hook that runs
-`ci-tier0.sh`.
+single-threaded. Run the relevant checks explicitly; CI runs the full set.
+There is no repository-installed full-suite pre-commit hook.
 
 ## How changes land
 

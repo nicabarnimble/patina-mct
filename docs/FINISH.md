@@ -26,13 +26,13 @@ through the workspace suite. Tier 0 is allowed to pass during development; the
 separate **completion** check deliberately remains red while obligations are
 open. No permanent failing completion job is added to ordinary CI.
 
-## Current owner and environment gates
+## Unresolved owner decisions and external validation
 
 [finish-owner-gates.md](design/finish-owner-gates.md) proposes explicit choices
 for recovery compromise, issuance ceilings, signature/legacy handling,
 recipient-bound handles, and trusted supervisor lifecycle. Recovery is ratified
 in D-54/D-55, issuance ceilings in D-56, and strict hybrid/fresh cutover in D-57.
-Child-handle and trusted-supervisor gates remain pending owner confirmation. Multi-host
+Child-handle and trusted-supervisor decisions remain pending owner confirmation. Multi-host
 partition and upgrade evidence also requires approved disposable test hosts.
 Remote macOS execution is to be handed off to Devin with explicit actions and
 required evidence, not assumed direct access from this session.
@@ -43,9 +43,11 @@ This supersedes retirement-only policy for the explicitly enrolled path, not
 for compromised hosts or missing canonical history. Implementation and release
 proofs remain open; the completion inventory remains red.
 
-The owner requested pushing `feat/finish-mct-federation` to `origin` only when
-complete. Run the full `release` check before that push; do not substitute an
-ordinary passing Tier-0 run or waive open inventory requirements.
+On 2026-10-19 the owner requested publishing the current work to GitHub and
+consolidating the local checkouts. This supersedes the earlier wait-to-push
+instruction for **draft branch publication only**. It does not authorize a
+merge, release or deployment. Keep the eight open obligations explicit; the
+full `release` check and final evidence review are still required for release.
 
 ## Bounded deployment contract
 

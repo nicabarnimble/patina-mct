@@ -3,161 +3,28 @@ id: unix-philosophy
 layer: core
 status: active
 created: 2026-05-31
-revised: 2026-05-31
+revised: 2026-10-19
 tags: [architecture, mct, decomposition, crates, core-principle]
 references: [dependable-rust, adapter-pattern, mct-build-boundaries]
 ---
 
 # Unix Philosophy for MCT
 
-**Purpose:** Build Mother/Child/Toy as composed, single-purpose pieces instead of one magical Mother blob.
-
----
-
-## Core Principle
-
-MCT follows Unix philosophy:
-
-```text
-one piece, one job, explicit composition
-```
-
-The system is powerful because the pieces compose:
+Compose pieces with explicit responsibilities:
 
 ```text
 peer facts → authority decision → observation → adapter effect → observation
 ```
 
-Do not hide multiple responsibilities behind names like "manager", "runtime", or "service" unless the module is explicit glue.
+Keep authority evaluation separate from effects and connectivity. Composition
+code may coordinate several pieces, but must not become a second source of
+permission.
 
-## MCT Decomposition
-
-### Design-time layer
-
-```text
-layer/core/              build laws and project patterns
-layer/allium/            frozen historical behavior maps
-layer/slate/work/        executable work and proof plans
-layer/surface/           evidence, beliefs, product notes
-layer/sessions/          discussion and git-range context
-```
-
-### Runtime layer
-
-```text
-crates/mct-kernel/       authority records and decisions
-crates/mct-observation/  local-first append-only observation ledger
-crates/mct-iroh/         Iroh endpoint and ALPN protocol adapter
-crates/mct-daemon/       process lifecycle and composition
-```
-
-The current workspace keeps the WASM runtime, toy backends, SQLite state,
-control surfaces, and CLI composition inside `crates/mct-daemon/`. Split them
-only after a second concrete implementation proves the seam.
-
-## Jobs That Must Stay Separate
-
-### Authority vs effect
-
-```text
-mct-kernel decides whether a peer/call/toy/child/data move is allowed.
-adapters perform the network/runtime/storage/secret effect.
-```
-
-### Observation vs logging
-
-```text
-MctObservation is durable truth.
-logs/metrics/qlog/OTel are projections or diagnostics.
-```
-
-### Connectivity vs authority
-
-```text
-Iroh connects endpoints.
-MCT admits peers and authorizes protocol effects.
-```
-
-### Child runtime vs Toy authority
-
-```text
-WASM/WIT child exports define callable shape.
-ToyGrant decides which host capabilities are available.
-```
-
-## Vertical Slice First
-
-The first build should prove this path:
-
-```text
-Mother starts
-  → local observation ledger opens
-  → peer binding exists
-  → Iroh endpoint receives mct/hello/0
-  → kernel admits or denies
-  → admitted peer sends mct/call/0
-  → kernel accepts the call envelope for routing
-  → authorized local handler returns MctResult
-  → observations reconstruct the trace
-```
-
-That slice is enough to prove the architecture without prematurely building the whole Toy catalog, additional runtime breadth, thought mesh, or federation layer.
-
-## Good MCT Module Names
-
-Good names say the job:
-
-- `peer_binding`
-- `hello_protocol`
-- `call_protocol`
-- `observation_ledger`
-- `toy_grants`
-- `route_authority`
-- `child_assignment`
-
-Suspicious names hide scope:
-
-- `manager`
-- `runtime` with no qualifier
-- `service`
-- `engine`
-- `orchestrator`
-
-Glue may exist, but name it as glue: `daemon`, `app`, `command`, or `composition`.
-
-## Composition Example
-
-Bad:
-
-```rust
-pub fn handle_iroh_stream(stream: IrohStream) {
-    // parse hello
-    // check database
-    // update policy
-    // invoke child
-    // write logs
-    // return result
-}
-```
-
-Good:
-
-```rust
-pub fn handle_iroh_stream(stream: IrohStream) -> Result<()> {
-    let presentation = adapter.read_presentation(&stream)?;
-    let request = adapter.read_hello_request(&stream)?;
-    let decision = evaluate_hello(&request, bindings, policy, context);
-    observations.append(hello_evaluation_observation(trace_id, observed_at, &decision))?;
-    adapter.write_hello_response(&stream, hello_response(response_id, &decision, response_observation_id))?;
-    Ok(())
-}
-```
-
-Each part has one job. The function composes them.
+Split modules or crates when responsibility, testability or measured behavior
+justifies it—not merely for a speculative abstraction or to satisfy a naming
+convention.
 
 ## References
 
-- [Dependable Rust](./dependable-rust.md)
 - [Adapter Pattern](./adapter-pattern.md)
-- [MCT Build Boundaries](./mct-build-boundaries.md)
-- [`docs/DECISIONS.md`](../../docs/DECISIONS.md)
+- [Dependable Rust](./dependable-rust.md)
