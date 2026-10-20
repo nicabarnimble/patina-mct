@@ -4,7 +4,6 @@ members = [
     "crates/mct-observation",
     "crates/mct-iroh",
     "crates/mct-daemon",
-    "crates/mct-trace",
     "crates/phase3-measure",
 ]
 resolver = "2"
@@ -39,7 +38,6 @@ tempfile = "3.23.0"
 wasmtime = "48.0.6"
 wasmtime-wasi = "48.0.6"
 wat = "1.241.2"
-zstd = "0.13.3"
 
 # Size-oriented release profile. Panic stays unwind: wasmtime catches
 # host-function panics with catch_unwind, and abort would turn those into

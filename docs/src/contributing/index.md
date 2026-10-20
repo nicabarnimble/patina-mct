@@ -23,5 +23,5 @@ explanations, generated-reference inputs, rustdoc, or explicitly record why no
 documentation surface changed.
 
 See [Documentation system](documentation-system.md) for authority and build
-boundaries. The public activity record is governed by the
-[Open trace contract](../provenance/open-trace-contract.md).
+boundaries. See [Provenance](../provenance/index.md) for the existing decision,
+evidence, and historical records.

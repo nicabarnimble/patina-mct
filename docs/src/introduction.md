@@ -24,7 +24,7 @@ cloud control plane.
 - **Operate a Mother:** use [Operations](operations/index.md).
 - **Contribute:** read [Architecture](architecture/index.md) and
   [Contributing](contributing/index.md).
-- **Audit how the product was built:** enter [Provenance](provenance/index.md).
+- **Understand the development history:** enter [Provenance](provenance/index.md).
 
 ## Status
 

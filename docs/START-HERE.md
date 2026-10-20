@@ -82,14 +82,13 @@ The full list, with dates and reasons, is [DECISIONS.md](DECISIONS.md).
 | `crates/mct-observation` | The ledger: hash chain, single-writer lock, authority facts and replay, tail recovery, segments. |
 | `crates/mct-iroh` | Mother's iroh endpoint, `mct/hello/0` and `mct/call/0`, signed peer bindings. |
 | `crates/mct-daemon` | Composition: config, wasmtime Child runtime, Toy adapters, SQLite state, control plane, resident Mother, restart recovery, CLI. |
-| `crates/mct-trace` | Verifies and projects published session traces into the docs book. |
 | `crates/phase3-measure` | Benchmark for hybrid signature cost and ledger size. Not shipped. |
 | `fuzz/` | cargo-fuzz targets over hostile inputs. |
 | `layer/allium/` | Frozen historical behavior maps retained for provenance; not a current development gate or authority source. |
 | `layer/core/` | Doctrine: what MCT is, reliability doctrine, safety boundaries, dependable Rust, vocabulary. |
 | `layer/surface/build/feat/<slice>/` | One spec (and sometimes design or closeout) per build slice. Slice specs carry numbered decisions such as `D-H3.5`. |
 | `layer/surface/build/product/` | `ROADMAP.md`, `MCT-NEXT-BUILD-TODO.md`, release checklists, the Mother replacement runbook, baselines. |
-| `layer/sessions/`, `traces/` | Session records and published traces. Historical evidence; do not edit. |
+| `layer/sessions/` | Written session records. Historical evidence; do not edit. |
 | `docs/src/` | The mdBook product manual. |
 | `docs/design/` | Design notes imported from working discussions. See [design/README.md](design/README.md). |
 | `docs/DECISIONS.md`, `docs/OPEN-QUESTIONS.md`, `docs/PRIOR-ART.md` | Decision log, open questions, prior-art research. |

@@ -118,6 +118,12 @@ in restart and fleet tests. Final reruns passed, but the cause is not establishe
 retain it as a release investigation, not a fixed bug. See
 [strict-cutover evidence](../layer/surface/build/feat/strict-admin-cutover/EVIDENCE.md).
 
+Conversation-archive retirement validation also observed a distinct fleet-test
+failure: `mother-0 -> 2` returned `denied` at route revalidation when the test
+expected `completed`. The proof run and full-suite rerun passed without a
+runtime-source change. The cause remains unestablished; this is not evidence
+that the failure was fixed.
+
 - Provision multiple instances without service-label/path/key collisions.
 - Provide inventory/inspection tooling without creating a runtime coordinator
   whose outage stops everyone. Inventory is not a grant source.
