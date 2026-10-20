@@ -774,6 +774,9 @@ mod tests {
             watch_scopes: Default::default(),
             admin_key_grants: std::collections::BTreeMap::new(),
             pairing_tickets: std::collections::BTreeMap::new(),
+            guardian_recovery: None,
+            admin_issuance: Default::default(),
+            admin_genesis: None,
         }
     }
 

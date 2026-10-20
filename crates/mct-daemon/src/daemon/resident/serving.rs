@@ -923,32 +923,22 @@ where
                 }
             },
         );
-        tokio::pin!(serve_fut);
-        tokio::pin!(shutdown);
-        let mut admitted_refresh = tokio::time::interval(Duration::from_secs(120));
-        admitted_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        admitted_refresh.tick().await;
-        let refresh_config = config.config_path.clone();
-        let refresh_children = config.children_dir.clone();
-        let refresh_state = config.state_path.clone();
-        loop {
-            tokio::select! {
-                result = &mut serve_fut => break result.map_err(anyhow::Error::from),
-                _ = admitted_refresh.tick() => {
-                    if let Err(error) = refresh_admitted_peers(
-                        &endpoint,
-                        &refresh_config,
-                        &refresh_children,
-                        &refresh_state,
-                    )
-                    .await
-                    {
-                        eprintln!("admitted peer hello refresh failed: {error}");
-                    }
-                }
-                _ = &mut shutdown => break Ok(()),
-            }
-        }
+        let refresh_fut = run_admitted_peer_refresh_loop(Duration::from_secs(120), || {
+            refresh_admitted_peers(
+                &endpoint,
+                &config.config_path,
+                &config.children_dir,
+                &config.state_path,
+            )
+        });
+        // Refresh is polled alongside serving, not awaited inside a selected
+        // timer branch. A slow/dead peer must not stop inbound calls or shutdown.
+        run_resident_io(
+            async { serve_fut.await.map_err(anyhow::Error::from) },
+            refresh_fut,
+            shutdown,
+        )
+        .await
     };
 
     let clean_shutdown_observed = match &supervised_instance {
@@ -984,6 +974,36 @@ where
         let _ = std::fs::remove_file(path);
     }
     serve_result
+}
+
+async fn run_resident_io<S, R, Q>(serve: S, refresh: R, shutdown: Q) -> Result<()>
+where
+    S: std::future::Future<Output = Result<()>>,
+    R: std::future::Future<Output = ()>,
+    Q: std::future::Future<Output = ()>,
+{
+    tokio::select! {
+        result = serve => result,
+        _ = refresh => bail!("resident peer refresh loop stopped unexpectedly"),
+        _ = shutdown => Ok(()),
+    }
+}
+
+async fn run_admitted_peer_refresh_loop<F, Fut>(period: Duration, mut refresh: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    let mut interval = tokio::time::interval(period);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        // The first tick is immediate: restart should not wait two minutes to
+        // learn configured peers. Later ticks preserve the existing interval.
+        interval.tick().await;
+        if let Err(error) = refresh().await {
+            eprintln!("admitted peer hello refresh failed: {error}");
+        }
+    }
 }
 
 async fn refresh_admitted_peers(
@@ -1161,6 +1181,72 @@ pub(super) fn resident_observations_for_served_protocol(
 mod tests {
     use super::*;
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+
+    #[tokio::test]
+    async fn federation_refresh_stall_does_not_block_serving() {
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let refresh = async {
+            entered.send(()).unwrap();
+            std::future::pending::<()>().await;
+        };
+        let serve = async {
+            started.await.unwrap();
+            Ok(())
+        };
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            run_resident_io(serve, refresh, std::future::pending()),
+        )
+        .await
+        .expect("pending refresh must not prevent serving")
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn federation_refresh_stall_does_not_block_shutdown() {
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let refresh = async {
+            entered.send(()).unwrap();
+            std::future::pending::<()>().await;
+        };
+        let shutdown = async { started.await.unwrap() };
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            run_resident_io(std::future::pending(), refresh, shutdown),
+        )
+        .await
+        .expect("pending refresh must not prevent shutdown")
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn federation_refresh_starts_immediately_not_after_first_period() {
+        let invoked = Arc::new(tokio::sync::Notify::new());
+        let started = invoked.notified();
+        let refresh = run_admitted_peer_refresh_loop(Duration::from_secs(3600), || async {
+            invoked.notify_one();
+            Ok(())
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            run_resident_io(std::future::pending(), refresh, started),
+        )
+        .await
+        .expect("configured peers must refresh at startup")
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn federation_refresh_unexpected_exit_is_an_error() {
+        let error = run_resident_io(std::future::pending(), async {}, std::future::pending())
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("refresh loop stopped unexpectedly")
+        );
+    }
 
     #[tokio::test]
     async fn receiver_authority_read_returns_epoch_and_generation() {
@@ -2432,6 +2518,7 @@ mod tests {
                 ObservationKind::PeerCallReceived,
                 ObservationKind::CallConstructed,
                 ObservationKind::CallAuthorized,
+                ObservationKind::CallConstructed, // durable keyed dispatch, before route/effect
                 ObservationKind::RouteRevalidated,
                 ObservationKind::RouteSelected,
                 ObservationKind::RouteRevalidated,

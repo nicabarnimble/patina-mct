@@ -66,7 +66,10 @@ The repository policy is [`.cargo/audit.toml`](.cargo/audit.toml):
 - unmaintained and unsound informational advisories are evaluated;
 - `RUSTSEC-2024-0436` is explicitly ignored with
   transitive-dependency rationale, a revisit date, and a revisit condition in
-  the policy file; and
+  the policy file;
+- `RUSTSEC-2026-0173` is ignored for the locked `cfg(hax)`-only
+  `proc-macro-error2` chain through libcrux, with revisit by 2027-04-14 or
+  earlier removal of that dependency chain; and
 - yanked-package checking is disabled with the pinned `spin 0.10.0` transitive
   rationale recorded in the policy file.
 

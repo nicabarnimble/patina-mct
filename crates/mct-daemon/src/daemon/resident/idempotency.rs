@@ -1,4 +1,6 @@
+use super::observation::{DispatchOperation, DispatchResponse};
 use super::*;
+use mct_daemon::call_dispatch::CallDispatchClaimV1;
 
 fn resident_idempotency_caller_scope(
     request: &MctCallProtocolRequest,
@@ -393,7 +395,88 @@ where
             idempotency_refusal_result(reason)
         }
         MctIdempotencyReservation::ExecuteFresh => {
-            let result = execute().await;
+            let claim = match CallDispatchClaimV1::new(
+                &caller_scope,
+                &idempotency_key,
+                &fingerprint,
+                now.clone(),
+                expires_at,
+            ) {
+                Ok(claim) => claim,
+                Err(_) => return MctIrohCallHandlerResult::failed("runtime unavailable"),
+            };
+            let template = resident_idempotency_observation(
+                &request,
+                &caller_scope,
+                &fingerprint,
+                MctIdempotencyReason::ExecuteFresh,
+                ObservationOutcome::Started,
+            );
+            let dispatch = ledger
+                .dispatch(DispatchOperation::Reserve {
+                    claim,
+                    observation: template,
+                })
+                .await;
+            let (dispatch_reservation, result) = match dispatch {
+                Ok(DispatchResponse::Reserved(reservation)) => (Some(reservation), execute().await),
+                Ok(DispatchResponse::Existing) => {
+                    let mut observation = resident_idempotency_observation(
+                        &request,
+                        &caller_scope,
+                        &fingerprint,
+                        MctIdempotencyReason::ExecuteFresh,
+                        ObservationOutcome::Failed,
+                    );
+                    observation.safe_message =
+                        "keyed dispatch outcome unavailable; execution not retried".into();
+                    observation.detail_ref = Some("idempotency_reason:dispatch_interrupted".into());
+                    if ledger.append(vec![observation]).await.is_err() {
+                        return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+                    }
+                    (
+                        None,
+                        MctIrohCallHandlerResult::failed(
+                            "execution outcome unavailable; not retried",
+                        )
+                        .with_protocol_reason(CallProtocolReason::ExecutionInterrupted),
+                    )
+                }
+                Ok(DispatchResponse::FingerprintMismatch) => {
+                    if ledger
+                        .append(vec![resident_idempotency_observation(
+                            &request,
+                            &caller_scope,
+                            &fingerprint,
+                            MctIdempotencyReason::IdempotencyKeyReuseMismatch,
+                            ObservationOutcome::Denied,
+                        )])
+                        .await
+                        .is_err()
+                    {
+                        return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+                    }
+                    // The restored database must not pin the wrong fingerprint.
+                    if MctRuntimeStateStore::open(&state_path)
+                        .and_then(|state| {
+                            state.release_call_idempotency(
+                                &caller_scope,
+                                &idempotency_key,
+                                &fingerprint,
+                            )
+                        })
+                        .is_err()
+                    {
+                        return MctIrohCallHandlerResult::failed("runtime unavailable");
+                    }
+                    return idempotency_refusal_result(
+                        MctIdempotencyReason::IdempotencyKeyReuseMismatch,
+                    );
+                }
+                Ok(DispatchResponse::Released) | Err(_) => {
+                    return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+                }
+            };
             if ledger.is_fenced() {
                 return MctIrohCallHandlerResult::failed("observation ledger unavailable");
             }
@@ -414,6 +497,20 @@ where
                 {
                     eprintln!("resident idempotency release observation failed: {error}");
                     return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+                }
+                if let Some(reservation) = dispatch_reservation {
+                    let observation =
+                        transient_release_observation(&request, &caller_scope, &fingerprint, &now);
+                    if ledger
+                        .dispatch(DispatchOperation::Release {
+                            reservation,
+                            observation,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+                    }
                 }
                 if let Err(error) = MctRuntimeStateStore::open(&state_path).and_then(|state| {
                     state.release_call_idempotency(&caller_scope, &idempotency_key, &fingerprint)
@@ -532,6 +629,126 @@ mod tests {
             .count()
     }
     #[tokio::test]
+    async fn call_dispatch_serializes_competing_missing_projections() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger =
+            ResidentLedgerWriter::spawn_authority_for_test(dir.path().join("ledger.jsonl"))
+                .unwrap();
+        let mut request = resident_test_protocol_request(resident_test_call(
+            TraceId::new("trace-dispatch-race").unwrap(),
+        ));
+        request.idempotency_key = Some("race-key".into());
+        let executions = Arc::new(AtomicU64::new(0));
+        let mut tasks = Vec::new();
+        for n in 0..2 {
+            let executions = Arc::clone(&executions);
+            tasks.push(tokio::spawn(execute_idempotent_call(
+                dir.path().join(format!("projection-{n}.sqlite")),
+                ledger.clone(),
+                request.clone(),
+                Timestamp::new("2026-10-19T00:00:00Z").unwrap(),
+                move || async move {
+                    executions.fetch_add(1, Ordering::SeqCst);
+                    MctIrohCallHandlerResult::completed(ResultRef::new("result-once").unwrap())
+                },
+            )));
+        }
+        let mut outcomes = Vec::new();
+        for task in tasks {
+            outcomes.push(task.await.unwrap());
+        }
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|r| r.outcome == CallProtocolOutcome::Completed)
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|r| r.protocol_reason == Some(CallProtocolReason::ExecutionInterrupted))
+                .count(),
+            1
+        );
+        ledger.close().await;
+    }
+
+    #[tokio::test]
+    async fn call_dispatch_mismatch_after_projection_loss_does_not_pin_wrong_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger =
+            ResidentLedgerWriter::spawn_authority_for_test(dir.path().join("ledger.jsonl"))
+                .unwrap();
+        let mut request = resident_test_protocol_request(resident_test_call(
+            TraceId::new("trace-dispatch-mismatch").unwrap(),
+        ));
+        request.idempotency_key = Some("private-key".into());
+        let now = Timestamp::new("2026-10-19T00:00:00Z").unwrap();
+        let first = execute_idempotent_call(
+            dir.path().join("before.sqlite"),
+            ledger.clone(),
+            request.clone(),
+            now.clone(),
+            || async {
+                MctIrohCallHandlerResult::completed(ResultRef::new("result-once").unwrap())
+            },
+        )
+        .await;
+        assert_eq!(first.outcome, CallProtocolOutcome::Completed);
+        let mut changed = request.clone();
+        changed.call.call_id = CallId::new("other-call").unwrap();
+        let mismatch = execute_idempotent_call(
+            dir.path().join("after.sqlite"),
+            ledger.clone(),
+            changed,
+            now.clone(),
+            || async { panic!("mismatch must not execute") },
+        )
+        .await;
+        assert_eq!(
+            mismatch.protocol_reason,
+            Some(CallProtocolReason::IdempotencyKeyReuseMismatch)
+        );
+        let retry = execute_idempotent_call(
+            dir.path().join("after.sqlite"),
+            ledger.clone(),
+            request,
+            now,
+            || async { panic!("lost result must not execute") },
+        )
+        .await;
+        assert_eq!(
+            retry.protocol_reason,
+            Some(CallProtocolReason::ExecutionInterrupted)
+        );
+        ledger.close().await;
+    }
+
+    #[tokio::test]
+    async fn call_dispatch_writer_failure_suppresses_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger =
+            ResidentLedgerWriter::fail_after_batches_for_test(dir.path().join("ledger.jsonl"), 0);
+        let mut request = resident_test_protocol_request(resident_test_call(
+            TraceId::new("trace-dispatch-failure").unwrap(),
+        ));
+        request.idempotency_key = Some("failure-key".into());
+        let result = execute_idempotent_call(
+            dir.path().join("state.sqlite"),
+            ledger.clone(),
+            request,
+            Timestamp::new("2026-10-19T00:00:00Z").unwrap(),
+            || async { panic!("failed dispatch must not execute") },
+        )
+        .await;
+        assert_eq!(result.outcome, CallProtocolOutcome::Failed);
+        assert!(ledger.is_fenced());
+        ledger.close().await;
+    }
+
+    #[tokio::test]
     async fn in_flight_idempotency_duplicate_refuses_without_second_execution() {
         let dir = tempfile::tempdir().unwrap();
         let state_path = dir.path().join("state.sqlite");
@@ -620,7 +837,11 @@ mod tests {
         .await;
         assert_eq!(first.outcome, CallProtocolOutcome::Failed);
         assert_eq!(first.safe_message, "observation ledger unavailable");
-        assert_eq!(execution_count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            execution_count.load(Ordering::SeqCst),
+            0,
+            "fenced dispatch never enters execution"
+        );
 
         let healthy_writer = ResidentLedgerWriter::spawn_authority_for_test(
             dir.path().join("recovery-observations.jsonl"),
@@ -647,7 +868,7 @@ mod tests {
             retry.protocol_reason,
             Some(CallProtocolReason::IdempotencyInProgress)
         );
-        assert_eq!(execution_count.load(Ordering::SeqCst), 1);
+        assert_eq!(execution_count.load(Ordering::SeqCst), 0);
         healthy_writer.close().await;
     }
 

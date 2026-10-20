@@ -3,7 +3,7 @@ id: what-is-mct
 layer: core
 status: active
 created: 2026-06-09
-revised: 2026-10-14
+revised: 2026-10-19
 tags: [mct, product, mother, child, toy, authority, iroh, observations]
 references: [mct-build-boundaries, spec-driven-design, adapter-pattern, safety-boundaries, migration-vocabulary]
 ---
@@ -11,8 +11,8 @@ references: [mct-build-boundaries, spec-driven-design, adapter-pattern, safety-b
 # What Is MCT
 
 **Purpose:** The narrative answer to "what is MCT?" for humans reading this
-repo. Settled decisions live in `docs/DECISIONS.md`; active ratified slice
-specifications govern current work. This document explains those decisions.
+repo. Settled decisions live in `docs/DECISIONS.md`; accepted work
+specifications define current scope. This document explains those decisions.
 The frozen maps under `layer/allium/` are historical evidence, not current law.
 
 ---
@@ -173,8 +173,9 @@ business unit, environment, compliance zone, data domain, or application
 fabric; do not collapse it to "tenant" early. Capability publication is
 per-Vision and policy-filtered; cross-Vision sharing requires explicit
 grants. Nodes differ in compute, storage, and locality, and routing accounts
-for that. Multi-Mother with per-Mother ledgers is future scale work, not
-planned now. JVM ecosystems (banking is the adoption example) integrate
+for that. The current release scope includes 4–6 independent Mothers, each
+with its own authority and ledger, cooperating through single-hop forwarding
+(D-37/D-52). JVM ecosystems (banking is the adoption example) integrate
 through WIT-shaped external ingress, trusted Mother adapters, or remote
 Mothers—not as a second call model or local Child runtime.
 

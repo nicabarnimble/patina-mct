@@ -5,7 +5,22 @@
 
 #![forbid(unsafe_code)]
 
+mod admin_genesis;
+pub use admin_genesis::{
+    AdminGenesisFactV1, AdminGenesisIntentV1, AdminGenesisRequestV1, AdminGenesisSetupV1,
+};
+#[cfg(test)]
+mod admin_genesis_tests;
+mod admin_issuance;
+mod guardian_recovery;
+pub use admin_issuance::{AdminKeyIssuanceRecordV1, AdminKeyIssueIntentV1, AdminKeyIssueRequestV1};
+#[cfg(test)]
+mod guardian_recovery_tests;
 mod segment;
+
+pub use mct_kernel::recovery::{
+    GuardianRecoveryCommandV1, GuardianRecoveryStateV1, RecoveryClockV1,
+};
 
 pub use segment::{
     SEGMENT_CHECKPOINT_PREFIX, SealedSegment, SegmentCheckpointV1, SegmentedLedgerReport,
@@ -187,8 +202,16 @@ pub struct PairingTicketV1 {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "change_kind", rename_all = "snake_case")]
+#[serde(tag = "change_kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AuthorityChangeV1 {
+    AdminKeyIssue {
+        request: Box<AdminKeyIssueRequestV1>,
+        decided_at: Timestamp,
+    },
+    GuardianRecovery {
+        command: Box<GuardianRecoveryCommandV1>,
+        clock: RecoveryClockV1,
+    },
     ToyCatalogPut {
         toy_id: String,
         contract: ToyContractIdentity,
@@ -408,6 +431,12 @@ pub struct AuthorityStateV1 {
     pub admin_key_grants: BTreeMap<String, AdminKeyGrantV1>,
     #[serde(default)]
     pub pairing_tickets: BTreeMap<String, PairingTicketV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guardian_recovery: Option<Box<GuardianRecoveryStateV1>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub admin_issuance: BTreeMap<String, AdminKeyIssuanceRecordV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_genesis: Option<Box<AdminGenesisFactV1>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -501,6 +530,9 @@ pub struct AuthorityReplayV1 {
     pub canonical_fact_count: usize,
     /// `(signer_grant_id, nonce)` pairs already accepted. Replay rejects a reuse.
     pub admin_signature_nonces: BTreeSet<(String, u64)>,
+    /// Every historical admin grant ID, including roots retired by recovery.
+    /// Reconstructed from canonical replay, never from a request/projection.
+    pub admin_grant_ids: BTreeSet<String>,
     /// True while every replayed entry is a valid tail-recovery fact
     /// ([`is_valid_tail_recovery_entry`]); vacuously true for an empty ledger.
     /// It is the only non-empty prefix over which an operator-gated epoch is legal.
@@ -723,12 +755,19 @@ pub enum ExportStatus {
 pub struct JsonlObservationLedger {
     path: PathBuf,
     file: File,
+    /// Atomic file-creation evidence for this handle, not evidence of virgin host inventory.
+    created_new: bool,
     ledger_id: String,
     mother_node_id: String,
     next_sequence: u64,
     previous_hash: Option<String>,
     recovery_status: Option<LedgerRecoveryStatus>,
     authority_tenure: Option<AuthorityWriterTenureV1>,
+    recovery_clock_origin: std::time::Instant,
+    // Durability latency is not credit toward a newly accepted 24-hour wait.
+    recovery_wait_offset_ms: u64,
+    #[cfg(test)]
+    recovery_test_ack_delay_ms: u64,
     writer_state: LedgerWriterState,
     authority_replay: std::result::Result<AuthorityReplayV1, String>,
     used_epochs: BTreeSet<String>,
@@ -1083,7 +1122,33 @@ impl JsonlObservationLedger {
     where
         F: FnOnce(&AuthorityStateV1) -> std::result::Result<Option<String>, String>,
     {
+        self.execute_authority_mutation_inner(request, legacy_projection_write, false)
+    }
+
+    fn execute_authority_mutation_inner<F>(
+        &mut self,
+        request: AuthorityMutationRequestV1,
+        legacy_projection_write: F,
+        typed_path: bool,
+    ) -> AuthorityMutationResultV1
+    where
+        F: FnOnce(&AuthorityStateV1) -> std::result::Result<Option<String>, String>,
+    {
         let mutation_id = request.mutation_id.clone();
+        if !typed_path
+            && request.changes.iter().any(|change| {
+                matches!(
+                    change,
+                    AuthorityChangeV1::GuardianRecovery { .. }
+                        | AuthorityChangeV1::AdminKeyIssue { .. }
+                )
+            })
+        {
+            return rejected_mutation(
+                mutation_id,
+                AuthorityMutationRejectionReasonV1::InvalidRequest,
+            );
+        }
         if self.authority_tenure.is_none() {
             return rejected_mutation(
                 mutation_id,
@@ -1114,6 +1179,16 @@ impl JsonlObservationLedger {
                 );
             }
         };
+        if !typed_path
+            && (replay.state.guardian_recovery.is_some()
+                || !replay.state.admin_issuance.is_empty()
+                || replay.state.admin_genesis.is_some())
+        {
+            return rejected_mutation(
+                mutation_id,
+                AuthorityMutationRejectionReasonV1::InvalidRequest,
+            );
+        }
         if let Some(existing) = replay.mutations.get(&request.mutation_id) {
             if existing.fact.mutation_intent_hash != intent_hash {
                 return rejected_mutation(
@@ -1135,6 +1210,35 @@ impl JsonlObservationLedger {
                 AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
             );
         };
+        if admin_issuance::validate_context(
+            &replay.admin_grant_ids,
+            &request.changes,
+            &prior_authority,
+            &self.ledger_id,
+            &request.mutation_id,
+            &request.decided_at,
+        )
+        .is_err()
+        {
+            return rejected_mutation(
+                mutation_id,
+                AuthorityMutationRejectionReasonV1::InvalidRequest,
+            );
+        }
+        if guardian_recovery::validate_context(
+            &replay.state,
+            &request.changes,
+            &prior_authority,
+            &self.ledger_id,
+            &request.decided_at,
+        )
+        .is_err()
+        {
+            return rejected_mutation(
+                mutation_id,
+                AuthorityMutationRejectionReasonV1::InvalidRequest,
+            );
+        }
         if verify_admin_change_signatures(
             &replay.state,
             &replay.admin_signature_nonces,
@@ -1299,6 +1403,18 @@ impl JsonlObservationLedger {
                 AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
             );
         };
+        if imported_state.admin_genesis.is_some()
+            || replay.state.admin_genesis.is_some()
+            || imported_state.guardian_recovery.is_some()
+            || replay.state.guardian_recovery.is_some()
+            || !imported_state.admin_issuance.is_empty()
+            || !replay.state.admin_issuance.is_empty()
+        {
+            return rejected_mutation(
+                mutation_id,
+                AuthorityMutationRejectionReasonV1::InvalidRequest,
+            );
+        }
         let imported_hash = match authority_state_hash(&imported_state) {
             Ok(hash) => hash,
             Err(_) => {
@@ -1965,6 +2081,10 @@ fn authority_mutation_intent_hash(request: &AuthorityMutationRequestV1) -> Resul
 
 fn authority_change_sort_key(change: &AuthorityChangeV1) -> (&'static str, &str) {
     match change {
+        AuthorityChangeV1::GuardianRecovery { .. } => ("guardian_recovery", ""),
+        AuthorityChangeV1::AdminKeyIssue { request, .. } => {
+            ("admin_key_issue", &request.intent.grant.grant_id)
+        }
         AuthorityChangeV1::ToyCatalogPut { toy_id, .. } => ("toy_catalog_put", toy_id),
         AuthorityChangeV1::ToyCatalogRemove { toy_id } => ("toy_catalog_remove", toy_id),
         AuthorityChangeV1::ToyGrantPut { grant_id, .. } => ("toy_grant_put", grant_id),
@@ -2171,8 +2291,48 @@ pub fn apply_authority_changes(
     state: &mut AuthorityStateV1,
     changes: &[AuthorityChangeV1],
 ) -> std::result::Result<(), AuthorityReplayError> {
+    if changes
+        .iter()
+        .any(|change| matches!(change, AuthorityChangeV1::AdminKeyIssue { .. }))
+    {
+        let [
+            AuthorityChangeV1::AdminKeyIssue {
+                request,
+                decided_at,
+            },
+        ] = changes
+        else {
+            return Err(authority_incoherent(
+                "issuance must be an exclusive authority transition",
+            ));
+        };
+        return admin_issuance::apply(state, request, decided_at);
+    }
+    if changes
+        .iter()
+        .any(|change| matches!(change, AuthorityChangeV1::GuardianRecovery { .. }))
+    {
+        let [AuthorityChangeV1::GuardianRecovery { command, clock }] = changes else {
+            return Err(authority_incoherent(
+                "recovery must be an exclusive authority transition",
+            ));
+        };
+        return guardian_recovery::apply(state, command, clock);
+    }
+    if state.guardian_recovery.is_some()
+        || !state.admin_issuance.is_empty()
+        || state.admin_genesis.is_some()
+    {
+        return Err(authority_incoherent(
+            "enrolled recovery authority requires the new runtime path",
+        ));
+    }
     for change in changes {
         match change {
+            AuthorityChangeV1::GuardianRecovery { .. }
+            | AuthorityChangeV1::AdminKeyIssue { .. } => {
+                unreachable!("exclusive typed transition handled above")
+            }
             AuthorityChangeV1::ToyCatalogPut {
                 toy_id,
                 contract,
@@ -2311,6 +2471,11 @@ pub fn apply_authority_changes(
                 state.watch_scopes.insert(scope_id, scope.as_ref().clone());
             }
             AuthorityChangeV1::AdminKeyGrantPut { grant, signature } => {
+                if grant.issuance_ceiling.is_some() {
+                    return Err(authority_incoherent(
+                        "legacy put cannot introduce an issuance ceiling",
+                    ));
+                }
                 if signature.is_some() && grant.ml_dsa65_public_key.is_none() {
                     return Err(authority_incoherent(
                         "scheme v1 grant put records the ML-DSA-65 public key beside Ed25519",
@@ -2493,6 +2658,11 @@ pub fn authority_state_hash(state: &AuthorityStateV1) -> Result<String> {
         .map_err(|detail| ObservationLedgerError::AuthorityReplay { detail })?;
     validate_admin_authority_state(state)
         .map_err(|detail| ObservationLedgerError::AuthorityReplay { detail })?;
+    guardian_recovery::validate_state(state)
+        .map_err(|detail| ObservationLedgerError::AuthorityReplay { detail })?;
+    admin_issuance::validate_state(state)
+        .map_err(|detail| ObservationLedgerError::AuthorityReplay { detail })?;
+    admin_genesis::validate_state(state)?;
     #[derive(Serialize)]
     struct HashableAuthorityState<'a> {
         toy_catalog: Vec<&'a CanonicalToyContract>,
@@ -2511,9 +2681,32 @@ pub fn authority_state_hash(state: &AuthorityStateV1) -> Result<String> {
         admin_key_grants: state.admin_key_grants.values().collect(),
         pairing_tickets: state.pairing_tickets.values().collect(),
     };
-    Ok(blake3::hash(&canonical_json_bytes(&hashable)?)
-        .to_hex()
-        .to_string())
+    if state.admin_genesis.is_some() {
+        let bytes = canonical_json_bytes(&(
+            "mct-strict-admin-authority-state/v1",
+            &hashable,
+            &state.guardian_recovery,
+            &state.admin_issuance,
+            &state.admin_genesis,
+        ))?;
+        return Ok(blake3::hash(&bytes).to_hex().to_string());
+    }
+    if !state.admin_issuance.is_empty() {
+        let bytes = canonical_json_bytes(&(
+            "mct-admin-issuance-authority-state/v1",
+            &hashable,
+            &state.guardian_recovery,
+            &state.admin_issuance,
+        ))?;
+        return Ok(blake3::hash(&bytes).to_hex().to_string());
+    }
+    let bytes = match &state.guardian_recovery {
+        None => canonical_json_bytes(&hashable)?,
+        Some(recovery) => {
+            canonical_json_bytes(&("mct-guardian-authority-state/v1", &hashable, recovery))?
+        }
+    };
+    Ok(blake3::hash(&bytes).to_hex().to_string())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2691,17 +2884,26 @@ fn empty_authority_replay() -> AuthorityReplayV1 {
         facts: Vec::new(),
         canonical_fact_count: 0,
         admin_signature_nonces: BTreeSet::new(),
+        admin_grant_ids: BTreeSet::new(),
         tail_recovery_only: true,
     }
 }
 
 fn change_signature(change: &AuthorityChangeV1) -> Option<&AdminSignatureV1> {
     match change {
+        AuthorityChangeV1::AdminKeyIssue { request, .. } => Some(&request.signature),
         AuthorityChangeV1::AdminKeyGrantPut { signature, .. }
         | AuthorityChangeV1::AdminKeyGrantRevoke { signature, .. }
         | AuthorityChangeV1::PairingTicketIssued { signature, .. }
         | AuthorityChangeV1::PairingTicketConsumed { signature, .. } => signature.as_ref(),
         _ => None,
+    }
+}
+
+fn unsigned_admin_command_bytes(change: &AuthorityChangeV1) -> Result<Vec<u8>> {
+    match change {
+        AuthorityChangeV1::AdminKeyIssue { request, .. } => admin_issuance::command_bytes(request),
+        _ => canonical_json_bytes(&command_without_signature(change)),
     }
 }
 
@@ -2751,7 +2953,7 @@ pub fn admin_change_signing_message(
     change: &AuthorityChangeV1,
 ) -> Result<Vec<u8>> {
     let grant_bytes = canonical_json_bytes(signer_grant)?;
-    let command_bytes = canonical_json_bytes(&command_without_signature(change))?;
+    let command_bytes = unsigned_admin_command_bytes(change)?;
     Ok(admin_signed_message(AdminSignedMessageParts {
         scheme: AdminSignatureSchemeV1::Ed25519MlDsa65V1,
         mother_node_id,
@@ -2774,6 +2976,11 @@ fn verify_admin_change_signatures(
         let Some(signature) = change_signature(change) else {
             continue;
         };
+        if matches!(change, AuthorityChangeV1::AdminKeyIssue { .. })
+            && signature.signature.len() != mct_kernel::ADMIN_HYBRID_SIGNATURE_LEN * 2
+        {
+            return Err("issuance signature has invalid encoded length".into());
+        }
         let nonce_key = (signature.signer_grant_id.clone(), signature.nonce);
         if used_nonces.contains(&nonce_key) || !seen.insert(nonce_key) {
             return Err(format!(
@@ -2788,8 +2995,8 @@ fn verify_admin_change_signatures(
             );
         };
         let grant_bytes = canonical_json_bytes(grant).map_err(|error| error.to_string())?;
-        let command_bytes = canonical_json_bytes(&command_without_signature(change))
-            .map_err(|error| error.to_string())?;
+        let command_bytes =
+            unsigned_admin_command_bytes(change).map_err(|error| error.to_string())?;
         let message = admin_signed_message(AdminSignedMessageParts {
             scheme: signature.scheme,
             mother_node_id,
@@ -2825,6 +3032,9 @@ fn fold_authority_entry(
     // Updated after the entry is validated, so the entry is judged against
     // the prefix before it.
     replay.tail_recovery_only = replay.tail_recovery_only && is_valid_tail_recovery_entry(entry);
+    replay
+        .admin_grant_ids
+        .extend(replay.state.admin_key_grants.keys().cloned());
     Ok(())
 }
 
@@ -2860,6 +3070,16 @@ fn fold_authority_entry_body(
     let fact_kind = envelope.fact_kind.clone();
     let fact_id = envelope.fact_id.clone();
     match fact_kind.as_str() {
+        "admin_genesis" => {
+            let fact: AdminGenesisFactV1 =
+                serde_json::from_value(envelope.body).map_err(|error| {
+                    AuthorityReplayError::Malformed {
+                        sequence: entry.local_sequence,
+                        detail: error.to_string(),
+                    }
+                })?;
+            admin_genesis::replay_genesis(replay, used_epochs, previous, entry, fact)?;
+        }
         "epoch_established" => {
             let fact: EpochEstablishedFactV1 =
                 serde_json::from_value(envelope.body).map_err(|error| {
@@ -3059,6 +3279,17 @@ fn validate_legacy_import_fact(
         sequence: entry.local_sequence,
         detail: detail.to_owned(),
     };
+    if replay.state.admin_genesis.is_some()
+        || fact.imported_state.admin_genesis.is_some()
+        || replay.state.guardian_recovery.is_some()
+        || fact.imported_state.guardian_recovery.is_some()
+        || !replay.state.admin_issuance.is_empty()
+        || !fact.imported_state.admin_issuance.is_empty()
+    {
+        return Err(incoherent(
+            "legacy import cannot introduce or overwrite recovery authority",
+        ));
+    }
     let Some(prior_authority) = replay.current_authority.as_ref() else {
         return Err(incoherent("legacy import precedes epoch establishment"));
     };
@@ -3131,6 +3362,23 @@ fn validate_authority_mutation_fact(
         &fact.mother_node_id,
         &fact.ledger_id,
         &fact.changes,
+    )
+    .map_err(|detail| incoherent(&detail))?;
+    admin_issuance::validate_context(
+        &replay.admin_grant_ids,
+        &fact.changes,
+        prior_authority,
+        &entry.ledger_id,
+        &fact.mutation_id,
+        &fact.decided_at,
+    )
+    .map_err(|detail| incoherent(&detail))?;
+    guardian_recovery::validate_context(
+        &replay.state,
+        &fact.changes,
+        prior_authority,
+        &entry.ledger_id,
+        &fact.decided_at,
     )
     .map_err(|detail| incoherent(&detail))?;
     let mut resulting_state = replay.state.clone();
@@ -3362,15 +3610,33 @@ fn open_with_recovery_hook(
         })?;
     }
 
-    let file = OpenOptions::new()
+    // Distinguish atomic creation from opening an existing zero-byte file.
+    // Only the creator may attempt strict genesis; reopen never re-proves birth.
+    let (file, created_new) = match OpenOptions::new()
         .read(true)
         .append(true)
-        .create(true)
+        .create_new(true)
         .open(&path)
-        .map_err(|source| ObservationLedgerError::Io {
-            path: path.clone(),
-            source,
-        })?;
+    {
+        Ok(file) => (file, true),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (
+            OpenOptions::new()
+                .read(true)
+                .append(true)
+                .open(&path)
+                .map_err(|source| ObservationLedgerError::Io {
+                    path: path.clone(),
+                    source,
+                })?,
+            false,
+        ),
+        Err(source) => {
+            return Err(ObservationLedgerError::Io {
+                path: path.clone(),
+                source,
+            });
+        }
+    };
     let mut file = acquire_writer_lock(&path, file)?;
 
     let (state, recovery_status) = match scan_existing(&path, ledger_id, mother_node_id)? {
@@ -3413,12 +3679,17 @@ fn open_with_recovery_hook(
     Ok(JsonlObservationLedger {
         path,
         file,
+        created_new,
         ledger_id: ledger_id.to_owned(),
         mother_node_id: mother_node_id.to_owned(),
         next_sequence: state.next_sequence,
         previous_hash: state.previous_hash,
         recovery_status,
         authority_tenure: None,
+        recovery_clock_origin: std::time::Instant::now(),
+        recovery_wait_offset_ms: 0,
+        #[cfg(test)]
+        recovery_test_ack_delay_ms: 0,
         writer_state: LedgerWriterState::Ready,
         authority_replay: state.authority_replay,
         used_epochs: state.used_epochs,
@@ -6212,6 +6483,7 @@ mod tests {
     fn day_to_day_admin_grant() -> AdminKeyGrantV1 {
         AdminKeyGrantV1 {
             grant_id: "day-to-day".into(),
+            issuance_ceiling: None,
             public_half: half(DAY_PK),
             ml_dsa65_public_key: None,
             class: AdminKeyGrantClassV1::DayToDay,
@@ -6224,6 +6496,7 @@ mod tests {
     fn recovery_admin_grant() -> AdminKeyGrantV1 {
         AdminKeyGrantV1 {
             grant_id: "recovery".into(),
+            issuance_ceiling: None,
             public_half: half(RECOVERY_PK),
             ml_dsa65_public_key: None,
             class: AdminKeyGrantClassV1::Recovery,

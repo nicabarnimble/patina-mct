@@ -1,9 +1,81 @@
 use super::*;
+use mct_daemon::call_dispatch::{
+    CallDispatchCheckV1, CallDispatchClaimV1, CallDispatchIndexV1, CallDispatchReservationV1,
+    dispatch_release_observation, dispatch_reservation_observation,
+};
 use mct_daemon::{
     MotherAuthorityAdmissionDenyV1, MotherAuthorityCommitOutcomeV1, MotherAuthorityOrderV1,
     authority_expectation_from_ledger, authority_expectation_from_snapshot, same_authority_state,
 };
 use mct_observation::UsableAuthorityProjectionProofV1;
+
+pub(super) enum DispatchOperation {
+    Reserve {
+        claim: CallDispatchClaimV1,
+        observation: MctObservation,
+    },
+    Release {
+        reservation: CallDispatchReservationV1,
+        observation: MctObservation,
+    },
+}
+
+#[derive(Debug)]
+pub(super) enum DispatchResponse {
+    Reserved(CallDispatchReservationV1),
+    Existing,
+    FingerprintMismatch,
+    Released,
+}
+
+fn process_dispatch(
+    ledger: &mut JsonlObservationLedger,
+    index: &mut CallDispatchIndexV1,
+    operation: DispatchOperation,
+) -> Result<DispatchResponse> {
+    let sequence = ledger
+        .verified_head()?
+        .local_sequence
+        .checked_add(1)
+        .context("dispatch sequence overflow")?;
+    let (observation, response) = match operation {
+        DispatchOperation::Reserve { claim, observation } => {
+            match index.check(&claim)? {
+                CallDispatchCheckV1::Existing => return Ok(DispatchResponse::Existing),
+                CallDispatchCheckV1::FingerprintMismatch => {
+                    return Ok(DispatchResponse::FingerprintMismatch);
+                }
+                CallDispatchCheckV1::Fresh => {}
+            }
+            let (observation, reservation) =
+                dispatch_reservation_observation(observation, claim, sequence)?;
+            (observation, DispatchResponse::Reserved(reservation))
+        }
+        DispatchOperation::Release {
+            reservation,
+            observation,
+        } => {
+            // A late release cannot remove a newer attempt after TTL expiry.
+            if !index.contains(&reservation) {
+                return Ok(DispatchResponse::Released);
+            }
+            (
+                dispatch_release_observation(observation, &reservation, sequence)?,
+                DispatchResponse::Released,
+            )
+        }
+    };
+    let entries = ledger.append_durable_batch(
+        [observation],
+        mct_daemon::current_timestamp_string(),
+        DurabilityClass::BeforeEffect,
+        ExportStatus::NotRequired,
+    )?;
+    for entry in &entries {
+        index.replay_entry(entry)?;
+    }
+    Ok(response)
+}
 
 const RESIDENT_LEDGER_QUEUE_CAPACITY: usize = 256;
 
@@ -52,6 +124,10 @@ pub(crate) struct ResidentLedgerWriter {
 
 enum ResidentLedgerCommand {
     Write(ResidentLedgerWrite),
+    Dispatch {
+        operation: Box<DispatchOperation>,
+        ack: tokio::sync::oneshot::Sender<std::result::Result<DispatchResponse, String>>,
+    },
     AuthorityMutation {
         request: AuthorityMutationRequestV1,
         state_path: PathBuf,
@@ -290,6 +366,10 @@ impl ResidentLedgerWriter {
                             reason: AuthorityMutationRejectionReasonV1::WriterPoisoned,
                         });
                     }
+                    ResidentLedgerCommand::Dispatch { ack, .. } => {
+                        task_fenced.store(true, Ordering::SeqCst);
+                        let _ = ack.send(Err("injected resident writer loss".into()));
+                    }
                     ResidentLedgerCommand::ProjectedAuthority { ack, .. } => {
                         let _ = ack.send(Err("injected resident writer loss".into()));
                     }
@@ -357,6 +437,9 @@ impl ResidentLedgerWriter {
                             mutation_id: request.import_id,
                             reason: AuthorityMutationRejectionReasonV1::InvalidRequest,
                         });
+                    }
+                    ResidentLedgerCommand::Dispatch { ack, .. } => {
+                        let _ = ack.send(Err("scripted authority writer".into()));
                     }
                     ResidentLedgerCommand::ProjectedAuthority { ack, .. } => {
                         let _ = ack.send(Err("scripted authority writer".into()));
@@ -429,6 +512,14 @@ impl ResidentLedgerWriter {
     }
 
     fn spawn_opened(path: PathBuf, mut ledger: JsonlObservationLedger) -> Result<Self> {
+        let mut dispatch_index = CallDispatchIndexV1::default();
+        for entry in ledger.iter_entries() {
+            dispatch_index
+                .replay_entry(&entry?)
+                .context("rebuild keyed dispatch fence")?;
+        }
+        let fenced = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let task_fenced = Arc::clone(&fenced);
         let authority_order = Arc::new(MotherAuthorityOrderV1::from_ledger(&ledger));
         let task_authority_order = Arc::clone(&authority_order);
         let cached_tip = Arc::new(std::sync::Mutex::new(cached_tip_from_ledger(&ledger)));
@@ -492,6 +583,18 @@ impl ResidentLedgerWriter {
                         );
                         publish_cached_tip(&ledger, &task_cached_tip);
                         let _ = ack.send(result);
+                    }
+                    ResidentLedgerCommand::Dispatch { operation, ack } => {
+                        let result = if task_fenced.load(Ordering::SeqCst) || ledger.is_poisoned() {
+                            Err(anyhow::anyhow!("resident observation writer is fenced"))
+                        } else {
+                            process_dispatch(&mut ledger, &mut dispatch_index, *operation)
+                        };
+                        if result.is_err() {
+                            task_fenced.store(true, Ordering::SeqCst);
+                        }
+                        publish_cached_tip(&ledger, &task_cached_tip);
+                        let _ = ack.send(result.map_err(|error| error.to_string()));
                     }
                     ResidentLedgerCommand::ProjectedAuthority { state_path, ack } => {
                         let _ = ack.send(projected_authority(&ledger, &state_path));
@@ -557,7 +660,7 @@ impl ResidentLedgerWriter {
         });
         Ok(Self {
             sender,
-            fenced: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            fenced,
             path: Some(Arc::new(path)),
             task: Arc::new(std::sync::Mutex::new(Some(task))),
             authority_order,
@@ -750,6 +853,30 @@ impl ResidentLedgerWriter {
             .context("receive resident authority mutation acknowledgement")
     }
 
+    pub(super) async fn dispatch(&self, operation: DispatchOperation) -> Result<DispatchResponse> {
+        if self.is_fenced() {
+            bail!("resident observation writer is fenced");
+        }
+        let (ack, rx) = tokio::sync::oneshot::channel();
+        let result = async {
+            self.sender
+                .send(ResidentLedgerCommand::Dispatch {
+                    operation: Box::new(operation),
+                    ack,
+                })
+                .await
+                .context("send keyed dispatch fact")?;
+            rx.await
+                .context("receive keyed dispatch acknowledgement")?
+                .map_err(anyhow::Error::msg)
+        }
+        .await;
+        if result.is_err() {
+            self.fenced.store(true, Ordering::SeqCst);
+        }
+        result
+    }
+
     pub(crate) async fn append(&self, observations: Vec<MctObservation>) -> Result<()> {
         self.append_with_durability(observations, DurabilityClass::BeforeEffect)
             .await
@@ -863,6 +990,24 @@ pub(super) fn resident_endpoint_observation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn call_dispatch_unknown_schema_blocks_writer_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(path.clone()).unwrap();
+        let mut observation = resident_endpoint_observation(
+            "unknown-dispatch",
+            EndpointIdText::new("endpoint-test").unwrap(),
+            ObservationOutcome::Started,
+            "test unknown schema",
+        );
+        observation.detail_ref = Some("mct-call-dispatch-v2:{}".into());
+        ledger.append(vec![observation]).await.unwrap();
+        ledger.close().await;
+        let error = ResidentLedgerWriter::spawn_authority_for_test(path).unwrap_err();
+        assert!(error.to_string().contains("rebuild keyed dispatch fence"));
+    }
 
     fn contract_peer_expiry() -> Timestamp {
         Timestamp::new("2099-01-01T00:00:00Z").unwrap()

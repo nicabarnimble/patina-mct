@@ -665,6 +665,24 @@ pub fn classify_authority_startup(
     let replay = replay_authority_entries(&entries).map_err(|error| {
         MctStartupClassificationErrorV1::AuthorityReplayBlocked(error.to_string())
     })?;
+    // Recovery facts are understood by storage but live canonical consumers and
+    // authenticated ingress are not enabled yet. Never serve legacy UID/admin
+    // paths through this authority; unsupported is not absent or virgin.
+    if replay.state.admin_genesis.is_some() {
+        return Err(MctStartupClassificationErrorV1::AuthorityReplayBlocked(
+            "strict admin genesis requires the authenticated cutover runtime".into(),
+        ));
+    }
+    if replay.state.guardian_recovery.is_some() {
+        return Err(MctStartupClassificationErrorV1::AuthorityReplayBlocked(
+            "guardian recovery authority requires the authenticated recovery runtime".into(),
+        ));
+    }
+    if !replay.state.admin_issuance.is_empty() {
+        return Err(MctStartupClassificationErrorV1::AuthorityReplayBlocked(
+            "bounded admin issuance requires the authenticated admin runtime".into(),
+        ));
+    }
     // D-H3.3: only an intact non-empty canonical history is continuity
     // evidence for `legacy_ledger_upgrade`. A ledger whose only entries are
     // tail-recovery facts (for example a torn very first frame) carries no
@@ -1587,6 +1605,9 @@ pub fn finalize_authority_startup(
             .collect(),
         admin_key_grants: std::collections::BTreeMap::new(),
         pairing_tickets: std::collections::BTreeMap::new(),
+        guardian_recovery: None,
+        admin_issuance: Default::default(),
+        admin_genesis: None,
     };
     let sqlite_hash = authority_state_hash(&sqlite_authority)?;
     let sqlite_comparison = if !pre_observation_replay.imported
@@ -1978,6 +1999,103 @@ mod tests {
             opened.authority_tenure().unwrap().fact.predecessor,
             AuthorityEpochPredecessorV1::NoneForVirgin
         );
+    }
+
+    #[test]
+    fn enrolled_guardian_recovery_ledger_cannot_start_through_legacy_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let entries: Vec<mct_observation::MctObservationLedgerEntry> = serde_json::from_str(
+            include_str!("../../../fuzz/corpus/guardian_recovery/canonical-prefix.json"),
+        )
+        .unwrap();
+        let replay = replay_authority_entries(&entries).unwrap();
+        assert_eq!(
+            replay
+                .state
+                .guardian_recovery
+                .as_ref()
+                .unwrap()
+                .binding
+                .root_generation,
+            2
+        );
+        let bytes: Vec<u8> = entries
+            .iter()
+            .flat_map(|entry| {
+                let mut frame = serde_json::to_vec(entry).unwrap();
+                frame.push(b'\n');
+                frame
+            })
+            .collect();
+        fs::write(&paths.ledger, &bytes).unwrap();
+        assert!(
+            matches!(classify_authority_startup(&paths, "ledger-a", "mother-a"),
+            Err(MctStartupClassificationErrorV1::AuthorityReplayBlocked(detail))
+                if detail.contains("authenticated recovery runtime"))
+        );
+        assert_eq!(
+            fs::read(&paths.ledger).unwrap(),
+            bytes,
+            "unsupported is not permission to rewrite history"
+        );
+    }
+
+    #[test]
+    fn bounded_issuance_ledger_cannot_start_through_legacy_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let entries: Vec<mct_observation::MctObservationLedgerEntry> = serde_json::from_str(
+            include_str!("../../../fuzz/corpus/admin_issuance/canonical-prefix.json"),
+        )
+        .unwrap();
+        let replay = replay_authority_entries(&entries).unwrap();
+        assert_eq!(replay.state.admin_issuance.len(), 2);
+        assert!(replay.state.guardian_recovery.is_none());
+        let bytes: Vec<u8> = entries
+            .iter()
+            .flat_map(|entry| {
+                let mut frame = serde_json::to_vec(entry).unwrap();
+                frame.push(b'\n');
+                frame
+            })
+            .collect();
+        fs::write(&paths.ledger, &bytes).unwrap();
+        assert!(
+            matches!(classify_authority_startup(&paths, "ledger-a", "mother-a"),
+            Err(MctStartupClassificationErrorV1::AuthorityReplayBlocked(detail))
+                if detail.contains("authenticated admin runtime"))
+        );
+        assert_eq!(fs::read(&paths.ledger).unwrap(), bytes);
+    }
+
+    #[test]
+    fn strict_admin_genesis_cannot_start_through_legacy_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let entries: Vec<mct_observation::MctObservationLedgerEntry> = serde_json::from_str(
+            include_str!("../../../fuzz/corpus/admin_genesis/genesis-only.json"),
+        )
+        .unwrap();
+        let replay = replay_authority_entries(&entries).unwrap();
+        assert!(replay.state.admin_genesis.is_some());
+        assert!(replay.state.admin_issuance.is_empty());
+        assert!(replay.state.guardian_recovery.is_none());
+        let bytes: Vec<u8> = entries
+            .iter()
+            .flat_map(|entry| {
+                let mut frame = serde_json::to_vec(entry).unwrap();
+                frame.push(b'\n');
+                frame
+            })
+            .collect();
+        fs::write(&paths.ledger, &bytes).unwrap();
+        assert!(
+            matches!(classify_authority_startup(&paths, "ledger-a", "mother-a"),
+            Err(MctStartupClassificationErrorV1::AuthorityReplayBlocked(detail))
+                if detail.contains("authenticated cutover runtime"))
+        );
+        assert_eq!(fs::read(&paths.ledger).unwrap(), bytes);
     }
 
     fn gate_request(

@@ -1667,8 +1667,8 @@ mod tests {
         assert_eq!(small.outcome, CallProtocolOutcome::Completed);
         let entries_per_echo = ledger_line_count(&ledger_path) - before_small;
         assert_eq!(
-            entries_per_echo, 10,
-            "plain echo ledger entry count changed"
+            entries_per_echo, 11,
+            "keyed echo includes one durable dispatch reservation"
         );
         assert_eq!(
             mct_observation::ledger_prefix_bytes_hashed_for(&ledger_path),

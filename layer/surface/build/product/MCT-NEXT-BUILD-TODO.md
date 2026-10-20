@@ -2,9 +2,27 @@
 
 Goal: build the next operational layer after the v0 `patinaMother` replacement boundary. MCT becomes the complete Mother/Child/Toy product; belief/scry/assay/spec/session meaning remains Patina application behavior rather than `mctMother` internals.
 
-## Execution order
+## Current next work
 
-1. [x] Single-hop route forwarding landed 2026-07-09. Multi-Mother with per-Mother ledgers is future scale work, not planned now.
+The older completed entries below retain their historical sequence. D-52 now
+sets a bounded completion target: one dependable runtime with 4–6 independent
+Mothers cooperating in one Vision. The ordered checklist and executable gate
+are in [`docs/FINISH.md`](../../../../docs/FINISH.md). First close independent
+policy revisions and the fleet proof; then canonical authority/final admission,
+admin decisions and cutover, fleet operations/failure tests, and a useful
+approved-artifact workflow. The inherited keyed dispatch fence remains bounded
+and does not implement final launch admission or durable task continuation.
+See [`federation-finish/SPEC.md`](../feat/federation-finish/SPEC.md),
+[`ledger-first-call-recovery/SPEC.md`](../feat/ledger-first-call-recovery/SPEC.md)
+and [`docs/OPEN-QUESTIONS.md`](../../../../docs/OPEN-QUESTIONS.md).
+
+Iroh admin keys and portable Child handles described below are target
+architecture, not current administration. The UDS owner check and offline
+commands remain until the explicit hard cutover.
+
+## Historical execution order
+
+1. [x] Single-hop route forwarding landed 2026-07-09. D-52 subsequently brings bounded 4–6-Mother federation into the completion target; clustering and shared/replicated ledgers remain out of scope.
 2. [x] Audit `patinaMother` routing and record translate/rebuild/replace decisions. See audit snapshot below.
 3. [ ] Design storage/network `mctToy` contracts from the `patinaToy` capability audit.
 4. [ ] JVM SDK on the iroh call path. A Child call presents a platform-given handle. Administration presents a granted iroh admin key. Same-uid is not caller identity.
@@ -25,7 +43,7 @@ Goal: build the next operational layer after the v0 `patinaMother` replacement b
 
 ## Completed: single-hop forwarding
 
-A 2026-07-09 slice forwards one authorized call to one admitted peer. Multi-Mother with per-Mother ledgers is future scale work, not planned now. A remote node is not trusted just because it connects.
+A 2026-07-09 slice forwards one authorized call to one admitted peer. D-52 extends the acceptance target to 4–6 independent Mothers without adding clustering, replicas, or shared ledgers. A remote node is not trusted just because it connects.
 
 ### Translate/rebuild/replace decisions from the `patinaMother` routing audit
 

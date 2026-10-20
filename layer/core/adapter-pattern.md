@@ -3,7 +3,7 @@ id: adapter-pattern
 layer: core
 status: active
 created: 2026-05-31
-revised: 2026-10-14
+revised: 2026-10-19
 tags: [architecture, mct, mother, adapters, authority, rust]
 references: [dependable-rust, unix-philosophy, mct-build-boundaries, mother-kernel-decides-adapters-perform, iroh-provides-connectivity-not-authority]
 ---
@@ -28,7 +28,7 @@ An adapter is code that crosses from MCT domain logic into an external system or
 
 - Iroh/noq networking
 - WASM/WASI component runtime
-- process or JVM execution
+- explicitly trusted native/JVM integration (not a local Child)
 - filesystem/database persistence
 - secret storage
 - telemetry export
@@ -96,16 +96,10 @@ pub fn evaluate_hello(
 ) -> MctHelloAdmissionEvaluation;
 ```
 
-### 3. Traits wait for the second implementation
+### 3. Use proven abstraction seams
 
-Do not create traits for imagined future backends. Start concrete. Introduce traits when a second real implementation or a proven test seam exists.
-
-MCT examples:
-
-- Keep one concrete append-only JSONL observation ledger until another sink is real.
-- Keep one concrete Iroh adapter until another transport is real.
-- Keep WASM/process runtime composition concrete inside the daemon until a split is earned.
-- Add traits only after the seam is proven.
+Do not create traits for imagined future backends. A real implementation need
+or a proven test seam can justify an abstraction.
 
 ### 4. Adapters emit observations
 
@@ -124,23 +118,6 @@ Adapter errors are not invisible logs; they become `MctObservation` facts or hea
 ### 5. Children use Toys, not adapter handles
 
 WASM/WASI/WIT children do not receive raw Iroh endpoints, raw database handles, unrestricted filesystem access, or host secrets. They receive scoped WIT/Toy access only through explicit `ToyGrant` evaluation and kernel-minted `AuthorizedToyCall` capabilities.
-
-## First Build Application
-
-For the first vertical slice:
-
-```text
-mct-kernel        → concrete domain records and evaluations
-mct-observation   → concrete append-only local ledger
-mct-iroh          → concrete Mother-owned Iroh endpoint adapter
-mct-daemon        → composition and local lifecycle
-```
-
-No generalized plugin framework is needed yet. Build the vertical seam honestly first:
-
-```text
-Endpoint facts → MctPeerBinding check → mct/hello/0 → mct/call/0 → MctObservation
-```
 
 ## Common Mistakes
 
@@ -172,20 +149,6 @@ Right:
 Iroh stream handler constructs MctCallProtocolRequest.
 Kernel evaluates the call protocol request and child authority.
 Runtime adapter invokes child only with a kernel-minted `AuthorizedChildInvocation`.
-```
-
-### Abstracting before the seam exists
-
-Wrong:
-
-```rust
-trait PeerTransport { ... } // only Iroh exists
-```
-
-Right:
-
-```rust
-mod iroh; // concrete adapter first
 ```
 
 ## References

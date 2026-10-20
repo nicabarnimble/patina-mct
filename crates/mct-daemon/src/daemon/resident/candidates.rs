@@ -231,13 +231,14 @@ pub(super) fn resident_remote_candidate_authority(
             .then_some(CandidateEliminationReason::VisionPolicyDenied)
     })
     .or_else(|| {
+        // Local admission belongs to this Mother. The reverse binding and
+        // publication belong to the peer; their revision counters are not global.
         (peer.policy_revision() != snapshot.policy_revision()
             || peer.local_binding().policy_revision != snapshot.policy_revision()
-            || peer
-                .outbound_binding()
-                .is_none_or(|binding| binding.policy_revision != snapshot.policy_revision())
-            || surface.publisher_policy_revision() != snapshot.policy_revision()
-            || surface.surface_policy_revision() != snapshot.policy_revision())
+            || peer.outbound_binding().is_none_or(|binding| {
+                binding.policy_revision != surface.publisher_policy_revision()
+                    || binding.policy_revision != surface.surface_policy_revision()
+            }))
         .then_some(CandidateEliminationReason::PolicyRevisionStale)
     })
     .or_else(|| {
@@ -455,6 +456,13 @@ mod tests {
         call
     }
     fn candidate_fixture() -> CandidateFixture {
+        candidate_fixture_with_revisions(1, 1)
+    }
+
+    fn candidate_fixture_with_revisions(
+        local_revision: u64,
+        remote_revision: u64,
+    ) -> CandidateFixture {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.json");
         let state_path = dir.path().join("state.sqlite");
@@ -462,20 +470,26 @@ mod tests {
         let remote_identity_path = dir.path().join("remote").join("iroh-secret.hex");
         let store = MctDaemonConfigStore::new(&config_path);
         let local_identity = store
-            .ensure_local_identity(MctOperatorNodeScope::default(), &local_identity_path)
+            .ensure_local_identity(
+                MctOperatorNodeScope {
+                    policy_revision: local_revision,
+                    ..MctOperatorNodeScope::default()
+                },
+                &local_identity_path,
+            )
             .unwrap();
         let remote_secret = load_or_create_node_secret_key_hex(&remote_identity_path).unwrap();
         let remote_endpoint_id = endpoint_id_for_secret_key_hex(&remote_secret).unwrap();
-        store
-            .upsert_peer(resident_remote_peer_entry(
-                "remote-mct",
-                "binding-remote",
-                remote_endpoint_id.as_str(),
-                "vision-local",
-                BindingState::Admitted,
-                None,
-            ))
-            .unwrap();
+        let mut remote_peer = resident_remote_peer_entry(
+            "remote-mct",
+            "binding-remote",
+            remote_endpoint_id.as_str(),
+            "vision-local",
+            BindingState::Admitted,
+            None,
+        );
+        remote_peer.policy_revision = local_revision;
+        store.upsert_peer(remote_peer).unwrap();
         store
             .approve_and_assign_loaded_child(&test_child(), MctOperatorChildScope::default())
             .unwrap();
@@ -484,7 +498,7 @@ mod tests {
         let outbound_binding = MctOutboundPeerBindingPresentation {
             binding_id: PeerBindingId::new("binding-outbound-local")
                 .expect("string ID literal/generated value must be non-empty"),
-            policy_revision: 1,
+            policy_revision: remote_revision,
             signature_ref: String::new(),
             expires_at: contract_peer_expiry(),
         };
@@ -510,7 +524,7 @@ mod tests {
         let view = hello_capability_view(
             &peer.peer_node_id,
             &peer.vision_id,
-            1,
+            remote_revision,
             &["patina:demo/control@0.1.0.run"],
         );
         state
@@ -530,6 +544,7 @@ mod tests {
                 .expect("string ID literal/generated value must be non-empty"),
         );
         call.origin = CallOrigin::Cli;
+        call.authority_context.policy_revision = local_revision;
         CandidateFixture {
             _dir: dir,
             config,
@@ -657,6 +672,92 @@ mod tests {
             CandidateAuthorityOutcome::Admissible
         );
         assert_eq!(plans[0].authority.reason, None);
+    }
+
+    #[test]
+    fn federation_revision_counters_are_independent() {
+        for (local, remote) in [(1, 7), (9, 2)] {
+            let fixture = candidate_fixture_with_revisions(local, remote);
+            let plans = resident_remote_candidate_plans(
+                &fixture.config,
+                Some(&fixture.state),
+                &fixture.call,
+                Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
+            )
+            .unwrap();
+            assert_eq!(plans.len(), 1);
+            assert_eq!(
+                plans[0].authority.outcome,
+                CandidateAuthorityOutcome::Admissible,
+                "independent local={local}, remote={remote}: {:?}",
+                plans[0].authority.reason,
+            );
+            assert_eq!(plans[0].authority.policy_revision, local);
+        }
+    }
+
+    #[test]
+    fn federation_revision_newer_remote_does_not_refresh_local_admission() {
+        let mut fixture = candidate_fixture_with_revisions(1, 7);
+        fixture
+            .config
+            .local_identity
+            .as_mut()
+            .unwrap()
+            .policy_revision = 2;
+        fixture.call.authority_context.policy_revision = 2;
+        let plans = resident_remote_candidate_plans(
+            &fixture.config,
+            Some(&fixture.state),
+            &fixture.call,
+            Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(
+            plans[0].authority.reason,
+            Some(CandidateEliminationReason::PolicyRevisionStale)
+        );
+    }
+
+    #[test]
+    fn federation_revision_remote_publication_must_match_remote_binding() {
+        for (publisher, surface) in [(1, 1), (9, 9), (7, 1), (7, 9), (1, 7)] {
+            let fixture = candidate_fixture_with_revisions(1, 7);
+            let peer = &fixture.config.peers["remote-mct"];
+            let mut view = hello_capability_view(
+                &peer.peer_node_id,
+                &peer.vision_id,
+                publisher,
+                &["patina:demo/control@0.1.0.run"],
+            );
+            view.callable_surfaces[0].policy_revision = surface;
+            fixture
+                .state
+                .refresh_remote_callable_surfaces(MctRemoteSurfaceRefresh {
+                    peer_node_id: &peer.peer_node_id,
+                    binding_id: &peer.binding_id,
+                    endpoint_id: &peer.endpoint_id,
+                    view: &view,
+                    received_at: &Timestamp::new("2026-07-09T00:00:00Z").unwrap(),
+                    stale_at: &Timestamp::new("2026-07-09T00:05:00Z").unwrap(),
+                    view_observation_id: &ObservationId::new("obs-inconsistent-publication")
+                        .unwrap(),
+                })
+                .unwrap();
+            let plans = resident_remote_candidate_plans(
+                &fixture.config,
+                Some(&fixture.state),
+                &fixture.call,
+                Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
+            )
+            .unwrap();
+            assert_eq!(plans.len(), 1);
+            assert_eq!(
+                plans[0].authority.reason,
+                Some(CandidateEliminationReason::PolicyRevisionStale)
+            );
+        }
     }
 
     #[test]

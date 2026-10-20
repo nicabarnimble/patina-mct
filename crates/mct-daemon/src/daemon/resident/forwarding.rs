@@ -555,6 +555,10 @@ fn resident_forwarded_call_request(
         project_id: original.call.caller.project_id.clone(),
     };
     call.origin = CallOrigin::Iroh;
+    // This hop carries a receiver-issued expectation, not the originating
+    // Mother's counter. The receiver independently checks its current policy
+    // and canonical grants; copying this signed revision grants no authority.
+    call.authority_context.policy_revision = outbound_binding.policy_revision;
     call.authority_context.expected_receiver_grants_authority =
         expected_receiver_grants_authority.clone();
     let payload =

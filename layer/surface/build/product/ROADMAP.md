@@ -1,6 +1,6 @@
 # MCT product roadmap — from runtime kernel to working product
 
-Status assessment date: 2026-10-14 (WASM-only local Child transition; reconciled after #36).
+Status assessment: reconciled against `main` at `4330876` after PR #71.
 This document records where MCT stands as a product and the ordered TODO to
 close the gap. Update the checkboxes as phases land; each phase gets its own
 task file under `layer/surface/build/feat/<name>/` following the proven
@@ -29,39 +29,33 @@ integrations, remote Mother workloads, or trusted Mother adapters—not local
 Children. Historical process/JVM records remain inspectable but inert. Run
 records, control-plane snapshots (HTTP/UDS), and the hash-chained ledger
 provide inspection of MCT-mediated activity.
-Administration presents a granted iroh admin key.
+Administration currently uses the owner-authenticated local path. Granted
+admin keys over iroh are the decided end state, not a shipped transport.
 
-### Proven as slices, not product-wired
+### Built and composed
 
-- **Peer federation.** Two resident Mothers complete `mct/hello/0` →
-  `mct/call/0` with signed binding admission and single-hop forwarding to a
-  WASM Child. Multi-Vision and transitive policy remain roadmap work.
-- **Routing.** The kernel's two-phase decision model (authority filter →
-  ranking → revalidation at execution) is complete and tested as decision
-  logic; no daemon path consumes `AuthorizedRouteExecution` yet. Calls go
-  where the operator points them.
-- **Child lifecycle.** Approval/assignment/instance generations, warmup,
-  reload, task cycles, and resident ownership are implemented for WASM
-  Children.
+- **Resident Mother:** one process owns the endpoint, control plane, Child
+  execution, runtime projections, and ledger writer.
+- **Payloads:** bounded inline transfer and local content-addressed blobs.
+- **Routing and peers:** authority filtering, ranking, effect revalidation,
+  signed binding verification, scoped publication, and single-hop forwarding.
+- **Child lifecycle:** approval/assignment/instance generations, warmup,
+  reload, task cycles, and resident ownership for WASM Children.
+- **Toys:** logging, measure, Git, scoped WASI preopens, secrets backend, and
+  the bounded Watch/supporting adapters used by the integration fixtures.
 
-### Does not exist yet
+### Still open
 
-1. **A resident Mother.** `mct-daemon serve` serves control-plane
-   snapshots only; Iroh serving is a separate foreground command. No
-   single process binds the endpoint, supervises children, serves peers,
-   and exposes control simultaneously.
-2. **A data plane.** Calls carry payload metadata and results carry refs;
-   there is no blob store and no payload byte transfer. Echo-shaped calls
-   work; real workloads cannot move data.
-3. **Cryptographic binding verification.** Iroh proves endpoint-key
-   possession; binding presentations carry a `signature_ref` nothing
-   verifies. Fine for trusted-operator setups, insufficient for
-   multi-institution Visions.
-4. **Toy catalog breadth.** logging/measure/git/WASI-preopens exist;
-   secrets, network, and storage toys do not.
-5. **Multi-Vision capability publication.** Vision scoping is in every
-   authority record, but per-Vision publication and cross-Vision grants
-   are unstarted.
+1. **Crash-safe keyed dispatch independent of SQLite.** See the design-hardening
+   slice; final Child-start admission evidence is a separate remaining boundary.
+2. **Iroh administration and portable Child handles.** Complete key issuance,
+   signed authorization, bootstrap/recovery, and the hard cutover.
+3. **Canonical authority coverage.** Child approvals/assignments and peer
+   bindings still depend on config; they are not all reconstructed from the ledger.
+4. **Durable task continuation.** Wake/checkpoint/freeze, journaled effects,
+   unknown outcomes, and Pi integration are not implemented.
+5. **Breadth and scale.** General network/storage Toys, cross-Vision grants,
+   inter-Mother blob transfer, and clustering remain separate work.
 
 ---
 

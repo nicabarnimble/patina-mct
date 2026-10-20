@@ -4,7 +4,7 @@ Questions the owner has not settled, with the current proposal where there is
 one. A proposal here is not a decision. When one is settled, move it to
 [DECISIONS.md](DECISIONS.md) and delete it here.
 
-State: `main` at `49dfacd`, 2026-10-18.
+Baseline: `main` at `4330876`; review-branch dispositions are explicitly labelled.
 
 ## 1. Child-start ledger fact (double-run on power loss)
 
@@ -14,6 +14,13 @@ SQLite, which runs WAL with `synchronous = NORMAL`. That survives a process kill
 but can lose recent commits on power loss or an OS crash. After that, a
 same-key retry finds no reservation and runs the Child a second time. This
 breaks "no retry executes the child twice". SIGKILL tests do not catch it.
+
+**Review-branch progress.** The [ledger-first-call-recovery slice](../layer/surface/build/feat/ledger-first-call-recovery/SPEC.md)
+adds an independent caller-scoped dispatch fence for keyed retries. Its
+SQLite-rollback regression reproduces the original bug and passes with the
+fence. It does not implement final Child-start ordering, unkeyed dedup, or
+reconstruction of lost run/result projections. The seven Option D questions
+below remain open; do not mark D-40 built.
 
 **Proposal.** Option D in
 [design/child-start-ledger-fact.md](design/child-start-ledger-fact.md): the
@@ -111,16 +118,44 @@ ledger would be failover of a Child's work, which (c) forbids.
 
 ## 10. Multi-Mother
 
-Future scale work, not planned now (D-38). Nothing to decide yet. Known
-constraints for when it comes: per-Mother ledgers versus (c), and a FROST
-guardian quorum not covering the ML-DSA half.
+D-52 now includes direct federation of 4–6 independent Mothers in the completion
+target. The local branch proves six separate processes with distinct identities
+and policy counters, receiver revocation, and independent work during peer loss.
+This is not a shared ledger, takeover, quorum, or multi-host release proof.
+Clustering/standby remain outside scope. D-54 explicitly brings Voice-bound
+guardian recovery into this release; its policy is settled and implementation
+is open. See [FINISH.md](FINISH.md) for remaining operations and failure tests.
 
-## 11. Smaller open items
+## 11. Remaining architecture boundaries
+
+The review identified concrete decisions needed before broader implementation:
+
+- [Current security boundaries](SECURITY-BOUNDARIES.md): portable handle semantics,
+  trusted supervisor lifecycle, and independent rollback anchors remain open.
+  D-57 settles strict hybrid/fresh cutover, D-56 node-wide issuance ceilings, and
+  D-54/D-55 recovery policy. Their
+  bounded canonical implementations do not complete the authenticated runtime.
+- [Durable task boundary proposal](design/durable-task-boundary.md): task versus
+  invocation versus effect identity, unknown-outcome recovery, checkpoint and
+  crash semantics, deterministic inputs, result retention, and code upgrades.
+- Secrets: opaque use-only credentials versus an explicitly authorized reveal
+  operation. The current value-returning backend is not a universal no-raw-key
+  guarantee.
+- Delegation: cascading revocation must state how it interacts with the
+  bounded lifetime of already-admitted capabilities (D-G7).
+
+These are proposed clarification/implementation boundaries, not new owner
+rulings. [Finish-line owner gates](design/finish-owner-gates.md) collects concrete
+recommended choices for confirmation before the admin/authority cutover.
+Capability checks alone do not provide general information-flow security.
+
+## 12. Smaller open items
 
 - Linux systemd supervision and macOS headless launchd: separately gated.
 - Network and storage Toys: designed in outline (D-39), not built.
-- Signature size: if ledger size ever matters, store a digest of each hybrid
-  signature instead of the whole signature.
+- Signature size: a digest cannot replace a verifiable signature. Any detached
+  signature design must retain the actual signature bytes with authenticated,
+  durable availability; no such design is adopted.
 - Live node identity rotation needs endpoint rebind and peer re-admission.
 - Kenton Varda argued (June 2026) that hand-configuring each agent's permissions
   means you have already lost. MCT grants per Child and per task by hand today.

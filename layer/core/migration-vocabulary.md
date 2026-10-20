@@ -3,7 +3,7 @@ id: migration-vocabulary
 layer: core
 status: active
 created: 2026-07-14
-revised: 2026-07-14
+revised: 2026-10-19
 tags: [mct, patina, migration, vocabulary, mother, child, toy]
 references: [what-is-mct, mct-build-boundaries, mct-patina-migration]
 ---
@@ -86,25 +86,6 @@ Use verbs as audit signals:
 
 Do not use **port** as a synonym for adopting an idea. Existing code may be
 behavioral evidence while still being unsuitable for reuse.
-
-## Examples
-
-Preferred:
-
-> We are evaluating `patinaMother` child warmup to decide which operational
-> responsibility `mctMother` must rebuild.
-
-> Slate is an `mctChild` whose effects require explicit `mctToy` grants.
-
-> The network use case demonstrated by `patinaToy` must be translated into a
-> deny-by-default `mctToy`; its adapter should not be ported.
-
-Avoid:
-
-> MCT Mother should port Mother's toy system for the Patina child.
-
-The avoided sentence is ambiguous about both architectures, overuses Mother,
-and incorrectly treats **port** as equivalent to redesign.
 
 ## Sunset condition
 

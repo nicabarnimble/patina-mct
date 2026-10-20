@@ -5,6 +5,10 @@
 
 #![forbid(unsafe_code)]
 
+/// Bounded administrative issuance, distinct from route execution.
+pub mod admin_issuance;
+pub use admin_issuance::{AdminIssuanceCeilingV1, AdminIssuanceError, evaluate_admin_key_issuance};
+
 /// Admin-key grant facts and the route-scope check.
 pub mod admin_key;
 /// Scheme v1 admin signatures: Ed25519 AND ML-DSA-65.
@@ -20,6 +24,8 @@ pub mod grant_check;
 pub mod id;
 pub mod observation;
 pub mod peer;
+/// Voice-bound guardian recovery identity and bounded quorum evidence.
+pub mod recovery;
 pub mod route;
 pub mod toy;
 pub mod trigger;

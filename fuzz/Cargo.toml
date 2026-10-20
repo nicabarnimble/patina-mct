@@ -10,6 +10,9 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+mct-kernel = { path = "../crates/mct-kernel" }
+mct-observation = { path = "../crates/mct-observation" }
+serde_json = "1"
 mct-daemon = { path = "../crates/mct-daemon", features = ["fuzzing"] }
 
 [lib]
@@ -17,6 +20,27 @@ path = "src/lib.rs"
 
 [workspace]
 members = ["."]
+
+[[bin]]
+name = "admin_genesis"
+path = "fuzz_targets/admin_genesis.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "admin_issuance"
+path = "fuzz_targets/admin_issuance.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "guardian_recovery"
+path = "fuzz_targets/guardian_recovery.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "uds_control_request"
@@ -35,6 +59,13 @@ bench = false
 [[bin]]
 name = "child_package_manifest"
 path = "fuzz_targets/child_package_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "call_dispatch"
+path = "fuzz_targets/call_dispatch.rs"
 test = false
 doc = false
 bench = false
