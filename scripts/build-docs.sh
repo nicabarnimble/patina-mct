@@ -14,12 +14,8 @@ done
 
 rm -rf target/mdbook target/rustdoc target/site/docs target/site/api target/docs-book
 
-cargo run --quiet -p mct-trace -- verify --repo-root "$repo_root"
 mkdir -p target/docs-book
 cp -R docs/. target/docs-book/
-cargo run --quiet -p mct-trace -- project \
-  --repo-root "$repo_root" \
-  --book-source "$repo_root/target/docs-book/src"
 mdbook build target/docs-book --dest-dir "$repo_root/target/mdbook"
 
 RUSTDOCFLAGS="${RUSTDOCFLAGS:+$RUSTDOCFLAGS }-D warnings" \

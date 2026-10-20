@@ -40,4 +40,4 @@ candidate execution.
 - Frozen Allium maps remain historical provenance and are not a development
   gate.
 - This book explains supported product behavior.
-- [Provenance](../provenance/index.md) connects explanations to public evidence.
+- [Provenance](../provenance/index.md) identifies decision, test, and historical records.
