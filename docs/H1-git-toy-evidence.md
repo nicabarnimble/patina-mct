@@ -183,6 +183,32 @@ fresh advisory fetches were online. New logs use the `security-` prefix under
 PR #84's ledger, not inferred from the earlier commit's results. The earlier R1
 failure remains retained and unresolved. No release/deployment approval follows.
 
+## Shipping-gate follow-up: hosted test runner disk budget
+
+At dependency-patched head `b711321`, GitHub audit and OSV passed, as did
+Clippy, formatting, docs, authors and the ledger benchmark. The Linux test job
+failed in `supervisor_conflicts_refuse_before_launchd_or_endpoint_effects`
+at `supervisor_lifecycle.rs:3403` while copying a fixture executable:
+
+```text
+called `Result::unwrap()` on an `Err` value:
+Os { code: 28, kind: StorageFull, message: "No space left on device" }
+test result: FAILED. 181 passed; 1 failed; 0 ignored
+```
+
+This is an observed infrastructure failure, not evidence that R1 recurred or
+that the dependency fix failed a runtime assertion. The full job log is retained
+at `/tmp/mct-h1-evidence/pr84-test-full.log`; the failed run remains linked in
+PR #84. No passing rerun is claimed for that attempt.
+
+Only the CI **test job** now sets `CARGO_PROFILE_DEV_DEBUG=0` and
+`CARGO_PROFILE_TEST_DEBUG=0`, matching the successful local 734-test run. Debug
+assertions, unoptimized execution, panic unwinding, test selection, serial harness,
+timeouts and fuzz/sanitizer settings are unchanged. Disk usage is reported before
+and after tests. No arbitrary hosted tools or files are deleted and no assertions
+are skipped. The updated job must pass on GitHub before merge; a local pass alone
+cannot certify the hosted runner budget.
+
 ## What still blocks H1 closure
 
 1. The project-root WASI preopen still permits `.git` writes. This patch does
