@@ -112,9 +112,10 @@ ran. Its complete stdout/stderr was retained. The isolated rerun used
 The later full rerun retained restart/fleet roots, but successful-test capture
 means their paths are not all printed. No first-failure ledger is claimed.
 These reruns do not identify or repair R1. R1/R2 remain open; this slice changes
-no startup, timing, stale-authority, or fleet assertions. A fresh advisory audit,
+no startup, timing, stale-authority, or fleet assertions. For that initial H1-only slice, a fresh advisory audit,
 independent security review, and full release acceptance were not performed;
-no dependency or lockfile changed. The completion inventory still has eight
+no dependency or lockfile changed. The subsequent shipping-gate update below
+changes dependency versions and adds fresh audit evidence. The completion inventory still has eight
 open obligations.
 
 Raw local logs are at `/tmp/mct-h1-evidence/` (not portable release artifacts).
@@ -127,6 +128,60 @@ d4318abc78da70bb8b5896dedafee3ba86f4fa585456ab5fbd436dab855b65e3  before.log
 ebf1daad386f9d05284ff7b47e6a2ff6b8bb04fea89c8c637fcfcb9660b8a8f8  restart-rerun.log
 9a35f09173db324b8368ec0ca877ec53eb4ac6d5e7dc68a7e69a771315ef9df1  workspace-rerun.log
 ```
+
+## Shipping-gate follow-up: dependency security patches
+
+PR #84's first CI run at `e237221` passed code tests, Clippy, formatting, docs,
+authors and the ledger-open benchmark, but OSV failed. The same failures were
+confirmed on unchanged `main` (`ebc0d2d`), already tracked by issue #83. This
+was not waived merely because the H1 code did not introduce them.
+
+OSV reported seven distinct advisories across the two lockfiles (14 findings),
+including the critical Wasmtime aarch64 `br_table` issue RUSTSEC-2026-0379.
+The narrowly scoped follow-up uses the reported fixed versions:
+
+| Package | Root before | Fuzz before | Updated | Advisories |
+| --- | --- | --- | --- | --- |
+| Wasmtime/WASI family | 48.0.6 | 48.0.6 | 48.0.7 | RUSTSEC-2026-0378, RUSTSEC-2026-0379 |
+| Tokio | 1.52.3 | 1.53.1 | 1.53.3 | RUSTSEC-2026-0386 |
+| ctutils | 0.4.2 | 0.4.2 | 0.4.4 | RUSTSEC-2026-0385 |
+| rustls-webpki | 0.103.15 | 0.103.15 | 0.103.16 | RUSTSEC-2026-0382 |
+| webpki-roots | 1.0.7 | 1.0.9 | 1.0.10 | RUSTSEC-2026-0381 |
+| webpki-root-certs | 1.0.7 | 1.0.9 | 1.0.10 | RUSTSEC-2026-0383 |
+
+The workspace manifests raise the minimum Tokio and Wasmtime/WASI versions.
+Both lockfiles retain their existing package membership and dependency edges;
+38 package version/checksum records change in each, limited to the listed
+packages and Wasmtime's coupled Cranelift/Pulley/Wiggle packages. No move to
+Wasmtime 49, no Iroh refresh, no new packages, no new audit ignores or waivers.
+This is security remediation, not the optional dependency proposal sweep.
+
+Resolution used `cargo update --manifest-path <manifest> --package <package>
+--precise <fixed-version>` on both manifests. The initial qualified WASI selector
+was stale after Wasmtime updated its coupled family; that command failed and was
+reissued by package name. Cargo's transient selection of Tokio 1.54.1 was narrowed
+to 1.53.3. Unrelated fuzz-lock tempfile/getrandom/Windows dependency-edge churn
+was removed; `cargo check --locked --manifest-path fuzz/Cargo.toml --bins`
+validated the final lock. No dependency checksum was hand-invented.
+
+Local revalidation on the patched graphs:
+
+- `cargo audit` and `cargo audit --file fuzz/Cargo.lock`: passed using a freshly
+  fetched database with 1,352 advisories and unchanged audit policy. Final
+  `--no-fetch` rechecks also passed after locking the exact graphs.
+- `MCT_RESTART_KEEP=1 MCT_FLEET_KEEP=1 cargo test --locked --workspace
+  --no-fail-fast -- --test-threads=1`: 734 passed, two pre-existing ignored.
+- `cargo clippy --locked --workspace --all-targets -- -D warnings`: passed.
+- `cargo check --locked --manifest-path fuzz/Cargo.toml --bins`: passed; this is
+  compilation, not a claim of local sanitizer fuzz execution.
+- `bash scripts/ci-tier0.sh specs`, `cargo fmt --check`, `git diff --check`: passed.
+- `bash scripts/build-docs.sh`: product/link checks and Rust API docs passed.
+
+The same build-job/debug environment as above was used. Package retrieval and
+fresh advisory fetches were online. New logs use the `security-` prefix under
+`/tmp/mct-h1-evidence/`. Final GitHub checks and bounded fuzz outcomes belong in
+PR #84's ledger, not inferred from the earlier commit's results. The earlier R1
+failure remains retained and unresolved. No release/deployment approval follows.
 
 ## What still blocks H1 closure
 

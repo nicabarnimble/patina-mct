@@ -300,6 +300,15 @@ not independently reproduced exploits. Scope/severity may change with evidence.
 
 ### C3 — Review the seven existing dependency proposals
 
+**Security prerequisite, 2026-10-24:** shipping PR #84 exposed new advisories on
+unchanged main, already tracked by [issue #83](https://github.com/nicabarnimble/patina-mct/issues/83).
+Both lockfiles now contain narrowly selected fixes: Wasmtime/WASI 48.0.7 and its
+coupled compiler packages, Tokio 1.53.3, ctutils 0.4.4, rustls-webpki 0.103.16,
+and both webpki root packages 1.0.10. Fresh local audits and 734 workspace tests
+pass; final GitHub validation is recorded in PR #84. Audit policy is unchanged.
+See [shipping-gate evidence](H1-git-toy-evidence.md#shipping-gate-follow-up-dependency-security-patches).
+This does not accept the optional major-version upgrades below.
+
 All seven were verified open and draft during plan preparation. Revalidate
 current heads, conflicts, security relevance and combined compatibility.
 Use existing PRs, not duplicate upgrade issues; correlate L17 where relevant.
