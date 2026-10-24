@@ -1,9 +1,14 @@
 # Finish MCT: one runtime, one to six independent Mothers
 
 **Status: in progress, not release-ready.** Owner-directed scope is D-52.
-Branch `feat/finish-mct-federation` starts at `ba685af`, including the unmerged
-ledger-first dispatch fence. No merge, deployment, or live service changes are
-implied. Allium remains frozen and outside the active checks.
+The federation/recovery/admin groundwork was merged in PR #81 (`f315175`);
+PR #82 (`ebc0d2d`) retired unused conversation-archive tooling. The canonical
+checkout is `/Users/nicabar/Projects/Patina/patina-mct`. These merges are not
+release or deployment approval. Allium remains frozen and outside active checks.
+
+Current execution order and security findings are tracked in
+[TODO-security-and-finish.md](TODO-security-and-finish.md). The release inventory
+remains `finish-checks.json`; the work index does not replace it.
 
 ## Run the check
 
@@ -43,11 +48,11 @@ This supersedes retirement-only policy for the explicitly enrolled path, not
 for compromised hosts or missing canonical history. Implementation and release
 proofs remain open; the completion inventory remains red.
 
-On 2026-10-19 the owner requested publishing the current work to GitHub and
-consolidating the local checkouts. This supersedes the earlier wait-to-push
-instruction for **draft branch publication only**. It does not authorize a
-merge, release or deployment. Keep the eight open obligations explicit; the
-full `release` check and final evidence review are still required for release.
+On 2026-10-19 the owner separately authorized publication, consolidation, and
+merging the tested groundwork. PRs #81/#82 are merged and consolidation is
+complete. Earlier draft-only restrictions describe history, not current branch
+state. No release or deployment was approved. Keep the eight open obligations
+explicit; the full `release` check and final evidence review remain required.
 
 ## Bounded deployment contract
 
@@ -95,7 +100,7 @@ It does not prove the final admin path or full canonical peer/Child recovery.
 - Retain the bounded dispatch fence and its parser/crash/fuzz evidence. It is
   not durable task resume, forever deduplication, or exactly-once execution.
 
-Status: `keyed-retry-fence` is implemented on the inherited branch;
+Status: `keyed-retry-fence` is implemented and merged;
 `canonical-authority` and `final-admission` are open.
 
 ### 3. Administration and recovery cutover

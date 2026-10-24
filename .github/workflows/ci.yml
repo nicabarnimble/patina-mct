@@ -48,6 +48,12 @@ jobs:
     name: test
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    env:
+      # Supervisor tests copy the daemon binary into private fixtures. Full DWARF
+      # exhausted the hosted runner disk; keep assertions/unwind/test selection,
+      # but use the same no-debuginfo profile validated locally.
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -57,8 +63,17 @@ jobs:
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
 
+      - name: Disk budget before tests
+        run: df -h . "$RUNNER_TEMP"
+
       - name: cargo test
         run: bash scripts/ci-tier0.sh test
+
+      - name: Disk budget after tests
+        if: always()
+        run: |
+          df -h . "$RUNNER_TEMP"
+          du -sh target 2>/dev/null || true
 
   specs:
     name: vocabulary, release, docs

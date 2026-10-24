@@ -2,9 +2,9 @@
 
 **Status: recovery ratified in D-54/D-55; issuance in D-56; strict hybrid/fresh cutover in D-57. Decisions 4–5 remain pending.**
 These are decisions already called out by `SECURITY-BOUNDARIES.md`,
-`OPEN-QUESTIONS.md`, and D-52, not an expansion of the finish line. Draft
-publication is now authorized, as recorded in `docs/FINISH.md`; it does not
-waive the completion inventory or replace settled authority contracts.
+`OPEN-QUESTIONS.md`, and D-52, not an expansion of the finish line. The tested
+groundwork is merged in PR #81; PR #82 retired unused archive tooling. Those
+merges do not waive the completion inventory or replace settled contracts.
 
 ## Active recovery design update (D-53)
 
@@ -109,7 +109,8 @@ that external check.
 
 ## Publication is not release
 
-The owner authorized publishing `feat/finish-mct-federation` as unfinished work
-on 2026-10-19. Keep the PR draft and its blockers explicit. Before release,
-`python3 scripts/check-finish.py release` must pass with every completion
-obligation genuinely supported by evidence. Ordinary Tier-0 green is not sufficient.
+The owner separately authorized publication and merging of the unfinished,
+tested groundwork on 2026-10-19. PRs #81/#82 are merged; the eight completion
+obligations remain open. Before release, `python3 scripts/check-finish.py release`
+must pass with every completion obligation genuinely supported by evidence.
+Ordinary Tier-0 green and a merged PR are not release approval.

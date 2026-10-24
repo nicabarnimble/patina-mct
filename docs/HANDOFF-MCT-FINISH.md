@@ -3,14 +3,20 @@
 ## Repository and publication
 
 - Repository: `git@github.com:nicabarnimble/patina-mct.git`.
-- Working branch: `feat/finish-mct-federation`; base `main`.
-- Canonical local checkout after consolidation: `/Users/nicabar/Projects/Patina/patina-mct`.
-- Development used the separate `patina-mct-finish` clone. Consolidate only
-  after the branch is published and the canonical checkout verifies that commit.
-  Preserve unique local history, ignored files and performance evidence.
-- On 2026-10-19 the owner authorized publishing the unfinished work to GitHub
-  and cleaning up local checkouts. This supersedes the earlier wait-to-push
-  instruction for draft publication, not for merge, release or deployment.
+- Merged baseline: `main` at `ebc0d2d` (PR #82), following PR #81 at `f315175`.
+- Canonical local checkout: `/Users/nicabar/Projects/Patina/patina-mct`.
+- `feat/finish-mct-federation` is merged and retired. Checkout consolidation is
+  complete; the old clones and preservation bundle are under
+  `/Users/nicabar/Projects/Patina/.patina-mct-archive/2026-10-19/`.
+- On 2026-10-19 the owner separately authorized publishing, consolidation and
+  merging the tested groundwork. Earlier draft-only restrictions were superseded
+  for that work, not for release or deployment.
+- Current work order: [TODO-security-and-finish.md](TODO-security-and-finish.md).
+  H1's first hook/fsmonitor/signer hardening slice has regression evidence in
+  [H1-git-toy-evidence.md](H1-git-toy-evidence.md); it is not a complete fix.
+  Continue with trusted Git metadata/execution isolation and a composed WASM
+  proof, then peer ingress and resource boundaries. Do not reopen settled design
+  or merge old experiments.
 
 The earlier handoff is preserved in Git at `665985c`. Its unratified recovery,
 issuance and signature recommendations are superseded by D-54 through D-57.
@@ -76,6 +82,9 @@ Eight completion obligations remain open: `administration`,
 - The intermittent `resident control socket did not bind before readiness`
   failure in restart/fleet validation remains unexplained. Successful reruns
   are not a fix. Retain the investigation described in strict-cutover evidence.
+- Fleet route revalidation also intermittently denied `mother-0 -> 2` during
+  PR #82 validation. Passing reruns did not establish a fix. Retain R1/R2 as
+  separate investigations in the work index.
 - Multi-host macOS partition/upgrade validation requires approved disposable
   hosts, actions and evidence returned through Devin. No assumed remote access,
   production deployment, PiD/Unraid changes or unsupported Linux release claims.
@@ -101,7 +110,9 @@ An optional existing build cache is
 are under `/tmp/mct-{finish,guardian,issuance,genesis}-evidence/`; durable evidence
 summaries are checked into the feature directories above.
 
-Keep the GitHub PR draft with explicit blockers. Do not waive requirements or
-mark unfinished work implemented to obtain green. Follow D-44: merge updates
-from `main`, never rebase or force-push published history. Publication does not
-authorize merge, release, deployment or changes to production services.
+PRs #81/#82 are already merged; do not reopen their publication gates. New work
+must keep its own scope, validation and remaining blockers explicit. Do not waive
+requirements or mark unfinished work implemented to obtain green. Follow D-44:
+merge updates from `main`, never rebase or force-push published history. Local
+implementation does not authorize pushing, merging, release, deployment or changes
+to production services.

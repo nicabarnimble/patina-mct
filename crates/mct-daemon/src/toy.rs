@@ -725,8 +725,32 @@ fn run_git_capture_allow_failure(repo_root: &Path, args: &[&str]) -> Result<Stri
 
 fn git_command(repo_root: &Path) -> Command {
     let mut command = Command::new("git");
+    // A Git Toy grant is not permission to invoke hooks, filesystem monitors,
+    // signing agents, or maintenance jobs selected by repository configuration.
+    // Command-line configuration wins over repository/global configuration.
+    // This is defense in depth, NOT the complete H1 boundary: arbitrary clean/
+    // process filters and Child-writable Git metadata still require isolation.
     command
         .current_dir(repo_root)
+        .args([
+            "--no-pager",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "commit.gpgSign=false",
+            "-c",
+            "tag.gpgSign=false",
+            "-c",
+            "tag.forceSignAnnotated=false",
+            "-c",
+            "log.showSignature=false",
+            "-c",
+            "gc.auto=0",
+            "-c",
+            "maintenance.auto=false",
+        ])
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
@@ -780,6 +804,9 @@ fn toy_observation(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    mod git_boundary;
+
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1412,26 +1439,27 @@ mod tests {
         ));
     }
 
-    #[cfg(unix)]
     #[test]
     fn git_toy_failure_never_projects_raw_stderr_into_safe_or_durable_output() {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let repo = init_git_repo();
-        let marker = "SECRET-HOOK-MARKER-must-not-enter-ledger";
-        let hook = repo.path().join(".git/hooks/pre-commit");
-        std::fs::write(
-            &hook,
-            format!("#!/bin/sh\nprintf '{marker}\\n' >&2\nexit 1\n"),
-        )
-        .unwrap();
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o700)).unwrap();
-        std::fs::write(repo.path().join("README.md"), "changed\n").unwrap();
-        run_git_for_test(repo.path(), &["add", "README.md"]);
-
+        let marker = "SECRET-REF-MARKER-must-not-enter-ledger";
+        // A missing ref produces real Git stderr without requiring native hook
+        // execution, which the Git Toy must no longer allow.
+        let output = git_command(repo.path())
+            .args(["tag", "-a", "safe-tag", "-m", "test", marker])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(marker));
+        let request = serde_json::json!({
+            "interface": "patina:git/git@0.1.0",
+            "function": "create-tag-at",
+            "name": "safe-tag",
+            "git_ref": marker,
+        });
         let report = git_report(
             repo.path(),
-            r#"{"interface":"patina:git/git@0.1.0","function":"commit","message":"blocked"}"#,
+            &request.to_string(),
             "toy-git-stderr-redaction",
         );
         let durable_json = serde_json::to_string(&report.observations).unwrap();
