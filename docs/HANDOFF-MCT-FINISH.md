@@ -12,8 +12,11 @@
   merging the tested groundwork. Earlier draft-only restrictions were superseded
   for that work, not for release or deployment.
 - Current work order: [TODO-security-and-finish.md](TODO-security-and-finish.md).
-  Begin with bounded H1 Git/WASI regressions and remediation, then peer ingress
-  and resource boundaries. Do not reopen settled design or merge old experiments.
+  H1's first hook/fsmonitor/signer hardening slice has regression evidence in
+  [H1-git-toy-evidence.md](H1-git-toy-evidence.md); it is not a complete fix.
+  Continue with trusted Git metadata/execution isolation and a composed WASM
+  proof, then peer ingress and resource boundaries. Do not reopen settled design
+  or merge old experiments.
 
 The earlier handoff is preserved in Git at `665985c`. Its unratified recovery,
 issuance and signature recommendations are superseded by D-54 through D-57.

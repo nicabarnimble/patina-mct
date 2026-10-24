@@ -1,7 +1,7 @@
 # Security remediation and remaining MCT work
 
-**Status: local execution backlog; H1 investigation in progress. No new issues
-published and no findings closed.**
+**Status: local execution backlog; first H1 hardening slice implemented and
+tested, but H1 remains open. No new issues published and no findings closed.**
 
 This consolidates the 2026-10-20 security audit and the remaining cleanup,
 reliability and runtime work. Audit baseline: `ebc0d2d6a1a055bf8157cf93ae73b2b1c2604a51`.
@@ -68,6 +68,12 @@ the source audit refer to the baseline and should not be treated as stable.
   An existing stderr-redaction test intentionally runs a pre-commit hook;
   it is not a sandbox regression. No end-to-end malicious Child test was run
   during the follow-up review.
+- **Progress, 2026-10-24:** three regressions reproduced native execution through
+  hooks, fsmonitor and signing helpers. The shared Git command builder now
+  suppresses those paths; 18 Toy tests pass and normal stage/commit is covered.
+  Arbitrary filters and writable `.git` metadata remain unisolated: **H1 is not
+  closed**. See [first-slice evidence](H1-git-toy-evidence.md) for exact scope,
+  commands, workspace failure/reruns, and the next metadata-isolation slice.
 - **Paths:** `mct-daemon/src/toy.rs`, `daemon/cli_runtime.rs` and
   `daemon/resident/execution.rs` under `mct-daemon/src/`.
 - [ ] Prove the grant composition in an isolated Child fixture, then prevent
@@ -242,6 +248,10 @@ not independently reproduced exploits. Scope/severity may change with evidence.
   `MidRun { delay_ms: 190 }`, boot 1.
 - **Sources:** `docs/FINISH.md`, strict-cutover feature evidence; original local
   logs under `/tmp/mct-genesis-evidence/` are not guaranteed portable/persistent.
+  H1 validation reproduced this on 2026-10-24: seed `0x6d637421`, iteration 2,
+  `MidRun { delay_ms: 718 }`, boot 1. An isolated rerun and the full workspace
+  rerun passed unchanged; this is not a fix. The first failure log, but not its
+  cleaned-up fixture, is retained. See [H1 evidence](H1-git-toy-evidence.md).
 - [ ] Retain startup logs, child exit status, readiness transitions and timing;
   distinguish failed startup, slow startup and faulty observation. Restore
   deterministic injection seams rather than production-only debugging hooks.
