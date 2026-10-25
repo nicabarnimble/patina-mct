@@ -2545,6 +2545,9 @@ fn wasm_observation(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    mod git_confinement;
+
     use super::*;
     use std::{
         fs,
@@ -3809,16 +3812,35 @@ mod tests {
         assert_eq!(report.output_json, serde_json::json!({"results": [1]}));
         assert_eq!(report.result.outcome, ResultOutcome::Success);
         assert_eq!(report.observations[1].kind, ObservationKind::ToyCallStarted);
+        #[cfg(target_os = "macos")]
         assert_eq!(
             report.observations[2].kind,
             ObservationKind::ToyCallCompleted
         );
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(report.observations[2].kind, ObservationKind::ToyCallFailed);
+            assert_eq!(
+                report.observations[2].safe_message,
+                "git confinement unavailable on this platform"
+            );
+            let durable = serde_json::to_string(&report.observations).unwrap();
+            assert!(!durable.contains(repo.path().to_str().unwrap()));
+            assert!(!durable.contains("mct-test-tag"));
+        }
         let tags = std::process::Command::new("git")
             .current_dir(repo.path())
             .args(["tag", "--list", "mct-test-tag"])
             .output()
             .unwrap();
+        assert!(tags.status.success());
+        #[cfg(target_os = "macos")]
         assert!(String::from_utf8_lossy(&tags.stdout).contains("mct-test-tag"));
+        #[cfg(not(target_os = "macos"))]
+        assert!(
+            tags.stdout.is_empty(),
+            "unsupported Git must have no effect"
+        );
     }
 
     #[test]

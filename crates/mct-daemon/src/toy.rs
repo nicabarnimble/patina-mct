@@ -9,6 +9,10 @@ use std::{
     sync::Arc,
 };
 
+// Native Git is always OS-confined; unsupported platforms fail closed.
+#[cfg(target_os = "macos")]
+mod confinement;
+
 pub const MCT_SECRETS_TOY_ID: &str = "toy-secrets";
 const MCT_SECRETS_INTERFACE: &str = "patina:secrets/secrets@0.1.0";
 use thiserror::Error;
@@ -225,7 +229,11 @@ impl MctToyAdapterRegistry {
                     ObservationOutcome::Failed,
                 ),
                 Some(MctToyBackend::GitCommand { repo_root }) => {
-                    match call_git_toy(repo_root, input_json) {
+                    // Select a supported confined executor before dispatching even
+                    // operations that might otherwise succeed without spawning Git.
+                    match GitExecutor::confined(repo_root)
+                        .and_then(|executor| call_git_toy(&executor, input_json))
+                    {
                         Ok(output_json) => (
                             MctToyAdapterOutcome::Success,
                             Some(output_json),
@@ -388,7 +396,36 @@ impl SecretToyError {
     }
 }
 
-fn call_git_toy(repo_root: &Path, input_json: &str) -> Result<String, GitToyError> {
+// Explicit executor seam for exercising the real admitted Toy path. This carries
+// no authority: registry dispatch still occurs only after effect admission.
+struct GitExecutor<'a> {
+    repo_root: &'a Path,
+    command_builder: fn(&Path) -> Result<Command, GitToyError>,
+}
+
+impl<'a> GitExecutor<'a> {
+    #[cfg(target_os = "macos")]
+    fn confined(repo_root: &'a Path) -> Result<Self, GitToyError> {
+        // Refuse unsupported layouts even for operations with no native effect.
+        confinement::validate_repository_layout(repo_root)?;
+        Ok(Self {
+            repo_root,
+            command_builder: confinement::git_command,
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn confined(_repo_root: &'a Path) -> Result<Self, GitToyError> {
+        Err(GitToyError::ConfinementUnsupported)
+    }
+
+    fn command(&self) -> Result<Command, GitToyError> {
+        (self.command_builder)(self.repo_root)
+    }
+}
+
+fn call_git_toy(executor: &GitExecutor<'_>, input_json: &str) -> Result<String, GitToyError> {
+    let repo_root = executor.repo_root;
     if !repo_root.is_dir() {
         return Err(GitToyError::RepoRootNotDirectory {
             repo_root: repo_root.to_path_buf(),
@@ -407,7 +444,7 @@ fn call_git_toy(repo_root: &Path, input_json: &str) -> Result<String, GitToyErro
         "create-tag" => {
             let name = required_git_ref_arg(&input, "name")?;
             let message = format!("mct git toy tag: {}", name.as_str());
-            run_git(repo_root, &["tag", "-a", name.as_str(), "-m", &message])?;
+            run_git(executor, &["tag", "-a", name.as_str(), "-m", &message])?;
             serde_json::json!({"ok": null})
         }
         "create-tag-at" => {
@@ -415,43 +452,43 @@ fn call_git_toy(repo_root: &Path, input_json: &str) -> Result<String, GitToyErro
             let git_ref = required_git_ref_arg(&input, "git_ref")?;
             let message = format!("mct git toy tag: {}", name.as_str());
             run_git(
-                repo_root,
+                executor,
                 &["tag", "-a", name.as_str(), "-m", &message, git_ref.as_str()],
             )?;
             serde_json::json!({"ok": null})
         }
         "delete-tag" => {
             let name = required_git_ref_arg(&input, "name")?;
-            run_git(repo_root, &["tag", "-d", name.as_str()])?;
+            run_git(executor, &["tag", "-d", name.as_str()])?;
             serde_json::json!({"ok": null})
         }
         "tag-exists" => {
             let name = required_git_ref_arg(&input, "name")?;
-            let tags = run_git_capture(repo_root, &["tag", "--list", name.as_str()])?;
+            let tags = run_git_capture(executor, &["tag", "--list", name.as_str()])?;
             serde_json::json!({"ok": tags.lines().any(|line| line.trim() == name.as_str())})
         }
         "commit" => {
             let message = required_str(&input, "message")?;
-            run_git(repo_root, &["commit", "-m", message])?;
-            let sha = run_git_capture(repo_root, &["rev-parse", "HEAD"])?;
+            run_git(executor, &["commit", "-m", message])?;
+            let sha = run_git_capture(executor, &["rev-parse", "HEAD"])?;
             serde_json::json!({"ok": sha.trim()})
         }
         "log-oneline" => {
             let limit = required_u32(&input, "limit")?;
             let limit = limit.to_string();
-            let log = run_git_capture(repo_root, &["log", "--oneline", "--max-count", &limit])?;
+            let log = run_git_capture(executor, &["log", "--oneline", "--max-count", &limit])?;
             let lines: Vec<&str> = log.lines().filter(|line| !line.trim().is_empty()).collect();
             serde_json::json!({"ok": lines})
         }
-        "diff-stat" => serde_json::json!({"ok": run_git_capture(repo_root, &["diff", "--stat"])?}),
+        "diff-stat" => serde_json::json!({"ok": run_git_capture(executor, &["diff", "--stat"])?}),
         "status-porcelain" => {
-            serde_json::json!({"ok": run_git_capture(repo_root, &["status", "--porcelain"])?})
+            serde_json::json!({"ok": run_git_capture(executor, &["status", "--porcelain"])?})
         }
         "add-paths" => {
             let paths = required_paths(&input, "paths")?;
             let mut args = vec!["add".to_owned(), "--".to_owned()];
             args.extend(paths);
-            run_git_owned(repo_root, &args)?;
+            run_git_owned(executor, &args)?;
             serde_json::json!({"ok": null})
         }
         "remove-paths" => {
@@ -459,40 +496,21 @@ fn call_git_toy(repo_root: &Path, input_json: &str) -> Result<String, GitToyErro
             if !paths.is_empty() {
                 let mut args = vec!["rm".to_owned(), "-rf".to_owned(), "--".to_owned()];
                 args.extend(paths);
-                run_git_owned(repo_root, &args)?;
+                run_git_owned(executor, &args)?;
             }
             serde_json::json!({"ok": null})
         }
         "is-clean-tracked" => {
-            let status = run_git_capture(repo_root, &["status", "--porcelain", "-uno"])?;
+            let status = run_git_capture(executor, &["status", "--porcelain", "-uno"])?;
             serde_json::json!({"ok": status.trim().is_empty()})
         }
         "commits-behind-upstream" => {
-            let count = run_git_capture_allow_failure(
-                repo_root,
-                &["rev-list", "--count", "HEAD..@{upstream}"],
-            )?;
-            let count = count.trim().parse::<u32>().unwrap_or(0);
-            serde_json::json!({"ok": count})
+            let (_, behind) = git_upstream_counts(executor)?;
+            serde_json::json!({"ok": behind})
         }
         "is-diverged" => {
-            let has_upstream =
-                run_git(repo_root, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_ok();
-            let diverged = if has_upstream {
-                let ahead = run_git_capture_allow_failure(
-                    repo_root,
-                    &["rev-list", "--count", "@{upstream}..HEAD"],
-                )?;
-                let behind = run_git_capture_allow_failure(
-                    repo_root,
-                    &["rev-list", "--count", "HEAD..@{upstream}"],
-                )?;
-                ahead.trim().parse::<u32>().unwrap_or(0) > 0
-                    && behind.trim().parse::<u32>().unwrap_or(0) > 0
-            } else {
-                false
-            };
-            serde_json::json!({"ok": diverged})
+            let (ahead, behind) = git_upstream_counts(executor)?;
+            serde_json::json!({"ok": ahead > 0 && behind > 0})
         }
         other => {
             return Err(GitToyError::UnsupportedFunction {
@@ -543,6 +561,12 @@ enum GitToyError {
     },
     #[error("git command failed")]
     GitFailed,
+    #[cfg(target_os = "macos")]
+    #[error("git repository layout unsupported")]
+    RepositoryLayoutUnsupported,
+    #[cfg(not(target_os = "macos"))]
+    #[error("git confinement unavailable on this platform")]
+    ConfinementUnsupported,
 }
 
 impl GitToyError {
@@ -571,6 +595,10 @@ impl GitToyError {
             Self::InvalidRef { source } => source.to_string(),
             Self::RunGit { .. } => "git command unavailable".into(),
             Self::GitFailed => "git command failed".into(),
+            #[cfg(target_os = "macos")]
+            Self::RepositoryLayoutUnsupported => "git repository layout unsupported".into(),
+            #[cfg(not(target_os = "macos"))]
+            Self::ConfinementUnsupported => "git confinement unavailable on this platform".into(),
         }
     }
 }
@@ -675,8 +703,9 @@ fn validate_repo_relative_path(path: &str) -> Result<(), GitToyPathError> {
     Ok(())
 }
 
-fn run_git(repo_root: &Path, args: &[&str]) -> Result<(), GitToyError> {
-    let output = git_command(repo_root)
+fn run_git(executor: &GitExecutor<'_>, args: &[&str]) -> Result<(), GitToyError> {
+    let output = executor
+        .command()?
         .args(args)
         .output()
         .map_err(|source| GitToyError::RunGit { source })?;
@@ -687,8 +716,9 @@ fn run_git(repo_root: &Path, args: &[&str]) -> Result<(), GitToyError> {
     }
 }
 
-fn run_git_owned(repo_root: &Path, args: &[String]) -> Result<(), GitToyError> {
-    let output = git_command(repo_root)
+fn run_git_owned(executor: &GitExecutor<'_>, args: &[String]) -> Result<(), GitToyError> {
+    let output = executor
+        .command()?
         .args(args)
         .output()
         .map_err(|source| GitToyError::RunGit { source })?;
@@ -699,8 +729,9 @@ fn run_git_owned(repo_root: &Path, args: &[String]) -> Result<(), GitToyError> {
     }
 }
 
-fn run_git_capture(repo_root: &Path, args: &[&str]) -> Result<String, GitToyError> {
-    let output = git_command(repo_root)
+fn run_git_capture(executor: &GitExecutor<'_>, args: &[&str]) -> Result<String, GitToyError> {
+    let output = executor
+        .command()?
         .args(args)
         .output()
         .map_err(|source| GitToyError::RunGit { source })?;
@@ -711,51 +742,53 @@ fn run_git_capture(repo_root: &Path, args: &[&str]) -> Result<String, GitToyErro
     }
 }
 
-fn run_git_capture_allow_failure(repo_root: &Path, args: &[&str]) -> Result<String, GitToyError> {
-    let output = git_command(repo_root)
-        .args(args)
-        .output()
-        .map_err(|source| GitToyError::RunGit { source })?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        Ok("0".into())
-    }
-}
+fn git_upstream_counts(executor: &GitExecutor<'_>) -> Result<(u32, u32), GitToyError> {
+    // Both queries require a born, attached HEAD. Unborn/detached HEAD is a
+    // failure, not evidence of zero lag or non-divergence.
+    run_git(executor, &["rev-parse", "--verify", "HEAD^{commit}"])?;
+    let head = run_git_capture(executor, &["symbolic-ref", "--quiet", "HEAD"])?;
+    let branch = head
+        .trim_end_matches('\n')
+        .strip_prefix("refs/heads/")
+        .filter(|branch| !branch.is_empty())
+        .ok_or(GitToyError::GitFailed)?;
 
-fn git_command(repo_root: &Path) -> Command {
-    let mut command = Command::new("git");
-    // A Git Toy grant is not permission to invoke hooks, filesystem monitors,
-    // signing agents, or maintenance jobs selected by repository configuration.
-    // Command-line configuration wins over repository/global configuration.
-    // This is defense in depth, NOT the complete H1 boundary: arbitrary clean/
-    // process filters and Child-writable Git metadata still require isolation.
-    command
-        .current_dir(repo_root)
-        .args([
-            "--no-pager",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "commit.gpgSign=false",
-            "-c",
-            "tag.gpgSign=false",
-            "-c",
-            "tag.forceSignAnnotated=false",
-            "-c",
-            "log.showSignature=false",
-            "-c",
-            "gc.auto=0",
-            "-c",
-            "maintenance.auto=false",
-        ])
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .env_remove("GIT_PREFIX");
-    command
+    // Only a successful config read can establish absent upstream configuration.
+    // Do not infer absence from a failed @{upstream} resolution (or an empty
+    // for-each-ref %(upstream): that also hides broken remote/refspec mappings).
+    // --null frames keys and values even when values contain newlines. Git
+    // normalizes section/key case but preserves the branch subsection's case.
+    let config = run_git_capture(executor, &["config", "--null", "--list"])?;
+    let merge_key = format!("branch.{branch}.merge");
+    let configured = config.split_terminator('\0').any(|entry| {
+        let key = entry.split_once('\n').map_or(entry, |(key, _)| key);
+        key == merge_key
+    });
+    if !configured {
+        return Ok((0, 0));
+    }
+
+    // Configuration is not trusted authority or a preflight security check.
+    // Every invocation still uses the executor, and any subsequent resolution,
+    // traversal, or policy failure propagates. Compare both directions in one
+    // traversal rather than silently defaulting either failed count to zero.
+    let counts = run_git_capture(
+        executor,
+        &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
+    )?;
+    let mut fields = counts.split_whitespace();
+    let mut count = || {
+        fields
+            .next()
+            .and_then(|field| field.parse::<u32>().ok())
+            .ok_or(GitToyError::GitFailed)
+    };
+    let ahead = count()?;
+    let behind = count()?;
+    if fields.next().is_some() {
+        return Err(GitToyError::GitFailed);
+    }
+    Ok((ahead, behind))
 }
 
 fn git_stderr(_output: &std::process::Output) -> GitToyError {
@@ -804,8 +837,14 @@ fn toy_observation(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     mod git_boundary;
+    #[cfg(target_os = "macos")]
+    mod git_confinement;
+    #[cfg(not(target_os = "macos"))]
+    mod git_unsupported;
+    #[cfg(target_os = "macos")]
+    mod git_upstream;
 
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -993,8 +1032,39 @@ mod tests {
         repo
     }
 
+    // Raw Git is only for disposable fixture setup and independent controls.
+    fn fixture_git_command(repo_root: &Path) -> Command {
+        let mut command = Command::new("git");
+        command
+            .current_dir(repo_root)
+            .args([
+                "--no-pager",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "commit.gpgSign=false",
+                "-c",
+                "tag.gpgSign=false",
+                "-c",
+                "tag.forceSignAnnotated=false",
+                "-c",
+                "log.showSignature=false",
+                "-c",
+                "gc.auto=0",
+                "-c",
+                "maintenance.auto=false",
+            ])
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_PREFIX");
+        command
+    }
+
     fn run_git_for_test(repo_root: &Path, args: &[&str]) {
-        let output = git_command(repo_root).args(args).output().unwrap();
+        let output = fixture_git_command(repo_root).args(args).output().unwrap();
         assert!(
             output.status.success(),
             "git {:?} failed: {}",
@@ -1337,6 +1407,7 @@ mod tests {
         assert!(allowed.is_allowed());
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn git_toy_backend_runs_in_configured_repo_and_records_success() {
         let repo = init_git_repo();
@@ -1362,7 +1433,11 @@ mod tests {
             report.observations[1].kind,
             ObservationKind::ToyCallCompleted
         );
-        let tags = run_git_capture(repo.path(), &["tag", "--list", "mct-toy-test"]).unwrap();
+        let tags = run_git_capture(
+            &GitExecutor::confined(repo.path()).unwrap(),
+            &["tag", "--list", "mct-toy-test"],
+        )
+        .unwrap();
         assert!(tags.contains("mct-toy-test"));
     }
 
@@ -1383,6 +1458,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn git_toy_rejects_option_like_untrusted_refs_before_invoking_git() {
         let repo = init_git_repo();
@@ -1426,7 +1502,10 @@ mod tests {
         let repo = init_git_repo();
 
         let error = call_git_toy(
-            repo.path(),
+            &GitExecutor {
+                repo_root: repo.path(),
+                command_builder: |_| panic!("invalid ref must be rejected before Git runs"),
+            },
             r#"{"interface":"patina:git/git@0.1.0","function":"create-tag","name":"--force"}"#,
         )
         .unwrap_err();
@@ -1439,13 +1518,14 @@ mod tests {
         ));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn git_toy_failure_never_projects_raw_stderr_into_safe_or_durable_output() {
         let repo = init_git_repo();
         let marker = "SECRET-REF-MARKER-must-not-enter-ledger";
         // A missing ref produces real Git stderr without requiring native hook
         // execution, which the Git Toy must no longer allow.
-        let output = git_command(repo.path())
+        let output = fixture_git_command(repo.path())
             .args(["tag", "-a", "safe-tag", "-m", "test", marker])
             .output()
             .unwrap();
@@ -1470,6 +1550,7 @@ mod tests {
         assert!(!durable_json.contains(marker));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn git_toy_backend_rejects_paths_that_escape_repo() {
         let repo = init_git_repo();

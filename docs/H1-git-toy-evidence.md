@@ -1,6 +1,10 @@
-# H1 Git Toy: first bounded hardening slice
+# H1 Git Toy: hardening and production macOS confinement
 
-**2026-10-24 — H1 remains open. Not a sandbox fix or release acceptance.**
+**2026-10-24 — macOS confinement promoted locally; H1 remains open for Linux confinement and independent security review. Not release acceptance.**
+
+The first sections preserve the historical bounded-hardening/PR #84 evidence.
+The current production backend and its validation are documented under
+[Production macOS confinement](#production-macos-confinement).
 
 Scope comes from [H1 in the work index](TODO-security-and-finish.md#h1--git-toy-can-cross-the-wasm-execution-boundary-high)
 and the existing [safety boundaries](../layer/core/safety-boundaries.md).
@@ -18,7 +22,7 @@ write; the tests write those bytes from the fixture rather than through WASM.
 They are adapter-level evidence, **not** an end-to-end malicious WASM proof.
 
 Each fixture first runs ordinary Git through a separate command builder to
-prove the installed payload actually executes. Its only effect is a sentinel
+prove the configured helper actually executes. Its only effect is a sentinel
 write to a private sibling temporary directory outside the repository. It does
 not read secrets, connect to a network, or mutate a real project. The marker is
 removed before invoking the Git Toy. No process-global environment is mutated.
@@ -54,7 +58,7 @@ The shared Git command builder now overrides:
 
 Hook, fsmonitor and commit/tag signer suppression has behavioral regression
 coverage. The remaining switches are defense in depth, not independently
-reproduced exploit closures. Command-line configuration takes precedence over
+reproduced boundary regressions. Command-line configuration takes precedence over
 repository configuration. Existing ref/path rejection and effect-time grant
 checks remain unchanged.
 
@@ -211,23 +215,154 @@ cannot certify the hosted runner budget.
 
 ## What still blocks H1 closure
 
-1. The project-root WASI preopen still permits `.git` writes. This patch does
-   not isolate Git metadata from the Child, other Children, or concurrent writers.
-2. Arbitrary `filter.<name>.clean` / `filter.<name>.process` configuration and
-   worktree attributes can still select native helpers during staging. Other
-   repository/ambient helper paths have not been exhaustively reviewed.
-3. No immutable/trusted metadata policy or race-safe Git execution context is
-   installed. A pre-call scan of mutable config would not solve this: another
-   writer can change it after validation. Removing selected environment variables
-   or disabling hooks is not a substitute.
-4. A composed WASM filesystem-write → Git Toy test and independent security
-   review are still required before closing the finding.
+1. Linux OS-level Git confinement is not implemented. All non-macOS Git Toy
+   calls now fail closed rather than using an unconfined native Git backend.
+2. Independent security review is still required, including the macOS policy,
+   supported Git/runtime distributions, filesystem aliasing and mutation races.
+   Local passing tests are not an exhaustive sandbox assurance claim.
 
-Next slice: establish the trusted metadata/execution boundary, retaining normal
-edit/stage/commit behavior. Explicitly cover Git discovery (`.git` directories,
-gitfiles, linked worktrees, symlinks), nested repositories, worktree attributes,
-filters/helpers and mutation races. Do not auto-migrate or rewrite existing
-repositories, pretend metadata is immutable, or quietly change grant/durability
-semantics. Bring back any actual compatibility/policy decision with the concrete
-tradeoff. Keep H1 and the eight release obligations open until the full boundary
-has executable evidence.
+The project-root WASI preopen still permits `.git` writes. This is intentional:
+ordinary repositories are preserved and metadata remains untrusted. The native
+Git interpreter's process/filesystem execution context is the boundary, not a
+preflight config scan, repository enrollment, or relocated metadata. No H1 or
+other release obligation is closed by this promotion.
+
+## Production macOS confinement
+
+The owner approved promotion on `experiment/git-toy-confinement`, based on
+PR #84's merge `edd947a`. `MctToyBackend::GitCommand` now always selects the
+confined macOS executor in `crates/mct-daemon/src/toy/confinement.rs`.
+It is compiled under `#[cfg(target_os = "macos")]`, including production builds.
+The test-only registry toggle and ambient production Git command builder are
+removed. Raw Git remains only in disposable test setup and independent positive
+controls; it cannot be selected as an adapter fallback.
+
+### Platform and repository contract
+
+- **macOS:** use host `/usr/bin/sandbox-exec` with a deny-default policy,
+  parameterized `-D` paths, cleared environment, explicit `--git-dir` /
+  `--work-tree`, and helper-suppressing `-c` overrides. No process-fork,
+  general exec, network, Mach IPC, or tracing grants. Missing sandbox support,
+  failed policy application, and denied Git commands fail without raw retry.
+- **Git installation:** select `/opt/homebrew/bin/git` (Homebrew arm64), then
+  `/Library/Developer/CommandLineTools/usr/bin/git` if the first is absent,
+  canonicalizing the selected executable. Never search ambient PATH. Runtime
+  read grants cover the named macOS/Homebrew library trees; selecting a repository
+  that overlaps trusted runtime paths is refused. A selected Git installation
+  that cannot operate under this policy fails closed, without retrying raw Git.
+  This is a supported-installation contract, not a cryptographic version pin.
+  Local evidence uses macOS arm64, Rust 1.96.0 and Git 2.56.0.
+- **Non-macOS:** fail before operation dispatch, including otherwise successful
+  no-ops, with `git confinement unavailable on this platform`, no success
+  output, and a redacted `ToyCallFailed` observation. No native Git is started.
+  The platform-specific test checks all 13 operations; it is not executed by
+  the macOS test run. No native non-macOS target is installed on this host.
+- **Repositories:** ordinary self-contained checkouts with an in-root `.git`
+  directory only. Gitfiles, symlinked `.git`, and linked worktrees are refused
+  with `git repository layout unsupported`. No current grant authorizes an
+  exception; future support requires explicit metadata authority, not an
+  implicit external-path grant. Parent discovery is disabled. The layout
+  preflight is only a compatibility restriction: OS confinement remains active
+  against redirection/config mutation after command construction.
+- **Upstream queries:** a born, attached HEAD with successfully read config and
+  no `branch.<current>.merge` setting returns `0` / `false`. Unborn/detached
+  HEAD, unreadable metadata, broken configured upstreams, and failed history
+  traversal fail closed. Both counts come from one strict
+  `rev-list --left-right --count HEAD...@{upstream}`; invalid/overflowing
+  output is an error, never a default count.
+
+No repository migration, new grant, new dependency, deployment, or H1 closure
+is introduced.
+
+### Executable evidence
+
+**13 confinement tests pass through the production registry, without a toggle:**
+
+1. **Adapter confinement (`crates/mct-daemon/src/toy/tests/git_confinement.rs`,
+   10 passed):**
+   - `clean` and `process` helper suppression, with independent raw-Git
+     positive controls and inside/outside markers. Optional filters use native
+     Git's unfiltered-byte behavior; required filters fail closed.
+   - All 13 Git Toy operations on an ordinary checkout.
+   - OS enforcement after config mutation and metadata redirection following
+     command construction.
+   - Parent-discovery refusal, symlink/gitfile redirection refusal without
+     external repository mutation, and real linked-worktree refusal.
+   - SBPL parameters treat quoted/newline-containing paths as data.
+   - Fail-closed queries on non-repositories, unreadable/policy-denied config,
+     redirected metadata, and unborn HEAD.
+   - A policy-denied common-ancestor object fails history traversal even after
+     both HEAD and upstream tip verification succeed.
+   - Durable-output redaction assertions remain enforced.
+
+2. **Composed WASM -> Git Toy
+   (`crates/mct-daemon/src/wasm/tests/git_confinement.rs`, 3 passed):**
+   - The WASM Child writes filter configuration and calls the production adapter:
+     neither filter starts a helper, both inside/outside markers stay absent,
+     and `ToyCallFailed` is observed with paths/filter names redacted.
+   - Independent raw Git then executes the exact WASM-written payload as a
+     positive control. Its markers are removed and the WASM production path
+     is exercised again. There is no unconfined adapter test toggle.
+   - Ordinary authorized WASM edit -> stage -> commit still succeeds without
+     metadata relocation or config rewriting.
+   - Without filesystem delegation, the Child cannot modify repo config or
+     attributes, and no Git Toy call starts.
+
+The unchanged Child fixture is
+`crates/mct-daemon/tests/fixtures/h1-git-child/child.wasm` (25,835 bytes,
+SHA-256 `bba25cd1fa6c437a41f98e7f2897c0c25f1077d5c520f3331abdcfa8ce6263ca`);
+source/build provenance is in its `PROVENANCE.md`.
+
+All **32 Toy unit tests** pass, including the four shared upstream-query tests,
+existing hook/signer/fsmonitor controls, and ref/path validation. The direct WIT
+Git import test also uses production dispatch and asserts unsupported-platform
+failure/no tag on non-macOS builds.
+
+### Promotion validation
+
+Validation used the locked graph offline, with `CARGO_BUILD_JOBS=8`,
+`CARGO_PROFILE_DEV_DEBUG=0`, `CARGO_PROFILE_TEST_DEBUG=0`, and
+`CARGO_NET_OFFLINE=true`. Full workspace tests used
+`MCT_RESTART_KEEP=1 MCT_FLEET_KEEP=1`, `--no-fail-fast`, and
+`--test-threads=1`.
+
+| Check | Observed result |
+| --- | --- |
+| Production confinement tests | 13 passed (10 adapter + 3 WASM), no toggle |
+| Toy unit tests | 32 passed |
+| Initial promoted workspace run | 751 passed, 0 failed, 2 pre-existing ignored |
+| Revalidation after also refusing linked-worktree no-ops | 750 passed, 1 failed, 2 pre-existing ignored; R1 readiness signature below |
+| Isolated restart rerun | 1 test / 3 iterations passed |
+| Full unchanged-source workspace rerun | 751 passed, 0 failed, 2 pre-existing ignored |
+| Workspace/all-target Clippy, `-D warnings` | Passed |
+| `cargo fmt --all --check`, `git diff --check` | Passed |
+| `bash scripts/ci-tier0.sh specs` | Passed, including 17 completion-runner self-tests |
+| `bash scripts/build-docs.sh` | Passed (mdBook/link checking and warnings-denied Rust API docs) |
+
+The revalidation failure in
+`mother_survives_sigkill_mid_run_with_active_children` matches the previously
+recorded R1 control-socket readiness signature; these runs do not establish or
+repair its root cause. Seed `0x6d637421`, iteration `1`,
+`AfterSomeChildrenFinish`, boot `1`:
+
+```text
+mct-daemon exited exit status: 1 before ready
+Error: resident control socket did not bind before readiness
+mother-restart seed=0x6d637421: 1/3 iterations failed: [1]
+```
+
+The failing fixture is retained at
+`/var/folders/6h/329275913d1d3k1lfvvvryp40000gn/T/.tmpbSbHKw`.
+The failed full log, isolated rerun, successful full rerun, Clippy, specs, and
+docs logs are under `/tmp/mct-h1-promotion-evidence/`. No source change,
+assertion weakening, retry logic, or timing adjustment occurred between the
+failed revalidation and the passing reruns. R1/R2 remain open; a rerun does not
+erase the failure. H1 remains open for Linux confinement and independent review.
+
+Local log SHA-256 receipts (not portable release artifacts):
+
+```text
+746220fb9d2e0e59d6dfb9d30cb27b1bae2ec2225531aa34eea447f09aa29e96  workspace-tests-final.log
+06cb9d81810e43a603cf54fbaf18bf7bd6018c6ad898fc6c3c7bd049005b4bf4  restart-rerun.log
+c9f1e28aa0cbf70562d106fee8551f62b972450b6572de197014ee3c0430cc36  workspace-rerun.log
+```

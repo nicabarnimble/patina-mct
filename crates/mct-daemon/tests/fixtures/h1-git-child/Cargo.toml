@@ -1,0 +1,18 @@
+[package]
+name = "mct-h1-git-child"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = { version = "=0.51.0", default-features = false, features = ["macros", "realloc", "bitflags"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
