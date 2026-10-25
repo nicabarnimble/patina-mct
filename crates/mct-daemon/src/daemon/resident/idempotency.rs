@@ -302,6 +302,7 @@ fn resident_idempotency_observation(
     }
 }
 
+/// Standalone Iroh ingress: only an already admitted peer may reserve this scope.
 pub(crate) async fn execute_idempotent_call<F, Fut>(
     state_path: PathBuf,
     ledger: ResidentLedgerWriter,
@@ -313,7 +314,7 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = MctIrohCallHandlerResult>,
 {
-    let Some(context) = ResidentCallIngressContext::ordinary(&request) else {
+    let Some(context) = ResidentCallIngressContext::peer(&request) else {
         return MctIrohCallHandlerResult::denied();
     };
     execute_idempotent_call_with_context(state_path, ledger, request, now, context, execute).await
@@ -331,6 +332,9 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = MctIrohCallHandlerResult>,
 {
+    if !context.matches_request(&request) {
+        return MctIrohCallHandlerResult::denied();
+    }
     let Some(idempotency_key) = request.idempotency_key.clone() else {
         return execute().await;
     };
@@ -557,6 +561,65 @@ mod tests {
         call.origin = CallOrigin::Iroh;
         call
     }
+    #[tokio::test]
+    async fn peer_context_cannot_switch_origin_or_retry_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("state.sqlite");
+        let request = resident_test_protocol_request(resident_test_call(
+            TraceId::new("trace-h2-scope").unwrap(),
+        ));
+        let context = ResidentCallIngressContext::peer(&request).unwrap();
+        let scope = resident_idempotency_caller_scope(&request, &context);
+        assert_eq!(scope, "peer-binding:binding-resident-wit");
+        let mut narrowed = request.clone();
+        narrowed.call.caller.project_id = Some(ProjectId::new("narrowed-project").unwrap());
+        assert_eq!(
+            resident_idempotency_caller_scope(&narrowed, &context),
+            scope
+        );
+        let mut attacks = Vec::new();
+        for origin in [
+            CallOrigin::Cli,
+            CallOrigin::JvmAdapter,
+            CallOrigin::WasmHost,
+            CallOrigin::ProcessHarness,
+            CallOrigin::TriggerFiring,
+        ] {
+            let mut forged = request.clone();
+            forged.call.origin = origin;
+            assert!(ResidentCallIngressContext::peer(&forged).is_none());
+            attacks.push(forged);
+        }
+        let mut user = request.clone();
+        user.call.caller.user_id = Some(UserId::new("local-owner").unwrap());
+        assert!(ResidentCallIngressContext::peer(&user).is_none());
+        attacks.push(user);
+        let mut binding = request;
+        binding.authority.peer_binding_id = PeerBindingId::new("other-binding").unwrap();
+        attacks.push(binding);
+        for attack in attacks {
+            for key in [None, Some("same-key".into())] {
+                let mut attack = attack.clone();
+                attack.idempotency_key = key;
+                let result = execute_idempotent_call_with_context(
+                    state_path.clone(),
+                    ResidentLedgerWriter::failed_for_test(),
+                    attack,
+                    current_timestamp(),
+                    context.clone(),
+                    || async { panic!("forged context reached execution") },
+                )
+                .await;
+                assert_eq!(result.outcome, CallProtocolOutcome::Denied);
+                assert_eq!(result.retry_directive, CallProtocolRetryDirective::None);
+            }
+        }
+        assert!(
+            !state_path.exists(),
+            "origin/caller forgery must not allocate a new retry budget"
+        );
+    }
+
     #[test]
     fn trigger_firing_idempotency_is_record_and_occurrence_scoped() {
         let mut request = resident_test_protocol_request(resident_test_call(
@@ -1062,7 +1125,7 @@ mod tests {
                 .call_idempotency_entry_state(
                     &resident_idempotency_caller_scope(
                         &request,
-                        &ResidentCallIngressContext::ordinary(&request).unwrap()
+                        &ResidentCallIngressContext::peer(&request).unwrap()
                     ),
                     "retry-later-key"
                 )

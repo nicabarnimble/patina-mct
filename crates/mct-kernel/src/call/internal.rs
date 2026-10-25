@@ -180,7 +180,20 @@ pub(super) fn evaluate_call_protocol_internal(
         );
     }
 
-    if hello.selected_node_id.as_ref() != Some(&request.call.caller.node_id) {
+    // mct/call/0 authenticates a peer hop, never a local principal or an
+    // upstream user. No delegation proof exists for either wire assertion.
+    if request.call.origin != CallOrigin::Iroh {
+        return denied(
+            request,
+            ids,
+            CallProtocolReason::OriginMismatch,
+            "not authorized",
+        );
+    }
+
+    if hello.selected_node_id.as_ref() != Some(&request.call.caller.node_id)
+        || request.call.caller.user_id.is_some()
+    {
         return denied(
             request,
             ids,

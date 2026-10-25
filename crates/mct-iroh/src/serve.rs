@@ -1721,6 +1721,9 @@ impl MotherIrohEndpoint {
                                     )
                                 }
                                 Ok((mut request, inline_payload_bytes)) => {
+                                    // Only transport supplies these facts. Keep wire origin/caller
+                                    // intact so the shared kernel evaluator rejects forged local
+                                    // origins and binds the peer caller to this receipt/binding.
                                     request.received_over.endpoint_id =
                                         remote_endpoint_id.clone();
                                     request.received_over.alpn = MCT_CALL_ALPN.into();
@@ -2282,6 +2285,8 @@ impl MotherIrohEndpoint {
                                 return Ok(served);
                             }
                         };
+                    // Same origin/caller enforcement as concurrent serving: never
+                    // reinterpret wire origin as local authority before evaluation.
                     request.received_over.endpoint_id = remote_endpoint_id.clone();
                     request.received_over.alpn = MCT_CALL_ALPN.into();
                     request.received_over.connection_side = ConnectionSide::Incoming;

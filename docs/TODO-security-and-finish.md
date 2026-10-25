@@ -87,14 +87,22 @@ the source audit refer to the baseline and should not be treated as stable.
 
 ### H2 — Wire-selected origin can turn a peer into a local principal (High)
 
-- **Evidence:** audit and follow-up source tracing. Transport fields are
-  overwritten, `call.origin` is not; resident ingress and remote candidate
-  selection trust it. No adversarial three-Mother test was run in this review.
+- **Initial audit evidence:** transport fields were overwritten, `call.origin`
+  was not constrained; resident ingress and remote candidate selection trusted
+  it. No adversarial three-Mother test had been run at audit time.
 - **Paths:** `mct-iroh/src/serve.rs`; `mct-daemon/src/daemon/resident/`
   `pipeline.rs`, `candidates.rs`, `forwarding.rs`, `idempotency.rs`.
-- [ ] Derive peer context from authenticated transport and admitted binding;
-  reject incompatible wire origin or normalize it at the boundary. Do not let
-  a generic context constructor recover local authority from wire metadata.
+- [x] Local implementation: enforce Iroh origin and admitted node/Vision at
+  the authenticated peer boundary, refuse unbound user claims, and derive
+  resident context from trusted ingress provenance rather than wire origin.
+  Remote ingress cannot construct local context or switch idempotency scope.
+- **Local proof atop R2 checkpoint `39239f4`:** before the fix, A's forged
+  `Cli` origin made B forward to C and execute its WASM child. The retained
+  counterexample now fails closed; all five local origins and spoofed upstream
+  identities are covered, with successful local/direct-peer controls. Five
+  additional three-Mother runs and 763 workspace tests passed, as did Clippy,
+  fmt and tier-0 specs. See [H2 call-origin evidence](H2-call-origin-evidence.md).
+  Review/merge and formal completion-inventory closure remain separate.
 - **Acceptance:** enumerate all forged origins; a three-Mother test proves no
   unauthorized extra forwarding hop; local work and legitimate direct peer
   calls still succeed; peer caller identity and retry budgets cannot be changed

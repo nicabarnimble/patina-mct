@@ -1217,6 +1217,8 @@ pub(super) fn resident_observations_for_served_protocol(
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
+    mod call_origin;
+    #[cfg(unix)]
     mod readiness;
 
     use super::*;

@@ -479,23 +479,41 @@ pub(crate) enum ResidentCallIngressContext {
 }
 
 impl ResidentCallIngressContext {
-    pub(super) fn ordinary(request: &MctCallProtocolRequest) -> Option<Self> {
-        match request.call.origin {
-            CallOrigin::Iroh => Some(Self::Peer {
+    /// Called only after the Iroh evaluator has matched authenticated endpoint,
+    /// exact admitted hello, caller node/Vision and current binding. This
+    /// constructor cannot recover a local principal from any wire origin.
+    pub(crate) fn peer(request: &MctCallProtocolRequest) -> Option<Self> {
+        (request.call.origin == CallOrigin::Iroh && request.call.caller.user_id.is_none()).then(
+            || Self::Peer {
                 binding_id: request.authority.peer_binding_id.clone(),
-            }),
-            CallOrigin::TriggerFiring => None,
-            origin => Some(Self::LocalPrincipal {
-                origin,
-                caller: request.call.caller.clone(),
-            }),
+            },
+        )
+    }
+
+    fn from_ingress(
+        request: &MctCallProtocolRequest,
+        ingress: &ResidentPayloadIngress,
+    ) -> Option<Self> {
+        match ingress {
+            ResidentPayloadIngress::Remote { .. } => Self::peer(request),
+            // Local adapters construct caller identity from trusted local facts.
+            // They may downscope to Peer, never upgrade a Remote arrival.
+            ResidentPayloadIngress::Local { .. } => match request.call.origin {
+                CallOrigin::Iroh => Self::peer(request),
+                CallOrigin::TriggerFiring => None,
+                origin => Some(Self::LocalPrincipal {
+                    origin,
+                    caller: request.call.caller.clone(),
+                }),
+            },
         }
     }
 
-    fn matches_request(&self, request: &MctCallProtocolRequest) -> bool {
+    pub(super) fn matches_request(&self, request: &MctCallProtocolRequest) -> bool {
         match self {
             Self::Peer { binding_id } => {
                 request.call.origin == CallOrigin::Iroh
+                    && request.call.caller.user_id.is_none()
                     && binding_id == &request.authority.peer_binding_id
             }
             Self::LocalPrincipal { origin, caller } => {
@@ -545,7 +563,7 @@ pub(crate) async fn execute_resident_call(
     request: MctCallProtocolRequest,
     payload: ResidentPayloadIngress,
 ) -> MctIrohCallHandlerResult {
-    let Some(context) = ResidentCallIngressContext::ordinary(&request) else {
+    let Some(context) = ResidentCallIngressContext::from_ingress(&request, &payload) else {
         return MctIrohCallHandlerResult::denied();
     };
     execute_resident_call_with_context(paths, ledger, request, payload, context).await
@@ -578,7 +596,7 @@ pub(super) async fn execute_resident_call_at(
     payload: ResidentPayloadIngress,
     now: Timestamp,
 ) -> MctIrohCallHandlerResult {
-    let Some(context) = ResidentCallIngressContext::ordinary(&request) else {
+    let Some(context) = ResidentCallIngressContext::from_ingress(&request, &payload) else {
         return MctIrohCallHandlerResult::denied();
     };
     execute_resident_call_at_with_context(
@@ -604,7 +622,7 @@ pub(super) async fn execute_resident_call_with_post_mint_mutation(
     payload: ResidentPayloadIngress,
     mutation: AuthorityMutationRequestV1,
 ) -> MctIrohCallHandlerResult {
-    let Some(context) = ResidentCallIngressContext::ordinary(&request) else {
+    let Some(context) = ResidentCallIngressContext::from_ingress(&request, &payload) else {
         return MctIrohCallHandlerResult::denied();
     };
     execute_resident_call_at_with_context(
@@ -703,7 +721,10 @@ async fn execute_resident_call_at_with_context(
     overrides: ResidentExecutionOverrides,
     context: ResidentCallIngressContext,
 ) -> MctIrohCallHandlerResult {
-    if !context.matches_request(&request) {
+    if !context.matches_request(&request)
+        || (matches!(&payload, ResidentPayloadIngress::Remote { .. })
+            && !matches!(&context, ResidentCallIngressContext::Peer { .. }))
+    {
         return MctIrohCallHandlerResult::denied();
     }
     #[cfg(test)]

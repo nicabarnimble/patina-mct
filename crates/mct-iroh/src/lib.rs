@@ -70,6 +70,7 @@ mod tests {
         SINK.get_or_init(|| MctIrohObservationSink::new(|_| async { Ok::<_, std::io::Error>(()) }))
     }
 
+    mod call_origin;
     mod hello_receipts;
 
     #[test]
