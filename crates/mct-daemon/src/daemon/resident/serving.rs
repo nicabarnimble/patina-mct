@@ -822,7 +822,7 @@ where
         trigger_clock,
         trigger_limits,
     ));
-    let control_task = spawn_resident_control_task(
+    let (control_task, control_bound) = spawn_resident_control_task(
         config.control.clone(),
         ResidentRuntimePaths::new(
             config.config_path.clone(),
@@ -833,7 +833,7 @@ where
         config.max_concurrent_connections,
         shutdown_tx.subscribe(),
         Some(status_source),
-    )?;
+    );
 
     println!("mct resident mother endpoint_id={}", snapshot.endpoint_id);
     println!("ticket={}", ticket.to_json()?.replace('\n', ""));
@@ -841,17 +841,21 @@ where
         "mct resident mother children loaded={} failed={} bindings={} max_connections={}",
         loaded_child_count, load_report.failed, binding_count, config.max_concurrent_connections
     );
-    if let ResidentControlTransport::Uds(path) = &config.control {
-        for _ in 0..200 {
-            if path.exists() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+    let control_task = match wait_for_resident_control_bound(control_task, control_bound).await {
+        Ok(task) => task,
+        Err(error) => {
+            // Startup must not leave detached schedulers or a live endpoint
+            // behind when the control listener cannot become ready.
+            let _ = shutdown_tx.send(());
+            trigger_task.abort();
+            event_task.abort();
+            let _ = trigger_task.await;
+            let _ = event_task.await;
+            endpoint.close().await;
+            ledger.close().await;
+            return Err(error);
         }
-        if !path.exists() {
-            bail!("resident control socket did not bind before readiness");
-        }
-    }
+    };
     if let Some(instance) = &supervised_instance {
         record_supervised_resident_ready(instance, &ledger).await?;
     }
@@ -1064,18 +1068,23 @@ fn spawn_resident_control_task(
     max_concurrent_connections: usize,
     shutdown: broadcast::Receiver<()>,
     status_source: Option<Arc<ResidentStatusSource>>,
-) -> Result<tokio::task::JoinHandle<Result<()>>> {
-    match control {
-        ResidentControlTransport::Http(addr) => Ok(tokio::spawn(async move {
+) -> (
+    tokio::task::JoinHandle<Result<()>>,
+    tokio::sync::oneshot::Receiver<()>,
+) {
+    let (bound, received) = tokio::sync::oneshot::channel();
+    let task = match control {
+        ResidentControlTransport::Http(addr) => tokio::spawn(async move {
             serve_http_control_loop_until(
                 paths.state_path().to_path_buf(),
                 addr,
                 shutdown,
                 status_source,
+                bound,
             )
             .await
-        })),
-        ResidentControlTransport::Uds(path) => Ok(tokio::spawn(async move {
+        }),
+        ResidentControlTransport::Uds(path) => tokio::spawn(async move {
             run_control_serve_uds_with_state_until(
                 paths,
                 path,
@@ -1083,9 +1092,37 @@ fn spawn_resident_control_task(
                 max_concurrent_connections,
                 shutdown,
                 status_source,
+                bound,
             )
             .await
-        })),
+        }),
+    };
+    (task, received)
+}
+
+async fn wait_for_resident_control_bound(
+    mut task: tokio::task::JoinHandle<Result<()>>,
+    bound: tokio::sync::oneshot::Receiver<()>,
+) -> Result<tokio::task::JoinHandle<Result<()>>> {
+    // Readiness is a receipt from this tenure's initialized listener, never a
+    // pathname observation: a SIGKILL leaves a stale socket that startup unlinks.
+    // Propagate real startup errors/panics instead of hiding them behind a
+    // fixed pathname timeout. Prefer a known task failure over a queued receipt.
+    tokio::select! {
+        biased;
+        result = &mut task => {
+            result.context("join resident control startup task")??;
+            bail!("resident control stopped before readiness");
+        }
+        result = bound => {
+            if result.is_err() {
+                // The sender is owned by the control task. Joining preserves
+                // its original bind, snapshot, or durable-admission error.
+                task.await.context("join resident control startup task")??;
+                bail!("resident control stopped before readiness");
+            }
+            Ok(task)
+        }
     }
 }
 
@@ -1179,6 +1216,9 @@ pub(super) fn resident_observations_for_served_protocol(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    mod readiness;
+
     use super::*;
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 

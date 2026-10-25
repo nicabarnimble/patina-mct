@@ -255,6 +255,13 @@ not independently reproduced exploits. Scope/severity may change with evidence.
 - [ ] Retain startup logs, child exit status, readiness transitions and timing;
   distinguish failed startup, slow startup and faulty observation. Restore
   deterministic injection seams rather than production-only debugging hooks.
+- **Local fix after H1 checkpoint `7aafdcc`:** replaced stale-socket pathname
+  polling with a listener-owned startup acknowledgment and task-error propagation.
+  Retained timestamps show a ~236 ms failure, not an exhausted two-second wait.
+  The deterministic regression failed with the original algorithm; all four new
+  tests, 30 seeded SIGKILL iterations, and the 755-pass workspace run passed with
+  the fix. See [R1 readiness evidence](R1-readiness-evidence.md). Review/merge and
+  formal inventory closure remain separate.
 - **Acceptance:** demonstrated cause, regression that fails without the fix,
   repeated relevant process suites with retained diagnostics. No unexplained
   timeout increase, weaker assertion or “rerun passed” closure.

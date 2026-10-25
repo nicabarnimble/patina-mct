@@ -2974,10 +2974,17 @@ pub(super) async fn serve_http_control_loop_until(
     addr: String,
     mut shutdown: broadcast::Receiver<()>,
     status_source: Option<Arc<ResidentStatusSource>>,
+    bound: tokio::sync::oneshot::Sender<()>,
 ) -> Result<()> {
     let listener = TcpListener::bind(&addr).await?;
     let snapshot_source = ControlSnapshotSource::open_with_status(&state_path, status_source);
+    control_snapshot(&snapshot_source).await.map_err(|_| {
+        anyhow::anyhow!("resident control status was not ready before HTTP readiness")
+    })?;
     println!("mct daemon serving control http on {addr}");
+    bound
+        .send(())
+        .map_err(|_| anyhow::anyhow!("resident control startup receiver dropped"))?;
     loop {
         tokio::select! {
             _ = shutdown.recv() => break,
@@ -3058,6 +3065,7 @@ pub(super) async fn run_control_serve_uds_with_state_until(
     max_in_flight_calls: usize,
     mut shutdown: broadcast::Receiver<()>,
     status_source: Option<Arc<ResidentStatusSource>>,
+    bound: tokio::sync::oneshot::Sender<()>,
 ) -> Result<()> {
     if let Some(parent) = socket_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -3096,6 +3104,12 @@ pub(super) async fn run_control_serve_uds_with_state_until(
         resident_local_call_handler(paths, ledger, expected_uid, max_in_flight_calls);
     let mut connections = tokio::task::JoinSet::new();
     let connection_capacity = Arc::new(tokio::sync::Semaphore::new(RESIDENT_UDS_CONNECTION_LIMIT));
+    // A pathname may belong to a killed predecessor. Only this listener owner
+    // can acknowledge the new bind, after durable admission, snapshot, mode,
+    // ownership checks and handler initialization have all succeeded.
+    bound
+        .send(())
+        .map_err(|_| anyhow::anyhow!("resident control startup receiver dropped"))?;
     loop {
         tokio::select! {
             _ = shutdown.recv() => break,
@@ -3182,6 +3196,7 @@ pub(super) async fn run_control_serve_uds_with_state_until(
     _max_in_flight_calls: usize,
     _shutdown: broadcast::Receiver<()>,
     _status_source: Option<Arc<ResidentStatusSource>>,
+    _bound: tokio::sync::oneshot::Sender<()>,
 ) -> Result<()> {
     bail!("UDS control plane is only available on Unix platforms")
 }
