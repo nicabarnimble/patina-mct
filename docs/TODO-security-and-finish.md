@@ -277,6 +277,16 @@ not independently reproduced exploits. Scope/severity may change with evidence.
 - [ ] Reproduce with `MCT_FLEET_KEEP=1`; preserve canonical history, projection
   generations, binding/route decisions and timing. Distinguish correct stale
   denial from a runtime race or fixture assumption.
+- **Local fix after R1 checkpoint `e739001`:** the unchanged fleet reproduced
+  the connected-phase denial on `mother-0 -> 3` (run 18, fixtures retained).
+  Local route revalidation succeeded; a background hello overwrote the receiver's
+  earlier forwarding-hello receipt for the same endpoint. Cache and lookup now
+  use endpoint plus exact hello decision ID, with bounded retention and unchanged
+  current-authority checks. The deterministic regression failed before the fix;
+  47 Iroh tests, 20 consecutive full fleet runs, and 758 workspace tests passed
+  afterward. See [R2 hello-receipt evidence](R2-hello-receipt-evidence.md).
+  The original `mother-0 -> 2` fixture remains unavailable; formal closure is
+  separate from this local fix and retained reproduction.
 - **Acceptance:** cause-specific regression and relevant fleet/restart runs;
   no weakening stale-authority checks. Do not infer that R1 and R2 share a cause.
 

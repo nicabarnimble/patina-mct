@@ -55,8 +55,10 @@ fn single_connection_receiver_authority() -> Option<GrantsAuthorityIdentity> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MctIrohServeState {
     pub last_hello: Option<MctHelloAdmissionEvaluation>,
-    hello_by_endpoint: BTreeMap<EndpointIdText, MctHelloAdmissionEvaluation>,
-    hello_insertion_order: VecDeque<EndpointIdText>,
+    // Concurrent forwarding and refresh hellos share an endpoint identity but
+    // have independent decision receipts. Calls must resolve their exact receipt.
+    hello_by_receipt: BTreeMap<(EndpointIdText, DecisionId), MctHelloAdmissionEvaluation>,
+    hello_insertion_order: VecDeque<(EndpointIdText, DecisionId)>,
     restart_scoped_id_prefix: String,
     next_sequence: u64,
 }
@@ -71,7 +73,7 @@ impl MctIrohServeState {
     pub fn new() -> Self {
         Self {
             last_hello: None,
-            hello_by_endpoint: BTreeMap::new(),
+            hello_by_receipt: BTreeMap::new(),
             hello_insertion_order: VecDeque::new(),
             restart_scoped_id_prefix: restart_scoped_id_prefix(),
             next_sequence: 0,
@@ -94,10 +96,11 @@ impl MctIrohServeState {
             .expect("string ID literal/generated value must be non-empty")
     }
 
-    fn forget_hello(&mut self, endpoint_id: &EndpointIdText) {
-        self.hello_by_endpoint.remove(endpoint_id);
+    fn forget_hellos(&mut self, endpoint_id: &EndpointIdText) {
+        self.hello_by_receipt
+            .retain(|(remembered, _), _| remembered != endpoint_id);
         self.hello_insertion_order
-            .retain(|remembered| remembered != endpoint_id);
+            .retain(|(remembered, _)| remembered != endpoint_id);
     }
 
     fn remember_hello(
@@ -107,35 +110,40 @@ impl MctIrohServeState {
     ) {
         self.last_hello = Some(evaluation.clone());
         if !evaluation.is_admitted() {
-            self.hello_by_endpoint.remove(&endpoint_id);
-            self.hello_insertion_order
-                .retain(|remembered| remembered != &endpoint_id);
+            // Preserve fail-closed invalidation on denied/failed admission.
+            self.forget_hellos(&endpoint_id);
             return;
         }
 
-        if !self.hello_by_endpoint.contains_key(&endpoint_id) {
-            self.hello_insertion_order.push_back(endpoint_id.clone());
+        let key = (endpoint_id, evaluation.decision_id.clone());
+        if !self.hello_by_receipt.contains_key(&key) {
+            self.hello_insertion_order.push_back(key.clone());
         }
-        self.hello_by_endpoint.insert(endpoint_id, evaluation);
-        while self.hello_by_endpoint.len() > MAX_REMEMBERED_HELLOS {
+        self.hello_by_receipt.insert(key, evaluation);
+        // Bound receipts, not just peers: one endpoint cannot grow this cache
+        // without limit by issuing many independently admitted hellos.
+        while self.hello_by_receipt.len() > MAX_REMEMBERED_HELLOS {
             if let Some(oldest) = self.hello_insertion_order.pop_front() {
-                self.hello_by_endpoint.remove(&oldest);
+                self.hello_by_receipt.remove(&oldest);
             } else {
                 break;
             }
         }
     }
 
-    fn hello_for_endpoint(
+    fn hello_for_call(
         &self,
         endpoint_id: &EndpointIdText,
+        decision_id: &DecisionId,
     ) -> Option<MctHelloAdmissionEvaluation> {
-        self.hello_by_endpoint.get(endpoint_id).cloned()
+        self.hello_by_receipt
+            .get(&(endpoint_id.clone(), decision_id.clone()))
+            .cloned()
     }
 
     #[cfg(test)]
     fn remembered_hello_count(&self) -> usize {
-        self.hello_by_endpoint.len()
+        self.hello_by_receipt.len()
     }
 }
 
@@ -184,7 +192,13 @@ mod tests {
         state.remember_hello(endpoint_id.clone(), hello_evaluation(HelloOutcome::Denied));
 
         assert_eq!(state.remembered_hello_count(), 0);
-        assert_eq!(state.hello_for_endpoint(&endpoint_id), None);
+        assert_eq!(
+            state.hello_for_call(
+                &endpoint_id,
+                &hello_evaluation(HelloOutcome::Admitted).decision_id
+            ),
+            None
+        );
     }
 
     #[test]
@@ -198,11 +212,68 @@ mod tests {
         }
 
         assert_eq!(state.remembered_hello_count(), MAX_REMEMBERED_HELLOS);
-        assert_eq!(state.hello_for_endpoint(&endpoint_id("endpoint-0")), None);
+        assert_eq!(
+            state.hello_for_call(
+                &endpoint_id("endpoint-0"),
+                &hello_evaluation(HelloOutcome::Admitted).decision_id
+            ),
+            None
+        );
         assert!(
             state
-                .hello_for_endpoint(&endpoint_id(format!("endpoint-{MAX_REMEMBERED_HELLOS}")))
+                .hello_for_call(
+                    &endpoint_id(format!("endpoint-{MAX_REMEMBERED_HELLOS}")),
+                    &hello_evaluation(HelloOutcome::Admitted).decision_id
+                )
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn same_endpoint_receipts_are_bounded_and_denial_invalidates_only_that_endpoint() {
+        let endpoint = endpoint_id("busy-peer");
+        let other = endpoint_id("other-peer");
+        let mut state = MctIrohServeState::new();
+        for i in 0..=MAX_REMEMBERED_HELLOS {
+            let mut hello = hello_evaluation(HelloOutcome::Admitted);
+            hello.decision_id = DecisionId::new(format!("decision-{i}")).unwrap();
+            state.remember_hello(endpoint.clone(), hello.clone());
+            // Re-inserting a receipt must not consume an extra FIFO entry.
+            state.remember_hello(endpoint.clone(), hello);
+        }
+        assert_eq!(state.remembered_hello_count(), MAX_REMEMBERED_HELLOS);
+        assert_eq!(state.hello_insertion_order.len(), MAX_REMEMBERED_HELLOS);
+        assert!(
+            state
+                .hello_for_call(&endpoint, &DecisionId::new("decision-0").unwrap())
+                .is_none()
+        );
+        for i in 1..=MAX_REMEMBERED_HELLOS {
+            assert!(
+                state
+                    .hello_for_call(
+                        &endpoint,
+                        &DecisionId::new(format!("decision-{i}")).unwrap()
+                    )
+                    .is_some()
+            );
+        }
+        let other_hello = hello_evaluation(HelloOutcome::Admitted);
+        state.remember_hello(other.clone(), other_hello.clone());
+        state.remember_hello(endpoint.clone(), hello_evaluation(HelloOutcome::Denied));
+        assert_eq!(state.remembered_hello_count(), 1);
+        assert_eq!(state.hello_insertion_order.len(), 1);
+        assert!(
+            state
+                .hello_for_call(
+                    &endpoint,
+                    &DecisionId::new(format!("decision-{MAX_REMEMBERED_HELLOS}")).unwrap()
+                )
+                .is_none()
+        );
+        assert_eq!(
+            state.hello_for_call(&other, &other_hello.decision_id),
+            Some(other_hello)
         );
     }
 
@@ -1524,7 +1595,6 @@ impl MotherIrohEndpoint {
                             request.received_over.connection_side = ConnectionSide::Incoming;
 
                             let mut state = state.lock().await;
-                            state.forget_hello(&remote_endpoint_id);
                             let hello_policy = HelloPolicy {
                                 current_policy_revision: current_peer_authority.policy_revision,
                                 ..HelloPolicy::default()
@@ -1585,9 +1655,12 @@ impl MotherIrohEndpoint {
                                     }],
                                 })
                                 .await
-                                .map_err(|source| MotherIrohEndpointError::ProtocolProvider {
-                                    action: "durably record mct/hello/0 evaluation",
-                                    source,
+                                .map_err(|source| {
+                                    state.forget_hellos(&remote_endpoint_id);
+                                    MotherIrohEndpointError::ProtocolProvider {
+                                        action: "durably record mct/hello/0 evaluation",
+                                        source,
+                                    }
                                 })?;
                             state.remember_hello(remote_endpoint_id, evaluation.clone());
                             drop(state);
@@ -1693,7 +1766,7 @@ impl MotherIrohEndpoint {
                                         )
                                     } else {
                                         let hello = state_guard
-                                            .hello_for_endpoint(&remote_endpoint_id)
+                                            .hello_for_call(&remote_endpoint_id, &request.authority.hello_decision_id)
                                             .unwrap_or_else(|| {
                                                 denied_missing_hello(
                                                     request.protocol_request_id.as_str(),
@@ -2107,9 +2180,12 @@ impl MotherIrohEndpoint {
                             }],
                         })
                         .await
-                        .map_err(|source| MotherIrohEndpointError::ProtocolProvider {
-                            action: "durably record mct/hello/0 evaluation",
-                            source,
+                        .map_err(|source| {
+                            state.forget_hellos(&remote_endpoint_id);
+                            MotherIrohEndpointError::ProtocolProvider {
+                                action: "durably record mct/hello/0 evaluation",
+                                source,
+                            }
                         })?;
                     state.remember_hello(remote_endpoint_id.clone(), evaluation.clone());
                     let mut response = hello_response(
@@ -2225,7 +2301,10 @@ impl MotherIrohEndpoint {
                         decision.outcome == PayloadIntegrityOutcome::Matched
                     }) {
                         let hello = state
-                            .hello_for_endpoint(&remote_endpoint_id)
+                            .hello_for_call(
+                                &remote_endpoint_id,
+                                &request.authority.hello_decision_id,
+                            )
                             .unwrap_or_else(|| {
                                 denied_missing_hello(request.protocol_request_id.as_str(), state)
                             });

@@ -70,6 +70,8 @@ mod tests {
         SINK.get_or_init(|| MctIrohObservationSink::new(|_| async { Ok::<_, std::io::Error>(()) }))
     }
 
+    mod hello_receipts;
+
     #[test]
     fn exposes_version() {
         assert_eq!(super::version(), env!("CARGO_PKG_VERSION"));
@@ -1433,6 +1435,12 @@ mod tests {
         let hello_response = client.send_hello(&server_ticket, &hello).await.unwrap();
         assert_eq!(hello_response.hello_outcome, HelloOutcome::Admitted);
 
+        // Another admitted hello must not erase the first receipt. The call
+        // below must still be denied by CURRENT binding policy, not cache loss.
+        let refreshed = client.send_hello(&server_ticket, &hello).await.unwrap();
+        assert_eq!(refreshed.hello_outcome, HelloOutcome::Admitted);
+        assert_ne!(refreshed.decision_id, hello_response.decision_id);
+
         mutate(&mut binding.lock().unwrap());
         *now.lock().unwrap() = call_time;
 
@@ -1572,6 +1580,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(retry.reply_outcome, CallProtocolReplyOutcome::Success);
+        assert_eq!(execution_count.load(Ordering::SeqCst), 1);
+
+        // Keeping the original hello receipt must not resurrect its stale
+        // generation/epoch after a newer hello is admitted.
+        let still_stale = client
+            .send_call(
+                &server_ticket,
+                &test_call_request(&client_endpoint_id, &trace_id, &first_hello),
+            )
+            .await
+            .unwrap();
+        assert_eq!(still_stale.reply_outcome, CallProtocolReplyOutcome::Denied);
+        assert_eq!(
+            still_stale.retry_directive,
+            CallProtocolRetryDirective::RefreshHello
+        );
         assert_eq!(execution_count.load(Ordering::SeqCst), 1);
 
         client.close().await;
