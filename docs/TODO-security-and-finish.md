@@ -145,11 +145,16 @@ the source audit refer to the baseline and should not be treated as stable.
 
 ### M2 — Release verification/extraction reopens mutable input (Medium)
 
-- **Evidence:** source confirms multiple archive opens and a final hash check.
-  Exploitation requires attacker-controlled storage; race not reproduced here.
+- **Initial audit evidence:** multiple archive opens and a final hash check;
+  exploitation required attacker-controlled storage and had not been reproduced.
 - **Path:** `mct-daemon/src/release.rs`.
-- [ ] Verify and extract one bounded, private immutable staging copy. Include
-  sidecars and destination ownership/races in the input-boundary review.
+- [x] Local fix atop H2 checkpoint `983b2a3`: verify and extract one bounded,
+  private immutable byte snapshot. Bounded sidecar reads and generated verified
+  sidecars remove the post-verification source reopen. Deterministic source
+  mutation tests cover both rename and in-place writes during/after staging.
+  Extraction is owner-only; its parent remains an operator-controlled boundary.
+  See [M2/M3 release evidence](M2-M3-release-boundary-evidence.md) for that trust
+  assumption, cleanup controls and the 773-pass workspace validation.
 - **Acceptance:** swaps or in-place changes between scan/hash/extraction cannot
   install bytes different from those verified; failures clean staging safely;
   normal release verification and path/type restrictions still pass.
@@ -160,9 +165,16 @@ the source audit refer to the baseline and should not be treated as stable.
   The reproducer and execution evidence have not yet been attached or rerun by
   this agent. Source bounds ordinary entries after tar extension processing.
 - **Path:** `mct-daemon/src/release.rs` (`scan_archive_reader`).
-- [ ] Obtain/preserve the PoC, reproduce under process resource limits, and
-  enforce a decompressed-byte budget before tar handles long-name/PAX metadata.
-  Treat budget exhaustion as error, not successful truncated parsing.
+- [x] Local fix atop `983b2a3`: a hard 520 MiB decompressed-stream budget sits
+  before tar in preflight, scan and extraction. Raw-header preflight bounds
+  aggregate GNU/PAX metadata to 8 MiB before tar allocates extension buffers.
+  Overflow is an error, including padding beyond tar EOF. Valid bounded releases
+  and GNU/PAX metadata pass; deterministic small-budget counterexamples are
+  retained. This checkout uses gzip, not zstd.
+- [ ] Obtain the original audit PoC and complete the extended process-resource
+  and fuzz campaign. The local work does not claim the reported 1.1 GB RSS
+  reproduction. See [M2/M3 release evidence](M2-M3-release-boundary-evidence.md).
+  Review/merge and formal completion-inventory closure remain separate.
 - **Acceptance:** extension/header bombs fail with bounded memory and work;
   fuzz cases cover compressed/decompressed/metadata limits, truncation and
   valid boundary-sized releases; retain the original regression artifact.
