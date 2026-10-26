@@ -241,7 +241,16 @@ impl MotherIrohEndpoint {
         let relay_mode = config.relay_mode;
         let mut builder = Endpoint::builder(presets::N0)
             .relay_mode(relay_mode.into_iroh())
-            .alpns(alpn_bytes(&accepted_alpns));
+            .alpns(alpn_bytes(&accepted_alpns))
+            // One MCT request/response per connection, no unidirectional protocol.
+            .transport_config(
+                iroh::endpoint::QuicTransportConfig::builder()
+                    .max_concurrent_bidi_streams(1u32.into())
+                    .max_concurrent_uni_streams(0u32.into())
+                    .stream_receive_window((128 * 1024u32).into())
+                    .receive_window((128 * 1024u32).into())
+                    .build(),
+            );
         if let Some(secret_key_hex) = config.secret_key_hex {
             builder = builder.secret_key(secret_key_from_hex(&secret_key_hex)?);
         }

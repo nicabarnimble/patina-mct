@@ -29,9 +29,10 @@ pub use serve::{
     MCT_CALL_FRAME_READ_BUDGET_BYTES, MCT_INLINE_PAYLOAD_MAX_BYTES,
     MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES, MctHelloCapabilityViewProvider, MctIrohCallHandlerResult,
     MctIrohCallLifecycleFact, MctIrohCallLifecycleStage, MctIrohCallPayloadReply,
-    MctIrohConcurrentServeConfig, MctIrohObservationBatch, MctIrohObservationDurability,
-    MctIrohObservationFact, MctIrohObservationSink, MctIrohPeerCallReport,
-    MctIrohReceiverAuthorityProvider, MctIrohServeEvent, MctIrohServeState, MctIrohServedProtocol,
+    MctIrohConcurrentServeConfig, MctIrohIngressHealth, MctIrohObservationBatch,
+    MctIrohObservationDurability, MctIrohObservationFact, MctIrohObservationSink,
+    MctIrohPeerCallReport, MctIrohReceiverAuthorityProvider, MctIrohServeEvent, MctIrohServeState,
+    MctIrohServedProtocol,
 };
 
 #[cfg(test)]
@@ -72,6 +73,7 @@ mod tests {
 
     mod call_origin;
     mod hello_receipts;
+    mod ingress;
 
     #[test]
     fn exposes_version() {
@@ -420,7 +422,7 @@ mod tests {
         assert!(matches!(
             served,
             Err(MotherIrohEndpointError::ProtocolTimeout {
-                action: "serve incoming MCT connection"
+                action: "incoming first stream"
             })
         ));
         server.close().await;
@@ -442,13 +444,19 @@ mod tests {
                 .connect(server_addr, MCT_CALL_ALPN.as_bytes())
                 .await
                 .unwrap();
-            let (mut send, _recv) = connection.open_bi().await.unwrap();
+            let (mut send, mut recv) = connection.open_bi().await.unwrap();
             send.write_all(&vec![b'x'; MCT_CALL_FRAME_READ_BUDGET_BYTES + 1])
                 .await
                 .unwrap();
             send.finish().unwrap();
-            drop(send);
-            connection.close(0u32.into(), b"oversized request sent");
+            // Await rejection, rather than racing a client close against the read.
+            let bytes = recv
+                .read_to_end(MCT_CALL_FRAME_READ_BUDGET_BYTES)
+                .await
+                .unwrap();
+            let reply: MctCallProtocolReply = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(reply.reply_outcome, CallProtocolReplyOutcome::Malformed);
+            connection.close(0u32.into(), b"oversized request rejected");
         });
         let mut state = MctIrohServeState::new();
         let served = server
@@ -462,15 +470,10 @@ mod tests {
             )
             .await;
 
-        let _ = raw_client_task.await;
+        raw_client_task.await.unwrap();
         assert!(matches!(
             served,
-            Err(MotherIrohEndpointError::ProtocolIo {
-                action: "read request stream",
-                ..
-            }) | Err(MotherIrohEndpointError::ProtocolTimeout {
-                action: "serve incoming MCT connection"
-            })
+            Ok(MctIrohServedProtocol::MalformedCall { .. })
         ));
         server.close().await;
     }

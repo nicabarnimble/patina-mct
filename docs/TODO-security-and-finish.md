@@ -119,11 +119,21 @@ the source audit refer to the baseline and should not be treated as stable.
   fetches for unadmitted calls; specify bounded rejection diagnostics and
   resource isolation from authority-critical commitment. Cover admitted-peer
   abuse as well as arbitrary newly generated endpoint keys.
-- **Contract dependency:** `layer/core/safety-boundaries.md` currently requires
-  observations for peer rejection/hello response and the reliability doctrine
-  makes durability classes specification decisions. Explicitly reconcile the
-  audit's “no durable facts before hello admission” proposal with that contract;
-  do not silently remove evidence or ignore canonical write errors.
+- **Owner decision, 2026-10-25:** keep `layer/core/safety-boundaries.md` Rule 3
+  and the reliability doctrine in force. Required rejection observations stay
+  `BeforeEffect`; durable write failure still denies the response/effect. Do not
+  adopt the audit's “no durable facts before hello admission” proposal.
+- [x] Local identifier/provider/error-isolation slice atop `d974af5`: validate
+  wire IDs before facts (256-byte ASCII fields, 8 KiB aggregate), use local
+  correlation for malformed requests, and check call validation/exact hello
+  before either authority provider. Connection errors remain task-local;
+  projection queues cannot pin serving. Required facts are still awaited.
+  Validation: 781 workspace tests, 56 Iroh tests, five additional 8-test ingress
+  runs, Clippy, fmt and tier-0 specs passed; 2 workspace tests remain ignored.
+  See [H3/M1 ingress evidence](H3-M1-iroh-ingress-evidence.md).
+- **Still open:** sustained-load/fairness and total ledger-volume bounds are
+  not established by per-request limits; independent review and formal closure
+  remain separate.
 - **Acceptance:** sustained denied/malformed traffic has named storage/work
   bounds; independent local work and admitted peers remain usable within the
   documented load envelope; genuine canonical durability failure still denies
@@ -136,9 +146,15 @@ the source audit refer to the baseline and should not be treated as stable.
 - **Evidence:** source-traced semaphore acquisition before admission; audit
   reports 64 slots held for up to 30 seconds, not a demonstrated load test.
 - **Path:** `mct-iroh/src/serve.rs`.
-- [ ] Separate handshake/first-byte/frame deadlines; bound streams, pending
-  work and connection occupancy. Define fair admission budgets; endpoint-key
-  limits alone do not stop attackers creating new keys. Coordinate with H3.
+- [x] Local deadline/occupancy slice atop `d974af5`: separate 3-second handshake
+  and combined first-stream/frame budgets from post-frame execution; bound
+  response write/close waits; cap incoming bidi/uni streams to 1/0 with 128 KiB
+  receive windows. Deterministic controls cover idle/partial frames, extra
+  streams, response-holding peers and longer legitimate execution.
+  See [H3/M1 ingress evidence](H3-M1-iroh-ingress-evidence.md).
+- [ ] Establish sustained-load/fair admission guarantees; endpoint-key limits
+  alone do not stop attackers creating new keys. Coordinate with H3. Local
+  implementation is not independent review or formal finding closure.
 - **Acceptance:** idle, slow and excess-stream clients release resources within
   named bounds; legitimate peers and local work retain the documented service
   guarantees; tests cover shutdown and failed handshakes.
@@ -412,9 +428,10 @@ are not proof that their runtime consumers and production ingress are complete.
 - [ ] Identify approved disposable multi-host macOS targets, permitted actions
   and evidence to return through Devin. Do not assume direct remote access or
   extend release support to Linux/Unraid without explicit scope and proof.
-- [ ] Resolve H3's rejection-observation/durability contract before changing it;
-  any amendment to ratified doctrine must be explicit. Other already-approved
-  engineering can continue while genuine policy questions remain open.
+- [x] H3 rejection-observation contract resolved by the owner on 2026-10-25:
+  retain Rule 3 and mandatory `BeforeEffect` rejection facts; write failure
+  denies the effect. No doctrine amendment or silent evidence suppression.
+  Broader sustained-load/storage policy remains outside this local slice.
 
 ## Shared definition of done
 

@@ -1,3 +1,6 @@
+mod ingress;
+#[cfg(test)]
+mod ingress_tests;
 mod internal;
 
 pub(crate) use internal::endpoint_addr_from_ticket;
@@ -617,11 +620,41 @@ impl MctHelloCapabilityViewProvider {
     }
 }
 
+/// Bounded, non-durable adapter health. Rejections still use the mandatory sink.
+#[derive(Debug, Default)]
+pub struct MctIrohIngressHealth {
+    pub failed_connections: AtomicU64,
+    pub dropped_projection_events: AtomicU64,
+}
+
+fn emit_serve_event(
+    events: Option<&mpsc::Sender<MctIrohServeEvent>>,
+    event: MctIrohServeEvent,
+    health: &MctIrohIngressHealth,
+) {
+    if let Some(events) = events
+        && events.try_send(event).is_err()
+    {
+        health
+            .dropped_projection_events
+            .fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct MctIrohConcurrentServeConfig {
     pub max_concurrent_connections: usize,
+    /// Post-frame processing/execution budget, independent of ingress time.
     pub connection_timeout: Duration,
+    /// Combined transport handshake and ALPN budget.
+    pub handshake_timeout: Duration,
+    /// Combined first-stream and complete-frame budget (not per-byte idle time).
+    pub frame_timeout: Duration,
+    pub response_timeout: Duration,
+    pub close_timeout: Duration,
+    /// Best-effort projection events, never the required observation sink.
     pub events: Option<mpsc::Sender<MctIrohServeEvent>>,
+    pub ingress_health: Arc<MctIrohIngressHealth>,
     pub require_binding_signature: bool,
     pub capability_view: Option<MctHelloCapabilityView>,
     /// When set, rebuilt on every admitted hello instead of the boot-time view.
@@ -635,7 +668,12 @@ impl MctIrohConcurrentServeConfig {
         Self {
             max_concurrent_connections: 64,
             connection_timeout: SERVE_CONNECTION_TIMEOUT,
+            handshake_timeout: ingress::HANDSHAKE_TIMEOUT,
+            frame_timeout: ingress::FRAME_TIMEOUT,
+            response_timeout: ingress::RESPONSE_TIMEOUT,
+            close_timeout: ingress::CLOSE_TIMEOUT,
             events: None,
+            ingress_health: Arc::new(MctIrohIngressHealth::default()),
             require_binding_signature: false,
             capability_view: None,
             capability_view_provider: None,
@@ -1204,6 +1242,7 @@ fn decode_call_request_envelope(
             action: "decode mct/call/0 request",
             source,
         })?;
+    ingress::validate_identifiers(&envelope.request)?;
     let inline_payload = match envelope.inline_payload_base64 {
         Some(encoded) => Some(BASE64_STANDARD.decode(encoded).map_err(|_| {
             MotherIrohEndpointError::ProtocolPayload {
@@ -1446,23 +1485,32 @@ impl MotherIrohEndpoint {
                 break;
             };
             let Ok(permit) = semaphore.clone().try_acquire_owned() else {
-                if let Some(events) = &config.events {
-                    let _ = events.send(MctIrohServeEvent::RefusedConnection).await;
-                }
+                emit_serve_event(
+                    config.events.as_ref(),
+                    MctIrohServeEvent::RefusedConnection,
+                    &config.ingress_health,
+                );
                 drop(incoming);
                 continue;
             };
 
-            if let Some(events) = &config.events {
-                let _ = events.send(MctIrohServeEvent::AcceptedConnection).await;
-            }
+            emit_serve_event(
+                config.events.as_ref(),
+                MctIrohServeEvent::AcceptedConnection,
+                &config.ingress_health,
+            );
 
             let state = Arc::clone(&state);
             let bindings_provider = bindings_provider.clone();
             let call_handler = call_handler.clone();
             let now = now.clone();
             let events = config.events.clone();
+            let ingress_health = config.ingress_health.clone();
             let connection_timeout = config.connection_timeout;
+            let handshake_timeout = config.handshake_timeout;
+            let frame_timeout = config.frame_timeout;
+            let response_timeout = config.response_timeout;
+            let close_timeout = config.close_timeout;
             let issuer_endpoint_id = issuer_endpoint_id.clone();
             let active_tasks = Arc::clone(&active_tasks);
             let capability_view = capability_view.clone();
@@ -1473,39 +1521,13 @@ impl MotherIrohEndpoint {
             active_tasks.fetch_add(1, Ordering::SeqCst);
 
             tokio::spawn(async move {
-                let served = match tokio::time::timeout(connection_timeout, async {
-                    let mut accepting = incoming.accept().map_err(|source| {
-                        MotherIrohEndpointError::ProtocolIo {
-                            action: "accept incoming connection",
-                            source: boxed_source(source),
-                        }
-                    })?;
-                    let alpn = accepting.alpn().await.map_err(|source| {
-                        MotherIrohEndpointError::ProtocolIo {
-                            action: "read incoming ALPN",
-                            source: boxed_source(source),
-                        }
-                    })?;
-                    let connection =
-                        accepting
-                            .await
-                            .map_err(|source| MotherIrohEndpointError::ProtocolIo {
-                                action: "finish incoming connection",
-                                source: boxed_source(source),
-                            })?;
-                    let remote_endpoint_id =
-                        EndpointIdText::new(connection.remote_id().to_string())
-                            .expect("string ID literal/generated value must be non-empty");
-                    let (mut send, mut recv) = connection.accept_bi().await.map_err(|source| {
-                        MotherIrohEndpointError::ProtocolIo {
-                            action: "accept bidirectional stream",
-                            source: boxed_source(source),
-                        }
-                    })?;
-                    let request_bytes = match recv
-                        .read_to_end(MCT_CALL_FRAME_READ_BUDGET_BYTES)
-                        .await
-                    {
+                let served = async {
+                    let (connection, alpn) = ingress::accept_connection(incoming, handshake_timeout).await?;
+                    let remote_endpoint_id = EndpointIdText::new(connection.remote_id().to_string())
+                        .expect("transport endpoint ID is nonempty");
+                    let (mut send, frame) = ingress::read_frame(&connection, frame_timeout).await?;
+                    ingress::deadline(connection_timeout, "serve incoming MCT connection", async {
+                    let request_bytes = match frame {
                         Ok(request_bytes) => request_bytes,
                         Err(_source) if alpn.as_slice() == MCT_CALL_ALPN.as_bytes() => {
                             let mut state_guard = state.lock().await;
@@ -1538,18 +1560,7 @@ impl MotherIrohEndpoint {
                                     source,
                                 })?;
                             let response_bytes = encode_call_reply_envelope(&reply, None)?;
-                            send.write_all(&response_bytes).await.map_err(|source| {
-                                MotherIrohEndpointError::ProtocolIo {
-                                    action: "write malformed call response stream",
-                                    source: boxed_source(source),
-                                }
-                            })?;
-                            send.finish().map_err(|source| {
-                                MotherIrohEndpointError::ProtocolIo {
-                                    action: "finish malformed call response stream",
-                                    source: boxed_source(source),
-                                }
-                            })?;
+                            ingress::write_response(&mut send, &response_bytes, response_timeout).await?;
                             let served = MctIrohServedProtocol::MalformedCall {
                                 trace_id,
                                 evaluation,
@@ -1568,28 +1579,24 @@ impl MotherIrohEndpoint {
                                         source: sink_source,
                                     }
                                 })?;
-                            connection.closed().await;
+                            ingress::close_after_response(&connection, close_timeout).await;
                             return Ok(served);
                         }
-                        Err(source) => {
-                            return Err(MotherIrohEndpointError::ProtocolIo {
-                                action: "read request stream",
-                                source: boxed_source(source),
-                            });
-                        }
+                        // A complete/partial hello that fails framing is rejected
+                        // with local correlation, just like malformed hello JSON.
+                        Err(_) if alpn.as_slice() == MCT_HELLO_ALPN.as_bytes() => Vec::new(),
+                        Err(source) => return Err(source),
                     };
-
-                    let current_peer_authority = bindings_provider().await?;
 
                     let (response_bytes, served) = match alpn.as_slice() {
                         bytes if bytes == MCT_HELLO_ALPN.as_bytes() => {
-                            let mut request: MctHelloRequest =
-                                serde_json::from_slice(&request_bytes).map_err(|source| {
-                                    MotherIrohEndpointError::ProtocolJson {
-                                        action: "decode mct/hello/0 request",
-                                        source,
-                                    }
-                                })?;
+                            let (mut request, valid_wire) = ingress::hello_request(
+                                &request_bytes, &remote_endpoint_id, &mut *state.lock().await);
+                            let current_peer_authority = if valid_wire {
+                                bindings_provider().await?
+                            } else {
+                                ingress::no_peer_authority()
+                            };
                             request.received_over.endpoint_id = remote_endpoint_id.clone();
                             request.received_over.alpn = MCT_HELLO_ALPN.into();
                             request.received_over.connection_side = ConnectionSide::Incoming;
@@ -1730,7 +1737,9 @@ impl MotherIrohEndpoint {
                                     request.received_over.connection_side =
                                         ConnectionSide::Incoming;
 
-                                    let validation_failed = request.validate().is_err();
+                                    let validation_failed = request.validate().is_err()
+                                        || request.authority.expected_receiver_grants_authority
+                                            != request.call.authority_context.expected_receiver_grants_authority;
                                     let payload_decision = (!validation_failed).then(|| {
                                         evaluate_payload_integrity(
                                             PayloadIntegritySubject::Request,
@@ -1741,17 +1750,24 @@ impl MotherIrohEndpoint {
                                             MCT_INLINE_PAYLOAD_MAX_BYTES as u64,
                                         )
                                     });
-                                    let current_receiver_grants_authority =
-                                        if validation_failed
-                                            || payload_decision.as_ref().is_some_and(|decision| {
-                                                decision.outcome
-                                                    != PayloadIntegrityOutcome::Matched
-                                            })
-                                        {
-                                            None
-                                        } else {
-                                            receiver_authority_provider.current().await
-                                        };
+                                    let admitted_hello = state.lock().await.hello_for_call(
+                                        &remote_endpoint_id, &request.authority.hello_decision_id);
+                                    let needs_authority = !validation_failed
+                                        && admitted_hello.is_some()
+                                        && payload_decision.as_ref().is_some_and(|decision|
+                                            decision.outcome == PayloadIntegrityOutcome::Matched);
+                                    // Neither SQLite/binding projection nor receiver proof
+                                    // is consulted for malformed or unadmitted traffic.
+                                    let current_peer_authority = if needs_authority {
+                                        bindings_provider().await?
+                                    } else {
+                                        ingress::no_peer_authority()
+                                    };
+                                    let current_receiver_grants_authority = if needs_authority {
+                                        receiver_authority_provider.current().await
+                                    } else {
+                                        None
+                                    };
                                     let mut state_guard = state.lock().await;
                                     let constructed_observation_id =
                                         state_guard.next_observation_id("call-constructed");
@@ -1921,17 +1937,7 @@ impl MotherIrohEndpoint {
                         }
                     };
 
-                    send.write_all(&response_bytes).await.map_err(|source| {
-                        MotherIrohEndpointError::ProtocolIo {
-                            action: "write response stream",
-                            source: boxed_source(source),
-                        }
-                    })?;
-                    send.finish()
-                        .map_err(|source| MotherIrohEndpointError::ProtocolIo {
-                            action: "finish response stream",
-                            source: boxed_source(source),
-                        })?;
+                    ingress::write_response(&mut send, &response_bytes, response_timeout).await?;
                     if let Some(reply_fact) = call_reply_emitted_fact(&served) {
                         observation_sink
                             .record(MctIrohObservationBatch {
@@ -1944,25 +1950,25 @@ impl MotherIrohEndpoint {
                                 source,
                             })?;
                     }
-                    connection.closed().await;
+                    ingress::close_after_response(&connection, close_timeout).await;
                     Ok(served)
-                })
-                .await
-                {
-                    Ok(Ok(served)) => Ok(served),
-                    Ok(Err(error)) => Err(error),
-                    Err(_) => Err(MotherIrohEndpointError::ProtocolTimeout {
-                        action: "serve incoming MCT connection",
-                    }),
-                };
+                    }).await
+                }.await;
 
-                if let (Ok(served), Some(events)) = (&served, events) {
-                    let _ = events
-                        .send(MctIrohServeEvent::Served(Box::new(served.clone())))
-                        .await;
-                }
-                active_tasks.fetch_sub(1, Ordering::SeqCst);
+                // A stalled optional projection consumer cannot retain a slot.
                 drop(permit);
+                active_tasks.fetch_sub(1, Ordering::SeqCst);
+                if let Ok(served) = &served {
+                    emit_serve_event(
+                        events.as_ref(),
+                        MctIrohServeEvent::Served(Box::new(served.clone())),
+                        &ingress_health,
+                    );
+                } else {
+                    ingress_health
+                        .failed_connections
+                        .fetch_add(1, Ordering::Relaxed);
+                }
                 if let Err(error) = served {
                     let reply_observation_failed = matches!(
                         &error,
@@ -2047,38 +2053,18 @@ impl MotherIrohEndpoint {
             .accept()
             .await
             .ok_or(MotherIrohEndpointError::EndpointClosed)?;
+        let (connection, alpn) = ingress::accept_connection(
+            incoming,
+            ingress::HANDSHAKE_TIMEOUT.min(connection_timeout),
+        )
+        .await?;
+        let remote_endpoint_id = EndpointIdText::new(connection.remote_id().to_string())
+            .expect("transport endpoint ID is nonempty");
+        let (mut send, frame) =
+            ingress::read_frame(&connection, ingress::FRAME_TIMEOUT.min(connection_timeout))
+                .await?;
         tokio::time::timeout(connection_timeout, async {
-            let mut accepting =
-                incoming
-                    .accept()
-                    .map_err(|source| MotherIrohEndpointError::ProtocolIo {
-                        action: "accept incoming connection",
-                        source: boxed_source(source),
-                    })?;
-            let alpn =
-                accepting
-                    .alpn()
-                    .await
-                    .map_err(|source| MotherIrohEndpointError::ProtocolIo {
-                        action: "read incoming ALPN",
-                        source: boxed_source(source),
-                    })?;
-            let connection =
-                accepting
-                    .await
-                    .map_err(|source| MotherIrohEndpointError::ProtocolIo {
-                        action: "finish incoming connection",
-                        source: boxed_source(source),
-                    })?;
-            let remote_endpoint_id = EndpointIdText::new(connection.remote_id().to_string())
-                .expect("string ID literal/generated value must be non-empty");
-            let (mut send, mut recv) = connection.accept_bi().await.map_err(|source| {
-                MotherIrohEndpointError::ProtocolIo {
-                    action: "accept bidirectional stream",
-                    source: boxed_source(source),
-                }
-            })?;
-            let request_bytes = match recv.read_to_end(MCT_CALL_FRAME_READ_BUDGET_BYTES).await {
+            let request_bytes = match frame {
                 Ok(request_bytes) => request_bytes,
                 Err(_source) if alpn.as_slice() == MCT_CALL_ALPN.as_bytes() => {
                     let (trace_id, evaluation, reply) = malformed_call_evaluation_and_reply(state);
@@ -2107,17 +2093,8 @@ impl MotherIrohEndpoint {
                             source,
                         })?;
                     let response_bytes = encode_call_reply_envelope(&reply, None)?;
-                    send.write_all(&response_bytes).await.map_err(|source| {
-                        MotherIrohEndpointError::ProtocolIo {
-                            action: "write malformed call response stream",
-                            source: boxed_source(source),
-                        }
-                    })?;
-                    send.finish()
-                        .map_err(|source| MotherIrohEndpointError::ProtocolIo {
-                            action: "finish malformed call response stream",
-                            source: boxed_source(source),
-                        })?;
+                    ingress::write_response(&mut send, &response_bytes, ingress::RESPONSE_TIMEOUT)
+                        .await?;
                     let served = MctIrohServedProtocol::MalformedCall {
                         trace_id,
                         evaluation,
@@ -2136,31 +2113,24 @@ impl MotherIrohEndpoint {
                             action: "record malformed mct/call/0 reply",
                             source,
                         })?;
-                    connection.closed().await;
+                    ingress::close_after_response(&connection, ingress::CLOSE_TIMEOUT).await;
                     return Ok(served);
                 }
-                Err(source) => {
-                    return Err(MotherIrohEndpointError::ProtocolIo {
-                        action: "read request stream",
-                        source: boxed_source(source),
-                    });
-                }
+                Err(_) if alpn.as_slice() == MCT_HELLO_ALPN.as_bytes() => Vec::new(),
+                Err(source) => return Err(source),
             };
 
             let (response_bytes, served) = match alpn.as_slice() {
                 bytes if bytes == MCT_HELLO_ALPN.as_bytes() => {
-                    let mut request: MctHelloRequest = serde_json::from_slice(&request_bytes)
-                        .map_err(|source| MotherIrohEndpointError::ProtocolJson {
-                            action: "decode mct/hello/0 request",
-                            source,
-                        })?;
+                    let (mut request, valid_wire) =
+                        ingress::hello_request(&request_bytes, &remote_endpoint_id, state);
                     request.received_over.endpoint_id = remote_endpoint_id.clone();
                     request.received_over.alpn = MCT_HELLO_ALPN.into();
                     request.received_over.connection_side = ConnectionSide::Incoming;
 
                     let mut evaluation = evaluate_hello(
                         &request,
-                        bindings,
+                        if valid_wire { bindings } else { &[] },
                         &HelloPolicy::default(),
                         HelloEvaluationContext {
                             ids: EvaluationIds {
@@ -2249,18 +2219,12 @@ impl MotherIrohEndpoint {
                                         }
                                     })?;
                                 let response_bytes = encode_call_reply_envelope(&reply, None)?;
-                                send.write_all(&response_bytes).await.map_err(|source| {
-                                    MotherIrohEndpointError::ProtocolIo {
-                                        action: "write malformed call response stream",
-                                        source: boxed_source(source),
-                                    }
-                                })?;
-                                send.finish().map_err(|source| {
-                                    MotherIrohEndpointError::ProtocolIo {
-                                        action: "finish malformed call response stream",
-                                        source: boxed_source(source),
-                                    }
-                                })?;
+                                ingress::write_response(
+                                    &mut send,
+                                    &response_bytes,
+                                    ingress::RESPONSE_TIMEOUT,
+                                )
+                                .await?;
                                 let served = MctIrohServedProtocol::MalformedCall {
                                     trace_id,
                                     evaluation,
@@ -2281,7 +2245,8 @@ impl MotherIrohEndpoint {
                                             source,
                                         }
                                     })?;
-                                connection.closed().await;
+                                ingress::close_after_response(&connection, ingress::CLOSE_TIMEOUT)
+                                    .await;
                                 return Ok(served);
                             }
                         };
@@ -2290,7 +2255,12 @@ impl MotherIrohEndpoint {
                     request.received_over.endpoint_id = remote_endpoint_id.clone();
                     request.received_over.alpn = MCT_CALL_ALPN.into();
                     request.received_over.connection_side = ConnectionSide::Incoming;
-                    let validation_failed = request.validate().is_err();
+                    let validation_failed = request.validate().is_err()
+                        || request.authority.expected_receiver_grants_authority
+                            != request
+                                .call
+                                .authority_context
+                                .expected_receiver_grants_authority;
                     let payload_decision = (!validation_failed).then(|| {
                         evaluate_payload_integrity(
                             PayloadIntegritySubject::Request,
@@ -2438,17 +2408,7 @@ impl MotherIrohEndpoint {
                 }
             };
 
-            send.write_all(&response_bytes).await.map_err(|source| {
-                MotherIrohEndpointError::ProtocolIo {
-                    action: "write response stream",
-                    source: boxed_source(source),
-                }
-            })?;
-            send.finish()
-                .map_err(|source| MotherIrohEndpointError::ProtocolIo {
-                    action: "finish response stream",
-                    source: boxed_source(source),
-                })?;
+            ingress::write_response(&mut send, &response_bytes, ingress::RESPONSE_TIMEOUT).await?;
             if let Some(reply_fact) = call_reply_emitted_fact(&served) {
                 observation_sink
                     .record(MctIrohObservationBatch {
@@ -2461,7 +2421,7 @@ impl MotherIrohEndpoint {
                         source,
                     })?;
             }
-            connection.closed().await;
+            ingress::close_after_response(&connection, ingress::CLOSE_TIMEOUT).await;
             Ok(served)
         })
         .await
