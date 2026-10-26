@@ -3,6 +3,10 @@ use mct_daemon::{
     MotherAuthorityCommitOutcomeV1, MotherAuthorityOrderV1, authority_expectation_from_ledger,
 };
 
+#[cfg(test)]
+#[path = "control/boundaries.rs"]
+mod boundaries;
+
 const PEER_MUTATION_BODY_MAX_BYTES: usize = 64 * 1024;
 const RESIDENT_UDS_CONNECTION_LIMIT: usize = 64;
 const RESIDENT_UDS_CAPACITY_RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -2956,17 +2960,41 @@ pub(super) fn execute_offline_identity_mutation(
     }
 }
 
-pub(super) async fn serve_http_control_loop(state_path: &Path, addr: &str) -> Result<()> {
-    let listener = TcpListener::bind(addr).await?;
-    let snapshot_source = ControlSnapshotSource::open(state_path);
-    println!("mct daemon serving control http on {addr}");
+async fn serve_http_connections<S: std::future::Future<Output = ()>>(
+    listener: TcpListener,
+    snapshot_source: ControlSnapshotSource,
+    shutdown: S,
+) -> Result<()> {
+    let mut connections = mct_daemon::control_transport::ControlConnections::default();
+    tokio::pin!(shutdown);
     loop {
-        serve_http_control_once_with_snapshot_result(
-            &listener,
-            control_snapshot(&snapshot_source).await,
-        )
-        .await?;
+        tokio::select! {
+            biased;
+            _ = &mut shutdown => break,
+            _ = connections.join_next(), if !connections.is_empty() => {}
+            accepted = listener.accept() => {
+                let Some((stream, _)) = mct_daemon::control_transport::accept_or_retry(accepted)? else { continue; };
+                let source = snapshot_source.clone();
+                connections.spawn(async move {
+                    mct_daemon::serve_http_control_stream_with_snapshot_result(
+                        stream, control_snapshot(&source).await).await
+                });
+            }
+        }
     }
+    Ok(())
+}
+
+pub(super) async fn serve_http_control_loop(
+    state_path: &Path,
+    addr: &str,
+    allow_non_loopback: bool,
+) -> Result<()> {
+    let listener =
+        mct_daemon::control_transport::bind_http_control(addr, allow_non_loopback).await?;
+    let snapshot_source = ControlSnapshotSource::open(state_path);
+    println!("mct daemon serving read-only control http on {addr}");
+    serve_http_connections(listener, snapshot_source, std::future::pending()).await
 }
 
 pub(super) async fn serve_http_control_loop_until(
@@ -2976,7 +3004,7 @@ pub(super) async fn serve_http_control_loop_until(
     status_source: Option<Arc<ResidentStatusSource>>,
     bound: tokio::sync::oneshot::Sender<()>,
 ) -> Result<()> {
-    let listener = TcpListener::bind(&addr).await?;
+    let listener = mct_daemon::control_transport::bind_http_control(&addr, false).await?;
     let snapshot_source = ControlSnapshotSource::open_with_status(&state_path, status_source);
     control_snapshot(&snapshot_source).await.map_err(|_| {
         anyhow::anyhow!("resident control status was not ready before HTTP readiness")
@@ -2985,16 +3013,10 @@ pub(super) async fn serve_http_control_loop_until(
     bound
         .send(())
         .map_err(|_| anyhow::anyhow!("resident control startup receiver dropped"))?;
-    loop {
-        tokio::select! {
-            _ = shutdown.recv() => break,
-            result = serve_http_control_once_with_snapshot_result(
-                &listener,
-                control_snapshot(&snapshot_source).await,
-            ) => result?,
-        }
-    }
-    Ok(())
+    serve_http_connections(listener, snapshot_source, async move {
+        let _ = shutdown.recv().await;
+    })
+    .await
 }
 
 pub(super) async fn run_control(mut args: Vec<String>) -> Result<()> {
@@ -3012,11 +3034,20 @@ pub(super) async fn run_control_serve_http(mut args: Vec<String>) -> Result<()> 
     let state_path = take_option(&mut args, "--state")
         .map(PathBuf::from)
         .unwrap_or_else(default_state_path);
+    let allow_non_loopback = take_flag(&mut args, "--allow-unauthenticated-non-loopback-http");
+    if args.len() > 1 {
+        bail!("unexpected HTTP control arguments");
+    }
     let addr = args
         .first()
         .cloned()
         .unwrap_or_else(|| "127.0.0.1:9173".into());
-    serve_http_control_loop(&state_path, &addr).await
+    if allow_non_loopback {
+        eprintln!(
+            "WARNING: explicitly exposing unauthenticated, read-only HTTP diagnostics; no mutation authority is enabled"
+        );
+    }
+    serve_http_control_loop(&state_path, &addr, allow_non_loopback).await
 }
 
 #[cfg(unix)]
@@ -3048,13 +3079,33 @@ pub(super) async fn run_control_serve_uds_with_state(
         socket_path.display()
     );
     let snapshot_source = ControlSnapshotSource::open(&state_path);
+    serve_readonly_uds_connections(listener, snapshot_source, std::future::pending()).await
+}
+
+#[cfg(unix)]
+async fn serve_readonly_uds_connections<S: std::future::Future<Output = ()>>(
+    listener: UnixListener,
+    snapshot_source: ControlSnapshotSource,
+    shutdown: S,
+) -> Result<()> {
+    let mut connections = mct_daemon::control_transport::ControlConnections::default();
+    tokio::pin!(shutdown);
     loop {
-        mct_daemon::serve_uds_control_once_with_snapshot_result(
-            &listener,
-            control_snapshot(&snapshot_source).await,
-        )
-        .await?;
+        tokio::select! {
+            biased;
+            _ = &mut shutdown => break,
+            _ = connections.join_next(), if !connections.is_empty() => {}
+            accepted = listener.accept() => {
+                let Some((stream, _)) = mct_daemon::control_transport::accept_or_retry(accepted)? else { continue; };
+                let source = snapshot_source.clone();
+                connections.spawn(async move {
+                    mct_daemon::serve_uds_control_stream_with_handlers(
+                        stream, control_snapshot(&source).await, None, None).await
+                });
+            }
+        }
     }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -3114,7 +3165,7 @@ pub(super) async fn run_control_serve_uds_with_state_until(
         tokio::select! {
             _ = shutdown.recv() => break,
             accepted = listener.accept() => {
-                let (mut stream, _) = accepted.context("accept uds control")?;
+                let Some((mut stream, _)) = mct_daemon::control_transport::accept_or_retry(accepted)? else { continue; };
                 let permit = Arc::clone(&connection_capacity).try_acquire_owned();
                 match permit {
                     Ok(permit) => {
@@ -5072,13 +5123,18 @@ mod tests {
                 .unwrap();
             }
         });
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600)).unwrap();
         let client_socket = socket_path.clone();
         let error = tokio::task::spawn_blocking(move || {
             try_resident_control_mutation(&client_socket, "/identity/ensure", b"{}").unwrap_err()
         })
         .await
         .unwrap();
-        server.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
 
         assert!(format!("{error:#}").contains("stop the daemon to create or rotate identity"));
         assert!(!config_path.exists());

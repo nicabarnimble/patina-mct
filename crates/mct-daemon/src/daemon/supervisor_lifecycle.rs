@@ -1676,36 +1676,22 @@ fn post_lifecycle_control_request(
     _uid: u32,
     release_artifact_id: Option<&str>,
 ) -> Result<LifecycleReport> {
-    use std::io::{Read as _, Write as _};
-    use std::os::unix::net::UnixStream;
-
     let body = serde_json::to_vec(&serde_json::json!({
         "action": action,
         "release_artifact_id": release_artifact_id,
     }))?;
-    let mut stream = UnixStream::connect(&record.uds_path).with_context(|| {
-        format!(
-            "connect resident lifecycle control {}",
-            record.uds_path.display()
-        )
-    })?;
-    stream.set_read_timeout(Some(Duration::from_secs(3)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(3)))?;
-    write!(
-        stream,
-        "POST /lifecycle/fact HTTP/1.1\r\nHost: local\r\nContent-Length: {}\r\n\r\n",
-        body.len()
-    )?;
-    stream.write_all(&body)?;
-    let mut response = String::new();
-    stream.read_to_string(&mut response)?;
-    let (headers, body) = response
-        .split_once("\r\n\r\n")
-        .context("resident lifecycle response missing body")?;
-    if !headers.starts_with("HTTP/1.1 200") {
+    let (status, body) = mct_daemon::control_transport::control_socket_request(
+        &record.uds_path,
+        "POST",
+        "/lifecycle/fact",
+        &body,
+        Duration::from_secs(3),
+    )?
+    .context("resident lifecycle control unavailable")?;
+    if status != 200 {
         bail!("resident lifecycle fact rejected");
     }
-    serde_json::from_str(body).context("decode resident lifecycle report")
+    serde_json::from_slice(&body).context("decode resident lifecycle report")
 }
 
 #[cfg(not(unix))]

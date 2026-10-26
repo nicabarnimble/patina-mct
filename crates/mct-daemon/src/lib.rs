@@ -16,6 +16,7 @@ mod children;
 mod composition;
 mod config;
 mod control;
+pub mod control_transport;
 mod cycle;
 #[cfg(test)]
 mod fake;
@@ -101,6 +102,7 @@ pub use control::{
     handle_control_plane_path, handle_control_plane_path_result_with_auth,
     handle_control_plane_path_with_auth, handle_local_control_request, serve_http_control_once,
     serve_http_control_once_with_auth, serve_http_control_once_with_snapshot_result,
+    serve_http_control_stream_with_snapshot_result,
 };
 #[cfg(unix)]
 pub use control::{

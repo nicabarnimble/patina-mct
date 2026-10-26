@@ -218,10 +218,20 @@ the source audit refer to the baseline and should not be treated as stable.
 
 - **Evidence:** audit code tracing; impact depends on listener exposure.
 - **Paths:** `mct-daemon/src/control.rs`, `mct-daemon/src/daemon/control.rs`.
-- [ ] Isolate connection errors and bound reads/deadlines. Inspect actual
-  consumers and decide whether to retire the optional transport or constrain
-  it without inventing an alternate administration bypass. Never expose
-  unauthenticated mutations off loopback; loopback is not proof of ownership.
+- [x] Local M5/L2/L3 transport slice atop M4/L15 checkpoint `68280db`:
+  isolate HTTP/UDS/startup connection failures with bounded tasks, complete-header
+  framing, request byte caps and absolute read/write deadlines. HTTP binds are
+  loopback-only by default; only standalone read-only diagnostics offer the
+  explicit `--allow-unauthenticated-non-loopback-http` opt-in. No mutation route
+  or administrative authority was added. Required durability is unchanged.
+  Validation: 810 workspace tests passed (2 pre-existing ignored), 57 focused
+  control tests and 2 CLI boundary tests passed; Clippy, fmt and tier-0 specs
+  passed. See [M5/L2/L3 control evidence](M5-control-plane-boundary-evidence.md).
+  This slice is checkpointed separately; independent verification remains open.
+- [ ] Complete external-consumer/retirement review, sustained-load fairness and
+  independent assurance before formal closure. Never expose unauthenticated
+  mutations off loopback; loopback is not proof of ownership, and this work does
+  not replace D-57's authenticated administration cutover.
 - **Acceptance:** malformed/idle clients cannot permanently stop the listener;
   configured exposure matches the documented authority boundary. Any retained
   transport is consistent with D-57's removal of legacy admin alternatives.
@@ -263,8 +273,8 @@ not independently reproduced exploits. Scope/severity may change with evidence.
 | ID | Reported boundary and source | Work and closure evidence |
 | --- | --- | --- |
 | L1 | Default permissions in unsupervised startup: `mct-daemon/src/config.rs`, `state.rs` | [ ] Verify config/state/ledger creation and parent-directory permissions under permissive umask; enforce intended ownership/modes and test both supervised and unsupervised startup. |
-| L2 | CLI trusts working-directory control socket and unbounded replies: `mct-daemon/src/daemon/cli_admin.rs` | [ ] Authenticate the socket/server boundary and bound response bytes/time; spoofed socket and oversized/idle replies fail safely without sending privileged material to an untrusted endpoint. Coordinate with legacy transport retirement. |
-| L3 | Startup plane can exit/hang on malformed or idle same-UID client: `mct-daemon/src/daemon/resident/serving.rs` | [ ] Add bounded per-connection failure handling; prove a later valid connection succeeds and shutdown completes. Compare with R1 without assuming a shared cause. |
+| L2 | CLI trusts working-directory control socket and unbounded replies: `mct-daemon/src/daemon/cli_admin.rs` | [x] Local client slice: bound full exchanges and response bytes; check socket type/mode/owner, parent/ancestors, inode continuity and live peer UID before payload delivery. Metadata/protocol/timeout errors never trigger offline mutation fallback. Status, mutation and lifecycle clients share the boundary. [M5/L2/L3 evidence](M5-control-plane-boundary-evidence.md). [ ] Same-UID process authentication, legacy transport retirement, independent review and formal closure remain open. |
+| L3 | Startup plane can exit/hang on malformed or idle same-UID client: `mct-daemon/src/daemon/resident/serving.rs` | [x] Local startup slice: bounded concurrent socket IO, strict framing and connection-local failures preserve later health requests and idle-peer shutdown; authority operations stay serialized and required durability is not timed out. Malformed-request tests preserve exact ledger bytes. [M5/L2/L3 evidence](M5-control-plane-boundary-evidence.md). [ ] Sustained-load/platform assurance and independent closure remain open; no shared cause with R1 is assumed. |
 | L4 | Supervisor binary ownership/parent/symlink checks: `mct-daemon/src/daemon/supervisor_lifecycle.rs` | [ ] Establish the trusted executable publication boundary; test writable-parent, replacement and symlink cases. Coordinate with the unresolved trusted lifecycle decision rather than adding an authority bypass. |
 | L5 | Offline mutations recorded as `os-uid:0`: `mct-daemon/src/daemon/control.rs` | [ ] Prove attribution bug and correct any retained path, or remove it through D-57 cutover; no fabricated root caller attribution. Preserve existing history rather than rewriting it. |
 | L6 | Caller-provided project/classification/secret metadata used in authorization: `mct-kernel/src/child.rs`, `toy.rs` | [ ] Trace who attests each field and which grants depend on it; test forged peer values against project/data/secret restrictions. Reassess severity; derive trusted facts locally or explicitly document fields that are claims only. |
