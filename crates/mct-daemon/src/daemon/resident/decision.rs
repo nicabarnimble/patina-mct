@@ -563,6 +563,7 @@ fn resident_required_toy_authority(
             evaluate_toy_grant_for_route_snapshot(
                 call,
                 &ToyGrantEvaluationRequest {
+                    data_authority: None,
                     toy_id,
                     subject: ToyGrantSubject {
                         child_name: child.name.clone(),

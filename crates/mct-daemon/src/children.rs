@@ -12,7 +12,7 @@ use mct_kernel::{
     evaluate_child_call_authority,
 };
 use patina_sdk::manifest::{
-    CHILD_MANIFEST_FILE, ChildManifest as SdkChildManifest, ChildManifestError, ChildPackage,
+    CHILD_MANIFEST_FILE, ChildManifest as SdkChildManifest, ChildManifestError,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -107,6 +107,30 @@ pub struct MctLoadedChild {
 }
 
 impl MctLoadedChild {
+    /// Public inventory records are diagnostics, not a substitute for parsing
+    /// the approved bytes. Reject independently altered cached authority fields.
+    pub(crate) fn authority_matches_manifest(&self, bytes: &[u8]) -> bool {
+        let Some(manifest) = std::str::from_utf8(bytes)
+            .ok()
+            .and_then(|text| SdkChildManifest::from_toml_str(text).ok())
+        else {
+            return false;
+        };
+        let ingress = match manifest.ingress_mode {
+            patina_sdk::manifest::ChildIngressMode::Hybrid => MctChildIngressMode::Hybrid,
+            patina_sdk::manifest::ChildIngressMode::WitOnly => MctChildIngressMode::WitOnly,
+            patina_sdk::manifest::ChildIngressMode::Handle => return false,
+        };
+        self.name == manifest.name
+            && self.version == manifest.version
+            && self.kind == manifest.kind
+            && self.role == manifest.role
+            && self.ingress_mode == ingress
+            && self.allowed_operations == manifest.contract.allow_operations
+            && self.requested_toys == manifest.needs.toys
+            && self.relationship_listens == manifest.relationships.listens
+    }
+
     pub fn integrity_verified(&self) -> bool {
         self.wasm_digest.verified && self.manifest_digest.verified
     }
@@ -372,6 +396,7 @@ impl MctChildAuthorityProjection {
                     .expect("string ID literal/generated value must be non-empty"),
                 };
                 let request = ChildCallAuthorityRequest {
+                    data_authority: None,
                     instance_id: instance.instance_id.clone(),
                     node_id: self.local_node_id.clone(),
                     ids,
@@ -531,23 +556,49 @@ fn load_child_package(
     children_dir: &Path,
     integrity_mode: MctChildIntegrityMode,
 ) -> Result<MctLoadedChild, MctChildLoadFailure> {
-    let package =
-        ChildPackage::from_package_dir(children_dir).map_err(|source| MctChildLoadFailure {
-            wasm_path: None,
-            manifest_path: Some(children_dir.join(CHILD_MANIFEST_FILE)),
-            safe_message: "invalid child package".into(),
-            detail: source.to_string(),
-        })?;
-    load_child_pair(
-        &package.artifact_path,
-        &package.manifest_path,
-        integrity_mode,
-    )
-    .map_err(|error| MctChildLoadFailure {
-        wasm_path: Some(package.artifact_path),
-        manifest_path: Some(package.manifest_path),
-        safe_message: error.safe_message(),
-        detail: error.to_string(),
+    let manifest_path = children_dir.join(CHILD_MANIFEST_FILE);
+    let failure = |detail: String| MctChildLoadFailure {
+        wasm_path: None,
+        manifest_path: Some(manifest_path.clone()),
+        safe_message: "invalid child package".into(),
+        detail,
+    };
+    // Select the component and derive authority from the SAME bounded manifest.
+    // The SDK path loader would reopen the manifest independently.
+    let bytes = read_bounded_file(&manifest_path, MAX_MANIFEST_BYTES)
+        .map_err(|e| failure(e.to_string()))?;
+    let text = std::str::from_utf8(&bytes).map_err(|e| failure(e.to_string()))?;
+    let manifest = SdkChildManifest::from_toml_str(text).map_err(|e| failure(e.to_string()))?;
+    let relative = manifest
+        .artifact
+        .wasm
+        .ok_or_else(|| failure("package does not declare a component path".into()))?;
+    if relative.as_os_str().is_empty()
+        || !relative
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)))
+    {
+        return Err(failure(
+            "component path must be confined and relative".into(),
+        ));
+    }
+    let root = children_dir
+        .canonicalize()
+        .map_err(|e| failure(e.to_string()))?;
+    let wasm_path = root
+        .join(relative)
+        .canonicalize()
+        .map_err(|e| failure(e.to_string()))?;
+    if !wasm_path.starts_with(&root) {
+        return Err(failure("component path escapes package".into()));
+    }
+    load_child_pair_snapshot(&wasm_path, &manifest_path, integrity_mode, &bytes).map_err(|error| {
+        MctChildLoadFailure {
+            wasm_path: Some(wasm_path),
+            manifest_path: Some(manifest_path),
+            safe_message: error.safe_message(),
+            detail: error.to_string(),
+        }
     })
 }
 
@@ -655,12 +706,6 @@ fn load_child_pair(
         });
     }
 
-    let component =
-        ComponentBytes::read(wasm_path).map_err(|source| MctChildLoadError::ReadFile {
-            path: wasm_path.to_path_buf(),
-            source,
-        })?;
-    let wasm_bytes = component.as_bytes();
     let manifest_bytes =
         read_bounded_file(manifest_path, MAX_MANIFEST_BYTES).map_err(|source| {
             MctChildLoadError::ReadFile {
@@ -668,11 +713,29 @@ fn load_child_pair(
                 source,
             }
         })?;
+    load_child_pair_snapshot(wasm_path, manifest_path, integrity_mode, &manifest_bytes)
+}
+
+fn load_child_pair_snapshot(
+    wasm_path: &Path,
+    manifest_path: &Path,
+    integrity_mode: MctChildIntegrityMode,
+    manifest_bytes: &[u8],
+) -> Result<MctLoadedChild, MctChildLoadError> {
+    let component =
+        ComponentBytes::read(wasm_path).map_err(|source| MctChildLoadError::ReadFile {
+            path: wasm_path.to_path_buf(),
+            source,
+        })?;
+    let wasm_bytes = component.as_bytes();
     let wasm_digest = digest_bytes_with_sidecar(wasm_path, wasm_bytes, integrity_mode)?;
-    let manifest_digest =
-        digest_bytes_with_sidecar(manifest_path, &manifest_bytes, integrity_mode)?;
-    let manifest_text = String::from_utf8_lossy(&manifest_bytes);
-    let manifest = SdkChildManifest::from_toml_str(&manifest_text).map_err(|source| {
+    let manifest_digest = digest_bytes_with_sidecar(manifest_path, manifest_bytes, integrity_mode)?;
+    let manifest_text =
+        std::str::from_utf8(manifest_bytes).map_err(|error| MctChildLoadError::ReadFile {
+            path: manifest_path.to_path_buf(),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+        })?;
+    let manifest = SdkChildManifest::from_toml_str(manifest_text).map_err(|source| {
         MctChildLoadError::ParseManifest {
             path: manifest_path.to_path_buf(),
             source,
@@ -995,6 +1058,116 @@ listens = ["events.changed"]
     }
 
     #[test]
+    fn l16_manifest_mutations_with_recomputed_sidecars_cannot_reuse_approval() {
+        use crate::MctOperatorChildScope;
+        let dir = tempfile::tempdir().unwrap();
+        write_child(
+            dir.path(),
+            "fixture",
+            "fixture",
+            "wit-only",
+            &["patina:demo/control@0.1.0.run"],
+        );
+        write_sidecars(dir.path(), "fixture");
+        let load = || {
+            load_children_from_dir(MctChildLoadOptions::new(dir.path()).strict_integrity())
+                .children
+                .remove(0)
+        };
+        let original = load();
+        let store = crate::MctDaemonConfigStore::new(dir.path().join("config.json"));
+        let config = store
+            .approve_and_assign_loaded_child(&original, MctOperatorChildScope::default())
+            .unwrap();
+        let project = |child: &MctLoadedChild| {
+            config
+                .authority_projection_for_loaded_children([child], MctOperatorChildScope::default())
+        };
+        assert_eq!(
+            project(&original).approvals[0].approval_state,
+            ChildApprovalState::Approved
+        );
+        let original_manifest = fs::read_to_string(&original.manifest_path).unwrap();
+        for (from, to) in [
+            (".run", ".privileged"),
+            ("toys = [\"logging\"]", "toys = [\"secrets\"]"),
+            ("role = \"app\"", "role = \"service\""),
+        ] {
+            let changed = original_manifest.replace(from, to);
+            assert_ne!(changed, original_manifest);
+            fs::write(&original.manifest_path, changed).unwrap();
+            write_sidecar(&original.manifest_path);
+            let altered = load();
+            assert_eq!(altered.artifact_id, original.artifact_id, "unchanged WASM");
+            assert!(
+                altered.integrity_verified(),
+                "attacker can recompute a checksum"
+            );
+            assert_eq!(
+                project(&altered).approvals[0].approval_state,
+                ChildApprovalState::Candidate
+            );
+        }
+        let mut old_config = serde_json::to_value(&config).unwrap();
+        old_config["child_approvals"]["fixture"]
+            .as_object_mut()
+            .unwrap()
+            .remove("manifest_hash");
+        let legacy: crate::MctDaemonConfig = serde_json::from_value(old_config).unwrap();
+        assert_eq!(
+            legacy
+                .authority_projection_for_loaded_children(
+                    [&original],
+                    MctOperatorChildScope::default()
+                )
+                .approvals[0]
+                .approval_state,
+            ChildApprovalState::Candidate
+        );
+        fs::write(&original.manifest_path, original_manifest).unwrap();
+        write_sidecar(&original.manifest_path);
+        assert_eq!(
+            project(&load()).approvals[0].approval_state,
+            ChildApprovalState::Approved
+        );
+    }
+
+    #[test]
+    fn l16_invalid_utf8_manifest_is_not_lossily_reinterpreted() {
+        let dir = tempfile::tempdir().unwrap();
+        write_child(
+            dir.path(),
+            "fixture",
+            "fixture",
+            "wit-only",
+            &["patina:demo/control@0.1.0.run"],
+        );
+        let path = dir.path().join("fixture.toml");
+        let mut bytes = fs::read(&path).unwrap();
+        bytes.extend_from_slice(b"\n# invalid comment: \xff\n");
+        fs::write(path, bytes).unwrap();
+        write_sidecars(dir.path(), "fixture");
+        let report =
+            load_children_from_dir(MctChildLoadOptions::new(dir.path()).strict_integrity());
+        assert_eq!(report.loaded, 0);
+        assert_eq!(report.failed, 1);
+    }
+
+    #[test]
+    fn l16_package_manifest_is_bounded_before_parsing_or_component_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = fs::File::create(dir.path().join("child.toml")).unwrap();
+        file.set_len(MAX_MANIFEST_BYTES as u64 + 1).unwrap();
+        let report = load_children_from_dir(MctChildLoadOptions::new(dir.path()));
+        assert_eq!(report.loaded, 0);
+        assert_eq!(report.failed, 1);
+        assert!(
+            report.failures[0].detail.contains("limit")
+                || report.failures[0].detail.contains("bound")
+        );
+    }
+
+    #[test]
     fn sdk_child_package_uses_manifest_declared_artifact() {
         let dir = tempfile::tempdir().unwrap();
         write_child_package(dir.path(), "one.wasm", "slate-manager");
@@ -1005,7 +1178,10 @@ listens = ["events.changed"]
         assert_eq!(report.discovered, 1);
         assert_eq!(report.loaded, 1);
         assert_eq!(report.failed, 0);
-        assert_eq!(report.children[0].wasm_path, dir.path().join("one.wasm"));
+        assert_eq!(
+            report.children[0].wasm_path,
+            dir.path().join("one.wasm").canonicalize().unwrap()
+        );
     }
 
     #[test]

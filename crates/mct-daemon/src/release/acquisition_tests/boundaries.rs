@@ -40,6 +40,31 @@ fn extension_tar(kind: u8, body: &[u8], rest: &[u8]) -> Vec<u8> {
 }
 
 #[test]
+fn l16_daemon_release_cannot_introduce_child_manifest_authority() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = release_fixture(dir.path());
+    let scan = scan_archive_reader(fs::File::open(&source).unwrap(), TARGET).unwrap();
+    let root = release_root_name(&scan.manifest);
+    let mut original = tar::Archive::new(GzDecoder::new(fs::File::open(source).unwrap()));
+    let mut builder = tar::Builder::new(Vec::new());
+    for entry in original.entries().unwrap() {
+        let mut entry = entry.unwrap();
+        let header = entry.header().clone();
+        builder.append(&header, &mut entry).unwrap();
+    }
+    let payload = b"[child]\\nname = \"injected\"";
+    let mut injected = header(b'0', payload.len() as u64);
+    injected.set_path(format!("{root}/child.toml")).unwrap();
+    injected.set_cksum();
+    builder.append(&injected, &payload[..]).unwrap();
+    let bytes = gzip(&builder.into_inner().unwrap());
+    let error = scan_archive_reader(Cursor::new(bytes), TARGET)
+        .err()
+        .unwrap();
+    assert!(format!("{error:#}").contains("layout"), "{error:#}");
+}
+
+#[test]
 fn hard_budget_exact_eof_overflow_and_growth_are_not_truncated_success() {
     let count = Rc::new(Cell::new(0));
     let input = Counted {

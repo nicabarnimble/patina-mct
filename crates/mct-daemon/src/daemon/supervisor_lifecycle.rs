@@ -3939,6 +3939,7 @@ mod tests {
             component_path: Some(MctRootRelativePath::new("slate-manager.wasm").unwrap()),
             claimed_child_name: "slate-manager".into(),
             claimed_artifact_version: "0.2.0".into(),
+            expected_manifest_digest: None,
             expected_digest: None,
             standing_source_authority_id: None,
             claimed_publisher: None,
@@ -4285,6 +4286,12 @@ status = "active"
             component_path: Some(MctRootRelativePath::new("slate-manager.wasm").unwrap()),
             claimed_child_name: "slate-manager".into(),
             claimed_artifact_version: "0.2.0".into(),
+            expected_manifest_digest: Some(format!(
+                "sha256:{:x}",
+                <sha2::Sha256 as sha2::Digest>::digest(
+                    fs::read(source_root.join("slate-manager.toml")).unwrap()
+                )
+            )),
             expected_digest: Some(
                 "blake3:e06cab5f7605f3c070ef792f67f7b71a179d8a9c7da0c45e525b39e8a3a88e7d".into(),
             ),
@@ -4556,14 +4563,17 @@ status = "active"
         let (call_status, call_reply) =
             uds_json(&paths.uds, "POST", "/calls", &call_submission("allowed")).await;
         assert_eq!(call_status, 200, "{call_reply:#}");
-        assert_eq!(call_reply["outcome"], "completed", "{call_reply:#}");
-        let result_bytes = BASE64_STANDARD
-            .decode(call_reply["inline_result_payload_base64"].as_str().unwrap())
-            .unwrap();
-        let result_json: serde_json::Value = serde_json::from_slice(&result_bytes).unwrap();
-        assert!(
-            result_json.to_string().contains("fixture-work"),
-            "{result_json:#}"
+        // L6: an authenticated UID does not attest a caller's data labels.
+        // Keep the classification-scoped grants narrow; do not manufacture
+        // Mother facts from the request just to make this call execute.
+        assert_eq!(call_reply["outcome"], "denied", "{call_reply:#}");
+        assert!(call_reply["inline_result_payload_base64"].is_null());
+        assert_eq!(
+            entries(&paths.ledger)
+                .iter()
+                .filter(|entry| entry.observation.kind == ObservationKind::RuntimeExecutionStarted)
+                .count(),
+            runtime_starts_before_grant_denial
         );
 
         let watch_root = root.path().join("watch-input");
@@ -4594,6 +4604,7 @@ status = "active"
                 component_path: Some(MctRootRelativePath::new(component_name).unwrap()),
                 claimed_child_name: child_name.into(),
                 claimed_artifact_version: "0.1.0".into(),
+                expected_manifest_digest: None,
                 expected_digest: None,
                 standing_source_authority_id: None,
                 claimed_publisher: None,

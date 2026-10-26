@@ -1177,6 +1177,12 @@ impl MctRuntimeStateStore {
     }
 
     fn migrate_artifact_acquisition_provenance(&self) -> Result<()> {
+        if !self.column_exists(
+            "operator_pointed_artifact_acquisition_decisions",
+            "expected_manifest_digest",
+        )? {
+            self.conn.execute("ALTER TABLE operator_pointed_artifact_acquisition_decisions ADD COLUMN expected_manifest_digest TEXT", [])?;
+        }
         if !self.column_exists("component_artifacts", "provenance_status")? {
             self.conn.execute(
                 "ALTER TABLE component_artifacts ADD COLUMN provenance_status TEXT NOT NULL DEFAULT 'historical_unknown'",
@@ -2774,8 +2780,8 @@ impl MctRuntimeStateStore {
             INSERT INTO operator_pointed_artifact_acquisition_decisions(
                 decision_id, source_ref, claimed_child_name, claimed_artifact_version,
                 expected_digest, issuer_principal_ref, policy_revision, decision_state,
-                authority_observation_id, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                authority_observation_id, updated_at, expected_manifest_digest
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             "#,
             params![
                 decision.decision_id.as_str(),
@@ -2788,6 +2794,7 @@ impl MctRuntimeStateStore {
                 json_atom(&decision.decision_state)?,
                 decision.authority_observation_id.as_str(),
                 current_timestamp_string(),
+                decision.expected_manifest_digest,
             ],
         )?;
         Ok(())
@@ -2818,7 +2825,7 @@ impl MctRuntimeStateStore {
             r#"
             SELECT decision_id, source_ref, claimed_child_name, claimed_artifact_version,
                    expected_digest, issuer_principal_ref, policy_revision, decision_state,
-                   authority_observation_id
+                   authority_observation_id, expected_manifest_digest
             FROM operator_pointed_artifact_acquisition_decisions
             ORDER BY updated_at, decision_id
             "#,
@@ -2826,6 +2833,7 @@ impl MctRuntimeStateStore {
         stmt.query_map([], |row| {
             let state: String = row.get(7)?;
             Ok(OperatorPointedArtifactAcquisitionDecision {
+                expected_manifest_digest: row.get(9)?,
                 decision_id: ArtifactAcquisitionDecisionId::new(row.get::<_, String>(0)?)
                     .expect("stored operator decision id is non-empty"),
                 source_ref: row.get(1)?,
@@ -5878,6 +5886,7 @@ mod tests {
             let authority = evaluate_child_call_authority(
                 &call(),
                 &ChildCallAuthorityRequest {
+                    data_authority: None,
                     instance_id: ChildInstanceId::new("instance-a").unwrap(),
                     node_id: MctNodeId::new("node-a").unwrap(),
                     ids: ChildCallAuthorityIds {

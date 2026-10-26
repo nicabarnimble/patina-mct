@@ -425,6 +425,9 @@ pub struct MctArtifactStageRequest {
     /// Artifact version claimed before source access.
     pub claimed_artifact_version: String,
     pub expected_digest: Option<String>,
+    /// SHA-256 pin for the source manifest, paired with the component pin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_manifest_digest: Option<String>,
     /// Standing source authority id; absent means operator-pointed staging.
     #[serde(default)]
     pub standing_source_authority_id: Option<String>,
@@ -484,6 +487,21 @@ where
     validate_claim(&request.claimed_child_name, "child name")?;
     validate_claim(&request.claimed_artifact_version, "artifact version")?;
     validate_expected_digest(request.expected_digest.as_deref())?;
+    if request.expected_digest.is_some() != request.expected_manifest_digest.is_some() {
+        bail!("digest-pinned acquisition requires both component and manifest digests");
+    }
+    if let Some(pin) = request.expected_manifest_digest.as_deref() {
+        let hex = pin
+            .strip_prefix("sha256:")
+            .context("expected manifest digest must be SHA-256 tagged")?;
+        if hex.len() != 64
+            || !hex
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            bail!("expected manifest digest must be lowercase 64-character SHA-256 hex");
+        }
+    }
 
     validate_relative_path(request.manifest_path.as_path())?;
     if let Some(component_path) = request.component_path.as_ref() {
@@ -546,6 +564,7 @@ where
             source_ref: source_ref.clone(),
             claimed_child_name: request.claimed_child_name.clone(),
             claimed_artifact_version: request.claimed_artifact_version.clone(),
+            expected_manifest_digest: request.expected_manifest_digest.clone(),
             expected_digest: request.expected_digest.clone(),
             issuer_principal_ref: format!("os-uid:{}", current_uid().unwrap_or_default()),
             policy_revision: 1,
@@ -576,6 +595,7 @@ where
             request.claimed_child_name, request.claimed_artifact_version
         ),
         publisher: request.claimed_publisher.clone(),
+        expected_manifest_digest: request.expected_manifest_digest.clone(),
         expected_digest: request.expected_digest.clone(),
         authenticated_uid: current_uid()?,
         namespaces,
@@ -776,6 +796,15 @@ where
             rejected_acquisition(component_bytes.len() as u64, observed_digest.clone());
         record_rejected(&acquisition)?;
         bail!("expected BLAKE3 digest does not match acquired component bytes");
+    }
+
+    if let Some(expected) = request.expected_manifest_digest.as_deref()
+        && expected != format!("sha256:{:x}", Sha256::digest(&manifest_bytes))
+    {
+        let acquisition =
+            rejected_acquisition(component_bytes.len() as u64, observed_digest.clone());
+        record_rejected(&acquisition)?;
+        bail!("expected SHA-256 manifest digest does not match acquired authority bytes");
     }
 
     let manifest_text = match std::str::from_utf8(&manifest_bytes) {
@@ -1219,6 +1248,12 @@ allow = ["patina:fixture/control@0.1.0.run"]
             component_path: Some(MctRootRelativePath::new("fixture.wasm").unwrap()),
             claimed_child_name: "fixture".into(),
             claimed_artifact_version: "1.0.0".into(),
+            expected_manifest_digest: expected_digest.as_ref().map(|_| {
+                format!(
+                    "sha256:{:x}",
+                    Sha256::digest(fs::read(root.join("source/child.toml")).unwrap())
+                )
+            }),
             expected_digest,
             standing_source_authority_id: None,
             claimed_publisher: None,
@@ -1776,6 +1811,7 @@ allow = ["malformed-operation"]
             component_path: None,
             claimed_child_name: "fixture".into(),
             claimed_artifact_version: "1.0.0".into(),
+            expected_manifest_digest: None,
             expected_digest: None,
             standing_source_authority_id: None,
             claimed_publisher: None,
@@ -1822,6 +1858,59 @@ allow = ["malformed-operation"]
             attempts[1].verification_outcome,
             ArtifactVerificationOutcome::Verified
         );
+    }
+
+    #[test]
+    fn l16_pinned_component_cannot_acquire_changed_manifest_even_with_fresh_sidecars() {
+        let root = tempfile::tempdir().unwrap();
+        let expected = format!("blake3:{}", blake3::hash(b"real-attempt-bytes").to_hex());
+        let mut request = raw_request(root.path(), Some(expected));
+        let original_pin = request.expected_manifest_digest.clone();
+        let manifest = request.source_root.join("child.toml");
+        let changed = fs::read_to_string(&manifest)
+            .unwrap()
+            .replace(".run", ".privileged");
+        fs::write(&manifest, &changed).unwrap();
+        write_sha256_sidecar(&manifest).unwrap();
+        write_sha256_sidecar(&request.source_root.join("fixture.wasm")).unwrap();
+        request.require_source_sidecars = true;
+        let error = stage_operator_pointed_artifact(&request).unwrap_err();
+        assert!(error.to_string().contains("manifest digest"), "{error:#}");
+        let state = MctRuntimeStateStore::open(&request.state_path).unwrap();
+        assert_eq!(state.summary().unwrap().artifacts, 0);
+        assert_eq!(
+            state.artifact_acquisitions().unwrap()[0].verification_outcome,
+            ArtifactVerificationOutcome::Rejected
+        );
+        assert_eq!(
+            state.operator_acquisition_decisions().unwrap()[0].expected_manifest_digest,
+            original_pin
+        );
+        assert!(!request.children_dir.join(".acquiring").exists());
+
+        // Explicitly selecting both new byte identities is allowed; staging is
+        // still not approval or permission to execute the changed declaration.
+        request.expected_manifest_digest =
+            Some(format!("sha256:{:x}", Sha256::digest(changed.as_bytes())));
+        let accepted = stage_operator_pointed_artifact(&request).unwrap();
+        assert_eq!(accepted.verification_outcome, "verified");
+    }
+
+    #[test]
+    fn l16_component_only_and_malformed_manifest_pins_fail_before_source_access() {
+        let root = tempfile::tempdir().unwrap();
+        let mut request = raw_request(root.path(), Some(format!("blake3:{}", "0".repeat(64))));
+        request.source_root = root.path().join("must-not-be-read");
+        for pin in [
+            None,
+            Some("sha256:ABC".into()),
+            Some(format!("blake3:{}", "0".repeat(64))),
+        ] {
+            request.expected_manifest_digest = pin;
+            assert!(stage_operator_pointed_artifact(&request).is_err());
+            assert!(!request.children_dir.exists());
+            assert!(!request.state_path.exists());
+        }
     }
 
     #[test]

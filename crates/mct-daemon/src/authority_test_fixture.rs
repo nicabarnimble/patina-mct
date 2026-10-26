@@ -1,5 +1,17 @@
 use mct_kernel::*;
 
+// Test-only trusted adapter assertion. Production ingress must NOT copy claims.
+#[allow(dead_code)]
+pub(crate) fn local_fixture_data(call: &MctCall) -> LocalInvocationData {
+    LocalInvocationData::from_authoritative_source(
+        call.call_id.clone(),
+        call.caller.project_id.clone(),
+        call.payload_metadata.data_classification.clone(),
+        call.payload_metadata.contains_secret_scoped_material,
+        ObservationId::new("obs:fixture-local-data").unwrap(),
+    )
+}
+
 #[allow(dead_code)] // Shared fixture module; some consumers use only artifact-specific admission.
 pub(crate) fn authorized_child_for_call(
     call: &MctCall,
@@ -7,7 +19,14 @@ pub(crate) fn authorized_child_for_call(
     node_id: MctNodeId,
     stem: &str,
 ) -> AuthorizedChildInvocation {
-    authorized_child_for_artifact(call, child_name, node_id, stem, &format!("artifact-{stem}"))
+    authorized_child_for_artifact(
+        call,
+        child_name,
+        node_id,
+        stem,
+        &format!("artifact-{stem}"),
+        &format!("sha256:manifest-{stem}"),
+    )
 }
 
 #[allow(dead_code)]
@@ -17,6 +36,7 @@ pub(crate) fn authorized_child_for_artifact(
     node_id: MctNodeId,
     stem: &str,
     artifact: &str,
+    manifest_hash: &str,
 ) -> AuthorizedChildInvocation {
     let artifact_id =
         ComponentArtifactId::new(artifact).expect("generated artifact id must be non-empty");
@@ -31,7 +51,7 @@ pub(crate) fn authorized_child_for_artifact(
         child_name: child_name.into(),
         artifact_version: "0.1.0".into(),
         content_hash: format!("sha256:{stem}"),
-        manifest_hash: format!("sha256:manifest-{stem}"),
+        manifest_hash: manifest_hash.into(),
         primary_export: ComponentWitExport {
             namespace: call.target.namespace.clone(),
             interface_name: call.target.interface_name.clone(),
@@ -90,6 +110,7 @@ pub(crate) fn authorized_child_for_artifact(
             .expect("generated observation id must be non-empty"),
     };
     let request = ChildCallAuthorityRequest {
+        data_authority: Some(local_fixture_data(call)),
         instance_id,
         node_id,
         ids: ChildCallAuthorityIds {
@@ -186,6 +207,7 @@ pub(crate) fn authorized_toy_for_call(
             .expect("generated observation id must be non-empty"),
     };
     let request = ToyGrantEvaluationRequest {
+        data_authority: Some(local_fixture_data(call)),
         toy_id,
         subject,
         child_instance_id,

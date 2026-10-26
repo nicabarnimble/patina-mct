@@ -68,6 +68,7 @@ fn authorized(deadline: Timestamp, path: &std::path::Path) -> AuthorizedChildInv
         MctNodeId::new("mother-a").expect("string ID literal/generated value must be non-empty"),
         "wasm-limit",
         &artifact,
+        "sha256:manifest-wasm-limit",
     )
 }
 

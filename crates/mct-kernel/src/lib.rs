@@ -22,6 +22,8 @@ pub mod error;
 /// Shared Child and admin-key grant check.
 pub mod grant_check;
 pub mod id;
+mod invocation_data;
+pub use invocation_data::LocalInvocationData;
 pub mod observation;
 pub mod peer;
 /// Voice-bound guardian recovery identity and bounded quorum evidence.

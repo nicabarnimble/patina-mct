@@ -84,6 +84,9 @@ pub struct OperatorPointedArtifactAcquisitionDecision {
     pub claimed_artifact_version: String,
     /// Optional expected algorithm-tagged BLAKE3 digest.
     pub expected_digest: Option<String>,
+    /// Separate pin for authority-bearing manifest bytes; old decisions remain readable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_manifest_digest: Option<String>,
     /// Authenticated issuer principal reference.
     pub issuer_principal_ref: String,
     pub policy_revision: u64,
@@ -183,6 +186,7 @@ pub struct ArtifactAcquisitionAuthorityRequest {
     pub publisher: Option<String>,
     /// Expected digest supplied for this exact request.
     pub expected_digest: Option<String>,
+    pub expected_manifest_digest: Option<String>,
     /// Authenticated local operator UID requesting the effect.
     pub authenticated_uid: u32,
     /// WIT namespaces claimed by the package.
@@ -199,6 +203,8 @@ pub struct ArtifactAcquisitionAuthorityRequest {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArtifactAcquisitionAuthorityReason {
+    /// A content pin must bind both component bytes and manifest authority.
+    IncompleteDigestBinding,
     /// Source trust and effect authority both matched.
     Allowed,
     /// No valid source-trust path was supplied.
@@ -264,6 +270,9 @@ pub fn evaluate_artifact_acquisition_authority(
     operator: Option<&OperatorPointedArtifactAcquisitionDecision>,
     effect: Option<&FilesystemAcquisitionEffectAuthority>,
 ) -> ArtifactAcquisitionAuthorityResult {
+    if request.expected_digest.is_some() != request.expected_manifest_digest.is_some() {
+        return denied(ArtifactAcquisitionAuthorityReason::IncompleteDigestBinding);
+    }
     let source_paths = usize::from(standing.is_some()) + usize::from(operator.is_some());
     if source_paths == 0 {
         return denied(ArtifactAcquisitionAuthorityReason::MissingSourceAuthority);
@@ -285,6 +294,7 @@ pub fn evaluate_artifact_acquisition_authority(
                 decision.claimed_child_name, decision.claimed_artifact_version
             ) == request.artifact
             && decision.expected_digest == request.expected_digest
+            && decision.expected_manifest_digest == request.expected_manifest_digest
             && decision.policy_revision == request.policy_revision
     } else {
         false
@@ -391,6 +401,7 @@ mod tests {
             source_ref: "file:///tmp/source".into(),
             artifact: "slate-manager@0.2.0".into(),
             publisher: Some("patina".into()),
+            expected_manifest_digest: None,
             expected_digest: None,
             authenticated_uid: 501,
             namespaces: vec!["patina:slate".into()],
@@ -408,6 +419,7 @@ mod tests {
             source_ref: "file:///tmp/source".into(),
             claimed_child_name: "slate-manager".into(),
             claimed_artifact_version: "0.2.0".into(),
+            expected_manifest_digest: None,
             expected_digest: None,
             issuer_principal_ref: "os-uid:501".into(),
             policy_revision: 1,
@@ -427,6 +439,58 @@ mod tests {
             attempt_id: ArtifactAcquisitionId::new("acquisition-1").unwrap(),
             expires_at: timestamp("2026-07-16T12:01:00Z"),
         }
+    }
+
+    #[test]
+    fn l16_operator_source_authority_binds_both_digests() {
+        let mut request = request();
+        let mut operator = operator();
+        request.expected_digest = Some(format!("blake3:{}", "0".repeat(64)));
+        operator.expected_digest = request.expected_digest.clone();
+        assert_eq!(
+            evaluate_artifact_acquisition_authority(
+                &request,
+                None,
+                Some(&operator),
+                Some(&effect())
+            )
+            .reason,
+            ArtifactAcquisitionAuthorityReason::IncompleteDigestBinding
+        );
+        request.expected_manifest_digest = Some(format!("sha256:{}", "1".repeat(64)));
+        operator.expected_manifest_digest = request.expected_manifest_digest.clone();
+        assert!(
+            evaluate_artifact_acquisition_authority(
+                &request,
+                None,
+                Some(&operator),
+                Some(&effect())
+            )
+            .authorized
+            .is_some()
+        );
+        request.expected_manifest_digest = Some(format!("sha256:{}", "2".repeat(64)));
+        assert_eq!(
+            evaluate_artifact_acquisition_authority(
+                &request,
+                None,
+                Some(&operator),
+                Some(&effect())
+            )
+            .reason,
+            ArtifactAcquisitionAuthorityReason::OperatorDecisionNotCurrentOrMatching
+        );
+        let mut legacy = serde_json::to_value(operator).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("expected_manifest_digest");
+        assert!(
+            serde_json::from_value::<OperatorPointedArtifactAcquisitionDecision>(legacy)
+                .unwrap()
+                .expected_manifest_digest
+                .is_none()
+        );
     }
 
     #[test]
@@ -514,6 +578,7 @@ mod tests {
         );
         operator = self::operator();
         request.expected_digest = Some(format!("blake3:{}", "0".repeat(64)));
+        request.expected_manifest_digest = Some(format!("sha256:{}", "1".repeat(64)));
         assert_eq!(
             evaluate_artifact_acquisition_authority(&request, None, Some(&operator), Some(&effect))
                 .reason,

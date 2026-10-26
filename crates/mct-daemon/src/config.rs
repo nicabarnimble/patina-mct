@@ -34,6 +34,9 @@ pub struct MctDaemonConfig {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MctStoredChildApproval {
+    /// Exact approved manifest bytes. Historical approvals without a pin are inert.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_hash: Option<String>,
     pub child_name: String,
     pub artifact_id: ComponentArtifactId,
     pub artifact_version: String,
@@ -162,7 +165,14 @@ impl MctDaemonConfig {
                 scope_vision_id: Some(stored_approval.vision_id.clone()),
                 scope_node_id: Some(stored_approval.node_id.clone()),
                 scope_project_id: stored_approval.project_id.clone(),
-                approval_state: stored_approval.approval_state,
+                approval_state: if stored_approval.manifest_hash.as_deref()
+                    == Some(artifact.manifest_hash.as_str())
+                {
+                    stored_approval.approval_state
+                } else {
+                    // A sidecar is a checksum, not approval of changed authority.
+                    ChildApprovalState::Candidate
+                },
                 policy_revision: stored_approval.policy_revision,
                 authority_observation_id: ObservationId::new(format!(
                     "obs:approval:{}",
@@ -333,6 +343,7 @@ impl MctConfigChildAuthorityProjection {
             .find(|instance| instance.child_name == child_name)
         else {
             let request = ChildCallAuthorityRequest {
+                data_authority: None,
                 instance_id: ChildInstanceId::new(format!("instance:{child_name}:missing"))
                     .expect("string ID literal/generated value must be non-empty"),
                 node_id: self.local_node_id.clone(),
@@ -349,6 +360,7 @@ impl MctConfigChildAuthorityProjection {
             );
         };
         let request = ChildCallAuthorityRequest {
+            data_authority: None,
             instance_id: instance.instance_id.clone(),
             node_id: self.local_node_id.clone(),
             ids: child_authority_ids(child_name, call),
@@ -460,6 +472,7 @@ impl MctDaemonConfigStore {
         config.child_approvals.insert(
             child.name.clone(),
             MctStoredChildApproval {
+                manifest_hash: Some(format!("sha256:{}", child.manifest_digest.sha256)),
                 child_name: child.name.clone(),
                 artifact_id: ComponentArtifactId::new(child.artifact_id.clone())
                     .expect("string ID literal/generated value must be non-empty"),
@@ -850,6 +863,7 @@ mod tests {
         config.child_approvals.insert(
             child.name.clone(),
             MctStoredChildApproval {
+                manifest_hash: Some(format!("sha256:{}", child.manifest_digest.sha256)),
                 child_name: child.name.clone(),
                 artifact_id: ComponentArtifactId::new(child.artifact_id.clone())
                     .expect("string ID literal/generated value must be non-empty"),

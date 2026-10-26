@@ -371,11 +371,7 @@ async fn execute_watch_callouts(
                 call_id: call_id.clone(),
                 caller: parent.caller.clone(),
                 target,
-                payload_metadata: PayloadMetadata {
-                    data_classification: parent.payload_metadata.data_classification.clone(),
-                    size_bytes: target_payload.len() as u64,
-                    contains_secret_scoped_material: false,
-                },
+                payload_metadata: child_callout_metadata(parent, target_payload.len() as u64),
                 authority_context,
                 deadline: parent.deadline.clone(),
                 trace_context: TraceContext {
@@ -1110,6 +1106,17 @@ async fn execute_resident_call_after_payload(
     }
 }
 
+// Labels remain claims. A Child may have read newly secret data through a Toy:
+// neither the parent's label nor the guest's output proves safe declassification.
+// Until a Mother-owned output classifier exists, derived output stays local.
+fn child_callout_metadata(parent: &MctCall, size_bytes: u64) -> PayloadMetadata {
+    PayloadMetadata {
+        data_classification: parent.payload_metadata.data_classification.clone(),
+        size_bytes,
+        contains_secret_scoped_material: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1337,6 +1344,30 @@ mod tests {
         );
         assert!(result.inline_result_payload.is_none());
         ledger.close().await;
+    }
+
+    #[test]
+    fn l6_child_callout_cannot_clear_parent_secret_classification() {
+        let (request, _) = jvm_bridge_protocol_request(
+            "patina:demo/control@0.1.0.run",
+            "[]",
+            test_grants_authority_identity(1),
+        )
+        .unwrap();
+        let mut parent = request.call;
+        for secret in [false, true] {
+            parent.payload_metadata.contains_secret_scoped_material = secret;
+            let metadata = child_callout_metadata(&parent, 17);
+            assert!(
+                metadata.contains_secret_scoped_material,
+                "unclassified Child output must not attest itself safe to forward"
+            );
+            assert_eq!(
+                metadata.data_classification,
+                parent.payload_metadata.data_classification
+            );
+            assert_eq!(metadata.size_bytes, 17);
+        }
     }
 
     #[test]

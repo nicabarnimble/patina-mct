@@ -1030,6 +1030,7 @@ mod tests {
     fn snapshot_authorized_toy(snapshot: &LocalExecutionAuthoritySnapshot) -> AuthorizedToyCall {
         let call = call();
         let request = ToyGrantEvaluationRequest {
+            data_authority: Some(crate::authority_test_fixture::local_fixture_data(&call)),
             toy_id: ToyId::new("toy-echo").unwrap(),
             subject: snapshot.canonical_grants().toy_grants()[0].subject.clone(),
             child_instance_id: ChildInstanceId::new("instance-toy-adapter").unwrap(),
@@ -1372,6 +1373,7 @@ mod tests {
         let toy_id = ToyId::new(MCT_SECRETS_TOY_ID)
             .expect("string ID literal/generated value must be non-empty");
         let request = ToyGrantEvaluationRequest {
+            data_authority: Some(crate::authority_test_fixture::local_fixture_data(&call)),
             toy_id: toy_id.clone(),
             subject: ToyGrantSubject {
                 child_name: "child-demo".into(),

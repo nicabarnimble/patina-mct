@@ -395,7 +395,90 @@ fn authorize_artifact(call: &MctCall, child: &MctLoadedChild) -> AuthorizedChild
         MctNodeId::new("mother-a").unwrap(),
         "wasm-boundary",
         &child.artifact_id,
+        &format!("sha256:{}", child.manifest_digest.sha256),
     )
+}
+
+#[test]
+fn l16_manifest_replacement_after_admission_is_rejected_before_execution() {
+    let dir = tempfile::tempdir().unwrap();
+    let child = loaded_typed_child(
+        typed_component_path(&dir),
+        vec!["patina:demo/control@0.1.0.double".into()],
+    );
+    let call = typed_call("double");
+    let mut tokens = (0..5)
+        .map(|_| authorize_artifact(&call, &child))
+        .collect::<Vec<_>>()
+        .into_iter();
+    let original = fs::read(&child.manifest_path).unwrap();
+    let runtime = runtime();
+    let mut forged_metadata = child.clone();
+    forged_metadata.requested_toys.push("secrets".into());
+    assert!(
+        runtime
+            .invoke_authorized_child_wit_export(
+                tokens.next().unwrap(),
+                &forged_metadata,
+                &call,
+                &serde_json::json!([7]),
+                ids(),
+            )
+            .is_err()
+    );
+    assert_eq!(
+        runtime
+            .invoke_authorized_child_wit_export(
+                tokens.next().unwrap(),
+                &child,
+                &call,
+                &serde_json::json!([7]),
+                ids()
+            )
+            .unwrap()
+            .output_json,
+        serde_json::json!({"results":[14]})
+    );
+    fs::write(&child.manifest_path, b"changed authority, same component").unwrap();
+    assert!(
+        runtime
+            .invoke_authorized_child_wit_export(
+                tokens.next().unwrap(),
+                &child,
+                &call,
+                &serde_json::json!([7]),
+                ids()
+            )
+            .is_err()
+    );
+    fs::write(&child.manifest_path, original).unwrap();
+    let mut changed_inventory = child.clone();
+    changed_inventory.manifest_digest.sha256 = "0".repeat(64);
+    assert!(
+        runtime
+            .invoke_authorized_child_wit_export(
+                tokens.next().unwrap(),
+                &changed_inventory,
+                &call,
+                &serde_json::json!([7]),
+                ids()
+            )
+            .is_err()
+    );
+    assert_eq!(
+        runtime
+            .invoke_authorized_child_wit_export(
+                tokens.next().unwrap(),
+                &child,
+                &call,
+                &serde_json::json!([7]),
+                ids()
+            )
+            .unwrap()
+            .result
+            .outcome,
+        ResultOutcome::Success
+    );
 }
 
 #[test]

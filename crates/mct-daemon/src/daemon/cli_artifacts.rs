@@ -24,6 +24,7 @@ fn run_artifacts_stage(mut args: Vec<String>) -> Result<()> {
     let child = take_option(&mut args, "--child");
     let version = take_option(&mut args, "--version");
     let expected_digest = take_option(&mut args, "--expected-digest");
+    let expected_manifest_digest = take_option(&mut args, "--expected-manifest-digest");
     let children_dir = take_option(&mut args, "--children-dir")
         .map(PathBuf::from)
         .unwrap_or_else(default_children_dir);
@@ -50,6 +51,7 @@ fn run_artifacts_stage(mut args: Vec<String>) -> Result<()> {
         )?),
         claimed_child_name: child.context("artifacts stage requires --child")?,
         claimed_artifact_version: version.context("artifacts stage requires --version")?,
+        expected_manifest_digest,
         expected_digest,
         standing_source_authority_id: None,
         claimed_publisher: None,
@@ -66,6 +68,7 @@ fn run_artifacts_acquire(mut args: Vec<String>) -> Result<()> {
     let child = take_option(&mut args, "--child");
     let version = take_option(&mut args, "--version");
     let expected_digest = take_option(&mut args, "--expected-digest");
+    let expected_manifest_digest = take_option(&mut args, "--expected-manifest-digest");
     let claimed_publisher = take_option(&mut args, "--publisher");
     let children_dir = take_option(&mut args, "--children-dir")
         .map(PathBuf::from)
@@ -96,6 +99,7 @@ fn run_artifacts_acquire(mut args: Vec<String>) -> Result<()> {
         component_path: None,
         claimed_child_name: child.context("artifacts acquire requires --child")?,
         claimed_artifact_version: version.context("artifacts acquire requires --version")?,
+        expected_manifest_digest,
         expected_digest,
         standing_source_authority_id: source_authority,
         claimed_publisher,

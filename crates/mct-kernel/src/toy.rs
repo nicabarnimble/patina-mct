@@ -148,6 +148,7 @@ pub struct ToyGrantEvaluation {
 /// non-`Clone` token remains the session authority and cannot be copied into a
 /// later session.
 pub struct AuthorizedToyCall {
+    call_binding: crate::invocation_data::InvocationCallBinding,
     authorized_toy_call_id: AuthorizedToyCallId,
     call_id: CallId,
     evaluation_id: ToyGrantEvaluationId,
@@ -176,6 +177,7 @@ pub struct AuthorizedToyCall {
 pub enum ToyEffectAdmissionDenyV1 {
     LocalAuthorityUnavailable,
     CallIdMismatch,
+    CallDataMismatch,
     EffectiveDeadlineMismatch,
     PolicyAuthorityMismatch,
     GrantsAuthorityMismatch,
@@ -216,6 +218,9 @@ impl AuthorizedToyCall {
             .ok_or(ToyEffectAdmissionDenyV1::LocalAuthorityUnavailable)?;
         if self.call_id != call.call_id {
             return Err(ToyEffectAdmissionDenyV1::CallIdMismatch);
+        }
+        if !self.call_binding.matches_call(call) {
+            return Err(ToyEffectAdmissionDenyV1::CallDataMismatch);
         }
         if authority.effective_deadline() != &call.deadline {
             return Err(ToyEffectAdmissionDenyV1::EffectiveDeadlineMismatch);
@@ -301,7 +306,9 @@ impl AuthorizedToyCall {
         call: &MctCall,
         executing_mother_now: &Timestamp,
     ) -> Option<AdmittedToyEffect<'a>> {
-        (self.call_id == call.call_id && executing_mother_now < &self.expires_at)
+        (self.call_id == call.call_id
+            && self.call_binding.matches_call(call)
+            && executing_mother_now < &self.expires_at)
             .then_some(AdmittedToyEffect { authorized: self })
     }
 
@@ -368,6 +375,8 @@ pub struct ToyGrantEvaluationIds {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToyGrantEvaluationRequest {
+    /// Independent Mother facts (normally inherited from the admitted Child).
+    pub data_authority: Option<crate::LocalInvocationData>,
     pub toy_id: ToyId,
     pub subject: ToyGrantSubject,
     pub child_instance_id: ChildInstanceId,
@@ -506,6 +515,7 @@ pub fn evaluate_toy_grant_for_call(
             );
         };
         let authorized = AuthorizedToyCall {
+            call_binding: crate::invocation_data::InvocationCallBinding::capture(call),
             authorized_toy_call_id: request.ids.authorized_toy_call_id.clone(),
             call_id: call.call_id.clone(),
             evaluation_id: evaluation.evaluation_id.clone(),
@@ -632,6 +642,7 @@ pub fn evaluate_toy_grant_for_snapshot(
         };
     };
     let authorized = AuthorizedToyCall {
+        call_binding: crate::invocation_data::InvocationCallBinding::capture(call),
         authorized_toy_call_id: request.ids.authorized_toy_call_id.clone(),
         call_id: call.call_id.clone(),
         evaluation_id: evaluation.evaluation_id.clone(),
@@ -838,10 +849,11 @@ fn scope_matches(
 ) -> bool {
     scope.vision_id == call.caller.vision_id
         && option_matches(&scope.node_id, &Some(request.node_id.clone()))
-        && option_matches(&scope.project_id, &call.caller.project_id)
-        && option_matches(
+        && crate::invocation_data::data_scope_matches(
+            call,
+            request.data_authority.as_ref(),
+            &scope.project_id,
             &scope.data_classification,
-            &Some(call.payload_metadata.data_classification.clone()),
         )
         && option_matches(&scope.resource_id, &request.resource_id)
         && action_is_allowed(
@@ -973,6 +985,13 @@ mod tests {
 
     fn request() -> ToyGrantEvaluationRequest {
         ToyGrantEvaluationRequest {
+            data_authority: Some(crate::LocalInvocationData::from_authoritative_source(
+                CallId::new("call-toy-1").unwrap(),
+                Some(ProjectId::new("project-a").unwrap()),
+                "project".into(),
+                false,
+                ObservationId::new("obs:fixture-local-data").unwrap(),
+            )),
             toy_id: ToyId::new("toy-logging")
                 .expect("string ID literal/generated value must be non-empty"),
             subject: subject(),
@@ -1031,6 +1050,77 @@ mod tests {
             grants_revision: 7,
             authority_observation_id: ObservationId::new("obs-grant")
                 .expect("string ID literal/generated value must be non-empty"),
+        }
+    }
+
+    #[test]
+    fn l6_toy_claims_cannot_satisfy_project_or_classification_grants() {
+        let mut request = request();
+        request.data_authority = None;
+        for (project, classification) in [
+            (Some(ProjectId::new("project-a").unwrap()), None),
+            (None, Some("project".into())),
+        ] {
+            let mut grant = grant(ToyGrantState::Active);
+            grant.scope.project_id = project;
+            grant.scope.data_classification = classification;
+            for origin in [CallOrigin::Cli, CallOrigin::Iroh] {
+                let mut caller_claim = call();
+                caller_claim.origin = origin;
+                let result = evaluate_toy_grant_for_call(
+                    &caller_claim,
+                    &request,
+                    &[toy()],
+                    std::slice::from_ref(&grant),
+                );
+                assert_eq!(
+                    result.evaluation.reason_code,
+                    ToyGrantReasonCode::WrongScope
+                );
+                assert!(result.authorized.is_none());
+            }
+        }
+        let mut unrestricted = grant(ToyGrantState::Active);
+        unrestricted.scope.project_id = None;
+        unrestricted.scope.data_classification = None;
+        assert!(
+            evaluate_toy_grant_for_call(&call(), &request, &[toy()], &[unrestricted]).is_allowed(),
+            "explicitly unscoped grant does not depend on a caller label"
+        );
+    }
+
+    #[test]
+    fn l6_toy_local_facts_and_effect_tokens_reject_metadata_substitution() {
+        let request = request();
+        let snapshot = snapshot_with(
+            vec![grant(ToyGrantState::Active)],
+            "epoch-l6",
+            6,
+            "2026-05-31T00:00:00Z",
+        );
+        let token = evaluate_toy_grant_for_snapshot(&call(), &request, &snapshot)
+            .authorized
+            .unwrap();
+        assert!(token.admit_effect_with_snapshot(&call(), &snapshot).is_ok());
+        for variant in 0..3 {
+            let mut forged = call();
+            match variant {
+                0 => forged.caller.project_id = Some(ProjectId::new("project-b").unwrap()),
+                1 => forged.payload_metadata.data_classification = "public".into(),
+                _ => forged.payload_metadata.contains_secret_scoped_material = true,
+            }
+            assert!(!evaluate_toy_grant_for_snapshot(&forged, &request, &snapshot).is_allowed());
+            assert_eq!(
+                token
+                    .admit_effect_with_snapshot(&forged, &snapshot)
+                    .unwrap_err(),
+                ToyEffectAdmissionDenyV1::CallDataMismatch
+            );
+            assert!(
+                token
+                    .admit_effect_for_call_at(&forged, snapshot.mother_clock().evaluated_at())
+                    .is_none()
+            );
         }
     }
 

@@ -850,6 +850,7 @@ mod tests {
         let instance_id = ChildInstanceId::new("child-instance-route-1")
             .expect("string ID literal/generated value must be non-empty");
         let request = ChildCallAuthorityRequest {
+            data_authority: None,
             instance_id: instance_id.clone(),
             node_id: MctNodeId::new("node-b")
                 .expect("string ID literal/generated value must be non-empty"),
@@ -1014,6 +1015,13 @@ mod tests {
                 .expect("string ID literal/generated value must be non-empty"),
         };
         let request = ToyGrantEvaluationRequest {
+            data_authority: Some(crate::LocalInvocationData::from_authoritative_source(
+                authority_call.call_id.clone(),
+                None,
+                "public".into(),
+                false,
+                ObservationId::new("obs:fixture-local-data").unwrap(),
+            )),
             toy_id,
             subject,
             child_instance_id: ChildInstanceId::new("child-instance-route-1")

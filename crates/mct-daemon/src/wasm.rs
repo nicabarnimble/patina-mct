@@ -1160,12 +1160,30 @@ impl MctWasmComponentRuntime {
         authorized: &AuthorizedChildInvocation,
     ) -> Result<ComponentBytes, MctWasmComponentRuntimeError> {
         if !child.integrity_verified()
+            || authorized.manifest_hash() != format!("sha256:{}", child.manifest_digest.sha256)
             || authorized.artifact_id().as_str() != child.artifact_id
             || child.artifact_id != format!("sha256:{}", child.wasm_digest.sha256)
         {
             return Err(MctWasmComponentRuntimeError::Load {
                 path: child.wasm_path.clone(),
                 message: "loaded child is not the verified authorized artifact".into(),
+            });
+        }
+        let manifest = crate::children::component_bytes::read_bounded_file(
+            &child.manifest_path,
+            crate::children::component_bytes::MAX_MANIFEST_BYTES,
+        )
+        .map_err(|error| MctWasmComponentRuntimeError::Load {
+            path: child.manifest_path.clone(),
+            message: error.to_string(),
+        })?;
+        use sha2::{Digest, Sha256};
+        if format!("sha256:{:x}", Sha256::digest(&manifest)) != authorized.manifest_hash()
+            || !child.authority_matches_manifest(&manifest)
+        {
+            return Err(MctWasmComponentRuntimeError::Load {
+                path: child.manifest_path.clone(),
+                message: "authorized child manifest bytes or cached authority changed".into(),
             });
         }
         self.component_snapshot(&child.wasm_path, Some(authorized.artifact_id().as_str()))
@@ -2947,6 +2965,10 @@ mod tests {
                 .expect("string ID literal/generated value must be non-empty"),
             "wasm",
             &artifact,
+            &format!(
+                "sha256:{:x}",
+                Sha256::digest(fs::read(component_path.with_extension("toml")).unwrap_or_default())
+            ),
         )
     }
 
@@ -3051,6 +3073,7 @@ mod tests {
     ) -> AuthorizedToyCall {
         let grant = &snapshot.canonical_grants().toy_grants()[0];
         let request = ToyGrantEvaluationRequest {
+            data_authority: Some(crate::authority_test_fixture::local_fixture_data(call)),
             toy_id: grant.toy_id.clone(),
             subject: grant.subject.clone(),
             child_instance_id: ChildInstanceId::new("instance-delegation").unwrap(),
@@ -3484,6 +3507,31 @@ mod tests {
         );
     }
 
+    fn loaded_manifest_fixture(component_path: &Path) -> (tempfile::TempDir, MctLoadedChild) {
+        let dir = tempfile::tempdir().unwrap();
+        fs::copy(component_path, dir.path().join("fixture.wasm")).unwrap();
+        fs::copy(
+            component_path.with_file_name("child.toml"),
+            dir.path().join("fixture.toml"),
+        )
+        .unwrap();
+        for name in ["fixture.wasm", "fixture.toml"] {
+            let digest =
+                <sha2::Sha256 as sha2::Digest>::digest(fs::read(dir.path().join(name)).unwrap());
+            fs::write(
+                dir.path().join(format!("{name}.sha256")),
+                format!("{digest:x}"),
+            )
+            .unwrap();
+        }
+        let child = crate::children::load_children_from_dir(
+            crate::children::MctChildLoadOptions::new(dir.path()).strict_integrity(),
+        )
+        .children
+        .remove(0);
+        (dir, child)
+    }
+
     fn loaded_typed_child(
         component_path: PathBuf,
         allowed_operations: Vec<String>,
@@ -3493,13 +3541,28 @@ mod tests {
             "{:x}",
             Sha256::digest(fs::read(&component_path).unwrap_or_default())
         );
+        let manifest = format!(
+            "[child]\nname = \"wasm-answer\"\nversion = \"0.1.0\"\nkind = \"child\"\n[child.ingress]\nmode = \"wit-only\"\n[child.contract]\nallow = {}\n",
+            serde_json::to_string(&allowed_operations).unwrap()
+        );
+        // Never create synthetic manifests beside committed fixture artifacts.
+        let component_path = if component_path.starts_with(env!("CARGO_MANIFEST_DIR")) {
+            let staged = tempfile::tempdir().unwrap().keep().join("fixture.wasm");
+            fs::copy(&component_path, &staged).unwrap();
+            staged
+        } else {
+            component_path
+        };
+        if component_path.exists() {
+            fs::write(component_path.with_extension("toml"), &manifest).unwrap();
+        }
         MctLoadedChild {
             child_id: ChildId::new("child:wasm-answer")
                 .expect("string ID literal/generated value must be non-empty"),
             name: "wasm-answer".into(),
             version: "0.1.0".into(),
             description: None,
-            kind: "test".into(),
+            kind: "child".into(),
             role: None,
             wasm_path: component_path.clone(),
             manifest_path: component_path.with_extension("toml"),
@@ -3509,7 +3572,7 @@ mod tests {
                 verified: true,
             },
             manifest_digest: crate::children::MctChildFileDigest {
-                sha256: "manifest-digest".into(),
+                sha256: format!("{:x}", Sha256::digest(manifest.as_bytes())),
                 sidecar_present: true,
                 verified: true,
             },
@@ -3565,6 +3628,7 @@ mod tests {
             MctNodeId::new("mother-a").unwrap(),
             "echo",
             &child.artifact_id,
+            &format!("sha256:{}", child.manifest_digest.sha256),
         );
         let invocation = runtime()
             .invoke_authorized_child_wit_export(
@@ -3694,44 +3758,7 @@ mod tests {
         let mut watcher_call = typed_call("status");
         watcher_call.target =
             OperationTarget::new("patina:watch", "control@0.1.0", "status").unwrap();
-        let child = MctLoadedChild {
-            child_id: ChildId::new("child:folder-watch-actor").unwrap(),
-            name: "folder-watch-actor".into(),
-            version: "0.1.0".into(),
-            description: None,
-            kind: "child".into(),
-            role: Some("app".into()),
-            wasm_path: component_path.clone(),
-            manifest_path: component_path.with_file_name("child.toml"),
-            wasm_digest: crate::children::MctChildFileDigest {
-                sha256: format!(
-                    "{:x}",
-                    <sha2::Sha256 as sha2::Digest>::digest(fs::read(&component_path).unwrap())
-                ),
-                sidecar_present: false,
-                verified: true,
-            },
-            manifest_digest: crate::children::MctChildFileDigest {
-                sha256: "fixture".into(),
-                sidecar_present: false,
-                verified: true,
-            },
-            artifact_id: format!(
-                "sha256:{:x}",
-                <sha2::Sha256 as sha2::Digest>::digest(fs::read(&component_path).unwrap())
-            ),
-            ingress_mode: crate::children::MctChildIngressMode::WitOnly,
-            allowed_operations: vec![
-                "patina:watch/control@0.1.0.status".into(),
-                "patina:watch/control@0.1.0.configure".into(),
-                "patina:watch/control@0.1.0.scan-now".into(),
-            ],
-            requested_toys: Vec::new(),
-            subscribed_streams: Vec::new(),
-            relationship_listens: Vec::new(),
-            wasm_size_bytes: std::fs::metadata(&component_path).unwrap().len(),
-            instance_state: crate::children::MctChildInstanceState::Ready,
-        };
+        let (_fixture, child) = loaded_manifest_fixture(&component_path);
         let make_adapters = |call: &MctCall| {
             let mut toy_registry = MctToyAdapterRegistry::new();
             toy_registry.register(
@@ -3792,6 +3819,7 @@ mod tests {
                         call.caller.node_id.clone(),
                         stem,
                         &child.artifact_id,
+                        &format!("sha256:{}", child.manifest_digest.sha256),
                     ),
                     &child,
                     call,
@@ -3843,40 +3871,7 @@ mod tests {
         let mut sink_call = typed_call("emit");
         sink_call.call_id = CallId::new("call-watch-sink").unwrap();
         sink_call.target = OperationTarget::new("patina:watch", "events@0.1.0", "emit").unwrap();
-        let child = MctLoadedChild {
-            child_id: ChildId::new("child:watch-null-sink").unwrap(),
-            name: "watch-null-sink".into(),
-            version: "0.1.0".into(),
-            description: None,
-            kind: "child".into(),
-            role: Some("app".into()),
-            wasm_path: component_path.clone(),
-            manifest_path: component_path.with_file_name("child.toml"),
-            wasm_digest: crate::children::MctChildFileDigest {
-                sha256: format!(
-                    "{:x}",
-                    <sha2::Sha256 as sha2::Digest>::digest(fs::read(&component_path).unwrap())
-                ),
-                sidecar_present: false,
-                verified: true,
-            },
-            manifest_digest: crate::children::MctChildFileDigest {
-                sha256: "fixture".into(),
-                sidecar_present: false,
-                verified: true,
-            },
-            artifact_id: format!(
-                "sha256:{:x}",
-                <sha2::Sha256 as sha2::Digest>::digest(fs::read(&component_path).unwrap())
-            ),
-            ingress_mode: crate::children::MctChildIngressMode::WitOnly,
-            allowed_operations: vec!["patina:watch/events@0.1.0.emit".into()],
-            requested_toys: Vec::new(),
-            subscribed_streams: Vec::new(),
-            relationship_listens: Vec::new(),
-            wasm_size_bytes: std::fs::metadata(&component_path).unwrap().len(),
-            instance_state: crate::children::MctChildInstanceState::Ready,
-        };
+        let (_fixture, child) = loaded_manifest_fixture(&component_path);
         let adapter = |stem: &str| MctWitToyHostAdapter {
             authorized_toy_call: crate::authority_test_fixture::authorized_toy_for_call(
                 &sink_call,
@@ -3901,6 +3896,7 @@ mod tests {
                     sink_call.caller.node_id.clone(),
                     "watch-sink",
                     &child.artifact_id,
+                    &format!("sha256:{}", child.manifest_digest.sha256),
                 ),
                 &child,
                 &sink_call,
