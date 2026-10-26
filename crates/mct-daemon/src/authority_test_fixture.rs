@@ -1,13 +1,25 @@
 use mct_kernel::*;
 
+#[allow(dead_code)] // Shared fixture module; some consumers use only artifact-specific admission.
 pub(crate) fn authorized_child_for_call(
     call: &MctCall,
     child_name: &str,
     node_id: MctNodeId,
     stem: &str,
 ) -> AuthorizedChildInvocation {
-    let artifact_id = ComponentArtifactId::new(format!("artifact-{stem}"))
-        .expect("generated artifact id must be non-empty");
+    authorized_child_for_artifact(call, child_name, node_id, stem, &format!("artifact-{stem}"))
+}
+
+#[allow(dead_code)]
+pub(crate) fn authorized_child_for_artifact(
+    call: &MctCall,
+    child_name: &str,
+    node_id: MctNodeId,
+    stem: &str,
+    artifact: &str,
+) -> AuthorizedChildInvocation {
+    let artifact_id =
+        ComponentArtifactId::new(artifact).expect("generated artifact id must be non-empty");
     let approval_id = ChildApprovalId::new(format!("approval-{stem}"))
         .expect("generated approval id must be non-empty");
     let assignment_id = ChildAssignmentId::new(format!("assignment-{stem}"))

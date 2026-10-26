@@ -199,8 +199,17 @@ the source audit refer to the baseline and should not be treated as stable.
 
 - **Evidence:** source-traced accumulation; no sustained-load proof yet.
 - **Paths:** `mct-daemon/src/wasm.rs` and Toy observation/writer paths.
-- [ ] Bound host-call counts, payload/output bytes and observation accumulation,
-  or introduce bounded backpressure with explicit durability behavior.
+- [x] Local M4/L15 slice atop H3/M1 checkpoint `039a277`: invocation-local
+  host/logging/measure/Toy counters, conservative observation reservations before
+  further effects, and accumulated MCT payload/output byte caps. Exhaustion traps
+  with a failed report while retaining prior Toy facts; required durability and
+  authority/order checks are unchanged. Native Git output is bounded while read.
+  Exact-limit controls, noisy logging/measure, initialization, output exhaustion
+  and scalar Toy regressions are retained. See
+  [M4/L15 WASM evidence](M4-L15-wasm-boundary-evidence.md).
+- [ ] Complete sustained-load, process-resource/ABI allocation assurance and
+  independent review. The per-invocation accounting envelope is not a total RSS
+  governor, standard-WASI byte budget, or cross-invocation ledger-growth bound.
 - **Acceptance:** logging/measure abuse cannot grow host memory or ledger work
   without limit; excess work terminates predictably; mandatory effect evidence
   is not silently discarded; ordinary calls remain functional.
@@ -267,7 +276,7 @@ not independently reproduced exploits. Scope/severity may change with evidence.
 | L12 | Ordinary append may impersonate authority `detail_ref`: `mct-observation/src/lib.rs` | [ ] Reserve authority namespaces/typed append boundaries; malicious ordinary facts cannot be interpreted as authority or poison replay. Test allowed ordinary facts and malformed reserved references. |
 | L13 | Canonical reserialization hash and checkpoint rollback handling: `mct-observation/src/lib.rs` | [ ] Review these as two distinct claims. Canonical serialization is not itself a vulnerability. Prove required representation/continuity properties; retain rollback evidence and deny discontinuity without silently changing historical hash contracts. |
 | L14 | Corrupt SQLite rows panic/crash-loop: `mct-daemon/src/state.rs` | [ ] Preserve corrupt fixtures; return typed degraded/quarantine outcomes with operator evidence, no guessed defaults or destructive repair; startup and inspection remain predictable. |
-| L15 | Verified WASM reopened per call; integrity mode may only audit: `mct-daemon/src/children.rs`, `wasm.rs` | [ ] Trace artifact mutability and bind actual executed bytes to approved digest at the execution boundary; replacement/race tests deny substituted bytes. Reassess severity alongside H1 and F3. |
+| L15 | Verified WASM reopened per call; integrity mode may only audit: `mct-daemon/src/children.rs`, `wasm.rs` | [x] Local execution-byte binding atop `039a277`: bounded immutable bytes are verified against the authorized artifact digest and passed directly to `Component::from_binary`; unverified typed inventory denies. Retained overwrite/rename counterexample and post-verification source-removal control pass. See [M4/L15 evidence](M4-L15-wasm-boundary-evidence.md). Independent review, severity reassessment alongside H1/F3, and formal closure remain open; L16 is unchanged. |
 | L16 | Acquisition expected digest covers WASM, not manifest: `mct-daemon/src/acquisition.rs` | [ ] Determine the approval unit; test same WASM with altered authority-bearing `child.toml`. Bind the required metadata/artifact identity, or narrow the documented claim with proof that mutable fields cannot grant power. |
 | L17 | Blanket yanked-crate waiver: root `.cargo/audit.toml` and lockfiles | [ ] Verify current yank reasons, fixed versions and transitive constraints for spin/chacha20/der; remove or narrowly justify exceptions with a revisit condition. Validate all retained graphs; an available version is not proof of compatible resolution. |
 | L18 | Mutable Rust setup action ref: root `.github/actions/setup-rust/action.yml` | [ ] Resolve and verify an immutable upstream commit; preserve explicit Rust 1.96.0 selection and the compiler-version check; validate CI installation. Pinning the action must not silently change the compiler. |

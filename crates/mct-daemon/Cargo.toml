@@ -29,7 +29,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tar.workspace = true
 toml.workspace = true
-wasmtime.workspace = true
+wasmtime = { workspace = true, features = ["call-hook"] }
 wasmtime-wasi.workspace = true
 
 [dev-dependencies]

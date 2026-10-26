@@ -296,6 +296,7 @@ pub(super) fn current_timestamp_after(budget: jiff::SignedDuration) -> Timestamp
 pub(super) fn default_wasm_host_config() -> MctWasmHostConfig {
     MctWasmHostConfig {
         memory_limit_bytes: DEFAULT_WASM_MEMORY_LIMIT_BYTES,
+        ..MctWasmHostConfig::default_local()
     }
 }
 

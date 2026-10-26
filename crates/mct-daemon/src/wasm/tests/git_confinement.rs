@@ -41,7 +41,7 @@ fn invoke(mode: &str, adapters: MctWitHostImportAdapters) -> MctWitComponentInvo
     let child = loaded_typed_child(fixture_path(), vec!["patina:demo/control@0.1.0.run".into()]);
     runtime()
         .invoke_authorized_child_wit_export_with_host_adapters(
-            authorized(),
+            authorized(&child.wasm_path),
             &child,
             &typed_call("run"),
             &serde_json::json!([mode]),

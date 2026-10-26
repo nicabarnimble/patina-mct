@@ -1,3 +1,5 @@
+pub(crate) mod component_bytes;
+use component_bytes::{ComponentBytes, MAX_MANIFEST_BYTES, MAX_SIDECAR_BYTES, read_bounded_file};
 use mct_kernel::{
     AuthorizedChildInvocationId, CandidateRoute, ChildApproval, ChildApprovalId,
     ChildApprovalState, ChildAssignment, ChildAssignmentId, ChildAssignmentState,
@@ -653,15 +655,20 @@ fn load_child_pair(
         });
     }
 
-    let wasm_bytes = fs::read(wasm_path).map_err(|source| MctChildLoadError::ReadFile {
-        path: wasm_path.to_path_buf(),
-        source,
-    })?;
-    let manifest_bytes = fs::read(manifest_path).map_err(|source| MctChildLoadError::ReadFile {
-        path: manifest_path.to_path_buf(),
-        source,
-    })?;
-    let wasm_digest = digest_bytes_with_sidecar(wasm_path, &wasm_bytes, integrity_mode)?;
+    let component =
+        ComponentBytes::read(wasm_path).map_err(|source| MctChildLoadError::ReadFile {
+            path: wasm_path.to_path_buf(),
+            source,
+        })?;
+    let wasm_bytes = component.as_bytes();
+    let manifest_bytes =
+        read_bounded_file(manifest_path, MAX_MANIFEST_BYTES).map_err(|source| {
+            MctChildLoadError::ReadFile {
+                path: manifest_path.to_path_buf(),
+                source,
+            }
+        })?;
+    let wasm_digest = digest_bytes_with_sidecar(wasm_path, wasm_bytes, integrity_mode)?;
     let manifest_digest =
         digest_bytes_with_sidecar(manifest_path, &manifest_bytes, integrity_mode)?;
     let manifest_text = String::from_utf8_lossy(&manifest_bytes);
@@ -726,11 +733,17 @@ fn digest_bytes_with_sidecar(
         });
     }
 
-    let expected = fs::read_to_string(&sidecar).map_err(|source| MctChildLoadError::ReadFile {
-        path: sidecar.clone(),
-        source,
+    let expected = read_bounded_file(&sidecar, MAX_SIDECAR_BYTES).map_err(|source| {
+        MctChildLoadError::ReadFile {
+            path: sidecar.clone(),
+            source,
+        }
     })?;
-    let expected = expected.trim();
+    let expected = std::str::from_utf8(&expected)
+        .map_err(|_| MctChildLoadError::HashMismatch {
+            path: path.to_path_buf(),
+        })?
+        .trim();
     if expected != actual {
         if integrity_mode == MctChildIntegrityMode::AuditOnly {
             return Ok(MctChildFileDigest {

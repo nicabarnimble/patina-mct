@@ -10,6 +10,7 @@ use std::{
 };
 
 // Native Git is always OS-confined; unsupported platforms fail closed.
+mod bounded_output;
 #[cfg(target_os = "macos")]
 mod confinement;
 
@@ -137,6 +138,54 @@ impl MctToyAdapterRegistry {
 
     pub fn register(&mut self, toy_id: ToyId, backend: MctToyBackend) {
         self.backends.insert(toy_id, backend);
+    }
+
+    /// Reserve both possible facts before a WASM import starts a Toy effect.
+    /// Toy facts contain host-owned authority/correlation, not guest payloads.
+    pub(crate) fn wasm_observation_reservation(
+        &self,
+        authorized: &AuthorizedToyCall,
+        call: &MctCall,
+        ids: &MctToyCallIds,
+        limit: usize,
+    ) -> Result<usize, std::io::Error> {
+        let message = match self.backends.get(authorized.toy_id()) {
+            Some(MctToyBackend::StaticFailure { safe_message }) if safe_message.len() > 128 => {
+                safe_message.as_str()
+            }
+            _ => {
+                "................................................................................................................................"
+            }
+        };
+        if message.len() > limit {
+            return Err(std::io::Error::other(
+                "Toy observation exceeds invocation budget",
+            ));
+        }
+        let observations = [
+            toy_observation(
+                ids.started_observation_id.clone(),
+                ids.started_at.clone(),
+                ObservationKind::ToyCallStarted,
+                ObservationOutcome::Started,
+                call,
+                authorized,
+                message,
+            ),
+            toy_observation(
+                ids.completed_observation_id.clone(),
+                ids.completed_at.clone(),
+                ObservationKind::ToyCallCompleted,
+                ObservationOutcome::Completed,
+                call,
+                authorized,
+                message,
+            ),
+        ];
+        // Covers enum spelling differences and native struct/container overhead.
+        let size = crate::resource_bounds::serialized_size(&observations, limit)?;
+        size.checked_add(2 * std::mem::size_of::<MctObservation>() + 1024)
+            .ok_or_else(|| std::io::Error::other("Toy observation size overflow"))
     }
 
     pub fn call_authorized_toy_with_authority(
@@ -704,10 +753,7 @@ fn validate_repo_relative_path(path: &str) -> Result<(), GitToyPathError> {
 }
 
 fn run_git(executor: &GitExecutor<'_>, args: &[&str]) -> Result<(), GitToyError> {
-    let output = executor
-        .command()?
-        .args(args)
-        .output()
+    let output = bounded_output::run(executor.command()?.args(args))
         .map_err(|source| GitToyError::RunGit { source })?;
     if output.status.success() {
         Ok(())
@@ -717,10 +763,7 @@ fn run_git(executor: &GitExecutor<'_>, args: &[&str]) -> Result<(), GitToyError>
 }
 
 fn run_git_owned(executor: &GitExecutor<'_>, args: &[String]) -> Result<(), GitToyError> {
-    let output = executor
-        .command()?
-        .args(args)
-        .output()
+    let output = bounded_output::run(executor.command()?.args(args))
         .map_err(|source| GitToyError::RunGit { source })?;
     if output.status.success() {
         Ok(())
@@ -730,10 +773,7 @@ fn run_git_owned(executor: &GitExecutor<'_>, args: &[String]) -> Result<(), GitT
 }
 
 fn run_git_capture(executor: &GitExecutor<'_>, args: &[&str]) -> Result<String, GitToyError> {
-    let output = executor
-        .command()?
-        .args(args)
-        .output()
+    let output = bounded_output::run(executor.command()?.args(args))
         .map_err(|source| GitToyError::RunGit { source })?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())

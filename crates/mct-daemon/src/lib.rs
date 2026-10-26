@@ -25,6 +25,7 @@ mod lifecycle;
 mod metrics;
 mod registry;
 mod release;
+mod resource_bounds;
 mod startup;
 mod state;
 mod status;
@@ -185,11 +186,11 @@ pub use wasm::{
     DEFAULT_WASM_MEMORY_LIMIT_BYTES, MctWasiHostConfig, MctWasiPreopen, MctWasiPreopenAccess,
     MctWasmComponentDiagnosticIds, MctWasmComponentInvocationIds, MctWasmComponentInvocationReport,
     MctWasmComponentRuntime, MctWasmComponentRuntimeError, MctWasmComponentToyInvocation,
-    MctWasmHostConfig, MctWasmToyHostImport, MctWitComponentInvocationReport,
-    MctWitHostImportAdapters, MctWitKeyvalueHostAdapter, MctWitMessagingHostAdapter,
-    MctWitProducedMessage, MctWitResolvedOperation, MctWitToyHostAdapter,
-    MctWitWatchCallOutWireEvent, MctWitWatchMessageAdmission, MctWitWatchMessageRefusal,
-    resolve_wit_operation_target, validate_wit_watch_message_admission,
+    MctWasmHostConfig, MctWasmInvocationLimits, MctWasmToyHostImport,
+    MctWitComponentInvocationReport, MctWitHostImportAdapters, MctWitKeyvalueHostAdapter,
+    MctWitMessagingHostAdapter, MctWitProducedMessage, MctWitResolvedOperation,
+    MctWitToyHostAdapter, MctWitWatchCallOutWireEvent, MctWitWatchMessageAdmission,
+    MctWitWatchMessageRefusal, resolve_wit_operation_target, validate_wit_watch_message_admission,
     wasm_component_runtime_error_observation, wit_operation_id_from_target,
 };
 
