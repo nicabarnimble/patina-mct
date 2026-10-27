@@ -2558,6 +2558,7 @@ dependencies = [
  "getrandom 0.3.4",
  "jiff",
  "mct-kernel",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

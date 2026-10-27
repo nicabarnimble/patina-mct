@@ -164,11 +164,11 @@ pub use startup::{
 pub use state::{
     AuthorityProjectionSnapshotV1, ChildInvocationProvenance,
     MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER, MCT_IDEMPOTENCY_TTL_SECONDS, MctArtifactPackageRecord,
-    MctCompositionRunRecord, MctIdempotencyReservation, MctInFlightCallIdempotencyEntry,
-    MctMetricPoint, MctQueuedTaskRecord, MctRecordedCallReply, MctRegistrySourceRecord,
-    MctRemoteCallableSurfaceRecord, MctRemoteSurfaceRefresh, MctRuntimeRunRecord,
-    MctRuntimeRunState, MctRuntimeStateStore, MctRuntimeStateSummary, MctTaskIntentRecord,
-    MctTaskStatus, MctTriggerFiringRecord, MctTriggerOccurrenceDisposition,
+    MctCompositionRunRecord, MctCorruptStateError, MctIdempotencyReservation,
+    MctInFlightCallIdempotencyEntry, MctMetricPoint, MctQueuedTaskRecord, MctRecordedCallReply,
+    MctRegistrySourceRecord, MctRemoteCallableSurfaceRecord, MctRemoteSurfaceRefresh,
+    MctRuntimeRunRecord, MctRuntimeRunState, MctRuntimeStateStore, MctRuntimeStateSummary,
+    MctTaskIntentRecord, MctTaskStatus, MctTriggerFiringRecord, MctTriggerOccurrenceDisposition,
     MctTriggerOccurrenceRecord, MctTriggerPendingOccurrenceRecord, default_state_path,
 };
 pub use status::{

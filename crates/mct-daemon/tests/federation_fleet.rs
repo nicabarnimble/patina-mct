@@ -42,7 +42,7 @@ impl Mother {
         // Short paths also fit macOS's sockaddr_un limit.
         let work = tempfile::Builder::new()
             .prefix("mct-fleet-")
-            .tempdir_in("/tmp")
+            .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
             .unwrap();
         let work_path = work.path().to_path_buf();
         let root = work_path.join("root");

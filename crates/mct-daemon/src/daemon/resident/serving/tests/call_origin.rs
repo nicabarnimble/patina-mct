@@ -163,7 +163,7 @@ async fn three_mother_wire_origin_cannot_create_local_principal_or_extra_hop() {
     // durable admission/authorization, real WASM children, and owner-only UDS.
     let dir = tempfile::Builder::new()
         .prefix("mct-h2-")
-        .tempdir_in("/tmp")
+        .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
         .unwrap();
     let root = dir.path().to_path_buf();
     if std::env::var_os("MCT_ORIGIN_KEEP").is_some() {

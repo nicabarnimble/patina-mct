@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsString,
     fs,
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -75,11 +76,13 @@ pub fn install_verified_child_package(
 ) -> Result<MctChildPackageInstallReport> {
     let source_dir = canonical_dir(source_dir.as_ref(), "child package source")?;
     let children_dir = absolute_dir(children_dir.as_ref())?;
-    fs::create_dir_all(&children_dir)
-        .with_context(|| format!("create children directory {}", children_dir.display()))?;
-
+    mct_observation::private_fs::ensure_directory(&children_dir)
+        .with_context(|| format!("verify private registry root {}", children_dir.display()))?;
+    let children_dir = children_dir.canonicalize()?;
     let child = load_single_verified_package_child(&source_dir)?;
+    validate_package_name(&child.name)?;
     let installed_dir = children_dir.join(&child.name);
+    verify_install_directory(&installed_dir)?;
     if installed_dir.exists() && !replace_existing {
         bail!(
             "installed child '{}' already exists at {}; pass --replace to update it",
@@ -88,26 +91,20 @@ pub fn install_verified_child_package(
         );
     }
 
-    let staging_dir = children_dir.join(format!(
-        ".installing-{}-{}",
-        sanitize_path_token(&child.name),
-        current_timestamp_string()
-    ));
-    if staging_dir.exists() {
-        fs::remove_dir_all(&staging_dir)
-            .with_context(|| format!("remove stale staging dir {}", staging_dir.display()))?;
-    }
-    fs::create_dir(&staging_dir)
-        .with_context(|| format!("create staging dir {}", staging_dir.display()))?;
+    let staging_dir = children_dir.join(mct_observation::private_fs::nonce_name("installing")?);
+    mct_observation::private_fs::ensure_directory(&staging_dir)?;
 
     copy_installable_package_files(&source_dir, &staging_dir, &child)
         .inspect_err(|_| cleanup_dir(&staging_dir))?;
 
-    let backup_dir = children_dir.join(format!(
-        ".replaced-{}-{}",
-        sanitize_path_token(&child.name),
-        current_timestamp_string()
-    ));
+    let staged = load_single_verified_package_child(&staging_dir)
+        .inspect_err(|_| cleanup_dir(&staging_dir))?;
+    if staged.artifact_id != child.artifact_id || staged.manifest_digest != child.manifest_digest {
+        cleanup_dir(&staging_dir);
+        bail!("registry package changed while staging");
+    }
+    verify_install_directory(&installed_dir)?;
+    let backup_dir = children_dir.join(mct_observation::private_fs::nonce_name("replaced")?);
     let replaced_existing = installed_dir.exists();
     if replaced_existing {
         fs::rename(&installed_dir, &backup_dir).with_context(|| {
@@ -160,7 +157,7 @@ fn load_single_verified_package_child(source_dir: &Path) -> Result<MctLoadedChil
         .children
         .into_iter()
         .next()
-        .expect("loaded count checked");
+        .context("verified package has no Child")?;
     if !child.integrity_verified() {
         bail!(
             "child package '{}' is not verified and cannot be installed",
@@ -218,20 +215,21 @@ fn copy_package_file(source_dir: &Path, staging_dir: &Path, source_file: &Path) 
     }
     let destination = staging_dir.join(relative);
     if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("create install dir {}", parent.display()))?;
+        mct_observation::private_fs::ensure_directory(parent)?;
     }
-    fs::copy(source_file, &destination).with_context(|| {
-        format!(
-            "copy package file {} to {}",
-            source_file.display(),
-            destination.display()
-        )
-    })?;
+    let input = mct_observation::private_fs::trusted_input(source_file)?;
+    let mut output = mct_observation::private_fs::create_new(&destination)?;
+    let cap = crate::children::component_bytes::MAX_COMPONENT_BYTES as u64;
+    let copied = std::io::copy(&mut input.take(cap + 1), &mut output)?;
+    if copied > cap {
+        bail!("registry package member exceeds bounded copy limit");
+    }
+    output.sync_all()?;
     Ok(())
 }
 
 fn canonical_dir(path: &Path, label: &str) -> Result<PathBuf> {
+    mct_observation::private_fs::trusted_directory(path)?;
     let canonical = path
         .canonicalize()
         .with_context(|| format!("resolve {label} {}", path.display()))?;
@@ -255,17 +253,30 @@ fn hash_sidecar_path(path: &Path) -> PathBuf {
     PathBuf::from(sidecar)
 }
 
-fn sanitize_path_token(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect()
+fn validate_package_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.len() > 128
+        || !name.as_bytes()[0].is_ascii_alphanumeric()
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        || name.ends_with('.')
+    {
+        bail!("registry package name must be a bounded portable basename");
+    }
+    Ok(())
+}
+
+fn verify_install_directory(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {
+            mct_observation::private_fs::ensure_directory(path)?;
+            Ok(())
+        }
+        Ok(_) => bail!("registry installation target is not a private real directory"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
 }
 
 fn cleanup_dir(path: &Path) {
@@ -274,6 +285,70 @@ fn cleanup_dir(path: &Path) {
 
 #[cfg(test)]
 mod tests {
+    fn private_tempdir() -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt as _;
+        tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap()
+    }
+    #[test]
+    fn l19_package_names_are_basenames_not_sanitized_paths() {
+        for name in [
+            "",
+            ".",
+            "..",
+            "../escape",
+            "/absolute",
+            "a/b",
+            "a\\\\b",
+            "C:drive",
+            ".hidden",
+            "trailing.",
+            "space name",
+        ] {
+            assert!(super::validate_package_name(name).is_err(), "{name}");
+        }
+        assert!(super::validate_package_name(&"a".repeat(129)).is_err());
+        for name in ["slate-manager", "child_2", "child.v1"] {
+            super::validate_package_name(name).unwrap();
+        }
+    }
+
+    #[test]
+    fn l19_installer_refuses_traversal_and_symlink_roots_or_destinations() {
+        use std::os::unix::fs::symlink;
+        let source = private_tempdir();
+        let registry = private_tempdir();
+        let outside = private_tempdir();
+        let source_root = source.path().canonicalize().unwrap();
+        let registry_root = registry.path().canonicalize().unwrap();
+        write_package(&source_root, b"wasm");
+        let manifest_path = source_root.join("child.toml");
+        let original = fs::read_to_string(&manifest_path).unwrap();
+        fs::write(
+            &manifest_path,
+            original.replace("name = \"child-a\"", "name = \"../escape\""),
+        )
+        .unwrap();
+        write_sidecar(&manifest_path);
+        assert!(install_verified_child_package(&source_root, &registry_root, true).is_err());
+        assert!(!registry_root.parent().unwrap().join("escape").exists());
+        fs::write(&manifest_path, original).unwrap();
+        write_sidecar(&manifest_path);
+        let target = registry_root.join("child-a");
+        symlink(outside.path().canonicalize().unwrap(), &target).unwrap();
+        assert!(install_verified_child_package(&source_root, &registry_root, true).is_err());
+        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
+        fs::remove_file(target).unwrap();
+        let alias = registry_root.join("source-alias");
+        symlink(&source_root, &alias).unwrap();
+        assert!(install_verified_child_package(&alias, &registry_root, false).is_err());
+        fs::remove_file(alias).unwrap();
+        let report = install_verified_child_package(&source_root, &registry_root, false).unwrap();
+        assert!(report.installed_dir.starts_with(&registry_root));
+    }
+
     use super::*;
     use sha2::{Digest, Sha256};
     use std::fs;
@@ -333,6 +408,40 @@ allow = ["patina/echo@0.1.0.echo"]
         .unwrap();
     }
 
+    #[test]
+    fn l19_package_members_and_registry_ancestors_do_not_follow_symlinks() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let source = private_tempdir();
+        let registry = private_tempdir();
+        let source_root = source.path().canonicalize().unwrap();
+        let registry_root = registry.path().canonicalize().unwrap();
+        write_package(&source_root, b"wasm");
+        for relative in ["child.toml", "target/wasm32-wasip1/release/child-a.wasm"] {
+            let member = source_root.join(relative);
+            let saved = member.with_extension("saved");
+            fs::rename(&member, &saved).unwrap();
+            symlink(&saved, &member).unwrap();
+            assert!(install_verified_child_package(&source_root, &registry_root, false).is_err());
+            assert_eq!(fs::read_dir(&registry_root).unwrap().count(), 0);
+            fs::remove_file(&member).unwrap();
+            fs::rename(&saved, &member).unwrap();
+        }
+        let alias = source_root.join("registry-alias");
+        symlink(&registry_root, &alias).unwrap();
+        assert!(install_verified_child_package(&source_root, &alias, false).is_err());
+        let writable = registry_root.join("writable");
+        fs::create_dir(&writable).unwrap();
+        fs::set_permissions(&writable, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(
+            install_verified_child_package(&source_root, writable.join("children"), false).is_err()
+        );
+        assert!(!writable.join("children").exists());
+        fs::set_permissions(&writable, fs::Permissions::from_mode(0o700)).unwrap();
+        let installed =
+            install_verified_child_package(&source_root, &registry_root, false).unwrap();
+        assert!(installed.installed_dir.join("child.toml").is_file());
+    }
+
     fn write_sidecar(path: &Path) {
         fs::write(hash_sidecar_path(path), sha256_file(path)).unwrap();
     }
@@ -343,9 +452,9 @@ allow = ["patina/echo@0.1.0.echo"]
 
     #[test]
     fn registry_sync_records_loaded_children_as_candidates() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let state = MctRuntimeStateStore::open(dir.path().join("state.sqlite")).unwrap();
-        let children = tempfile::tempdir().unwrap();
+        let children = private_tempdir();
         write_child(children.path());
 
         let report = sync_child_registry_source(
@@ -363,8 +472,8 @@ allow = ["patina/echo@0.1.0.echo"]
 
     #[test]
     fn installs_verified_package_atomically_under_child_name() {
-        let source = tempfile::tempdir().unwrap();
-        let children = tempfile::tempdir().unwrap();
+        let source = private_tempdir();
+        let children = private_tempdir();
         write_package(source.path(), b"wasm-v1");
 
         let report = install_verified_child_package(source.path(), children.path(), false).unwrap();
@@ -386,8 +495,8 @@ allow = ["patina/echo@0.1.0.echo"]
 
     #[test]
     fn install_requires_replace_for_existing_child() {
-        let source = tempfile::tempdir().unwrap();
-        let children = tempfile::tempdir().unwrap();
+        let source = private_tempdir();
+        let children = private_tempdir();
         write_package(source.path(), b"wasm-v1");
         install_verified_child_package(source.path(), children.path(), false).unwrap();
 
@@ -398,9 +507,9 @@ allow = ["patina/echo@0.1.0.echo"]
 
     #[test]
     fn install_replace_updates_package_contents() {
-        let source_v1 = tempfile::tempdir().unwrap();
-        let source_v2 = tempfile::tempdir().unwrap();
-        let children = tempfile::tempdir().unwrap();
+        let source_v1 = private_tempdir();
+        let source_v2 = private_tempdir();
+        let children = private_tempdir();
         write_package(source_v1.path(), b"wasm-v1");
         write_package(source_v2.path(), b"wasm-v2");
         install_verified_child_package(source_v1.path(), children.path(), false).unwrap();

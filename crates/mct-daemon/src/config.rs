@@ -8,7 +8,6 @@ use mct_kernel::*;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    fs,
     path::{Path, PathBuf},
 };
 
@@ -406,30 +405,24 @@ impl MctDaemonConfigStore {
     }
 
     pub fn load(&self) -> Result<MctDaemonConfig> {
-        if !self.path.exists() {
-            return Ok(MctDaemonConfig::default());
-        }
-        let text = fs::read_to_string(&self.path)
-            .with_context(|| format!("read config {}", self.path.display()))?;
-        serde_json::from_str(&text).with_context(|| format!("parse config {}", self.path.display()))
+        let bytes = match mct_observation::private_fs::read(&self.path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(MctDaemonConfig::default());
+            }
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("read private config {}", self.path.display()));
+            }
+        };
+        serde_json::from_slice(&bytes)
+            .with_context(|| format!("parse config {}", self.path.display()))
     }
 
     pub fn save(&self, config: &MctDaemonConfig) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("create config dir {}", parent.display()))?;
-        }
-        let tmp = self.path.with_extension("json.tmp");
-        let text = serde_json::to_string_pretty(config).context("encode config")?;
-        fs::write(&tmp, text).with_context(|| format!("write config temp {}", tmp.display()))?;
-        fs::rename(&tmp, &self.path).with_context(|| {
-            format!(
-                "replace config {} with {}",
-                self.path.display(),
-                tmp.display()
-            )
-        })?;
-        Ok(())
+        let bytes = serde_json::to_vec_pretty(config).context("encode config")?;
+        mct_observation::private_fs::write_atomic(&self.path, &bytes)
+            .with_context(|| format!("publish private config {}", self.path.display()))
     }
 
     pub fn ensure_local_identity(
@@ -691,6 +684,7 @@ pub fn admit_call_deadline(
 mod tests {
     use super::*;
     use crate::children::{MctChildFileDigest, MctChildIngressMode, MctChildInstanceState};
+    use std::fs;
 
     #[test]
     fn call_deadline_admission_clamps_ahead_rejects_behind_without_grace() {

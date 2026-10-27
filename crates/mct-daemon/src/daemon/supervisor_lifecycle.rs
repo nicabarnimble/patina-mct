@@ -267,9 +267,19 @@ fn current_home(uid: u32) -> Result<PathBuf> {
     Ok(home)
 }
 
+fn executable_digest(path: &Path) -> Result<String> {
+    let file = mct_observation::private_fs::executable(path)
+        .with_context(|| format!("untrusted supervisor executable {}", path.display()))?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update_reader(file)?;
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
 fn file_digest(path: &Path) -> Result<String> {
-    let bytes = fs::read(path).with_context(|| format!("read {} for digest", path.display()))?;
-    Ok(blake3::hash(&bytes).to_hex().to_string())
+    let file = mct_observation::private_fs::trusted_input(path)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update_reader(file)?;
+    Ok(hasher.finalize().to_hex().to_string())
 }
 
 fn xml_escape(value: &str) -> String {
@@ -297,7 +307,8 @@ fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     let parent = path
         .parent()
         .with_context(|| format!("{} has no parent", path.display()))?;
-    fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    mct_observation::private_fs::ensure_publication_directory(parent)
+        .with_context(|| format!("verify publication directory {}", parent.display()))?;
     let temp = parent.join(format!(
         ".{}.{}.tmp",
         path.file_name()
@@ -806,22 +817,16 @@ fn exists_class(path: &Path) -> &'static str {
 }
 
 fn ensure_owner_private_root(root: &Path, uid: u32) -> Result<()> {
-    fs::create_dir_all(root).with_context(|| format!("create service root {}", root.display()))?;
-    fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
-    let metadata = fs::metadata(root)?;
-    if metadata.uid() != uid || metadata.permissions().mode() & 0o077 != 0 {
-        bail!("service root must be owned by authenticated UID and mode 0700");
+    if uid != mct_observation::private_fs::current_uid() {
+        bail!("service root UID does not match current process");
     }
-    Ok(())
+    mct_observation::private_fs::ensure_directory(root).context("verify private service root")
 }
 
 fn read_record(path: &Path) -> Result<SupervisorRecordV1> {
-    let metadata = fs::metadata(path)
-        .with_context(|| format!("read supervisor record metadata {}", path.display()))?;
-    if metadata.permissions().mode() & 0o077 != 0 {
-        bail!("supervisor record must be owner-private mode 0600");
-    }
-    let record: SupervisorRecordV1 = serde_json::from_slice(&fs::read(path)?)
+    let bytes =
+        mct_observation::private_fs::read(path).context("read private supervisor record")?;
+    let record: SupervisorRecordV1 = serde_json::from_slice(&bytes)
         .with_context(|| format!("decode supervisor record {}", path.display()))?;
     Ok(record)
 }
@@ -863,7 +868,7 @@ fn validate_supervisor_record_inner(
         bail!("supervisor record digest mismatch");
     }
     if require_current_executable
-        && file_digest(&record.executable_path)? != record.executable_digest
+        && executable_digest(&record.executable_path)? != record.executable_digest
     {
         bail!(
             "supervisor executable digest mismatch; run `mct-daemon install --replace --executable {}`",
@@ -935,13 +940,9 @@ fn install_with_adapter(
     replace: bool,
     adapter: &dyn SupervisorAdapter,
 ) -> Result<LifecycleReport> {
-    if !executable.is_absolute() || !executable.is_file() {
-        bail!("supervisor executable must be an absolute regular file");
-    }
-    let mode = fs::metadata(executable)?.permissions().mode();
-    if mode & 0o111 == 0 {
-        bail!("supervisor executable must be executable");
-    }
+    // Reject unsafe paths before bootstrap; defer expensive hashing until the
+    // exclusive writer is acquired so contention remains an early decision.
+    mct_observation::private_fs::executable(executable)?;
 
     let initial_discovery = discovered_summary(paths, "uninspected");
     ensure_owner_private_root(&paths.root, uid)?;
@@ -979,6 +980,7 @@ fn install_with_adapter(
         }
         Err(error) => return Err(error.into()),
     };
+    let selected_executable_digest = executable_digest(executable)?;
     let existing = paths.record.exists();
     if existing && !replace {
         let attempt_id = generated_id("lifecycle-install");
@@ -1064,7 +1066,12 @@ fn install_with_adapter(
             .map(|_| governing_observation_id.clone()),
         record_digest: String::new(),
         executable_path: executable.to_path_buf(),
-        executable_digest: file_digest(executable)?,
+        executable_digest: {
+            if executable_digest(executable)? != selected_executable_digest {
+                bail!("supervisor executable changed before publication");
+            }
+            selected_executable_digest
+        },
         plist_path: paths.plist.clone(),
         plist_digest: String::new(),
         config_path: paths.config.clone(),
@@ -1366,6 +1373,8 @@ fn upgrade_supervisor_context_for_paths(
     if record.owner_uid != uid {
         bail!("upgrade supervisor record is not owned by the authenticated UID");
     }
+    executable_digest(&current_executable)?;
+    executable_digest(&record.executable_path)?;
     let current_executable = current_executable.canonicalize()?;
     let recorded_executable = record.executable_path.canonicalize()?;
     if current_executable != recorded_executable
@@ -1548,7 +1557,8 @@ where
         .immutable_release_path
         .join(&artifact.executable_relative_path);
     if !candidate_executable.is_file()
-        || format!("blake3:{}", file_digest(&candidate_executable)?) != artifact.executable_blake3
+        || format!("blake3:{}", executable_digest(&candidate_executable)?)
+            != artifact.executable_blake3
     {
         bail!("verified daemon release executable changed before replacement");
     }
@@ -2515,6 +2525,45 @@ mod tests {
     fn sha256_hex(bytes: &[u8]) -> String {
         use sha2::{Digest as _, Sha256};
         format!("{:x}", Sha256::digest(bytes))
+    }
+
+    #[test]
+    fn l4_install_and_record_verification_refuse_untrusted_executable_paths() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let bin = root.join("bin");
+        mct_observation::private_fs::ensure_directory(&bin).unwrap();
+        let executable = bin.join("mother");
+        fs::write(&executable, b"fixture executable bytes").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let paths = SupervisorPaths::isolated(&root.join("service")).unwrap();
+        let adapter = FakeSupervisorAdapter::default();
+        install_with_adapter(&paths, &executable, current_uid().unwrap(), false, &adapter).unwrap();
+        validate_supervisor_record(&paths.record, true).unwrap();
+        let original_record = fs::read(&paths.record).unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o770)).unwrap();
+        assert!(validate_supervisor_record(&paths.record, true).is_err());
+        assert!(
+            install_with_adapter(&paths, &executable, current_uid().unwrap(), true, &adapter)
+                .is_err()
+        );
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o722)).unwrap();
+        assert!(validate_supervisor_record(&paths.record, true).is_err());
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let moved = bin.join("actual-mother");
+        fs::rename(&executable, &moved).unwrap();
+        symlink(&moved, &executable).unwrap();
+        assert!(validate_supervisor_record(&paths.record, true).is_err());
+        assert!(
+            install_with_adapter(&paths, &executable, current_uid().unwrap(), true, &adapter)
+                .is_err()
+        );
+        assert_eq!(fs::read(&paths.record).unwrap(), original_record);
+        fs::remove_file(&executable).unwrap();
+        fs::rename(moved, executable).unwrap();
+        validate_supervisor_record(&paths.record, true).unwrap();
     }
 
     #[test]

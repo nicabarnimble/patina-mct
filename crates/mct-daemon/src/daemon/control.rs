@@ -368,6 +368,14 @@ async fn execute_resident_peer_mutation(
             );
         }
     };
+    apply_resident_peer_mutation(ledger, &prepared, PreparedPeerMutation::apply).await
+}
+
+async fn apply_resident_peer_mutation(
+    ledger: &ResidentLedgerWriter,
+    prepared: &PreparedPeerMutation,
+    apply: impl FnOnce(&PreparedPeerMutation) -> Result<PeerMutationSuccess>,
+) -> MctControlPlaneResponse {
     if ledger
         .append(vec![prepared.decision_observation()])
         .await
@@ -378,7 +386,7 @@ async fn execute_resident_peer_mutation(
             serde_json::json!({"error": "peer mutation decision was not durable"}),
         );
     }
-    match prepared.apply() {
+    match apply(prepared) {
         Ok(response) => peer_mutation_response(
             200,
             serde_json::to_value(response)
@@ -3654,12 +3662,30 @@ mod tests {
     async fn resident_apply_failure_records_typed_failure_after_decision() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.json");
-        std::fs::create_dir(config_path.with_extension("json.tmp")).unwrap();
+        // Inject a failure at the actual apply boundary, not a predictable temp name.
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
         let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
-        let handler = resident_peer_mutation_handler(config_path.clone(), ledger.clone());
+        let handler = mct_daemon::MctUdsControlMutationHandler::new(
+            mct_observation::private_fs::current_uid(),
+            {
+                let config_path = config_path.clone();
+                let ledger = ledger.clone();
+                move |_owner, path, body| {
+                    let config_path = config_path.clone();
+                    let ledger = ledger.clone();
+                    async move {
+                        let prepared = prepare_peer_mutation(&config_path, &path, &body).unwrap();
+                        apply_resident_peer_mutation(&ledger, &prepared, |prepared| {
+                            std::fs::create_dir(&config_path)?;
+                            prepared.apply()
+                        })
+                        .await
+                    }
+                }
+            },
+        );
 
         let (status, response) = post_mutation(
             listener,
@@ -3689,7 +3715,7 @@ mod tests {
             ObservationKind::OperatorActionRecorded
         );
         assert_eq!(entries[1].observation.outcome, ObservationOutcome::Failed);
-        assert!(!config_path.exists());
+        assert!(config_path.is_dir());
     }
 
     #[test]

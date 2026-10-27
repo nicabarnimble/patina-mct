@@ -16,6 +16,8 @@ mod guardian_recovery;
 pub use admin_issuance::{AdminKeyIssuanceRecordV1, AdminKeyIssueIntentV1, AdminKeyIssueRequestV1};
 #[cfg(test)]
 mod guardian_recovery_tests;
+/// Owner-private Unix storage helpers shared with Mother host adapters.
+pub mod private_fs;
 mod segment;
 
 pub use mct_kernel::recovery::{
@@ -42,11 +44,10 @@ use mct_kernel::{
     ToyGrantSubject, ToyId, TraceId, WatchObservationScope, WatchObservationScopeState,
 };
 use serde::{Deserialize, Serialize};
-#[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{File, OpenOptions},
+    fs::File,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
@@ -3446,7 +3447,7 @@ fn empty_scan_state() -> LedgerScanState {
 }
 
 fn scan_existing(path: &Path, ledger_id: &str, mother_node_id: &str) -> Result<LedgerScan> {
-    let file = File::open(path).map_err(|source| ObservationLedgerError::Io {
+    let file = private_fs::read_file(path).map_err(|source| ObservationLedgerError::Io {
         path: path.to_path_buf(),
         source,
     })?;
@@ -3603,40 +3604,12 @@ fn open_with_recovery_hook(
     mut hook: impl FnMut(RecoveryStage) -> std::io::Result<()>,
 ) -> Result<JsonlObservationLedger> {
     let path = path.to_path_buf();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| ObservationLedgerError::Io {
-            path: parent.to_path_buf(),
+    // Exclusive creation preserves the strict-genesis birth distinction.
+    let (file, created_new) =
+        private_fs::open_or_create(&path).map_err(|source| ObservationLedgerError::Io {
+            path: path.clone(),
             source,
         })?;
-    }
-
-    // Distinguish atomic creation from opening an existing zero-byte file.
-    // Only the creator may attempt strict genesis; reopen never re-proves birth.
-    let (file, created_new) = match OpenOptions::new()
-        .read(true)
-        .append(true)
-        .create_new(true)
-        .open(&path)
-    {
-        Ok(file) => (file, true),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (
-            OpenOptions::new()
-                .read(true)
-                .append(true)
-                .open(&path)
-                .map_err(|source| ObservationLedgerError::Io {
-                    path: path.clone(),
-                    source,
-                })?,
-            false,
-        ),
-        Err(source) => {
-            return Err(ObservationLedgerError::Io {
-                path: path.clone(),
-                source,
-            });
-        }
-    };
     let mut file = acquire_writer_lock(&path, file)?;
 
     let (state, recovery_status) = match scan_existing(&path, ledger_id, mother_node_id)? {
@@ -3915,7 +3888,7 @@ fn preserve_quarantine(
     path: &Path,
     mut status: LedgerQuarantineStatus,
 ) -> Result<LedgerQuarantineStatus> {
-    let bytes = std::fs::read(path).map_err(|source| ObservationLedgerError::Io {
+    let bytes = private_fs::read(path).map_err(|source| ObservationLedgerError::Io {
         path: path.to_path_buf(),
         source,
     })?;
@@ -3968,7 +3941,7 @@ fn pending_tail_recovery_exists(
 }
 
 fn read_recovery_status(path: &Path) -> Result<LedgerRecoveryStatus> {
-    let bytes = std::fs::read(path).map_err(|source| ObservationLedgerError::Io {
+    let bytes = private_fs::read(path).map_err(|source| ObservationLedgerError::Io {
         path: path.to_path_buf(),
         source,
     })?;
@@ -3979,23 +3952,16 @@ fn read_recovery_status(path: &Path) -> Result<LedgerRecoveryStatus> {
 }
 
 fn ensure_private_directory(path: &Path) -> Result<()> {
-    std::fs::create_dir_all(path).map_err(|source| ObservationLedgerError::Io {
+    private_fs::ensure_directory(path).map_err(|source| ObservationLedgerError::Io {
         path: path.to_path_buf(),
         source,
-    })?;
-    #[cfg(unix)]
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).map_err(|source| {
-        ObservationLedgerError::Io {
-            path: path.to_path_buf(),
-            source,
-        }
     })?;
     sync_directory(path)
 }
 
 fn write_bytes_once_durable(path: &Path, bytes: &[u8]) -> Result<()> {
     if path.exists() {
-        let existing = std::fs::read(path).map_err(|source| ObservationLedgerError::Io {
+        let existing = private_fs::read(path).map_err(|source| ObservationLedgerError::Io {
             path: path.to_path_buf(),
             source,
         })?;
@@ -4021,29 +3987,10 @@ fn write_json_durable(path: &Path, value: &impl Serialize) -> Result<()> {
 }
 
 fn write_bytes_durable(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let temporary = path.with_extension("tmp");
-    let mut options = OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let mut file = options
-        .open(&temporary)
-        .map_err(|source| ObservationLedgerError::Io {
-            path: temporary.clone(),
-            source,
-        })?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|source| ObservationLedgerError::Io {
-            path: temporary.clone(),
-            source,
-        })?;
-    std::fs::rename(&temporary, path).map_err(|source| ObservationLedgerError::Io {
+    private_fs::write_atomic(path, bytes).map_err(|source| ObservationLedgerError::Io {
         path: path.to_path_buf(),
         source,
-    })?;
-    sync_directory(parent)
+    })
 }
 
 fn sync_directory(path: &Path) -> Result<()> {
@@ -4078,7 +4025,7 @@ struct LedgerEntryIter {
 
 impl LedgerEntryIter {
     fn open(path: PathBuf, ledger_id: String, mother_node_id: String) -> Self {
-        match File::open(&path) {
+        match private_fs::read_file(&path) {
             Ok(file) => Self {
                 path,
                 ledger_id,
@@ -4290,7 +4237,7 @@ pub fn resume_ledger_replay(
             detail: "checkpoint does not name a committed entry".into(),
         });
     }
-    let mut file = File::open(path).map_err(|source| ObservationLedgerError::Io {
+    let mut file = private_fs::read_file(path).map_err(|source| ObservationLedgerError::Io {
         path: path.to_path_buf(),
         source,
     })?;
@@ -4501,16 +4448,16 @@ pub fn write_benchmark_chain(
     count: u64,
 ) -> Result<u64> {
     let path = path.as_ref();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| ObservationLedgerError::Io {
-            path: parent.to_path_buf(),
+    let (mut file, _) =
+        private_fs::open_or_create(path).map_err(|source| ObservationLedgerError::Io {
+            path: path.to_path_buf(),
             source,
         })?;
-    }
-    let mut file = File::create(path).map_err(|source| ObservationLedgerError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    file.set_len(0)
+        .map_err(|source| ObservationLedgerError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
     let mut previous = None;
     for sequence in 0..count {
         let observation_id = ObservationId::new(format!("obs-bench-{sequence}"))
@@ -4679,6 +4626,7 @@ pub fn version() -> &'static str {
 mod tests {
     use super::*;
     use mct_kernel::{CallId, MctObservation, ObservationId, ObservationKind, Timestamp, TraceId};
+    use std::fs::OpenOptions;
 
     fn observation(id: &str, trace: &str, call: Option<&str>) -> MctObservation {
         let mut obs = MctObservation::informational(
