@@ -256,6 +256,31 @@ pub struct MctHelloCapabilityView {
     pub callable_surfaces: Vec<MctHelloCallableSurface>,
     pub capability_view_ref: Option<String>,
 }
+impl MctHelloCapabilityView {
+    /// Audience is the admitted local binding, never a caller's requested Vision.
+    /// This product hosts one Vision; do not relabel another Vision's inventory.
+    pub fn for_vision(mut self, vision: &VisionId) -> Option<Self> {
+        if &self.vision_id != vision {
+            return None;
+        }
+        self.callable_surfaces
+            .retain(|surface| &surface.vision_id == vision);
+        self.supported_wit_worlds = self
+            .callable_surfaces
+            .iter()
+            .filter_map(|surface| {
+                surface
+                    .operation_id
+                    .rsplit_once('.')
+                    .map(|(world, _)| world.to_owned())
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        self.capability_view_ref = None;
+        Some(self)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// `mct/hello/0` request presented before any call authority exists.

@@ -85,12 +85,15 @@ fn sign_change(
             window_expires_at,
             signature,
         },
-        AuthorityChangeV1::PairingTicketConsumed { ticket_hash, .. } => {
-            AuthorityChangeV1::PairingTicketConsumed {
-                ticket_hash,
-                signature,
-            }
-        }
+        AuthorityChangeV1::PairingTicketConsumed {
+            ticket_hash,
+            admission,
+            ..
+        } => AuthorityChangeV1::PairingTicketConsumed {
+            ticket_hash,
+            admission,
+            signature,
+        },
         other => panic!("not an admin fact: {other:?}"),
     }
 }
@@ -149,8 +152,8 @@ fn measure_ledger() -> u64 {
                 2,
                 AuthorityChangeV1::PairingTicketIssued {
                     ticket_hash: ticket_hash.clone(),
-                    peer_endpoint_id: Some(endpoint),
-                    window_starts_at: Some(starts),
+                    peer_endpoint_id: Some(endpoint.clone()),
+                    window_starts_at: Some(starts.clone()),
                     window_expires_at: Some(expires),
                     signature: None,
                 },
@@ -164,6 +167,10 @@ fn measure_ledger() -> u64 {
                 3,
                 AuthorityChangeV1::PairingTicketConsumed {
                     ticket_hash,
+                    admission: Some(mct_observation::PairingTicketAdmissionV1 {
+                        authenticated_peer_endpoint_id: endpoint.clone(),
+                        admitted_at: starts.clone(),
+                    }),
                     signature: None,
                 },
             ),
@@ -201,15 +208,23 @@ fn measure_ledger() -> u64 {
     let mut session = 0u64;
     for (id, change) in steps {
         let before = file_len(&path);
-        let result = ledger.execute_authority_mutation(
-            AuthorityMutationRequestV1 {
-                mutation_id: id.into(),
-                changes: vec![change],
-                grant_shaping_sources: vec![source.clone()],
-                decided_at: "2026-10-15T12:00:00Z".into(),
-            },
-            |_| Ok(None),
-        );
+        let request = AuthorityMutationRequestV1 {
+            mutation_id: id.into(),
+            changes: vec![change],
+            grant_shaping_sources: vec![source.clone()],
+            decided_at: "2026-10-15T12:00:00Z".into(),
+        };
+        // Measurement-owned fixture facts, not a production transport authenticator.
+        let result = if id == "ticket-consume" {
+            ledger.execute_pairing_ticket_admission(
+                request,
+                &mct_kernel::EndpointIdText::new(endpoint.clone()).unwrap(),
+                &starts,
+                |_| Ok(None),
+            )
+        } else {
+            ledger.execute_authority_mutation(request, |_| Ok(None))
+        };
         let delta = file_len(&path) - before;
         session += delta;
         println!(

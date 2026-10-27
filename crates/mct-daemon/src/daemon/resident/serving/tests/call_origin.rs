@@ -358,22 +358,62 @@ async fn three_mother_wire_origin_cannot_create_local_principal_or_extra_hop() {
             .lines()
             .any(|line| line.contains("call-h2-local-control") && line.contains("peer_call_sent"))
     );
+    let entries = |text: &str| {
+        text.lines()
+            .map(|line| {
+                serde_json::from_str::<mct_observation::MctObservationLedgerEntry>(line).unwrap()
+            })
+            .collect::<Vec<_>>()
+    };
+    let b_entries = entries(&b_text);
+    let c_entries = entries(&c_text);
+    let correlations = |entries: &[mct_observation::MctObservationLedgerEntry], raw: &str| {
+        entries
+            .iter()
+            .filter_map(|entry| {
+                let detail = entry
+                    .observation
+                    .detail_ref
+                    .as_deref()?
+                    .strip_prefix("mct-peer-call-correlation-v1:")?;
+                let value: serde_json::Value = serde_json::from_str(detail).unwrap();
+                value["caller_call_id"]
+                    .as_str()?
+                    .starts_with(raw)
+                    .then(|| entry.observation.call_id.clone())
+                    .flatten()
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let c_control = correlations(&c_entries, "call-h2-local-control");
+    assert!(!c_control.is_empty());
+    assert!(c_entries.iter().any(|entry| {
+        entry.observation.kind == ObservationKind::RuntimeExecutionCompleted
+            && entry
+                .observation
+                .call_id
+                .as_ref()
+                .is_some_and(|id| c_control.contains(id))
+    }));
     assert!(
-        c_text
-            .lines()
-            .any(|line| line.contains("call-h2-local-control")
-                && line.contains("runtime_execution_completed"))
+        !c_entries.iter().any(|entry| entry
+            .observation
+            .trace
+            .trace_id
+            .as_str()
+            .starts_with("trace-h2-attack")),
+        "no adversarial call may reach C, even if a hop remints the execution ID"
     );
+    let b_attacks = correlations(&b_entries, "call-h2-attack");
     assert!(
-        !c_text.contains("call-h2-attack"),
-        "no adversarial call may reach C"
+        !b_entries.iter().any(|entry| matches!(
+            entry.observation.kind,
+            ObservationKind::PeerCallSent | ObservationKind::RuntimeExecutionCompleted
+        ) && entry
+            .observation
+            .call_id
+            .as_ref()
+            .is_some_and(|id| b_attacks.contains(id))),
+        "correlated attacks cannot execute locally or create another hop"
     );
-    assert!(
-        !b_text
-            .lines()
-            .any(|line| line.contains("call-h2-attack") && line.contains("peer_call_sent"))
-    );
-    assert!(!b_text.lines().any(
-        |line| line.contains("call-h2-attack") && line.contains("runtime_execution_completed")
-    ));
 }

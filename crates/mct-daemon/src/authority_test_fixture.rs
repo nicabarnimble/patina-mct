@@ -1,5 +1,33 @@
 use mct_kernel::*;
 
+/// Deliberately construct an on-disk hostile historical fixture. This does not
+/// bypass the ordinary append guard in production. Do not append through the
+/// cached writer afterward; readers/reopen must validate the forged bytes.
+#[allow(dead_code)]
+pub(crate) fn append_forensic_observation(
+    writer: &mut mct_observation::JsonlObservationLedger,
+    path: &std::path::Path,
+    mut observation: MctObservation,
+    at: &str,
+) -> mct_observation::MctObservationLedgerEntry {
+    let detail = observation.detail_ref.take();
+    let mut entry = writer.append_before_effect(observation, at).unwrap();
+    let mut entries = writer.entries().unwrap();
+    entry.observation.detail_ref = detail;
+    entry.entry_hash.clear();
+    entry.entry_hash = blake3::hash(&serde_json::to_vec(&entry).unwrap())
+        .to_hex()
+        .to_string();
+    *entries.last_mut().unwrap() = entry.clone();
+    let mut bytes = Vec::new();
+    for entry in entries {
+        serde_json::to_writer(&mut bytes, &entry).unwrap();
+        bytes.push(b'\n');
+    }
+    std::fs::write(path, bytes).unwrap();
+    entry
+}
+
 // Test-only trusted adapter assertion. Production ingress must NOT copy claims.
 #[allow(dead_code)]
 pub(crate) fn local_fixture_data(call: &MctCall) -> LocalInvocationData {

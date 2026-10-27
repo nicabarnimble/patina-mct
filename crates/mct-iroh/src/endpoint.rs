@@ -318,6 +318,19 @@ impl MotherIrohEndpoint {
         })
     }
 
+    /// Send-only shared handle; no bind, serve, or close authority.
+    pub fn client(&self) -> MotherIrohEndpointResult<MotherIrohClient> {
+        let endpoint = self
+            .endpoint
+            .as_ref()
+            .ok_or(MotherIrohEndpointError::EndpointClosed)?;
+        Ok(MotherIrohClient {
+            inner: std::sync::Arc::new(Self {
+                endpoint: Some(endpoint.clone()),
+                snapshot: self.snapshot.clone(),
+            }),
+        })
+    }
     pub fn snapshot(&self) -> MotherIrohEndpointSnapshot {
         self.snapshot.clone()
     }
@@ -334,6 +347,24 @@ impl MotherIrohEndpoint {
     }
 }
 
+/// Cloning/dropping clients never starts or closes an endpoint.
+/// Owner close shuts down the shared Iroh endpoint and all its clients.
+#[derive(Clone)]
+pub struct MotherIrohClient {
+    pub(crate) inner: std::sync::Arc<MotherIrohEndpoint>,
+}
+impl std::fmt::Debug for MotherIrohClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MotherIrohClient")
+            .field("endpoint_id", &self.inner.snapshot.endpoint_id)
+            .finish()
+    }
+}
+impl MotherIrohClient {
+    pub fn endpoint_id(&self) -> EndpointIdText {
+        self.inner.snapshot.endpoint_id.clone()
+    }
+}
 pub(crate) fn mct_alpns() -> Vec<String> {
     vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()]
 }

@@ -1686,7 +1686,7 @@ pub fn finalize_authority_startup(
                     blocking_reasons.join(",")
                 ),
                 format!(
-                    "mct-authority-drift-v1:{}",
+                    "mct-startup-drift-v1:{}",
                     serde_json::to_string(&normalized_inputs)?
                 ),
             ),
@@ -2307,9 +2307,12 @@ mod tests {
         forged.detail_ref = Some(format!("ledger-tail-recovery-v1:{digest}"));
         let mut writer =
             JsonlObservationLedger::open(&paths.ledger, "ledger-a", "mother-a").unwrap();
-        let entry = writer
-            .append_before_effect(forged, "2026-10-17T00:00:00Z")
-            .unwrap();
+        let entry = crate::authority_test_fixture::append_forensic_observation(
+            &mut writer,
+            &paths.ledger,
+            forged,
+            "2026-10-17T00:00:00Z",
+        );
         drop(writer);
         assert!(is_tail_recovery_entry(&entry));
         assert!(!is_valid_tail_recovery_entry(&entry));
@@ -2336,9 +2339,12 @@ mod tests {
         exact.detail_ref = Some(format!("ledger-tail-recovery-v1:{digest}"));
         let mut writer =
             JsonlObservationLedger::open(&paths.ledger, "ledger-a", "mother-a").unwrap();
-        let entry = writer
-            .append_before_effect(exact, "2026-10-17T00:00:00Z")
-            .unwrap();
+        let entry = crate::authority_test_fixture::append_forensic_observation(
+            &mut writer,
+            &paths.ledger,
+            exact,
+            "2026-10-17T00:00:00Z",
+        );
         drop(writer);
         assert!(is_valid_tail_recovery_entry(&entry));
         assert!(

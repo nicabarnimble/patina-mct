@@ -1324,6 +1324,32 @@ fn payload_malformed_evaluation(
     }
 }
 
+impl crate::MotherIrohClient {
+    pub async fn send_hello(
+        &self,
+        peer: &MotherIrohEndpointTicket,
+        request: &MctHelloRequest,
+    ) -> MotherIrohEndpointResult<MctHelloResponse> {
+        self.inner.send_hello(peer, request).await
+    }
+    pub async fn send_call(
+        &self,
+        peer: &MotherIrohEndpointTicket,
+        request: &MctCallProtocolRequest,
+    ) -> MotherIrohEndpointResult<MctCallProtocolReply> {
+        self.inner.send_call(peer, request).await
+    }
+    pub async fn send_call_with_inline_payload(
+        &self,
+        peer: &MotherIrohEndpointTicket,
+        request: &MctCallProtocolRequest,
+        bytes: Vec<u8>,
+    ) -> MotherIrohEndpointResult<MctIrohCallPayloadReply> {
+        self.inner
+            .send_call_with_inline_payload(peer, request, bytes)
+            .await
+    }
+}
 impl MotherIrohEndpoint {
     pub async fn send_hello(
         &self,
@@ -1644,7 +1670,8 @@ impl MotherIrohEndpoint {
                                 response.capability_view = capability_view_provider
                                     .as_ref()
                                     .map(MctHelloCapabilityViewProvider::current)
-                                    .unwrap_or_else(|| capability_view.clone());
+                                    .unwrap_or_else(|| capability_view.clone())
+                                    .and_then(|view| evaluation.selected_vision_id.as_ref().and_then(|vision| view.for_vision(vision)));
                             }
                             let response_bytes =
                                 serde_json::to_vec(&response).map_err(|source| {

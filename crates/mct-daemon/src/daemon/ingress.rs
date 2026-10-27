@@ -884,6 +884,7 @@ pub(super) fn default_observation_ledger_path() -> PathBuf {
     PathBuf::from(".mct").join("observations.jsonl")
 }
 
+#[cfg(test)]
 pub(super) fn iroh_config(secret_key_hex: String, relay_default: bool) -> MotherIrohEndpointConfig {
     iroh_config_with_bind(secret_key_hex, relay_default, Vec::new())
 }

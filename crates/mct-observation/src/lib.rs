@@ -273,11 +273,21 @@ pub enum AuthorityChangeV1 {
     },
     PairingTicketConsumed {
         ticket_hash: String,
+        /// Historical absence is replayable, but cannot authorize a new admission.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        admission: Option<PairingTicketAdmissionV1>,
         /// Scheme v1 signature of this command plus the signer grant.
         /// Absent on a pre-scheme fact.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signature: Option<AdminSignatureV1>,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PairingTicketAdmissionV1 {
+    pub authenticated_peer_endpoint_id: String,
+    pub admitted_at: Timestamp,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -562,6 +572,8 @@ pub enum AuthorityReplayError {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ObservationLedgerError {
+    #[error("ordinary observation cannot use a reserved authority detail namespace")]
+    ReservedAuthorityDetail,
     #[error("observation ledger io error at {path}: {source}")]
     Io {
         path: PathBuf,
@@ -1107,7 +1119,7 @@ impl JsonlObservationLedger {
             safe_message: "authority writer tenure established".into(),
             detail_ref: Some(detail_ref),
         };
-        let entry = self.append_before_effect(observation, started_at)?;
+        let entry = self.append_canonical_before_effect(observation, started_at)?;
         self.authority_tenure = Some(AuthorityWriterTenureV1 {
             fact: fact.clone(),
             entry,
@@ -1127,6 +1139,67 @@ impl JsonlObservationLedger {
     }
 
     fn execute_authority_mutation_inner<F>(
+        &mut self,
+        request: AuthorityMutationRequestV1,
+        legacy_projection_write: F,
+        typed_path: bool,
+    ) -> AuthorityMutationResultV1
+    where
+        F: FnOnce(&AuthorityStateV1) -> std::result::Result<Option<String>, String>,
+    {
+        if request
+            .changes
+            .iter()
+            .any(|change| matches!(change, AuthorityChangeV1::PairingTicketConsumed { .. }))
+        {
+            return rejected_mutation(
+                request.mutation_id,
+                AuthorityMutationRejectionReasonV1::InvalidRequest,
+            );
+        }
+        self.execute_authority_mutation_validated(request, legacy_projection_write, typed_path)
+    }
+
+    /// Trusted host-adapter seam, NOT a wire claim verifier. The peer must come
+    /// from authenticated transport and now from Mother time. This consumes only
+    /// an already issued ticket; it does not enroll a peer or grant administration.
+    pub fn execute_pairing_ticket_admission<F>(
+        &mut self,
+        request: AuthorityMutationRequestV1,
+        authenticated_peer: &mct_kernel::EndpointIdText,
+        mother_now: &Timestamp,
+        projection: F,
+    ) -> AuthorityMutationResultV1
+    where
+        F: FnOnce(&AuthorityStateV1) -> std::result::Result<Option<String>, String>,
+    {
+        let valid = match request.changes.as_slice() {
+            [
+                AuthorityChangeV1::PairingTicketConsumed {
+                    ticket_hash,
+                    admission: Some(admission),
+                    ..
+                },
+            ] => {
+                admission.authenticated_peer_endpoint_id == authenticated_peer.as_str()
+                    && &admission.admitted_at == mother_now
+                    && request.decided_at == mother_now.as_str()
+                    && self.cached_replay().is_ok_and(|replay| {
+                        validate_pairing_admission(&replay.state, ticket_hash, admission).is_ok()
+                    })
+            }
+            _ => false,
+        };
+        if !valid {
+            return rejected_mutation(
+                request.mutation_id,
+                AuthorityMutationRejectionReasonV1::InvalidRequest,
+            );
+        }
+        self.execute_authority_mutation_validated(request, projection, true)
+    }
+
+    fn execute_authority_mutation_validated<F>(
         &mut self,
         request: AuthorityMutationRequestV1,
         legacy_projection_write: F,
@@ -1320,7 +1393,8 @@ impl JsonlObservationLedger {
             }
         };
         let observation = authority_mutation_observation(&fact_id, &fact, detail_ref);
-        let entry = match self.append_before_effect(observation, fact.decided_at.clone()) {
+        let entry = match self.append_canonical_before_effect(observation, fact.decided_at.clone())
+        {
             Ok(entry) => entry,
             Err(ObservationLedgerError::AppendCommitUnknown { stage, .. }) => {
                 return AuthorityMutationResultV1::CommitUnknown {
@@ -1488,7 +1562,7 @@ impl JsonlObservationLedger {
             }
         };
         let observation = legacy_import_observation(&fact_id, &fact, detail_ref);
-        let entry = match self.append_before_effect(observation, decided_at) {
+        let entry = match self.append_canonical_before_effect(observation, decided_at) {
             Ok(entry) => entry,
             Err(ObservationLedgerError::AppendCommitUnknown { stage, .. }) => {
                 return AuthorityMutationResultV1::CommitUnknown {
@@ -1568,6 +1642,7 @@ impl JsonlObservationLedger {
         let mut previous_hash = self.previous_hash.clone();
         let mut prepared = Vec::new();
         for observation in observations {
+            validate_ordinary_observation(&observation)?;
             let mut entry = MctObservationLedgerEntry {
                 ledger_id: self.ledger_id.clone(),
                 mother_node_id: self.mother_node_id.clone(),
@@ -1643,6 +1718,31 @@ impl JsonlObservationLedger {
     }
 
     pub fn append(
+        &mut self,
+        observation: MctObservation,
+        appended_at: impl Into<String>,
+        durability_class: DurabilityClass,
+        export_status: ExportStatus,
+    ) -> Result<MctObservationLedgerEntry> {
+        validate_ordinary_observation(&observation)?;
+        self.append_canonical(observation, appended_at, durability_class, export_status)
+    }
+
+    // Private to this crate's validated authority writers, never an adapter API.
+    fn append_canonical_before_effect(
+        &mut self,
+        observation: MctObservation,
+        at: impl Into<String>,
+    ) -> Result<MctObservationLedgerEntry> {
+        self.append_canonical(
+            observation,
+            at,
+            DurabilityClass::BeforeEffect,
+            ExportStatus::NotRequired,
+        )
+    }
+
+    fn append_canonical(
         &mut self,
         observation: MctObservation,
         appended_at: impl Into<String>,
@@ -2255,14 +2355,52 @@ fn apply_pairing_ticket_issued(
     Ok(())
 }
 
+fn validate_pairing_admission(
+    state: &AuthorityStateV1,
+    ticket_hash: &str,
+    admission: &PairingTicketAdmissionV1,
+) -> std::result::Result<(), AuthorityReplayError> {
+    let valid = state
+        .pairing_tickets
+        .get(ticket_hash)
+        .is_some_and(|ticket| {
+            ticket.state == PairingTicketStateV1::Issued
+                && ticket.peer_endpoint_id.as_deref()
+                    == Some(admission.authenticated_peer_endpoint_id.as_str())
+                && ticket
+                    .window_starts_at
+                    .as_ref()
+                    .zip(ticket.window_expires_at.as_ref())
+                    .is_some_and(|(start, end)| {
+                        // Compare instants, not RFC3339 strings with potentially different offsets.
+                        let parse = |time: &Timestamp| time.as_str().parse::<jiff::Timestamp>();
+                        match (parse(start), parse(end), parse(&admission.admitted_at)) {
+                            (Ok(start), Ok(end), Ok(now)) => start <= now && now < end,
+                            _ => false,
+                        }
+                    })
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(authority_incoherent(
+            "pairing ticket is unavailable for this authenticated peer and Mother time",
+        ))
+    }
+}
+
 fn apply_pairing_ticket_consumed(
     state: &mut AuthorityStateV1,
     ticket_hash: &str,
+    admission: Option<&PairingTicketAdmissionV1>,
 ) -> std::result::Result<(), AuthorityReplayError> {
     if !pairing_ticket_hash_ok(ticket_hash) {
         return Err(authority_incoherent(
             "pairing ticket fact stores a hash only",
         ));
+    }
+    if let Some(admission) = admission {
+        validate_pairing_admission(state, ticket_hash, admission)?;
     }
     match state
         .pairing_tickets
@@ -2503,8 +2641,12 @@ pub fn apply_authority_changes(
                     signature.is_some(),
                 )?;
             }
-            AuthorityChangeV1::PairingTicketConsumed { ticket_hash, .. } => {
-                apply_pairing_ticket_consumed(state, ticket_hash)?;
+            AuthorityChangeV1::PairingTicketConsumed {
+                ticket_hash,
+                admission,
+                ..
+            } => {
+                apply_pairing_ticket_consumed(state, ticket_hash, admission.as_ref())?;
             }
         }
     }
@@ -3430,6 +3572,15 @@ pub fn forensic_root_path(ledger_path: &Path) -> PathBuf {
         .and_then(|name| name.to_str())
         .unwrap_or("observation-ledger");
     ledger_path.with_file_name(format!("{file_name}.forensics"))
+}
+
+fn validate_ordinary_observation(observation: &MctObservation) -> Result<()> {
+    if observation.detail_ref.as_deref().is_some_and(|detail| {
+        detail.starts_with("mct-authority-") || detail.starts_with("ledger-tail-recovery-")
+    }) {
+        return Err(ObservationLedgerError::ReservedAuthorityDetail);
+    }
+    Ok(())
 }
 
 fn empty_scan_state() -> LedgerScanState {
@@ -4621,6 +4772,9 @@ fn replay_cache_remove(key: &str) {
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
+
+#[cfg(test)]
+mod peer_ledger_tests;
 
 #[cfg(test)]
 mod tests {
@@ -6460,7 +6614,8 @@ mod tests {
         changes: Vec<AuthorityChangeV1>,
         source: GrantShapingSourceV1,
     ) -> AuthorityMutationResultV1 {
-        ledger.execute_authority_mutation(
+        // Historical fixture constructor, not a production admission entry point.
+        ledger.execute_authority_mutation_validated(
             AuthorityMutationRequestV1 {
                 mutation_id: id.into(),
                 changes,
@@ -6468,6 +6623,7 @@ mod tests {
                 decided_at: "2026-08-06T12:00:00Z".into(),
             },
             |_| Ok(None),
+            false,
         )
     }
 
@@ -6565,6 +6721,7 @@ mod tests {
             vec![AuthorityChangeV1::PairingTicketConsumed {
                 ticket_hash: ticket_hash.into(),
 
+                admission: None,
                 signature: None,
             }],
             admin_key_source(DAY_PK),
@@ -6592,6 +6749,7 @@ mod tests {
             vec![AuthorityChangeV1::PairingTicketConsumed {
                 ticket_hash: ticket_hash.into(),
 
+                admission: None,
                 signature: None,
             }],
             admin_key_source(DAY_PK),
@@ -7072,6 +7230,7 @@ mod tests {
                 vec![AuthorityChangeV1::PairingTicketConsumed {
                     ticket_hash: ticket_hash.into(),
 
+                    admission: None,
                     signature: None,
                 }],
                 admin_key_source(DAY_PK),

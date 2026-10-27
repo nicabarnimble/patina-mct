@@ -528,6 +528,7 @@ impl ResidentCallIngressContext {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ResidentRuntimePaths {
+    forwarding_client: Option<mct_iroh::MotherIrohClient>,
     config_path: PathBuf,
     children_dir: PathBuf,
     state_path: PathBuf,
@@ -536,10 +537,19 @@ pub(crate) struct ResidentRuntimePaths {
 impl ResidentRuntimePaths {
     pub(crate) fn new(config_path: PathBuf, children_dir: PathBuf, state_path: PathBuf) -> Self {
         Self {
+            forwarding_client: None,
             config_path,
             children_dir,
             state_path,
         }
+    }
+
+    pub(crate) fn with_forwarding_client(mut self, client: mct_iroh::MotherIrohClient) -> Self {
+        self.forwarding_client = Some(client);
+        self
+    }
+    pub(super) fn forwarding_client(&self) -> Option<&mct_iroh::MotherIrohClient> {
+        self.forwarding_client.as_ref()
     }
 
     pub(crate) fn config_path(&self) -> &Path {
@@ -723,6 +733,67 @@ async fn execute_resident_call_at_with_context(
     {
         return MctIrohCallHandlerResult::denied();
     }
+    let caller_call_id = request.call.call_id.clone();
+    let execution_call_id = if matches!(&context, ResidentCallIngressContext::Peer { .. }) {
+        let id = match super::idempotency::fresh_peer_execution_id() {
+            Ok(id) => id,
+            Err(_) => return MctIrohCallHandlerResult::failed("execution identity unavailable"),
+        };
+        request.call.call_id = id.clone();
+        let mut correlation = MctObservation::informational(
+            ObservationId::new(format!("obs:{id}:correlation")).expect("Mother generated ID"),
+            now.clone(),
+            ObservationKind::CallConstructed,
+            request.call.trace_context.trace_id.clone(),
+            "peer correlation bound to Mother execution",
+        );
+        correlation.call_id = Some(id.clone());
+        correlation.detail_ref = Some(format!(
+            "mct-peer-call-correlation-v1:{}",
+            serde_json::json!({
+                "caller_call_id": caller_call_id, "peer_binding_id": request.authority.peer_binding_id,
+                "caller_node_id": request.call.caller.node_id, "caller_vision_id": request.call.caller.vision_id
+            })
+        ));
+        if ledger.append(vec![correlation]).await.is_err() {
+            return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+        }
+        Some(id)
+    } else {
+        if caller_call_id
+            .as_str()
+            .starts_with("mct-peer-execution-v1:")
+            || caller_call_id
+                .as_str()
+                .starts_with("legacy-peer-reservation:")
+        {
+            let refusal_id = match super::idempotency::fresh_peer_execution_id() {
+                Ok(id) => id,
+                Err(_) => {
+                    return MctIrohCallHandlerResult::failed("observation identity unavailable");
+                }
+            };
+            let mut refusal = MctObservation::informational(
+                ObservationId::new(format!("obs:{refusal_id}:reserved-namespace"))
+                    .expect("Mother ID"),
+                now.clone(),
+                ObservationKind::CallDenied,
+                request.call.trace_context.trace_id.clone(),
+                "caller selected a reserved execution namespace",
+            );
+            refusal.outcome = ObservationOutcome::Denied;
+            // The rejected claim must not become an execution/recovery key itself.
+            refusal.detail_ref = Some(format!(
+                "mct-caller-correlation-v1:{}",
+                serde_json::json!({"caller_call_id": caller_call_id})
+            ));
+            if ledger.append(vec![refusal]).await.is_err() {
+                return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+            }
+            return MctIrohCallHandlerResult::denied();
+        }
+        None
+    };
     #[cfg(test)]
     if request
         .authority
@@ -828,14 +899,16 @@ async fn execute_resident_call_at_with_context(
     };
 
     let state_path = paths.state_path().to_path_buf();
-    let idempotency_request = request.clone();
+    let mut idempotency_request = request.clone();
+    idempotency_request.call.call_id = caller_call_id;
     let idempotency_ledger = ledger.clone();
-    execute_idempotent_call_with_context(
+    super::idempotency::execute_idempotent_call_with_execution(
         state_path,
         idempotency_ledger,
         idempotency_request,
         now,
         context.clone(),
+        execution_call_id,
         move || {
             execute_resident_call_after_payload(
                 paths,
@@ -1343,6 +1416,139 @@ mod tests {
             Some(CallProtocolReason::CallDeadlineExpired)
         );
         assert!(result.inline_result_payload.is_none());
+        ledger.close().await;
+    }
+
+    #[tokio::test]
+    async fn l8_peer_duplicate_call_ids_get_distinct_execution_ids_without_breaking_keyed_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        MctDaemonConfigStore::new(&config_path)
+            .ensure_local_identity(MctOperatorNodeScope::default(), dir.path().join("identity"))
+            .unwrap();
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
+        let paths =
+            ResidentRuntimePaths::new(config_path, dir.path().join("children"), state_path.clone());
+        let authority = fresh_resident_receiver_identity(&paths, &ledger)
+            .await
+            .unwrap();
+        let (mut request, payload) =
+            jvm_bridge_protocol_request("patina:missing/control@0.1.0.run", "[]", authority)
+                .unwrap();
+        request.call.origin = CallOrigin::Iroh;
+        request.call.caller.user_id = None;
+        request.call.call_id = CallId::new("same-wire-id").unwrap();
+        let mut local_call = request.call.clone();
+        local_call.origin = CallOrigin::Cli;
+        MctRuntimeStateStore::open(&state_path)
+            .unwrap()
+            .insert_run_started(
+                "local-same-correlation",
+                &local_call,
+                RuntimeKind::Internal,
+                None,
+                current_timestamp_string(),
+            )
+            .unwrap();
+        request.idempotency_key = Some("same-key".into());
+        for binding in ["peer-a", "peer-a", "peer-b"] {
+            request.authority.peer_binding_id = PeerBindingId::new(binding).unwrap();
+            let result = execute_resident_call(
+                paths.clone(),
+                ledger.clone(),
+                request.clone(),
+                ResidentPayloadIngress::local(Some(payload.clone())),
+            )
+            .await;
+            assert_eq!(result.outcome, CallProtocolOutcome::Denied);
+        }
+        request.idempotency_key = None;
+        for _ in 0..2 {
+            let result = execute_resident_call(
+                paths.clone(),
+                ledger.clone(),
+                request.clone(),
+                ResidentPayloadIngress::local(Some(payload.clone())),
+            )
+            .await;
+            assert_eq!(result.outcome, CallProtocolOutcome::Denied);
+        }
+        let state = MctRuntimeStateStore::open(state_path).unwrap();
+        let local = state
+            .get_run_by_call_id(&CallId::new("same-wire-id").unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(local.run_id, "local-same-correlation");
+        assert_eq!(local.state, mct_daemon::MctRuntimeRunState::Running);
+        assert!(
+            local.result.is_none(),
+            "peer results cannot close a colliding local run"
+        );
+        let entries =
+            JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
+                .unwrap()
+                .entries()
+                .unwrap();
+        let executions = entries
+            .iter()
+            .filter(|entry| {
+                entry.observation.kind == ObservationKind::ResultRecorded
+                    && entry
+                        .observation
+                        .detail_ref
+                        .as_deref()
+                        .is_none_or(|s| !s.starts_with("idempotency_reason:"))
+            })
+            .filter_map(|entry| entry.observation.call_id.clone())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            executions.len(),
+            4,
+            "one keyed replay, two separate peer scopes, two unkeyed attempts"
+        );
+        assert!(
+            executions
+                .iter()
+                .all(|id| id.as_str().starts_with("mct-peer-execution-v1:"))
+        );
+        request.call.origin = CallOrigin::Cli;
+        for reserved in [
+            executions.iter().next().unwrap().clone(),
+            CallId::new("legacy-peer-reservation:spoof").unwrap(),
+        ] {
+            request.call.call_id = reserved.clone();
+            assert_eq!(
+                execute_resident_call(
+                    paths.clone(),
+                    ledger.clone(),
+                    request.clone(),
+                    ResidentPayloadIngress::local(Some(payload.clone()))
+                )
+                .await
+                .outcome,
+                CallProtocolOutcome::Denied
+            );
+            let entries =
+                JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
+                    .unwrap()
+                    .entries()
+                    .unwrap();
+            let refusal = &entries.last().unwrap().observation;
+            assert_eq!(refusal.kind, ObservationKind::CallDenied);
+            assert!(
+                refusal.call_id.is_none(),
+                "rejected claims must not poison execution evidence"
+            );
+            assert!(
+                refusal
+                    .detail_ref
+                    .as_deref()
+                    .unwrap()
+                    .contains(reserved.as_str())
+            );
+        }
         ledger.close().await;
     }
 

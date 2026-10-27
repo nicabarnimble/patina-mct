@@ -302,6 +302,13 @@ fn resident_idempotency_observation(
     }
 }
 
+pub(super) fn fresh_peer_execution_id() -> Result<CallId> {
+    Ok(CallId::new(format!(
+        "mct-peer-execution-v1:{}",
+        mct_observation::private_fs::nonce_name("peer-execution")?
+    ))?)
+}
+
 /// Standalone Iroh ingress: only an already admitted peer may reserve this scope.
 pub(crate) async fn execute_idempotent_call<F, Fut>(
     state_path: PathBuf,
@@ -317,15 +324,47 @@ where
     let Some(context) = ResidentCallIngressContext::peer(&request) else {
         return MctIrohCallHandlerResult::denied();
     };
-    execute_idempotent_call_with_context(state_path, ledger, request, now, context, execute).await
+    let execution_id = match fresh_peer_execution_id() {
+        Ok(id) => id,
+        Err(_) => return MctIrohCallHandlerResult::failed("execution identity unavailable"),
+    };
+    execute_idempotent_call_with_execution(
+        state_path,
+        ledger,
+        request,
+        now,
+        context,
+        Some(execution_id),
+        execute,
+    )
+    .await
 }
 
+#[cfg(test)]
 pub(crate) async fn execute_idempotent_call_with_context<F, Fut>(
     state_path: PathBuf,
     ledger: ResidentLedgerWriter,
     request: MctCallProtocolRequest,
     now: Timestamp,
     context: ResidentCallIngressContext,
+    execute: F,
+) -> MctIrohCallHandlerResult
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = MctIrohCallHandlerResult>,
+{
+    execute_idempotent_call_with_execution(state_path, ledger, request, now, context, None, execute)
+        .await
+}
+
+/// Correlation fingerprints remain caller-scoped; execution IDs are Mother minted.
+pub(super) async fn execute_idempotent_call_with_execution<F, Fut>(
+    state_path: PathBuf,
+    ledger: ResidentLedgerWriter,
+    request: MctCallProtocolRequest,
+    now: Timestamp,
+    context: ResidentCallIngressContext,
+    execution_call_id: Option<CallId>,
     execute: F,
 ) -> MctIrohCallHandlerResult
 where
@@ -340,6 +379,11 @@ where
     };
     let caller_scope = resident_idempotency_caller_scope(&request, &context);
     let fingerprint = resident_idempotency_fingerprint(&request);
+    // Later observations use execution identity, never the raw correlation ID.
+    let mut request = request;
+    if let Some(id) = &execution_call_id {
+        request.call.call_id = id.clone();
+    }
     let expires_at = match idempotency_expiry(&now) {
         Ok(expires_at) => expires_at,
         Err(error) => {
@@ -399,6 +443,20 @@ where
             idempotency_refusal_result(reason)
         }
         MctIdempotencyReservation::ExecuteFresh => {
+            if let Some(id) = &execution_call_id
+                && MctRuntimeStateStore::open(&state_path)
+                    .and_then(|state| {
+                        state.bind_call_execution_identity(
+                            &caller_scope,
+                            &idempotency_key,
+                            &fingerprint,
+                            id,
+                        )
+                    })
+                    .is_err()
+            {
+                return MctIrohCallHandlerResult::failed("execution identity unavailable");
+            }
             let claim = match CallDispatchClaimV1::new(
                 &caller_scope,
                 &idempotency_key,

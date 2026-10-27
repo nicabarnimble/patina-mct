@@ -660,6 +660,7 @@ where
         );
     }
     let ticket = endpoint.ticket();
+    let forwarding_client = endpoint.client()?;
     let load_report = load_children_from_dir(MctChildLoadOptions::new(config.children_dir.clone()));
     reconcile_trigger_projection(&config.state_path, &config.ledger_path, &mother_node_id)
         .context("reconcile trigger ledger projection before resident readiness")?;
@@ -726,7 +727,8 @@ where
             config.config_path.clone(),
             config.children_dir.clone(),
             config.state_path.clone(),
-        ),
+        )
+        .with_forwarding_client(forwarding_client.clone()),
         ledger.clone(),
         shutdown_tx.subscribe(),
         trigger_clock,
@@ -738,7 +740,8 @@ where
             config.config_path.clone(),
             config.children_dir.clone(),
             config.state_path.clone(),
-        ),
+        )
+        .with_forwarding_client(forwarding_client.clone()),
         ledger.clone(),
         config.max_concurrent_connections,
         shutdown_tx.subscribe(),
@@ -778,7 +781,8 @@ where
         config.config_path.clone(),
         config.children_dir.clone(),
         config.state_path.clone(),
-    );
+    )
+    .with_forwarding_client(forwarding_client);
     let execution_ledger = ledger.clone();
     let receiver_authority_paths = (
         config.ledger_path.clone(),
@@ -950,7 +954,9 @@ async fn refresh_admitted_peers(
             &peer.vision_id,
             &trace_id,
             Some(outbound.signature_ref),
-            capability_view.clone(),
+            capability_view
+                .clone()
+                .and_then(|view| view.for_vision(&peer.vision_id)),
         );
         hello.presented_binding.policy_revision = Some(outbound.policy_revision);
         hello.presented_binding.expires_at = Some(outbound.expires_at);
@@ -2441,13 +2447,7 @@ mod tests {
                 .unwrap();
         let lifecycle_kinds = entries
             .iter()
-            .filter(|entry| {
-                entry
-                    .observation
-                    .call_id
-                    .as_ref()
-                    .is_some_and(|call_id| call_id.as_str() == "call-resident-payload-e2e")
-            })
+            .filter(|entry| entry.observation.trace.trace_id == call.call.trace_context.trace_id)
             .map(|entry| entry.observation.kind)
             .filter(|kind| {
                 matches!(
@@ -2470,6 +2470,7 @@ mod tests {
                 ObservationKind::PeerCallReceived,
                 ObservationKind::CallConstructed,
                 ObservationKind::CallAuthorized,
+                ObservationKind::CallConstructed, // Mother execution / caller correlation binding
                 ObservationKind::CallConstructed, // durable keyed dispatch, before route/effect
                 ObservationKind::RouteRevalidated,
                 ObservationKind::RouteSelected,

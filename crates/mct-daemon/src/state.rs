@@ -50,6 +50,8 @@ pub struct MctInFlightCallIdempotencyEntry {
     pub caller_scope: String,
     pub idempotency_key: String,
     pub fingerprint: MctIdempotencyFingerprint,
+    /// Mother execution identity, separate from the caller's fingerprint correlation.
+    pub recovery_call_id: CallId,
     pub created_at: String,
 }
 
@@ -1139,6 +1141,12 @@ impl MctRuntimeStateStore {
             END;
             "#,
         )?;
+        if !self.column_exists("call_idempotency_entries", "execution_call_id")? {
+            self.conn.execute(
+                "ALTER TABLE call_idempotency_entries ADD COLUMN execution_call_id TEXT",
+                [],
+            )?;
+        }
         self.migrate_runtime_run_child_invocation_provenance()?;
         self.migrate_artifact_acquisition_provenance()?;
         self.conn.execute(
@@ -2593,6 +2601,34 @@ impl MctRuntimeStateStore {
         Ok(())
     }
 
+    /// Bind only a fresh reservation, before the canonical dispatch and effect.
+    pub fn bind_call_execution_identity(
+        &self,
+        scope: &str,
+        key: &str,
+        fingerprint: &MctIdempotencyFingerprint,
+        execution: &CallId,
+    ) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE call_idempotency_entries SET execution_call_id = ?1
+             WHERE caller_scope = ?2 AND idempotency_key = ?3 AND target_identity = ?4
+             AND call_id = ?5 AND payload_digest = ?6 AND entry_state = 'in_flight'
+             AND execution_call_id IS NULL",
+            params![
+                execution.as_str(),
+                scope,
+                key,
+                fingerprint.target,
+                fingerprint.call_id.as_str(),
+                fingerprint.payload_digest
+            ],
+        )?;
+        if changed != 1 {
+            bail!("execution identity requires exactly one fresh matching reservation");
+        }
+        Ok(())
+    }
+
     /// Every reservation still marked in flight, oldest first. Unlike
     /// [`Self::reserve_call_idempotency`] this applies no TTL eviction: a
     /// restarting Mother must see each reservation a prior tenure left open.
@@ -2602,7 +2638,7 @@ impl MctRuntimeStateStore {
         let mut stmt = self.conn.prepare(
             r#"
             SELECT caller_scope, idempotency_key, target_identity, call_id,
-                   payload_digest, created_at
+                   payload_digest, created_at, execution_call_id
             FROM call_idempotency_entries
             WHERE entry_state = 'in_flight'
             ORDER BY created_at, caller_scope, idempotency_key
@@ -2617,13 +2653,38 @@ impl MctRuntimeStateStore {
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
                 ))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         rows.into_iter()
             .map(
-                |(caller_scope, idempotency_key, target, call_id, payload_digest, created_at)| {
+                |(
+                    caller_scope,
+                    idempotency_key,
+                    target,
+                    call_id,
+                    payload_digest,
+                    created_at,
+                    execution_call_id,
+                )| {
+                    // Never guess that an old peer's raw correlation names a local run.
+                    let recovery_call_id = match execution_call_id {
+                        Some(id) => CallId::new(id)?,
+                        None if caller_scope.starts_with("peer-binding:") => CallId::new(format!(
+                            "legacy-peer-reservation:{}",
+                            blake3::hash(&serde_json::to_vec(&(
+                                &caller_scope,
+                                &idempotency_key,
+                                &call_id,
+                                &created_at
+                            ))?)
+                            .to_hex()
+                        ))?,
+                        None => CallId::new(call_id.clone())?,
+                    };
                     Ok(MctInFlightCallIdempotencyEntry {
+                        recovery_call_id,
                         caller_scope,
                         idempotency_key,
                         fingerprint: MctIdempotencyFingerprint {
@@ -6979,9 +7040,12 @@ mod tests {
                 "body": {}
             })
         ));
-        ledger
-            .append_before_effect(observation, "2026-08-03T19:20:00Z")
-            .unwrap();
+        crate::authority_test_fixture::append_forensic_observation(
+            &mut ledger,
+            &ledger_path,
+            observation,
+            "2026-08-03T19:20:00Z",
+        );
 
         let error = store
             .publish_authority_projection(&ledger.entries().unwrap())
@@ -7063,9 +7127,12 @@ mod tests {
                 }
             })
         ));
-        ledger
-            .append_before_effect(observation, "2026-08-05T12:02:00Z")
-            .unwrap();
+        crate::authority_test_fixture::append_forensic_observation(
+            &mut ledger,
+            &ledger_path,
+            observation,
+            "2026-08-05T12:02:00Z",
+        );
 
         let error = store
             .publish_authority_projection(&ledger.entries().unwrap())

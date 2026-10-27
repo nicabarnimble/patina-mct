@@ -15,7 +15,7 @@ mod serve;
 mod test_support;
 
 pub use endpoint::{
-    MotherIrohEndpoint, MotherIrohEndpointConfig, MotherIrohEndpointError,
+    MotherIrohClient, MotherIrohEndpoint, MotherIrohEndpointConfig, MotherIrohEndpointError,
     MotherIrohEndpointLifecycle, MotherIrohEndpointResult, MotherIrohEndpointSnapshot,
     MotherIrohEndpointTicket, MotherIrohRelayMode,
 };
@@ -74,6 +74,7 @@ mod tests {
     mod call_origin;
     mod hello_receipts;
     mod ingress;
+    mod peer_boundaries;
 
     #[test]
     fn exposes_version() {

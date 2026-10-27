@@ -26,7 +26,7 @@ use publication::{
 };
 
 mod idempotency;
-pub(super) use idempotency::{execute_idempotent_call, execute_idempotent_call_with_context};
+pub(super) use idempotency::execute_idempotent_call;
 
 #[cfg(unix)]
 mod local_ingress;
