@@ -155,6 +155,17 @@ impl MotherIrohEndpointConfig {
         }
     }
 
+    pub fn with_administration(mut self) -> Self {
+        if !self
+            .accepted_alpns
+            .iter()
+            .any(|alpn| alpn == crate::MCT_ADMIN_ALPN)
+        {
+            self.accepted_alpns.push(crate::MCT_ADMIN_ALPN.into());
+        }
+        self
+    }
+
     pub fn with_relay_mode(mut self, relay_mode: MotherIrohRelayMode) -> Self {
         self.relay_mode = relay_mode;
         self

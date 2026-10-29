@@ -1,3 +1,9 @@
+mod admin;
+pub use admin::{
+    MCT_ADMIN_ALPN, MCT_ADMIN_FRAME_MAX_BYTES, MctIrohAdminHandler, MctIrohAdminReply,
+};
+#[cfg(test)]
+mod admin_tests;
 mod ingress;
 #[cfg(test)]
 mod ingress_tests;
@@ -331,6 +337,9 @@ mod tests {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[allow(clippy::large_enum_variant)] // Complete hello/call reports remain inspectable by value.
 pub enum MctIrohServedProtocol {
+    Admin {
+        reply: MctIrohAdminReply,
+    },
     Hello {
         request: MctHelloRequest,
         evaluation: MctHelloAdmissionEvaluation,
@@ -661,6 +670,8 @@ pub struct MctIrohConcurrentServeConfig {
     pub capability_view_provider: Option<MctHelloCapabilityViewProvider>,
     pub receiver_authority_provider: MctIrohReceiverAuthorityProvider,
     pub observation_sink: MctIrohObservationSink,
+    /// Explicit opt-in; endpoint configuration must also enable mct/admin/1.
+    pub admin_handler: Option<MctIrohAdminHandler>,
 }
 
 impl MctIrohConcurrentServeConfig {
@@ -693,6 +704,7 @@ impl MctIrohConcurrentServeConfig {
                 }
             },
             observation_sink,
+            admin_handler: None,
         }
     }
 
@@ -921,7 +933,7 @@ fn call_result_fact(
 
 fn call_reply_emitted_fact(served: &MctIrohServedProtocol) -> Option<MctIrohObservationFact> {
     match served {
-        MctIrohServedProtocol::Hello { .. } => None,
+        MctIrohServedProtocol::Hello { .. } | MctIrohServedProtocol::Admin { .. } => None,
         MctIrohServedProtocol::Call {
             request,
             evaluation,
@@ -1543,6 +1555,7 @@ impl MotherIrohEndpoint {
             let capability_view_provider = capability_view_provider.clone();
             let receiver_authority_provider = receiver_authority_provider.clone();
             let observation_sink = observation_sink.clone();
+            let admin_handler = config.admin_handler.clone();
             let task_error_tx = task_error_tx.clone();
             active_tasks.fetch_add(1, Ordering::SeqCst);
 
@@ -1552,6 +1565,18 @@ impl MotherIrohEndpoint {
                     let remote_endpoint_id = EndpointIdText::new(connection.remote_id().to_string())
                         .expect("transport endpoint ID is nonempty");
                     let (mut send, frame) = ingress::read_frame(&connection, frame_timeout).await?;
+                    if alpn.as_slice() == MCT_ADMIN_ALPN.as_bytes() {
+                        // Transport budgets end before the authority owner starts.
+                        // The bounded connection permit stays held until it finishes.
+                        let reply = match frame {
+                            Ok(bytes) => admin::dispatch(admin_handler.as_ref(), &bytes, now()).await,
+                            Err(_) => MctIrohAdminReply::Rejected,
+                        };
+                        let bytes = admin::encode_reply(&reply)?;
+                        ingress::write_response(&mut send, &bytes, response_timeout).await?;
+                        ingress::close_after_response(&connection, close_timeout).await;
+                        return Ok(MctIrohServedProtocol::Admin { reply });
+                    }
                     ingress::deadline(connection_timeout, "serve incoming MCT connection", async {
                     let request_bytes = match frame {
                         Ok(request_bytes) => request_bytes,
