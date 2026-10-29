@@ -11,7 +11,7 @@ pub use admin_issuance::{AdminIssuanceCeilingV1, AdminIssuanceError, evaluate_ad
 
 /// Admin-key grant facts and the route-scope check.
 pub mod admin_key;
-/// Scheme v1 admin signatures: Ed25519 AND ML-DSA-65.
+/// Passkey/day-key signatures and historical Ed25519 AND ML-DSA-65 support.
 pub mod admin_sig;
 pub mod artifact;
 /// Mother-owned, proof-gated local execution authority snapshots.

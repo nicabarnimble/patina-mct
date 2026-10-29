@@ -1,4 +1,6 @@
-//! Scheme v1 admin signatures: Ed25519 AND ML-DSA-65.
+//! D-58 WebAuthn/Ed25519 day-key signatures and preserved hybrid v1 support.
+//!
+//! New passkey administration uses `DayKeyAdminProofV1`, not a hybrid fallback.
 //!
 //! The hybrid matches `patina-wasi-pi` `crates/mother/src/sig.rs` at `c436eaf`:
 //! tag `0x48`, the Ed25519 half signs `context ‖ msg`, the ML-DSA-65 half signs
@@ -8,6 +10,10 @@
 //!
 //! Mother verifies. The signing key has no serde form, so a raw secret cannot
 //! land in a fact. Transport stays plain Ed25519; iroh never sees the ML-DSA half.
+
+#[path = "admin_sig/day_key.rs"]
+mod day_key;
+pub use day_key::*;
 
 use crate::admin_key::AdminKeyPublicHalf;
 use ed25519_dalek::{Signer as _, Verifier as _};
@@ -122,6 +128,12 @@ pub enum AdminSignatureSchemeV1 {
     /// Ed25519 AND ML-DSA-65, version v1.
     #[serde(rename = "ed25519+mldsa65/v1")]
     Ed25519MlDsa65V1,
+    /// WebAuthn ES256 assertion over a day-key administrative intent.
+    #[serde(rename = "webauthn-p256-day-key/v1")]
+    WebAuthnP256DayKeyV1,
+    /// Short-lived Ed25519 administrative lease; no ML-DSA half.
+    #[serde(rename = "ed25519-day-key/v1")]
+    Ed25519DayKeyV1,
 }
 
 impl AdminSignatureSchemeV1 {
@@ -129,6 +141,8 @@ impl AdminSignatureSchemeV1 {
     pub fn name(self) -> &'static str {
         match self {
             Self::Ed25519MlDsa65V1 => "ed25519+mldsa65/v1",
+            Self::WebAuthnP256DayKeyV1 => "webauthn-p256-day-key/v1",
+            Self::Ed25519DayKeyV1 => "ed25519-day-key/v1",
         }
     }
 
@@ -136,6 +150,8 @@ impl AdminSignatureSchemeV1 {
     pub fn version(self) -> &'static str {
         match self {
             Self::Ed25519MlDsa65V1 => ADMIN_SCHEME_VERSION,
+            Self::WebAuthnP256DayKeyV1 => "webauthn-p256-day-key/v1",
+            Self::Ed25519DayKeyV1 => "ed25519-day-key/v1",
         }
     }
 }

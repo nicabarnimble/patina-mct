@@ -4477,6 +4477,9 @@ impl MctRuntimeStateStore {
         replay: &mct_observation::AuthorityReplayV1,
         before_commit: impl FnOnce() -> Result<()>,
     ) -> Result<AuthorityProjectionCursorV1> {
+        if replay.state.passkey_admin.is_some() {
+            bail!("legacy SQLite projection cannot activate passkey administration");
+        }
         let authority = replay
             .current_authority
             .clone()
@@ -4809,6 +4812,7 @@ impl MctRuntimeStateStore {
                 guardian_recovery: None,
                 admin_issuance: Default::default(),
                 admin_genesis: None,
+                passkey_admin: None,
             },
             facts,
         }))

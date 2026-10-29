@@ -27,6 +27,11 @@ fn cli_status_and_mutation_reject_oversized_replies_without_fallback() {
                 let mut body = [0; 2];
                 stream.read_exact(&mut body).unwrap();
             }
+            // Wait for the client's write-half close before replying and
+            // dropping the peer. Otherwise macOS can return ENOTCONN from the
+            // client's shutdown before it reaches the byte-cap assertion.
+            let mut extra = [0];
+            assert_eq!(stream.read(&mut extra).unwrap(), 0);
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",

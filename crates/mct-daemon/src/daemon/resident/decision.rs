@@ -778,6 +778,7 @@ mod tests {
             guardian_recovery: None,
             admin_issuance: Default::default(),
             admin_genesis: None,
+            passkey_admin: None,
         }
     }
 

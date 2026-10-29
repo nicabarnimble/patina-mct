@@ -5,7 +5,11 @@
 
 #![forbid(unsafe_code)]
 
+mod passkey_admin;
+pub use passkey_admin::{PasskeyAdminCanonicalV1, PasskeyAdminFactV1, PasskeyGenesisSetupV1};
 mod admin_genesis;
+#[cfg(test)]
+mod passkey_admin_tests;
 pub use admin_genesis::{
     AdminGenesisFactV1, AdminGenesisIntentV1, AdminGenesisRequestV1, AdminGenesisSetupV1,
 };
@@ -80,7 +84,7 @@ use thiserror::Error;
 
 pub const AUTHORITY_FACT_DETAIL_PREFIX: &str = "mct-authority-fact-v1:";
 const AUTHORITY_FACT_SCHEMA_V1: &str = "mct-authority-fact/v1";
-const AUTHORITY_EPOCH_PREFIX_V1: &str = "mct-authority-epoch-v1:";
+pub const AUTHORITY_EPOCH_PREFIX_V1: &str = "mct-authority-epoch-v1:";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GrantsAuthorityIdentityV1 {
@@ -448,6 +452,8 @@ pub struct AuthorityStateV1 {
     pub admin_issuance: BTreeMap<String, AdminKeyIssuanceRecordV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admin_genesis: Option<Box<AdminGenesisFactV1>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passkey_admin: Option<Box<PasskeyAdminCanonicalV1>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1258,10 +1264,11 @@ impl JsonlObservationLedger {
                 );
             }
         };
-        if !typed_path
-            && (replay.state.guardian_recovery.is_some()
-                || !replay.state.admin_issuance.is_empty()
-                || replay.state.admin_genesis.is_some())
+        if replay.state.passkey_admin.is_some()
+            || (!typed_path
+                && (replay.state.guardian_recovery.is_some()
+                    || !replay.state.admin_issuance.is_empty()
+                    || replay.state.admin_genesis.is_some()))
         {
             return rejected_mutation(
                 mutation_id,
@@ -1483,7 +1490,9 @@ impl JsonlObservationLedger {
                 AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
             );
         };
-        if imported_state.admin_genesis.is_some()
+        if imported_state.passkey_admin.is_some()
+            || replay.state.passkey_admin.is_some()
+            || imported_state.admin_genesis.is_some()
             || replay.state.admin_genesis.is_some()
             || imported_state.guardian_recovery.is_some()
             || replay.state.guardian_recovery.is_some()
@@ -2435,6 +2444,11 @@ pub fn apply_authority_changes(
     state: &mut AuthorityStateV1,
     changes: &[AuthorityChangeV1],
 ) -> std::result::Result<(), AuthorityReplayError> {
+    if state.passkey_admin.is_some() {
+        return Err(authority_incoherent(
+            "legacy/hybrid changes cannot mutate passkey authority",
+        ));
+    }
     if changes
         .iter()
         .any(|change| matches!(change, AuthorityChangeV1::AdminKeyIssue { .. }))
@@ -2811,6 +2825,19 @@ pub fn authority_state_hash(state: &AuthorityStateV1) -> Result<String> {
     admin_issuance::validate_state(state)
         .map_err(|detail| ObservationLedgerError::AuthorityReplay { detail })?;
     admin_genesis::validate_state(state)?;
+    if state.passkey_admin.is_some() {
+        if state.admin_genesis.is_some()
+            || state.guardian_recovery.is_some()
+            || !state.admin_issuance.is_empty()
+            || !state.admin_key_grants.is_empty()
+        {
+            return Err(ObservationLedgerError::AuthorityReplay {
+                detail: "mixed passkey/legacy authority".into(),
+            });
+        }
+        let bytes = canonical_json_bytes(&("mct-passkey-authority-state/v1", state))?;
+        return Ok(blake3::hash(&bytes).to_hex().to_string());
+    }
     #[derive(Serialize)]
     struct HashableAuthorityState<'a> {
         toy_catalog: Vec<&'a CanonicalToyContract>,
@@ -3124,6 +3151,9 @@ fn verify_admin_change_signatures(
         let Some(signature) = change_signature(change) else {
             continue;
         };
+        if signature.scheme != AdminSignatureSchemeV1::Ed25519MlDsa65V1 {
+            return Err("legacy commands require their original hybrid scheme".into());
+        }
         if matches!(change, AuthorityChangeV1::AdminKeyIssue { .. })
             && signature.signature.len() != mct_kernel::ADMIN_HYBRID_SIGNATURE_LEN * 2
         {
@@ -3218,6 +3248,15 @@ fn fold_authority_entry_body(
     let fact_kind = envelope.fact_kind.clone();
     let fact_id = envelope.fact_id.clone();
     match fact_kind.as_str() {
+        "passkey_admin" => {
+            let fact = serde_json::from_value(envelope.body).map_err(|error| {
+                AuthorityReplayError::Malformed {
+                    sequence: entry.local_sequence,
+                    detail: error.to_string(),
+                }
+            })?;
+            passkey_admin::replay_fact(replay, used_epochs, previous, entry, fact)?;
+        }
         "admin_genesis" => {
             let fact: AdminGenesisFactV1 =
                 serde_json::from_value(envelope.body).map_err(|error| {
@@ -3427,7 +3466,9 @@ fn validate_legacy_import_fact(
         sequence: entry.local_sequence,
         detail: detail.to_owned(),
     };
-    if replay.state.admin_genesis.is_some()
+    if replay.state.passkey_admin.is_some()
+        || fact.imported_state.passkey_admin.is_some()
+        || replay.state.admin_genesis.is_some()
         || fact.imported_state.admin_genesis.is_some()
         || replay.state.guardian_recovery.is_some()
         || fact.imported_state.guardian_recovery.is_some()

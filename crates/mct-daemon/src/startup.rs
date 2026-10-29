@@ -668,6 +668,11 @@ pub fn classify_authority_startup(
     // Recovery facts are understood by storage but live canonical consumers and
     // authenticated ingress are not enabled yet. Never serve legacy UID/admin
     // paths through this authority; unsupported is not absent or virgin.
+    if replay.state.passkey_admin.is_some() {
+        return Err(MctStartupClassificationErrorV1::AuthorityReplayBlocked(
+            "passkey administration cannot run through legacy UID/offline runtime".into(),
+        ));
+    }
     if replay.state.admin_genesis.is_some() {
         return Err(MctStartupClassificationErrorV1::AuthorityReplayBlocked(
             "strict admin genesis requires the authenticated cutover runtime".into(),
@@ -1608,6 +1613,7 @@ pub fn finalize_authority_startup(
         guardian_recovery: None,
         admin_issuance: Default::default(),
         admin_genesis: None,
+        passkey_admin: None,
     };
     let sqlite_hash = authority_state_hash(&sqlite_authority)?;
     let sqlite_comparison = if !pre_observation_replay.imported

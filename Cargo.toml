@@ -26,6 +26,9 @@ getrandom = "0.3.4"
 jiff = "0.2.15"
 libcrux-ml-dsa = { version = "=0.0.11", default-features = false }
 ml-dsa = "=0.1.1"
+p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa", "std"] }
+ciborium = "=0.2.2"
+url = "2.5"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 sha2 = "0.10.9"
