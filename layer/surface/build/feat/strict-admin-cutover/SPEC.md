@@ -36,8 +36,12 @@ Day keys cannot delegate; KeyManage allows targeted revocation, not lease renewa
 
 Automated tests cover WebAuthn RP/origin/challenge/UP/UV binding, exact target and
 snapshot, scope, expiry, nonces, restart, lost acknowledgement and legacy denial.
-Resident Iroh administration and other command adapters remain open; the legacy
-runtime refuses passkey ledgers. No hosted 1Password/browser validation is claimed.
+The admin-only resident Iroh mode now uses the existing bounded ledger actor
+and shared signed issuance/revocation/status adapters. Real-process tests reject
+bad signatures, wrong targets/scopes and replay, and preserve revocation across
+restart. Other command adapters, canonical runtime projections, remote snapshot
+acquisition and removal of their legacy callers remain open. The full legacy
+runtime still refuses passkey ledgers. No live 1Password validation is claimed.
 
 ## Archived hybrid slice
 
