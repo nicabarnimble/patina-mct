@@ -35,6 +35,8 @@ fn options(args: Vec<String>) -> Result<(String, BTreeMap<String, String>)> {
         anyhow!("expected prepare-genesis, bootstrap, prepare, apply, day-keygen or sign-day")
     })?;
     let allowed: &[&str] = match command.as_str() {
+        "serve-iroh" => &["--root", "--mother", "--ledger-id", "--ticket-output"],
+        "send-iroh" => &["--ticket", "--request"],
         "day-keygen" => &["--secret-output"],
         "sign-day" => &["--intent", "--grant", "--secret"],
         "prepare-genesis" => &["--root", "--mother", "--ledger-id", "--registered-root"],
@@ -68,8 +70,32 @@ fn options(args: Vec<String>) -> Result<(String, BTreeMap<String, String>)> {
     }
     Ok((command, flags))
 }
-pub(super) fn run_passkey_admin(args: Vec<String>) -> Result<()> {
+pub(super) async fn run_passkey_admin(args: Vec<String>) -> Result<()> {
     let (command, flags) = options(args)?;
+    if command == "serve-iroh" {
+        return super::resident::run_passkey_admin_server(
+            PathBuf::from(&flags["--root"]),
+            flags["--mother"].clone(),
+            flags["--ledger-id"].clone(),
+            PathBuf::from(&flags["--ticket-output"]),
+        )
+        .await;
+    }
+    if command == "send-iroh" {
+        let ticket = read_json(&flags["--ticket"])?;
+        let request = read_json(&flags["--request"])?;
+        let mut endpoint =
+            mct_iroh::MotherIrohEndpoint::bind(mct_iroh::MotherIrohEndpointConfig::local_mct())
+                .await?;
+        let response = endpoint.send_admin(&ticket, &request).await;
+        endpoint.close().await;
+        let response = response?;
+        println!("{}", serde_json::to_string_pretty(&response)?);
+        if !matches!(response, mct_iroh::MctIrohAdminReply::Completed { .. }) {
+            bail!("administration did not complete; inspect canonical state before any retry");
+        }
+        return Ok(());
+    }
     if command == "day-keygen" {
         let path = Path::new(&flags["--secret-output"]);
         if path.try_exists()? {
@@ -189,28 +215,13 @@ pub(super) fn run_passkey_admin(args: Vec<String>) -> Result<()> {
     // Do not begin a new epoch between preparing and consuming the signed intent.
     // The exclusive writer and canonical snapshot serialize these one-shot calls.
     let mut writer = JsonlObservationLedger::open(&paths.ledger, ledger_id, mother)?;
-    if matches!(request.intent.action, PasskeyAdminActionV1::Command { .. }) {
-        let status = serde_json::to_string_pretty(&writer.verified_replay()?.state.passkey_admin)?;
-        let status = writer.execute_passkey_command(
-            request,
-            "/status",
-            AdminKeyScopeV1::Status,
-            |body| {
-                if !body.is_empty() {
-                    return Err(mct_observation::ObservationLedgerError::AuthorityReplay {
-                        detail: "status body must be empty".into(),
-                    });
-                }
-                Ok(status)
-            },
-        )?;
-        println!("{status}");
-    } else {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&writer.execute_passkey_admin(request)?)?
-        );
-    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&mct_daemon::execute_passkey_administration(
+            &mut writer,
+            request
+        )?)?
+    );
     Ok(())
 }
 fn print_prepared(

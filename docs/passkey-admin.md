@@ -6,10 +6,12 @@ code/tests remain; no old ledger is automatically promoted or rewritten.
 ## Current adapter
 
 `mct-daemon passkey-admin` supports explicit bootstrap, signed lease issuance,
-revocation and `/status`. Other scoped commands have a canonical BeforeEffect
-host API but **are not connected to resident command adapters or Iroh yet**.
-The existing UID/offline daemon refuses passkey-profile ledgers. This is not a
-completed resident F1 cutover or a claim of hosted 1Password testing.
+revocation and `/status`, locally or through the admin-only resident Iroh mode.
+`mct/admin/1` never treats an EndpointId, peer hello or UID as admin authority.
+The same resident ledger actor serializes verification, nonce consumption,
+revocation and required durability. Other command adapters and the full
+Child/Toy runtime cutover remain unbuilt: the legacy runtime still refuses
+passkey ledgers. No live 1Password validation is claimed.
 
 1. On an operator-controlled HTTPS RP origin, import `scripts/passkey-admin.mjs`
    and call `registerRoot(rpId, userName)`. Choose 1Password in the browser.
@@ -46,6 +48,27 @@ not permission to retry an effect: complete surviving frames consume nonces.
 Registration is an explicit operator trust boundary; no attestation CA policy,
 root rotation, persistent external rollback anchor or hosted browser integration
 is claimed. Synced passkey counters are not treated as monotonic freshness.
+
+## Resident Iroh key-management slice
+
+After bootstrap, run:
+```sh
+cargo run -p mct-daemon -- passkey-admin serve-iroh \
+  --root "$HOME/.mct-passkey" --mother mother-a --ledger-id ledger-a \
+  --ticket-output "$HOME/.mct-passkey/admin-ticket.json"
+```
+This is admin-only (no Child runtime, peer ALPN, UID listener or offline fallback).
+Start it **before** preparing intents: every restart establishes a fresh epoch.
+Prepare/sign using the steps above, then send instead of applying locally:
+```sh
+cargo run -p mct-daemon -- passkey-admin send-iroh \
+  --ticket "$HOME/.mct-passkey/admin-ticket.json" --request SIGNED.json
+```
+The initial transport is direct/relay-disabled. Preparing intents currently
+requires local access to the canonical ledger; remote snapshot acquisition is
+not implemented. Ctrl-C closes serving and drains the ledger actor. An uncertain
+reply is not permission to retry. Unmigrated routes deny, not route to legacy
+mutation helpers.
 
 ## Checks
 

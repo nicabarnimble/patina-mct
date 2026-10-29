@@ -5,6 +5,9 @@
 
 #![forbid(unsafe_code)]
 
+mod passkey_admin;
+pub use passkey_admin::execute_passkey_administration;
+
 mod acquisition;
 mod authority_order;
 mod authority_snapshot;

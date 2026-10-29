@@ -123,6 +123,10 @@ pub(crate) struct ResidentLedgerWriter {
 }
 
 enum ResidentLedgerCommand {
+    PasskeyAdmin {
+        request: Box<mct_kernel::admin_sig::PasskeyAdminRequestV1>,
+        ack: tokio::sync::oneshot::Sender<mct_iroh::MctIrohAdminReply>,
+    },
     Write(ResidentLedgerWrite),
     Dispatch {
         operation: Box<DispatchOperation>,
@@ -319,6 +323,39 @@ fn order_outcome_for_result(
 }
 
 impl ResidentLedgerWriter {
+    pub(crate) fn open_passkey_admin(path: PathBuf, ledger_id: &str, mother: &str) -> Result<Self> {
+        // Missing/legacy files cannot be silently initialized by serving.
+        std::fs::symlink_metadata(&path)?;
+        let mut ledger = JsonlObservationLedger::open(&path, ledger_id, mother)?;
+        if ledger.verified_replay()?.state.passkey_admin.is_none() {
+            bail!("resident administration requires canonical passkey genesis");
+        }
+        ledger.begin_authority_tenure()?;
+        Self::spawn_opened(path, ledger)
+    }
+
+    pub(crate) async fn administer(
+        &self,
+        request: mct_kernel::admin_sig::PasskeyAdminRequestV1,
+    ) -> mct_iroh::MctIrohAdminReply {
+        if self.is_fenced() {
+            return mct_iroh::MctIrohAdminReply::Unavailable;
+        }
+        let (ack, rx) = tokio::sync::oneshot::channel();
+        if self
+            .sender
+            .try_send(ResidentLedgerCommand::PasskeyAdmin {
+                request: Box::new(request),
+                ack,
+            })
+            .is_err()
+        {
+            return mct_iroh::MctIrohAdminReply::Unavailable;
+        }
+        rx.await
+            .unwrap_or(mct_iroh::MctIrohAdminReply::Indeterminate)
+    }
+
     #[cfg(test)]
     pub(crate) fn fail_after_batches_for_test(path: PathBuf, allowed_batches: usize) -> Self {
         let mut ledger = JsonlObservationLedger::open(&path, "ledger-local", "local-mct").unwrap();
@@ -365,6 +402,9 @@ impl ResidentLedgerWriter {
                             mutation_id: request.import_id,
                             reason: AuthorityMutationRejectionReasonV1::WriterPoisoned,
                         });
+                    }
+                    ResidentLedgerCommand::PasskeyAdmin { ack, .. } => {
+                        let _ = ack.send(mct_iroh::MctIrohAdminReply::Unavailable);
                     }
                     ResidentLedgerCommand::Dispatch { ack, .. } => {
                         task_fenced.store(true, Ordering::SeqCst);
@@ -437,6 +477,9 @@ impl ResidentLedgerWriter {
                             mutation_id: request.import_id,
                             reason: AuthorityMutationRejectionReasonV1::InvalidRequest,
                         });
+                    }
+                    ResidentLedgerCommand::PasskeyAdmin { ack, .. } => {
+                        let _ = ack.send(mct_iroh::MctIrohAdminReply::Unavailable);
                     }
                     ResidentLedgerCommand::Dispatch { ack, .. } => {
                         let _ = ack.send(Err("scripted authority writer".into()));
@@ -583,6 +626,22 @@ impl ResidentLedgerWriter {
                         );
                         publish_cached_tip(&ledger, &task_cached_tip);
                         let _ = ack.send(result);
+                    }
+                    ResidentLedgerCommand::PasskeyAdmin { request, ack } => {
+                        let reply = if task_fenced.load(Ordering::SeqCst) || ledger.is_poisoned() {
+                            mct_iroh::MctIrohAdminReply::Unavailable
+                        } else {
+                            super::admin::process_admin(
+                                &mut ledger,
+                                &task_authority_order,
+                                *request,
+                            )
+                        };
+                        if ledger.is_poisoned() || task_authority_order.fence_reason().is_some() {
+                            task_fenced.store(true, Ordering::SeqCst);
+                        }
+                        publish_cached_tip(&ledger, &task_cached_tip);
+                        let _ = ack.send(reply);
                     }
                     ResidentLedgerCommand::Dispatch { operation, ack } => {
                         let result = if task_fenced.load(Ordering::SeqCst) || ledger.is_poisoned() {

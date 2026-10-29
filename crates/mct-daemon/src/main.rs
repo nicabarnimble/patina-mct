@@ -200,7 +200,7 @@ async fn main() -> Result<()> {
     }
 
     match args.remove(0).as_str() {
-        "passkey-admin" => cli_passkey_admin::run_passkey_admin(args)?,
+        "passkey-admin" => cli_passkey_admin::run_passkey_admin(args).await?,
         "version" => println!("mct-daemon {}", mct_daemon::version()),
         "status" => run_status(args)?,
         "upgrade" => run_upgrade(args)?,
