@@ -48,6 +48,7 @@ run_specs() {
   run_vocabulary || status=1
   python3 scripts/check-finish.py validate || status=1
   python3 scripts/test-check-finish.py || status=1
+  python3 scripts/test-low-security-boundaries.py || status=1
   return "$status"
 }
 

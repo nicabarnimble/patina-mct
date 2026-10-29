@@ -92,6 +92,162 @@ fn issue_manager(f: &mut Fixture) -> AdminKeyIssueRequestV1 {
 }
 
 #[test]
+fn l10_d56_held_intents_require_current_epoch_and_snapshot_but_nonces_need_not_increase() {
+    let mut f = Fixture::with_strict_origin(true);
+    let held = request(
+        &f,
+        "held",
+        "root",
+        2,
+        grant(
+            "held-leaf",
+            51,
+            vec![Scope::Status],
+            None,
+            RECOVERY_DELAY_MS,
+        ),
+        90,
+    );
+    let original_epoch = held
+        .intent
+        .expected_authority
+        .grants_authority
+        .authority_epoch
+        .clone();
+    f = f.reopen();
+    assert_ne!(
+        f.writer
+            .cached_replay()
+            .unwrap()
+            .current_authority
+            .as_ref()
+            .unwrap()
+            .authority_epoch,
+        original_epoch
+    );
+    let before = std::fs::read(&f.path).unwrap();
+    denied(f.writer.execute_admin_key_issuance_at(held, time(0)));
+    assert_eq!(std::fs::read(&f.path).unwrap(), before);
+    let first = request(
+        &f,
+        "current",
+        "root",
+        2,
+        grant(
+            "first-leaf",
+            51,
+            vec![Scope::Status],
+            None,
+            RECOVERY_DELAY_MS,
+        ),
+        90,
+    );
+    let stale = request(
+        &f,
+        "stale-snapshot",
+        "root",
+        2,
+        grant(
+            "second-leaf",
+            52,
+            vec![Scope::Status],
+            None,
+            RECOVERY_DELAY_MS,
+        ),
+        7,
+    );
+    committed(
+        f.writer
+            .execute_admin_key_issuance_at(first.clone(), time(0)),
+    );
+    let before = std::fs::read(&f.path).unwrap();
+    denied(f.writer.execute_admin_key_issuance_at(stale, time(0)));
+    assert_eq!(std::fs::read(&f.path).unwrap(), before);
+    let current = request(
+        &f,
+        "current-lower-nonce",
+        "root",
+        2,
+        grant(
+            "second-leaf",
+            52,
+            vec![Scope::Status],
+            None,
+            RECOVERY_DELAY_MS,
+        ),
+        7,
+    );
+    committed(f.writer.execute_admin_key_issuance_at(current, time(0)));
+    f = f.reopen();
+    let before = std::fs::read(&f.path).unwrap();
+    committed(f.writer.execute_admin_key_issuance_at(first, time(0)));
+    assert_eq!(std::fs::read(&f.path).unwrap(), before);
+    let reused = request(
+        &f,
+        "reuse",
+        "root",
+        2,
+        grant(
+            "third-leaf",
+            53,
+            vec![Scope::Status],
+            None,
+            RECOVERY_DELAY_MS,
+        ),
+        90,
+    );
+    denied(f.writer.execute_admin_key_issuance_at(reused, time(0)));
+    assert_eq!(std::fs::read(&f.path).unwrap(), before);
+    // A legacy signature lacks the D-56 expected-authority binding. Even valid
+    // crypto must not open a legacy mutation path in this enrolled profile.
+    let root = f.state().admin_key_grants["root"].clone();
+    let mut legacy = AuthorityChangeV1::PairingTicketIssued {
+        ticket_hash: "aabbcc".into(),
+        peer_endpoint_id: Some("fixture-peer".into()),
+        window_starts_at: Some(time(0)),
+        window_expires_at: Some(time(RECOVERY_DELAY_MS)),
+        signature: None,
+    };
+    let signature = key(2).sign_hex(
+        &admin_change_signing_message("mother-a", "ledger-a", 999, &root, &legacy).unwrap(),
+    );
+    let AuthorityChangeV1::PairingTicketIssued {
+        signature: slot, ..
+    } = &mut legacy
+    else {
+        unreachable!()
+    };
+    *slot = Some(AdminSignatureV1 {
+        scheme: AdminSignatureSchemeV1::Ed25519MlDsa65V1,
+        signer_grant_id: "root".into(),
+        nonce: 999,
+        signature,
+    });
+    assert!(
+        verify_admin_change_signatures(
+            &f.state(),
+            &BTreeSet::new(),
+            "mother-a",
+            "ledger-a",
+            std::slice::from_ref(&legacy)
+        )
+        .is_ok()
+    );
+    denied(f.writer.execute_authority_mutation(
+        AuthorityMutationRequestV1 {
+            mutation_id: "legacy-held".into(),
+            changes: vec![legacy],
+            decided_at: time(0).to_string(),
+            grant_shaping_sources: vec![GrantShapingSourceV1::AdminKey {
+                public_half: public(2).ed25519,
+            }],
+        },
+        |_| panic!("strict profile cannot apply legacy authorization"),
+    ));
+    assert_eq!(std::fs::read(&f.path).unwrap(), before);
+}
+
+#[test]
 fn admin_issuance_canonical_root_and_bounded_delegation_preserve_distinct_execution_rights() {
     let mut f = Fixture::new();
     issue_manager(&mut f);

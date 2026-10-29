@@ -2328,7 +2328,11 @@ pub(super) fn execute_offline_administrative_mutation(
     })?;
     let prepared =
         prepare_administrative_mutation(config_path, children_dir, state_path, path, body)?;
-    if let Some(request) = prepared.authority_mutation_request(0) {
+    // Retained offline helper: attribution is the effective OS principal, not root.
+    // This does not make a UID a D-57 administrative credential.
+    if let Some(request) =
+        prepared.authority_mutation_request(mct_observation::private_fs::current_uid())
+    {
         let existing_legacy = legacy_authority_state(state_path)?;
         let replay = replay_authority_entries(&ledger.entries()?)
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
@@ -4699,6 +4703,79 @@ mod tests {
                 ledger.close().await;
             }
         }
+    }
+
+    #[test]
+    fn l5_offline_mutation_records_effective_uid_without_rewriting_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.json");
+        let children = dir.path().join("children");
+        let state = dir.path().join("state.sqlite");
+        let path = dir.path().join("observations.jsonl");
+        write_resident_wasm_child(&children);
+        let child = load_children_from_dir(MctChildLoadOptions::new(&children).strict_integrity())
+            .children
+            .into_iter()
+            .next()
+            .unwrap();
+        MctDaemonConfigStore::new(&config)
+            .approve_and_assign_loaded_child(&child, MctOperatorChildScope::default())
+            .unwrap();
+        {
+            let mut ledger =
+                JsonlObservationLedger::open(&path, "ledger-local", "local-mct").unwrap();
+            ledger
+                .append_before_effect(
+                    MctObservation::informational(
+                        ObservationId::new("historical-attribution").unwrap(),
+                        current_timestamp(),
+                        ObservationKind::LifecycleTransitionRecorded,
+                        TraceId::new("history").unwrap(),
+                        "historical os-uid:0 attribution is not repaired",
+                    ),
+                    current_timestamp_string(),
+                )
+                .unwrap();
+        }
+        let before = std::fs::read(&path).unwrap();
+        let request = ToyAuthorizeSecretRequest {
+            mutation_id: "l5-attribution".into(),
+            expected_config_path: config.clone(),
+            expected_children_dir: children.clone(),
+            expected_state_path: state.clone(),
+            child_name: "resident-echo".into(),
+            secret_name: "credential-name".into(),
+        };
+        execute_offline_administrative_mutation(
+            &config,
+            &children,
+            &state,
+            &path,
+            "/toys/authorize-secret",
+            &serde_json::to_vec(&request).unwrap(),
+        )
+        .unwrap();
+        let ledger =
+            JsonlObservationLedger::open_read_only(&path, "ledger-local", "local-mct").unwrap();
+        let replay = replay_authority_entries(&ledger.entries().unwrap()).unwrap();
+        let sources = &replay.mutations["l5-attribution"]
+            .fact
+            .grant_shaping_sources;
+        let principal = sources
+            .iter()
+            .find_map(|source| match source {
+                GrantShapingSourceV1::OperatorDecision {
+                    authenticated_principal_ref,
+                    ..
+                } => Some(authenticated_principal_ref.as_str()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            principal,
+            format!("os-uid:{}", mct_observation::private_fs::current_uid())
+        );
+        assert!(std::fs::read(&path).unwrap().starts_with(&before));
     }
 
     #[tokio::test]

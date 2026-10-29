@@ -142,8 +142,12 @@ impl AdminSignatureSchemeV1 {
 
 /// Signature carried on one admin authority change.
 ///
-/// The signature covers the command plus the signer grant. `nonce` is strictly
-/// increasing per signer grant; replay rejects a reuse.
+/// The signature covers the command plus the signer grant. `nonce` is unique
+/// per signer grant across committed history, not a monotonic counter. Replay
+/// rejects reuse even across ordinary authority epochs. The legacy v1 envelope
+/// itself does not bind an epoch or expiration; current D-56 issuance signs its
+/// exact expected authority snapshot inside the command. Do not use a legacy
+/// signature as evidence of current authorization under D-57.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdminSignatureV1 {
@@ -151,7 +155,7 @@ pub struct AdminSignatureV1 {
     pub scheme: AdminSignatureSchemeV1,
     /// Grant whose Ed25519 and ML-DSA-65 keys verify this signature.
     pub signer_grant_id: String,
-    /// Counter for this signer grant. A second use of the same value is rejected.
+    /// Unique value for this signer grant. A second committed use is rejected.
     pub nonce: u64,
     /// Hex of `0x48 ‖ ed25519 sig ‖ ML-DSA-65 sig`.
     pub signature: String,

@@ -9,10 +9,11 @@ runs:
   using: composite
   steps:
     - name: Install pinned Rust
-      # 1.96.0 matches rust-toolchain.toml. @stable installs rustc 1.99.0
-      # (2026-09-28) as the rustup default and the toolchain file overrides it.
-      uses: dtolnay/rust-toolchain@1.96.0
+      # Verified upstream commit; never use a mutable toolchain branch as code.
+      # Compiler selection remains explicit and matches rust-toolchain.toml.
+      uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
       with:
+        toolchain: 1.96.0
         components: rustfmt, clippy
 
     - name: Confirm rustc matches rust-toolchain.toml

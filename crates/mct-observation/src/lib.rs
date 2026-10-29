@@ -539,7 +539,8 @@ pub struct AuthorityReplayV1 {
     pub mutations: BTreeMap<String, CommittedAuthorityMutationV1>,
     pub facts: Vec<AuthorityCanonicalFactRecordV1>,
     pub canonical_fact_count: usize,
-    /// `(signer_grant_id, nonce)` pairs already accepted. Replay rejects a reuse.
+    /// `(signer_grant_id, nonce)` pairs already committed, across all epochs.
+    /// This is uniqueness, not ordering; epoch establishment must not clear it.
     pub admin_signature_nonces: BTreeSet<(String, u64)>,
     /// Every historical admin grant ID, including roots retired by recovery.
     /// Reconstructed from canonical replay, never from a request/projection.
@@ -598,6 +599,10 @@ pub enum ObservationLedgerError {
         actual_ledger_id: String,
         actual_mother_node_id: String,
     },
+    #[error(
+        "observation ledger does not extend the known committed head at sequence {known_sequence}"
+    )]
+    LedgerDiscontinuity { known_sequence: u64 },
     #[error("observation ledger sequence mismatch: expected {expected}, found {actual}")]
     SequenceMismatch { expected: u64, actual: u64 },
     #[error(
@@ -3598,6 +3603,9 @@ fn empty_scan_state() -> LedgerScanState {
 }
 
 fn scan_existing(path: &Path, ledger_id: &str, mother_node_id: &str) -> Result<LedgerScan> {
+    // A process-local verified head is continuity evidence, not a disposable hint.
+    // Compare typed entry hashes, allowing equivalent historical JSON spellings.
+    let known = replay_cache_head(&replay_cache_key(path, ledger_id, mother_node_id));
     let file = private_fs::read_file(path).map_err(|source| ObservationLedgerError::Io {
         path: path.to_path_buf(),
         source,
@@ -3620,6 +3628,13 @@ fn scan_existing(path: &Path, ledger_id: &str, mother_node_id: &str) -> Result<L
         }
         let offset = state.committed_len;
         if !frame.ends_with(b"\n") {
+            if let Some((sequence, _)) = &known
+                && state.next_sequence <= *sequence
+            {
+                return Err(ObservationLedgerError::LedgerDiscontinuity {
+                    known_sequence: *sequence,
+                });
+            }
             let digest = blake3::hash(&frame).to_hex().to_string();
             return Ok(LedgerScan::Residue(LedgerTailResidue {
                 offset,
@@ -3685,9 +3700,24 @@ fn scan_existing(path: &Path, ledger_id: &str, mother_node_id: &str) -> Result<L
             )));
         }
 
+        if let Some((sequence, hash)) = &known
+            && entry.local_sequence == *sequence
+            && &entry.entry_hash != hash
+        {
+            return Err(ObservationLedgerError::LedgerDiscontinuity {
+                known_sequence: *sequence,
+            });
+        }
         remember_scanned_entry(path, &mut state, &entry, &frame);
     }
 
+    if let Some((sequence, _)) = known
+        && state.next_sequence <= sequence
+    {
+        return Err(ObservationLedgerError::LedgerDiscontinuity {
+            known_sequence: sequence,
+        });
+    }
     Ok(LedgerScan::Ready(state))
 }
 
@@ -4337,8 +4367,9 @@ pub struct LedgerReplayCheckpoint {
 #[derive(Clone, Debug)]
 pub enum CheckpointResume {
     Resumed(Box<VerifiedLedgerReplay>),
-    /// The checkpoint does not bind the current log. Callers must full-verify
-    /// and fail closed if that verification fails.
+    /// Raw prefix bytes no longer match. Full verification must still preserve
+    /// the known typed head as an ancestry constraint; this is not permission
+    /// to discard continuity evidence. `load_verified_ledger_replay` does so.
     Mismatch {
         detail: String,
     },
@@ -4563,7 +4594,9 @@ pub fn resume_ledger_replay(
 }
 
 /// Verify the log, reusing a process-local checkpoint when its prefix digest
-/// still matches. A mismatch falls back to a streaming full verification.
+/// still matches. A mismatch full-verifies while retaining the known head:
+/// equivalent representations may pass, but rollback or a rehashed fork cannot.
+/// This is process-local continuity, not a persistent external rollback anchor.
 pub fn load_verified_ledger_replay(
     path: impl AsRef<Path>,
     ledger_id: &str,
@@ -4575,16 +4608,16 @@ pub fn load_verified_ledger_replay(
         match resume_ledger_replay(path, ledger_id, mother_node_id, &checkpoint)? {
             CheckpointResume::Resumed(verified) => {
                 if let Some(checkpoint) = verified.checkpoint.clone() {
-                    replay_cache_store(key, checkpoint);
+                    replay_cache_store(key, checkpoint)?;
                 }
                 return Ok(*verified);
             }
-            CheckpointResume::Mismatch { .. } => replay_cache_remove(&key),
+            CheckpointResume::Mismatch { .. } => {} // Keep the known head for the full scan.
         }
     }
     let verified = verify_ledger_streaming(path, ledger_id, mother_node_id)?;
     if let Some(checkpoint) = verified.checkpoint.clone() {
-        replay_cache_store(key, checkpoint);
+        replay_cache_store(key, checkpoint)?;
     }
     Ok(verified)
 }
@@ -4660,7 +4693,8 @@ pub fn write_benchmark_chain(
         .len())
 }
 
-/// Drop process-local replay checkpoints. Tests use this to isolate tamper cases.
+/// Drop process-local replay checkpoints only in isolated tests.
+#[cfg(test)]
 pub fn clear_ledger_replay_cache() {
     replay_cache()
         .lock()
@@ -4755,18 +4789,34 @@ fn replay_cache_get(key: &str) -> Option<LedgerReplayCheckpoint> {
         .cloned()
 }
 
-fn replay_cache_store(key: String, checkpoint: LedgerReplayCheckpoint) {
+fn replay_cache_head(key: &str) -> Option<(u64, String)> {
     replay_cache()
         .lock()
         .unwrap_or_else(|error| error.into_inner())
-        .insert(key, checkpoint);
+        .get(key)
+        .map(|checkpoint| {
+            (
+                checkpoint.through_sequence,
+                checkpoint.through_entry_hash.clone(),
+            )
+        })
 }
 
-fn replay_cache_remove(key: &str) {
-    replay_cache()
+fn replay_cache_store(key: String, checkpoint: LedgerReplayCheckpoint) -> Result<()> {
+    let mut cache = replay_cache()
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .remove(key);
+        .unwrap_or_else(|error| error.into_inner());
+    if let Some(known) = cache.get(&key)
+        && (checkpoint.through_sequence < known.through_sequence
+            || (checkpoint.through_sequence == known.through_sequence
+                && checkpoint.through_entry_hash != known.through_entry_hash))
+    {
+        return Err(ObservationLedgerError::LedgerDiscontinuity {
+            known_sequence: known.through_sequence,
+        });
+    }
+    cache.insert(key, checkpoint);
+    Ok(())
 }
 
 pub fn version() -> &'static str {
@@ -4775,6 +4825,8 @@ pub fn version() -> &'static str {
 
 #[cfg(test)]
 mod peer_ledger_tests;
+#[cfg(test)]
+mod remaining_low_tests;
 
 #[cfg(test)]
 mod tests {
