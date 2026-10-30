@@ -21,6 +21,20 @@ class LowSecurityPolicyTests(unittest.TestCase):
             self.assertFalse(identities & bad, lock)
             self.assertTrue({"spin", "chacha20", "der"} <= {p["name"] for p in packages})
 
+    def test_unused_wasmtime_cache_and_affected_inline_buffers_stay_out(self):
+        manifest = tomllib.loads((ROOT / "Cargo.toml").read_text())
+        engine = manifest["workspace"]["dependencies"]["wasmtime"]
+        self.assertFalse(engine["default-features"])
+        self.assertNotIn("cache", engine["features"])
+        for lock in ("Cargo.lock", "fuzz/Cargo.lock"):
+            packages = tomllib.loads((ROOT / lock).read_text())["package"]
+            self.assertFalse({"zstd", "zstd-safe", "zstd-sys", "wasmtime-internal-cache"}
+                             & {p["name"] for p in packages})
+            for package in packages:
+                if package["name"] == "block-buffer":
+                    version = tuple(map(int, package["version"].split(".")))
+                    self.assertTrue(version == (0, 10, 4) or version >= (0, 12, 1))
+
     def test_l18_rust_setup_is_immutable_with_explicit_checked_compiler(self):
         action = (ROOT / ".github/actions/setup-rust/action.yml").read_text()
         refs = re.findall(r"uses: dtolnay/rust-toolchain@([^\s]+)", action)
