@@ -28,6 +28,9 @@ libcrux-ml-dsa = { workspace = true, features = ["simd256"] }
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 libcrux-ml-dsa = { workspace = true, features = ["simd128"] }
 
+# Retained only to exercise the exact-version OSV false-positive proof. Remove
+# with scripts/scan-osv.py when Wasmtime no longer brings this version.
 [dev-dependencies]
+block-buffer = "=0.10.4"
 ml-dsa.workspace = true
 serde_json.workspace = true

@@ -2638,6 +2638,7 @@ version = "0.2.0"
 dependencies = [
  "base64",
  "blake3",
+ "block-buffer 0.10.4",
  "ciborium",
  "const-hex",
  "ed25519-dalek",
