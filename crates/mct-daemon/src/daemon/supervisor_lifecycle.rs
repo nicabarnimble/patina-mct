@@ -2522,6 +2522,21 @@ fn install_supervisor_for_test(root: &Path) -> Result<(SupervisorPaths, Supervis
 mod tests {
     use super::*;
 
+    // Linux /tmp is sticky/world-writable: valid for private ledger storage,
+    // deliberately invalid for executable/publication ancestry. Do not change
+    // global TMPDIR or relax production trust checks to make fixtures pass.
+    fn supervisor_tempdir() -> tempfile::TempDir {
+        let home = PathBuf::from(std::env::var_os("HOME").expect("test HOME"))
+            .canonicalize()
+            .expect("canonical test HOME");
+        mct_observation::private_fs::ensure_publication_directory(&home)
+            .expect("test HOME must have trusted executable ancestry");
+        tempfile::Builder::new()
+            .prefix("mct-supervisor-test-")
+            .tempdir_in(home)
+            .expect("private supervisor fixture")
+    }
+
     fn sha256_hex(bytes: &[u8]) -> String {
         use sha2::{Digest as _, Sha256};
         format!("{:x}", Sha256::digest(bytes))
@@ -2530,7 +2545,7 @@ mod tests {
     #[test]
     fn l4_install_and_record_verification_refuse_untrusted_executable_paths() {
         use std::os::unix::fs::symlink;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = supervisor_tempdir();
         let root = dir.path().canonicalize().unwrap();
         let bin = root.join("bin");
         mct_observation::private_fs::ensure_directory(&bin).unwrap();
@@ -2542,12 +2557,14 @@ mod tests {
         install_with_adapter(&paths, &executable, current_uid().unwrap(), false, &adapter).unwrap();
         validate_supervisor_record(&paths.record, true).unwrap();
         let original_record = fs::read(&paths.record).unwrap();
-        fs::set_permissions(&bin, fs::Permissions::from_mode(0o770)).unwrap();
-        assert!(validate_supervisor_record(&paths.record, true).is_err());
-        assert!(
-            install_with_adapter(&paths, &executable, current_uid().unwrap(), true, &adapter)
-                .is_err()
-        );
+        for mode in [0o770, 0o1777] {
+            fs::set_permissions(&bin, fs::Permissions::from_mode(mode)).unwrap();
+            assert!(validate_supervisor_record(&paths.record, true).is_err());
+            assert!(
+                install_with_adapter(&paths, &executable, current_uid().unwrap(), true, &adapter)
+                    .is_err()
+            );
+        }
         fs::set_permissions(&bin, fs::Permissions::from_mode(0o700)).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o722)).unwrap();
         assert!(validate_supervisor_record(&paths.record, true).is_err());
@@ -2756,7 +2773,7 @@ mod tests {
     /// with a simulated process context, so it runs on Linux too.
     #[test]
     fn supervised_boot_recovers_a_torn_final_frame_before_validating_the_record() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let (paths, record) = install_supervisor_for_test(root.path()).unwrap();
         let committed = fs::read(&paths.ledger).unwrap();
         let committed_lines = committed.iter().filter(|byte| **byte == b'\n').count() as u64;
@@ -2848,7 +2865,7 @@ mod tests {
 
     #[test]
     fn supervisor_install_bootstrap_is_observed_before_every_remaining_effect() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let (paths, record) = install_supervisor_for_test(root.path()).unwrap();
 
         assert!(paths.config.exists());
@@ -2908,7 +2925,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn supervisor_lifecycle_install_start_stop_unclean_reconcile_uninstall_preserves_evidence()
      {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let adapter = Arc::new(FakeSupervisorAdapter::default());
         let (paths, record) =
             install_supervisor_for_test_with_adapter(root.path(), adapter.as_ref()).unwrap();
@@ -3308,7 +3325,7 @@ mod tests {
 
     #[test]
     fn smoke_plist_seam_is_internal_isolated_and_keeps_fixed_service_identity() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = supervisor_tempdir();
         let root = temp.path().join("smoke-root");
         fs::create_dir(&root).unwrap();
         let smoke = SupervisorPaths::smoke_internal(&root).unwrap();
@@ -3359,7 +3376,7 @@ mod tests {
 
     #[test]
     fn supervised_start_rejects_unobserved_tampered_or_stale_records() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let (paths, mut record) = install_supervisor_for_test(root.path()).unwrap();
         record.record_state = "revoked".into();
         record.refresh_digest().unwrap();
@@ -3390,7 +3407,7 @@ mod tests {
 
     #[test]
     fn supervisor_conflicts_refuse_before_launchd_or_endpoint_effects() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let adapter = FakeSupervisorAdapter::default();
         let (paths, _) = install_supervisor_for_test_with_adapter(root.path(), &adapter).unwrap();
         let executable = paths.root.join("mct-daemon-fixture");
@@ -3428,7 +3445,7 @@ mod tests {
         let manual = refuse_manual_serve_if_managed(&paths.config, false).unwrap_err();
         assert!(manual.to_string().contains("manual serve refused"));
 
-        let concurrent_root = tempfile::tempdir().unwrap();
+        let concurrent_root = supervisor_tempdir();
         let concurrent_paths = SupervisorPaths::isolated(concurrent_root.path()).unwrap();
         ensure_owner_private_root(&concurrent_paths.root, current_uid().unwrap()).unwrap();
         let held_bootstrap =
@@ -3499,7 +3516,7 @@ mod tests {
 
     #[test]
     fn launchd_adapter_refuses_missing_gui_domain_without_fallback() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let paths = SupervisorPaths::isolated(root.path()).unwrap();
         let executable = paths.root.join("mct-daemon-fixture");
         fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
@@ -3524,7 +3541,7 @@ mod tests {
 
     #[test]
     fn supervised_start_rejects_unblessed_binary_swap_with_replace_guidance() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let (paths, record) = install_supervisor_for_test(root.path()).unwrap();
         fs::write(&record.executable_path, b"binary-swap").unwrap();
 
@@ -3568,7 +3585,7 @@ mod tests {
 
     #[test]
     fn uninstall_refuses_foreign_plist_with_durable_observation() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let adapter = FakeSupervisorAdapter::default();
         let (paths, _) = install_supervisor_for_test_with_adapter(root.path(), &adapter).unwrap();
         let foreign_plist = b"foreign launchd policy";
@@ -3589,7 +3606,7 @@ mod tests {
 
     #[test]
     fn launchd_non_zero_start_is_observed_once_without_fallback() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let adapter = FakeSupervisorAdapter::default();
         let (paths, record) =
             install_supervisor_for_test_with_adapter(root.path(), &adapter).unwrap();
@@ -3629,7 +3646,7 @@ mod tests {
 
     #[test]
     fn install_replace_refuses_loaded_service_durably() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let adapter = FakeSupervisorAdapter::default();
         let (paths, record) =
             install_supervisor_for_test_with_adapter(root.path(), &adapter).unwrap();
@@ -3656,7 +3673,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn supervisor_start_and_stop_no_ops_are_observed() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let adapter = Arc::new(FakeSupervisorAdapter::default());
         let (paths, _) =
             install_supervisor_for_test_with_adapter(root.path(), adapter.as_ref()).unwrap();
@@ -3720,7 +3737,7 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_append_failure_has_no_clean_claim_and_next_start_reconciles() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let (paths, record) = install_supervisor_for_test(root.path()).unwrap();
         let first_writer = ResidentLedgerWriter::spawn(paths.ledger.clone()).unwrap();
         let first_instance = begin_supervised_resident_instance(&record, &first_writer)
@@ -3811,11 +3828,13 @@ mod tests {
     #[test]
     fn exact_upgrade_approval_composes_shared_replace_and_named_post_verify() {
         assert_eq!(MCT_UPGRADE_POST_VERIFY_DEADLINE_SECONDS, 30);
-        let temp = tempfile::tempdir().unwrap();
+        let temp = supervisor_tempdir();
         let paths = SupervisorPaths::isolated(temp.path()).unwrap();
         let uid = current_uid().unwrap();
         let adapter = FakeSupervisorAdapter::default();
-        let current = std::env::current_exe().unwrap();
+        let current = paths.root.join("current-mother");
+        fs::copy(std::env::current_exe().unwrap(), &current).unwrap();
+        fs::set_permissions(&current, fs::Permissions::from_mode(0o700)).unwrap();
         let initial = install_with_adapter(&paths, &current, uid, false, &adapter).unwrap();
         let context = UpgradeSupervisorContext {
             paths: paths.clone(),
@@ -3965,7 +3984,7 @@ mod tests {
 
     #[test]
     fn exact_approval_refuses_wrong_historical_failed_and_tampered_artifact_evidence() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let fixture =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/slate-manager-0.2.0");
         let source = root.path().join("source");
@@ -4040,7 +4059,7 @@ mod tests {
             .is_err()
         );
 
-        let failed_root = tempfile::tempdir().unwrap();
+        let failed_root = supervisor_tempdir();
         let mut failed_request = request;
         failed_request.source_root = failed_root.path().join("missing-source");
         failed_request.state_path = failed_root.path().join("state.sqlite");
@@ -4056,7 +4075,7 @@ mod tests {
 
     #[test]
     fn standing_artifact_source_authority_is_scoped_observed_and_revocable() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let source_root = root.path().join("source");
         fs::create_dir(&source_root).unwrap();
         let state_path = root.path().join("state.sqlite");
@@ -4271,7 +4290,7 @@ mod tests {
         assert!(!manifest.with_extension("toml.sha256").exists());
         assert!(!component.with_extension("wasm.sha256").exists());
 
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let adapter = Arc::new(FakeSupervisorAdapter::default());
         let (paths, record) =
             install_supervisor_for_test_with_adapter(root.path(), adapter.as_ref()).unwrap();
@@ -5135,7 +5154,7 @@ status = "active"
 
     #[test]
     fn launchd_adapter_maps_install_start_stop_and_restart_without_ambient_fallbacks() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let (_, record) = install_supervisor_for_test(root.path()).unwrap();
         let plist = String::from_utf8(render_launchd_plist(&record)).unwrap();
         assert!(plist.contains("io.patina.mct.mother"));
