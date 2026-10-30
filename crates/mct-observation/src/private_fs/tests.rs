@@ -71,7 +71,17 @@ fn l1_symlinks_hardlinks_and_unsafe_modes_are_refused_without_mutation() {
 
 #[test]
 fn l4_executable_leaf_and_ancestor_permissions_are_checked_before_hashing() {
-    let dir = private_tempdir();
+    // Unlike private data storage, executable ancestry rejects even a sticky
+    // shared temporary parent. Keep the positive fixture out of Linux /tmp.
+    let home = PathBuf::from(std::env::var_os("HOME").expect("test HOME"))
+        .canonicalize()
+        .unwrap();
+    ensure_publication_directory(&home).expect("trusted executable fixture parent");
+    let dir = tempfile::Builder::new()
+        .prefix("mct-executable-test-")
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in(home)
+        .unwrap();
     let root = dir.path().canonicalize().unwrap();
     let parent = root.join("bin");
     ensure_directory(&parent).unwrap();
@@ -79,8 +89,10 @@ fn l4_executable_leaf_and_ancestor_permissions_are_checked_before_hashing() {
     write_atomic(&path, b"host executable fixture").unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert!(executable(&path).is_ok());
-    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o770)).unwrap();
-    assert!(executable(&path).is_err());
+    for mode in [0o770, 0o1777] {
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(mode)).unwrap();
+        assert!(executable(&path).is_err());
+    }
     std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
     for mode in [0o722, 0o600, 0o4700] {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
