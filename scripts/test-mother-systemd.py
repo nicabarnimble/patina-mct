@@ -19,6 +19,7 @@ class UnitTests(unittest.TestCase):
         command = next(line.removeprefix('ExecStart=') for line in unit.splitlines() if line.startswith('ExecStart='))
         self.assertEqual(shlex.split(command)[-2:], ['--bind-address', '127.0.0.1:0'])
         self.assertIn('%%x$$HOME', unit)
+        self.assertIn('WorkingDirectory=/\n', unit)
         self.assertIn('KillSignal=SIGINT', unit)
         self.assertIn('NoNewPrivileges=yes', unit)
         self.assertIn('PrivateUsers=yes', unit)

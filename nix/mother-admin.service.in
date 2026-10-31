@@ -6,7 +6,7 @@ StartLimitBurst=3
 [Service]
 Type=exec
 ExecStart=@EXEC@
-WorkingDirectory=@ROOT@
+WorkingDirectory=/
 UMask=0077
 NoNewPrivileges=yes
 PrivateUsers=yes
