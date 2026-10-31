@@ -1,0 +1,26 @@
+---
+description: pstack per-role model choices (overrides skill defaults)
+alwaysApply: true
+---
+# pstack model configuration. One line per role. Delete a line to fall back to the skill default.
+# `inherit-parent` or `auto` as a value: the role runs on the parent chat model (omit Task `model`). Alias entries in a panel list still count toward its fan-out.
+# budget: large (xhigh)
+# Detected 2026-10-30 from the Oct 28 cloud run (bc-c65a58c9): grok-4.7-xhigh-fast ACCEPTED by Task; claude-opus-5-5-xhigh REJECTED.
+# No second model family is confirmed yet. Once a claude-* (or other non-grok) slug is confirmed, put it first in the three panel lines and the cross-judge pool.
+feature, refactoring: inherit-parent
+bug-fix: inherit-parent
+perf-issue: inherit-parent
+hillclimb: inherit-parent
+judgment and prose: inherit-parent
+hardest tasks: inherit-parent
+how explorer: grok-4.7-xhigh-fast
+how explainer: inherit-parent
+why investigators: grok-4.7-xhigh-fast
+why synthesizer: inherit-parent
+reflect tooling: grok-4.7-xhigh-fast
+reflect judgment, divergent, synthesizer: inherit-parent
+arena runners: grok-4.7-xhigh-fast, inherit-parent
+arena cross-judge pool: grok-4.7-xhigh-fast
+swarm workers: grok-4.7-xhigh-fast
+architect runners: grok-4.7-xhigh-fast, inherit-parent
+interrogate reviewers: grok-4.7-xhigh-fast, inherit-parent

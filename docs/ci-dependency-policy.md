@@ -23,3 +23,26 @@ cover the classifier's refusal cases. These are not a general memory-safety proo
 
 Remove the classification and its exact-version test dependency when upstream
 corrects the advisory range or Wasmtime no longer needs the older buffer.
+
+## PR #87 runtime patch
+
+The failed PR #87 scan reported Rust lockfile dependencies, not vendored skill
+files. Merging main at `cfd0d1f` brought in PR #86's zstd removal and block-buffer
+update. A fresh scan still failed on these Wasmtime advisories:
+
+- [RUSTSEC-2026-0420](https://rustsec.org/advisories/RUSTSEC-2026-0420.html):
+  WASIp3 UDP send could use an address permitted only for receiving.
+- [RUSTSEC-2026-0422](https://rustsec.org/advisories/RUSTSEC-2026-0422.html):
+  insufficient typed-function argument checks could panic.
+- [RUSTSEC-2026-0423](https://rustsec.org/advisories/RUSTSEC-2026-0423.html):
+  cross-engine confusion of host-created struct types with supertypes.
+- [RUSTSEC-2026-0424](https://rustsec.org/advisories/RUSTSEC-2026-0424.html):
+  unchecked memory usage when transferring borrowed component resources.
+
+All four are fixed in the 48.x maintenance release **48.0.8**. The workspace
+minimums for `wasmtime` and `wasmtime-wasi` and both root/fuzz lockfiles now select
+that patch and its coordinated Wasmtime/Cranelift dependencies. The feature set
+is unchanged, including the disabled disk cache. No new suppression or scan
+exclusion was added. These are upstream runtime advisories; this update does not
+claim every affected API is reachable through MCT. The same OSV v2.7.0 scan
+changed from exit 1 before the patch to exit 0 afterward.
