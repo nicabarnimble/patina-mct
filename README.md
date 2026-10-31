@@ -62,6 +62,10 @@ explicitly trusted Mother-side adapter; it does not become a local Child.
 
 ## Quick start
 
+For a **Linux ARM64 admin-only Mother**, use the [Nix/systemd installation and
+hardware gate](docs/linux-admin-install.md). This is separate from the legacy
+macOS runtime below and does not enable the full passkey Child runtime.
+
 Obtain the target archive and both sidecars, then verify from a trusted matching
 checkout before extracting:
 

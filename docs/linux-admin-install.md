@@ -1,0 +1,130 @@
+# Linux ARM64 admin Mother
+
+This slice packages the **admin-only** Mother on Debian with Nix, not NixOS.
+Each Mother keeps its own identity and canonical state on local storage. It does
+not enable the full passkey Child runtime, Linux Git Toy, or task continuation.
+
+## Build and hardware gate
+
+On the ARM64 host, from the reviewed checkout:
+
+```sh
+. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+nix build .#mother
+nix run .#mother-install-smoke
+```
+
+Builds use Rust 1.96.0, the committed Cargo lock and pinned Nix inputs. The Cargo
+Git dependency has an explicit fixed-output hash. Two Cargo build jobs bound
+parallel compilation on the initial four-gigabyte builder; this is not a claim
+that the build fits one gigabyte. Pi 3 nodes should consume a separately
+configured trusted cache rather than compile locally.
+
+The gate requires an unprivileged user, a running systemd user manager and an
+ext4, XFS or Btrfs home filesystem. It creates a unique private directory under
+that home, uses **software test credentials only**, installs a uniquely named
+unit through `mother-admin-service`, and tests real signed administration over
+loopback Iroh. It does not establish actual 1Password behavior or external
+network reachability.
+
+A successful run prints PASS for installation/start, signed status, second-writer
+refusal, revocation, forced restart, fresh revoked-key denial and WASI execution.
+It exits nonzero on a missing measurement, timeout, wrong result, transport
+failure masquerading as rejection, or cleanup failure. An indeterminate signed
+submission is not retried. Successful cleanup stops/removes only its own unit and
+package retention link. The printed private evidence directory remains; it
+contains test key material and must **not** be uploaded wholesale.
+
+Measurements:
+
+- **Cold readiness:** one process-cold start through the first authenticated
+  status response. Includes CLI/signing overhead; the OS cache is not purged.
+- **Idle RSS:** five process samples at 200 ms spacing; print min/max.
+- **Mother peak RSS:** `/proc/PID/status` VmHWM over both tested tenures.
+- **Compile peak:** whole fresh probe-process VmHWM immediately after component
+  compilation, not Rust/Nix build peak or a heap delta. Compile time excludes
+  WAT parsing, engine construction and execution. The component imports
+  `wasi:random/random@0.2.3` and returns a checked result; no inherited filesystem,
+  environment or stdio is provided. This is separate from the admin Mother, not
+  a full Child-admission test or an AOT cache.
+- **Durable writes:** forty single-frame canonical BeforeEffect append+sync_data
+  calls, then validated reopen/count; nearest-rank p50/p95 and max. Raw samples
+  are in the private `measurements.json`. Creation/reopen are outside the timer.
+
+No result here establishes power-loss recovery, large-history startup, replication,
+concurrent Child capacity or suitability for a one-gigabyte Pi 3. Run the same
+hardware gate on a physical Pi 3 before any fleet rollout.
+
+## Install a provisioned Mother
+
+Installation and provisioning are separate. First use the explicit trusted-root
+procedure in [passkey administration](passkey-admin.md) and
+[the approval RUN](passkey-approval-RUN.md). The administrator's browser uses
+**your default browser with 1Password**; the headless Mother does not need the
+administrator's private day key. Root trust/CA installation is never implicit.
+
+For an **already provisioned** private local root:
+
+```sh
+nix profile add .#mother
+nix run .#mother-admin-service -- \
+  --root /absolute/private/mother-root \
+  --mother YOUR-MOTHER-ID --ledger-id YOUR-LEDGER-ID \
+  --unit-name mct-admin-YOUR-NAME.service
+```
+
+Use lowercase letters, numbers and hyphens in these identifiers. The installer
+checks the canonical target and passkey provenance by read-only replay before
+publishing a new unit. Existing units/package roots are refused, not replaced.
+It retains the exact Nix package through an indirect GC root under
+`$XDG_CONFIG_HOME/mct/package-roots/` (default `~/.config`). It does not start the
+service, generate keys, install a root, change network settings or enable linger.
+
+Then explicitly start/enable it:
+
+```sh
+systemctl --user enable --now mct-admin-YOUR-NAME.service
+systemctl --user status mct-admin-YOUR-NAME.service
+```
+
+For unattended boot/logout operation, an operator must explicitly authorize
+`sudo loginctl enable-linger "$USER"`. The hardware gate can run in an existing
+user-manager session without enabling linger. It does not claim reboot proof.
+The canonical root and endpoint identity survive service restart; the authority
+epoch advances. Public ticket output is `ROOT/admin-ticket.json`, mode 0600.
+Intent preparation still needs local canonical access; remote preparation and
+external exposure are not added here.
+
+To uninstall, explicitly stop/disable that exact unit, inspect its unit and
+package-root paths, then remove only those two installer artifacts and run
+`systemctl --user daemon-reload`. **Keep canonical state and identity.** No
+upgrade/replacement or automatic recovery of partially installed artifacts is
+implemented; inspect interrupted installation evidence before manual action.
+
+## Security and resource envelope
+
+Nix's pinned inputs/content hashes and the host's configured trusted binary-cache
+keys establish package delivery provenance. The programs and their ancestry are
+checked for ownership/writability; the unit points at the exact immutable store
+path, not PATH lookup or an arbitrary writable executable. This is not a new MCT
+authority source or a claim of publisher signing equivalent to Apple codesign.
+Existing Darwin release verification and launchd lifecycle are unchanged; this
+path directly supervises the foreground admin-only server.
+
+The unit uses a read-only system/home view with only its canonical root writable,
+private user namespaces and temporary storage, no-new-privileges, empty capability
+sets, restricted address families and a 0077 service umask. AF_NETLINK permits
+Iroh's unprivileged Linux route monitor; it does not grant CAP_NET_ADMIN. The gate
+checks live mount flags, UID, capabilities and the actual route-monitor socket. A 512 MiB service memory ceiling reserves half the smallest
+planned one-gigabyte host for the OS/other work; it is a containment budget, **not
+measured proof of fit**. TasksMax=64 is a conservative admin-only thread ceiling,
+not a Child concurrency limit. Crashes restart after one second, bounded to three
+starts per minute, so corrupt state cannot spin indefinitely. SIGINT gets up to
+30 seconds for graceful shutdown before systemd's forced-stop policy applies.
+
+The new explicit `serve-iroh --bind-address` accepts only loopback addresses.
+Omitting it preserves the existing command's behavior. Units always specify
+`127.0.0.1:0`. No firewall ports, public relay, Tailscale join or CA is installed.
+If user namespaces/systemd sandbox facilities are unavailable, service startup
+fails; do not remove hardening just to make the gate pass. Root/host compromise
+and hostile same-UID processes remain outside the local isolation boundary.
