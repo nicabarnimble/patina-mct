@@ -40,8 +40,55 @@ fn sign_root(prepared: Value, key: &p256::ecdsa::SigningKey) -> Value {
     json!({"intent":prepared["intent"],"proof":{"scheme":"webauthn-p256-day-key/v1","credential_id":prepared["root"]["credential_id"],"authenticator_data":URL_SAFE_NO_PAD.encode(auth),"client_data_json":URL_SAFE_NO_PAD.encode(client),"signature":URL_SAFE_NO_PAD.encode(sig.to_der().as_bytes())}})
 }
 
+struct AdminServer(std::process::Child);
+impl Drop for AdminServer {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+fn start_server(common: &[&str], ticket: &Path) -> AdminServer {
+    if ticket.exists() {
+        std::fs::remove_file(ticket).unwrap();
+    }
+    let child = Command::new("/bin/sh")
+        .args([
+            "-c",
+            "umask 000; exec \"$@\"",
+            "admin-test",
+            env!("CARGO_BIN_EXE_mct-daemon"),
+            "passkey-admin",
+            "serve-iroh",
+        ])
+        .args(common)
+        .args(["--ticket-output", ticket.to_str().unwrap()])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut server = AdminServer(child);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !ticket.exists() {
+        assert!(
+            server.0.try_wait().unwrap().is_none(),
+            "resident exited before ready"
+        );
+        assert!(
+            std::time::Instant::now() < until,
+            "resident startup timeout"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    server
+}
 #[test]
 fn passkey_cli_bootstrap_issue_sign_status_revoke_and_legacy_denial() {
+    exercise_adapters(false);
+}
+#[test]
+fn passkey_resident_iroh_verifies_signatures_nonce_target_scope_and_revocation_after_restart() {
+    exercise_adapters(true);
+}
+fn exercise_adapters(resident: bool) {
     let d = tempfile::tempdir().unwrap();
     let root = d.path().join("mother");
     private_fs::ensure_directory(&root).unwrap();
@@ -85,6 +132,17 @@ fn passkey_cli_bootstrap_issue_sign_status_revoke_and_legacy_denial() {
             .rebuild_authority_projection(&ledger.entries().unwrap())
             .is_err()
     );
+    let ticket = d.path().join("admin-ticket.json");
+    let mut server = resident.then(|| start_server(&common, &ticket));
+    let apply = if resident {
+        [
+            &["send-iroh", "--ticket", ticket.to_str().unwrap()][..],
+            &request_args,
+        ]
+        .concat()
+    } else {
+        [&["apply"][..], &common, &request_args].concat()
+    };
     let public = ok(&["day-keygen", "--secret-output", secret.to_str().unwrap()]);
     assert!(
         !call(&["day-keygen", "--secret-output", secret.to_str().unwrap()])
@@ -106,7 +164,7 @@ fn passkey_cli_bootstrap_issue_sign_status_revoke_and_legacy_denial() {
     ]
     .concat());
     put(&request, &sign_root(prepared, &key));
-    ok(&[&["apply"][..], &common, &request_args].concat());
+    ok(&apply);
     for revoked in [false, true] {
         put(
             &action,
@@ -128,8 +186,53 @@ fn passkey_cli_bootstrap_issue_sign_status_revoke_and_legacy_denial() {
             "--secret",
             secret.to_str().unwrap(),
         ]);
+        if resident && !revoked {
+            let mut invalid = signed.clone();
+            invalid["proof"]["signature"] = "00".repeat(64).into();
+            put(&request, &invalid);
+            assert!(
+                !call(&apply).status.success(),
+                "transport identity cannot authorize"
+            );
+            for (field, value) in [
+                ("mother_node_id", "wrong-mother"),
+                ("ledger_id", "wrong-ledger"),
+            ] {
+                let mut other = prepared["intent"].clone();
+                other[field] = value.into();
+                put(&intent, &other);
+                let signed_other = ok(&[
+                    "sign-day",
+                    "--intent",
+                    intent.to_str().unwrap(),
+                    "--grant",
+                    "day",
+                    "--secret",
+                    secret.to_str().unwrap(),
+                ]);
+                put(&request, &signed_other);
+                assert!(!call(&apply).status.success());
+            }
+            let mut other = prepared["intent"].clone();
+            other["action"]["scope"] = "key_manage".into();
+            put(&intent, &other);
+            let signed_other = ok(&[
+                "sign-day",
+                "--intent",
+                intent.to_str().unwrap(),
+                "--grant",
+                "day",
+                "--secret",
+                secret.to_str().unwrap(),
+            ]);
+            put(&request, &signed_other);
+            assert!(
+                !call(&apply).status.success(),
+                "wire scope cannot choose route policy"
+            );
+        }
         put(&request, &signed);
-        let result = call(&[&["apply"][..], &common, &request_args].concat());
+        let result = call(&apply);
         assert_eq!(
             result.status.success(),
             !revoked,
@@ -137,6 +240,10 @@ fn passkey_cli_bootstrap_issue_sign_status_revoke_and_legacy_denial() {
             String::from_utf8_lossy(&result.stderr)
         );
         if !revoked {
+            assert!(
+                !call(&apply).status.success(),
+                "committed nonce cannot replay"
+            );
             put(
                 &action,
                 &json!({"action":"revoke_day_key","grant_id":"day"}),
@@ -148,7 +255,11 @@ fn passkey_cli_bootstrap_issue_sign_status_revoke_and_legacy_denial() {
             ]
             .concat());
             put(&request, &sign_root(prepared, &key));
-            ok(&[&["apply"][..], &common, &request_args].concat());
+            ok(&apply);
+            if resident {
+                drop(server.take());
+                server = Some(start_server(&common, &ticket));
+            }
         }
     }
 }

@@ -1,5 +1,7 @@
 use super::*;
 
+mod admin;
+pub(super) use admin::run_passkey_admin_server;
 mod observation;
 #[cfg(test)]
 pub(crate) use observation::TestAuthorityMutationFailure;

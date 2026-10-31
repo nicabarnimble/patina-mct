@@ -6,10 +6,12 @@ code/tests remain; no old ledger is automatically promoted or rewritten.
 ## Current adapter
 
 `mct-daemon passkey-admin` supports explicit bootstrap, signed lease issuance,
-revocation and `/status`. Other scoped commands have a canonical BeforeEffect
-host API but **are not connected to resident command adapters or Iroh yet**.
-The existing UID/offline daemon refuses passkey-profile ledgers. This is not a
-completed resident F1 cutover or a claim of hosted 1Password testing.
+revocation and `/status`, locally or through the admin-only resident Iroh mode.
+`mct/admin/1` never treats an EndpointId, peer hello or UID as admin authority.
+The same resident ledger actor serializes verification, nonce consumption,
+revocation and required durability. Other command adapters and the full
+Child/Toy runtime cutover remain unbuilt: the legacy runtime still refuses
+passkey ledgers. No live 1Password validation is claimed.
 
 1. On an operator-controlled HTTPS RP origin, import `scripts/passkey-admin.mjs`
    and call `registerRoot(rpId, userName)`. Choose 1Password in the browser.
@@ -46,6 +48,74 @@ not permission to retry an effect: complete surviving frames consume nonces.
 Registration is an explicit operator trust boundary; no attestation CA policy,
 root rotation, persistent external rollback anchor or hosted browser integration
 is claimed. Synced passkey counters are not treated as monotonic freshness.
+
+## Resident Iroh key-management slice
+
+After bootstrap, run:
+```sh
+cargo run -p mct-daemon -- passkey-admin serve-iroh \
+  --root "$HOME/.mct-passkey" --mother mother-a --ledger-id ledger-a \
+  --ticket-output "$HOME/.mct-passkey/admin-ticket.json"
+```
+This is admin-only (no Child runtime, peer ALPN, UID listener or offline fallback).
+Start it **before** preparing intents: every restart establishes a fresh epoch.
+Prepare/sign using the steps above, then send instead of applying locally:
+```sh
+cargo run -p mct-daemon -- passkey-admin send-iroh \
+  --ticket "$HOME/.mct-passkey/admin-ticket.json" --request SIGNED.json
+```
+The initial transport is direct/relay-disabled. Preparing intents currently
+requires local access to the canonical ledger; remote snapshot acquisition is
+not implemented. Ctrl-C closes serving and drains the ledger actor. An uncertain
+reply is not permission to retry. Unmigrated routes deny, not route to legacy
+mutation helpers.
+
+## Doug's real 1Password tap test
+
+Prerequisites: Chrome with the 1Password extension enabled/unlocked, Python 3,
+and `mkcert`. The CA installation below is an explicit operator action, not
+something the agent runs. Use a fresh test root; do not migrate an existing RP pin.
+
+```sh
+mkdir -p -m 700 "$HOME/.mct-passkey-tap"
+mkcert -install
+mkcert -cert-file "$HOME/.mct-passkey-tap/cert.pem" -key-file "$HOME/.mct-passkey-tap/key.pem" mct.localhost
+python3 scripts/serve-passkey-tap.py --cert "$HOME/.mct-passkey-tap/cert.pem" --key "$HOME/.mct-passkey-tap/key.pem"
+```
+
+In another terminal:
+```sh
+open -a "Google Chrome" https://mct.localhost:8443
+```
+
+Click **Register a new passkey root**, selecting 1Password. Install the downloaded
+`registered-root.json` as a private pin (0600 in a private directory), then use
+the prepare-genesis command above. Save its output as private `prepared.json`.
+On the page, select that file, inspect the target/scope/expiry, and click
+**Sign the reviewed intent**. The real tap must return a downloaded
+`signed-admin.json`; provision it privately before passing it to `bootstrap`.
+For a fresh local test, after downloading the registration:
+```sh
+umask 077
+mkdir -m 700 "$HOME/.mct-passkey-tap/mother"
+install -m 600 "$HOME/Downloads/registered-root.json" "$HOME/.mct-passkey-tap/registered-root.json"
+cargo run -p mct-daemon -- passkey-admin prepare-genesis --root "$HOME/.mct-passkey-tap/mother" --mother mother-a --ledger-id ledger-a --registered-root "$HOME/.mct-passkey-tap/registered-root.json" > "$HOME/.mct-passkey-tap/prepared.json"
+```
+Upload that prepared file to the page and tap. Then, selecting the newly
+downloaded assertion (not an older duplicate download):
+```sh
+install -m 600 "$HOME/Downloads/signed-admin.json" "$HOME/.mct-passkey-tap/signed-admin.json"
+cargo run -p mct-daemon -- passkey-admin bootstrap --root "$HOME/.mct-passkey-tap/mother" --mother mother-a --ledger-id ledger-a --registered-root "$HOME/.mct-passkey-tap/registered-root.json" --request "$HOME/.mct-passkey-tap/signed-admin.json"
+```
+Repeat prepare/sign for day-key issuance, then use `send-iroh` for the resident,
+substituting this test Mother's root in the resident commands above.
+
+The page is loopback-only HTTPS and serves only three fixed assets. Pins,
+intents and assertions stay in browser-selected files; it has no upload or
+Mother mutation endpoint. A browser must trust the certificate; do not bypass
+certificate errors. This is a manual-test harness, not a production HTTPS
+administration service. Actual 1Password prompts/registration/assertions remain
+unverified until Doug runs this test.
 
 ## Checks
 

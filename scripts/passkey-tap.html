@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>MCT passkey tap test</title>
+<h1>MCT passkey tap test</h1>
+<p>Local manual test, not a production admin server. Choose 1Password in the browser prompt.</p>
+<p>Register only for a fresh root. Inspect and install the public pin separately; this page never applies administrative changes.</p>
+<label>Operator name <input id="name" value="operator"></label>
+<button id="register">Register a new passkey root</button>
+<hr>
+<label>Prepared intent JSON <input id="prepared" type="file" accept=".json,application/json"></label>
+<pre id="review">Load a prepared intent, inspect its exact target, scope and expiry, then sign.</pre>
+<button id="sign" disabled>Sign the reviewed intent</button>
+<pre id="result"></pre>
+<script type="module" src="/tap.mjs"></script>
+</html>

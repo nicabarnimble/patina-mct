@@ -20,6 +20,9 @@ New review material (not part of the historical import):
 
 - [durable-task-boundary.md](durable-task-boundary.md) — proposed task,
   invocation, effect, and checkpoint contract; not ratified or implemented.
+- [sqlite-write-patterns-and-group-commit.md](sqlite-write-patterns-and-group-commit.md) — 2026-10-30
+  observation: SQLite and ledger write patterns, and why pi-durable group
+  commit doesn't matter for MCT yet.
 - [../SECURITY-BOUNDARIES.md](../SECURITY-BOUNDARIES.md) — current guarantees,
   limitations, and decisions still needed before admin cutover.
 
