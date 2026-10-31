@@ -100,13 +100,24 @@ Doug's live rerun. The page offers at most one explicit retry after NotAllowedEr
 which can mean refusal/cancellation as well as a gesture restriction.
 
 Only the private Unix socket can enqueue work. The HTTPS page exchanges a
-one-use fragment capability for an HttpOnly cookie and can return only the exact
-queued intent. See [the queue contract](design/passkey-approval-queue.md) for
+one-use fragment capability for an HttpOnly cookie and a separate page identity.
+Each offer belongs to that page and has a renewable 30-second lease. Completion
+must match the current page, offer capability and exact queued intent. See [the queue contract](design/passkey-approval-queue.md) for
 states, limits, failure handling and trust boundaries. Keep the page focused.
 Preparation is just in time, not an extension of Mother's five-minute window.
 If Doug leaves an already visible prompt, it can still expire. An expired attempt
-stops without automatic resubmission. Cancel the waiting CLI and inspect canonical
-state before a new command after any lost reply, reload or interrupted run.
+stops without automatic resubmission. If a page disappears or stops responding
+before delivery, run `passkey-approve.py --session SESSION open` again. New page
+authentication fences the old page immediately. The same unsigned job becomes
+available after cancellation acknowledgement or lease expiry. Do not restart the
+demo for this handoff. A root intent keeps its original expiry. Inspect canonical
+state before any retry after a lost submission reply or interrupted run.
+
+The page cancels WebAuthn when hidden or unloaded, or when it loses its lease.
+A frozen external provider UI cannot be forcibly dismissed by the broker, but its
+stale result is always refused. An active broker from an older revision does not
+acquire this protocol through source edits; start a matching broker only after
+finishing the existing live run.
 
 ## Original manual 1Password tap test
 

@@ -15,6 +15,7 @@ import time
 from urllib.parse import urlsplit
 
 LIMIT = 96 * 1024
+OFFER_LEASE_SECONDS = 30
 ROOT = Path(__file__).resolve().parent
 
 
@@ -87,6 +88,13 @@ class Phase(str, Enum):
 
 
 @dataclass
+class Offer:
+    id: str
+    page_id: str
+    deadline: float
+
+
+@dataclass
 class Job:
     id: str
     kind: str
@@ -94,10 +102,17 @@ class Job:
     deadline: float
     phase: Phase = Phase.QUEUED
     prepared: dict | None = None
+    offer: Offer | None = None
 
     def view(self):
         return {"id": self.id, "kind": self.kind, "name": self.name,
-                "phase": self.phase, "prepared": self.prepared}
+                "phase": self.phase, "prepared": self.prepared,
+                "offer": self.offer.id if self.offer else None,
+                "lease_ms": OFFER_LEASE_SECONDS * 1000}
+
+    def release(self):
+        self.offer = None
+        self.phase = Phase.QUEUED if self.kind == "registration" else Phase.PREPARED
 
 
 class Broker:
@@ -114,11 +129,15 @@ class Broker:
         self.page_token = None
         self.token_deadline = 0
         self.cookie = None
+        self.page_id = None
 
     def expire(self):
+        current = time.monotonic()
         for job in self.jobs.values():
-            if time.monotonic() >= job.deadline and job.phase not in (Phase.TAKEN, Phase.FAILED):
+            if current >= job.deadline and job.phase not in (Phase.TAKEN, Phase.FAILED):
                 job.phase = Phase.FAILED
+            elif job.phase == Phase.OFFERED and current >= job.offer.deadline:
+                job.release()
 
     def cli(self, request):
         with self.lock:
@@ -170,26 +189,42 @@ class Broker:
                 raise ValueError("invalid page capability")
             self.page_token = None
             self.cookie = secrets.token_urlsafe(32)
-            return self.cookie
+            self.page_id = secrets.token_urlsafe(32)
+            return {"cookie": self.cookie, "page_id": self.page_id}
 
-    def page(self, op, request, cookie):
+    def page(self, op, request, cookie, page_id):
         with self.lock:
-            if not self.cookie or not secrets.compare_digest(cookie, self.cookie):
-                raise ValueError("unauthenticated page")
             self.expire()
+            if op == "release":
+                # A superseded page may acknowledge cancellation using only its
+                # old offer capability. It cannot renew or complete that offer.
+                job = self.owned_offer(request, page_id)
+                job.release()
+                return job.view()
+            if (not self.cookie or not secrets.compare_digest(cookie, self.cookie)
+                    or not secrets.compare_digest(page_id, self.page_id)):
+                raise ValueError("unauthenticated page")
             active = next((j for j in self.jobs.values()
                            if j.phase in (Phase.QUEUED, Phase.READY, Phase.PREPARED, Phase.OFFERED)), None)
             if op == "next":
-                if active is None or active.phase == Phase.OFFERED:
+                if active is None:
                     return None
+                if active.phase == Phase.OFFERED:
+                    return {"phase": "waiting", "wait_ms": max(0, int(
+                        (active.offer.deadline - time.monotonic()) * 1000))}
                 if active.phase == Phase.QUEUED:
                     active.phase = Phase.READY
                 if active.kind == "registration" or active.phase == Phase.PREPARED:
                     active.phase = Phase.OFFERED
+                    active.offer = Offer(secrets.token_urlsafe(32), page_id,
+                                         time.monotonic() + OFFER_LEASE_SECONDS)
                 return active.view()
-            job = self.jobs[request["id"]]
+            job = self.owned_offer(request, page_id)
             if job is not active:
                 raise ValueError("not the active operation")
+            if op == "renew":
+                job.offer.deadline = time.monotonic() + OFFER_LEASE_SECONDS
+                return {"lease_ms": OFFER_LEASE_SECONDS * 1000}
             if op == "fail":
                 job.phase = Phase.FAILED
                 return job.view()
@@ -209,9 +244,21 @@ class Broker:
                     raise ValueError("assertion substitution")
             else:
                 raise ValueError("invalid page transition")
-            write_new(self.directory / (job.id + ".json"), result)
+            try:
+                write_new(self.directory / (job.id + ".json"), result)
+            except OSError:
+                job.phase = Phase.FAILED
+                raise
             job.phase = Phase.SIGNED
             return job.view()
+
+    def owned_offer(self, request, page_id):
+        job = self.jobs[request["id"]]
+        if (job.phase != Phase.OFFERED or job.offer is None
+                or not secrets.compare_digest(page_id, job.offer.page_id)
+                or not secrets.compare_digest(request.get("offer", ""), job.offer.id)):
+            raise ValueError("stale or unowned offer")
+        return job
 
 
 def receive(stream):
@@ -337,13 +384,14 @@ class Service:
                         raise ValueError("incomplete body")
                     request = loads(body)
                     if self.path == "/api/session":
-                        cookie = broker.authenticate(request["token"])
-                        return self.reply(200, {}, cookie=cookie)
+                        session = broker.authenticate(request["token"])
+                        return self.reply(200, {"page_id": session["page_id"]}, cookie=session["cookie"])
                     cookies = SimpleCookie(self.headers.get("Cookie", ""))
                     cookie = cookies["__Host-mct"].value if "__Host-mct" in cookies else ""
-                    if self.path not in ("/api/next", "/api/complete", "/api/fail"):
+                    if self.path not in ("/api/next", "/api/complete", "/api/fail", "/api/renew", "/api/release"):
                         raise ValueError("unknown route")
-                    result = broker.page(self.path.removeprefix("/api/"), request, cookie)
+                    result = broker.page(self.path.removeprefix("/api/"), request, cookie,
+                                         self.headers.get("X-MCT-Page", ""))
                     self.reply(200, result)
                 except (ValueError, KeyError, TypeError, RecursionError, OSError):
                     self.reply(400, {"error": "request refused"})

@@ -50,8 +50,15 @@ The day-key status calls need no passkey approval. The demo stops Mother cleanly
 Then Ctrl-C the broker in terminal 1. Preserve this private directory; do not
 upload it. It contains the day-key secret, TLS key, signed requests and replies.
 
-Preparation waits for the page, but an already displayed prompt still has a
-five-minute limit. On expiry or failure, stop and inspect. Do not rerun the demo
-against its existing run directory or automatically retry an uncertain action.
+For a broker started with this revision, an abandoned page no longer requires
+killing the run. Run only the `open` command again. Keep the demo and broker
+running. The new page takes over the unsigned job after the previous page cancels
+or its 30-second lease expires. Late completions from the old page are refused.
+Do not restart an active older broker to apply source changes during a live run.
+
+Preparation waits for the page, but an already displayed root intent still has
+its original five-minute limit. Handoff does not extend it. On intent expiry or
+uncertain submission, stop and inspect. Do not rerun the demo against its existing
+run directory or automatically retry an uncertain action.
 Report any provider-selection, unlock, or extra confirmation UI separately from
 the three root approvals. Actual 1Password behavior is the point of this rerun.

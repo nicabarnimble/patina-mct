@@ -62,8 +62,9 @@ class CDP {
   }
 }
 
-for (const forcedFallback of [false, true]) {
-test(forcedFallback ? 'Chrome ceremony with a simulated provider refusal and one Approve click per root action'
+for (const [forcedFallback, handoff] of [[false, false], [true, false], [false, true]]) {
+test(handoff ? 'CDP reauthentication cancels an owned registration before its replacement completes the same job'
+  : forcedFallback ? 'Chrome ceremony with a simulated provider refusal and one Approve click per root action'
   : 'Chrome approvals-only genesis issue status revoke and fresh refusal across restart', {timeout: 120000}, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'mct-approval-e2e-'));
   const session = join(directory, 'session');
@@ -93,7 +94,8 @@ test(forcedFallback ? 'Chrome ceremony with a simulated provider refusal and one
     await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, {once: true}); socket.addEventListener('error', reject, {once: true}); });
     cdp = new CDP(socket);
     const version = await cdp.call('Browser.getVersion');
-    const {targetId} = await cdp.call('Target.createTarget', {url: 'about:blank'});
+    async function createPage(presence) {
+    const {targetId} = await cdp.call('Target.createTarget', {url: 'about:blank', newWindow: true});
     const {sessionId} = await cdp.call('Target.attachToTarget', {targetId, flatten: true});
     const page = (method, params = {}) => cdp.call(method, params, sessionId);
     await page('Page.enable');
@@ -101,9 +103,18 @@ test(forcedFallback ? 'Chrome ceremony with a simulated provider refusal and one
     await cdp.call('Browser.setDownloadBehavior', {behavior: 'deny', eventsEnabled: true});
     await page('WebAuthn.enable', {enableUI: false});
     await page('WebAuthn.addVirtualAuthenticator', {options: {protocol: 'ctap2', transport: 'internal',
-      hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true}});
+      hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: presence}});
     await page('Page.addScriptToEvaluateOnNewDocument', {source: `
-      window.ceremonyMetrics = {gets: 0, creates: 0, gestures: [], approveClicks: 0};
+      window.ceremonyMetrics = {gets: 0, creates: 0, gestures: [], approveClicks: 0, active: 0, aborted: 0, offers: []};
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = async (...args) => {
+        const response = await originalFetch(...args);
+        if (args[0] === '/api/next' && response.ok) {
+          const job = await response.clone().json();
+          if (job?.phase === 'offered') ceremonyMetrics.offers.push({id:job.id, offer:job.offer});
+        }
+        return response;
+      };
       const refusedChallenges = new Set();
       for (const method of ['get', 'create']) {
         const original = navigator.credentials[method].bind(navigator.credentials);
@@ -115,13 +126,25 @@ test(forcedFallback ? 'Chrome ceremony with a simulated provider refusal and one
           }
           ceremonyMetrics[method === 'get' ? 'gets' : 'creates']++;
           ceremonyMetrics.gestures.push(navigator.userActivation.isActive);
-          return original(...args);
+          ceremonyMetrics.firstStartedAt ??= Date.now();
+          ceremonyMetrics.active++;
+          return original(...args).catch(error => {
+            if (args[0].signal?.aborted) {
+              ceremonyMetrics.aborted++;
+              ceremonyMetrics.abortedAt = Date.now();
+            }
+            throw error;
+          }).finally(() => { ceremonyMetrics.active--; });
         };
       }
       document.addEventListener('click', event => {
         if (event.target.id === 'approve') ceremonyMetrics.approveClicks++;
       });
     `});
+    return page;
+    }
+    let page = await createPage(!handoff);
+    let oldPage;
     const runDirectory = join(directory, 'run');
     const binary = resolve(process.env.MCT_BINARY || 'target/debug/mct-daemon');
     demo = spawn('python3', ['scripts/passkey-approval-demo.py', '--session', session, '--directory', runDirectory, '--binary', binary], {detached: true});
@@ -138,6 +161,18 @@ test(forcedFallback ? 'Chrome ceremony with a simulated provider refusal and one
     const openedAt = Date.now();
     await page('Page.navigate', {url: JSON.parse(stdout).url});
     await page('Page.bringToFront');
+    if (handoff) {
+      await eventually(async () => {
+        const result = await page('Runtime.evaluate', {expression: 'ceremonyMetrics.active', returnByValue: true});
+        assert.equal(result.result.value, 1);
+      });
+      oldPage = page;
+      page = await createPage(true);
+      const reopened = await exec('python3', ['-c',
+        'import sys,json; sys.path.insert(0,"scripts"); from passkey_queue import rpc; print(json.dumps(rpc(sys.argv[1],{"op":"open"})))', session]);
+      await page('Page.navigate', {url: JSON.parse(reopened.stdout).url});
+      await page('Page.bringToFront');
+    }
     await eventually(async () => {
       const result = await page('Runtime.evaluate', {expression: 'document.getElementById("state")?.textContent', returnByValue: true});
       if (demo.exitCode !== null && demo.exitCode !== 0) throw new Error(errors);
@@ -161,6 +196,17 @@ test(forcedFallback ? 'Chrome ceremony with a simulated provider refusal and one
       signButtons: [...document.querySelectorAll('button')].filter(b => /sign/i.test(b.textContent)).length,
       fragment: location.hash, cookie: document.cookie})`, returnByValue: true});
     const metrics = JSON.parse(result.value);
+    if (handoff) {
+      const oldResult = await oldPage('Runtime.evaluate', {expression: 'JSON.stringify(ceremonyMetrics)', returnByValue: true});
+      const oldMetrics = JSON.parse(oldResult.result.value);
+      assert.equal(oldMetrics.creates, 1);
+      assert.equal(oldMetrics.aborted, 1);
+      assert.equal(oldMetrics.active, 0);
+      assert(oldMetrics.abortedAt <= metrics.firstStartedAt, 'replacement prompted before the old WebAuthn promise settled');
+      assert(oldMetrics.offers[0].id === metrics.offers[0].id, 'handoff changed the queued job');
+      assert(oldMetrics.offers[0].offer !== metrics.offers[0].offer, 'handoff reused an old offer capability');
+    }
+    assert.equal(metrics.active, 0);
     assert.equal(metrics.gets, 3);
     assert.equal(metrics.creates, 1);
     assert.equal(metrics.approveClicks, forcedFallback ? 3 : 0);

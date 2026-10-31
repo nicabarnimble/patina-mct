@@ -66,12 +66,18 @@ class QueueTests(unittest.TestCase):
         self.broker = Broker(self.directory.name, ORIGIN)
         token = self.broker.cli({"op": "open"})["url"].split("#")[1]
         self.cookie = self.broker.authenticate(token)
+        self.offers = {}
 
     def queue(self):
         return self.broker.cli({"op": "enqueue", "kind": "assertion"})["id"]
 
     def page(self, op, **args):
-        return self.broker.page(op, args, self.cookie)
+        if "id" in args:
+            args.setdefault("offer", self.offers.get(args["id"], ""))
+        result = self.broker.page(op, args, **self.cookie)
+        if result and result.get("phase") == "offered":
+            self.offers[result["id"]] = result["offer"]
+        return result
 
     def test_queue_requires_foreground_claim_before_prepare_and_single_take(self):
         job_id = self.queue()
@@ -83,10 +89,13 @@ class QueueTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.page("complete", id=job_id, result=signed(prepared()))
         self.assertEqual(self.page("next")["phase"], "offered")
-        self.assertIsNone(self.page("next"), "a second tab must not receive the same ceremony")
+        self.assertEqual(self.page("next")["phase"], "waiting",
+                         "a second tab must not receive the same ceremony")
         self.page("complete", id=job_id, result=signed(prepared()))
         with self.assertRaises(ValueError):
             self.page("complete", id=job_id, result=signed(prepared()))
+        with self.assertRaises(ValueError):
+            self.page("release", id=job_id)
         path = Path(self.broker.cli({"op": "take", "id": job_id})["path"])
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(read_private(path), signed(prepared()))
@@ -160,20 +169,79 @@ class QueueTests(unittest.TestCase):
     def test_silent_offered_page_can_be_replaced_without_accepting_its_late_completion(self):
         job_id = self.broker.cli({"op": "enqueue", "kind": "registration"})["id"]
         page_a = self.cookie
-        self.assertEqual(self.page("next")["phase"], "offered")
+        offer_a = self.page("next")
+        self.assertEqual(offer_a["phase"], "offered")
         token = self.broker.cli({"op": "open"})["url"].split("#")[1]
         self.cookie = self.broker.authenticate(token)
+        self.assertEqual(self.page("next")["phase"], "waiting")
         with patch("passkey_queue.time.monotonic", return_value=time.monotonic() + 31):
             offered = self.page("next")
             self.assertIsNotNone(offered, "an orphaned offer blocked the replacement page")
             self.assertEqual(offered["id"], job_id)
+            self.assertNotEqual(offered["offer"], offer_a["offer"])
             result = {"rp_id": "mct.localhost", "origin": ORIGIN,
                       "credential_id": "registration-fixture", "public_key_sec1": "fixture"}
             with self.assertRaises(ValueError):
-                self.broker.page("complete", {"id": job_id, "result": result}, page_a)
+                self.broker.page("complete", {"id": job_id, "offer": offer_a["offer"],
+                                              "result": result}, **page_a)
             self.page("complete", id=job_id, result=result)
             path = self.broker.cli({"op": "take", "id": job_id})["path"]
             self.assertEqual(read_private(path), result)
+            with self.assertRaises(ValueError):
+                self.broker.page("complete", {"id": job_id, "offer": offer_a["offer"],
+                                              "result": result}, **page_a)
+            self.assertEqual(read_private(path), result)
+
+    def test_reauthentication_fences_shared_cookies_and_waits_for_cancellation(self):
+        job_id = self.queue()
+        self.page("next")
+        self.broker.cli({"op": "publish", "id": job_id, "prepared": prepared()})
+        offer_a = self.page("next")
+        page_a = self.cookie
+        token = self.broker.cli({"op": "open"})["url"].split("#")[1]
+        self.cookie = self.broker.authenticate(token)
+        self.assertEqual(self.page("next")["phase"], "waiting")
+        old_request = {"id": job_id, "offer": offer_a["offer"]}
+        with self.assertRaises(ValueError):
+            self.broker.page("renew", old_request, **page_a)
+        with self.assertRaises(ValueError):
+            self.broker.page("complete", dict(old_request, result=signed(prepared())),
+                             cookie=self.cookie["cookie"], page_id=page_a["page_id"])
+        with self.assertRaises(ValueError):
+            self.broker.page("release", old_request, **self.cookie)
+        self.broker.page("release", old_request, **page_a)
+        offer_b = self.page("next")
+        self.assertEqual(offer_b["id"], job_id)
+        self.assertEqual(offer_b["prepared"], prepared())
+        self.assertNotEqual(offer_b["offer"], offer_a["offer"])
+        for op in ("renew", "release", "complete"):
+            with self.assertRaises(ValueError):
+                self.broker.page(op, dict(old_request, result=signed(prepared())), **page_a)
+        self.page("complete", id=job_id, result=signed(prepared()))
+        path = self.broker.cli({"op": "take", "id": job_id})["path"]
+        self.assertEqual(read_private(path), signed(prepared()))
+
+    def test_heartbeat_renews_only_current_offer_and_expiry_fences_same_page(self):
+        start = time.monotonic()
+        with patch("passkey_queue.time.monotonic", return_value=start):
+            job_id = self.broker.cli({"op": "enqueue", "kind": "registration"})["id"]
+            offered = self.page("next")
+        with patch("passkey_queue.time.monotonic", return_value=start + 25):
+            self.assertEqual(self.page("renew", id=job_id)["lease_ms"], 30000)
+        with patch("passkey_queue.time.monotonic", return_value=start + 31):
+            self.assertEqual(self.page("next")["phase"], "waiting")
+        with patch("passkey_queue.time.monotonic", return_value=start + 55):
+            with self.assertRaises(ValueError):
+                self.page("renew", id=job_id)
+            replacement = self.page("next")
+            self.assertEqual(replacement["id"], job_id)
+            self.assertNotEqual(replacement["offer"], offered["offer"])
+            with self.assertRaises(ValueError):
+                self.page("release", id=job_id, offer=offered["offer"])
+            with self.assertRaises(ValueError):
+                self.page("complete", id=job_id, offer=offered["offer"], result={
+                    "rp_id": "mct.localhost", "origin": ORIGIN,
+                    "credential_id": "registration-fixture", "public_key_sec1": "fixture"})
 
     def test_existing_artifact_is_never_overwritten(self):
         job_id = self.queue()
@@ -185,6 +253,7 @@ class QueueTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             self.page("complete", id=job_id, result=signed(prepared()))
         self.assertEqual(path.read_text(), "existing evidence")
+        self.assertEqual(self.broker.cli({"op": "status", "id": job_id})["phase"], "failed")
 
 
 class HTTPTests(unittest.TestCase):
@@ -214,11 +283,13 @@ class HTTPTests(unittest.TestCase):
                     self.assertEqual(server.server_address[0], "127.0.0.1")
                     self.assertEqual(post("/api/next", {})[0], 400)
                     url = rpc(directory, {"op": "open"})["url"]
-                    status, headers, _ = post("/api/session", {"token": url.split("#")[1]})
+                    status, headers, body = post("/api/session", {"token": url.split("#")[1]})
                     self.assertEqual(status, 200)
                     cookie = dict(headers)["Set-Cookie"]
                     self.assertIn("Secure; HttpOnly; SameSite=Strict", cookie)
-                    self.assertEqual(post("/api/next", {}, Cookie=cookie)[0], 200)
+                    page_header = {"X-MCT-Page": json.loads(body)["page_id"]}
+                    self.assertEqual(post("/api/next", {}, Cookie=cookie)[0], 400)
+                    self.assertEqual(post("/api/next", {}, Cookie=cookie, **page_header)[0], 200)
                     for route, data, headers in [
                         ("/api/next", {}, {"Host": "evil.test"}),
                         ("/api/next", {}, {"Origin": "https://evil.test"}),
@@ -226,7 +297,7 @@ class HTTPTests(unittest.TestCase):
                         ("/api/next", {}, {"Content-Length": str(LIMIT + 1)}),
                         ("/api/next", {}, {"Content-Type": "text/plain"}),
                     ]:
-                        self.assertEqual(post(route, data, Cookie=cookie, **headers)[0], 400)
+                        self.assertEqual(post(route, data, Cookie=cookie, **page_header, **headers)[0], 400)
                     self.assertFalse(service.broker.jobs)
                 finally:
                     server.shutdown()

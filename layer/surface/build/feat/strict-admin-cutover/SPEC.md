@@ -55,8 +55,11 @@ that intent and calls WebAuthn automatically. The CLI consumes the matching priv
 assertion once and submits it through existing bootstrap/Iroh paths. Existing
 expiry, nonvirgin storage and uncertain-submission refusals remain unchanged.
 See `docs/design/passkey-approval-queue.md` and `docs/passkey-approval-RUN.md`.
-The CDP test covers the complete ceremony and both fresh post-revocation
-refusals. Virtual authentication is not evidence of actual 1Password UI behavior.
+Offers are bound to a page identity and renewable lease. Reauthentication fences
+old completions and transfers unsigned work only after cancellation acknowledgement
+or lease expiry. Signed requests remain single-consumption, and handoff cannot
+extend an intent's expiry. The CDP tests cover the complete ceremony, both fresh
+post-revocation refusals, and cancellation before a replacement page prompts. Virtual authentication is not evidence of actual 1Password UI behavior.
 
 ## Archived hybrid slice
 
