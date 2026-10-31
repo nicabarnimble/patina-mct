@@ -363,7 +363,7 @@ fn admin_genesis_replay_rejects_grafting_after_legacy_or_noncanonical_prefix() {
         };
         // Bypass the typed writer deliberately to test independent semantic replay.
         writer
-            .append_before_effect(fact.observation().unwrap(), time(0).to_string())
+            .append_canonical_before_effect(fact.observation().unwrap(), time(0).to_string())
             .unwrap();
         assert!(replay_authority_entries(&writer.entries().unwrap()).is_err());
     }

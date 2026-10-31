@@ -15,7 +15,7 @@ mod serve;
 mod test_support;
 
 pub use endpoint::{
-    MotherIrohEndpoint, MotherIrohEndpointConfig, MotherIrohEndpointError,
+    MotherIrohClient, MotherIrohEndpoint, MotherIrohEndpointConfig, MotherIrohEndpointError,
     MotherIrohEndpointLifecycle, MotherIrohEndpointResult, MotherIrohEndpointSnapshot,
     MotherIrohEndpointTicket, MotherIrohRelayMode,
 };
@@ -29,9 +29,10 @@ pub use serve::{
     MCT_CALL_FRAME_READ_BUDGET_BYTES, MCT_INLINE_PAYLOAD_MAX_BYTES,
     MCT_RESULT_INLINE_PAYLOAD_MAX_BYTES, MctHelloCapabilityViewProvider, MctIrohCallHandlerResult,
     MctIrohCallLifecycleFact, MctIrohCallLifecycleStage, MctIrohCallPayloadReply,
-    MctIrohConcurrentServeConfig, MctIrohObservationBatch, MctIrohObservationDurability,
-    MctIrohObservationFact, MctIrohObservationSink, MctIrohPeerCallReport,
-    MctIrohReceiverAuthorityProvider, MctIrohServeEvent, MctIrohServeState, MctIrohServedProtocol,
+    MctIrohConcurrentServeConfig, MctIrohIngressHealth, MctIrohObservationBatch,
+    MctIrohObservationDurability, MctIrohObservationFact, MctIrohObservationSink,
+    MctIrohPeerCallReport, MctIrohReceiverAuthorityProvider, MctIrohServeEvent, MctIrohServeState,
+    MctIrohServedProtocol,
 };
 
 #[cfg(test)]
@@ -69,6 +70,11 @@ mod tests {
         static SINK: OnceLock<MctIrohObservationSink> = OnceLock::new();
         SINK.get_or_init(|| MctIrohObservationSink::new(|_| async { Ok::<_, std::io::Error>(()) }))
     }
+
+    mod call_origin;
+    mod hello_receipts;
+    mod ingress;
+    mod peer_boundaries;
 
     #[test]
     fn exposes_version() {
@@ -417,7 +423,7 @@ mod tests {
         assert!(matches!(
             served,
             Err(MotherIrohEndpointError::ProtocolTimeout {
-                action: "serve incoming MCT connection"
+                action: "incoming first stream"
             })
         ));
         server.close().await;
@@ -439,13 +445,19 @@ mod tests {
                 .connect(server_addr, MCT_CALL_ALPN.as_bytes())
                 .await
                 .unwrap();
-            let (mut send, _recv) = connection.open_bi().await.unwrap();
+            let (mut send, mut recv) = connection.open_bi().await.unwrap();
             send.write_all(&vec![b'x'; MCT_CALL_FRAME_READ_BUDGET_BYTES + 1])
                 .await
                 .unwrap();
             send.finish().unwrap();
-            drop(send);
-            connection.close(0u32.into(), b"oversized request sent");
+            // Await rejection, rather than racing a client close against the read.
+            let bytes = recv
+                .read_to_end(MCT_CALL_FRAME_READ_BUDGET_BYTES)
+                .await
+                .unwrap();
+            let reply: MctCallProtocolReply = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(reply.reply_outcome, CallProtocolReplyOutcome::Malformed);
+            connection.close(0u32.into(), b"oversized request rejected");
         });
         let mut state = MctIrohServeState::new();
         let served = server
@@ -459,15 +471,10 @@ mod tests {
             )
             .await;
 
-        let _ = raw_client_task.await;
+        raw_client_task.await.unwrap();
         assert!(matches!(
             served,
-            Err(MotherIrohEndpointError::ProtocolIo {
-                action: "read request stream",
-                ..
-            }) | Err(MotherIrohEndpointError::ProtocolTimeout {
-                action: "serve incoming MCT connection"
-            })
+            Ok(MctIrohServedProtocol::MalformedCall { .. })
         ));
         server.close().await;
     }
@@ -1433,6 +1440,12 @@ mod tests {
         let hello_response = client.send_hello(&server_ticket, &hello).await.unwrap();
         assert_eq!(hello_response.hello_outcome, HelloOutcome::Admitted);
 
+        // Another admitted hello must not erase the first receipt. The call
+        // below must still be denied by CURRENT binding policy, not cache loss.
+        let refreshed = client.send_hello(&server_ticket, &hello).await.unwrap();
+        assert_eq!(refreshed.hello_outcome, HelloOutcome::Admitted);
+        assert_ne!(refreshed.decision_id, hello_response.decision_id);
+
         mutate(&mut binding.lock().unwrap());
         *now.lock().unwrap() = call_time;
 
@@ -1572,6 +1585,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(retry.reply_outcome, CallProtocolReplyOutcome::Success);
+        assert_eq!(execution_count.load(Ordering::SeqCst), 1);
+
+        // Keeping the original hello receipt must not resurrect its stale
+        // generation/epoch after a newer hello is admitted.
+        let still_stale = client
+            .send_call(
+                &server_ticket,
+                &test_call_request(&client_endpoint_id, &trace_id, &first_hello),
+            )
+            .await
+            .unwrap();
+        assert_eq!(still_stale.reply_outcome, CallProtocolReplyOutcome::Denied);
+        assert_eq!(
+            still_stale.retry_directive,
+            CallProtocolRetryDirective::RefreshHello
+        );
         assert_eq!(execution_count.load(Ordering::SeqCst), 1);
 
         client.close().await;

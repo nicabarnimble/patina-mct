@@ -8,18 +8,31 @@ autobins = false
 [package.metadata]
 cargo-fuzz = true
 
+[features]
+# Keep existing daemon targets enabled by default; ledger/kernel fuzzing can
+# avoid unrelated Iroh cdylib instrumentation via --no-default-features.
+default = ["daemon"]
+daemon = ["dep:mct-daemon"]
+
 [dependencies]
 libfuzzer-sys = "0.4"
 mct-kernel = { path = "../crates/mct-kernel" }
 mct-observation = { path = "../crates/mct-observation" }
 serde_json = "1"
-mct-daemon = { path = "../crates/mct-daemon", features = ["fuzzing"] }
+mct-daemon = { path = "../crates/mct-daemon", features = ["fuzzing"], optional = true }
 
 [lib]
 path = "src/lib.rs"
 
 [workspace]
 members = ["."]
+
+[[bin]]
+name = "ledger_continuity"
+path = "fuzz_targets/ledger_continuity.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "admin_genesis"
@@ -44,6 +57,7 @@ bench = false
 
 [[bin]]
 name = "uds_control_request"
+required-features = ["daemon"]
 path = "fuzz_targets/uds_control_request.rs"
 test = false
 doc = false
@@ -51,6 +65,7 @@ bench = false
 
 [[bin]]
 name = "release_archive"
+required-features = ["daemon"]
 path = "fuzz_targets/release_archive.rs"
 test = false
 doc = false
@@ -58,6 +73,7 @@ bench = false
 
 [[bin]]
 name = "child_package_manifest"
+required-features = ["daemon"]
 path = "fuzz_targets/child_package_manifest.rs"
 test = false
 doc = false
@@ -65,6 +81,7 @@ bench = false
 
 [[bin]]
 name = "call_dispatch"
+required-features = ["daemon"]
 path = "fuzz_targets/call_dispatch.rs"
 test = false
 doc = false
@@ -72,6 +89,7 @@ bench = false
 
 [[bin]]
 name = "pando_manifest"
+required-features = ["daemon"]
 path = "fuzz_targets/pando_manifest.rs"
 test = false
 doc = false

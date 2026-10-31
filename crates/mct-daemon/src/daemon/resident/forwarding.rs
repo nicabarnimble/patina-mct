@@ -179,28 +179,11 @@ pub(super) async fn execute_authorized_resident_remote_call(
             .with_route(Some(authorized.decision.decision_id.clone()), None);
     };
 
-    let secret_key_hex =
-        match load_or_create_node_secret_key_hex(&authorized.local_identity.identity_path) {
-            Ok(secret_key_hex) => secret_key_hex,
-            Err(error) => {
-                eprintln!("resident remote identity load failed: {error}");
-                return MctIrohCallHandlerResult::failed("runtime unavailable");
-            }
-        };
-    // The outbound endpoint must be able to use the relay the peer advertises; with relay
-    // disabled, a relay-only peer ticket (e.g. a peer behind NAT/Docker) can never connect.
-    let relay_default = !peer_ticket.relay_urls.is_empty();
-    let mut endpoint =
-        match MotherIrohEndpoint::bind(iroh_config(secret_key_hex, relay_default)).await {
-            Ok(endpoint) => endpoint,
-            Err(error) => {
-                eprintln!("resident remote endpoint bind failed: {error}");
-                return MctIrohCallHandlerResult::failed("remote peer unavailable");
-            }
-        };
-    let local_endpoint_id = endpoint.snapshot().endpoint_id;
+    let Some(endpoint) = paths.forwarding_client() else {
+        return MctIrohCallHandlerResult::failed("resident forwarding transport unavailable");
+    };
+    let local_endpoint_id = endpoint.endpoint_id();
     if local_endpoint_id != authorized.local_identity.endpoint_id {
-        endpoint.close().await;
         return MctIrohCallHandlerResult::failed("runtime unavailable");
     }
     if let Err(error) = ledger
@@ -212,7 +195,6 @@ pub(super) async fn execute_authorized_resident_remote_call(
         )])
         .await
     {
-        endpoint.close().await;
         eprintln!("resident remote sent-observation ledger write failed: {error}");
         return MctIrohCallHandlerResult::failed("observation ledger unavailable");
     }
@@ -229,7 +211,6 @@ pub(super) async fn execute_authorized_resident_remote_call(
         Ok(response) => response,
         Err(error) => {
             eprintln!("resident remote hello failed: {error}");
-            endpoint.close().await;
             return MctIrohCallHandlerResult::failed("remote peer unavailable");
         }
     };
@@ -248,7 +229,6 @@ pub(super) async fn execute_authorized_resident_remote_call(
             .iter()
             .any(|alpn| alpn == MCT_CALL_ALPN)
     {
-        endpoint.close().await;
         return MctIrohCallHandlerResult::denied()
             .with_route(Some(authorized.decision.decision_id.clone()), None);
     }
@@ -276,7 +256,6 @@ pub(super) async fn execute_authorized_resident_remote_call(
                 inline_result_payload: None,
             }),
     };
-    endpoint.close().await;
     match call_reply {
         Ok(reply) => {
             if let Err(error) = ledger
@@ -526,7 +505,7 @@ fn resident_forwarding_hello_request(
             signature_ref: Some(outbound_binding.signature_ref.clone()),
             expires_at: Some(outbound_binding.expires_at.clone()),
         },
-        capability_view,
+        capability_view: capability_view.and_then(|view| view.for_vision(&peer.vision_id)),
         local_policy_revision_seen: Some(local_identity.policy_revision),
         trace_id: trace_id.clone(),
         received_observation_id: ObservationId::new(format!("obs-hello-forward:{trace_id}"))
@@ -822,6 +801,26 @@ mod tests {
             inline_result_payload: None,
         }
     }
+    // These unit fixtures have no running origin resident. Own one transport
+    // through the test's send handle instead of relying on a production bind fallback.
+    async fn forwarding_fixture_paths(
+        config: PathBuf,
+        children: PathBuf,
+        state: PathBuf,
+    ) -> ResidentRuntimePaths {
+        let identity = MctDaemonConfigStore::new(&config)
+            .load()
+            .unwrap()
+            .local_identity
+            .unwrap();
+        let secret = load_or_create_node_secret_key_hex(&identity.identity_path).unwrap();
+        let endpoint = MotherIrohEndpoint::bind(iroh_config(secret, false))
+            .await
+            .unwrap();
+        ResidentRuntimePaths::new(config, children, state)
+            .with_forwarding_client(endpoint.client().unwrap())
+    }
+
     fn forwarding_fixture() -> ForwardingFixture {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.json");
@@ -1170,11 +1169,12 @@ mod tests {
         )
         .unwrap();
         let call_reply = execute_resident_call(
-            ResidentRuntimePaths::new(
+            forwarding_fixture_paths(
                 mother_a_config_path,
                 mother_a_children_dir,
                 mother_a_state_path,
-            ),
+            )
+            .await,
             mother_a_ledger.clone(),
             call,
             ResidentPayloadIngress::local(Some(payload)),
@@ -1447,11 +1447,12 @@ mod tests {
             blake3_digest_hex: blake3_hex(&payload),
         };
         let forwarded = execute_resident_call(
-            ResidentRuntimePaths::new(
+            forwarding_fixture_paths(
                 mother_a_config_path.clone(),
                 mother_a_children_dir.clone(),
                 mother_a_state_path.clone(),
-            ),
+            )
+            .await,
             mother_a_ledger.clone(),
             call,
             ResidentPayloadIngress::local(Some(payload.clone())),
@@ -1506,11 +1507,12 @@ mod tests {
             blake3_digest_hex: blake3_hex(&payload),
         };
         let denied = execute_resident_call(
-            ResidentRuntimePaths::new(
+            forwarding_fixture_paths(
                 mother_a_config_path,
                 mother_a_children_dir,
                 mother_a_state_path,
-            ),
+            )
+            .await,
             mother_a_ledger.clone(),
             denied_call,
             ResidentPayloadIngress::local(Some(payload)),
@@ -1627,11 +1629,12 @@ mod tests {
         let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path).unwrap();
         ledger.append(observations).await.unwrap();
         let result = execute_authorized_resident_remote_call(
-            ResidentRuntimePaths::new(
+            forwarding_fixture_paths(
                 fixture.config_path.clone(),
                 fixture._dir.path().join("children"),
                 fixture.state_path.clone(),
-            ),
+            )
+            .await,
             *execution,
             resident_test_protocol_request(fixture.call.clone()),
             None,
@@ -1738,11 +1741,12 @@ mod tests {
         let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         ledger.append(observations).await.unwrap();
         let result = execute_authorized_resident_remote_call(
-            ResidentRuntimePaths::new(
+            forwarding_fixture_paths(
                 fixture.config_path.clone(),
                 fixture._dir.path().join("children"),
                 fixture.state_path.clone(),
-            ),
+            )
+            .await,
             *execution,
             resident_test_protocol_request(fixture.call.clone()),
             None,
@@ -1846,11 +1850,12 @@ mod tests {
         let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
         ledger.append(observations).await.unwrap();
         let result = execute_authorized_resident_remote_call(
-            ResidentRuntimePaths::new(
+            forwarding_fixture_paths(
                 fixture.config_path.clone(),
                 fixture._dir.path().join("children"),
                 fixture.state_path.clone(),
-            ),
+            )
+            .await,
             *execution,
             resident_test_protocol_request(fixture.call.clone()),
             None,
@@ -2207,7 +2212,7 @@ mod tests {
         let result = tokio::time::timeout(
             Duration::from_secs(5),
             execute_authorized_resident_remote_call(
-                ResidentRuntimePaths::new(a_config_path, a_children_dir, a_state_path),
+                forwarding_fixture_paths(a_config_path, a_children_dir, a_state_path).await,
                 *authorized,
                 request,
                 None,

@@ -1,5 +1,11 @@
+mod bounded_reports;
+mod budget;
+use bounded_reports::{retain_host_observations, s32_failed_report, wit_failed_report};
+use budget::InvocationBudget;
+pub use budget::MctWasmInvocationLimits;
+
 use crate::{
-    children::{MctLoadedChild, operation_id_from_target},
+    children::{MctLoadedChild, component_bytes::ComponentBytes, operation_id_from_target},
     state::MctRuntimeStateStore,
     toy::{MctToyAdapterOutcome, MctToyAdapterRegistry, MctToyCallIds, MctToyEffectAuthorityV1},
     wit_values::{lift_component_results_to_json, lower_typed_args_for_component},
@@ -234,12 +240,14 @@ pub const DEFAULT_WASM_MEMORY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MctWasmHostConfig {
     pub memory_limit_bytes: usize,
+    pub invocation_limits: MctWasmInvocationLimits,
 }
 
 impl MctWasmHostConfig {
     pub fn default_local() -> Self {
         Self {
             memory_limit_bytes: DEFAULT_WASM_MEMORY_LIMIT_BYTES,
+            invocation_limits: MctWasmInvocationLimits::default(),
         }
     }
 }
@@ -264,6 +272,7 @@ struct MctWasmEmptyHostState {
 }
 
 struct MctWasmHostState {
+    budget: InvocationBudget,
     toy_registry: MctToyAdapterRegistry,
     call: MctCall,
     toy_observations: Vec<MctObservation>,
@@ -271,6 +280,7 @@ struct MctWasmHostState {
 }
 
 struct MctWitHostState {
+    budget: InvocationBudget,
     toy_registry: MctToyAdapterRegistry,
     effect_authority: Option<MctToyEffectAuthorityV1>,
     call: MctCall,
@@ -303,7 +313,7 @@ impl MctWitHostState {
         &mut self,
         adapter: &MctWitToyHostAdapter,
         input_json: &Value,
-    ) -> crate::toy::MctToyCallReport {
+    ) -> wasmtime::Result<crate::toy::MctToyCallReport> {
         self.next_toy_call_index += 1;
         let ids = MctToyCallIds {
             started_observation_id: ObservationId::new(format!(
@@ -319,24 +329,51 @@ impl MctWitHostState {
             started_at: adapter.observed_at.clone(),
             completed_at: adapter.observed_at.clone(),
         };
+        let reservation = self
+            .toy_registry
+            .wasm_observation_reservation(
+                &adapter.authorized_toy_call,
+                &self.call,
+                &ids,
+                self.budget.limits.accumulated_bytes,
+            )
+            .map_err(|_| budget::BudgetExceeded("observation bytes"));
+        let reservation = match reservation {
+            Ok(size) => size,
+            Err(_) => return self.budget.fail("observation bytes"),
+        };
+        self.budget.toy(reservation)?;
+        self.budget.json_bytes(
+            input_json,
+            self.budget.limits.host_value_bytes,
+            "Toy input bytes",
+        )?;
+        let input_json = input_json.to_string();
         let mut report = match self.effect_authority.as_ref() {
             Some(authority) => self.toy_registry.call_authorized_toy_with_authority(
                 &adapter.authorized_toy_call,
                 &self.call,
                 authority,
-                &input_json.to_string(),
+                &input_json,
                 ids,
             ),
             None => self.toy_registry.call_authorized_toy_at(
                 &adapter.authorized_toy_call,
                 &self.call,
                 &crate::config::current_timestamp(),
-                &input_json.to_string(),
+                &input_json,
                 ids,
             ),
         };
         self.toy_observations.append(&mut report.observations);
-        report
+        // Prior effect facts remain available even if its output exhausts the budget.
+        if let Some(output) = &report.output_json {
+            if output.len() > self.budget.limits.output_bytes {
+                return self.budget.fail("Toy output bytes");
+            }
+            self.budget.bytes(output.len(), "Toy output bytes")?;
+        }
+        Ok(report)
     }
 }
 
@@ -972,6 +1009,38 @@ impl MctWasmComponentRuntime {
         })
     }
 
+    fn invocation_budget(
+        &self,
+        started: &MctObservation,
+        ids: &MctWasmComponentInvocationIds,
+        call: &MctCall,
+        authorized: &AuthorizedChildInvocation,
+    ) -> Result<InvocationBudget, MctWasmComponentRuntimeError> {
+        let mut budget = InvocationBudget::new(self.host_config.invocation_limits.clone());
+        let terminal = wasm_observation(
+            ids.completed_observation_id.clone(),
+            ids.completed_at.clone(),
+            ObservationKind::RuntimeExecutionFailed,
+            ObservationOutcome::Failed,
+            call,
+            authorized,
+            "wasm invocation resource limit exceeded",
+        );
+        let size = crate::resource_bounds::serialized_size(
+            &[started, &terminal],
+            budget.limits.accumulated_bytes,
+        )
+        .map_err(|_| {
+            MctWasmComponentRuntimeError::Configure(
+                "WASM invocation observation budget unavailable".into(),
+            )
+        })?;
+        budget
+            .observations(2, size + 2 * std::mem::size_of::<MctObservation>() + 512)
+            .map_err(|error| MctWasmComponentRuntimeError::Configure(error.to_string()))?;
+        Ok(budget)
+    }
+
     fn store_limits(&self) -> StoreLimits {
         StoreLimitsBuilder::new()
             .memory_size(self.host_config.memory_limit_bytes)
@@ -1057,18 +1126,76 @@ impl MctWasmComponentRuntime {
         }))
     }
 
+    fn compile_snapshot(
+        &self,
+        path: &Path,
+        bytes: &ComponentBytes,
+    ) -> Result<component::Component, MctWasmComponentRuntimeError> {
+        component::Component::from_binary(&self.engine, bytes.as_bytes()).map_err(|error| {
+            MctWasmComponentRuntimeError::Load {
+                path: path.to_path_buf(),
+                message: error.to_string(),
+            }
+        })
+    }
+
+    fn component_snapshot(
+        &self,
+        path: &Path,
+        expected: Option<&str>,
+    ) -> Result<ComponentBytes, MctWasmComponentRuntimeError> {
+        match expected {
+            Some(digest) => ComponentBytes::verify(path, digest),
+            None => ComponentBytes::read(path), // bounded diagnostic inspection, never execution
+        }
+        .map_err(|error| MctWasmComponentRuntimeError::Load {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        })
+    }
+
+    fn verified_child_snapshot(
+        &self,
+        child: &MctLoadedChild,
+        authorized: &AuthorizedChildInvocation,
+    ) -> Result<ComponentBytes, MctWasmComponentRuntimeError> {
+        if !child.integrity_verified()
+            || authorized.manifest_hash() != format!("sha256:{}", child.manifest_digest.sha256)
+            || authorized.artifact_id().as_str() != child.artifact_id
+            || child.artifact_id != format!("sha256:{}", child.wasm_digest.sha256)
+        {
+            return Err(MctWasmComponentRuntimeError::Load {
+                path: child.wasm_path.clone(),
+                message: "loaded child is not the verified authorized artifact".into(),
+            });
+        }
+        let manifest = crate::children::component_bytes::read_bounded_file(
+            &child.manifest_path,
+            crate::children::component_bytes::MAX_MANIFEST_BYTES,
+        )
+        .map_err(|error| MctWasmComponentRuntimeError::Load {
+            path: child.manifest_path.clone(),
+            message: error.to_string(),
+        })?;
+        use sha2::{Digest, Sha256};
+        if format!("sha256:{:x}", Sha256::digest(&manifest)) != authorized.manifest_hash()
+            || !child.authority_matches_manifest(&manifest)
+        {
+            return Err(MctWasmComponentRuntimeError::Load {
+                path: child.manifest_path.clone(),
+                message: "authorized child manifest bytes or cached authority changed".into(),
+            });
+        }
+        self.component_snapshot(&child.wasm_path, Some(authorized.artifact_id().as_str()))
+    }
+
     pub fn discover_wit_operations(
         &self,
         component_path: impl AsRef<Path>,
     ) -> Result<BTreeSet<String>, MctWasmComponentRuntimeError> {
         let component_path = component_path.as_ref().to_path_buf();
-        let component =
-            component::Component::from_file(&self.engine, &component_path).map_err(|error| {
-                MctWasmComponentRuntimeError::Load {
-                    path: component_path.clone(),
-                    message: error.to_string(),
-                }
-            })?;
+        let bytes = self.component_snapshot(&component_path, None)?;
+        let component = self.compile_snapshot(&component_path, &bytes)?;
         Ok(discover_wit_component_operations(&self.engine, &component))
     }
 
@@ -1077,13 +1204,8 @@ impl MctWasmComponentRuntime {
         component_path: impl AsRef<Path>,
     ) -> Result<BTreeSet<String>, MctWasmComponentRuntimeError> {
         let component_path = component_path.as_ref().to_path_buf();
-        let component =
-            component::Component::from_file(&self.engine, &component_path).map_err(|error| {
-                MctWasmComponentRuntimeError::Load {
-                    path: component_path.clone(),
-                    message: error.to_string(),
-                }
-            })?;
+        let bytes = self.component_snapshot(&component_path, None)?;
+        let component = self.compile_snapshot(&component_path, &bytes)?;
         Ok(discover_wit_component_imports(&self.engine, &component))
     }
 
@@ -1111,7 +1233,7 @@ impl MctWasmComponentRuntime {
         self.invoke_wit_export_after_contract_check(
             authorized,
             call,
-            &child.wasm_path,
+            child,
             args_json,
             MctWitHostImportAdapters::none(),
             ids,
@@ -1143,7 +1265,7 @@ impl MctWasmComponentRuntime {
         self.invoke_wit_export_after_contract_check(
             authorized,
             call,
-            &child.wasm_path,
+            child,
             args_json,
             host_adapters,
             ids,
@@ -1154,12 +1276,12 @@ impl MctWasmComponentRuntime {
         &self,
         authorized: AuthorizedChildInvocation,
         call: &MctCall,
-        component_path: impl AsRef<Path>,
+        child: &MctLoadedChild,
         args_json: &Value,
         host_adapters: MctWitHostImportAdapters,
         ids: MctWasmComponentInvocationIds,
     ) -> Result<MctWitComponentInvocationReport, MctWasmComponentRuntimeError> {
-        let component_path = component_path.as_ref().to_path_buf();
+        let component_path = child.wasm_path.clone();
         let Some(_admitted_effect) = authorized.admit_effect_for_call(call) else {
             return Ok(wit_stale_authority_report(ids, call, &authorized));
         };
@@ -1173,13 +1295,8 @@ impl MctWasmComponentRuntime {
             &authorized,
             "wasm component execution started",
         );
-        let component =
-            component::Component::from_file(&self.engine, &component_path).map_err(|error| {
-                MctWasmComponentRuntimeError::Load {
-                    path: component_path.clone(),
-                    message: error.to_string(),
-                }
-            })?;
+        let bytes = self.verified_child_snapshot(child, &authorized)?;
+        let component = self.compile_snapshot(&component_path, &bytes)?;
         validate_wit_host_imports_for_adapters(
             &self.engine,
             &component,
@@ -1193,9 +1310,18 @@ impl MctWasmComponentRuntime {
             host_adapters.effect_authority.as_ref(),
             call,
         )?;
+        let mut budget = self.invocation_budget(&started, &ids, call, &authorized)?;
+        budget
+            .json_bytes(
+                args_json,
+                budget.limits.host_value_bytes,
+                "component argument bytes",
+            )
+            .map_err(|error| MctWasmComponentRuntimeError::Configure(error.to_string()))?;
         let mut store = Store::new(
             &self.engine,
             MctWitHostState {
+                budget,
                 toy_registry: host_adapters.toy_registry,
                 effect_authority: host_adapters.effect_authority,
                 call: call.clone(),
@@ -1215,36 +1341,89 @@ impl MctWasmComponentRuntime {
             },
         );
         store.limiter(|state| &mut state.limits);
+        store.call_hook(|mut context, hook| {
+            if matches!(hook, wasmtime::CallHook::CallingHost) {
+                context.data_mut().budget.host_call()?;
+            }
+            Ok(())
+        });
         let deadline = self.configure_deadline(&mut store, call)?;
         if matches!(deadline, WasmDeadlinePermit::Expired) {
-            return Ok(wit_timeout_report(started, ids, call, &authorized));
+            let mut report = wit_timeout_report(started, ids, call, &authorized);
+            retain_host_observations(
+                &mut report.observations,
+                &mut store.data_mut().toy_observations,
+            );
+            return Ok(report);
         }
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .map_err(|error| self.instantiate_error(component_path.clone(), error))?;
-        let func =
-            lookup_wit_component_func(&mut store, &instance, &operation).ok_or_else(|| {
-                MctWasmComponentRuntimeError::MissingWitOperation {
-                    path: component_path.clone(),
-                    operation_id: operation.operation_id.clone(),
-                }
-            })?;
+        let instance = linker.instantiate(&mut store, &component);
+        if store.data().budget.failed.is_some()
+            || (instance.is_err() && !store.data().toy_observations.is_empty())
+        {
+            return Ok(wit_failed_report(
+                started,
+                ids,
+                call,
+                &authorized,
+                store.data_mut(),
+            ));
+        }
+        let instance =
+            instance.map_err(|error| self.instantiate_error(component_path.clone(), error))?;
+        let func = lookup_wit_component_func(&mut store, &instance, &operation);
+        if func.is_none() && !store.data().toy_observations.is_empty() {
+            return Ok(wit_failed_report(
+                started,
+                ids,
+                call,
+                &authorized,
+                store.data_mut(),
+            ));
+        }
+        let func = func.ok_or_else(|| MctWasmComponentRuntimeError::MissingWitOperation {
+            path: component_path.clone(),
+            operation_id: operation.operation_id.clone(),
+        })?;
         let func_ty = func.ty(store.as_context());
+        let lowered_args = lower_typed_args_for_component(args_json, &func_ty);
+        if lowered_args.is_err() && !store.data().toy_observations.is_empty() {
+            return Ok(wit_failed_report(
+                started,
+                ids,
+                call,
+                &authorized,
+                store.data_mut(),
+            ));
+        }
         let lowered_args =
-            lower_typed_args_for_component(args_json, &func_ty).map_err(|error| {
-                MctWasmComponentRuntimeError::WitValueConversion {
-                    path: component_path.clone(),
-                    operation_id: operation.operation_id.clone(),
-                    message: error.to_string(),
-                }
+            lowered_args.map_err(|error| MctWasmComponentRuntimeError::WitValueConversion {
+                path: component_path.clone(),
+                operation_id: operation.operation_id.clone(),
+                message: error.to_string(),
             })?;
         let mut results = vec![component::Val::Bool(false); func_ty.results().len()];
         let call_result = func.call(store.as_context_mut(), &lowered_args, &mut results);
         let timed_out =
             matches!(&deadline, WasmDeadlinePermit::Running(guard) if guard.timed_out());
+        if store.data().budget.failed.is_some()
+            || (call_result.is_err() && !timed_out && !store.data().toy_observations.is_empty())
+        {
+            return Ok(wit_failed_report(
+                started,
+                ids,
+                call,
+                &authorized,
+                store.data_mut(),
+            ));
+        }
         if let Err(error) = call_result {
             if timed_out {
-                return Ok(wit_timeout_report(started, ids, call, &authorized));
+                let mut report = wit_timeout_report(started, ids, call, &authorized);
+                retain_host_observations(
+                    &mut report.observations,
+                    &mut store.data_mut().toy_observations,
+                );
+                return Ok(report);
             }
             return Err(self.call_error(
                 component_path.clone(),
@@ -1253,15 +1432,56 @@ impl MctWasmComponentRuntime {
             ));
         }
         if timed_out {
-            return Ok(wit_timeout_report(started, ids, call, &authorized));
+            let mut report = wit_timeout_report(started, ids, call, &authorized);
+            retain_host_observations(
+                &mut report.observations,
+                &mut store.data_mut().toy_observations,
+            );
+            return Ok(report);
         }
-        let output_json = lift_component_results_to_json(&results, &func_ty).map_err(|error| {
-            MctWasmComponentRuntimeError::WitValueConversion {
+        if budget::component_values_size(&results, store.data().budget.limits.output_bytes)
+            .is_none()
+        {
+            let _ = store.data_mut().budget.fail::<()>("component result bytes");
+            return Ok(wit_failed_report(
+                started,
+                ids,
+                call,
+                &authorized,
+                store.data_mut(),
+            ));
+        }
+        let output_json = lift_component_results_to_json(&results, &func_ty);
+        if output_json.is_err() && !store.data().toy_observations.is_empty() {
+            return Ok(wit_failed_report(
+                started,
+                ids,
+                call,
+                &authorized,
+                store.data_mut(),
+            ));
+        }
+        let output_json =
+            output_json.map_err(|error| MctWasmComponentRuntimeError::WitValueConversion {
                 path: component_path.clone(),
                 operation_id: operation.operation_id.clone(),
                 message: error.to_string(),
-            }
-        })?;
+            })?;
+        let limit = store.data().budget.limits.output_bytes;
+        if store
+            .data_mut()
+            .budget
+            .json_bytes(&output_json, limit, "component result bytes")
+            .is_err()
+        {
+            return Ok(wit_failed_report(
+                started,
+                ids,
+                call,
+                &authorized,
+                store.data_mut(),
+            ));
+        }
         let completed = wasm_observation(
             ids.completed_observation_id,
             ids.completed_at,
@@ -1299,13 +1519,13 @@ impl MctWasmComponentRuntime {
             audit_ref: ids.audit_ref,
         };
         let mut observations = vec![started];
-        observations.extend(store.data().toy_observations.clone());
+        observations.append(&mut store.data_mut().toy_observations);
         observations.push(completed);
         Ok(MctWitComponentInvocationReport {
             result,
             output_json,
             observations,
-            produced_messages: store.data().produced_messages.clone(),
+            produced_messages: std::mem::take(&mut store.data_mut().produced_messages),
         })
     }
 
@@ -1330,14 +1550,19 @@ impl MctWasmComponentRuntime {
             &authorized,
             "wasm component execution started",
         );
-        let component =
-            component::Component::from_file(&self.engine, &component_path).map_err(|error| {
-                MctWasmComponentRuntimeError::Load {
-                    path: component_path.clone(),
-                    message: error.to_string(),
-                }
-            })?;
+        let bytes =
+            self.component_snapshot(&component_path, Some(authorized.artifact_id().as_str()))?;
+        let component = self.compile_snapshot(&component_path, &bytes)?;
         let linker = component::Linker::<MctWasmEmptyHostState>::new(&self.engine);
+        let mut budget = self.invocation_budget(&started, &ids, call, &authorized)?;
+        if self.host_config.invocation_limits.output_bytes < std::mem::size_of::<i32>() {
+            return Err(MctWasmComponentRuntimeError::Configure(
+                "WASM scalar output budget unavailable".into(),
+            ));
+        }
+        budget
+            .bytes(std::mem::size_of::<i32>(), "scalar output bytes")
+            .map_err(|error| MctWasmComponentRuntimeError::Configure(error.to_string()))?;
         let mut store = Store::new(
             &self.engine,
             MctWasmEmptyHostState {
@@ -1421,13 +1646,9 @@ impl MctWasmComponentRuntime {
             &authorized,
             "wasm component execution started",
         );
-        let component =
-            component::Component::from_file(&self.engine, &component_path).map_err(|error| {
-                MctWasmComponentRuntimeError::Load {
-                    path: component_path.clone(),
-                    message: error.to_string(),
-                }
-            })?;
+        let bytes =
+            self.component_snapshot(&component_path, Some(authorized.artifact_id().as_str()))?;
+        let component = self.compile_snapshot(&component_path, &bytes)?;
         let mut linker = component::Linker::<MctWasmHostState>::new(&self.engine);
         for toy_import in invocation.toy_imports {
             let import_name = toy_import.import_name.clone();
@@ -1436,32 +1657,65 @@ impl MctWasmComponentRuntime {
                 .func_wrap(
                     &import_name,
                     move |mut store: StoreContextMut<'_, MctWasmHostState>, _params: ()| {
-                        let registry = store.data().toy_registry.clone();
-                        let call = store.data().call.clone();
-                        let executing_mother_now = crate::config::current_timestamp();
-                        let report = registry.call_authorized_toy_at(
+                        let state = store.data_mut();
+                        let index = state.budget.next_toy_index();
+                        let mut toy_ids = toy_import.ids.clone();
+                        toy_ids.started_observation_id = ObservationId::new(format!(
+                            "{}:{index}",
+                            toy_ids.started_observation_id
+                        ))
+                        .unwrap();
+                        toy_ids.completed_observation_id = ObservationId::new(format!(
+                            "{}:{index}",
+                            toy_ids.completed_observation_id
+                        ))
+                        .unwrap();
+                        let reservation = state.toy_registry.wasm_observation_reservation(
                             &toy_import.authorized_toy_call,
-                            &call,
-                            &executing_mother_now,
+                            &state.call,
+                            &toy_ids,
+                            state.budget.limits.accumulated_bytes,
+                        );
+                        let Ok(reservation) = reservation else {
+                            return state.budget.fail("observation bytes");
+                        };
+                        state.budget.toy(reservation)?;
+                        let report = state.toy_registry.call_authorized_toy_at(
+                            &toy_import.authorized_toy_call,
+                            &state.call,
+                            &crate::config::current_timestamp(),
                             "{}",
-                            toy_import.ids.clone(),
+                            toy_ids,
                         );
                         let return_code = match report.outcome {
                             MctToyAdapterOutcome::Success => 1_i32,
                             MctToyAdapterOutcome::Failed => -1_i32,
                         };
-                        store
-                            .data_mut()
-                            .toy_observations
-                            .extend(report.observations);
+                        state.toy_observations.extend(report.observations);
+                        if let Some(output) = report.output_json {
+                            if output.len() > state.budget.limits.output_bytes {
+                                return state.budget.fail("Toy output bytes");
+                            }
+                            state.budget.bytes(output.len(), "Toy output bytes")?;
+                        }
                         Ok((return_code,))
                     },
                 )
                 .map_err(|error| MctWasmComponentRuntimeError::Configure(error.to_string()))?;
         }
+        let mut budget = self.invocation_budget(&started, &ids, call, &authorized)?;
+        if budget.limits.output_bytes < std::mem::size_of::<i32>() {
+            return Err(MctWasmComponentRuntimeError::Configure(
+                "WASM scalar output budget unavailable".into(),
+            ));
+        }
+        budget
+            .bytes(std::mem::size_of::<i32>(), "scalar output bytes")
+            .map_err(|error| MctWasmComponentRuntimeError::Configure(error.to_string()))?;
         let mut store = Store::new(
             &self.engine,
             MctWasmHostState {
+                budget,
                 toy_registry: invocation.toy_registry,
                 call: call.clone(),
                 toy_observations: Vec::new(),
@@ -1469,33 +1723,93 @@ impl MctWasmComponentRuntime {
             },
         );
         store.limiter(|state| &mut state.limits);
+        store.call_hook(|mut context, hook| {
+            if matches!(hook, wasmtime::CallHook::CallingHost) {
+                context.data_mut().budget.host_call()?;
+            }
+            Ok(())
+        });
         let deadline = self.configure_deadline(&mut store, call)?;
         if matches!(deadline, WasmDeadlinePermit::Expired) {
-            return Ok(s32_timeout_report(started, ids, call, &authorized));
+            let mut report = s32_timeout_report(started, ids, call, &authorized);
+            retain_host_observations(
+                &mut report.observations,
+                &mut store.data_mut().toy_observations,
+            );
+            return Ok(report);
         }
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .map_err(|error| self.instantiate_error(component_path.clone(), error))?;
-        let func = instance.get_func(&mut store, &export_name).ok_or_else(|| {
-            MctWasmComponentRuntimeError::MissingExport {
-                path: component_path.clone(),
-                export_name: export_name.clone(),
-            }
+        let instance = linker.instantiate(&mut store, &component);
+        if store.data().budget.failed.is_some()
+            || (instance.is_err() && !store.data().toy_observations.is_empty())
+        {
+            return Ok(s32_failed_report(
+                started,
+                ids,
+                call,
+                &authorized,
+                store.data_mut(),
+            ));
+        }
+        let instance =
+            instance.map_err(|error| self.instantiate_error(component_path.clone(), error))?;
+        let func = instance.get_func(&mut store, &export_name);
+        if func.is_none() && !store.data().toy_observations.is_empty() {
+            return Ok(s32_failed_report(
+                started,
+                ids,
+                call,
+                &authorized,
+                store.data_mut(),
+            ));
+        }
+        let func = func.ok_or_else(|| MctWasmComponentRuntimeError::MissingExport {
+            path: component_path.clone(),
+            export_name: export_name.clone(),
         })?;
         let mut results = [component::Val::S32(0)];
         let call_result = func.call(&mut store, &[], &mut results);
         let timed_out =
             matches!(&deadline, WasmDeadlinePermit::Running(guard) if guard.timed_out());
+        if store.data().budget.failed.is_some()
+            || (call_result.is_err() && !timed_out && !store.data().toy_observations.is_empty())
+        {
+            return Ok(s32_failed_report(
+                started,
+                ids,
+                call,
+                &authorized,
+                store.data_mut(),
+            ));
+        }
         if let Err(error) = call_result {
             if timed_out {
-                return Ok(s32_timeout_report(started, ids, call, &authorized));
+                let mut report = s32_timeout_report(started, ids, call, &authorized);
+                retain_host_observations(
+                    &mut report.observations,
+                    &mut store.data_mut().toy_observations,
+                );
+                return Ok(report);
             }
             return Err(self.call_error(component_path.clone(), export_name.clone(), error));
         }
         if timed_out {
-            return Ok(s32_timeout_report(started, ids, call, &authorized));
+            let mut report = s32_timeout_report(started, ids, call, &authorized);
+            retain_host_observations(
+                &mut report.observations,
+                &mut store.data_mut().toy_observations,
+            );
+            return Ok(report);
         }
         let component::Val::S32(returned_s32) = results[0] else {
+            if !store.data().toy_observations.is_empty() {
+                return Ok(s32_failed_report(
+                    started,
+                    ids,
+                    call,
+                    &authorized,
+                    store.data_mut(),
+                ));
+            }
             return Err(MctWasmComponentRuntimeError::UnexpectedResult {
                 export_name: export_name.clone(),
             });
@@ -1510,7 +1824,7 @@ impl MctWasmComponentRuntime {
             "wasm component execution completed",
         );
         let mut observations = vec![started];
-        observations.extend(store.data().toy_observations.clone());
+        observations.append(&mut store.data_mut().toy_observations);
         observations.push(completed);
         let result = wasm_invocation_result(
             call,
@@ -1651,6 +1965,8 @@ fn link_wit_host_import_adapters(
             })?;
         logging
             .func_new("log", |mut store, _ty, params, results| {
+                store.data_mut().budget.logging_call()?;
+                store.data_mut().budget.host_values(params)?;
                 if !results.is_empty() {
                     return Err(wasmtime::Error::msg(
                         "invalid wasi logging host result shape",
@@ -1680,7 +1996,7 @@ fn link_wit_host_import_adapters(
                     store.data_mut().logging.take().ok_or_else(|| {
                         wasmtime::Error::msg("wasi logging adapter not configured")
                     })?;
-                let report = store.data_mut().call_toy(&adapter, &input_json);
+                let report = store.data_mut().call_toy(&adapter, &input_json)?;
                 store.data_mut().logging = Some(adapter);
                 match report.outcome {
                     MctToyAdapterOutcome::Success => Ok(()),
@@ -1702,6 +2018,7 @@ fn link_wit_host_import_adapters(
             })?;
         measure
             .func_new("gauge", |mut store, _ty, params, results| {
+                store.data_mut().budget.host_values(params)?;
                 let [component::Val::String(name), component::Val::Float64(value)] = params else {
                     return Err(wasmtime::Error::msg(
                         "invalid patina measure gauge host call shape",
@@ -1715,6 +2032,7 @@ fn link_wit_host_import_adapters(
             })?;
         measure
             .func_new("counter", |mut store, _ty, params, results| {
+                store.data_mut().budget.host_values(params)?;
                 let [component::Val::String(name), component::Val::Float64(delta)] = params else {
                     return Err(wasmtime::Error::msg(
                         "invalid patina measure counter host call shape",
@@ -1790,6 +2108,7 @@ fn link_keyvalue_host_import(
         })?;
     store
         .func_new("open", |mut store, _ty, params, results| {
+            store.data_mut().budget.host_values(params)?;
             let [component::Val::String(identifier)] = params else {
                 return Err(wasmtime::Error::msg("invalid keyvalue open call shape"));
             };
@@ -1802,7 +2121,7 @@ fn link_keyvalue_host_import(
             let report = store.data_mut().call_toy(
                 &adapter.get,
                 &serde_json::json!({"function": "open", "identifier": identifier}),
-            );
+            )?;
             store.data_mut().keyvalue = Some(adapter);
             if !expected || report.outcome != MctToyAdapterOutcome::Success {
                 return set_keyvalue_error(results, "access-denied");
@@ -1818,6 +2137,7 @@ fn link_keyvalue_host_import(
         })?;
     store
         .func_new("[method]bucket.get", |mut store, _ty, params, results| {
+            store.data_mut().budget.host_values(params)?;
             let [
                 component::Val::Resource(bucket),
                 component::Val::String(key),
@@ -1838,7 +2158,7 @@ fn link_keyvalue_host_import(
             let report = store.data_mut().call_toy(
                 &adapter.get,
                 &serde_json::json!({"function": "get", "key": key}),
-            );
+            )?;
             let value = if report.outcome == MctToyAdapterOutcome::Success {
                 MctRuntimeStateStore::open(&adapter.state_path)
                     .and_then(|state| state.child_keyvalue_get(&adapter.bucket_resource_id, key))
@@ -1852,6 +2172,15 @@ fn link_keyvalue_host_import(
             if !allowed {
                 return set_keyvalue_error(results, "access-denied");
             }
+            if let Some(bytes) = &value {
+                if bytes.len() > store.data().budget.limits.output_bytes {
+                    return store.data_mut().budget.fail("keyvalue output bytes");
+                }
+                store
+                    .data_mut()
+                    .budget
+                    .bytes(bytes.len(), "keyvalue output bytes")?;
+            }
             let value = value.map(|bytes| {
                 component::Val::List(bytes.into_iter().map(component::Val::U8).collect())
             });
@@ -1863,6 +2192,7 @@ fn link_keyvalue_host_import(
         })?;
     store
         .func_new("[method]bucket.set", |mut store, _ty, params, results| {
+            store.data_mut().budget.host_values(params)?;
             let [
                 component::Val::Resource(bucket),
                 component::Val::String(key),
@@ -1891,7 +2221,7 @@ fn link_keyvalue_host_import(
             let report = store.data_mut().call_toy(
                 &adapter.set,
                 &serde_json::json!({"function": "set", "key": key, "size_bytes": bytes.len()}),
-            );
+            )?;
             let persisted = report.outcome == MctToyAdapterOutcome::Success
                 && MctRuntimeStateStore::open(&adapter.state_path)
                     .and_then(|state| {
@@ -1936,6 +2266,7 @@ fn link_messaging_host_import(
         })?;
     producer
         .func_new("connect", |mut store, _ty, params, results| {
+            store.data_mut().budget.host_values(params)?;
             let [component::Val::String(name)] = params else {
                 return Err(wasmtime::Error::msg("invalid messaging connect call shape"));
             };
@@ -1956,7 +2287,7 @@ fn link_messaging_host_import(
             let report = store.data_mut().call_toy(
                 &adapter.toy,
                 &serde_json::json!({"function": "connect", "name": name}),
-            );
+            )?;
             store.data_mut().messaging = Some(adapter);
             if report.outcome != MctToyAdapterOutcome::Success {
                 let [result] = results else {
@@ -1981,6 +2312,7 @@ fn link_messaging_host_import(
         })?;
     producer
         .func_new("send", |mut store, _ty, params, results| {
+                store.data_mut().budget.host_values(params)?;
             let [
                 component::Val::Resource(client),
                 component::Val::Record(fields),
@@ -2065,7 +2397,7 @@ fn link_messaging_host_import(
             let report = store.data_mut().call_toy(
                 &adapter.toy,
                 &serde_json::json!({"function": "send", "target": target_operation, "topic": topic, "size_bytes": data.len()}),
-            );
+            )?;
             store.data_mut().messaging = Some(adapter);
             if report.outcome != MctToyAdapterOutcome::Success {
                 let [result] = results else {
@@ -2077,17 +2409,12 @@ fn link_messaging_host_import(
                 return Ok(());
             }
             let offset = store.data().produced_messages.len() as u64 + 1;
-            store
-                .data_mut()
-                .produced_messages
-                .push(MctWitProducedMessage {
-                    target_operation,
-                    topic,
-                    content_type,
-                    data,
-                    metadata,
-                    offset,
-                });
+            let message = MctWitProducedMessage {
+                target_operation, topic, content_type, data, metadata, offset,
+            };
+            let limit = store.data().budget.limits.output_bytes;
+            store.data_mut().budget.json_bytes(&message, limit, "produced message bytes")?;
+            store.data_mut().produced_messages.push(message);
             set_wit_result_ok(results, Some(component::Val::U64(offset)))
         })
         .map_err(|error| MctWasmComponentRuntimeError::Instantiate {
@@ -2108,6 +2435,7 @@ fn link_git_host_import(
     })?;
 
     git.func_new("create-tag", |mut store, _ty, params, results| {
+        store.data_mut().budget.host_values(params)?;
         let [component::Val::String(name)] = params else {
             return Err(wasmtime::Error::msg(
                 "invalid patina git create-tag host call shape",
@@ -2125,6 +2453,7 @@ fn link_git_host_import(
         message: error.to_string(),
     })?;
     git.func_new("create-tag-at", |mut store, _ty, params, results| {
+        store.data_mut().budget.host_values(params)?;
         let [
             component::Val::String(name),
             component::Val::String(git_ref),
@@ -2146,6 +2475,7 @@ fn link_git_host_import(
         message: error.to_string(),
     })?;
     git.func_new("delete-tag", |mut store, _ty, params, results| {
+        store.data_mut().budget.host_values(params)?;
         let [component::Val::String(name)] = params else {
             return Err(wasmtime::Error::msg(
                 "invalid patina git delete-tag host call shape",
@@ -2163,6 +2493,7 @@ fn link_git_host_import(
         message: error.to_string(),
     })?;
     git.func_new("tag-exists", |mut store, _ty, params, results| {
+        store.data_mut().budget.host_values(params)?;
         let [component::Val::String(name)] = params else {
             return Err(wasmtime::Error::msg(
                 "invalid patina git tag-exists host call shape",
@@ -2180,6 +2511,7 @@ fn link_git_host_import(
         message: error.to_string(),
     })?;
     git.func_new("commit", |mut store, _ty, params, results| {
+        store.data_mut().budget.host_values(params)?;
         let [component::Val::String(message)] = params else {
             return Err(wasmtime::Error::msg(
                 "invalid patina git commit host call shape",
@@ -2197,6 +2529,7 @@ fn link_git_host_import(
         message: error.to_string(),
     })?;
     git.func_new("log-oneline", |mut store, _ty, params, results| {
+        store.data_mut().budget.host_values(params)?;
         let [component::Val::U32(limit)] = params else {
             return Err(wasmtime::Error::msg(
                 "invalid patina git log-oneline host call shape",
@@ -2214,6 +2547,7 @@ fn link_git_host_import(
         message: error.to_string(),
     })?;
     git.func_new("diff-stat", |mut store, _ty, params, results| {
+        store.data_mut().budget.host_values(params)?;
         if !params.is_empty() {
             return Err(wasmtime::Error::msg(
                 "invalid patina git diff-stat host call shape",
@@ -2231,6 +2565,7 @@ fn link_git_host_import(
         message: error.to_string(),
     })?;
     git.func_new("status-porcelain", |mut store, _ty, params, results| {
+        store.data_mut().budget.host_values(params)?;
         if !params.is_empty() {
             return Err(wasmtime::Error::msg(
                 "invalid patina git status-porcelain host call shape",
@@ -2248,6 +2583,7 @@ fn link_git_host_import(
         message: error.to_string(),
     })?;
     git.func_new("add-paths", |mut store, _ty, params, results| {
+        store.data_mut().budget.host_values(params)?;
         let [component::Val::List(paths)] = params else {
             return Err(wasmtime::Error::msg(
                 "invalid patina git add-paths host call shape",
@@ -2266,6 +2602,7 @@ fn link_git_host_import(
         message: error.to_string(),
     })?;
     git.func_new("remove-paths", |mut store, _ty, params, results| {
+        store.data_mut().budget.host_values(params)?;
         let [component::Val::List(paths)] = params else {
             return Err(wasmtime::Error::msg(
                 "invalid patina git remove-paths host call shape",
@@ -2284,6 +2621,7 @@ fn link_git_host_import(
         message: error.to_string(),
     })?;
     git.func_new("is-clean-tracked", |mut store, _ty, params, results| {
+        store.data_mut().budget.host_values(params)?;
         if !params.is_empty() {
             return Err(wasmtime::Error::msg(
                 "invalid patina git is-clean-tracked host call shape",
@@ -2303,6 +2641,7 @@ fn link_git_host_import(
     git.func_new(
         "commits-behind-upstream",
         |mut store, _ty, params, results| {
+            store.data_mut().budget.host_values(params)?;
             if !params.is_empty() {
                 return Err(wasmtime::Error::msg(
                     "invalid patina git commits-behind-upstream host call shape",
@@ -2321,6 +2660,7 @@ fn link_git_host_import(
         message: error.to_string(),
     })?;
     git.func_new("is-diverged", |mut store, _ty, params, results| {
+        store.data_mut().budget.host_values(params)?;
         if !params.is_empty() {
             return Err(wasmtime::Error::msg(
                 "invalid patina git is-diverged host call shape",
@@ -2348,6 +2688,7 @@ fn call_measure_toy(
     name: &str,
     value: f64,
 ) -> wasmtime::Result<()> {
+    store.data_mut().budget.measure_call()?;
     if results.len() != 1 {
         return Err(wasmtime::Error::msg(
             "invalid patina measure host result shape",
@@ -2364,7 +2705,7 @@ fn call_measure_toy(
         .measure
         .take()
         .ok_or_else(|| wasmtime::Error::msg("patina measure adapter not configured"))?;
-    let report = store.data_mut().call_toy(&adapter, &input_json);
+    let report = store.data_mut().call_toy(&adapter, &input_json)?;
     store.data_mut().measure = Some(adapter);
     results[0] = match report.outcome {
         MctToyAdapterOutcome::Success => component::Val::Result(Ok(None)),
@@ -2405,7 +2746,7 @@ fn call_git_toy(
         .git
         .take()
         .ok_or_else(|| wasmtime::Error::msg("patina git adapter not configured"))?;
-    let report = store.data_mut().call_toy(&adapter, &input_json);
+    let report = store.data_mut().call_toy(&adapter, &input_json)?;
     store.data_mut().git = Some(adapter);
     results[0] = match report.outcome {
         MctToyAdapterOutcome::Success => {
@@ -2545,6 +2886,10 @@ fn wasm_observation(
 
 #[cfg(test)]
 mod tests {
+    mod boundaries;
+    #[cfg(target_os = "macos")]
+    mod git_confinement;
+
     use super::*;
     use std::{
         fs,
@@ -2557,6 +2902,7 @@ mod tests {
     fn runtime() -> MctWasmComponentRuntime {
         MctWasmComponentRuntime::new(MctWasmHostConfig {
             memory_limit_bytes: DEFAULT_WASM_MEMORY_LIMIT_BYTES,
+            ..MctWasmHostConfig::default_local()
         })
         .unwrap()
     }
@@ -2606,13 +2952,23 @@ mod tests {
         }
     }
 
-    fn authorized() -> AuthorizedChildInvocation {
-        crate::authority_test_fixture::authorized_child_for_call(
+    fn authorized(component_path: &Path) -> AuthorizedChildInvocation {
+        use sha2::{Digest, Sha256};
+        let artifact = format!(
+            "sha256:{:x}",
+            Sha256::digest(fs::read(component_path).unwrap_or_default())
+        );
+        crate::authority_test_fixture::authorized_child_for_artifact(
             &call(),
             "wasm-answer",
             MctNodeId::new("mother-a")
                 .expect("string ID literal/generated value must be non-empty"),
             "wasm",
+            &artifact,
+            &format!(
+                "sha256:{:x}",
+                Sha256::digest(fs::read(component_path.with_extension("toml")).unwrap_or_default())
+            ),
         )
     }
 
@@ -2717,6 +3073,7 @@ mod tests {
     ) -> AuthorizedToyCall {
         let grant = &snapshot.canonical_grants().toy_grants()[0];
         let request = ToyGrantEvaluationRequest {
+            data_authority: Some(crate::authority_test_fixture::local_fixture_data(call)),
             toy_id: grant.toy_id.clone(),
             subject: grant.subject.clone(),
             child_instance_id: ChildInstanceId::new("instance-delegation").unwrap(),
@@ -3150,31 +3507,76 @@ mod tests {
         );
     }
 
+    fn loaded_manifest_fixture(component_path: &Path) -> (tempfile::TempDir, MctLoadedChild) {
+        let dir = tempfile::tempdir().unwrap();
+        fs::copy(component_path, dir.path().join("fixture.wasm")).unwrap();
+        fs::copy(
+            component_path.with_file_name("child.toml"),
+            dir.path().join("fixture.toml"),
+        )
+        .unwrap();
+        for name in ["fixture.wasm", "fixture.toml"] {
+            let digest =
+                <sha2::Sha256 as sha2::Digest>::digest(fs::read(dir.path().join(name)).unwrap());
+            fs::write(
+                dir.path().join(format!("{name}.sha256")),
+                format!("{digest:x}"),
+            )
+            .unwrap();
+        }
+        let child = crate::children::load_children_from_dir(
+            crate::children::MctChildLoadOptions::new(dir.path()).strict_integrity(),
+        )
+        .children
+        .remove(0);
+        (dir, child)
+    }
+
     fn loaded_typed_child(
         component_path: PathBuf,
         allowed_operations: Vec<String>,
     ) -> MctLoadedChild {
+        use sha2::{Digest, Sha256};
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(fs::read(&component_path).unwrap_or_default())
+        );
+        let manifest = format!(
+            "[child]\nname = \"wasm-answer\"\nversion = \"0.1.0\"\nkind = \"child\"\n[child.ingress]\nmode = \"wit-only\"\n[child.contract]\nallow = {}\n",
+            serde_json::to_string(&allowed_operations).unwrap()
+        );
+        // Never create synthetic manifests beside committed fixture artifacts.
+        let component_path = if component_path.starts_with(env!("CARGO_MANIFEST_DIR")) {
+            let staged = tempfile::tempdir().unwrap().keep().join("fixture.wasm");
+            fs::copy(&component_path, &staged).unwrap();
+            staged
+        } else {
+            component_path
+        };
+        if component_path.exists() {
+            fs::write(component_path.with_extension("toml"), &manifest).unwrap();
+        }
         MctLoadedChild {
             child_id: ChildId::new("child:wasm-answer")
                 .expect("string ID literal/generated value must be non-empty"),
             name: "wasm-answer".into(),
             version: "0.1.0".into(),
             description: None,
-            kind: "test".into(),
+            kind: "child".into(),
             role: None,
             wasm_path: component_path.clone(),
             manifest_path: component_path.with_extension("toml"),
             wasm_digest: crate::children::MctChildFileDigest {
-                sha256: "wasm-digest".into(),
+                sha256: digest.clone(),
                 sidecar_present: true,
                 verified: true,
             },
             manifest_digest: crate::children::MctChildFileDigest {
-                sha256: "manifest-digest".into(),
+                sha256: format!("{:x}", Sha256::digest(manifest.as_bytes())),
                 sidecar_present: true,
                 verified: true,
             },
-            artifact_id: "artifact-wasm".into(),
+            artifact_id: format!("sha256:{digest}"),
             ingress_mode: crate::children::MctChildIngressMode::WitOnly,
             allowed_operations,
             requested_toys: Vec::new(),
@@ -3200,7 +3602,7 @@ mod tests {
         assert_eq!(report.discovered, 1, "{:#?}", report.failures);
         assert_eq!(report.loaded, 1, "{:#?}", report.failures);
         assert_eq!(report.failed, 0, "{:#?}", report.failures);
-        let mut child = report.children.into_iter().next().unwrap();
+        let child = report.children.into_iter().next().unwrap();
         assert!(child.integrity_verified());
         assert_eq!(
             child.ingress_mode,
@@ -3220,14 +3622,13 @@ mod tests {
             interface_name: "echo@0.1.0".into(),
             function_name: "echo".into(),
         };
-        // The authority fixture uses a stable synthetic artifact identity. Runtime
-        // invocation still consumes the exact strictly loaded component bytes.
-        child.artifact_id = "artifact-echo".into();
-        let authorized = crate::authority_test_fixture::authorized_child_for_call(
+        let authorized = crate::authority_test_fixture::authorized_child_for_artifact(
             &echo_call,
             &child.name,
             MctNodeId::new("mother-a").unwrap(),
             "echo",
+            &child.artifact_id,
+            &format!("sha256:{}", child.manifest_digest.sha256),
         );
         let invocation = runtime()
             .invoke_authorized_child_wit_export(
@@ -3357,38 +3758,7 @@ mod tests {
         let mut watcher_call = typed_call("status");
         watcher_call.target =
             OperationTarget::new("patina:watch", "control@0.1.0", "status").unwrap();
-        let child = MctLoadedChild {
-            child_id: ChildId::new("child:folder-watch-actor").unwrap(),
-            name: "folder-watch-actor".into(),
-            version: "0.1.0".into(),
-            description: None,
-            kind: "child".into(),
-            role: Some("app".into()),
-            wasm_path: component_path.clone(),
-            manifest_path: component_path.with_file_name("child.toml"),
-            wasm_digest: crate::children::MctChildFileDigest {
-                sha256: "fixture".into(),
-                sidecar_present: false,
-                verified: true,
-            },
-            manifest_digest: crate::children::MctChildFileDigest {
-                sha256: "fixture".into(),
-                sidecar_present: false,
-                verified: true,
-            },
-            artifact_id: "artifact-watch-fixture".into(),
-            ingress_mode: crate::children::MctChildIngressMode::WitOnly,
-            allowed_operations: vec![
-                "patina:watch/control@0.1.0.status".into(),
-                "patina:watch/control@0.1.0.configure".into(),
-                "patina:watch/control@0.1.0.scan-now".into(),
-            ],
-            requested_toys: Vec::new(),
-            subscribed_streams: Vec::new(),
-            relationship_listens: Vec::new(),
-            wasm_size_bytes: std::fs::metadata(&component_path).unwrap().len(),
-            instance_state: crate::children::MctChildInstanceState::Ready,
-        };
+        let (_fixture, child) = loaded_manifest_fixture(&component_path);
         let make_adapters = |call: &MctCall| {
             let mut toy_registry = MctToyAdapterRegistry::new();
             toy_registry.register(
@@ -3443,11 +3813,13 @@ mod tests {
         let invoke = |call: &MctCall, args: serde_json::Value, stem: &str| {
             runtime()
                 .invoke_authorized_child_wit_export_with_host_adapters(
-                    crate::authority_test_fixture::authorized_child_for_call(
+                    crate::authority_test_fixture::authorized_child_for_artifact(
                         call,
                         "folder-watch-actor",
                         call.caller.node_id.clone(),
                         stem,
+                        &child.artifact_id,
+                        &format!("sha256:{}", child.manifest_digest.sha256),
                     ),
                     &child,
                     call,
@@ -3499,34 +3871,7 @@ mod tests {
         let mut sink_call = typed_call("emit");
         sink_call.call_id = CallId::new("call-watch-sink").unwrap();
         sink_call.target = OperationTarget::new("patina:watch", "events@0.1.0", "emit").unwrap();
-        let child = MctLoadedChild {
-            child_id: ChildId::new("child:watch-null-sink").unwrap(),
-            name: "watch-null-sink".into(),
-            version: "0.1.0".into(),
-            description: None,
-            kind: "child".into(),
-            role: Some("app".into()),
-            wasm_path: component_path.clone(),
-            manifest_path: component_path.with_file_name("child.toml"),
-            wasm_digest: crate::children::MctChildFileDigest {
-                sha256: "fixture".into(),
-                sidecar_present: false,
-                verified: true,
-            },
-            manifest_digest: crate::children::MctChildFileDigest {
-                sha256: "fixture".into(),
-                sidecar_present: false,
-                verified: true,
-            },
-            artifact_id: "artifact-watch-sink-fixture".into(),
-            ingress_mode: crate::children::MctChildIngressMode::WitOnly,
-            allowed_operations: vec!["patina:watch/events@0.1.0.emit".into()],
-            requested_toys: Vec::new(),
-            subscribed_streams: Vec::new(),
-            relationship_listens: Vec::new(),
-            wasm_size_bytes: std::fs::metadata(&component_path).unwrap().len(),
-            instance_state: crate::children::MctChildInstanceState::Ready,
-        };
+        let (_fixture, child) = loaded_manifest_fixture(&component_path);
         let adapter = |stem: &str| MctWitToyHostAdapter {
             authorized_toy_call: crate::authority_test_fixture::authorized_toy_for_call(
                 &sink_call,
@@ -3545,11 +3890,13 @@ mod tests {
         );
         let report = runtime()
             .invoke_authorized_child_wit_export_with_host_adapters(
-                crate::authority_test_fixture::authorized_child_for_call(
+                crate::authority_test_fixture::authorized_child_for_artifact(
                     &sink_call,
                     "watch-null-sink",
                     sink_call.caller.node_id.clone(),
                     "watch-sink",
+                    &child.artifact_id,
+                    &format!("sha256:{}", child.manifest_digest.sha256),
                 ),
                 &child,
                 &sink_call,
@@ -3614,7 +3961,7 @@ mod tests {
         assert!(imports.contains("patina:measure/measure@0.1.0"));
         let error = runtime
             .invoke_authorized_child_wit_export(
-                authorized(),
+                authorized(&child.wasm_path),
                 &child,
                 &typed_call("double"),
                 &serde_json::json!([7]),
@@ -3638,7 +3985,7 @@ mod tests {
 
         let report = runtime
             .invoke_authorized_child_wit_export_with_host_adapters(
-                authorized(),
+                authorized(&child.wasm_path),
                 &child,
                 &typed_call("run"),
                 &serde_json::json!([]),
@@ -3671,7 +4018,7 @@ mod tests {
 
         let report = runtime
             .invoke_authorized_child_wit_export_with_host_adapters(
-                authorized(),
+                authorized(&child.wasm_path),
                 &child,
                 &typed_call("run"),
                 &serde_json::json!([]),
@@ -3701,7 +4048,7 @@ mod tests {
 
         let report = runtime
             .invoke_authorized_child_wit_export_with_host_adapters(
-                authorized(),
+                authorized(&child.wasm_path),
                 &child,
                 &typed_call("double"),
                 &serde_json::json!([7]),
@@ -3774,7 +4121,7 @@ mod tests {
 
         let report = runtime
             .invoke_authorized_child_wit_export_with_host_adapters(
-                authorized(),
+                authorized(&child.wasm_path),
                 &child,
                 &typed_call("double"),
                 &serde_json::json!([7]),
@@ -3797,7 +4144,7 @@ mod tests {
 
         let report = runtime
             .invoke_authorized_child_wit_export_with_host_adapters(
-                authorized(),
+                authorized(&child.wasm_path),
                 &child,
                 &typed_call("run"),
                 &serde_json::json!([]),
@@ -3809,16 +4156,35 @@ mod tests {
         assert_eq!(report.output_json, serde_json::json!({"results": [1]}));
         assert_eq!(report.result.outcome, ResultOutcome::Success);
         assert_eq!(report.observations[1].kind, ObservationKind::ToyCallStarted);
+        #[cfg(target_os = "macos")]
         assert_eq!(
             report.observations[2].kind,
             ObservationKind::ToyCallCompleted
         );
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(report.observations[2].kind, ObservationKind::ToyCallFailed);
+            assert_eq!(
+                report.observations[2].safe_message,
+                "git confinement unavailable on this platform"
+            );
+            let durable = serde_json::to_string(&report.observations).unwrap();
+            assert!(!durable.contains(repo.path().to_str().unwrap()));
+            assert!(!durable.contains("mct-test-tag"));
+        }
         let tags = std::process::Command::new("git")
             .current_dir(repo.path())
             .args(["tag", "--list", "mct-test-tag"])
             .output()
             .unwrap();
+        assert!(tags.status.success());
+        #[cfg(target_os = "macos")]
         assert!(String::from_utf8_lossy(&tags.stdout).contains("mct-test-tag"));
+        #[cfg(not(target_os = "macos"))]
+        assert!(
+            tags.stdout.is_empty(),
+            "unsupported Git must have no effect"
+        );
     }
 
     #[test]
@@ -3835,7 +4201,7 @@ mod tests {
 
         let error = runtime
             .invoke_authorized_child_wit_export_with_host_adapters(
-                authorized(),
+                authorized(&child.wasm_path),
                 &child,
                 &typed_call("double"),
                 &serde_json::json!([7]),
@@ -3863,7 +4229,7 @@ mod tests {
 
         let report = runtime
             .invoke_authorized_child_wit_export(
-                authorized(),
+                authorized(&child.wasm_path),
                 &child,
                 &typed_call("double"),
                 &serde_json::json!([7]),
@@ -3895,7 +4261,7 @@ mod tests {
 
         let report = runtime
             .invoke_authorized_child_wit_export(
-                authorized(),
+                authorized(&child.wasm_path),
                 &child,
                 &typed_call("summarize"),
                 &serde_json::json!([{ "left": 4, "right": 5 }]),
@@ -3924,7 +4290,7 @@ mod tests {
 
         let report = runtime
             .invoke_authorized_child_wit_export(
-                authorized(),
+                authorized(&child.wasm_path),
                 &child,
                 &slate_call("list-work"),
                 &serde_json::json!([{ "project": null, "status": "active", "kind": null }]),
@@ -3960,7 +4326,7 @@ mod tests {
 
         let error = runtime
             .invoke_authorized_child_wit_export(
-                authorized(),
+                authorized(&child.wasm_path),
                 &child,
                 &typed_call("missing"),
                 &serde_json::json!([]),
@@ -3984,11 +4350,11 @@ mod tests {
             vec!["patina:demo/control@0.1.0.missing".into()],
         );
         let call = typed_call("missing");
-        let diagnostic_authorized = authorized();
+        let diagnostic_authorized = authorized(&child.wasm_path);
 
         let error = runtime
             .invoke_authorized_child_wit_export(
-                authorized(),
+                authorized(&child.wasm_path),
                 &child,
                 &call,
                 &serde_json::json!([]),
@@ -4026,7 +4392,7 @@ mod tests {
 
         let error = runtime
             .invoke_authorized_child_wit_export(
-                authorized(),
+                authorized(&child.wasm_path),
                 &child,
                 &typed_call("double"),
                 &serde_json::json!([7]),
@@ -4057,12 +4423,18 @@ mod tests {
         let runtime = runtime();
 
         let error = runtime
-            .invoke_authorized_s32_export(authorized(), &call(), &component_path, "trap", ids())
+            .invoke_authorized_s32_export(
+                authorized(&component_path),
+                &call(),
+                &component_path,
+                "trap",
+                ids(),
+            )
             .unwrap_err();
         let observation = wasm_component_runtime_error_observation(
             &error,
             &call(),
-            &authorized(),
+            &authorized(&component_path),
             diagnostic_ids(),
         )
         .unwrap();
@@ -4116,7 +4488,7 @@ mod tests {
 
         let report = runtime
             .invoke_authorized_s32_export_with_toy_imports(
-                authorized(),
+                authorized(&component_path),
                 &call(),
                 MctWasmComponentToyInvocation {
                     component_path: component_path.clone(),
@@ -4171,7 +4543,7 @@ mod tests {
 
         let report = runtime
             .invoke_authorized_s32_export_with_toy_imports(
-                authorized(),
+                authorized(&component_path),
                 &call(),
                 MctWasmComponentToyInvocation {
                     component_path: component_path.clone(),
@@ -4248,7 +4620,7 @@ mod tests {
 
         let report = runtime
             .invoke_authorized_child_wit_export(
-                authorized(),
+                authorized(&child.wasm_path),
                 &child,
                 &different_call,
                 &serde_json::json!({}),
@@ -4270,7 +4642,7 @@ mod tests {
 
         let report = runtime
             .invoke_authorized_s32_export(
-                authorized(),
+                authorized(Path::new("/definitely/not/a/component.wasm")),
                 &different_call,
                 PathBuf::from("/definitely/not/a/component.wasm"),
                 "answer",
@@ -4292,7 +4664,7 @@ mod tests {
 
         let report = runtime
             .invoke_authorized_s32_export_with_toy_imports(
-                authorized(),
+                authorized(Path::new("/definitely/not/a/component.wasm")),
                 &different_call,
                 MctWasmComponentToyInvocation {
                     component_path: PathBuf::from("/definitely/not/a/component.wasm"),
@@ -4317,7 +4689,7 @@ mod tests {
 
         let error = runtime
             .invoke_authorized_s32_export(
-                authorized(),
+                authorized(Path::new("/definitely/not/a/component.wasm")),
                 &stale_call,
                 PathBuf::from("/definitely/not/a/component.wasm"),
                 "answer",
@@ -4345,7 +4717,13 @@ mod tests {
         let runtime = runtime();
 
         let report = runtime
-            .invoke_authorized_s32_export(authorized(), &call(), &component_path, "answer", ids())
+            .invoke_authorized_s32_export(
+                authorized(&component_path),
+                &call(),
+                &component_path,
+                "answer",
+                ids(),
+            )
             .unwrap();
 
         assert_eq!(report.returned_s32, 42);

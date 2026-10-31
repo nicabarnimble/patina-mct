@@ -1,13 +1,73 @@
 use mct_kernel::*;
 
+/// Deliberately construct an on-disk hostile historical fixture. This does not
+/// bypass the ordinary append guard in production. Do not append through the
+/// cached writer afterward; readers/reopen must validate the forged bytes.
+#[allow(dead_code)]
+pub(crate) fn append_forensic_observation(
+    writer: &mut mct_observation::JsonlObservationLedger,
+    path: &std::path::Path,
+    mut observation: MctObservation,
+    at: &str,
+) -> mct_observation::MctObservationLedgerEntry {
+    let detail = observation.detail_ref.take();
+    let mut entry = writer.append_before_effect(observation, at).unwrap();
+    let mut entries = writer.entries().unwrap();
+    entry.observation.detail_ref = detail;
+    entry.entry_hash.clear();
+    entry.entry_hash = blake3::hash(&serde_json::to_vec(&entry).unwrap())
+        .to_hex()
+        .to_string();
+    *entries.last_mut().unwrap() = entry.clone();
+    let mut bytes = Vec::new();
+    for entry in entries {
+        serde_json::to_writer(&mut bytes, &entry).unwrap();
+        bytes.push(b'\n');
+    }
+    std::fs::write(path, bytes).unwrap();
+    entry
+}
+
+// Test-only trusted adapter assertion. Production ingress must NOT copy claims.
+#[allow(dead_code)]
+pub(crate) fn local_fixture_data(call: &MctCall) -> LocalInvocationData {
+    LocalInvocationData::from_authoritative_source(
+        call.call_id.clone(),
+        call.caller.project_id.clone(),
+        call.payload_metadata.data_classification.clone(),
+        call.payload_metadata.contains_secret_scoped_material,
+        ObservationId::new("obs:fixture-local-data").unwrap(),
+    )
+}
+
+#[allow(dead_code)] // Shared fixture module; some consumers use only artifact-specific admission.
 pub(crate) fn authorized_child_for_call(
     call: &MctCall,
     child_name: &str,
     node_id: MctNodeId,
     stem: &str,
 ) -> AuthorizedChildInvocation {
-    let artifact_id = ComponentArtifactId::new(format!("artifact-{stem}"))
-        .expect("generated artifact id must be non-empty");
+    authorized_child_for_artifact(
+        call,
+        child_name,
+        node_id,
+        stem,
+        &format!("artifact-{stem}"),
+        &format!("sha256:manifest-{stem}"),
+    )
+}
+
+#[allow(dead_code)]
+pub(crate) fn authorized_child_for_artifact(
+    call: &MctCall,
+    child_name: &str,
+    node_id: MctNodeId,
+    stem: &str,
+    artifact: &str,
+    manifest_hash: &str,
+) -> AuthorizedChildInvocation {
+    let artifact_id =
+        ComponentArtifactId::new(artifact).expect("generated artifact id must be non-empty");
     let approval_id = ChildApprovalId::new(format!("approval-{stem}"))
         .expect("generated approval id must be non-empty");
     let assignment_id = ChildAssignmentId::new(format!("assignment-{stem}"))
@@ -19,7 +79,7 @@ pub(crate) fn authorized_child_for_call(
         child_name: child_name.into(),
         artifact_version: "0.1.0".into(),
         content_hash: format!("sha256:{stem}"),
-        manifest_hash: format!("sha256:manifest-{stem}"),
+        manifest_hash: manifest_hash.into(),
         primary_export: ComponentWitExport {
             namespace: call.target.namespace.clone(),
             interface_name: call.target.interface_name.clone(),
@@ -78,6 +138,7 @@ pub(crate) fn authorized_child_for_call(
             .expect("generated observation id must be non-empty"),
     };
     let request = ChildCallAuthorityRequest {
+        data_authority: Some(local_fixture_data(call)),
         instance_id,
         node_id,
         ids: ChildCallAuthorityIds {
@@ -174,6 +235,7 @@ pub(crate) fn authorized_toy_for_call(
             .expect("generated observation id must be non-empty"),
     };
     let request = ToyGrantEvaluationRequest {
+        data_authority: Some(local_fixture_data(call)),
         toy_id,
         subject,
         child_instance_id,

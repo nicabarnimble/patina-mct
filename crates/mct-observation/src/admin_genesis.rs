@@ -326,6 +326,6 @@ impl JsonlObservationLedger {
             request,
             decided_at: now,
         };
-        self.append_before_effect(fact.observation()?, fact.decided_at.to_string())
+        self.append_canonical_before_effect(fact.observation()?, fact.decided_at.to_string())
     }
 }

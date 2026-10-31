@@ -1,4 +1,6 @@
-//! Scheme v1 admin signatures: Ed25519 AND ML-DSA-65.
+//! D-58 WebAuthn/Ed25519 day-key signatures and preserved hybrid v1 support.
+//!
+//! New passkey administration uses `DayKeyAdminProofV1`, not a hybrid fallback.
 //!
 //! The hybrid matches `patina-wasi-pi` `crates/mother/src/sig.rs` at `c436eaf`:
 //! tag `0x48`, the Ed25519 half signs `context ‖ msg`, the ML-DSA-65 half signs
@@ -8,6 +10,10 @@
 //!
 //! Mother verifies. The signing key has no serde form, so a raw secret cannot
 //! land in a fact. Transport stays plain Ed25519; iroh never sees the ML-DSA half.
+
+#[path = "admin_sig/day_key.rs"]
+mod day_key;
+pub use day_key::*;
 
 use crate::admin_key::AdminKeyPublicHalf;
 use ed25519_dalek::{Signer as _, Verifier as _};
@@ -122,6 +128,12 @@ pub enum AdminSignatureSchemeV1 {
     /// Ed25519 AND ML-DSA-65, version v1.
     #[serde(rename = "ed25519+mldsa65/v1")]
     Ed25519MlDsa65V1,
+    /// WebAuthn ES256 assertion over a day-key administrative intent.
+    #[serde(rename = "webauthn-p256-day-key/v1")]
+    WebAuthnP256DayKeyV1,
+    /// Short-lived Ed25519 administrative lease; no ML-DSA half.
+    #[serde(rename = "ed25519-day-key/v1")]
+    Ed25519DayKeyV1,
 }
 
 impl AdminSignatureSchemeV1 {
@@ -129,6 +141,8 @@ impl AdminSignatureSchemeV1 {
     pub fn name(self) -> &'static str {
         match self {
             Self::Ed25519MlDsa65V1 => "ed25519+mldsa65/v1",
+            Self::WebAuthnP256DayKeyV1 => "webauthn-p256-day-key/v1",
+            Self::Ed25519DayKeyV1 => "ed25519-day-key/v1",
         }
     }
 
@@ -136,14 +150,20 @@ impl AdminSignatureSchemeV1 {
     pub fn version(self) -> &'static str {
         match self {
             Self::Ed25519MlDsa65V1 => ADMIN_SCHEME_VERSION,
+            Self::WebAuthnP256DayKeyV1 => "webauthn-p256-day-key/v1",
+            Self::Ed25519DayKeyV1 => "ed25519-day-key/v1",
         }
     }
 }
 
 /// Signature carried on one admin authority change.
 ///
-/// The signature covers the command plus the signer grant. `nonce` is strictly
-/// increasing per signer grant; replay rejects a reuse.
+/// The signature covers the command plus the signer grant. `nonce` is unique
+/// per signer grant across committed history, not a monotonic counter. Replay
+/// rejects reuse even across ordinary authority epochs. The legacy v1 envelope
+/// itself does not bind an epoch or expiration; current D-56 issuance signs its
+/// exact expected authority snapshot inside the command. Do not use a legacy
+/// signature as evidence of current authorization under D-57.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdminSignatureV1 {
@@ -151,7 +171,7 @@ pub struct AdminSignatureV1 {
     pub scheme: AdminSignatureSchemeV1,
     /// Grant whose Ed25519 and ML-DSA-65 keys verify this signature.
     pub signer_grant_id: String,
-    /// Counter for this signer grant. A second use of the same value is rejected.
+    /// Unique value for this signer grant. A second committed use is rejected.
     pub nonce: u64,
     /// Hex of `0x48 ‖ ed25519 sig ‖ ML-DSA-65 sig`.
     pub signature: String,

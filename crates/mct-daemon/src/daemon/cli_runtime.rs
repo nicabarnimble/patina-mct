@@ -866,7 +866,17 @@ pub(super) struct CliToyAuthorizationRequest<'a> {
 pub(super) fn authorize_cli_toy(
     request: CliToyAuthorizationRequest<'_>,
 ) -> std::result::Result<CliAuthorizedToy, CliToyAuthorizationError> {
+    if !request
+        .authorized_child
+        .matches_invocation_data(request.call)
+    {
+        return Err(CliToyAuthorizationError {
+            safe_message: "Child invocation metadata changed before Toy admission".into(),
+            observations: Vec::new(),
+        });
+    }
     let evaluation_request = ToyGrantEvaluationRequest {
+        data_authority: request.authorized_child.data_authority().cloned(),
         toy_id: request.toy_id.clone(),
         subject: ToyGrantSubject {
             child_name: request.child.name.clone(),
@@ -1232,6 +1242,7 @@ mod tests {
         let authority = evaluate_child_call_authority(
             &call,
             &ChildCallAuthorityRequest {
+                data_authority: None,
                 instance_id: projection.instances[0].instance_id.clone(),
                 node_id: projection.local_node_id.clone(),
                 ids: ChildCallAuthorityIds {

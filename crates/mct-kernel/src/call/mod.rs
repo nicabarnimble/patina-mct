@@ -11,6 +11,8 @@ mod internal;
 ///
 /// The caller node and vision are authority-bearing; optional user and
 /// project fields narrow audit and policy scope without changing node identity.
+/// On `mct/call/0`, node/Vision must match the authenticated hop's admitted
+/// binding and user must be absent: peer admission does not delegate a user.
 pub struct CallerIdentity {
     pub node_id: MctNodeId,
     pub user_id: Option<UserId>,
@@ -508,7 +510,10 @@ impl PayloadIntegrityReason {
 /// Wire-edge `mct/call/0` request after JSON decoding.
 ///
 /// Validation requires authority, connection, call, and payload facts to be
-/// internally consistent before evaluation can authorize routing.
+/// internally consistent before evaluation can authorize routing. Evaluation
+/// requires `call.origin == Iroh`; local origins on this wire are denied, not
+/// promoted to local principals. Connection identity is adapter-authenticated,
+/// while caller node/Vision must match the exact admitted/current peer binding.
 pub struct MctCallProtocolRequest {
     pub protocol_request_id: ProtocolRequestId,
     pub authority: MctCallProtocolAuthority,
@@ -640,6 +645,8 @@ pub enum CallProtocolReason {
     EndpointMismatch,
     BindingMismatch,
     CallerMismatch,
+    /// A peer hop cannot assert a local, trigger, or Child call-out origin.
+    OriginMismatch,
     VisionMismatch,
     BindingRevoked,
     BindingExpired,
@@ -1771,6 +1778,38 @@ mod tests {
             Some(
                 CallId::new("call-1").expect("string ID literal/generated value must be non-empty")
             )
+        );
+    }
+
+    #[test]
+    fn peer_protocol_rejects_every_local_origin_and_unbound_user() {
+        for origin in [
+            CallOrigin::Cli,
+            CallOrigin::JvmAdapter,
+            CallOrigin::WasmHost,
+            CallOrigin::ProcessHarness,
+            CallOrigin::TriggerFiring,
+        ] {
+            let mut request = protocol_request();
+            request.call.origin = origin;
+            let evaluation = evaluate_call_protocol(&request, &admitted_hello(), eval_ids());
+            assert_eq!(evaluation.outcome, CallProtocolOutcome::Denied);
+            assert_eq!(evaluation.reason, CallProtocolReason::OriginMismatch);
+            assert_eq!(evaluation.retry_directive, CallProtocolRetryDirective::None);
+            assert_eq!(evaluation.safe_message, "not authorized");
+            assert!(evaluation.route_decision_id.is_none());
+        }
+        let mut request = protocol_request();
+        request.call.caller.user_id = Some(UserId::new("local-owner").unwrap());
+        let evaluation = evaluate_call_protocol(&request, &admitted_hello(), eval_ids());
+        assert_eq!(evaluation.reason, CallProtocolReason::CallerMismatch);
+        assert_eq!(evaluation.outcome, CallProtocolOutcome::Denied);
+        request.call.caller.user_id = None;
+        // Project remains narrowing request metadata, not upstream authority.
+        request.call.caller.project_id = Some(ProjectId::new("project-narrowing").unwrap());
+        assert!(
+            evaluate_call_protocol(&request, &admitted_hello(), eval_ids())
+                .is_accepted_for_routing()
         );
     }
 

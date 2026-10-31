@@ -7,7 +7,7 @@ use mct_iroh::MotherIrohEndpointSnapshot;
 use mct_kernel::GrantsAuthorityIdentity;
 use serde::{Deserialize, Serialize};
 use std::{future::Future, path::Path, pin::Pin, sync::Arc, time::Duration};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 
 #[cfg(unix)]
@@ -119,7 +119,7 @@ pub struct MctControlPlaneResponse {
 }
 
 const MCT_UDS_CONTROL_HEADER_READ_BUDGET_BYTES: usize = 4096;
-const MCT_UDS_CONTROL_REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
+const MCT_UDS_CONTROL_REQUEST_READ_TIMEOUT: Duration = crate::control_transport::CONTROL_IO_TIMEOUT;
 const MCT_UDS_CONTROL_READ_BUDGET_BYTES: usize =
     MCT_BLOB_MAX_BYTES.div_ceil(3) * 4 + MCT_UDS_CONTROL_HEADER_READ_BUDGET_BYTES;
 
@@ -420,27 +420,15 @@ pub async fn serve_http_control_once_with_snapshot_result(
     listener: &TcpListener,
     snapshot: MctControlPlaneSnapshotResult,
 ) -> Result<()> {
-    let (mut stream, _) = listener.accept().await.context("accept http control")?;
-    let mut buffer = [0_u8; 4096];
-    let read = stream
-        .read(&mut buffer)
-        .await
-        .context("read http control request")?;
-    let request = String::from_utf8_lossy(&buffer[..read]);
-    let (method, path) = parse_http_request_line(&request)?;
-    let authorization_header = parse_authorization_header(&request);
-    let response = handle_control_plane_path_result_with_auth(
-        method,
-        path,
-        snapshot.as_ref(),
-        &MctControlPlaneAuthPolicy::open_local(),
-        authorization_header,
-    );
-    stream
-        .write_all(http_response_bytes(&response).as_bytes())
-        .await
-        .context("write http control response")?;
-    Ok(())
+    let (stream, _) = listener.accept().await.context("accept http control")?;
+    serve_http_control_stream_with_snapshot_result(stream, snapshot).await
+}
+
+pub async fn serve_http_control_stream_with_snapshot_result(
+    stream: tokio::net::TcpStream,
+    snapshot: MctControlPlaneSnapshotResult,
+) -> Result<()> {
+    serve_read_only_stream(stream, snapshot, MctControlPlaneAuthPolicy::open_local()).await
 }
 
 pub async fn serve_http_control_once_with_auth(
@@ -448,22 +436,39 @@ pub async fn serve_http_control_once_with_auth(
     snapshot: MctControlPlaneSnapshot,
     policy: MctControlPlaneAuthPolicy,
 ) -> Result<()> {
-    let (mut stream, _) = listener.accept().await.context("accept http control")?;
-    let mut buffer = [0_u8; 4096];
-    let read = stream
-        .read(&mut buffer)
-        .await
-        .context("read http control request")?;
-    let request = String::from_utf8_lossy(&buffer[..read]);
-    let (method, path) = parse_http_request_line(&request)?;
-    let authorization_header = parse_authorization_header(&request);
-    let response =
-        handle_control_plane_path_with_auth(method, path, &snapshot, &policy, authorization_header);
-    stream
-        .write_all(http_response_bytes(&response).as_bytes())
-        .await
-        .context("write http control response")?;
-    Ok(())
+    let (stream, _) = listener.accept().await.context("accept http control")?;
+    serve_read_only_stream(stream, Ok(snapshot), policy).await
+}
+
+async fn serve_read_only_stream<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    mut stream: S,
+    snapshot: MctControlPlaneSnapshotResult,
+    policy: MctControlPlaneAuthPolicy,
+) -> Result<()> {
+    let head = crate::control_transport::read_request_head(&mut stream).await?;
+    if (head.method == "GET" && head.content_length != 0)
+        || head.content_length > crate::control_transport::CONTROL_BODY_BYTES
+    {
+        bail!("read-only control does not accept request bodies");
+    }
+    let response = handle_control_plane_path_result_with_auth(
+        &head.method,
+        &head.path,
+        snapshot.as_ref(),
+        &policy,
+        head.authorization.as_deref(),
+    );
+    write_control_response(&mut stream, &response).await
+}
+
+async fn write_control_response<S: tokio::io::AsyncWrite + Unpin>(
+    stream: &mut S,
+    response: &MctControlPlaneResponse,
+) -> Result<()> {
+    if response.body.len() > crate::control_transport::CONTROL_RESPONSE_BYTES {
+        bail!("control response exceeds byte cap");
+    }
+    crate::control_transport::write_response(stream, http_response_bytes(response).as_bytes()).await
 }
 
 #[cfg(unix)]
@@ -576,9 +581,11 @@ pub async fn serve_uds_control_stream_with_handlers(
                 .expect("owner-mutation route is constructed only when its handler exists");
             match handler.authenticate_owner(peer) {
                 Ok(owner) => {
-                    let body_budget = MCT_UDS_CONTROL_READ_BUDGET_BYTES
-                        .checked_sub(headers.len())
-                        .context("control request headers exceed bounded read budget")?;
+                    let body_budget = if request.path == "/blobs" {
+                        MCT_UDS_CONTROL_READ_BUDGET_BYTES - headers.len()
+                    } else {
+                        crate::control_transport::CONTROL_BODY_BYTES
+                    };
                     let body = read_http_body_bounded_with_deadline(
                         &mut stream,
                         request.content_length,
@@ -601,10 +608,7 @@ pub async fn serve_uds_control_stream_with_handlers(
         )),
     };
     if let Some(response) = response {
-        stream
-            .write_all(http_response_bytes(&response).as_bytes())
-            .await
-            .context("write uds control response")?;
+        write_control_response(&mut stream, &response).await?;
     }
     Ok(())
 }
@@ -614,22 +618,8 @@ pub async fn serve_uds_control_once_with_auth(
     snapshot: MctControlPlaneSnapshot,
     policy: MctControlPlaneAuthPolicy,
 ) -> Result<()> {
-    let (mut stream, _) = listener.accept().await.context("accept uds control")?;
-    let mut buffer = [0_u8; 4096];
-    let read = stream
-        .read(&mut buffer)
-        .await
-        .context("read uds control request")?;
-    let request = String::from_utf8_lossy(&buffer[..read]);
-    let (method, path) = parse_http_request_line(&request)?;
-    let authorization_header = parse_authorization_header(&request);
-    let response =
-        handle_control_plane_path_with_auth(method, path, &snapshot, &policy, authorization_header);
-    stream
-        .write_all(http_response_bytes(&response).as_bytes())
-        .await
-        .context("write uds control response")?;
-    Ok(())
+    let (stream, _) = listener.accept().await.context("accept uds control")?;
+    serve_read_only_stream(stream, Ok(snapshot), policy).await
 }
 
 fn parse_uds_control_request_head(
@@ -642,8 +632,9 @@ fn parse_uds_control_request_head(
     if !headers.ends_with(b"\r\n\r\n") {
         bail!("control request ended before header terminator");
     }
-    let request = String::from_utf8_lossy(headers);
-    let (method, path) = parse_http_request_line(&request)?;
+    let parsed = crate::control_transport::parse_request_head(headers)?;
+    let method = parsed.method.as_str();
+    let path = parsed.path.as_str();
     let route = if method == "POST" && path == "/calls" {
         MctUdsControlRequestRoute::CallPreflight
     } else if method == "POST" && mutation_handler_available {
@@ -651,11 +642,17 @@ fn parse_uds_control_request_head(
     } else {
         MctUdsControlRequestRoute::ReadOnly
     };
+    if route == MctUdsControlRequestRoute::ReadOnly
+        && ((method == "GET" && parsed.content_length != 0)
+            || parsed.content_length > crate::control_transport::CONTROL_BODY_BYTES)
+    {
+        bail!("read-only control does not accept request bodies");
+    }
     Ok(MctUdsControlRequestHead {
         method: method.to_owned(),
         path: path.to_owned(),
-        authorization_header: parse_authorization_header(&request).map(str::to_owned),
-        content_length: parse_content_length(&request)?.unwrap_or(0),
+        authorization_header: parsed.authorization,
+        content_length: parsed.content_length,
         route,
     })
 }
@@ -666,41 +663,6 @@ pub fn fuzz_uds_control_request(data: &[u8]) {
         return;
     };
     let _ = parse_uds_control_request_head(headers, flags & 1 == 1);
-}
-
-fn parse_http_request_line(request: &str) -> Result<(&str, &str)> {
-    let Some(line) = request.lines().next() else {
-        bail!("empty control request");
-    };
-    let mut parts = line.split_whitespace();
-    let method = parts
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("missing method"))?;
-    let path = parts
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-    Ok((method, path))
-}
-
-fn parse_authorization_header(request: &str) -> Option<&str> {
-    request.lines().skip(1).find_map(|line| {
-        let (name, value) = line.split_once(':')?;
-        name.eq_ignore_ascii_case("authorization")
-            .then(|| value.trim())
-    })
-}
-
-fn parse_content_length(request: &str) -> Result<Option<usize>> {
-    request
-        .lines()
-        .skip(1)
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse::<usize>())
-        })
-        .transpose()
-        .context("parse content-length")
 }
 
 async fn read_http_headers_bounded<S>(stream: &mut S, budget: usize) -> Result<Vec<u8>>
@@ -1247,6 +1209,12 @@ mod tests {
     fn control_plane_authorization_header_is_case_insensitive() {
         let request =
             "GET /status HTTP/1.1\r\nhost: localhost\r\nAUTHORIZATION: Bearer secret\r\n\r\n";
-        assert_eq!(parse_authorization_header(request), Some("Bearer secret"));
+        assert_eq!(
+            crate::control_transport::parse_request_head(request.as_bytes())
+                .unwrap()
+                .authorization
+                .as_deref(),
+            Some("Bearer secret")
+        );
     }
 }

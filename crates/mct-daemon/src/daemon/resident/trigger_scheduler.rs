@@ -2150,11 +2150,17 @@ mod tests {
         .await;
 
         let stage = MctArtifactStageRequest {
-            source_root: source_package,
+            source_root: source_package.clone(),
             manifest_path: MctRootRelativePath::new("child.toml").unwrap(),
             component_path: Some(MctRootRelativePath::new("trigger-wit.wasm").unwrap()),
             claimed_child_name: "trigger-wit".into(),
             claimed_artifact_version: "0.1.0".into(),
+            expected_manifest_digest: Some(format!(
+                "sha256:{:x}",
+                <sha2::Sha256 as sha2::Digest>::digest(
+                    std::fs::read(source_package.join("child.toml")).unwrap()
+                )
+            )),
             expected_digest: Some(format!("blake3:{component_blake3}")),
             standing_source_authority_id: None,
             claimed_publisher: None,

@@ -267,9 +267,19 @@ fn current_home(uid: u32) -> Result<PathBuf> {
     Ok(home)
 }
 
+fn executable_digest(path: &Path) -> Result<String> {
+    let file = mct_observation::private_fs::executable(path)
+        .with_context(|| format!("untrusted supervisor executable {}", path.display()))?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update_reader(file)?;
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
 fn file_digest(path: &Path) -> Result<String> {
-    let bytes = fs::read(path).with_context(|| format!("read {} for digest", path.display()))?;
-    Ok(blake3::hash(&bytes).to_hex().to_string())
+    let file = mct_observation::private_fs::trusted_input(path)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update_reader(file)?;
+    Ok(hasher.finalize().to_hex().to_string())
 }
 
 fn xml_escape(value: &str) -> String {
@@ -297,7 +307,8 @@ fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     let parent = path
         .parent()
         .with_context(|| format!("{} has no parent", path.display()))?;
-    fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    mct_observation::private_fs::ensure_publication_directory(parent)
+        .with_context(|| format!("verify publication directory {}", parent.display()))?;
     let temp = parent.join(format!(
         ".{}.{}.tmp",
         path.file_name()
@@ -806,22 +817,16 @@ fn exists_class(path: &Path) -> &'static str {
 }
 
 fn ensure_owner_private_root(root: &Path, uid: u32) -> Result<()> {
-    fs::create_dir_all(root).with_context(|| format!("create service root {}", root.display()))?;
-    fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
-    let metadata = fs::metadata(root)?;
-    if metadata.uid() != uid || metadata.permissions().mode() & 0o077 != 0 {
-        bail!("service root must be owned by authenticated UID and mode 0700");
+    if uid != mct_observation::private_fs::current_uid() {
+        bail!("service root UID does not match current process");
     }
-    Ok(())
+    mct_observation::private_fs::ensure_directory(root).context("verify private service root")
 }
 
 fn read_record(path: &Path) -> Result<SupervisorRecordV1> {
-    let metadata = fs::metadata(path)
-        .with_context(|| format!("read supervisor record metadata {}", path.display()))?;
-    if metadata.permissions().mode() & 0o077 != 0 {
-        bail!("supervisor record must be owner-private mode 0600");
-    }
-    let record: SupervisorRecordV1 = serde_json::from_slice(&fs::read(path)?)
+    let bytes =
+        mct_observation::private_fs::read(path).context("read private supervisor record")?;
+    let record: SupervisorRecordV1 = serde_json::from_slice(&bytes)
         .with_context(|| format!("decode supervisor record {}", path.display()))?;
     Ok(record)
 }
@@ -863,7 +868,7 @@ fn validate_supervisor_record_inner(
         bail!("supervisor record digest mismatch");
     }
     if require_current_executable
-        && file_digest(&record.executable_path)? != record.executable_digest
+        && executable_digest(&record.executable_path)? != record.executable_digest
     {
         bail!(
             "supervisor executable digest mismatch; run `mct-daemon install --replace --executable {}`",
@@ -935,13 +940,9 @@ fn install_with_adapter(
     replace: bool,
     adapter: &dyn SupervisorAdapter,
 ) -> Result<LifecycleReport> {
-    if !executable.is_absolute() || !executable.is_file() {
-        bail!("supervisor executable must be an absolute regular file");
-    }
-    let mode = fs::metadata(executable)?.permissions().mode();
-    if mode & 0o111 == 0 {
-        bail!("supervisor executable must be executable");
-    }
+    // Reject unsafe paths before bootstrap; defer expensive hashing until the
+    // exclusive writer is acquired so contention remains an early decision.
+    mct_observation::private_fs::executable(executable)?;
 
     let initial_discovery = discovered_summary(paths, "uninspected");
     ensure_owner_private_root(&paths.root, uid)?;
@@ -979,6 +980,7 @@ fn install_with_adapter(
         }
         Err(error) => return Err(error.into()),
     };
+    let selected_executable_digest = executable_digest(executable)?;
     let existing = paths.record.exists();
     if existing && !replace {
         let attempt_id = generated_id("lifecycle-install");
@@ -1064,7 +1066,12 @@ fn install_with_adapter(
             .map(|_| governing_observation_id.clone()),
         record_digest: String::new(),
         executable_path: executable.to_path_buf(),
-        executable_digest: file_digest(executable)?,
+        executable_digest: {
+            if executable_digest(executable)? != selected_executable_digest {
+                bail!("supervisor executable changed before publication");
+            }
+            selected_executable_digest
+        },
         plist_path: paths.plist.clone(),
         plist_digest: String::new(),
         config_path: paths.config.clone(),
@@ -1366,6 +1373,8 @@ fn upgrade_supervisor_context_for_paths(
     if record.owner_uid != uid {
         bail!("upgrade supervisor record is not owned by the authenticated UID");
     }
+    executable_digest(&current_executable)?;
+    executable_digest(&record.executable_path)?;
     let current_executable = current_executable.canonicalize()?;
     let recorded_executable = record.executable_path.canonicalize()?;
     if current_executable != recorded_executable
@@ -1548,7 +1557,8 @@ where
         .immutable_release_path
         .join(&artifact.executable_relative_path);
     if !candidate_executable.is_file()
-        || format!("blake3:{}", file_digest(&candidate_executable)?) != artifact.executable_blake3
+        || format!("blake3:{}", executable_digest(&candidate_executable)?)
+            != artifact.executable_blake3
     {
         bail!("verified daemon release executable changed before replacement");
     }
@@ -1676,36 +1686,22 @@ fn post_lifecycle_control_request(
     _uid: u32,
     release_artifact_id: Option<&str>,
 ) -> Result<LifecycleReport> {
-    use std::io::{Read as _, Write as _};
-    use std::os::unix::net::UnixStream;
-
     let body = serde_json::to_vec(&serde_json::json!({
         "action": action,
         "release_artifact_id": release_artifact_id,
     }))?;
-    let mut stream = UnixStream::connect(&record.uds_path).with_context(|| {
-        format!(
-            "connect resident lifecycle control {}",
-            record.uds_path.display()
-        )
-    })?;
-    stream.set_read_timeout(Some(Duration::from_secs(3)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(3)))?;
-    write!(
-        stream,
-        "POST /lifecycle/fact HTTP/1.1\r\nHost: local\r\nContent-Length: {}\r\n\r\n",
-        body.len()
-    )?;
-    stream.write_all(&body)?;
-    let mut response = String::new();
-    stream.read_to_string(&mut response)?;
-    let (headers, body) = response
-        .split_once("\r\n\r\n")
-        .context("resident lifecycle response missing body")?;
-    if !headers.starts_with("HTTP/1.1 200") {
+    let (status, body) = mct_daemon::control_transport::control_socket_request(
+        &record.uds_path,
+        "POST",
+        "/lifecycle/fact",
+        &body,
+        Duration::from_secs(3),
+    )?
+    .context("resident lifecycle control unavailable")?;
+    if status != 200 {
         bail!("resident lifecycle fact rejected");
     }
-    serde_json::from_str(body).context("decode resident lifecycle report")
+    serde_json::from_slice(&body).context("decode resident lifecycle report")
 }
 
 #[cfg(not(unix))]
@@ -2526,9 +2522,65 @@ fn install_supervisor_for_test(root: &Path) -> Result<(SupervisorPaths, Supervis
 mod tests {
     use super::*;
 
+    // Linux /tmp is sticky/world-writable: valid for private ledger storage,
+    // deliberately invalid for executable/publication ancestry. Do not change
+    // global TMPDIR or relax production trust checks to make fixtures pass.
+    fn supervisor_tempdir() -> tempfile::TempDir {
+        let home = PathBuf::from(std::env::var_os("HOME").expect("test HOME"))
+            .canonicalize()
+            .expect("canonical test HOME");
+        mct_observation::private_fs::ensure_publication_directory(&home)
+            .expect("test HOME must have trusted executable ancestry");
+        tempfile::Builder::new()
+            .prefix("mct-supervisor-test-")
+            .tempdir_in(home)
+            .expect("private supervisor fixture")
+    }
+
     fn sha256_hex(bytes: &[u8]) -> String {
         use sha2::{Digest as _, Sha256};
         format!("{:x}", Sha256::digest(bytes))
+    }
+
+    #[test]
+    fn l4_install_and_record_verification_refuse_untrusted_executable_paths() {
+        use std::os::unix::fs::symlink;
+        let dir = supervisor_tempdir();
+        let root = dir.path().canonicalize().unwrap();
+        let bin = root.join("bin");
+        mct_observation::private_fs::ensure_directory(&bin).unwrap();
+        let executable = bin.join("mother");
+        fs::write(&executable, b"fixture executable bytes").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let paths = SupervisorPaths::isolated(&root.join("service")).unwrap();
+        let adapter = FakeSupervisorAdapter::default();
+        install_with_adapter(&paths, &executable, current_uid().unwrap(), false, &adapter).unwrap();
+        validate_supervisor_record(&paths.record, true).unwrap();
+        let original_record = fs::read(&paths.record).unwrap();
+        for mode in [0o770, 0o1777] {
+            fs::set_permissions(&bin, fs::Permissions::from_mode(mode)).unwrap();
+            assert!(validate_supervisor_record(&paths.record, true).is_err());
+            assert!(
+                install_with_adapter(&paths, &executable, current_uid().unwrap(), true, &adapter)
+                    .is_err()
+            );
+        }
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o722)).unwrap();
+        assert!(validate_supervisor_record(&paths.record, true).is_err());
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let moved = bin.join("actual-mother");
+        fs::rename(&executable, &moved).unwrap();
+        symlink(&moved, &executable).unwrap();
+        assert!(validate_supervisor_record(&paths.record, true).is_err());
+        assert!(
+            install_with_adapter(&paths, &executable, current_uid().unwrap(), true, &adapter)
+                .is_err()
+        );
+        assert_eq!(fs::read(&paths.record).unwrap(), original_record);
+        fs::remove_file(&executable).unwrap();
+        fs::rename(moved, executable).unwrap();
+        validate_supervisor_record(&paths.record, true).unwrap();
     }
 
     #[test]
@@ -2721,7 +2773,7 @@ mod tests {
     /// with a simulated process context, so it runs on Linux too.
     #[test]
     fn supervised_boot_recovers_a_torn_final_frame_before_validating_the_record() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let (paths, record) = install_supervisor_for_test(root.path()).unwrap();
         let committed = fs::read(&paths.ledger).unwrap();
         let committed_lines = committed.iter().filter(|byte| **byte == b'\n').count() as u64;
@@ -2813,7 +2865,7 @@ mod tests {
 
     #[test]
     fn supervisor_install_bootstrap_is_observed_before_every_remaining_effect() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let (paths, record) = install_supervisor_for_test(root.path()).unwrap();
 
         assert!(paths.config.exists());
@@ -2873,7 +2925,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn supervisor_lifecycle_install_start_stop_unclean_reconcile_uninstall_preserves_evidence()
      {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let adapter = Arc::new(FakeSupervisorAdapter::default());
         let (paths, record) =
             install_supervisor_for_test_with_adapter(root.path(), adapter.as_ref()).unwrap();
@@ -3273,7 +3325,7 @@ mod tests {
 
     #[test]
     fn smoke_plist_seam_is_internal_isolated_and_keeps_fixed_service_identity() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = supervisor_tempdir();
         let root = temp.path().join("smoke-root");
         fs::create_dir(&root).unwrap();
         let smoke = SupervisorPaths::smoke_internal(&root).unwrap();
@@ -3324,7 +3376,7 @@ mod tests {
 
     #[test]
     fn supervised_start_rejects_unobserved_tampered_or_stale_records() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let (paths, mut record) = install_supervisor_for_test(root.path()).unwrap();
         record.record_state = "revoked".into();
         record.refresh_digest().unwrap();
@@ -3355,7 +3407,7 @@ mod tests {
 
     #[test]
     fn supervisor_conflicts_refuse_before_launchd_or_endpoint_effects() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let adapter = FakeSupervisorAdapter::default();
         let (paths, _) = install_supervisor_for_test_with_adapter(root.path(), &adapter).unwrap();
         let executable = paths.root.join("mct-daemon-fixture");
@@ -3393,7 +3445,7 @@ mod tests {
         let manual = refuse_manual_serve_if_managed(&paths.config, false).unwrap_err();
         assert!(manual.to_string().contains("manual serve refused"));
 
-        let concurrent_root = tempfile::tempdir().unwrap();
+        let concurrent_root = supervisor_tempdir();
         let concurrent_paths = SupervisorPaths::isolated(concurrent_root.path()).unwrap();
         ensure_owner_private_root(&concurrent_paths.root, current_uid().unwrap()).unwrap();
         let held_bootstrap =
@@ -3464,7 +3516,7 @@ mod tests {
 
     #[test]
     fn launchd_adapter_refuses_missing_gui_domain_without_fallback() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let paths = SupervisorPaths::isolated(root.path()).unwrap();
         let executable = paths.root.join("mct-daemon-fixture");
         fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
@@ -3489,7 +3541,7 @@ mod tests {
 
     #[test]
     fn supervised_start_rejects_unblessed_binary_swap_with_replace_guidance() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let (paths, record) = install_supervisor_for_test(root.path()).unwrap();
         fs::write(&record.executable_path, b"binary-swap").unwrap();
 
@@ -3533,7 +3585,7 @@ mod tests {
 
     #[test]
     fn uninstall_refuses_foreign_plist_with_durable_observation() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let adapter = FakeSupervisorAdapter::default();
         let (paths, _) = install_supervisor_for_test_with_adapter(root.path(), &adapter).unwrap();
         let foreign_plist = b"foreign launchd policy";
@@ -3554,7 +3606,7 @@ mod tests {
 
     #[test]
     fn launchd_non_zero_start_is_observed_once_without_fallback() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let adapter = FakeSupervisorAdapter::default();
         let (paths, record) =
             install_supervisor_for_test_with_adapter(root.path(), &adapter).unwrap();
@@ -3594,7 +3646,7 @@ mod tests {
 
     #[test]
     fn install_replace_refuses_loaded_service_durably() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let adapter = FakeSupervisorAdapter::default();
         let (paths, record) =
             install_supervisor_for_test_with_adapter(root.path(), &adapter).unwrap();
@@ -3621,7 +3673,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn supervisor_start_and_stop_no_ops_are_observed() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let adapter = Arc::new(FakeSupervisorAdapter::default());
         let (paths, _) =
             install_supervisor_for_test_with_adapter(root.path(), adapter.as_ref()).unwrap();
@@ -3685,7 +3737,7 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_append_failure_has_no_clean_claim_and_next_start_reconciles() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let (paths, record) = install_supervisor_for_test(root.path()).unwrap();
         let first_writer = ResidentLedgerWriter::spawn(paths.ledger.clone()).unwrap();
         let first_instance = begin_supervised_resident_instance(&record, &first_writer)
@@ -3776,11 +3828,13 @@ mod tests {
     #[test]
     fn exact_upgrade_approval_composes_shared_replace_and_named_post_verify() {
         assert_eq!(MCT_UPGRADE_POST_VERIFY_DEADLINE_SECONDS, 30);
-        let temp = tempfile::tempdir().unwrap();
+        let temp = supervisor_tempdir();
         let paths = SupervisorPaths::isolated(temp.path()).unwrap();
         let uid = current_uid().unwrap();
         let adapter = FakeSupervisorAdapter::default();
-        let current = std::env::current_exe().unwrap();
+        let current = paths.root.join("current-mother");
+        fs::copy(std::env::current_exe().unwrap(), &current).unwrap();
+        fs::set_permissions(&current, fs::Permissions::from_mode(0o700)).unwrap();
         let initial = install_with_adapter(&paths, &current, uid, false, &adapter).unwrap();
         let context = UpgradeSupervisorContext {
             paths: paths.clone(),
@@ -3930,7 +3984,7 @@ mod tests {
 
     #[test]
     fn exact_approval_refuses_wrong_historical_failed_and_tampered_artifact_evidence() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let fixture =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/slate-manager-0.2.0");
         let source = root.path().join("source");
@@ -3953,6 +4007,7 @@ mod tests {
             component_path: Some(MctRootRelativePath::new("slate-manager.wasm").unwrap()),
             claimed_child_name: "slate-manager".into(),
             claimed_artifact_version: "0.2.0".into(),
+            expected_manifest_digest: None,
             expected_digest: None,
             standing_source_authority_id: None,
             claimed_publisher: None,
@@ -4004,7 +4059,7 @@ mod tests {
             .is_err()
         );
 
-        let failed_root = tempfile::tempdir().unwrap();
+        let failed_root = supervisor_tempdir();
         let mut failed_request = request;
         failed_request.source_root = failed_root.path().join("missing-source");
         failed_request.state_path = failed_root.path().join("state.sqlite");
@@ -4020,7 +4075,7 @@ mod tests {
 
     #[test]
     fn standing_artifact_source_authority_is_scoped_observed_and_revocable() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let source_root = root.path().join("source");
         fs::create_dir(&source_root).unwrap();
         let state_path = root.path().join("state.sqlite");
@@ -4235,7 +4290,7 @@ mod tests {
         assert!(!manifest.with_extension("toml.sha256").exists());
         assert!(!component.with_extension("wasm.sha256").exists());
 
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let adapter = Arc::new(FakeSupervisorAdapter::default());
         let (paths, record) =
             install_supervisor_for_test_with_adapter(root.path(), adapter.as_ref()).unwrap();
@@ -4299,6 +4354,12 @@ status = "active"
             component_path: Some(MctRootRelativePath::new("slate-manager.wasm").unwrap()),
             claimed_child_name: "slate-manager".into(),
             claimed_artifact_version: "0.2.0".into(),
+            expected_manifest_digest: Some(format!(
+                "sha256:{:x}",
+                <sha2::Sha256 as sha2::Digest>::digest(
+                    fs::read(source_root.join("slate-manager.toml")).unwrap()
+                )
+            )),
             expected_digest: Some(
                 "blake3:e06cab5f7605f3c070ef792f67f7b71a179d8a9c7da0c45e525b39e8a3a88e7d".into(),
             ),
@@ -4570,14 +4631,17 @@ status = "active"
         let (call_status, call_reply) =
             uds_json(&paths.uds, "POST", "/calls", &call_submission("allowed")).await;
         assert_eq!(call_status, 200, "{call_reply:#}");
-        assert_eq!(call_reply["outcome"], "completed", "{call_reply:#}");
-        let result_bytes = BASE64_STANDARD
-            .decode(call_reply["inline_result_payload_base64"].as_str().unwrap())
-            .unwrap();
-        let result_json: serde_json::Value = serde_json::from_slice(&result_bytes).unwrap();
-        assert!(
-            result_json.to_string().contains("fixture-work"),
-            "{result_json:#}"
+        // L6: an authenticated UID does not attest a caller's data labels.
+        // Keep the classification-scoped grants narrow; do not manufacture
+        // Mother facts from the request just to make this call execute.
+        assert_eq!(call_reply["outcome"], "denied", "{call_reply:#}");
+        assert!(call_reply["inline_result_payload_base64"].is_null());
+        assert_eq!(
+            entries(&paths.ledger)
+                .iter()
+                .filter(|entry| entry.observation.kind == ObservationKind::RuntimeExecutionStarted)
+                .count(),
+            runtime_starts_before_grant_denial
         );
 
         let watch_root = root.path().join("watch-input");
@@ -4608,6 +4672,7 @@ status = "active"
                 component_path: Some(MctRootRelativePath::new(component_name).unwrap()),
                 claimed_child_name: child_name.into(),
                 claimed_artifact_version: "0.1.0".into(),
+                expected_manifest_digest: None,
                 expected_digest: None,
                 standing_source_authority_id: None,
                 claimed_publisher: None,
@@ -5089,7 +5154,7 @@ status = "active"
 
     #[test]
     fn launchd_adapter_maps_install_start_stop_and_restart_without_ambient_fallbacks() {
-        let root = tempfile::tempdir().unwrap();
+        let root = supervisor_tempdir();
         let (_, record) = install_supervisor_for_test(root.path()).unwrap();
         let plist = String::from_utf8(render_launchd_plist(&record)).unwrap();
         assert!(plist.contains("io.patina.mct.mother"));

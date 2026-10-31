@@ -3,6 +3,10 @@ use mct_daemon::{
     MotherAuthorityCommitOutcomeV1, MotherAuthorityOrderV1, authority_expectation_from_ledger,
 };
 
+#[cfg(test)]
+#[path = "control/boundaries.rs"]
+mod boundaries;
+
 const PEER_MUTATION_BODY_MAX_BYTES: usize = 64 * 1024;
 const RESIDENT_UDS_CONNECTION_LIMIT: usize = 64;
 const RESIDENT_UDS_CAPACITY_RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -364,6 +368,14 @@ async fn execute_resident_peer_mutation(
             );
         }
     };
+    apply_resident_peer_mutation(ledger, &prepared, PreparedPeerMutation::apply).await
+}
+
+async fn apply_resident_peer_mutation(
+    ledger: &ResidentLedgerWriter,
+    prepared: &PreparedPeerMutation,
+    apply: impl FnOnce(&PreparedPeerMutation) -> Result<PeerMutationSuccess>,
+) -> MctControlPlaneResponse {
     if ledger
         .append(vec![prepared.decision_observation()])
         .await
@@ -374,7 +386,7 @@ async fn execute_resident_peer_mutation(
             serde_json::json!({"error": "peer mutation decision was not durable"}),
         );
     }
-    match prepared.apply() {
+    match apply(prepared) {
         Ok(response) => peer_mutation_response(
             200,
             serde_json::to_value(response)
@@ -2053,6 +2065,7 @@ fn legacy_authority_state(state_path: &Path) -> Result<AuthorityStateV1> {
         guardian_recovery: None,
         admin_issuance: Default::default(),
         admin_genesis: None,
+        passkey_admin: None,
     })
 }
 
@@ -2316,7 +2329,11 @@ pub(super) fn execute_offline_administrative_mutation(
     })?;
     let prepared =
         prepare_administrative_mutation(config_path, children_dir, state_path, path, body)?;
-    if let Some(request) = prepared.authority_mutation_request(0) {
+    // Retained offline helper: attribution is the effective OS principal, not root.
+    // This does not make a UID a D-57 administrative credential.
+    if let Some(request) =
+        prepared.authority_mutation_request(mct_observation::private_fs::current_uid())
+    {
         let existing_legacy = legacy_authority_state(state_path)?;
         let replay = replay_authority_entries(&ledger.entries()?)
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
@@ -2956,17 +2973,41 @@ pub(super) fn execute_offline_identity_mutation(
     }
 }
 
-pub(super) async fn serve_http_control_loop(state_path: &Path, addr: &str) -> Result<()> {
-    let listener = TcpListener::bind(addr).await?;
-    let snapshot_source = ControlSnapshotSource::open(state_path);
-    println!("mct daemon serving control http on {addr}");
+async fn serve_http_connections<S: std::future::Future<Output = ()>>(
+    listener: TcpListener,
+    snapshot_source: ControlSnapshotSource,
+    shutdown: S,
+) -> Result<()> {
+    let mut connections = mct_daemon::control_transport::ControlConnections::default();
+    tokio::pin!(shutdown);
     loop {
-        serve_http_control_once_with_snapshot_result(
-            &listener,
-            control_snapshot(&snapshot_source).await,
-        )
-        .await?;
+        tokio::select! {
+            biased;
+            _ = &mut shutdown => break,
+            _ = connections.join_next(), if !connections.is_empty() => {}
+            accepted = listener.accept() => {
+                let Some((stream, _)) = mct_daemon::control_transport::accept_or_retry(accepted)? else { continue; };
+                let source = snapshot_source.clone();
+                connections.spawn(async move {
+                    mct_daemon::serve_http_control_stream_with_snapshot_result(
+                        stream, control_snapshot(&source).await).await
+                });
+            }
+        }
     }
+    Ok(())
+}
+
+pub(super) async fn serve_http_control_loop(
+    state_path: &Path,
+    addr: &str,
+    allow_non_loopback: bool,
+) -> Result<()> {
+    let listener =
+        mct_daemon::control_transport::bind_http_control(addr, allow_non_loopback).await?;
+    let snapshot_source = ControlSnapshotSource::open(state_path);
+    println!("mct daemon serving read-only control http on {addr}");
+    serve_http_connections(listener, snapshot_source, std::future::pending()).await
 }
 
 pub(super) async fn serve_http_control_loop_until(
@@ -2974,20 +3015,21 @@ pub(super) async fn serve_http_control_loop_until(
     addr: String,
     mut shutdown: broadcast::Receiver<()>,
     status_source: Option<Arc<ResidentStatusSource>>,
+    bound: tokio::sync::oneshot::Sender<()>,
 ) -> Result<()> {
-    let listener = TcpListener::bind(&addr).await?;
+    let listener = mct_daemon::control_transport::bind_http_control(&addr, false).await?;
     let snapshot_source = ControlSnapshotSource::open_with_status(&state_path, status_source);
+    control_snapshot(&snapshot_source).await.map_err(|_| {
+        anyhow::anyhow!("resident control status was not ready before HTTP readiness")
+    })?;
     println!("mct daemon serving control http on {addr}");
-    loop {
-        tokio::select! {
-            _ = shutdown.recv() => break,
-            result = serve_http_control_once_with_snapshot_result(
-                &listener,
-                control_snapshot(&snapshot_source).await,
-            ) => result?,
-        }
-    }
-    Ok(())
+    bound
+        .send(())
+        .map_err(|_| anyhow::anyhow!("resident control startup receiver dropped"))?;
+    serve_http_connections(listener, snapshot_source, async move {
+        let _ = shutdown.recv().await;
+    })
+    .await
 }
 
 pub(super) async fn run_control(mut args: Vec<String>) -> Result<()> {
@@ -3005,11 +3047,20 @@ pub(super) async fn run_control_serve_http(mut args: Vec<String>) -> Result<()> 
     let state_path = take_option(&mut args, "--state")
         .map(PathBuf::from)
         .unwrap_or_else(default_state_path);
+    let allow_non_loopback = take_flag(&mut args, "--allow-unauthenticated-non-loopback-http");
+    if args.len() > 1 {
+        bail!("unexpected HTTP control arguments");
+    }
     let addr = args
         .first()
         .cloned()
         .unwrap_or_else(|| "127.0.0.1:9173".into());
-    serve_http_control_loop(&state_path, &addr).await
+    if allow_non_loopback {
+        eprintln!(
+            "WARNING: explicitly exposing unauthenticated, read-only HTTP diagnostics; no mutation authority is enabled"
+        );
+    }
+    serve_http_control_loop(&state_path, &addr, allow_non_loopback).await
 }
 
 #[cfg(unix)]
@@ -3041,13 +3092,33 @@ pub(super) async fn run_control_serve_uds_with_state(
         socket_path.display()
     );
     let snapshot_source = ControlSnapshotSource::open(&state_path);
+    serve_readonly_uds_connections(listener, snapshot_source, std::future::pending()).await
+}
+
+#[cfg(unix)]
+async fn serve_readonly_uds_connections<S: std::future::Future<Output = ()>>(
+    listener: UnixListener,
+    snapshot_source: ControlSnapshotSource,
+    shutdown: S,
+) -> Result<()> {
+    let mut connections = mct_daemon::control_transport::ControlConnections::default();
+    tokio::pin!(shutdown);
     loop {
-        mct_daemon::serve_uds_control_once_with_snapshot_result(
-            &listener,
-            control_snapshot(&snapshot_source).await,
-        )
-        .await?;
+        tokio::select! {
+            biased;
+            _ = &mut shutdown => break,
+            _ = connections.join_next(), if !connections.is_empty() => {}
+            accepted = listener.accept() => {
+                let Some((stream, _)) = mct_daemon::control_transport::accept_or_retry(accepted)? else { continue; };
+                let source = snapshot_source.clone();
+                connections.spawn(async move {
+                    mct_daemon::serve_uds_control_stream_with_handlers(
+                        stream, control_snapshot(&source).await, None, None).await
+                });
+            }
+        }
     }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -3058,6 +3129,7 @@ pub(super) async fn run_control_serve_uds_with_state_until(
     max_in_flight_calls: usize,
     mut shutdown: broadcast::Receiver<()>,
     status_source: Option<Arc<ResidentStatusSource>>,
+    bound: tokio::sync::oneshot::Sender<()>,
 ) -> Result<()> {
     if let Some(parent) = socket_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -3096,11 +3168,17 @@ pub(super) async fn run_control_serve_uds_with_state_until(
         resident_local_call_handler(paths, ledger, expected_uid, max_in_flight_calls);
     let mut connections = tokio::task::JoinSet::new();
     let connection_capacity = Arc::new(tokio::sync::Semaphore::new(RESIDENT_UDS_CONNECTION_LIMIT));
+    // A pathname may belong to a killed predecessor. Only this listener owner
+    // can acknowledge the new bind, after durable admission, snapshot, mode,
+    // ownership checks and handler initialization have all succeeded.
+    bound
+        .send(())
+        .map_err(|_| anyhow::anyhow!("resident control startup receiver dropped"))?;
     loop {
         tokio::select! {
             _ = shutdown.recv() => break,
             accepted = listener.accept() => {
-                let (mut stream, _) = accepted.context("accept uds control")?;
+                let Some((mut stream, _)) = mct_daemon::control_transport::accept_or_retry(accepted)? else { continue; };
                 let permit = Arc::clone(&connection_capacity).try_acquire_owned();
                 match permit {
                     Ok(permit) => {
@@ -3182,6 +3260,7 @@ pub(super) async fn run_control_serve_uds_with_state_until(
     _max_in_flight_calls: usize,
     _shutdown: broadcast::Receiver<()>,
     _status_source: Option<Arc<ResidentStatusSource>>,
+    _bound: tokio::sync::oneshot::Sender<()>,
 ) -> Result<()> {
     bail!("UDS control plane is only available on Unix platforms")
 }
@@ -3588,12 +3667,30 @@ mod tests {
     async fn resident_apply_failure_records_typed_failure_after_decision() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.json");
-        std::fs::create_dir(config_path.with_extension("json.tmp")).unwrap();
+        // Inject a failure at the actual apply boundary, not a predictable temp name.
         let ledger_path = dir.path().join("observations.jsonl");
         let socket_path = dir.path().join("control.sock");
         let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
         let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
-        let handler = resident_peer_mutation_handler(config_path.clone(), ledger.clone());
+        let handler = mct_daemon::MctUdsControlMutationHandler::new(
+            mct_observation::private_fs::current_uid(),
+            {
+                let config_path = config_path.clone();
+                let ledger = ledger.clone();
+                move |_owner, path, body| {
+                    let config_path = config_path.clone();
+                    let ledger = ledger.clone();
+                    async move {
+                        let prepared = prepare_peer_mutation(&config_path, &path, &body).unwrap();
+                        apply_resident_peer_mutation(&ledger, &prepared, |prepared| {
+                            std::fs::create_dir(&config_path)?;
+                            prepared.apply()
+                        })
+                        .await
+                    }
+                }
+            },
+        );
 
         let (status, response) = post_mutation(
             listener,
@@ -3623,7 +3720,7 @@ mod tests {
             ObservationKind::OperatorActionRecorded
         );
         assert_eq!(entries[1].observation.outcome, ObservationOutcome::Failed);
-        assert!(!config_path.exists());
+        assert!(config_path.is_dir());
     }
 
     #[test]
@@ -3852,6 +3949,7 @@ mod tests {
             component_path: Some(MctRootRelativePath::new("child.wasm").unwrap()),
             claimed_child_name: "fixture".into(),
             claimed_artifact_version: "1.0.0".into(),
+            expected_manifest_digest: None,
             expected_digest: None,
             standing_source_authority_id: None,
             claimed_publisher: None,
@@ -3934,6 +4032,7 @@ mod tests {
             component_path: Some(MctRootRelativePath::new("resident-echo.wasm").unwrap()),
             claimed_child_name: "resident-echo".into(),
             claimed_artifact_version: "0.1.0".into(),
+            expected_manifest_digest: None,
             expected_digest: None,
             standing_source_authority_id: Some(source.source_authority_id.to_string()),
             claimed_publisher: Some("resident-fixture".into()),
@@ -3998,6 +4097,7 @@ mod tests {
             component_path: Some(MctRootRelativePath::new("slate-manager.wasm").unwrap()),
             claimed_child_name: "slate-manager".into(),
             claimed_artifact_version: "0.2.0".into(),
+            expected_manifest_digest: None,
             expected_digest: None,
             standing_source_authority_id: None,
             claimed_publisher: None,
@@ -4606,6 +4706,79 @@ mod tests {
         }
     }
 
+    #[test]
+    fn l5_offline_mutation_records_effective_uid_without_rewriting_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.json");
+        let children = dir.path().join("children");
+        let state = dir.path().join("state.sqlite");
+        let path = dir.path().join("observations.jsonl");
+        write_resident_wasm_child(&children);
+        let child = load_children_from_dir(MctChildLoadOptions::new(&children).strict_integrity())
+            .children
+            .into_iter()
+            .next()
+            .unwrap();
+        MctDaemonConfigStore::new(&config)
+            .approve_and_assign_loaded_child(&child, MctOperatorChildScope::default())
+            .unwrap();
+        {
+            let mut ledger =
+                JsonlObservationLedger::open(&path, "ledger-local", "local-mct").unwrap();
+            ledger
+                .append_before_effect(
+                    MctObservation::informational(
+                        ObservationId::new("historical-attribution").unwrap(),
+                        current_timestamp(),
+                        ObservationKind::LifecycleTransitionRecorded,
+                        TraceId::new("history").unwrap(),
+                        "historical os-uid:0 attribution is not repaired",
+                    ),
+                    current_timestamp_string(),
+                )
+                .unwrap();
+        }
+        let before = std::fs::read(&path).unwrap();
+        let request = ToyAuthorizeSecretRequest {
+            mutation_id: "l5-attribution".into(),
+            expected_config_path: config.clone(),
+            expected_children_dir: children.clone(),
+            expected_state_path: state.clone(),
+            child_name: "resident-echo".into(),
+            secret_name: "credential-name".into(),
+        };
+        execute_offline_administrative_mutation(
+            &config,
+            &children,
+            &state,
+            &path,
+            "/toys/authorize-secret",
+            &serde_json::to_vec(&request).unwrap(),
+        )
+        .unwrap();
+        let ledger =
+            JsonlObservationLedger::open_read_only(&path, "ledger-local", "local-mct").unwrap();
+        let replay = replay_authority_entries(&ledger.entries().unwrap()).unwrap();
+        let sources = &replay.mutations["l5-attribution"]
+            .fact
+            .grant_shaping_sources;
+        let principal = sources
+            .iter()
+            .find_map(|source| match source {
+                GrantShapingSourceV1::OperatorDecision {
+                    authenticated_principal_ref,
+                    ..
+                } => Some(authenticated_principal_ref.as_str()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            principal,
+            format!("os-uid:{}", mct_observation::private_fs::current_uid())
+        );
+        assert!(std::fs::read(&path).unwrap().starts_with(&before));
+    }
+
     #[tokio::test]
     async fn administrative_append_failure_and_offline_lock_contention_prevent_state_effects() {
         let dir = tempfile::tempdir().unwrap();
@@ -5057,13 +5230,18 @@ mod tests {
                 .unwrap();
             }
         });
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600)).unwrap();
         let client_socket = socket_path.clone();
         let error = tokio::task::spawn_blocking(move || {
             try_resident_control_mutation(&client_socket, "/identity/ensure", b"{}").unwrap_err()
         })
         .await
         .unwrap();
-        server.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
 
         assert!(format!("{error:#}").contains("stop the daemon to create or rotate identity"));
         assert!(!config_path.exists());

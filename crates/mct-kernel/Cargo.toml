@@ -8,6 +8,11 @@ repository.workspace = true
 
 [dependencies]
 blake3.workspace = true
+base64.workspace = true
+sha2.workspace = true
+p256.workspace = true
+ciborium.workspace = true
+url.workspace = true
 const-hex.workspace = true
 ed25519-dalek.workspace = true
 getrandom.workspace = true
@@ -23,6 +28,9 @@ libcrux-ml-dsa = { workspace = true, features = ["simd256"] }
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 libcrux-ml-dsa = { workspace = true, features = ["simd128"] }
 
+# Retained only to exercise the exact-version OSV false-positive proof. Remove
+# with scripts/scan-osv.py when Wasmtime no longer brings this version.
 [dev-dependencies]
+block-buffer = "=0.10.4"
 ml-dsa.workspace = true
 serde_json.workspace = true

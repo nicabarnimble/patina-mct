@@ -241,7 +241,16 @@ impl MotherIrohEndpoint {
         let relay_mode = config.relay_mode;
         let mut builder = Endpoint::builder(presets::N0)
             .relay_mode(relay_mode.into_iroh())
-            .alpns(alpn_bytes(&accepted_alpns));
+            .alpns(alpn_bytes(&accepted_alpns))
+            // One MCT request/response per connection, no unidirectional protocol.
+            .transport_config(
+                iroh::endpoint::QuicTransportConfig::builder()
+                    .max_concurrent_bidi_streams(1u32.into())
+                    .max_concurrent_uni_streams(0u32.into())
+                    .stream_receive_window((128 * 1024u32).into())
+                    .receive_window((128 * 1024u32).into())
+                    .build(),
+            );
         if let Some(secret_key_hex) = config.secret_key_hex {
             builder = builder.secret_key(secret_key_from_hex(&secret_key_hex)?);
         }
@@ -309,6 +318,19 @@ impl MotherIrohEndpoint {
         })
     }
 
+    /// Send-only shared handle; no bind, serve, or close authority.
+    pub fn client(&self) -> MotherIrohEndpointResult<MotherIrohClient> {
+        let endpoint = self
+            .endpoint
+            .as_ref()
+            .ok_or(MotherIrohEndpointError::EndpointClosed)?;
+        Ok(MotherIrohClient {
+            inner: std::sync::Arc::new(Self {
+                endpoint: Some(endpoint.clone()),
+                snapshot: self.snapshot.clone(),
+            }),
+        })
+    }
     pub fn snapshot(&self) -> MotherIrohEndpointSnapshot {
         self.snapshot.clone()
     }
@@ -325,6 +347,24 @@ impl MotherIrohEndpoint {
     }
 }
 
+/// Cloning/dropping clients never starts or closes an endpoint.
+/// Owner close shuts down the shared Iroh endpoint and all its clients.
+#[derive(Clone)]
+pub struct MotherIrohClient {
+    pub(crate) inner: std::sync::Arc<MotherIrohEndpoint>,
+}
+impl std::fmt::Debug for MotherIrohClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MotherIrohClient")
+            .field("endpoint_id", &self.inner.snapshot.endpoint_id)
+            .finish()
+    }
+}
+impl MotherIrohClient {
+    pub fn endpoint_id(&self) -> EndpointIdText {
+        self.inner.snapshot.endpoint_id.clone()
+    }
+}
 pub(crate) fn mct_alpns() -> Vec<String> {
     vec![MCT_HELLO_ALPN.into(), MCT_CALL_ALPN.into()]
 }

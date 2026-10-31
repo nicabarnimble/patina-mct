@@ -17,7 +17,7 @@ use mct_kernel::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs,
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
 };
@@ -106,15 +106,21 @@ pub fn seal_segment(
         last_entry_hash: body.last_entry_hash.clone(),
         segment_blake3: body.file_blake3.clone(),
     };
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent).map_err(|source| ObservationLedgerError::Io {
-            path: parent.to_path_buf(),
+    let mut input = crate::private_fs::read_file(source).map_err(|source_error| {
+        ObservationLedgerError::Io {
+            path: source.to_path_buf(),
+            source: source_error,
+        }
+    })?;
+    let mut output = crate::private_fs::create_new(destination).map_err(|source| {
+        ObservationLedgerError::Io {
+            path: destination.to_path_buf(),
             source,
-        })?;
-    }
-    fs::copy(source, destination).map_err(|io| ObservationLedgerError::Io {
+        }
+    })?;
+    std::io::copy(&mut input, &mut output).map_err(|source| ObservationLedgerError::Io {
         path: destination.to_path_buf(),
-        source: io,
+        source,
     })?;
     let observation = checkpoint_observation(
         segment_id,
@@ -302,7 +308,7 @@ fn stream_chain(
     mother_node_id: &str,
     expected_start: Option<(u64, Option<String>)>,
 ) -> Result<StreamedChain> {
-    let file = File::open(path).map_err(|source| ObservationLedgerError::Io {
+    let file = crate::private_fs::read_file(path).map_err(|source| ObservationLedgerError::Io {
         path: path.to_path_buf(),
         source,
     })?;
@@ -582,14 +588,12 @@ fn append_checkpoint_frame(
         source,
     })?;
     bytes.push(b'\n');
-    let file = OpenOptions::new()
-        .read(true)
-        .append(true)
-        .open(path)
-        .map_err(|source| ObservationLedgerError::Io {
+    let file = crate::private_fs::open_existing(path, true).map_err(|source| {
+        ObservationLedgerError::Io {
             path: path.to_path_buf(),
             source,
-        })?;
+        }
+    })?;
     let mut file = crate::acquire_writer_lock(path, file)?;
     file.write_all(&bytes)
         .map_err(|source| ObservationLedgerError::Io {
@@ -683,7 +687,7 @@ mod tests {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).unwrap();
         }
-        let mut file = File::create(path).unwrap();
+        let mut file = std::fs::File::create(path).unwrap();
         let mut previous = previous;
         for offset in 0..count {
             let sequence = start + offset;

@@ -215,6 +215,12 @@ fn authorize_resident_watch_toy(
     action: &str,
     label: &str,
 ) -> std::result::Result<CliAuthorizedToy, CliToyAuthorizationError> {
+    if !authorized_child.matches_invocation_data(call) {
+        return Err(CliToyAuthorizationError {
+            safe_message: "Child invocation metadata changed before Toy admission".into(),
+            observations: Vec::new(),
+        });
+    }
     let grants = snapshot.canonical_grants().toy_grants();
     let toy_id = ToyId::new(toy_id).map_err(|error| cli_adapter_error(error.into()))?;
     let resource_id = grants
@@ -238,6 +244,7 @@ fn authorize_resident_watch_toy(
             observations: Vec::new(),
         })?;
     let request = ToyGrantEvaluationRequest {
+        data_authority: authorized_child.data_authority().cloned(),
         toy_id,
         subject: ToyGrantSubject {
             child_name: child.name.clone(),

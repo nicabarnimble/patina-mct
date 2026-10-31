@@ -5,7 +5,11 @@
 
 #![forbid(unsafe_code)]
 
+mod passkey_admin;
+pub use passkey_admin::{PasskeyAdminCanonicalV1, PasskeyAdminFactV1, PasskeyGenesisSetupV1};
 mod admin_genesis;
+#[cfg(test)]
+mod passkey_admin_tests;
 pub use admin_genesis::{
     AdminGenesisFactV1, AdminGenesisIntentV1, AdminGenesisRequestV1, AdminGenesisSetupV1,
 };
@@ -16,6 +20,8 @@ mod guardian_recovery;
 pub use admin_issuance::{AdminKeyIssuanceRecordV1, AdminKeyIssueIntentV1, AdminKeyIssueRequestV1};
 #[cfg(test)]
 mod guardian_recovery_tests;
+/// Owner-private Unix storage helpers shared with Mother host adapters.
+pub mod private_fs;
 mod segment;
 
 pub use mct_kernel::recovery::{
@@ -42,11 +48,10 @@ use mct_kernel::{
     ToyGrantSubject, ToyId, TraceId, WatchObservationScope, WatchObservationScopeState,
 };
 use serde::{Deserialize, Serialize};
-#[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{File, OpenOptions},
+    fs::File,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
@@ -79,7 +84,7 @@ use thiserror::Error;
 
 pub const AUTHORITY_FACT_DETAIL_PREFIX: &str = "mct-authority-fact-v1:";
 const AUTHORITY_FACT_SCHEMA_V1: &str = "mct-authority-fact/v1";
-const AUTHORITY_EPOCH_PREFIX_V1: &str = "mct-authority-epoch-v1:";
+pub const AUTHORITY_EPOCH_PREFIX_V1: &str = "mct-authority-epoch-v1:";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GrantsAuthorityIdentityV1 {
@@ -272,11 +277,21 @@ pub enum AuthorityChangeV1 {
     },
     PairingTicketConsumed {
         ticket_hash: String,
+        /// Historical absence is replayable, but cannot authorize a new admission.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        admission: Option<PairingTicketAdmissionV1>,
         /// Scheme v1 signature of this command plus the signer grant.
         /// Absent on a pre-scheme fact.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signature: Option<AdminSignatureV1>,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PairingTicketAdmissionV1 {
+    pub authenticated_peer_endpoint_id: String,
+    pub admitted_at: Timestamp,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -437,6 +452,8 @@ pub struct AuthorityStateV1 {
     pub admin_issuance: BTreeMap<String, AdminKeyIssuanceRecordV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admin_genesis: Option<Box<AdminGenesisFactV1>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passkey_admin: Option<Box<PasskeyAdminCanonicalV1>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -528,7 +545,8 @@ pub struct AuthorityReplayV1 {
     pub mutations: BTreeMap<String, CommittedAuthorityMutationV1>,
     pub facts: Vec<AuthorityCanonicalFactRecordV1>,
     pub canonical_fact_count: usize,
-    /// `(signer_grant_id, nonce)` pairs already accepted. Replay rejects a reuse.
+    /// `(signer_grant_id, nonce)` pairs already committed, across all epochs.
+    /// This is uniqueness, not ordering; epoch establishment must not clear it.
     pub admin_signature_nonces: BTreeSet<(String, u64)>,
     /// Every historical admin grant ID, including roots retired by recovery.
     /// Reconstructed from canonical replay, never from a request/projection.
@@ -561,6 +579,8 @@ pub enum AuthorityReplayError {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ObservationLedgerError {
+    #[error("ordinary observation cannot use a reserved authority detail namespace")]
+    ReservedAuthorityDetail,
     #[error("observation ledger io error at {path}: {source}")]
     Io {
         path: PathBuf,
@@ -585,6 +605,10 @@ pub enum ObservationLedgerError {
         actual_ledger_id: String,
         actual_mother_node_id: String,
     },
+    #[error(
+        "observation ledger does not extend the known committed head at sequence {known_sequence}"
+    )]
+    LedgerDiscontinuity { known_sequence: u64 },
     #[error("observation ledger sequence mismatch: expected {expected}, found {actual}")]
     SequenceMismatch { expected: u64, actual: u64 },
     #[error(
@@ -1106,7 +1130,7 @@ impl JsonlObservationLedger {
             safe_message: "authority writer tenure established".into(),
             detail_ref: Some(detail_ref),
         };
-        let entry = self.append_before_effect(observation, started_at)?;
+        let entry = self.append_canonical_before_effect(observation, started_at)?;
         self.authority_tenure = Some(AuthorityWriterTenureV1 {
             fact: fact.clone(),
             entry,
@@ -1126,6 +1150,67 @@ impl JsonlObservationLedger {
     }
 
     fn execute_authority_mutation_inner<F>(
+        &mut self,
+        request: AuthorityMutationRequestV1,
+        legacy_projection_write: F,
+        typed_path: bool,
+    ) -> AuthorityMutationResultV1
+    where
+        F: FnOnce(&AuthorityStateV1) -> std::result::Result<Option<String>, String>,
+    {
+        if request
+            .changes
+            .iter()
+            .any(|change| matches!(change, AuthorityChangeV1::PairingTicketConsumed { .. }))
+        {
+            return rejected_mutation(
+                request.mutation_id,
+                AuthorityMutationRejectionReasonV1::InvalidRequest,
+            );
+        }
+        self.execute_authority_mutation_validated(request, legacy_projection_write, typed_path)
+    }
+
+    /// Trusted host-adapter seam, NOT a wire claim verifier. The peer must come
+    /// from authenticated transport and now from Mother time. This consumes only
+    /// an already issued ticket; it does not enroll a peer or grant administration.
+    pub fn execute_pairing_ticket_admission<F>(
+        &mut self,
+        request: AuthorityMutationRequestV1,
+        authenticated_peer: &mct_kernel::EndpointIdText,
+        mother_now: &Timestamp,
+        projection: F,
+    ) -> AuthorityMutationResultV1
+    where
+        F: FnOnce(&AuthorityStateV1) -> std::result::Result<Option<String>, String>,
+    {
+        let valid = match request.changes.as_slice() {
+            [
+                AuthorityChangeV1::PairingTicketConsumed {
+                    ticket_hash,
+                    admission: Some(admission),
+                    ..
+                },
+            ] => {
+                admission.authenticated_peer_endpoint_id == authenticated_peer.as_str()
+                    && &admission.admitted_at == mother_now
+                    && request.decided_at == mother_now.as_str()
+                    && self.cached_replay().is_ok_and(|replay| {
+                        validate_pairing_admission(&replay.state, ticket_hash, admission).is_ok()
+                    })
+            }
+            _ => false,
+        };
+        if !valid {
+            return rejected_mutation(
+                request.mutation_id,
+                AuthorityMutationRejectionReasonV1::InvalidRequest,
+            );
+        }
+        self.execute_authority_mutation_validated(request, projection, true)
+    }
+
+    fn execute_authority_mutation_validated<F>(
         &mut self,
         request: AuthorityMutationRequestV1,
         legacy_projection_write: F,
@@ -1179,10 +1264,11 @@ impl JsonlObservationLedger {
                 );
             }
         };
-        if !typed_path
-            && (replay.state.guardian_recovery.is_some()
-                || !replay.state.admin_issuance.is_empty()
-                || replay.state.admin_genesis.is_some())
+        if replay.state.passkey_admin.is_some()
+            || (!typed_path
+                && (replay.state.guardian_recovery.is_some()
+                    || !replay.state.admin_issuance.is_empty()
+                    || replay.state.admin_genesis.is_some()))
         {
             return rejected_mutation(
                 mutation_id,
@@ -1319,7 +1405,8 @@ impl JsonlObservationLedger {
             }
         };
         let observation = authority_mutation_observation(&fact_id, &fact, detail_ref);
-        let entry = match self.append_before_effect(observation, fact.decided_at.clone()) {
+        let entry = match self.append_canonical_before_effect(observation, fact.decided_at.clone())
+        {
             Ok(entry) => entry,
             Err(ObservationLedgerError::AppendCommitUnknown { stage, .. }) => {
                 return AuthorityMutationResultV1::CommitUnknown {
@@ -1403,7 +1490,9 @@ impl JsonlObservationLedger {
                 AuthorityMutationRejectionReasonV1::AuthorityEpochUnavailable,
             );
         };
-        if imported_state.admin_genesis.is_some()
+        if imported_state.passkey_admin.is_some()
+            || replay.state.passkey_admin.is_some()
+            || imported_state.admin_genesis.is_some()
             || replay.state.admin_genesis.is_some()
             || imported_state.guardian_recovery.is_some()
             || replay.state.guardian_recovery.is_some()
@@ -1487,7 +1576,7 @@ impl JsonlObservationLedger {
             }
         };
         let observation = legacy_import_observation(&fact_id, &fact, detail_ref);
-        let entry = match self.append_before_effect(observation, decided_at) {
+        let entry = match self.append_canonical_before_effect(observation, decided_at) {
             Ok(entry) => entry,
             Err(ObservationLedgerError::AppendCommitUnknown { stage, .. }) => {
                 return AuthorityMutationResultV1::CommitUnknown {
@@ -1567,6 +1656,7 @@ impl JsonlObservationLedger {
         let mut previous_hash = self.previous_hash.clone();
         let mut prepared = Vec::new();
         for observation in observations {
+            validate_ordinary_observation(&observation)?;
             let mut entry = MctObservationLedgerEntry {
                 ledger_id: self.ledger_id.clone(),
                 mother_node_id: self.mother_node_id.clone(),
@@ -1642,6 +1732,31 @@ impl JsonlObservationLedger {
     }
 
     pub fn append(
+        &mut self,
+        observation: MctObservation,
+        appended_at: impl Into<String>,
+        durability_class: DurabilityClass,
+        export_status: ExportStatus,
+    ) -> Result<MctObservationLedgerEntry> {
+        validate_ordinary_observation(&observation)?;
+        self.append_canonical(observation, appended_at, durability_class, export_status)
+    }
+
+    // Private to this crate's validated authority writers, never an adapter API.
+    fn append_canonical_before_effect(
+        &mut self,
+        observation: MctObservation,
+        at: impl Into<String>,
+    ) -> Result<MctObservationLedgerEntry> {
+        self.append_canonical(
+            observation,
+            at,
+            DurabilityClass::BeforeEffect,
+            ExportStatus::NotRequired,
+        )
+    }
+
+    fn append_canonical(
         &mut self,
         observation: MctObservation,
         appended_at: impl Into<String>,
@@ -2254,14 +2369,52 @@ fn apply_pairing_ticket_issued(
     Ok(())
 }
 
+fn validate_pairing_admission(
+    state: &AuthorityStateV1,
+    ticket_hash: &str,
+    admission: &PairingTicketAdmissionV1,
+) -> std::result::Result<(), AuthorityReplayError> {
+    let valid = state
+        .pairing_tickets
+        .get(ticket_hash)
+        .is_some_and(|ticket| {
+            ticket.state == PairingTicketStateV1::Issued
+                && ticket.peer_endpoint_id.as_deref()
+                    == Some(admission.authenticated_peer_endpoint_id.as_str())
+                && ticket
+                    .window_starts_at
+                    .as_ref()
+                    .zip(ticket.window_expires_at.as_ref())
+                    .is_some_and(|(start, end)| {
+                        // Compare instants, not RFC3339 strings with potentially different offsets.
+                        let parse = |time: &Timestamp| time.as_str().parse::<jiff::Timestamp>();
+                        match (parse(start), parse(end), parse(&admission.admitted_at)) {
+                            (Ok(start), Ok(end), Ok(now)) => start <= now && now < end,
+                            _ => false,
+                        }
+                    })
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(authority_incoherent(
+            "pairing ticket is unavailable for this authenticated peer and Mother time",
+        ))
+    }
+}
+
 fn apply_pairing_ticket_consumed(
     state: &mut AuthorityStateV1,
     ticket_hash: &str,
+    admission: Option<&PairingTicketAdmissionV1>,
 ) -> std::result::Result<(), AuthorityReplayError> {
     if !pairing_ticket_hash_ok(ticket_hash) {
         return Err(authority_incoherent(
             "pairing ticket fact stores a hash only",
         ));
+    }
+    if let Some(admission) = admission {
+        validate_pairing_admission(state, ticket_hash, admission)?;
     }
     match state
         .pairing_tickets
@@ -2291,6 +2444,11 @@ pub fn apply_authority_changes(
     state: &mut AuthorityStateV1,
     changes: &[AuthorityChangeV1],
 ) -> std::result::Result<(), AuthorityReplayError> {
+    if state.passkey_admin.is_some() {
+        return Err(authority_incoherent(
+            "legacy/hybrid changes cannot mutate passkey authority",
+        ));
+    }
     if changes
         .iter()
         .any(|change| matches!(change, AuthorityChangeV1::AdminKeyIssue { .. }))
@@ -2502,8 +2660,12 @@ pub fn apply_authority_changes(
                     signature.is_some(),
                 )?;
             }
-            AuthorityChangeV1::PairingTicketConsumed { ticket_hash, .. } => {
-                apply_pairing_ticket_consumed(state, ticket_hash)?;
+            AuthorityChangeV1::PairingTicketConsumed {
+                ticket_hash,
+                admission,
+                ..
+            } => {
+                apply_pairing_ticket_consumed(state, ticket_hash, admission.as_ref())?;
             }
         }
     }
@@ -2663,6 +2825,19 @@ pub fn authority_state_hash(state: &AuthorityStateV1) -> Result<String> {
     admin_issuance::validate_state(state)
         .map_err(|detail| ObservationLedgerError::AuthorityReplay { detail })?;
     admin_genesis::validate_state(state)?;
+    if state.passkey_admin.is_some() {
+        if state.admin_genesis.is_some()
+            || state.guardian_recovery.is_some()
+            || !state.admin_issuance.is_empty()
+            || !state.admin_key_grants.is_empty()
+        {
+            return Err(ObservationLedgerError::AuthorityReplay {
+                detail: "mixed passkey/legacy authority".into(),
+            });
+        }
+        let bytes = canonical_json_bytes(&("mct-passkey-authority-state/v1", state))?;
+        return Ok(blake3::hash(&bytes).to_hex().to_string());
+    }
     #[derive(Serialize)]
     struct HashableAuthorityState<'a> {
         toy_catalog: Vec<&'a CanonicalToyContract>,
@@ -2976,6 +3151,9 @@ fn verify_admin_change_signatures(
         let Some(signature) = change_signature(change) else {
             continue;
         };
+        if signature.scheme != AdminSignatureSchemeV1::Ed25519MlDsa65V1 {
+            return Err("legacy commands require their original hybrid scheme".into());
+        }
         if matches!(change, AuthorityChangeV1::AdminKeyIssue { .. })
             && signature.signature.len() != mct_kernel::ADMIN_HYBRID_SIGNATURE_LEN * 2
         {
@@ -3070,6 +3248,15 @@ fn fold_authority_entry_body(
     let fact_kind = envelope.fact_kind.clone();
     let fact_id = envelope.fact_id.clone();
     match fact_kind.as_str() {
+        "passkey_admin" => {
+            let fact = serde_json::from_value(envelope.body).map_err(|error| {
+                AuthorityReplayError::Malformed {
+                    sequence: entry.local_sequence,
+                    detail: error.to_string(),
+                }
+            })?;
+            passkey_admin::replay_fact(replay, used_epochs, previous, entry, fact)?;
+        }
         "admin_genesis" => {
             let fact: AdminGenesisFactV1 =
                 serde_json::from_value(envelope.body).map_err(|error| {
@@ -3279,7 +3466,9 @@ fn validate_legacy_import_fact(
         sequence: entry.local_sequence,
         detail: detail.to_owned(),
     };
-    if replay.state.admin_genesis.is_some()
+    if replay.state.passkey_admin.is_some()
+        || fact.imported_state.passkey_admin.is_some()
+        || replay.state.admin_genesis.is_some()
         || fact.imported_state.admin_genesis.is_some()
         || replay.state.guardian_recovery.is_some()
         || fact.imported_state.guardian_recovery.is_some()
@@ -3431,6 +3620,15 @@ pub fn forensic_root_path(ledger_path: &Path) -> PathBuf {
     ledger_path.with_file_name(format!("{file_name}.forensics"))
 }
 
+fn validate_ordinary_observation(observation: &MctObservation) -> Result<()> {
+    if observation.detail_ref.as_deref().is_some_and(|detail| {
+        detail.starts_with("mct-authority-") || detail.starts_with("ledger-tail-recovery-")
+    }) {
+        return Err(ObservationLedgerError::ReservedAuthorityDetail);
+    }
+    Ok(())
+}
+
 fn empty_scan_state() -> LedgerScanState {
     LedgerScanState {
         next_sequence: 0,
@@ -3446,7 +3644,10 @@ fn empty_scan_state() -> LedgerScanState {
 }
 
 fn scan_existing(path: &Path, ledger_id: &str, mother_node_id: &str) -> Result<LedgerScan> {
-    let file = File::open(path).map_err(|source| ObservationLedgerError::Io {
+    // A process-local verified head is continuity evidence, not a disposable hint.
+    // Compare typed entry hashes, allowing equivalent historical JSON spellings.
+    let known = replay_cache_head(&replay_cache_key(path, ledger_id, mother_node_id));
+    let file = private_fs::read_file(path).map_err(|source| ObservationLedgerError::Io {
         path: path.to_path_buf(),
         source,
     })?;
@@ -3468,6 +3669,13 @@ fn scan_existing(path: &Path, ledger_id: &str, mother_node_id: &str) -> Result<L
         }
         let offset = state.committed_len;
         if !frame.ends_with(b"\n") {
+            if let Some((sequence, _)) = &known
+                && state.next_sequence <= *sequence
+            {
+                return Err(ObservationLedgerError::LedgerDiscontinuity {
+                    known_sequence: *sequence,
+                });
+            }
             let digest = blake3::hash(&frame).to_hex().to_string();
             return Ok(LedgerScan::Residue(LedgerTailResidue {
                 offset,
@@ -3533,9 +3741,24 @@ fn scan_existing(path: &Path, ledger_id: &str, mother_node_id: &str) -> Result<L
             )));
         }
 
+        if let Some((sequence, hash)) = &known
+            && entry.local_sequence == *sequence
+            && &entry.entry_hash != hash
+        {
+            return Err(ObservationLedgerError::LedgerDiscontinuity {
+                known_sequence: *sequence,
+            });
+        }
         remember_scanned_entry(path, &mut state, &entry, &frame);
     }
 
+    if let Some((sequence, _)) = known
+        && state.next_sequence <= sequence
+    {
+        return Err(ObservationLedgerError::LedgerDiscontinuity {
+            known_sequence: sequence,
+        });
+    }
     Ok(LedgerScan::Ready(state))
 }
 
@@ -3603,40 +3826,12 @@ fn open_with_recovery_hook(
     mut hook: impl FnMut(RecoveryStage) -> std::io::Result<()>,
 ) -> Result<JsonlObservationLedger> {
     let path = path.to_path_buf();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| ObservationLedgerError::Io {
-            path: parent.to_path_buf(),
+    // Exclusive creation preserves the strict-genesis birth distinction.
+    let (file, created_new) =
+        private_fs::open_or_create(&path).map_err(|source| ObservationLedgerError::Io {
+            path: path.clone(),
             source,
         })?;
-    }
-
-    // Distinguish atomic creation from opening an existing zero-byte file.
-    // Only the creator may attempt strict genesis; reopen never re-proves birth.
-    let (file, created_new) = match OpenOptions::new()
-        .read(true)
-        .append(true)
-        .create_new(true)
-        .open(&path)
-    {
-        Ok(file) => (file, true),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (
-            OpenOptions::new()
-                .read(true)
-                .append(true)
-                .open(&path)
-                .map_err(|source| ObservationLedgerError::Io {
-                    path: path.clone(),
-                    source,
-                })?,
-            false,
-        ),
-        Err(source) => {
-            return Err(ObservationLedgerError::Io {
-                path: path.clone(),
-                source,
-            });
-        }
-    };
     let mut file = acquire_writer_lock(&path, file)?;
 
     let (state, recovery_status) = match scan_existing(&path, ledger_id, mother_node_id)? {
@@ -3915,7 +4110,7 @@ fn preserve_quarantine(
     path: &Path,
     mut status: LedgerQuarantineStatus,
 ) -> Result<LedgerQuarantineStatus> {
-    let bytes = std::fs::read(path).map_err(|source| ObservationLedgerError::Io {
+    let bytes = private_fs::read(path).map_err(|source| ObservationLedgerError::Io {
         path: path.to_path_buf(),
         source,
     })?;
@@ -3968,7 +4163,7 @@ fn pending_tail_recovery_exists(
 }
 
 fn read_recovery_status(path: &Path) -> Result<LedgerRecoveryStatus> {
-    let bytes = std::fs::read(path).map_err(|source| ObservationLedgerError::Io {
+    let bytes = private_fs::read(path).map_err(|source| ObservationLedgerError::Io {
         path: path.to_path_buf(),
         source,
     })?;
@@ -3979,23 +4174,16 @@ fn read_recovery_status(path: &Path) -> Result<LedgerRecoveryStatus> {
 }
 
 fn ensure_private_directory(path: &Path) -> Result<()> {
-    std::fs::create_dir_all(path).map_err(|source| ObservationLedgerError::Io {
+    private_fs::ensure_directory(path).map_err(|source| ObservationLedgerError::Io {
         path: path.to_path_buf(),
         source,
-    })?;
-    #[cfg(unix)]
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).map_err(|source| {
-        ObservationLedgerError::Io {
-            path: path.to_path_buf(),
-            source,
-        }
     })?;
     sync_directory(path)
 }
 
 fn write_bytes_once_durable(path: &Path, bytes: &[u8]) -> Result<()> {
     if path.exists() {
-        let existing = std::fs::read(path).map_err(|source| ObservationLedgerError::Io {
+        let existing = private_fs::read(path).map_err(|source| ObservationLedgerError::Io {
             path: path.to_path_buf(),
             source,
         })?;
@@ -4021,29 +4209,10 @@ fn write_json_durable(path: &Path, value: &impl Serialize) -> Result<()> {
 }
 
 fn write_bytes_durable(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let temporary = path.with_extension("tmp");
-    let mut options = OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let mut file = options
-        .open(&temporary)
-        .map_err(|source| ObservationLedgerError::Io {
-            path: temporary.clone(),
-            source,
-        })?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|source| ObservationLedgerError::Io {
-            path: temporary.clone(),
-            source,
-        })?;
-    std::fs::rename(&temporary, path).map_err(|source| ObservationLedgerError::Io {
+    private_fs::write_atomic(path, bytes).map_err(|source| ObservationLedgerError::Io {
         path: path.to_path_buf(),
         source,
-    })?;
-    sync_directory(parent)
+    })
 }
 
 fn sync_directory(path: &Path) -> Result<()> {
@@ -4078,7 +4247,7 @@ struct LedgerEntryIter {
 
 impl LedgerEntryIter {
     fn open(path: PathBuf, ledger_id: String, mother_node_id: String) -> Self {
-        match File::open(&path) {
+        match private_fs::read_file(&path) {
             Ok(file) => Self {
                 path,
                 ledger_id,
@@ -4239,8 +4408,9 @@ pub struct LedgerReplayCheckpoint {
 #[derive(Clone, Debug)]
 pub enum CheckpointResume {
     Resumed(Box<VerifiedLedgerReplay>),
-    /// The checkpoint does not bind the current log. Callers must full-verify
-    /// and fail closed if that verification fails.
+    /// Raw prefix bytes no longer match. Full verification must still preserve
+    /// the known typed head as an ancestry constraint; this is not permission
+    /// to discard continuity evidence. `load_verified_ledger_replay` does so.
     Mismatch {
         detail: String,
     },
@@ -4290,7 +4460,7 @@ pub fn resume_ledger_replay(
             detail: "checkpoint does not name a committed entry".into(),
         });
     }
-    let mut file = File::open(path).map_err(|source| ObservationLedgerError::Io {
+    let mut file = private_fs::read_file(path).map_err(|source| ObservationLedgerError::Io {
         path: path.to_path_buf(),
         source,
     })?;
@@ -4465,7 +4635,9 @@ pub fn resume_ledger_replay(
 }
 
 /// Verify the log, reusing a process-local checkpoint when its prefix digest
-/// still matches. A mismatch falls back to a streaming full verification.
+/// still matches. A mismatch full-verifies while retaining the known head:
+/// equivalent representations may pass, but rollback or a rehashed fork cannot.
+/// This is process-local continuity, not a persistent external rollback anchor.
 pub fn load_verified_ledger_replay(
     path: impl AsRef<Path>,
     ledger_id: &str,
@@ -4477,16 +4649,16 @@ pub fn load_verified_ledger_replay(
         match resume_ledger_replay(path, ledger_id, mother_node_id, &checkpoint)? {
             CheckpointResume::Resumed(verified) => {
                 if let Some(checkpoint) = verified.checkpoint.clone() {
-                    replay_cache_store(key, checkpoint);
+                    replay_cache_store(key, checkpoint)?;
                 }
                 return Ok(*verified);
             }
-            CheckpointResume::Mismatch { .. } => replay_cache_remove(&key),
+            CheckpointResume::Mismatch { .. } => {} // Keep the known head for the full scan.
         }
     }
     let verified = verify_ledger_streaming(path, ledger_id, mother_node_id)?;
     if let Some(checkpoint) = verified.checkpoint.clone() {
-        replay_cache_store(key, checkpoint);
+        replay_cache_store(key, checkpoint)?;
     }
     Ok(verified)
 }
@@ -4501,16 +4673,16 @@ pub fn write_benchmark_chain(
     count: u64,
 ) -> Result<u64> {
     let path = path.as_ref();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| ObservationLedgerError::Io {
-            path: parent.to_path_buf(),
+    let (mut file, _) =
+        private_fs::open_or_create(path).map_err(|source| ObservationLedgerError::Io {
+            path: path.to_path_buf(),
             source,
         })?;
-    }
-    let mut file = File::create(path).map_err(|source| ObservationLedgerError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    file.set_len(0)
+        .map_err(|source| ObservationLedgerError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
     let mut previous = None;
     for sequence in 0..count {
         let observation_id = ObservationId::new(format!("obs-bench-{sequence}"))
@@ -4562,7 +4734,8 @@ pub fn write_benchmark_chain(
         .len())
 }
 
-/// Drop process-local replay checkpoints. Tests use this to isolate tamper cases.
+/// Drop process-local replay checkpoints only in isolated tests.
+#[cfg(test)]
 pub fn clear_ledger_replay_cache() {
     replay_cache()
         .lock()
@@ -4657,18 +4830,34 @@ fn replay_cache_get(key: &str) -> Option<LedgerReplayCheckpoint> {
         .cloned()
 }
 
-fn replay_cache_store(key: String, checkpoint: LedgerReplayCheckpoint) {
+fn replay_cache_head(key: &str) -> Option<(u64, String)> {
     replay_cache()
         .lock()
         .unwrap_or_else(|error| error.into_inner())
-        .insert(key, checkpoint);
+        .get(key)
+        .map(|checkpoint| {
+            (
+                checkpoint.through_sequence,
+                checkpoint.through_entry_hash.clone(),
+            )
+        })
 }
 
-fn replay_cache_remove(key: &str) {
-    replay_cache()
+fn replay_cache_store(key: String, checkpoint: LedgerReplayCheckpoint) -> Result<()> {
+    let mut cache = replay_cache()
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .remove(key);
+        .unwrap_or_else(|error| error.into_inner());
+    if let Some(known) = cache.get(&key)
+        && (checkpoint.through_sequence < known.through_sequence
+            || (checkpoint.through_sequence == known.through_sequence
+                && checkpoint.through_entry_hash != known.through_entry_hash))
+    {
+        return Err(ObservationLedgerError::LedgerDiscontinuity {
+            known_sequence: known.through_sequence,
+        });
+    }
+    cache.insert(key, checkpoint);
+    Ok(())
 }
 
 pub fn version() -> &'static str {
@@ -4676,9 +4865,15 @@ pub fn version() -> &'static str {
 }
 
 #[cfg(test)]
+mod peer_ledger_tests;
+#[cfg(test)]
+mod remaining_low_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use mct_kernel::{CallId, MctObservation, ObservationId, ObservationKind, Timestamp, TraceId};
+    use std::fs::OpenOptions;
 
     fn observation(id: &str, trace: &str, call: Option<&str>) -> MctObservation {
         let mut obs = MctObservation::informational(
@@ -6512,7 +6707,8 @@ mod tests {
         changes: Vec<AuthorityChangeV1>,
         source: GrantShapingSourceV1,
     ) -> AuthorityMutationResultV1 {
-        ledger.execute_authority_mutation(
+        // Historical fixture constructor, not a production admission entry point.
+        ledger.execute_authority_mutation_validated(
             AuthorityMutationRequestV1 {
                 mutation_id: id.into(),
                 changes,
@@ -6520,6 +6716,7 @@ mod tests {
                 decided_at: "2026-08-06T12:00:00Z".into(),
             },
             |_| Ok(None),
+            false,
         )
     }
 
@@ -6617,6 +6814,7 @@ mod tests {
             vec![AuthorityChangeV1::PairingTicketConsumed {
                 ticket_hash: ticket_hash.into(),
 
+                admission: None,
                 signature: None,
             }],
             admin_key_source(DAY_PK),
@@ -6644,6 +6842,7 @@ mod tests {
             vec![AuthorityChangeV1::PairingTicketConsumed {
                 ticket_hash: ticket_hash.into(),
 
+                admission: None,
                 signature: None,
             }],
             admin_key_source(DAY_PK),
@@ -7124,6 +7323,7 @@ mod tests {
                 vec![AuthorityChangeV1::PairingTicketConsumed {
                     ticket_hash: ticket_hash.into(),
 
+                    admission: None,
                     signature: None,
                 }],
                 admin_key_source(DAY_PK),

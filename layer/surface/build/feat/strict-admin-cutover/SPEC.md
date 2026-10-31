@@ -8,6 +8,10 @@ related:
   - docs/design/finish-owner-gates.md
   - layer/core/reliability-doctrine.md
 exit_criteria:
+  - id: passkey-day-key-boundaries
+    text: D-58 independently pinned passkey genesis, bounded Ed25519 leases, scoped BeforeEffect commands and persistent targeted revocation reject legacy promotion.
+    checked: true
+    verify: cargo test -p mct-observation passkey -- --test-threads=1
   - id: genesis-boundary
     text: Given separate trusted setup, genesis commits atomically, replays strict origin, rejects legacy promotion and survives complete-frame acknowledgement loss.
     checked: true
@@ -21,7 +25,27 @@ exit_criteria:
     checked: false
 ---
 
-# Strict administrative origin and cutover (D-57)
+# Passkey-rooted administrative origin and cutover (D-58)
+
+Current administration uses registered WebAuthn P-256 roots and <=24-hour
+Ed25519 day keys. The owner superseded the guardian/hybrid ceremony on 2026-10-28.
+Canonical issuance, scoped BeforeEffect command admission and targeted revocation
+are implemented in `passkey_admin.rs`; `passkey-admin` provides bounded signed
+CLI input, explicit pinned bootstrap, issue/revoke and authenticated status.
+Day keys cannot delegate; KeyManage allows targeted revocation, not lease renewal.
+
+Automated tests cover WebAuthn RP/origin/challenge/UP/UV binding, exact target and
+snapshot, scope, expiry, nonces, restart, lost acknowledgement and legacy denial.
+Resident Iroh administration and other command adapters remain open; the legacy
+runtime refuses passkey ledgers. No hosted 1Password/browser validation is claimed.
+
+## Archived hybrid slice
+
+The text below and its tests are historical compatibility material. See
+`docs/archive/2026-10-28-guardian-hybrid-admin-plan.md`; do not make this ceremony
+mandatory for D-58.
+
+### Strict administrative origin and cutover (former D-57)
 
 ## First bounded implementation
 

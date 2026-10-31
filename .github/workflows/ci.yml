@@ -171,8 +171,8 @@ jobs:
 
       - name: Scan lockfiles
         run: |
-          "$RUNNER_TEMP/osv-scanner" scan source --config osv-scanner.toml \
-            -L Cargo.lock -L fuzz/Cargo.lock
+          python3 scripts/test-scan-osv.py
+          python3 scripts/scan-osv.py "$RUNNER_TEMP/osv-scanner"
 
   dependency-audit:
     name: nightly dependency audit

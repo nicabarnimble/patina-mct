@@ -1135,6 +1135,7 @@ mod tests {
         let call = watch_test_call();
         let scope = watch_test_scope();
         let request = ToyGrantEvaluationRequest {
+            data_authority: None,
             toy_id: ToyId::new(MCT_WATCH_TOY_ID).unwrap(),
             subject: ToyGrantSubject {
                 child_name: scope.observer_ref.child_name.clone(),

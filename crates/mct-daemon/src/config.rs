@@ -8,7 +8,6 @@ use mct_kernel::*;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    fs,
     path::{Path, PathBuf},
 };
 
@@ -34,6 +33,9 @@ pub struct MctDaemonConfig {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MctStoredChildApproval {
+    /// Exact approved manifest bytes. Historical approvals without a pin are inert.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_hash: Option<String>,
     pub child_name: String,
     pub artifact_id: ComponentArtifactId,
     pub artifact_version: String,
@@ -162,7 +164,14 @@ impl MctDaemonConfig {
                 scope_vision_id: Some(stored_approval.vision_id.clone()),
                 scope_node_id: Some(stored_approval.node_id.clone()),
                 scope_project_id: stored_approval.project_id.clone(),
-                approval_state: stored_approval.approval_state,
+                approval_state: if stored_approval.manifest_hash.as_deref()
+                    == Some(artifact.manifest_hash.as_str())
+                {
+                    stored_approval.approval_state
+                } else {
+                    // A sidecar is a checksum, not approval of changed authority.
+                    ChildApprovalState::Candidate
+                },
                 policy_revision: stored_approval.policy_revision,
                 authority_observation_id: ObservationId::new(format!(
                     "obs:approval:{}",
@@ -333,6 +342,7 @@ impl MctConfigChildAuthorityProjection {
             .find(|instance| instance.child_name == child_name)
         else {
             let request = ChildCallAuthorityRequest {
+                data_authority: None,
                 instance_id: ChildInstanceId::new(format!("instance:{child_name}:missing"))
                     .expect("string ID literal/generated value must be non-empty"),
                 node_id: self.local_node_id.clone(),
@@ -349,6 +359,7 @@ impl MctConfigChildAuthorityProjection {
             );
         };
         let request = ChildCallAuthorityRequest {
+            data_authority: None,
             instance_id: instance.instance_id.clone(),
             node_id: self.local_node_id.clone(),
             ids: child_authority_ids(child_name, call),
@@ -394,30 +405,24 @@ impl MctDaemonConfigStore {
     }
 
     pub fn load(&self) -> Result<MctDaemonConfig> {
-        if !self.path.exists() {
-            return Ok(MctDaemonConfig::default());
-        }
-        let text = fs::read_to_string(&self.path)
-            .with_context(|| format!("read config {}", self.path.display()))?;
-        serde_json::from_str(&text).with_context(|| format!("parse config {}", self.path.display()))
+        let bytes = match mct_observation::private_fs::read(&self.path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(MctDaemonConfig::default());
+            }
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("read private config {}", self.path.display()));
+            }
+        };
+        serde_json::from_slice(&bytes)
+            .with_context(|| format!("parse config {}", self.path.display()))
     }
 
     pub fn save(&self, config: &MctDaemonConfig) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("create config dir {}", parent.display()))?;
-        }
-        let tmp = self.path.with_extension("json.tmp");
-        let text = serde_json::to_string_pretty(config).context("encode config")?;
-        fs::write(&tmp, text).with_context(|| format!("write config temp {}", tmp.display()))?;
-        fs::rename(&tmp, &self.path).with_context(|| {
-            format!(
-                "replace config {} with {}",
-                self.path.display(),
-                tmp.display()
-            )
-        })?;
-        Ok(())
+        let bytes = serde_json::to_vec_pretty(config).context("encode config")?;
+        mct_observation::private_fs::write_atomic(&self.path, &bytes)
+            .with_context(|| format!("publish private config {}", self.path.display()))
     }
 
     pub fn ensure_local_identity(
@@ -460,6 +465,7 @@ impl MctDaemonConfigStore {
         config.child_approvals.insert(
             child.name.clone(),
             MctStoredChildApproval {
+                manifest_hash: Some(format!("sha256:{}", child.manifest_digest.sha256)),
                 child_name: child.name.clone(),
                 artifact_id: ComponentArtifactId::new(child.artifact_id.clone())
                     .expect("string ID literal/generated value must be non-empty"),
@@ -678,6 +684,7 @@ pub fn admit_call_deadline(
 mod tests {
     use super::*;
     use crate::children::{MctChildFileDigest, MctChildIngressMode, MctChildInstanceState};
+    use std::fs;
 
     #[test]
     fn call_deadline_admission_clamps_ahead_rejects_behind_without_grace() {
@@ -850,6 +857,7 @@ mod tests {
         config.child_approvals.insert(
             child.name.clone(),
             MctStoredChildApproval {
+                manifest_hash: Some(format!("sha256:{}", child.manifest_digest.sha256)),
                 child_name: child.name.clone(),
                 artifact_id: ComponentArtifactId::new(child.artifact_id.clone())
                     .expect("string ID literal/generated value must be non-empty"),

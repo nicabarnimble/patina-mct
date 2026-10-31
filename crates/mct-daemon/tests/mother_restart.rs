@@ -406,6 +406,7 @@ fn provision(layout: &Layout, with_trigger: bool) -> Acquired {
             "claimed_child_name": name,
             "claimed_artifact_version": "0.1.0",
             "expected_digest": format!("blake3:{digest}"),
+            "expected_manifest_digest": format!("sha256:{:x}", <sha2::Sha256 as sha2::Digest>::digest(std::fs::read(source.join("child.toml")).unwrap())),
             "standing_source_authority_id": null,
             "claimed_publisher": null,
             "require_source_sidecars": false,

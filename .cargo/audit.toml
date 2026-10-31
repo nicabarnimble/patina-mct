@@ -25,7 +25,8 @@ quiet = false
 show_tree = true
 
 [yanked]
-# futures-buffered 0.2.13 requires spin ^0.10 and 0.10.0 is the only release in
-# that series. Keep the lock exact and revisit with the next n0-future/Iroh refresh.
-enabled = false
+# No blanket yank waiver. Compatible fixes now exist in both graphs: spin
+# 0.10.1, chacha20 0.10.2, der 0.8.3. See L5-L10-L13-L17-L18 evidence.
+# Revisit on every lockfile change or newly reported yank; warnings fail closed.
+enabled = true
 update_index = true

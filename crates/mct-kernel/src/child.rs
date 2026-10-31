@@ -372,6 +372,9 @@ pub struct ChildCallAuthorityEvaluation {
 /// Adapters consume it when invoking the child; persisted state stores
 /// provenance facts instead of rehydrating this executable authority.
 pub struct AuthorizedChildInvocation {
+    call_binding: crate::invocation_data::InvocationCallBinding,
+    data_authority: Option<crate::LocalInvocationData>,
+    manifest_hash: String,
     authorized_child_invocation_id: AuthorizedChildInvocationId,
     call_id: CallId,
     evaluation_id: ChildCallEvaluationId,
@@ -391,6 +394,7 @@ pub enum ChildEffectAdmissionDenyV1 {
     /// The capability did not pass snapshot-sourced route minting.
     LocalAuthorityUnavailable,
     CallIdMismatch,
+    CallDataMismatch,
     EffectiveDeadlineMismatch,
     PolicyAuthorityMismatch,
     GrantsAuthorityMismatch,
@@ -431,6 +435,9 @@ impl AuthorizedChildInvocation {
             .ok_or(ChildEffectAdmissionDenyV1::LocalAuthorityUnavailable)?;
         if self.call_id != call.call_id {
             return Err(ChildEffectAdmissionDenyV1::CallIdMismatch);
+        }
+        if !self.call_binding.matches_call(call) {
+            return Err(ChildEffectAdmissionDenyV1::CallDataMismatch);
         }
         if authority.effective_deadline() != &call.deadline {
             return Err(ChildEffectAdmissionDenyV1::EffectiveDeadlineMismatch);
@@ -480,6 +487,7 @@ impl AuthorizedChildInvocation {
             artifact.artifact_id == approval.artifact_id
                 && artifact.child_name == self.child_name
                 && artifact.artifact_version == approval.artifact_version
+                && artifact.manifest_hash == self.manifest_hash
                 && artifact.verification_status == VerificationStatus::Verified
                 && LocalChildRuntime::try_from(artifact.runtime_shape).is_ok()
         }) {
@@ -491,7 +499,21 @@ impl AuthorizedChildInvocation {
     /// Legacy exact-call guard retained for non-resident compatibility surfaces.
     /// It carries no local authority and must not be used by resident effects.
     pub fn admit_effect_for_call<'a>(&'a self, call: &MctCall) -> Option<AdmittedChildEffect<'a>> {
-        (self.call_id == call.call_id).then_some(AdmittedChildEffect { authorized: self })
+        (self.call_id == call.call_id && self.call_binding.matches_call(call))
+            .then_some(AdmittedChildEffect { authorized: self })
+    }
+
+    /// Semantic binding only; this does not replace current authority admission.
+    pub fn matches_invocation_data(&self, call: &MctCall) -> bool {
+        self.call_id == call.call_id && self.call_binding.matches_call(call)
+    }
+
+    pub fn data_authority(&self) -> Option<&crate::LocalInvocationData> {
+        self.data_authority.as_ref()
+    }
+
+    pub fn manifest_hash(&self) -> &str {
+        &self.manifest_hash
     }
 
     pub fn authorized_child_invocation_id(&self) -> &AuthorizedChildInvocationId {
@@ -549,6 +571,8 @@ pub struct ChildCallAuthorityIds {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChildCallAuthorityRequest {
+    /// Independent Mother-owned data evidence; never copied from wire claims.
+    pub data_authority: Option<crate::LocalInvocationData>,
     pub instance_id: ChildInstanceId,
     pub node_id: MctNodeId,
     pub ids: ChildCallAuthorityIds,
@@ -743,7 +767,12 @@ pub fn evaluate_child_call_authority_with_policy(
         );
     }
 
-    if !option_matches(&assignment.project_id, &call.caller.project_id) {
+    if !crate::invocation_data::data_scope_matches(
+        call,
+        request.data_authority.as_ref(),
+        &assignment.project_id,
+        &None,
+    ) {
         return denied_with_context(
             call,
             request,
@@ -816,7 +845,14 @@ pub fn evaluate_child_call_authority_with_policy(
         );
     }
 
-    if !approval_scope_matches(approval, call, &request.node_id) {
+    if !approval_scope_matches(approval, call, &request.node_id)
+        || !crate::invocation_data::data_scope_matches(
+            call,
+            request.data_authority.as_ref(),
+            &approval.scope_project_id,
+            &None,
+        )
+    {
         return denied_with_context(
             call,
             request,
@@ -916,6 +952,9 @@ pub fn evaluate_child_call_authority_with_policy(
         observation_id: request.ids.observation_id.clone(),
     };
     let authorized = AuthorizedChildInvocation {
+        call_binding: crate::invocation_data::InvocationCallBinding::capture(call),
+        data_authority: request.data_authority.clone(),
+        manifest_hash: artifact.manifest_hash.clone(),
         authorized_child_invocation_id: request.ids.authorized_child_invocation_id.clone(),
         call_id: call.call_id.clone(),
         evaluation_id: evaluation.evaluation_id.clone(),
@@ -1185,6 +1224,13 @@ mod tests {
 
     fn request() -> ChildCallAuthorityRequest {
         ChildCallAuthorityRequest {
+            data_authority: Some(crate::LocalInvocationData::from_authoritative_source(
+                CallId::new("call-child-1").unwrap(),
+                Some(ProjectId::new("project-a").unwrap()),
+                "project".into(),
+                false,
+                ObservationId::new("obs:fixture-local-data").unwrap(),
+            )),
             instance_id: ChildInstanceId::new("instance-slate-manager-1")
                 .expect("string ID literal/generated value must be non-empty"),
             node_id: MctNodeId::new("node-a")
@@ -1202,6 +1248,65 @@ mod tests {
                 .expect("string ID literal/generated value must be non-empty"),
             },
         }
+    }
+
+    #[test]
+    fn l6_child_project_claims_need_independent_facts_and_tokens_freeze_metadata() {
+        let evaluate = |call: &MctCall, request: &ChildCallAuthorityRequest| {
+            evaluate_child_call_authority(
+                call,
+                request,
+                &[artifact()],
+                &[approval(ChildApprovalState::Approved)],
+                &[assignment(ChildAssignmentState::Active)],
+                &[instance(ChildInstanceState::Ready)],
+            )
+        };
+        let trusted = request();
+        let mut unverified = trusted.clone();
+        unverified.data_authority = None;
+        assert_eq!(
+            evaluate(&call(), &unverified).evaluation.reason_code,
+            ChildCallReasonCode::WrongProject
+        );
+        let mut peer_claim = call();
+        peer_claim.origin = CallOrigin::Iroh;
+        assert!(
+            !evaluate(&peer_claim, &unverified).is_allowed(),
+            "authenticated peer hop is not project attestation"
+        );
+        let token = evaluate(&call(), &trusted)
+            .authorized
+            .expect("independent local facts admit");
+        assert!(token.admit_effect_for_call(&call()).is_some());
+        for variant in 0..4 {
+            let mut forged = call();
+            match variant {
+                0 => forged.caller.project_id = None,
+                1 => forged.caller.project_id = Some(ProjectId::new("project-b").unwrap()),
+                2 => forged.payload_metadata.data_classification = "public".into(),
+                _ => forged.payload_metadata.contains_secret_scoped_material = true,
+            }
+            assert!(!evaluate(&forged, &trusted).is_allowed());
+            assert!(token.admit_effect_for_call(&forged).is_none());
+        }
+        let mut secret_call = call();
+        secret_call.payload_metadata.contains_secret_scoped_material = true;
+        let mut secret_request = trusted;
+        secret_request.data_authority =
+            Some(crate::LocalInvocationData::from_authoritative_source(
+                secret_call.call_id.clone(),
+                Some(ProjectId::new("project-a").unwrap()),
+                "project".into(),
+                true,
+                ObservationId::new("obs:owned-secret-data").unwrap(),
+            ));
+        let token = evaluate(&secret_call, &secret_request).authorized.unwrap();
+        assert!(
+            token.admit_effect_for_call(&call()).is_none(),
+            "false cannot declassify an admitted secret context"
+        );
+        assert!(!evaluate(&call(), &secret_request).is_allowed());
     }
 
     #[test]

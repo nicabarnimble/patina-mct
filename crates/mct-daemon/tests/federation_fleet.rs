@@ -42,7 +42,7 @@ impl Mother {
         // Short paths also fit macOS's sockaddr_un limit.
         let work = tempfile::Builder::new()
             .prefix("mct-fleet-")
-            .tempdir_in("/tmp")
+            .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
             .unwrap();
         let work_path = work.path().to_path_buf();
         let root = work_path.join("root");
@@ -234,6 +234,7 @@ toys = []
             "source_root": source, "manifest_path": "child.toml", "component_path": "worker.wasm",
             "claimed_child_name": "worker", "claimed_artifact_version": "0.1.0",
             "expected_digest": format!("blake3:{}", blake3::hash(&component).to_hex()),
+            "expected_manifest_digest": format!("sha256:{:x}", <sha2::Sha256 as sha2::Digest>::digest(std::fs::read(source.join("child.toml")).unwrap())),
             "standing_source_authority_id": null, "claimed_publisher": null,
             "require_source_sidecars": false, "children_dir": self.root.join("children"),
             "state_path": self.root.join("state.sqlite")

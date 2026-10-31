@@ -127,6 +127,13 @@ fn ledger_evidence(ledger_path: &Path, mother_node_id: &str) -> Result<LedgerEvi
     let mut latest_progress: BTreeMap<String, usize> = BTreeMap::new();
     for (position, entry) in entries.into_iter().enumerate() {
         let observation = entry.observation;
+        // Transport replies correlate to wire IDs, not durable local executions.
+        // Also excludes historical pre-L8 transport records without rewriting them.
+        if observation.source_plane == SourcePlane::Peer
+            && observation.kind == ObservationKind::ResultRecorded
+        {
+            continue;
+        }
         let is_disposition = observation
             .detail_ref
             .as_deref()
@@ -306,16 +313,21 @@ async fn settle_prior_tenure_reservations_and_runs(
         let mut settled_runs = BTreeSet::new();
         let mut settlements = Vec::new();
         for entry in reservations {
-            let run = state.get_run_by_call_id(&entry.fingerprint.call_id)?;
-            let call_id = entry.fingerprint.call_id.as_str();
+            let call_id = entry.recovery_call_id.as_str();
+            let run = if call_id.starts_with("legacy-peer-reservation:") {
+                None
+            } else {
+                state.get_run_by_call_id(&entry.recovery_call_id)?
+            };
             let disposition = match run.as_ref() {
+                None if call_id.starts_with("legacy-peer-reservation:") => Disposition::Interrupted,
                 Some(run) if run.result.is_some() => Disposition::ResultRecovered,
                 Some(_) if evidence.denial_for_run(call_id).is_some() => Disposition::Denied,
                 Some(_) => Disposition::Interrupted,
                 None if evidence.denial_for_reservation(call_id).is_some() => Disposition::Denied,
                 None if evidence
                     .effect_started_calls
-                    .contains(entry.fingerprint.call_id.as_str()) =>
+                    .contains(entry.recovery_call_id.as_str()) =>
                 {
                     Disposition::Interrupted
                 }
@@ -360,7 +372,7 @@ async fn settle_prior_tenure_reservations_and_runs(
                         entry,
                         disposition: Disposition::Denied,
                         ..
-                    } => entry.fingerprint.call_id.as_str(),
+                    } => entry.recovery_call_id.as_str(),
                     Settlement::RunOnly {
                         run,
                         disposition: Disposition::Denied,
@@ -402,7 +414,7 @@ async fn settle_prior_tenure_reservations_and_runs(
                 }
                 Disposition::Denied => {
                     let decision = denials
-                        .get(entry.fingerprint.call_id.as_str())
+                        .get(entry.recovery_call_id.as_str())
                         .cloned()
                         .flatten();
                     let result = match run {
@@ -412,7 +424,7 @@ async fn settle_prior_tenure_reservations_and_runs(
                             result
                         }
                         None => denied_result_for_call(
-                            &entry.fingerprint.call_id,
+                            &entry.recovery_call_id,
                             decision,
                             "reservation",
                             0,
@@ -627,14 +639,14 @@ fn settlement_observation(settlement: &Settlement) -> Result<MctObservation> {
             disposition,
         } => (
             *disposition,
-            entry.fingerprint.call_id.clone(),
+            entry.recovery_call_id.clone(),
             run.as_ref(),
             format!(
                 "reservation\n{}\n{}\n{}\n{}\n{}\n{}",
                 entry.caller_scope,
                 entry.idempotency_key,
                 entry.fingerprint.target,
-                entry.fingerprint.call_id,
+                entry.recovery_call_id,
                 entry.fingerprint.payload_digest,
                 entry.created_at
             ),
@@ -648,7 +660,7 @@ fn settlement_observation(settlement: &Settlement) -> Result<MctObservation> {
                     format!(
                         "{}:{}:{}",
                         entry.fingerprint.target,
-                        entry.fingerprint.call_id,
+                        entry.recovery_call_id,
                         entry.fingerprint.payload_digest
                     )
                     .as_bytes()
@@ -715,7 +727,8 @@ fn settlement_observation(settlement: &Settlement) -> Result<MctObservation> {
             parent_span_id: None,
             external_trace_id: None,
         },
-        call_id: Some(call_id),
+        // An unassociated historical peer reservation is not an execution fact.
+        call_id: (!call_id.as_str().starts_with("legacy-peer-reservation:")).then_some(call_id),
         decision_id: run.and_then(|run| run.authority_decision_id.clone()),
         subject_id: scope.clone(),
         resource_id: fingerprint
@@ -795,6 +808,76 @@ mod tests {
                     .is_some_and(|detail| detail.starts_with(DISPOSITION_DETAIL_PREFIX))
             })
             .collect()
+    }
+
+    #[tokio::test]
+    async fn l8_legacy_peer_reservations_and_transport_results_cannot_adopt_local_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let state = MctRuntimeStateStore::open(&state_path).unwrap();
+        let call = test_call("colliding-wire-id");
+        state
+            .insert_run_started(
+                "local-run",
+                &call,
+                RuntimeKind::Internal,
+                None,
+                current_timestamp_string(),
+            )
+            .unwrap();
+        let now = Timestamp::new("2026-07-10T00:00:00Z").unwrap();
+        state
+            .reserve_call_idempotency(
+                "peer-binding:attacker",
+                "key",
+                &fingerprint("colliding-wire-id"),
+                &now,
+                &Timestamp::new("2026-07-10T00:12:00Z").unwrap(),
+                64,
+            )
+            .unwrap();
+        let ledger = ResidentLedgerWriter::spawn(ledger_path.clone()).unwrap();
+        let mut wire_denial = MctObservation::informational(
+            ObservationId::new("transport-result").unwrap(),
+            now,
+            ObservationKind::ResultRecorded,
+            call.trace_context.trace_id.clone(),
+            "wire denial",
+        );
+        wire_denial.call_id = Some(call.call_id.clone());
+        wire_denial.source_plane = SourcePlane::Peer;
+        wire_denial.outcome = ObservationOutcome::Denied;
+        ledger.append(vec![wire_denial]).await.unwrap();
+        let report = settle_prior_tenure_reservations_and_runs(
+            &state_path,
+            &ledger_path,
+            "local-mct",
+            &ledger,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            report.denied, 0,
+            "wire denial is not the local run's result"
+        );
+        assert_eq!(
+            report.interrupted, 2,
+            "ambiguous historical peer reservation stays unknown, independently of local execution"
+        );
+        assert_eq!(disposition_facts(&ledger_path).len(), 2);
+        assert!(
+            settle_prior_tenure_reservations_and_runs(
+                &state_path,
+                &ledger_path,
+                "local-mct",
+                &ledger
+            )
+            .await
+            .unwrap()
+            .is_empty()
+        );
+        ledger.close().await;
     }
 
     #[tokio::test]
