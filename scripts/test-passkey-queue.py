@@ -157,6 +157,24 @@ class QueueTests(unittest.TestCase):
                 self.broker.cli({"op": "take", "id": job_id})
         self.assertFalse(list(Path(self.directory.name).glob("*.json")))
 
+    def test_silent_offered_page_can_be_replaced_without_accepting_its_late_completion(self):
+        job_id = self.broker.cli({"op": "enqueue", "kind": "registration"})["id"]
+        page_a = self.cookie
+        self.assertEqual(self.page("next")["phase"], "offered")
+        token = self.broker.cli({"op": "open"})["url"].split("#")[1]
+        self.cookie = self.broker.authenticate(token)
+        with patch("passkey_queue.time.monotonic", return_value=time.monotonic() + 31):
+            offered = self.page("next")
+            self.assertIsNotNone(offered, "an orphaned offer blocked the replacement page")
+            self.assertEqual(offered["id"], job_id)
+            result = {"rp_id": "mct.localhost", "origin": ORIGIN,
+                      "credential_id": "registration-fixture", "public_key_sec1": "fixture"}
+            with self.assertRaises(ValueError):
+                self.broker.page("complete", {"id": job_id, "result": result}, page_a)
+            self.page("complete", id=job_id, result=result)
+            path = self.broker.cli({"op": "take", "id": job_id})["path"]
+            self.assertEqual(read_private(path), result)
+
     def test_existing_artifact_is_never_overwritten(self):
         job_id = self.queue()
         self.page("next")
