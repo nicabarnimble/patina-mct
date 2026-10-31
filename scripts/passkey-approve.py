@@ -37,11 +37,11 @@ def execute(args):
     if args.command == "open":
         url = rpc(session, {"op": "open"})["url"]
         if sys.platform == "darwin":
-            opened = subprocess.run(["open", "-a", "Google Chrome", url], capture_output=True).returncode == 0
+            opened = subprocess.run(["open", url], capture_output=True).returncode == 0
         else:
-            opened = webbrowser.get("google-chrome").open(url)
+            opened = webbrowser.open(url)
         if not opened:
-            raise RuntimeError("could not open Google Chrome")
+            raise RuntimeError("could not open the default browser")
         print("Opened authenticated approval page. No action was submitted.")
         return
     registration = args.command == "register"

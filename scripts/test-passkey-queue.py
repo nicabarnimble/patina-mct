@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import http.client
+import importlib.util
 import json
 from pathlib import Path
 import ssl
@@ -8,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from passkey_queue import Broker, LIMIT, Service, loads, read_private, rpc
@@ -25,9 +27,41 @@ def signed(value):
             "credential_id": "fixture", "signature": "not-cryptographically-verified-by-broker"}}
 
 
+class DefaultBrowserTests(unittest.TestCase):
+    def test_open_uses_system_default_and_reports_launch_failure(self):
+        spec = importlib.util.spec_from_file_location(
+            "approve", Path(__file__).with_name("passkey-approve.py"))
+        approve = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(approve)
+        url = ORIGIN + "/#test-only-capability"
+        for platform in ("darwin", "linux"):
+            for success in (True, False):
+                with self.subTest(platform=platform, success=success), \
+                        patch.object(approve.sys, "platform", platform), \
+                        patch.object(approve, "private_directory", return_value=Path("unused")), \
+                        patch.object(approve, "rpc", return_value={"url": url}) as request, \
+                        patch.object(approve.subprocess, "run", return_value=SimpleNamespace(returncode=0 if success else 1)) as launch, \
+                        patch.object(approve.webbrowser, "open", return_value=success) as browser, \
+                        patch.object(approve.webbrowser, "get", side_effect=AssertionError("must use system default")), \
+                        patch("builtins.print"):
+                    args = SimpleNamespace(session="unused", command="open")
+                    if success:
+                        approve.execute(args)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "could not open the default browser"):
+                            approve.execute(args)
+                    request.assert_called_once_with(Path("unused"), {"op": "open"})
+                    if platform == "darwin":
+                        launch.assert_called_once_with(["open", url], capture_output=True)
+                        browser.assert_not_called()
+                    else:
+                        browser.assert_called_once_with(url)
+                        launch.assert_not_called()
+
+
 class QueueTests(unittest.TestCase):
     def setUp(self):
-        self.directory = tempfile.TemporaryDirectory()
+        self.directory = tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve())
         self.addCleanup(self.directory.cleanup)
         self.broker = Broker(self.directory.name, ORIGIN)
         token = self.broker.cli({"op": "open"})["url"].split("#")[1]
@@ -137,7 +171,7 @@ class QueueTests(unittest.TestCase):
 
 class HTTPTests(unittest.TestCase):
     def test_https_auth_origin_host_route_and_body_guards(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as directory:
             directory = Path(directory)
             cert, key = directory / "cert.pem", directory / "key.pem"
             subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",

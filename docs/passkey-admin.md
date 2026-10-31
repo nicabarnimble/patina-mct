@@ -80,8 +80,11 @@ mutation helpers.
 
 ## Approvals-only local queue
 
-Use [the short RUN recipe](passkey-approval-RUN.md) for a fresh live run. The
-`--session` mode of `serve-passkey-tap.py` serves the authenticated queue page,
+Use [the short RUN recipe](passkey-approval-RUN.md) for a fresh live run in your
+default Chromium browser with 1Password. The opener uses the system default,
+not a fixed browser application.
+
+The `--session` mode of `serve-passkey-tap.py` serves the authenticated queue page,
 not the file-picker page. `passkey-approve.py` queues registration or a root
 operation and waits. It prepares only after a foreground page claims that work,
 then receives the private signed request and invokes bootstrap or `send-iroh`.
@@ -107,7 +110,7 @@ state before a new command after any lost reply, reload or interrupted run.
 
 ## Original manual 1Password tap test
 
-Prerequisites: Chrome with the 1Password extension enabled/unlocked, Python 3,
+Prerequisites: your default Chromium browser with 1Password enabled and unlocked, Python 3,
 and `mkcert`. The CA installation below is an explicit operator action, not
 something the agent runs. Use a fresh test root; do not migrate an existing RP pin.
 
@@ -120,7 +123,7 @@ python3 scripts/serve-passkey-tap.py --cert "$HOME/.mct-passkey-tap/cert.pem" --
 
 In another terminal:
 ```sh
-open -a "Google Chrome" https://mct.localhost:8443
+open https://mct.localhost:8443
 ```
 
 Click **Register a new passkey root**, selecting 1Password. Install the downloaded

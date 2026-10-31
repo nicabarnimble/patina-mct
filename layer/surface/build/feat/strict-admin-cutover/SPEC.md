@@ -21,7 +21,7 @@ exit_criteria:
     checked: true
     verify: cargo test -p mct-daemon --lib strict_admin_genesis_cannot_start_through_legacy_runtime
   - id: approvals-only-browser-ceremony
-    text: An authenticated loopback queue delivers only CLI-enqueued root intents to Chrome, returns private assertions without file selections or Sign clicks, and preserves Mother verification and restart revocation.
+    text: An authenticated loopback queue delivers only CLI-enqueued root intents to the default Chromium browser with 1Password, returns private assertions without file selections or Sign clicks, and preserves Mother verification and restart revocation.
     checked: true
     verify: node --test scripts/passkey-approval.e2e.test.mjs
   - id: authenticated-cutover
