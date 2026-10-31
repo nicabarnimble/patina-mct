@@ -69,7 +69,7 @@ jobs:
       - name: cargo test
         run: bash scripts/ci-tier0.sh test
 
-      - name: Chrome passkey approval ceremony
+      - name: Browser passkey approval ceremony
         run: node --test scripts/passkey-approval.e2e.test.mjs
 
       - name: Disk budget after tests

@@ -1,6 +1,6 @@
 # Doug's approvals-only 1Password rerun
 
-Use your default Chromium browser with 1Password enabled and unlocked. Select
+Use your default browser with 1Password enabled and unlocked. Select
 **1Password**, not iCloud or the browser's password store, for the new registration.
 Save a new test credential.
 This is a fresh run; never reuse or modify `~/.mct-pr88-tap`.
@@ -27,11 +27,10 @@ python3 scripts/serve-passkey-tap.py --session "$T/session" \
 If port 8443 is occupied, stop the older harness yourself. Do not delete its
 private evidence. A broker restart needs a new session directory.
 
-## Terminal 2: open your default Chromium browser with 1Password and run the ceremony
+## Terminal 2: open your default browser with 1Password and run the ceremony
 
 Set `T` to the fresh directory printed above. The opener uses your system default
-browser, including Helium when configured as the default. Run from the same PR
-checkout:
+browser. Run from the same PR checkout:
 
 ```sh
 python3 scripts/passkey-approve.py --session "$T/session" open
@@ -41,7 +40,7 @@ python3 scripts/passkey-approval-demo.py --session "$T/session" \
 
 Keep the authenticated page focused. Approve registration, genesis, issuance,
 and revocation in 1Password. There are no files to choose, no downloads and no
-Sign button. Chrome's virtual-authenticator test needed no Approve clicks.
+Sign button. The CDP virtual-authenticator test needed no Approve clicks.
 If the real browser/provider refuses the automatic request, the page offers
 **Approve** once for that action. This fallback does not bypass provider consent.
 

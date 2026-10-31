@@ -83,9 +83,9 @@ there is no browser-accessible generic command or queue-creation endpoint.
 ## Verification and limits
 
 Unit tests cover queue transitions, substitution, replay, authentication, bounds
-and private files. A Chrome CDP test uses a WebAuthn virtual authenticator through
+and private files. A CDP test uses a WebAuthn virtual authenticator through
 registration, genesis, issuance, signed status, revocation and fresh rejection
 before/after restart. It checks that there are no file inputs or Sign clicks.
-This establishes Chrome behavior with the virtual authenticator, not actual
+This establishes test-driver behavior with the virtual authenticator, not actual
 1Password extension behavior. Doug's live rerun is separate. Local CA installation
 remains an explicit one-time operator action; no certificate bypass in live use.

@@ -21,7 +21,7 @@ exit_criteria:
     checked: true
     verify: cargo test -p mct-daemon --lib strict_admin_genesis_cannot_start_through_legacy_runtime
   - id: approvals-only-browser-ceremony
-    text: An authenticated loopback queue delivers only CLI-enqueued root intents to the default Chromium browser with 1Password, returns private assertions without file selections or Sign clicks, and preserves Mother verification and restart revocation.
+    text: An authenticated loopback queue delivers only CLI-enqueued root intents to the default browser with 1Password, returns private assertions without file selections or Sign clicks, and preserves Mother verification and restart revocation.
     checked: true
     verify: node --test scripts/passkey-approval.e2e.test.mjs
   - id: authenticated-cutover
@@ -55,7 +55,7 @@ that intent and calls WebAuthn automatically. The CLI consumes the matching priv
 assertion once and submits it through existing bootstrap/Iroh paths. Existing
 expiry, nonvirgin storage and uncertain-submission refusals remain unchanged.
 See `docs/design/passkey-approval-queue.md` and `docs/passkey-approval-RUN.md`.
-The Chrome CDP test covers the complete ceremony and both fresh post-revocation
+The CDP test covers the complete ceremony and both fresh post-revocation
 refusals. Virtual authentication is not evidence of actual 1Password UI behavior.
 
 ## Archived hybrid slice

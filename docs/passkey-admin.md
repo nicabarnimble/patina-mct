@@ -81,7 +81,7 @@ mutation helpers.
 ## Approvals-only local queue
 
 Use [the short RUN recipe](passkey-approval-RUN.md) for a fresh live run in your
-default Chromium browser with 1Password. The opener uses the system default,
+default browser with 1Password. The opener uses the system default,
 not a fixed browser application.
 
 The `--session` mode of `serve-passkey-tap.py` serves the authenticated queue page,
@@ -91,10 +91,10 @@ then receives the private signed request and invokes bootstrap or `send-iroh`.
 The page never applies administration. Existing low-level CLI commands remain
 available; they do not implicitly connect to a broker.
 
-Chrome 156.0.8078.74 completed the CDP virtual-authenticator test with zero file
+The CDP test driver completed the virtual-authenticator test with zero file
 selections, downloads, Sign clicks or Approve clicks, and no transient user
 activation. An injected provider-refusal test also passed with one Approve click
-per root action. That injected refusal does not establish a Chrome requirement.
+per root action. That injected refusal does not establish a browser requirement.
 Actual 1Password provider selection, unlock and approval UI remain subject to
 Doug's live rerun. The page offers at most one explicit retry after NotAllowedError,
 which can mean refusal/cancellation as well as a gesture restriction.
@@ -110,7 +110,7 @@ state before a new command after any lost reply, reload or interrupted run.
 
 ## Original manual 1Password tap test
 
-Prerequisites: your default Chromium browser with 1Password enabled and unlocked, Python 3,
+Prerequisites: your default browser with 1Password enabled and unlocked, Python 3,
 and `mkcert`. The CA installation below is an explicit operator action, not
 something the agent runs. Use a fresh test root; do not migrate an existing RP pin.
 
