@@ -48,6 +48,15 @@ not a replicated authority database, Pi integration, or task continuation.
 - Linux Git Toy remains denied. No AOT deserialization, full Child cutover,
   migration of existing authorities, network-mounted state or Pi 3 rollout.
 
+## Current blocker
+
+The native package builds on nicamaster, but the full gate exits 1. Its user
+namespace maps host-root ownership to overflow UID 65534; the existing canonical
+filesystem guard correctly refuses it. The host kernel has no Landlock support.
+Changing to a system-level unit running as `pi`, or adding a supported alternative
+user-unit confinement implementation, requires owner approval. Do not relax the
+ownership check. See [hardware evidence](../../../../../docs/linux-admin-install-evidence.md).
+
 ## Hardware gate
 
 Each run creates new private local state, synthetic ES256 root and one-hour

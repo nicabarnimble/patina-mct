@@ -1,5 +1,10 @@
 # Linux ARM64 admin Mother
 
+**Blocked on the current nicamaster configuration.** The native package builds,
+but the user-service namespace hides host-root ownership and Mother refuses
+startup. Do not remove the ownership check or the sandbox to force a pass.
+See the [hardware evidence and required owner decision](linux-admin-install-evidence.md).
+
 This slice packages the **admin-only** Mother on Debian with Nix, not NixOS.
 Each Mother keeps its own identity and canonical state on local storage. It does
 not enable the full passkey Child runtime, Linux Git Toy, or task continuation.
