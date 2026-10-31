@@ -43,7 +43,7 @@
       };
       smoke = pkgs.writeShellApplication {
         name = "mother-install-smoke";
-        runtimeInputs = [ pkgs.systemd pkgs.util-linux pkgs.coreutils ];
+        runtimeInputs = [ pkgs.systemd pkgs.nix pkgs.util-linux pkgs.coreutils ];
         text = ''
           exec ${python}/bin/python3 ${./scripts}/mother-install-smoke.py \
             --binary ${mother}/bin/mct-daemon \

@@ -48,6 +48,18 @@ def safe_directory(path, create=False):
     return path
 
 
+def trusted_program(path, verify_contents):
+    path = Path(path).resolve(strict=True)
+    if not str(path).startswith("/nix/store/"):
+        raise ValueError("expected a Nix-installed executable")
+    safe_directory(path.parent)
+    info = path.stat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        raise ValueError("program must be immutable and root-owned")
+    verify_contents(path.parent.parent)
+    return path
+
+
 def mount_options(mountinfo, path):
     """Select the effective (longest ancestor) mount, decoding procfs escapes."""
     candidates = []

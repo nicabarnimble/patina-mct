@@ -7,7 +7,7 @@ import re
 import subprocess
 import tempfile
 
-from mother_systemd import install_unit, render_unit, safe_directory
+from mother_systemd import install_unit, render_unit, safe_directory, trusted_program
 from passkey_queue import write_new
 
 
@@ -30,11 +30,7 @@ def main():
     filesystem = run("findmnt", "-n", "-o", "FSTYPE", "-T", root).stdout.strip()
     if filesystem not in {"ext4", "xfs", "btrfs"}:
         raise ValueError("Mother state must be on a supported local filesystem")
-    binary = Path(args.binary).resolve(strict=True)
-    safe_directory(binary.parent)
-    info = binary.stat()
-    if not str(binary).startswith("/nix/store/") or info.st_uid != 0 or info.st_mode & 0o022:
-        raise ValueError("expected an immutable Nix-installed executable")
+    binary = trusted_program(args.binary, lambda package: run("nix-store", "--verify-path", package))
     home = safe_directory(Path.home())
     with tempfile.TemporaryDirectory(prefix=".mct-install-check-", dir=home) as temporary:
         action = Path(temporary) / "action.json"

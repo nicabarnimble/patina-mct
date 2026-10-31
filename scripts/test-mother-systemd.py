@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 import shlex
+import stat
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+import mother_systemd
 from pathlib import Path
 import tempfile
 import unittest
@@ -23,6 +27,18 @@ class UnitTests(unittest.TestCase):
         for root in ["relative", "/tmp/a\nExecStart=/bin/evil", "/tmp/a\x00"]:
             with self.assertRaises(ValueError):
                 render_unit(TEMPLATE.read_text(), "/nix/store/example/bin/mct-daemon", root, "m", "l")
+
+    def test_program_content_verification_must_succeed_before_use(self):
+        binary = Path('/nix/store/example/bin/mct-daemon')
+        metadata = SimpleNamespace(st_uid=0, st_mode=stat.S_IFREG | 0o555)
+        verify = Mock(side_effect=RuntimeError('package content hash mismatch'))
+        with patch.object(Path, 'resolve', return_value=binary), patch.object(Path, 'stat', return_value=metadata), patch.object(mother_systemd, 'safe_directory'):
+            with self.assertRaisesRegex(RuntimeError, 'content hash mismatch'):
+                mother_systemd.trusted_program(binary, verify)
+            verify.assert_called_once_with(binary.parent.parent)
+            verify.reset_mock(side_effect=True)
+            self.assertEqual(mother_systemd.trusted_program(binary, verify), binary)
+            verify.assert_called_once_with(binary.parent.parent)
 
     def test_mount_check_uses_the_effective_ancestor_and_decodes_spaces(self):
         mounts = "1 0 0:1 / / ro - ext4 /dev/root ro\n2 1 0:1 / /home/pi/mother\\040root rw - ext4 /dev/root rw\n"

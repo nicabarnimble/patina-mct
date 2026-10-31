@@ -16,7 +16,7 @@ import time
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from mother_systemd import mount_options, remove_unit, render_unit, safe_directory, unit_identity
+from mother_systemd import mount_options, remove_unit, render_unit, safe_directory, trusted_program, unit_identity
 from passkey_queue import read_private, write_new
 
 
@@ -76,16 +76,6 @@ def verify_sandbox(pid, root, outside):
             return
         time.sleep(0.1)
     raise RuntimeError("Iroh route monitor has no NETLINK_ROUTE socket")
-
-
-def trusted_program(path):
-    path = Path(path).resolve(strict=True)
-    require(str(path).startswith("/nix/store/"), "hardware gate requires the Nix-built programs")
-    safe_directory(path.parent)
-    info = path.stat()
-    require(path.is_file() and info.st_uid == 0 and not info.st_mode & 0o022,
-            "program must be immutable and root-owned")
-    return path
 
 
 class Ceremony:
@@ -200,8 +190,10 @@ def main():
     args = parser.parse_args()
     require(platform.system() == "Linux" and platform.machine() == "aarch64", "native Linux aarch64 required")
     require(os.geteuid() != 0, "run as the unprivileged user, never root")
-    binary, probe = trusted_program(args.binary), trusted_program(args.probe)
-    installer = trusted_program(args.installer)
+    def verify_contents(package):
+        execute(["nix-store", "--verify-path", package])
+    binary, probe = trusted_program(args.binary, verify_contents), trusted_program(args.probe, verify_contents)
+    installer = trusted_program(args.installer, verify_contents)
     home = safe_directory(Path.home())
     filesystem = execute(["findmnt", "-n", "-o", "FSTYPE", "-T", home]).stdout.strip()
     require(filesystem in {"ext4", "xfs", "btrfs"}, "gate requires a local supported filesystem")

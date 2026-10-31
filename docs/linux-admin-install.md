@@ -105,7 +105,9 @@ implemented; inspect interrupted installation evidence before manual action.
 
 Nix's pinned inputs/content hashes and the host's configured trusted binary-cache
 keys establish package delivery provenance. The programs and their ancestry are
-checked for ownership/writability; the unit points at the exact immutable store
+checked for ownership and writability. Before execution, `nix-store --verify-path`
+checks the package content hash against Nix's registered hash, without repair.
+The unit points at the exact immutable store
 path, not PATH lookup or an arbitrary writable executable. This is not a new MCT
 authority source or a claim of publisher signing equivalent to Apple codesign.
 Existing Darwin release verification and launchd lifecycle are unchanged; this

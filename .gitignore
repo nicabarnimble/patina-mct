@@ -1,5 +1,7 @@
 # Build artifacts
 /target/
+/result
+/result-*
 **/*.rs.bk
 # Environment and secrets
 .env
