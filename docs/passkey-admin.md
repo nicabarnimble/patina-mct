@@ -43,8 +43,15 @@ All input files use private storage checks (regular, single-link, owner-private,
 no-follow ancestry); provision private directories/files deliberately, e.g. with
 operator `umask 077`. Production never changes umask or silently repairs modes.
 Intents expire after at most five minutes and bind the exact current authority
-snapshot. Reprepare after any authority change. A failed/uncertain admission is
-not permission to retry an effect: complete surviving frames consume nonces.
+snapshot. Reprepare after any authority change. Bootstrap validates the trusted
+setup, signed intent and signature before exclusively creating its ledger. An
+expired, malformed or incorrectly signed genesis therefore leaves a virgin root
+available for a fresh prepare/sign/bootstrap ceremony, without deleting files.
+An already existing ledger, including a zero-byte file, remains nonvirgin. No
+automatic cleanup or reinterpretation of old empty files is performed. I/O failure
+after admission can still leave uncertain storage and requires inspection.
+A failed/uncertain admission is not permission to retry an effect: complete
+surviving frames consume nonces.
 Registration is an explicit operator trust boundary; no attestation CA policy,
 root rotation, persistent external rollback anchor or hosted browser integration
 is claimed. Synced passkey counters are not treated as monotonic freshness.

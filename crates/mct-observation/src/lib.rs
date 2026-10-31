@@ -3823,7 +3823,7 @@ fn open_with_recovery_hook(
     path: &Path,
     ledger_id: &str,
     mother_node_id: &str,
-    mut hook: impl FnMut(RecoveryStage) -> std::io::Result<()>,
+    hook: impl FnMut(RecoveryStage) -> std::io::Result<()>,
 ) -> Result<JsonlObservationLedger> {
     let path = path.to_path_buf();
     // Exclusive creation preserves the strict-genesis birth distinction.
@@ -3832,6 +3832,17 @@ fn open_with_recovery_hook(
             path: path.clone(),
             source,
         })?;
+    open_file_with_recovery_hook(path, ledger_id, mother_node_id, file, created_new, hook)
+}
+
+fn open_file_with_recovery_hook(
+    path: PathBuf,
+    ledger_id: &str,
+    mother_node_id: &str,
+    file: File,
+    created_new: bool,
+    mut hook: impl FnMut(RecoveryStage) -> std::io::Result<()>,
+) -> Result<JsonlObservationLedger> {
     let mut file = acquire_writer_lock(&path, file)?;
 
     let (state, recovery_status) = match scan_existing(&path, ledger_id, mother_node_id)? {

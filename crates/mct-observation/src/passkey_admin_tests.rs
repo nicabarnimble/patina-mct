@@ -524,6 +524,78 @@ fn passkey_cose_parser_rejects_duplicate_wrong_curve_trailing_and_truncated_keys
 }
 
 #[test]
+fn passkey_genesis_creation_rejects_untrusted_setup_before_creating_storage() {
+    let d = tempfile::tempdir().unwrap();
+    for field in [
+        "mother",
+        "ledger",
+        "inventory",
+        "root",
+        "epoch",
+        "generation",
+    ] {
+        let p = d.path().join(field);
+        let mut i = birth().intent;
+        match field {
+            "mother" => i.mother_node_id = "wrong-mother".into(),
+            "ledger" => i.ledger_id = "wrong-ledger".into(),
+            "inventory" => {
+                let PasskeyAdminActionV1::Bootstrap { inventory_hash, .. } = &mut i.action else {
+                    unreachable!()
+                };
+                *inventory_hash = "cd".repeat(32);
+            }
+            "root" => {
+                let PasskeyAdminActionV1::Bootstrap { root, .. } = &mut i.action else {
+                    unreachable!()
+                };
+                root.credential_id = URL_SAFE_NO_PAD.encode([99; 32]);
+            }
+            "epoch" => i.epoch = "not-a-birth-epoch".into(),
+            "generation" => i.generation = 1,
+            _ => unreachable!(),
+        }
+        assert!(
+            JsonlObservationLedger::create_passkey_genesis_at(
+                &p,
+                &setup(),
+                root_signed(i),
+                time(0)
+            )
+            .is_err(),
+            "{field} substitution was admitted"
+        );
+        assert!(!p.exists(), "{field} rejection created storage");
+        JsonlObservationLedger::create_passkey_genesis_at(&p, &setup(), birth(), time(0)).unwrap();
+    }
+}
+
+#[test]
+fn passkey_genesis_creation_preserves_existing_empty_partial_and_legacy_ledgers() {
+    let d = tempfile::tempdir().unwrap();
+    for (name, bytes) in [
+        ("empty", b"".as_slice()),
+        ("partial", b"partial genesis".as_slice()),
+        ("malformed", b"{}\n".as_slice()),
+        ("legacy", b"".as_slice()),
+    ] {
+        let p = d.path().join(name);
+        if name == "legacy" {
+            drop(JsonlObservationLedger::open_authority(&p, "ledger-a", "mother-a").unwrap());
+        } else {
+            private_fs::write_atomic(&p, bytes).unwrap();
+        }
+        let before = std::fs::read(&p).unwrap();
+        let error =
+            JsonlObservationLedger::create_passkey_genesis_at(&p, &setup(), birth(), time(0))
+                .unwrap_err();
+        assert!(matches!(error, ObservationLedgerError::Io { source, .. }
+            if source.kind() == std::io::ErrorKind::AlreadyExists));
+        assert_eq!(std::fs::read(&p).unwrap(), before, "{name} was changed");
+    }
+}
+
+#[test]
 fn passkey_genesis_complete_ack_loss_commits_but_partial_birth_never_reinitializes() {
     for fault in [
         TestAppendFault::PartialFrame,

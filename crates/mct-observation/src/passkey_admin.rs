@@ -60,6 +60,25 @@ impl PasskeyGenesisSetupV1 {
             inventory_hash: startup.inventory_hash.clone(),
         })
     }
+
+    fn validate_request(&self, request: &PasskeyAdminRequestV1) -> Result<()> {
+        let i = &request.intent;
+        let PasskeyAdminActionV1::Bootstrap {
+            root,
+            inventory_hash,
+        } = &i.action
+        else {
+            return Err(denied("not genesis"));
+        };
+        if i.mother_node_id != self.mother_node_id
+            || i.ledger_id != self.ledger_id
+            || root != &self.root
+            || inventory_hash != &self.inventory_hash
+        {
+            return Err(denied("genesis disagrees with trusted registration/setup"));
+        }
+        Ok(())
+    }
 }
 fn digest(s: &str) -> bool {
     s.len() == 64
@@ -203,6 +222,45 @@ pub(super) fn replay_fact(
 }
 
 impl JsonlObservationLedger {
+    /// Rejects invalid genesis before creating storage. Existing files are never
+    /// reopened here; I/O failures after admission retain the normal recovery gate.
+    pub fn create_passkey_genesis(
+        path: impl AsRef<Path>,
+        setup: &PasskeyGenesisSetupV1,
+        request: PasskeyAdminRequestV1,
+    ) -> Result<MctObservationLedgerEntry> {
+        Self::create_passkey_genesis_at(path.as_ref(), setup, request, now())
+    }
+
+    pub(super) fn create_passkey_genesis_at(
+        path: &Path,
+        setup: &PasskeyGenesisSetupV1,
+        request: PasskeyAdminRequestV1,
+        time: Timestamp,
+    ) -> Result<MctObservationLedgerEntry> {
+        setup.validate_request(&request)?;
+        let fact = PasskeyAdminFactV1 {
+            request,
+            decided_at: time,
+        };
+        transition(&empty_authority_replay(), &fact)?;
+        let file = private_fs::create_new(path).map_err(|source| ObservationLedgerError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let mut writer = open_file_with_recovery_hook(
+            path.to_path_buf(),
+            &setup.ledger_id,
+            &setup.mother_node_id,
+            file,
+            true,
+            |_| Ok(()),
+        )?;
+        // Keep the same admission time: a second clock read could reject an
+        // admitted request after file creation and strand an empty ledger again.
+        writer.execute_passkey_genesis_at(setup, fact.request, fact.decided_at)
+    }
+
     pub fn execute_passkey_genesis(
         &mut self,
         setup: &PasskeyGenesisSetupV1,
@@ -216,21 +274,10 @@ impl JsonlObservationLedger {
         request: PasskeyAdminRequestV1,
         time: Timestamp,
     ) -> Result<MctObservationLedgerEntry> {
-        let i = &request.intent;
-        let PasskeyAdminActionV1::Bootstrap {
-            root,
-            inventory_hash,
-        } = &i.action
-        else {
-            return Err(denied("not genesis"));
-        };
+        setup.validate_request(&request)?;
         if self.is_poisoned()
             || self.mother_node_id != setup.mother_node_id
             || self.ledger_id != setup.ledger_id
-            || i.mother_node_id != setup.mother_node_id
-            || i.ledger_id != setup.ledger_id
-            || root != &setup.root
-            || inventory_hash != &setup.inventory_hash
         {
             return Err(denied("genesis disagrees with trusted registration/setup"));
         }
