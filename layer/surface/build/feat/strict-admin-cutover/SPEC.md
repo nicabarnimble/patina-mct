@@ -20,6 +20,10 @@ exit_criteria:
     text: Existing runtime refuses strict genesis without rewriting canonical history.
     checked: true
     verify: cargo test -p mct-daemon --lib strict_admin_genesis_cannot_start_through_legacy_runtime
+  - id: approvals-only-browser-ceremony
+    text: An authenticated loopback queue delivers only CLI-enqueued root intents to Chrome, returns private assertions without file selections or Sign clicks, and preserves Mother verification and restart revocation.
+    checked: true
+    verify: node --test scripts/passkey-approval.e2e.test.mjs
   - id: authenticated-cutover
     text: Iroh administrative ingress and canonical consumers replace all UID/offline authority paths, with approved trusted setup and lifecycle.
     checked: false
@@ -41,7 +45,18 @@ and shared signed issuance/revocation/status adapters. Real-process tests reject
 bad signatures, wrong targets/scopes and replay, and preserve revocation across
 restart. Other command adapters, canonical runtime projections, remote snapshot
 acquisition and removal of their legacy callers remain open. The full legacy
-runtime still refuses passkey ledgers. No live 1Password validation is claimed.
+runtime still refuses passkey ledgers. Doug reported the original manual browser
+flow passed on `ab193bb`; the new queued flow still needs a live 1Password rerun.
+
+The optional loopback approval broker is an assertion transport, not an authority
+owner. Only its private Unix socket may enqueue operations. The authenticated
+foreground page claims work before the CLI prepares a fresh intent; it renders
+that intent and calls WebAuthn automatically. The CLI consumes the matching private
+assertion once and submits it through existing bootstrap/Iroh paths. Existing
+expiry, nonvirgin storage and uncertain-submission refusals remain unchanged.
+See `docs/design/passkey-approval-queue.md` and `docs/passkey-approval-RUN.md`.
+The Chrome CDP test covers the complete ceremony and both fresh post-revocation
+refusals. Virtual authentication is not evidence of actual 1Password UI behavior.
 
 ## Archived hybrid slice
 

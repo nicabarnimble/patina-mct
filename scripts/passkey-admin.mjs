@@ -33,10 +33,10 @@ export async function expectedChallenge(prepared) {
   const message = JSON.stringify(canonical(['mct-passkey-administration/v1', `webauthn:${prepared.root.credential_id}`, prepared.intent]));
   return encode(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(message)));
 }
-export async function signPrepared(prepared) {
+export async function signPrepared(prepared, {signal} = {}) {
   if (await expectedChallenge(prepared) !== prepared.challenge) throw new Error('challenge does not sign the reviewed intent');
   if (location.protocol !== 'https:' || location.origin !== prepared.root.origin) throw new Error('wrong registered origin');
-  const credential = await navigator.credentials.get({publicKey: {
+  const credential = await navigator.credentials.get({signal, publicKey: {
     challenge: decode(prepared.challenge), rpId: prepared.root.rp_id,
     allowCredentials: [{type: 'public-key', id: decode(prepared.root.credential_id)}],
     userVerification: 'required', timeout: 300000,

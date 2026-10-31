@@ -11,7 +11,8 @@ revocation and `/status`, locally or through the admin-only resident Iroh mode.
 The same resident ledger actor serializes verification, nonce consumption,
 revocation and required durability. Other command adapters and the full
 Child/Toy runtime cutover remain unbuilt: the legacy runtime still refuses
-passkey ledgers. No live 1Password validation is claimed.
+passkey ledgers. Doug reported a successful live 1Password run of the original
+manual flow on build `ab193bb`; the new queued flow still needs its own live rerun.
 
 1. On an operator-controlled HTTPS RP origin, import `scripts/passkey-admin.mjs`
    and call `registerRoot(rpId, userName)`. Choose 1Password in the browser.
@@ -77,7 +78,34 @@ not implemented. Ctrl-C closes serving and drains the ledger actor. An uncertain
 reply is not permission to retry. Unmigrated routes deny, not route to legacy
 mutation helpers.
 
-## Doug's real 1Password tap test
+## Approvals-only local queue
+
+Use [the short RUN recipe](passkey-approval-RUN.md) for a fresh live run. The
+`--session` mode of `serve-passkey-tap.py` serves the authenticated queue page,
+not the file-picker page. `passkey-approve.py` queues registration or a root
+operation and waits. It prepares only after a foreground page claims that work,
+then receives the private signed request and invokes bootstrap or `send-iroh`.
+The page never applies administration. Existing low-level CLI commands remain
+available; they do not implicitly connect to a broker.
+
+Chrome 156.0.8078.74 completed the CDP virtual-authenticator test with zero file
+selections, downloads, Sign clicks or Approve clicks, and no transient user
+activation. An injected provider-refusal test also passed with one Approve click
+per root action. That injected refusal does not establish a Chrome requirement.
+Actual 1Password provider selection, unlock and approval UI remain subject to
+Doug's live rerun. The page offers at most one explicit retry after NotAllowedError,
+which can mean refusal/cancellation as well as a gesture restriction.
+
+Only the private Unix socket can enqueue work. The HTTPS page exchanges a
+one-use fragment capability for an HttpOnly cookie and can return only the exact
+queued intent. See [the queue contract](design/passkey-approval-queue.md) for
+states, limits, failure handling and trust boundaries. Keep the page focused.
+Preparation is just in time, not an extension of Mother's five-minute window.
+If Doug leaves an already visible prompt, it can still expire. An expired attempt
+stops without automatic resubmission. Cancel the waiting CLI and inspect canonical
+state before a new command after any lost reply, reload or interrupted run.
+
+## Original manual 1Password tap test
 
 Prerequisites: Chrome with the 1Password extension enabled/unlocked, Python 3,
 and `mkcert`. The CA installation below is an explicit operator action, not
@@ -117,12 +145,12 @@ cargo run -p mct-daemon -- passkey-admin bootstrap --root "$HOME/.mct-passkey-ta
 Repeat prepare/sign for day-key issuance, then use `send-iroh` for the resident,
 substituting this test Mother's root in the resident commands above.
 
-The page is loopback-only HTTPS and serves only three fixed assets. Pins,
+Without `--session`, the original page is loopback-only HTTPS and serves only three fixed assets. Pins,
 intents and assertions stay in browser-selected files; it has no upload or
 Mother mutation endpoint. A browser must trust the certificate; do not bypass
 certificate errors. This is a manual-test harness, not a production HTTPS
-administration service. Actual 1Password prompts/registration/assertions remain
-unverified until Doug runs this test.
+administration service. Doug reported this original flow passed on `ab193bb`;
+that report is separate from automated tests and the queued-flow live rerun.
 
 ## Checks
 
