@@ -52,6 +52,7 @@ run_specs() {
   python3 scripts/test-scan-osv.py || status=1
   node --test scripts/passkey-admin.test.mjs || status=1
   python3 scripts/test-passkey-tap.py || status=1
+  python3 scripts/test-passkey-queue.py || status=1
   return "$status"
 }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Loopback HTTPS manual-test page. Never receives pins, intents or signatures."""
+"""Loopback HTTPS passkey harness. Optional private assertion queue; never applies actions."""
 import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -68,8 +68,14 @@ def main():
     parser.add_argument("--origin", default="https://mct.localhost:8443")
     parser.add_argument("--cert", required=True)
     parser.add_argument("--key", required=True)
+    parser.add_argument("--session", help="owner-private directory for the approvals-only queue")
     args = parser.parse_args()
-    with make_server(args.origin, args.cert, args.key) as server:
+    if args.session:
+        from passkey_queue import Service
+        service = Service(args.session, args.origin, args.cert, args.key)
+    else:
+        service = make_server(args.origin, args.cert, args.key)
+    with service as server:
         print(f"Open {args.origin} in a browser with 1Password enabled. Ctrl-C to stop.",
               flush=True)
         try:

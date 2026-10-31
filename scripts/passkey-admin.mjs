@@ -5,9 +5,9 @@ export const encode = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes)
 export const decode = value => Uint8Array.from(atob(value.replaceAll('-', '+').replaceAll('_', '/')), c => c.charCodeAt(0));
 const hex = bytes => [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
 
-export async function registerRoot(rpId, userName) {
+export async function registerRoot(rpId, userName, {signal} = {}) {
   if (location.protocol !== 'https:') throw new Error('HTTPS registration required');
-  const credential = await navigator.credentials.create({publicKey: {
+  const credential = await navigator.credentials.create({signal, publicKey: {
     challenge: crypto.getRandomValues(new Uint8Array(32)),
     rp: {id: rpId, name: 'MCT administration'},
     user: {id: crypto.getRandomValues(new Uint8Array(32)), name: userName, displayName: userName},
@@ -33,10 +33,10 @@ export async function expectedChallenge(prepared) {
   const message = JSON.stringify(canonical(['mct-passkey-administration/v1', `webauthn:${prepared.root.credential_id}`, prepared.intent]));
   return encode(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(message)));
 }
-export async function signPrepared(prepared) {
+export async function signPrepared(prepared, {signal} = {}) {
   if (await expectedChallenge(prepared) !== prepared.challenge) throw new Error('challenge does not sign the reviewed intent');
   if (location.protocol !== 'https:' || location.origin !== prepared.root.origin) throw new Error('wrong registered origin');
-  const credential = await navigator.credentials.get({publicKey: {
+  const credential = await navigator.credentials.get({signal, publicKey: {
     challenge: decode(prepared.challenge), rpId: prepared.root.rp_id,
     allowCredentials: [{type: 'public-key', id: decode(prepared.root.credential_id)}],
     userVerification: 'required', timeout: 300000,
