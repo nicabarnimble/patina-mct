@@ -5,6 +5,10 @@
 //! handle, or a session token. Proof of possession is a later check; a grant
 //! fact alone is not a proof.
 
+#[path = "admin_key/passkey.rs"]
+mod passkey;
+pub use passkey::*;
+
 use crate::grant_check::{ExpiryDecision, ExpiryRequirement, action_is_allowed, expiry_decision};
 use crate::id::Timestamp;
 use ed25519_dalek::VerifyingKey;

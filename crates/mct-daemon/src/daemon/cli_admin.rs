@@ -1,4 +1,7 @@
 use super::*;
+#[cfg(all(test, unix))]
+#[path = "cli_admin_boundaries.rs"]
+mod boundaries;
 
 pub(super) fn run_registry(mut args: Vec<String>) -> Result<()> {
     if args.is_empty() {
@@ -623,42 +626,19 @@ pub(super) fn default_control_uds_path() -> PathBuf {
 
 #[cfg(unix)]
 pub(super) fn query_resident_status(socket_path: &Path) -> Result<MctCliResidentStatus> {
-    use std::io::{Read, Write};
-    use std::os::unix::net::UnixStream;
-
-    let mut stream = UnixStream::connect(socket_path)
-        .with_context(|| format!("resident not running at {}", socket_path.display()))?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .context("set resident status read timeout")?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(2)))
-        .context("set resident status write timeout")?;
-    stream
-        .write_all(b"GET /snapshot HTTP/1.1\r\nHost: local\r\n\r\n")
-        .context("write resident status request")?;
-    stream
-        .shutdown(std::net::Shutdown::Write)
-        .context("finish resident status request")?;
-    let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
-        .context("read resident status response")?;
-    let response = std::str::from_utf8(&response).context("decode resident status response")?;
-    let (headers, body) = response
-        .split_once("\r\n\r\n")
-        .context("resident status response missing header terminator")?;
-    let status_code = headers
-        .split_whitespace()
-        .nth(1)
-        .context("resident status response missing status")?
-        .parse::<u16>()
-        .context("parse resident status response status")?;
+    let (status_code, body) = mct_daemon::control_transport::control_socket_request(
+        socket_path,
+        "GET",
+        "/snapshot",
+        &[],
+        Duration::from_secs(2),
+    )?
+    .context("resident not running at verified control socket")?;
     if status_code != 200 {
         bail!("resident status unavailable with HTTP status {status_code}");
     }
     let snapshot: MctControlPlaneSnapshot =
-        serde_json::from_str(body).context("decode resident status snapshot")?;
+        serde_json::from_slice(&body).context("decode resident status snapshot")?;
     let resident = snapshot
         .status
         .resident
@@ -732,47 +712,18 @@ pub(super) fn try_resident_control_mutation(
     path: &str,
     body: &[u8],
 ) -> Result<Option<Vec<u8>>> {
-    use std::io::{Read, Write};
-    use std::os::unix::net::UnixStream;
-
-    let mut stream = match UnixStream::connect(socket_path) {
-        Ok(stream) => stream,
-        Err(_) => return Ok(None),
+    let Some((status, response_body)) = mct_daemon::control_transport::control_socket_request(
+        socket_path,
+        "POST",
+        path,
+        body,
+        Duration::from_secs(10),
+    )?
+    else {
+        return Ok(None);
     };
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .context("set resident UDS read timeout")?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(10)))
-        .context("set resident UDS write timeout")?;
-    write!(
-        stream,
-        "POST {path} HTTP/1.1\r\nHost: local\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-        body.len()
-    )
-    .context("write resident control mutation headers")?;
-    stream
-        .write_all(body)
-        .context("write resident control mutation body")?;
-    stream
-        .shutdown(std::net::Shutdown::Write)
-        .context("finish resident control mutation request")?;
-    let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
-        .context("read resident control mutation response")?;
-    let response = std::str::from_utf8(&response).context("decode resident control response")?;
-    let (headers, response_body) = response
-        .split_once("\r\n\r\n")
-        .context("resident control response missing header terminator")?;
-    let status = headers
-        .split_whitespace()
-        .nth(1)
-        .context("resident control response missing status")?
-        .parse::<u16>()
-        .context("parse resident control response status")?;
     if !(200..300).contains(&status) {
-        let safe_error = serde_json::from_str::<serde_json::Value>(response_body)
+        let safe_error = serde_json::from_slice::<serde_json::Value>(&response_body)
             .ok()
             .and_then(|value| {
                 value
@@ -783,7 +734,7 @@ pub(super) fn try_resident_control_mutation(
             .unwrap_or_else(|| "resident mutation rejected".into());
         bail!("resident control mutation failed with HTTP status {status}: {safe_error}");
     }
-    Ok(Some(response_body.as_bytes().to_vec()))
+    Ok(Some(response_body))
 }
 
 #[cfg(not(unix))]
@@ -1058,6 +1009,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("control.sock");
         let listener = UnixListener::bind(&socket_path).unwrap();
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600)).unwrap();
         let body = serde_json::json!({
             "status": {
                 "version": "0.1.0-test",

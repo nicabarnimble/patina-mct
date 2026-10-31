@@ -87,14 +87,22 @@ the source audit refer to the baseline and should not be treated as stable.
 
 ### H2 — Wire-selected origin can turn a peer into a local principal (High)
 
-- **Evidence:** audit and follow-up source tracing. Transport fields are
-  overwritten, `call.origin` is not; resident ingress and remote candidate
-  selection trust it. No adversarial three-Mother test was run in this review.
+- **Initial audit evidence:** transport fields were overwritten, `call.origin`
+  was not constrained; resident ingress and remote candidate selection trusted
+  it. No adversarial three-Mother test had been run at audit time.
 - **Paths:** `mct-iroh/src/serve.rs`; `mct-daemon/src/daemon/resident/`
   `pipeline.rs`, `candidates.rs`, `forwarding.rs`, `idempotency.rs`.
-- [ ] Derive peer context from authenticated transport and admitted binding;
-  reject incompatible wire origin or normalize it at the boundary. Do not let
-  a generic context constructor recover local authority from wire metadata.
+- [x] Local implementation: enforce Iroh origin and admitted node/Vision at
+  the authenticated peer boundary, refuse unbound user claims, and derive
+  resident context from trusted ingress provenance rather than wire origin.
+  Remote ingress cannot construct local context or switch idempotency scope.
+- **Local proof atop R2 checkpoint `39239f4`:** before the fix, A's forged
+  `Cli` origin made B forward to C and execute its WASM child. The retained
+  counterexample now fails closed; all five local origins and spoofed upstream
+  identities are covered, with successful local/direct-peer controls. Five
+  additional three-Mother runs and 763 workspace tests passed, as did Clippy,
+  fmt and tier-0 specs. See [H2 call-origin evidence](H2-call-origin-evidence.md).
+  Review/merge and formal completion-inventory closure remain separate.
 - **Acceptance:** enumerate all forged origins; a three-Mother test proves no
   unauthorized extra forwarding hop; local work and legitimate direct peer
   calls still succeed; peer caller identity and retry budgets cannot be changed
@@ -111,11 +119,21 @@ the source audit refer to the baseline and should not be treated as stable.
   fetches for unadmitted calls; specify bounded rejection diagnostics and
   resource isolation from authority-critical commitment. Cover admitted-peer
   abuse as well as arbitrary newly generated endpoint keys.
-- **Contract dependency:** `layer/core/safety-boundaries.md` currently requires
-  observations for peer rejection/hello response and the reliability doctrine
-  makes durability classes specification decisions. Explicitly reconcile the
-  audit's “no durable facts before hello admission” proposal with that contract;
-  do not silently remove evidence or ignore canonical write errors.
+- **Owner decision, 2026-10-25:** keep `layer/core/safety-boundaries.md` Rule 3
+  and the reliability doctrine in force. Required rejection observations stay
+  `BeforeEffect`; durable write failure still denies the response/effect. Do not
+  adopt the audit's “no durable facts before hello admission” proposal.
+- [x] Local identifier/provider/error-isolation slice atop `d974af5`: validate
+  wire IDs before facts (256-byte ASCII fields, 8 KiB aggregate), use local
+  correlation for malformed requests, and check call validation/exact hello
+  before either authority provider. Connection errors remain task-local;
+  projection queues cannot pin serving. Required facts are still awaited.
+  Validation: 781 workspace tests, 56 Iroh tests, five additional 8-test ingress
+  runs, Clippy, fmt and tier-0 specs passed; 2 workspace tests remain ignored.
+  See [H3/M1 ingress evidence](H3-M1-iroh-ingress-evidence.md).
+- **Still open:** sustained-load/fairness and total ledger-volume bounds are
+  not established by per-request limits; independent review and formal closure
+  remain separate.
 - **Acceptance:** sustained denied/malformed traffic has named storage/work
   bounds; independent local work and admitted peers remain usable within the
   documented load envelope; genuine canonical durability failure still denies
@@ -128,20 +146,31 @@ the source audit refer to the baseline and should not be treated as stable.
 - **Evidence:** source-traced semaphore acquisition before admission; audit
   reports 64 slots held for up to 30 seconds, not a demonstrated load test.
 - **Path:** `mct-iroh/src/serve.rs`.
-- [ ] Separate handshake/first-byte/frame deadlines; bound streams, pending
-  work and connection occupancy. Define fair admission budgets; endpoint-key
-  limits alone do not stop attackers creating new keys. Coordinate with H3.
+- [x] Local deadline/occupancy slice atop `d974af5`: separate 3-second handshake
+  and combined first-stream/frame budgets from post-frame execution; bound
+  response write/close waits; cap incoming bidi/uni streams to 1/0 with 128 KiB
+  receive windows. Deterministic controls cover idle/partial frames, extra
+  streams, response-holding peers and longer legitimate execution.
+  See [H3/M1 ingress evidence](H3-M1-iroh-ingress-evidence.md).
+- [ ] Establish sustained-load/fair admission guarantees; endpoint-key limits
+  alone do not stop attackers creating new keys. Coordinate with H3. Local
+  implementation is not independent review or formal finding closure.
 - **Acceptance:** idle, slow and excess-stream clients release resources within
   named bounds; legitimate peers and local work retain the documented service
   guarantees; tests cover shutdown and failed handshakes.
 
 ### M2 — Release verification/extraction reopens mutable input (Medium)
 
-- **Evidence:** source confirms multiple archive opens and a final hash check.
-  Exploitation requires attacker-controlled storage; race not reproduced here.
+- **Initial audit evidence:** multiple archive opens and a final hash check;
+  exploitation required attacker-controlled storage and had not been reproduced.
 - **Path:** `mct-daemon/src/release.rs`.
-- [ ] Verify and extract one bounded, private immutable staging copy. Include
-  sidecars and destination ownership/races in the input-boundary review.
+- [x] Local fix atop H2 checkpoint `983b2a3`: verify and extract one bounded,
+  private immutable byte snapshot. Bounded sidecar reads and generated verified
+  sidecars remove the post-verification source reopen. Deterministic source
+  mutation tests cover both rename and in-place writes during/after staging.
+  Extraction is owner-only; its parent remains an operator-controlled boundary.
+  See [M2/M3 release evidence](M2-M3-release-boundary-evidence.md) for that trust
+  assumption, cleanup controls and the 773-pass workspace validation.
 - **Acceptance:** swaps or in-place changes between scan/hash/extraction cannot
   install bytes different from those verified; failures clean staging safely;
   normal release verification and path/type restrictions still pass.
@@ -152,9 +181,16 @@ the source audit refer to the baseline and should not be treated as stable.
   The reproducer and execution evidence have not yet been attached or rerun by
   this agent. Source bounds ordinary entries after tar extension processing.
 - **Path:** `mct-daemon/src/release.rs` (`scan_archive_reader`).
-- [ ] Obtain/preserve the PoC, reproduce under process resource limits, and
-  enforce a decompressed-byte budget before tar handles long-name/PAX metadata.
-  Treat budget exhaustion as error, not successful truncated parsing.
+- [x] Local fix atop `983b2a3`: a hard 520 MiB decompressed-stream budget sits
+  before tar in preflight, scan and extraction. Raw-header preflight bounds
+  aggregate GNU/PAX metadata to 8 MiB before tar allocates extension buffers.
+  Overflow is an error, including padding beyond tar EOF. Valid bounded releases
+  and GNU/PAX metadata pass; deterministic small-budget counterexamples are
+  retained. This checkout uses gzip, not zstd.
+- [ ] Obtain the original audit PoC and complete the extended process-resource
+  and fuzz campaign. The local work does not claim the reported 1.1 GB RSS
+  reproduction. See [M2/M3 release evidence](M2-M3-release-boundary-evidence.md).
+  Review/merge and formal completion-inventory closure remain separate.
 - **Acceptance:** extension/header bombs fail with bounded memory and work;
   fuzz cases cover compressed/decompressed/metadata limits, truncation and
   valid boundary-sized releases; retain the original regression artifact.
@@ -163,8 +199,17 @@ the source audit refer to the baseline and should not be treated as stable.
 
 - **Evidence:** source-traced accumulation; no sustained-load proof yet.
 - **Paths:** `mct-daemon/src/wasm.rs` and Toy observation/writer paths.
-- [ ] Bound host-call counts, payload/output bytes and observation accumulation,
-  or introduce bounded backpressure with explicit durability behavior.
+- [x] Local M4/L15 slice atop H3/M1 checkpoint `039a277`: invocation-local
+  host/logging/measure/Toy counters, conservative observation reservations before
+  further effects, and accumulated MCT payload/output byte caps. Exhaustion traps
+  with a failed report while retaining prior Toy facts; required durability and
+  authority/order checks are unchanged. Native Git output is bounded while read.
+  Exact-limit controls, noisy logging/measure, initialization, output exhaustion
+  and scalar Toy regressions are retained. See
+  [M4/L15 WASM evidence](M4-L15-wasm-boundary-evidence.md).
+- [ ] Complete sustained-load, process-resource/ABI allocation assurance and
+  independent review. The per-invocation accounting envelope is not a total RSS
+  governor, standard-WASI byte budget, or cross-invocation ledger-growth bound.
 - **Acceptance:** logging/measure abuse cannot grow host memory or ledger work
   without limit; excess work terminates predictably; mandatory effect evidence
   is not silently discarded; ordinary calls remain functional.
@@ -173,10 +218,20 @@ the source audit refer to the baseline and should not be treated as stable.
 
 - **Evidence:** audit code tracing; impact depends on listener exposure.
 - **Paths:** `mct-daemon/src/control.rs`, `mct-daemon/src/daemon/control.rs`.
-- [ ] Isolate connection errors and bound reads/deadlines. Inspect actual
-  consumers and decide whether to retire the optional transport or constrain
-  it without inventing an alternate administration bypass. Never expose
-  unauthenticated mutations off loopback; loopback is not proof of ownership.
+- [x] Local M5/L2/L3 transport slice atop M4/L15 checkpoint `68280db`:
+  isolate HTTP/UDS/startup connection failures with bounded tasks, complete-header
+  framing, request byte caps and absolute read/write deadlines. HTTP binds are
+  loopback-only by default; only standalone read-only diagnostics offer the
+  explicit `--allow-unauthenticated-non-loopback-http` opt-in. No mutation route
+  or administrative authority was added. Required durability is unchanged.
+  Validation: 810 workspace tests passed (2 pre-existing ignored), 57 focused
+  control tests and 2 CLI boundary tests passed; Clippy, fmt and tier-0 specs
+  passed. See [M5/L2/L3 control evidence](M5-control-plane-boundary-evidence.md).
+  This slice is checkpointed separately; independent verification remains open.
+- [ ] Complete external-consumer/retirement review, sustained-load fairness and
+  independent assurance before formal closure. Never expose unauthenticated
+  mutations off loopback; loopback is not proof of ownership, and this work does
+  not replace D-57's authenticated administration cutover.
 - **Acceptance:** malformed/idle clients cannot permanently stop the listener;
   configured exposure matches the documented authority boundary. Any retained
   transport is consistent with D-57's removal of legacy admin alternatives.
@@ -188,9 +243,11 @@ the source audit refer to the baseline and should not be treated as stable.
   this is not a demonstrated exposed strict-admin exploit.
 - **Paths:** `mct-observation/src/admin_issuance.rs`, `guardian_recovery.rs`,
   `lib.rs`; `mct-daemon/src/startup.rs`.
-- [ ] Enforce D-57 provenance at every production writer/replay/activation
-  boundary before strict ingress is enabled. Preserve inspectability of old
-  history without silently turning it into active strict authority.
+- [x] D-58 passkey profile: independent registered pin and virgin inventory,
+  first-frame birth, replay verification and legacy/import denial. Covered by
+  `passkey_genesis_independent_pin_and_virgin_provenance_block_legacy_promotion`.
+- [ ] Complete resident authenticated cutover; historical guardian/hybrid paths
+  remain archived and disabled at runtime, not promoted to passkey authority.
 - **Acceptance:** unsigned/self-signed legacy roots cannot become operational
   strict roots through issuance or enrollment; genuine genesis and subsequent
   valid recovery/issuance work; old hashes and explicit startup denial survive.
@@ -201,13 +258,14 @@ the source audit refer to the baseline and should not be treated as stable.
 - **Evidence:** legacy mutation path is denied for new profiles; strict runtime
   remains disabled. Missing implementation, not proof of a live exploit.
 - **Paths:** `mct-observation/src/lib.rs`, canonical admin command/evaluator paths.
-- [ ] Add typed, signed canonical day-key revocation under the accepted D-56
-  authority model. Review issuer lineage, root powers and descendant behavior;
-  surface any genuinely unspecified rule rather than inventing one.
+- [x] D-58 canonical targeted revocation: passkey root or active KeyManage day
+  key; revoked is terminal, other leases survive replay/restart. Covered by
+  `passkey_day_key_targeted_revocation_root_manager_self_and_restart`.
+- [ ] Resident transport integration and independent review remain open.
 - **Acceptance:** authorized targeted revocation persists across replay/restart
   and blocks subsequent admissions; unrelated grants survive as specified;
-  unauthorized, stale and replayed requests cannot mutate authority; guardian
-  root replacement remains governed separately by D-54/D-55.
+  unauthorized, stale and replayed requests cannot mutate authority. Passkey
+  root replacement is not implemented; archived guardian semantics stay inert.
 - **Dependency:** F1/F3/F4; no enabling strict ingress without the required path.
 
 ## Security findings: low (individual triage still required)
@@ -217,25 +275,25 @@ not independently reproduced exploits. Scope/severity may change with evidence.
 
 | ID | Reported boundary and source | Work and closure evidence |
 | --- | --- | --- |
-| L1 | Default permissions in unsupervised startup: `mct-daemon/src/config.rs`, `state.rs` | [ ] Verify config/state/ledger creation and parent-directory permissions under permissive umask; enforce intended ownership/modes and test both supervised and unsupervised startup. |
-| L2 | CLI trusts working-directory control socket and unbounded replies: `mct-daemon/src/daemon/cli_admin.rs` | [ ] Authenticate the socket/server boundary and bound response bytes/time; spoofed socket and oversized/idle replies fail safely without sending privileged material to an untrusted endpoint. Coordinate with legacy transport retirement. |
-| L3 | Startup plane can exit/hang on malformed or idle same-UID client: `mct-daemon/src/daemon/resident/serving.rs` | [ ] Add bounded per-connection failure handling; prove a later valid connection succeeds and shutdown completes. Compare with R1 without assuming a shared cause. |
-| L4 | Supervisor binary ownership/parent/symlink checks: `mct-daemon/src/daemon/supervisor_lifecycle.rs` | [ ] Establish the trusted executable publication boundary; test writable-parent, replacement and symlink cases. Coordinate with the unresolved trusted lifecycle decision rather than adding an authority bypass. |
-| L5 | Offline mutations recorded as `os-uid:0`: `mct-daemon/src/daemon/control.rs` | [ ] Prove attribution bug and correct any retained path, or remove it through D-57 cutover; no fabricated root caller attribution. Preserve existing history rather than rewriting it. |
-| L6 | Caller-provided project/classification/secret metadata used in authorization: `mct-kernel/src/child.rs`, `toy.rs` | [ ] Trace who attests each field and which grants depend on it; test forged peer values against project/data/secret restrictions. Reassess severity; derive trusted facts locally or explicitly document fields that are claims only. |
-| L7 | Hello capability view not restricted to peer Vision: `mct-daemon/src/daemon/resident/serving.rs` | [ ] Prove exposure with distinct audiences; limit disclosed inventory to authorized scope and preserve non-leaking denials. Test within supported scope without inventing multi-Vision hosting. |
-| L8 | Peer IDs may contaminate restart evidence: `mct-daemon/src/daemon/resident/restart_recovery.rs` | [ ] Separate caller correlation from Mother-issued durable identity; malicious duplicate/colliding IDs cannot fabricate recovery status or fence unrelated work. Coordinate with H2/H3. |
-| L9 | Forwarding creates another endpoint with Mother's key: `mct-daemon/src/daemon/resident/forwarding.rs` | [ ] Reproduce any relay reachability interference and use an appropriate owned endpoint lifecycle; concurrent outbound forwarding cannot disrupt inbound reachability or shutdown. |
-| L10 | Legacy nonce reuse checks lack ordering/epoch binding: `mct-kernel/src/admin_sig.rs`, `mct-observation/src/lib.rs` | [ ] Identify the exact required freshness contract and any reproducible replay across authority changes; nonce ordering is not inherently required. Fix a demonstrated gap or document why unique request IDs plus other bindings suffice; do not change D-56 semantics casually. |
-| L11 | Pairing-ticket consumption ignores window/peer: `mct-observation/src/lib.rs` | [ ] Trace all production consumers; enforce the accepted ticket target/time/single-use contract at the authoritative boundary; wrong-peer, early, expired and replayed attempts deny. |
-| L12 | Ordinary append may impersonate authority `detail_ref`: `mct-observation/src/lib.rs` | [ ] Reserve authority namespaces/typed append boundaries; malicious ordinary facts cannot be interpreted as authority or poison replay. Test allowed ordinary facts and malformed reserved references. |
-| L13 | Canonical reserialization hash and checkpoint rollback handling: `mct-observation/src/lib.rs` | [ ] Review these as two distinct claims. Canonical serialization is not itself a vulnerability. Prove required representation/continuity properties; retain rollback evidence and deny discontinuity without silently changing historical hash contracts. |
-| L14 | Corrupt SQLite rows panic/crash-loop: `mct-daemon/src/state.rs` | [ ] Preserve corrupt fixtures; return typed degraded/quarantine outcomes with operator evidence, no guessed defaults or destructive repair; startup and inspection remain predictable. |
-| L15 | Verified WASM reopened per call; integrity mode may only audit: `mct-daemon/src/children.rs`, `wasm.rs` | [ ] Trace artifact mutability and bind actual executed bytes to approved digest at the execution boundary; replacement/race tests deny substituted bytes. Reassess severity alongside H1 and F3. |
-| L16 | Acquisition expected digest covers WASM, not manifest: `mct-daemon/src/acquisition.rs` | [ ] Determine the approval unit; test same WASM with altered authority-bearing `child.toml`. Bind the required metadata/artifact identity, or narrow the documented claim with proof that mutable fields cannot grant power. |
-| L17 | Blanket yanked-crate waiver: root `.cargo/audit.toml` and lockfiles | [ ] Verify current yank reasons, fixed versions and transitive constraints for spin/chacha20/der; remove or narrowly justify exceptions with a revisit condition. Validate all retained graphs; an available version is not proof of compatible resolution. |
-| L18 | Mutable Rust setup action ref: root `.github/actions/setup-rust/action.yml` | [ ] Resolve and verify an immutable upstream commit; preserve explicit Rust 1.96.0 selection and the compiler-version check; validate CI installation. Pinning the action must not silently change the compiler. |
-| L19 | Unused install function may permit traversal: `mct-daemon/src/registry.rs` | [ ] Verify all callers and external API exposure; remove genuinely unused code or validate names and destination containment. Cover traversal/platform path forms if retained. |
+| L1 | Default permissions in unsupervised startup: `mct-daemon/src/config.rs`, `state.rs` | [x] Separately checkpointed local slice: shared no-follow owner-private config/SQLite/ledger storage, private creation under umask 000, unsafe-path refusal without chmod repair, and metadata-only SQLite preflight preserving live POSIX locks. Supervised and unsupervised workspace paths remain covered. [Local storage evidence](L1-L4-L14-L19-local-storage-hygiene-evidence.md). [ ] Migration, ACL/platform and privileged cross-UID assurance, independent review and formal closure remain open. |
+| L2 | CLI trusts working-directory control socket and unbounded replies: `mct-daemon/src/daemon/cli_admin.rs` | [x] Local client slice: bound full exchanges and response bytes; check socket type/mode/owner, parent/ancestors, inode continuity and live peer UID before payload delivery. Metadata/protocol/timeout errors never trigger offline mutation fallback. Status, mutation and lifecycle clients share the boundary. [M5/L2/L3 evidence](M5-control-plane-boundary-evidence.md). [ ] Same-UID process authentication, legacy transport retirement, independent review and formal closure remain open. |
+| L3 | Startup plane can exit/hang on malformed or idle same-UID client: `mct-daemon/src/daemon/resident/serving.rs` | [x] Local startup slice: bounded concurrent socket IO, strict framing and connection-local failures preserve later health requests and idle-peer shutdown; authority operations stay serialized and required durability is not timed out. Malformed-request tests preserve exact ledger bytes. [M5/L2/L3 evidence](M5-control-plane-boundary-evidence.md). [ ] Sustained-load/platform assurance and independent closure remain open; no shared cause with R1 is assumed. |
+| L4 | Supervisor binary ownership/parent/symlink checks: `mct-daemon/src/daemon/supervisor_lifecycle.rs` | [x] Separately checkpointed local slice: validate executable owner/type/mode and every ancestor before canonicalization; hash validated descriptors and recheck at installation/record/start boundaries. Writable-parent, symlink and restored-safe controls pass. [Local storage evidence](L1-L4-L14-L19-local-storage-hygiene-evidence.md). [ ] Same-UID execution identity, trusted lifecycle authorization, platform assurance and independent closure remain unresolved; no administration bypass added. |
+| L5 | Offline mutations recorded as `os-uid:0`: `mct-daemon/src/daemon/control.rs` | [x] Checkpoint `1c1d727`: reproduced persisted `os-uid:0` versus effective UID 501; the retained offline Toy-authority helper now uses `geteuid` through the shared Unix adapter, with historical bytes unchanged. [Remaining-Low evidence](L5-L10-L13-L17-L18-remaining-low-evidence.md). [ ] D-57 removal of UID/offline alternatives, independent review and formal closure remain open; truthful attribution is not administrative authentication. |
+| L6 | Caller-provided project/classification/secret metadata used in authorization: `mct-kernel/src/child.rs`, `toy.rs` | [x] Separately checkpointed local fail-closed slice: caller labels cannot satisfy project/classification-scoped Child/Toy authority without independent Mother facts; capabilities bind invocation metadata and Child outputs remain conservatively local without declassification proof. No production attestation resolver is invented, and grants are not broadened to recover old behavior. [L6/L16 evidence and compatibility restrictions](L6-L16-authority-binding-evidence.md). [ ] Trusted attestation/output classification, severity reassessment, independent review and formal closure remain open. |
+| L7 | Hello capability view not restricted to peer Vision: `mct-daemon/src/daemon/resident/serving.rs` | [x] Separately checkpointed local slice: hello publication is filtered by the admitted binding Vision at the Iroh boundary, including derived worlds/references and outbound advertisements; different-Vision views are omitted, not relabeled. Distinct-audience and generic-denial controls pass. [Peer/ledger evidence](L7-L8-L9-L11-L12-peer-ledger-boundary-evidence.md). [ ] Independent review, broader federation disclosure assurance and formal closure remain open; no multi-Vision hosting added. |
+| L8 | Peer IDs may contaminate restart evidence: `mct-daemon/src/daemon/resident/restart_recovery.rs` | [x] Separately checkpointed local slice: peer execution IDs are Mother-minted; wire IDs remain correlations, idempotency fingerprints remain caller-scoped, and reservations bind a separate execution ID. Recovery excludes transport results and isolates unassociated historical peer reservations. Collision, keyed-replay and origin controls pass. [Peer/ledger evidence](L7-L8-L9-L11-L12-peer-ledger-boundary-evidence.md). [ ] Historical lineage/migration, independent review and formal closure remain open; old ambiguous history is not silently repaired. |
+| L9 | Forwarding creates another endpoint with Mother's key: `mct-daemon/src/daemon/resident/forwarding.rs` | [x] Separately checkpointed local slice: forwarding uses a send-only shared resident endpoint handle, with no same-key bind/close fallback; identity is revalidated and owner shutdown closes all clients. Concurrent direct inbound/outbound and lifecycle controls pass. [Peer/ledger evidence](L7-L8-L9-L11-L12-peer-ledger-boundary-evidence.md). [ ] Hosted-relay interference reproduction, load/platform assurance, independent review and formal closure remain open. |
+| L10 | Legacy nonce reuse checks lack ordering/epoch binding: `mct-kernel/src/admin_sig.rs`, `mct-observation/src/lib.rs` | [x] Checkpoint `1c1d727`, contract audit/proofs: committed nonce uniqueness survives epochs; unused lower values remain valid. Corrected the false monotonic-counter comment. Strict D-56 tests reject held old-epoch/snapshot intents and nonce reuse while preserving exact retry. [Remaining-Low evidence](L5-L10-L13-L17-L18-remaining-low-evidence.md). [ ] Legacy v1 itself has no epoch/expiry binding and must not be promoted into fresh D-57 authority; integration, independent review and formal closure remain open. |
+| L11 | Pairing-ticket consumption ignores window/peer: `mct-observation/src/lib.rs` | [x] Separately checkpointed local ledger slice: generic consumption commands deny; a narrow trusted-adapter gate checks independent authenticated peer/Mother time, canonical target/window and single use before durable consumption. Missing historical scope is inert; lost-ack/restart controls pass. [Peer/ledger evidence](L7-L8-L9-L11-L12-peer-ledger-boundary-evidence.md). [ ] D-13 production redemption remains unbuilt; strict hybrid administration, fingerprint confirmation, D-57 cutover, trusted adapter integration and independent closure remain open. No peer/admin authority is granted by this seam. |
+| L12 | Ordinary append may impersonate authority `detail_ref`: `mct-observation/src/lib.rs` | [x] Separately checkpointed local slice: ordinary single/batch append rejects authority and tail-recovery detail namespaces, including valid forged facts and unknown versions; validated canonical writers use a private path. Byte/head/replay and acknowledged-prefix controls pass. Informational drift and forensic fixtures are explicitly separated. [Peer/ledger evidence](L7-L8-L9-L11-L12-peer-ledger-boundary-evidence.md). [ ] Broader runtime-record provenance, independent review and formal closure remain open. |
+| L13 | Canonical reserialization hash and checkpoint rollback handling: `mct-observation/src/lib.rs` | [x] Checkpoint `1c1d727`: retained the historical typed reserialization hash/golden value and representation controls; reproduced valid truncation/rechained-fork acceptance and now retain known checkpoint ancestry across fallback, recovery and repeated attempts. Deterministic and bounded fuzz controls preserve evidence. [Remaining-Low evidence](L5-L10-L13-L17-L18-remaining-low-evidence.md). [ ] The anchor is process-local, not durable external anti-rollback protection; cross-restart/migration/race assurance, independent review and formal closure remain open. |
+| L14 | Corrupt SQLite rows panic/crash-loop: `mct-daemon/src/state.rs` | [x] Separately checkpointed local slice: fallible typed row conversion replaces persisted-value panics; malformed IDs/timestamps/JSON/booleans and invalid counters/sequences return errors without repairing the row or guessing authority. [Local storage evidence](L1-L4-L14-L19-local-storage-hygiene-evidence.md). [ ] Broader corruption/quarantine UX, migration and independent review/formal closure remain open; no universal proactive SQLite quarantine is claimed. |
+| L15 | Verified WASM reopened per call; integrity mode may only audit: `mct-daemon/src/children.rs`, `wasm.rs` | [x] Local execution-byte binding atop `039a277`: bounded immutable bytes are verified against the authorized artifact digest and passed directly to `Component::from_binary`; unverified typed inventory denies. Retained overwrite/rename counterexample and post-verification source-removal control pass. See [M4/L15 evidence](M4-L15-wasm-boundary-evidence.md). Independent review, severity reassessment alongside H1/F3, and formal closure remain open; the separately checkpointed L16 slice is tracked below. |
+| L16 | Acquisition expected digest covers WASM, not manifest: `mct-daemon/src/acquisition.rs` | [x] Separately checkpointed local slice: paired component/source-manifest pins, exact operator-decision binding, one bounded package-manifest snapshot, separate installed-manifest approval pin, and execution checks against both approved bytes and cached authority fields. Same-WASM changed permissions plus recomputed sidecars cannot reuse approval; historical approvals without a pin are readable but inert. Daemon release archives still reject Child members. [L6/L16 evidence](L6-L16-authority-binding-evidence.md). [ ] Independent review, source/publisher trust assurance, migration review and formal closure remain open. |
+| L17 | Blanket yanked-crate waiver: root `.cargo/audit.toml` and lockfiles | [x] Checkpoint `1c1d727`: verified registry/upstream release evidence and compatible constraints; removed the blanket yank waiver. Both graphs select spin 0.10.1, chacha20 0.10.2 and der 0.8.3; both no-fetch audits pass. Existing unrelated advisory exceptions remain explicit. [Remaining-Low evidence](L5-L10-L13-L17-L18-remaining-low-evidence.md). [ ] Revisit every lockfile change/new yank; ongoing advisory monitoring and independent review/formal closure remain open. |
+| L18 | Mutable Rust setup action ref: root `.github/actions/setup-rust/action.yml` | [x] Checkpoint `1c1d727`: pinned verified upstream `683b588c487a69d01f6c6ddf40f036ff682cc2c8`, explicitly selects Rust 1.96.0, and preserves the compiler-version check. Local install/version and policy regressions pass. [Remaining-Low evidence](L5-L10-L13-L17-L18-remaining-low-evidence.md). [ ] Hosted CI/other-platform validation, independent provenance review and formal closure remain open; no push or workflow dispatch claimed. |
+| L19 | Unused install function may permit traversal: `mct-daemon/src/registry.rs` | [x] Separately checkpointed local slice: retained exported/control-referenced installer now rejects unsafe basenames, traversal, symlink roots/members/destinations and writable ancestors; private bounded staging is reverified against source artifact/manifest identity. D-57 registry ingress stays closed. [Local storage evidence](L1-L4-L14-L19-local-storage-hygiene-evidence.md). [ ] Platform/race/crash assurance, independent review and formal closure remain open. |
 
 ## Runtime reliability investigations
 
@@ -255,6 +313,13 @@ not independently reproduced exploits. Scope/severity may change with evidence.
 - [ ] Retain startup logs, child exit status, readiness transitions and timing;
   distinguish failed startup, slow startup and faulty observation. Restore
   deterministic injection seams rather than production-only debugging hooks.
+- **Local fix after H1 checkpoint `7aafdcc`:** replaced stale-socket pathname
+  polling with a listener-owned startup acknowledgment and task-error propagation.
+  Retained timestamps show a ~236 ms failure, not an exhausted two-second wait.
+  The deterministic regression failed with the original algorithm; all four new
+  tests, 30 seeded SIGKILL iterations, and the 755-pass workspace run passed with
+  the fix. See [R1 readiness evidence](R1-readiness-evidence.md). Review/merge and
+  formal inventory closure remain separate.
 - **Acceptance:** demonstrated cause, regression that fails without the fix,
   repeated relevant process suites with retained diagnostics. No unexplained
   timeout increase, weaker assertion or “rerun passed” closure.
@@ -270,6 +335,16 @@ not independently reproduced exploits. Scope/severity may change with evidence.
 - [ ] Reproduce with `MCT_FLEET_KEEP=1`; preserve canonical history, projection
   generations, binding/route decisions and timing. Distinguish correct stale
   denial from a runtime race or fixture assumption.
+- **Local fix after R1 checkpoint `e739001`:** the unchanged fleet reproduced
+  the connected-phase denial on `mother-0 -> 3` (run 18, fixtures retained).
+  Local route revalidation succeeded; a background hello overwrote the receiver's
+  earlier forwarding-hello receipt for the same endpoint. Cache and lookup now
+  use endpoint plus exact hello decision ID, with bounded retention and unchanged
+  current-authority checks. The deterministic regression failed before the fix;
+  47 Iroh tests, 20 consecutive full fleet runs, and 758 workspace tests passed
+  afterward. See [R2 hello-receipt evidence](R2-hello-receipt-evidence.md).
+  The original `mother-0 -> 2` fixture remains unavailable; formal closure is
+  separate from this local fix and retained reproduction.
 - **Acceptance:** cause-specific regression and relevant fleet/restart runs;
   no weakening stale-authority checks. Do not infer that R1 and R2 share a cause.
 
@@ -355,10 +430,10 @@ are not proof that their runtime consumers and production ingress are complete.
 
 | Work | Inventory ID | Remaining work and acceptance evidence |
 | --- | --- | --- |
-| F1 | `administration` | [ ] Finish authenticated Iroh administration, strict hybrid checks, issuance/revocation and trusted genesis integration; remove UID/offline alternatives in the same cutover. Include M6/M7, production parser bounds, expiry, stale/replayed intents and legacy denial. |
+| F1 | `administration` | [x] D-58 passkey-rooted Ed25519 leases, scoped command verification, M6/M7, bounded signed CLI and replay/restart tests. [ ] Integrate authenticated Iroh administration and remaining command adapters; remove UID/offline alternatives in the resident cutover. Passkey ledgers explicitly refuse the legacy runtime. Guardian/hybrid ceremony is archived, not a prerequisite. |
 | F2 | `canonical-authority` | [ ] Record complete typed Child approvals/assignments and peer bindings/proofs; reconstruct from canonical history, not surviving configuration. Lost/rolled-back projections cannot resurrect authority; commitment survives projection failure; old hash contracts remain stable. |
 | F3 | `final-admission` | [ ] Fence final Child/effect execution against concurrent revocation and stale authority; bind executed artifact identity. Define task/invocation/effect/checkpoint recovery boundaries without inventing exactly-once execution, global call-ID fencing or changing the 720-second keyed retry contract. |
-| F4 | `key-recovery` | [ ] Integrate D-54/D-55 Voice-bound guardian lifecycle into authenticated runtime, canonical consumers and final admission; prove delays, restart clock handling, cancellation, replacement/revocation and exact-snapshot resumption end to end. |
+| F4 | `key-recovery` | [ ] Passkey root-loss/replacement policy remains separate. The D-54/D-55 guardian ceremony is archived under D-58, with code/spec/tests retained for reference; it is not required for day-key administration. No implicit recovery or legacy-root promotion. |
 | F5 | `fleet-operations` | [ ] Provision, inspect, revoke, stop, quarantine, recover and upgrade independent instances without identity/path/service collisions. Inventory is not authority and must not become a required shared coordinator. |
 | F6 | `distributed-failures` | [ ] Obtain approved disposable hosts/actions and exercise partition, reconnect, stale bindings, lost replies, retry correlation, peer restart and rolling upgrade. Prove unavailable peers do not stop unrelated local work. Same-host six-process tests are not physical multi-host evidence. |
 | F7 | `useful-workflow` | [ ] Produce a real artifact and authorize publication against its exact digest; reject unauthorized requester/artifact. Demonstrate independent work during outage and no blind replay of unknown external effects. |
@@ -375,9 +450,10 @@ are not proof that their runtime consumers and production ingress are complete.
 - [ ] Identify approved disposable multi-host macOS targets, permitted actions
   and evidence to return through Devin. Do not assume direct remote access or
   extend release support to Linux/Unraid without explicit scope and proof.
-- [ ] Resolve H3's rejection-observation/durability contract before changing it;
-  any amendment to ratified doctrine must be explicit. Other already-approved
-  engineering can continue while genuine policy questions remain open.
+- [x] H3 rejection-observation contract resolved by the owner on 2026-10-25:
+  retain Rule 3 and mandatory `BeforeEffect` rejection facts; write failure
+  denies the effect. No doctrine amendment or silent evidence suppression.
+  Broader sustained-load/storage policy remains outside this local slice.
 
 ## Shared definition of done
 

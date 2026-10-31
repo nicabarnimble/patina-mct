@@ -371,11 +371,7 @@ async fn execute_watch_callouts(
                 call_id: call_id.clone(),
                 caller: parent.caller.clone(),
                 target,
-                payload_metadata: PayloadMetadata {
-                    data_classification: parent.payload_metadata.data_classification.clone(),
-                    size_bytes: target_payload.len() as u64,
-                    contains_secret_scoped_material: false,
-                },
+                payload_metadata: child_callout_metadata(parent, target_payload.len() as u64),
                 authority_context,
                 deadline: parent.deadline.clone(),
                 trace_context: TraceContext {
@@ -479,23 +475,41 @@ pub(crate) enum ResidentCallIngressContext {
 }
 
 impl ResidentCallIngressContext {
-    pub(super) fn ordinary(request: &MctCallProtocolRequest) -> Option<Self> {
-        match request.call.origin {
-            CallOrigin::Iroh => Some(Self::Peer {
+    /// Called only after the Iroh evaluator has matched authenticated endpoint,
+    /// exact admitted hello, caller node/Vision and current binding. This
+    /// constructor cannot recover a local principal from any wire origin.
+    pub(crate) fn peer(request: &MctCallProtocolRequest) -> Option<Self> {
+        (request.call.origin == CallOrigin::Iroh && request.call.caller.user_id.is_none()).then(
+            || Self::Peer {
                 binding_id: request.authority.peer_binding_id.clone(),
-            }),
-            CallOrigin::TriggerFiring => None,
-            origin => Some(Self::LocalPrincipal {
-                origin,
-                caller: request.call.caller.clone(),
-            }),
+            },
+        )
+    }
+
+    fn from_ingress(
+        request: &MctCallProtocolRequest,
+        ingress: &ResidentPayloadIngress,
+    ) -> Option<Self> {
+        match ingress {
+            ResidentPayloadIngress::Remote { .. } => Self::peer(request),
+            // Local adapters construct caller identity from trusted local facts.
+            // They may downscope to Peer, never upgrade a Remote arrival.
+            ResidentPayloadIngress::Local { .. } => match request.call.origin {
+                CallOrigin::Iroh => Self::peer(request),
+                CallOrigin::TriggerFiring => None,
+                origin => Some(Self::LocalPrincipal {
+                    origin,
+                    caller: request.call.caller.clone(),
+                }),
+            },
         }
     }
 
-    fn matches_request(&self, request: &MctCallProtocolRequest) -> bool {
+    pub(super) fn matches_request(&self, request: &MctCallProtocolRequest) -> bool {
         match self {
             Self::Peer { binding_id } => {
                 request.call.origin == CallOrigin::Iroh
+                    && request.call.caller.user_id.is_none()
                     && binding_id == &request.authority.peer_binding_id
             }
             Self::LocalPrincipal { origin, caller } => {
@@ -514,6 +528,7 @@ impl ResidentCallIngressContext {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ResidentRuntimePaths {
+    forwarding_client: Option<mct_iroh::MotherIrohClient>,
     config_path: PathBuf,
     children_dir: PathBuf,
     state_path: PathBuf,
@@ -522,10 +537,19 @@ pub(crate) struct ResidentRuntimePaths {
 impl ResidentRuntimePaths {
     pub(crate) fn new(config_path: PathBuf, children_dir: PathBuf, state_path: PathBuf) -> Self {
         Self {
+            forwarding_client: None,
             config_path,
             children_dir,
             state_path,
         }
+    }
+
+    pub(crate) fn with_forwarding_client(mut self, client: mct_iroh::MotherIrohClient) -> Self {
+        self.forwarding_client = Some(client);
+        self
+    }
+    pub(super) fn forwarding_client(&self) -> Option<&mct_iroh::MotherIrohClient> {
+        self.forwarding_client.as_ref()
     }
 
     pub(crate) fn config_path(&self) -> &Path {
@@ -545,7 +569,7 @@ pub(crate) async fn execute_resident_call(
     request: MctCallProtocolRequest,
     payload: ResidentPayloadIngress,
 ) -> MctIrohCallHandlerResult {
-    let Some(context) = ResidentCallIngressContext::ordinary(&request) else {
+    let Some(context) = ResidentCallIngressContext::from_ingress(&request, &payload) else {
         return MctIrohCallHandlerResult::denied();
     };
     execute_resident_call_with_context(paths, ledger, request, payload, context).await
@@ -578,7 +602,7 @@ pub(super) async fn execute_resident_call_at(
     payload: ResidentPayloadIngress,
     now: Timestamp,
 ) -> MctIrohCallHandlerResult {
-    let Some(context) = ResidentCallIngressContext::ordinary(&request) else {
+    let Some(context) = ResidentCallIngressContext::from_ingress(&request, &payload) else {
         return MctIrohCallHandlerResult::denied();
     };
     execute_resident_call_at_with_context(
@@ -604,7 +628,7 @@ pub(super) async fn execute_resident_call_with_post_mint_mutation(
     payload: ResidentPayloadIngress,
     mutation: AuthorityMutationRequestV1,
 ) -> MctIrohCallHandlerResult {
-    let Some(context) = ResidentCallIngressContext::ordinary(&request) else {
+    let Some(context) = ResidentCallIngressContext::from_ingress(&request, &payload) else {
         return MctIrohCallHandlerResult::denied();
     };
     execute_resident_call_at_with_context(
@@ -703,9 +727,73 @@ async fn execute_resident_call_at_with_context(
     overrides: ResidentExecutionOverrides,
     context: ResidentCallIngressContext,
 ) -> MctIrohCallHandlerResult {
-    if !context.matches_request(&request) {
+    if !context.matches_request(&request)
+        || (matches!(&payload, ResidentPayloadIngress::Remote { .. })
+            && !matches!(&context, ResidentCallIngressContext::Peer { .. }))
+    {
         return MctIrohCallHandlerResult::denied();
     }
+    let caller_call_id = request.call.call_id.clone();
+    let execution_call_id = if matches!(&context, ResidentCallIngressContext::Peer { .. }) {
+        let id = match super::idempotency::fresh_peer_execution_id() {
+            Ok(id) => id,
+            Err(_) => return MctIrohCallHandlerResult::failed("execution identity unavailable"),
+        };
+        request.call.call_id = id.clone();
+        let mut correlation = MctObservation::informational(
+            ObservationId::new(format!("obs:{id}:correlation")).expect("Mother generated ID"),
+            now.clone(),
+            ObservationKind::CallConstructed,
+            request.call.trace_context.trace_id.clone(),
+            "peer correlation bound to Mother execution",
+        );
+        correlation.call_id = Some(id.clone());
+        correlation.detail_ref = Some(format!(
+            "mct-peer-call-correlation-v1:{}",
+            serde_json::json!({
+                "caller_call_id": caller_call_id, "peer_binding_id": request.authority.peer_binding_id,
+                "caller_node_id": request.call.caller.node_id, "caller_vision_id": request.call.caller.vision_id
+            })
+        ));
+        if ledger.append(vec![correlation]).await.is_err() {
+            return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+        }
+        Some(id)
+    } else {
+        if caller_call_id
+            .as_str()
+            .starts_with("mct-peer-execution-v1:")
+            || caller_call_id
+                .as_str()
+                .starts_with("legacy-peer-reservation:")
+        {
+            let refusal_id = match super::idempotency::fresh_peer_execution_id() {
+                Ok(id) => id,
+                Err(_) => {
+                    return MctIrohCallHandlerResult::failed("observation identity unavailable");
+                }
+            };
+            let mut refusal = MctObservation::informational(
+                ObservationId::new(format!("obs:{refusal_id}:reserved-namespace"))
+                    .expect("Mother ID"),
+                now.clone(),
+                ObservationKind::CallDenied,
+                request.call.trace_context.trace_id.clone(),
+                "caller selected a reserved execution namespace",
+            );
+            refusal.outcome = ObservationOutcome::Denied;
+            // The rejected claim must not become an execution/recovery key itself.
+            refusal.detail_ref = Some(format!(
+                "mct-caller-correlation-v1:{}",
+                serde_json::json!({"caller_call_id": caller_call_id})
+            ));
+            if ledger.append(vec![refusal]).await.is_err() {
+                return MctIrohCallHandlerResult::failed("observation ledger unavailable");
+            }
+            return MctIrohCallHandlerResult::denied();
+        }
+        None
+    };
     #[cfg(test)]
     if request
         .authority
@@ -811,14 +899,16 @@ async fn execute_resident_call_at_with_context(
     };
 
     let state_path = paths.state_path().to_path_buf();
-    let idempotency_request = request.clone();
+    let mut idempotency_request = request.clone();
+    idempotency_request.call.call_id = caller_call_id;
     let idempotency_ledger = ledger.clone();
-    execute_idempotent_call_with_context(
+    super::idempotency::execute_idempotent_call_with_execution(
         state_path,
         idempotency_ledger,
         idempotency_request,
         now,
         context.clone(),
+        execution_call_id,
         move || {
             execute_resident_call_after_payload(
                 paths,
@@ -1089,6 +1179,17 @@ async fn execute_resident_call_after_payload(
     }
 }
 
+// Labels remain claims. A Child may have read newly secret data through a Toy:
+// neither the parent's label nor the guest's output proves safe declassification.
+// Until a Mother-owned output classifier exists, derived output stays local.
+fn child_callout_metadata(parent: &MctCall, size_bytes: u64) -> PayloadMetadata {
+    PayloadMetadata {
+        data_classification: parent.payload_metadata.data_classification.clone(),
+        size_bytes,
+        contains_secret_scoped_material: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1316,6 +1417,163 @@ mod tests {
         );
         assert!(result.inline_result_payload.is_none());
         ledger.close().await;
+    }
+
+    #[tokio::test]
+    async fn l8_peer_duplicate_call_ids_get_distinct_execution_ids_without_breaking_keyed_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        MctDaemonConfigStore::new(&config_path)
+            .ensure_local_identity(MctOperatorNodeScope::default(), dir.path().join("identity"))
+            .unwrap();
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
+        let paths =
+            ResidentRuntimePaths::new(config_path, dir.path().join("children"), state_path.clone());
+        let authority = fresh_resident_receiver_identity(&paths, &ledger)
+            .await
+            .unwrap();
+        let (mut request, payload) =
+            jvm_bridge_protocol_request("patina:missing/control@0.1.0.run", "[]", authority)
+                .unwrap();
+        request.call.origin = CallOrigin::Iroh;
+        request.call.caller.user_id = None;
+        request.call.call_id = CallId::new("same-wire-id").unwrap();
+        let mut local_call = request.call.clone();
+        local_call.origin = CallOrigin::Cli;
+        MctRuntimeStateStore::open(&state_path)
+            .unwrap()
+            .insert_run_started(
+                "local-same-correlation",
+                &local_call,
+                RuntimeKind::Internal,
+                None,
+                current_timestamp_string(),
+            )
+            .unwrap();
+        request.idempotency_key = Some("same-key".into());
+        for binding in ["peer-a", "peer-a", "peer-b"] {
+            request.authority.peer_binding_id = PeerBindingId::new(binding).unwrap();
+            let result = execute_resident_call(
+                paths.clone(),
+                ledger.clone(),
+                request.clone(),
+                ResidentPayloadIngress::local(Some(payload.clone())),
+            )
+            .await;
+            assert_eq!(result.outcome, CallProtocolOutcome::Denied);
+        }
+        request.idempotency_key = None;
+        for _ in 0..2 {
+            let result = execute_resident_call(
+                paths.clone(),
+                ledger.clone(),
+                request.clone(),
+                ResidentPayloadIngress::local(Some(payload.clone())),
+            )
+            .await;
+            assert_eq!(result.outcome, CallProtocolOutcome::Denied);
+        }
+        let state = MctRuntimeStateStore::open(state_path).unwrap();
+        let local = state
+            .get_run_by_call_id(&CallId::new("same-wire-id").unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(local.run_id, "local-same-correlation");
+        assert_eq!(local.state, mct_daemon::MctRuntimeRunState::Running);
+        assert!(
+            local.result.is_none(),
+            "peer results cannot close a colliding local run"
+        );
+        let entries =
+            JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
+                .unwrap()
+                .entries()
+                .unwrap();
+        let executions = entries
+            .iter()
+            .filter(|entry| {
+                entry.observation.kind == ObservationKind::ResultRecorded
+                    && entry
+                        .observation
+                        .detail_ref
+                        .as_deref()
+                        .is_none_or(|s| !s.starts_with("idempotency_reason:"))
+            })
+            .filter_map(|entry| entry.observation.call_id.clone())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            executions.len(),
+            4,
+            "one keyed replay, two separate peer scopes, two unkeyed attempts"
+        );
+        assert!(
+            executions
+                .iter()
+                .all(|id| id.as_str().starts_with("mct-peer-execution-v1:"))
+        );
+        request.call.origin = CallOrigin::Cli;
+        for reserved in [
+            executions.iter().next().unwrap().clone(),
+            CallId::new("legacy-peer-reservation:spoof").unwrap(),
+        ] {
+            request.call.call_id = reserved.clone();
+            assert_eq!(
+                execute_resident_call(
+                    paths.clone(),
+                    ledger.clone(),
+                    request.clone(),
+                    ResidentPayloadIngress::local(Some(payload.clone()))
+                )
+                .await
+                .outcome,
+                CallProtocolOutcome::Denied
+            );
+            let entries =
+                JsonlObservationLedger::open_read_only(&ledger_path, "ledger-local", "local-mct")
+                    .unwrap()
+                    .entries()
+                    .unwrap();
+            let refusal = &entries.last().unwrap().observation;
+            assert_eq!(refusal.kind, ObservationKind::CallDenied);
+            assert!(
+                refusal.call_id.is_none(),
+                "rejected claims must not poison execution evidence"
+            );
+            assert!(
+                refusal
+                    .detail_ref
+                    .as_deref()
+                    .unwrap()
+                    .contains(reserved.as_str())
+            );
+        }
+        ledger.close().await;
+    }
+
+    #[test]
+    fn l6_child_callout_cannot_clear_parent_secret_classification() {
+        let (request, _) = jvm_bridge_protocol_request(
+            "patina:demo/control@0.1.0.run",
+            "[]",
+            test_grants_authority_identity(1),
+        )
+        .unwrap();
+        let mut parent = request.call;
+        for secret in [false, true] {
+            parent.payload_metadata.contains_secret_scoped_material = secret;
+            let metadata = child_callout_metadata(&parent, 17);
+            assert!(
+                metadata.contains_secret_scoped_material,
+                "unclassified Child output must not attest itself safe to forward"
+            );
+            assert_eq!(
+                metadata.data_classification,
+                parent.payload_metadata.data_classification
+            );
+            assert_eq!(metadata.size_bytes, 17);
+        }
     }
 
     #[test]

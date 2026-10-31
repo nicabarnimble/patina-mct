@@ -1,0 +1,6 @@
+package patina:git@0.1.0;
+
+interface git {
+    add-paths: func(paths: list<string>) -> result<_, string>;
+    commit: func(message: string) -> result<string, string>;
+}

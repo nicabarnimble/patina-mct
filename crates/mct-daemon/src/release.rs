@@ -11,8 +11,8 @@ use sha2::{Digest as _, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::{Read, Write as _},
-    os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _},
+    io::{self, Cursor, Read, Seek, SeekFrom, Write as _},
+    os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _},
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
@@ -20,7 +20,13 @@ use std::{
 
 pub const MCT_DAEMON_RELEASE_ARCHIVE_MAX_BYTES: u64 = 256 * 1024 * 1024;
 pub const MCT_DAEMON_RELEASE_EXTRACTED_MAX_BYTES: u64 = 512 * 1024 * 1024;
+// Includes physical tar headers, padding, extensions and trailing decompressed
+// bytes, unlike the regular-file payload bound above.
+pub const MCT_DAEMON_RELEASE_DECOMPRESSED_MAX_BYTES: u64 =
+    MCT_DAEMON_RELEASE_EXTRACTED_MAX_BYTES + 8 * 1024 * 1024;
+pub const MCT_DAEMON_RELEASE_TAR_METADATA_MAX_BYTES: u64 = 8 * 1024 * 1024;
 pub const MCT_DAEMON_RELEASE_MAX_ENTRIES: usize = 32;
+const RELEASE_MAX_RAW_ENTRIES: usize = MCT_DAEMON_RELEASE_MAX_ENTRIES * 4;
 pub const MCT_DAEMON_RELEASE_METADATA_FILE_MAX_BYTES: u64 = 8 * 1024 * 1024;
 pub const MCT_DAEMON_RELEASE_ACQUISITION_DEADLINE_SECONDS: i64 = 60;
 pub const MCT_DAEMON_RELEASE_FILESYSTEM_ADAPTER: &str =
@@ -258,6 +264,9 @@ struct ArchiveScan {
     release_notes: String,
 }
 
+/// Verify one private bounded snapshot of caller-mutable source bytes.
+/// `destination` must be absent and its parent operator-controlled: private
+/// extraction permissions do not defend a hostile parent-directory owner.
 pub fn verify_and_extract_daemon_release_archive(
     archive_path: &Path,
     destination: &Path,
@@ -273,11 +282,15 @@ pub fn verify_and_extract_daemon_release_archive(
         .and_then(|name| name.to_str())
         .context("release archive filename is not UTF-8")?;
 
-    let metadata = fs::metadata(&archive_path)?;
-    if metadata.len() > MCT_DAEMON_RELEASE_ARCHIVE_MAX_BYTES {
-        bail!("release archive exceeds named byte bound");
+    let file = fs::File::open(&archive_path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > MCT_DAEMON_RELEASE_ARCHIVE_MAX_BYTES {
+        bail!("release archive must be a regular file within the named byte bound");
     }
-    let (archive_sha256, archive_blake3, archive_size_bytes) = hash_file(&archive_path)?;
+    // Read the source once. Every later pass borrows this private immutable
+    // snapshot, never the caller's path or still-mutable opened source inode.
+    let snapshot = ReleaseArchiveSnapshot::read(file, archive_name.to_owned())?;
+    let (archive_sha256, archive_blake3, _) = snapshot.hashes();
     let tagged_archive_sha256 = format!("sha256:{archive_sha256}");
     if let Some(expected) = expected_sha256
         && expected != tagged_archive_sha256
@@ -300,36 +313,71 @@ pub fn verify_and_extract_daemon_release_archive(
         "BLAKE3",
     )?;
 
-    let scan = scan_archive(&archive_path, expected_target)?;
-    let expected_archive_name = format!("{}.tar.gz", release_root_name(&scan.manifest));
-    if archive_name != expected_archive_name {
-        bail!("release archive basename does not match manifest identity");
-    }
-    let gzip_mtime = gzip_header_mtime(&archive_path)?;
-    if gzip_mtime != scan.manifest.source_epoch {
-        bail!("release gzip header does not use the source epoch");
-    }
-    extract_verified_archive(&archive_path, destination, &scan.facts)?;
-    let final_hashes = hash_file(&archive_path)?;
-    if final_hashes.0 != archive_sha256
-        || final_hashes.1 != archive_blake3
-        || final_hashes.2 != archive_size_bytes
-    {
-        let _ = fs::remove_dir_all(destination);
-        bail!("release archive changed during verification");
-    }
-    let release_root = destination.join(release_root_name(&scan.manifest));
-    let executable_path = release_root.join(&scan.manifest.executable_relative_path);
+    snapshot.verify_and_extract(destination, expected_sha256, expected_target)
+}
 
-    Ok(VerifiedDaemonReleaseArchive {
-        manifest: scan.manifest,
-        archive_sha256: tagged_archive_sha256,
-        archive_blake3: format!("blake3:{archive_blake3}"),
-        archive_size_bytes,
-        release_root,
-        executable_path,
-        release_notes: scan.release_notes,
-    })
+/// Private bytes, with no writable handle or caller-controlled backing path.
+struct ReleaseArchiveSnapshot {
+    bytes: Box<[u8]>,
+    archive_name: String,
+}
+
+impl ReleaseArchiveSnapshot {
+    fn read(reader: impl Read, archive_name: String) -> Result<Self> {
+        let bytes = read_bounded_bytes(
+            reader,
+            MCT_DAEMON_RELEASE_ARCHIVE_MAX_BYTES,
+            "release archive exceeds named byte bound",
+        )?
+        .into_boxed_slice();
+        Ok(Self {
+            bytes,
+            archive_name,
+        })
+    }
+
+    fn hashes(&self) -> (String, String, u64) {
+        (
+            format!("{:x}", Sha256::digest(&self.bytes)),
+            blake3::hash(&self.bytes).to_hex().to_string(),
+            self.bytes.len() as u64,
+        )
+    }
+
+    fn verify_and_extract(
+        &self,
+        destination: &Path,
+        expected_sha256: Option<&str>,
+        expected_target: &str,
+    ) -> Result<VerifiedDaemonReleaseArchive> {
+        let (archive_sha256, archive_blake3, archive_size_bytes) = self.hashes();
+        let tagged_archive_sha256 = format!("sha256:{archive_sha256}");
+        if expected_sha256.is_some_and(|expected| expected != tagged_archive_sha256) {
+            bail!("release archive does not match expected SHA-256");
+        }
+        let scan = scan_archive_reader(Cursor::new(&self.bytes), expected_target)?;
+        let expected_archive_name = format!("{}.tar.gz", release_root_name(&scan.manifest));
+        if self.archive_name != expected_archive_name {
+            bail!("release archive basename does not match manifest identity");
+        }
+        let gzip_mtime = gzip_header_mtime(self.bytes.as_ref())?;
+        if gzip_mtime != scan.manifest.source_epoch {
+            bail!("release gzip header does not use the source epoch");
+        }
+        extract_verified_archive(&self.bytes, destination, &scan.facts)?;
+        let release_root = destination.join(release_root_name(&scan.manifest));
+        let executable_path = release_root.join(&scan.manifest.executable_relative_path);
+
+        Ok(VerifiedDaemonReleaseArchive {
+            manifest: scan.manifest,
+            archive_sha256: tagged_archive_sha256,
+            archive_blake3: format!("blake3:{archive_blake3}"),
+            archive_size_bytes,
+            release_root,
+            executable_path,
+            release_notes: scan.release_notes,
+        })
+    }
 }
 
 pub fn acquire_operator_file_daemon_release_offline(
@@ -515,7 +563,7 @@ where
         "daemon release archive verified",
     )?)?;
 
-    copy_release_sidecars(&source_path, &verified.release_root)?;
+    write_verified_release_sidecars(&verified)?;
     let digest = verified
         .archive_sha256
         .strip_prefix("sha256:")
@@ -763,19 +811,27 @@ fn validate_expected_archive_identity(expected: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn copy_release_sidecars(source: &Path, staging: &Path) -> Result<()> {
-    let name = source
-        .file_name()
-        .and_then(|name| name.to_str())
-        .context("release archive name is not UTF-8")?;
-    for algorithm in ["sha256", "blake3"] {
-        let sidecar = source.with_file_name(format!("{name}.{algorithm}"));
-        let destination = staging.join(format!("archive.{algorithm}"));
-        fs::copy(&sidecar, &destination)?;
-        let file = fs::OpenOptions::new().read(true).open(&destination)?;
+fn write_verified_release_sidecars(verified: &VerifiedDaemonReleaseArchive) -> Result<()> {
+    // These exact canonical texts were verified against the staged bytes.
+    // Never re-copy caller-mutable sidecars after verification.
+    let name = format!("{}.tar.gz", release_root_name(&verified.manifest));
+    for (algorithm, tagged_digest) in [
+        ("sha256", &verified.archive_sha256),
+        ("blake3", &verified.archive_blake3),
+    ] {
+        let digest = tagged_digest
+            .split_once(':')
+            .context("verified digest missing tag")?
+            .1;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o644)
+            .open(verified.release_root.join(format!("archive.{algorithm}")))?;
+        file.write_all(format!("{digest}  {name}\n").as_bytes())?;
         file.sync_all()?;
     }
-    fs::File::open(staging)?.sync_all()?;
+    fs::File::open(&verified.release_root)?.sync_all()?;
     Ok(())
 }
 
@@ -882,9 +938,9 @@ fn hash_file(path: &Path) -> Result<(String, String, u64)> {
     ))
 }
 
-fn gzip_header_mtime(path: &Path) -> Result<u64> {
+fn gzip_header_mtime(mut reader: impl Read) -> Result<u64> {
     let mut header = [0_u8; 10];
-    fs::File::open(path)?.read_exact(&mut header)?;
+    reader.read_exact(&mut header)?;
     if header[0..3] != [0x1f, 0x8b, 8] || header[3] != 0 {
         bail!("release archive gzip header is not canonical");
     }
@@ -902,11 +958,12 @@ fn verify_external_sidecar(
     if sidecar.parent() != Some(expected_parent) {
         bail!("release checksum sidecar escapes archive parent");
     }
-    let metadata = fs::metadata(&sidecar)?;
-    if metadata.len() > 256 {
-        bail!("release checksum sidecar exceeds byte bound");
+    let file = fs::File::open(&sidecar)?;
+    if !file.metadata()?.is_file() {
+        bail!("release checksum sidecar must be a regular file");
     }
-    let text = fs::read_to_string(&sidecar).context("release checksum sidecar is not UTF-8")?;
+    let bytes = read_bounded_bytes(file, 256, "release checksum sidecar exceeds byte bound")?;
+    let text = std::str::from_utf8(&bytes).context("release checksum sidecar is not UTF-8")?;
     let expected = format!("{expected_digest}  {archive_name}\n");
     if text != expected {
         bail!("release {algorithm} sidecar does not match archive");
@@ -914,13 +971,137 @@ fn verify_external_sidecar(
     Ok(())
 }
 
-fn scan_archive(archive_path: &Path, expected_target: &str) -> Result<ArchiveScan> {
-    let file = fs::File::open(archive_path)?;
-    scan_archive_reader(file, expected_target)
+const DECOMPRESSED_BUDGET_ERROR: &str = "release archive exceeds named decompressed byte bound";
+
+/// Unlike Read::take, exhaustion is an error, not a successful truncated EOF.
+/// A one-byte overflow probe distinguishes exact-limit EOF; it is never exposed
+/// to the consumer. Once exceeded, the error is sticky and no more input is read.
+struct HardByteBudget<R> {
+    inner: R,
+    remaining: u64,
+    exceeded: bool,
+    message: &'static str,
 }
 
-fn scan_archive_reader(reader: impl Read, expected_target: &str) -> Result<ArchiveScan> {
-    let decoder = GzDecoder::new(reader);
+impl<R> HardByteBudget<R> {
+    fn new(inner: R, limit: u64, message: &'static str) -> Self {
+        Self {
+            inner,
+            remaining: limit,
+            exceeded: false,
+            message,
+        }
+    }
+}
+
+impl<R: Read> Read for HardByteBudget<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        if self.exceeded {
+            return Err(io::Error::other(self.message));
+        }
+        if self.remaining == 0 {
+            let mut probe = [0_u8; 1];
+            if self.inner.read(&mut probe)? == 0 {
+                return Ok(0);
+            }
+            self.exceeded = true;
+            return Err(io::Error::other(self.message));
+        }
+        let length = buffer
+            .len()
+            .min(usize::try_from(self.remaining).unwrap_or(usize::MAX));
+        let read = self.inner.read(&mut buffer[..length])?;
+        self.remaining -= read as u64;
+        Ok(read)
+    }
+}
+
+fn read_bounded_bytes(reader: impl Read, limit: u64, message: &'static str) -> Result<Vec<u8>> {
+    let max_capacity =
+        usize::try_from(limit).context("release byte limit exceeds address space")?;
+    let mut reader = HardByteBudget::new(reader, limit, message);
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let needed = bytes.len() + read;
+        if needed > bytes.capacity() {
+            let capacity = needed
+                .max(bytes.capacity().saturating_mul(2))
+                .min(max_capacity);
+            bytes
+                .try_reserve_exact(capacity - bytes.len())
+                .context("reserve bounded release snapshot")?;
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+    }
+    Ok(bytes)
+}
+
+fn preflight_tar_metadata(reader: impl Read, budget: u64) -> Result<()> {
+    let decoder = HardByteBudget::new(GzDecoder::new(reader), budget, DECOMPRESSED_BUDGET_ERROR);
+    let mut archive = tar::Archive::new(decoder);
+    let mut metadata_size = 0_u64;
+    let mut payload_size = 0_u64;
+    for (index, entry) in archive.entries()?.raw(true).enumerate() {
+        let entry = entry.context("read release raw tar header")?;
+        if index >= RELEASE_MAX_RAW_ENTRIES {
+            bail!("release archive exceeds named raw entry bound");
+        }
+        let kind = entry.header().entry_type();
+        if kind.is_gnu_longname()
+            || kind.is_gnu_longlink()
+            || kind.is_pax_local_extensions()
+            || kind.is_pax_global_extensions()
+        {
+            metadata_size = metadata_size
+                .checked_add(entry.header().size()?)
+                .context("release tar metadata size overflow")?;
+            if metadata_size > MCT_DAEMON_RELEASE_TAR_METADATA_MAX_BYTES {
+                bail!("release tar extension metadata exceeds named byte bound");
+            }
+        } else if kind.is_file() {
+            payload_size = payload_size
+                .checked_add(entry.header().size()?)
+                .context("release extracted size overflow")?;
+            if payload_size > MCT_DAEMON_RELEASE_EXTRACTED_MAX_BYTES {
+                bail!("release archive exceeds named extracted byte bound");
+            }
+        } else if !kind.is_dir() {
+            bail!("release archive contains forbidden raw entry type");
+        } else if entry.header().size()? != 0 {
+            bail!("release archive directory has non-zero size");
+        }
+    }
+    io::copy(&mut archive.into_inner(), &mut io::sink())?;
+    Ok(())
+}
+
+fn scan_archive_reader(reader: impl Read + Seek, expected_target: &str) -> Result<ArchiveScan> {
+    scan_archive_reader_with_budget(
+        reader,
+        expected_target,
+        MCT_DAEMON_RELEASE_DECOMPRESSED_MAX_BYTES,
+    )
+}
+
+fn scan_archive_reader_with_budget(
+    mut reader: impl Read + Seek,
+    expected_target: &str,
+    budget: u64,
+) -> Result<ArchiveScan> {
+    let start = reader.stream_position()?;
+    // raw(true) does not allocate tar's GNU/PAX extension buffers. Check their
+    // aggregate declared size before the normal iterator can collect them.
+    preflight_tar_metadata(&mut reader, budget)?;
+    reader.seek(SeekFrom::Start(start))?;
+    let decoder = HardByteBudget::new(GzDecoder::new(reader), budget, DECOMPRESSED_BUDGET_ERROR);
     let mut archive = tar::Archive::new(decoder);
     let mut facts = BTreeMap::new();
     let mut entry_order = Vec::new();
@@ -1019,6 +1200,10 @@ fn scan_archive_reader(reader: impl Read, expected_target: &str) -> Result<Archi
             },
         );
     }
+
+    // Tar stops at its end marker. Still account for all remaining decompressed
+    // padding/trailing bytes and require a valid gzip trailer, not truncated EOF.
+    io::copy(&mut archive.into_inner(), &mut io::sink())?;
 
     let manifest_path = facts
         .keys()
@@ -1333,19 +1518,22 @@ fn validate_display_bytes(bytes: &[u8], label: &str) -> Result<()> {
 }
 
 fn extract_verified_archive(
-    archive_path: &Path,
+    archive_bytes: &[u8],
     destination: &Path,
     facts: &BTreeMap<String, EntryFact>,
 ) -> Result<()> {
     if destination.exists() {
         bail!("release extraction destination must not already exist");
     }
-    fs::create_dir(destination).with_context(|| {
-        format!(
-            "create release extraction destination {}",
-            destination.display()
-        )
-    })?;
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(destination)
+        .with_context(|| {
+            format!(
+                "create release extraction destination {}",
+                destination.display()
+            )
+        })?;
     let result = (|| -> Result<()> {
         let mut directories = facts
             .values()
@@ -1358,8 +1546,11 @@ fn extract_verified_archive(
             fs::set_permissions(&path, fs::Permissions::from_mode(fact.mode))?;
         }
 
-        let file = fs::File::open(archive_path)?;
-        let decoder = GzDecoder::new(file);
+        let decoder = HardByteBudget::new(
+            GzDecoder::new(archive_bytes),
+            MCT_DAEMON_RELEASE_DECOMPRESSED_MAX_BYTES,
+            DECOMPRESSED_BUDGET_ERROR,
+        );
         let mut archive = tar::Archive::new(decoder);
         for entry in archive.entries()? {
             let mut entry = entry?;
@@ -1399,6 +1590,7 @@ fn extract_verified_archive(
             output.sync_all()?;
             fs::set_permissions(&output_path, fs::Permissions::from_mode(fact.mode))?;
         }
+        io::copy(&mut archive.into_inner(), &mut io::sink())?;
         sync_tree_directories(destination, facts)?;
         Ok(())
     })();
@@ -1444,11 +1636,15 @@ fn is_lower_hex(value: &str, len: usize) -> bool {
 
 #[cfg(feature = "fuzzing")]
 pub fn fuzz_release_archive(data: &[u8]) {
-    let _ = scan_archive_reader(data, "aarch64-apple-darwin");
+    if data.len() as u64 <= MCT_DAEMON_RELEASE_ARCHIVE_MAX_BYTES {
+        let _ = scan_archive_reader(Cursor::new(data), "aarch64-apple-darwin");
+    }
 }
 
 #[cfg(test)]
 mod acquisition_tests {
+    mod boundaries;
+
     use super::*;
     use flate2::{Compression, GzBuilder};
 
@@ -1644,6 +1840,10 @@ mod acquisition_tests {
     }
 
     fn release_fixture(directory: &Path) -> PathBuf {
+        release_fixture_with_executable(directory, b"test executable")
+    }
+
+    fn release_fixture_with_executable(directory: &Path, executable: &[u8]) -> PathBuf {
         let version = crate::version();
         let root = format!("mct-daemon-v{version}-{TARGET}");
         let archive_name = format!("{root}.tar.gz");
@@ -1653,7 +1853,7 @@ mod acquisition_tests {
             RELEASE_INFO_PLIST.into(),
             b"<?xml version=\"1.0\"?>\n<plist version=\"1.0\"><dict/></plist>\n".to_vec(),
         );
-        files.insert(RELEASE_EXECUTABLE.into(), b"test executable".to_vec());
+        files.insert(RELEASE_EXECUTABLE.into(), executable.to_vec());
         files.insert(RELEASE_CODE_RESOURCES.into(), b"sealed resources".to_vec());
         files.insert(
             RELEASE_NOTES_FILE.into(),

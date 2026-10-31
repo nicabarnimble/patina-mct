@@ -8,11 +8,10 @@
 //! `--check` enforces ceilings for 10k and 100k. One million entries stays
 //! report-only so CI can keep the smaller sizes.
 
-use mct_observation::{resume_ledger_replay, verify_ledger_streaming, write_benchmark_chain};
-use std::{
-    env, fs,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+use mct_observation::{
+    private_fs, resume_ledger_replay, verify_ledger_streaming, write_benchmark_chain,
 };
+use std::{env, fs, time::Instant};
 
 struct Sample {
     entries: u64,
@@ -75,15 +74,13 @@ fn main() {
 }
 
 fn measure(entries: u64) -> Sample {
-    let dir = env::temp_dir().join(format!(
-        "mct-ledger-bench-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0)
-    ));
-    fs::create_dir_all(&dir).expect("create benchmark directory");
+    let dir = env::temp_dir()
+        .canonicalize()
+        .expect("resolve benchmark temporary parent")
+        .join(private_fs::nonce_name("mct-ledger-bench").expect("benchmark directory nonce"));
+    // Provision new private storage, independent of the caller's umask. Do not
+    // repair existing permissions or weaken the production ledger checks.
+    private_fs::ensure_directory(&dir).expect("create private benchmark directory");
     let path = dir.join("observations.jsonl");
     let bytes = write_benchmark_chain(&path, "ledger-bench", "mother-bench", entries)
         .expect("write benchmark chain");

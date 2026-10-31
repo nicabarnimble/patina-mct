@@ -292,6 +292,7 @@ mod tests {
         config.child_approvals.insert(
             "resident-wit".into(),
             MctStoredChildApproval {
+                manifest_hash: None,
                 child_name: "resident-wit".into(),
                 artifact_id: ComponentArtifactId::new("artifact-resident-wit")
                     .expect("string ID literal/generated value must be non-empty"),

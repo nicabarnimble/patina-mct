@@ -26,16 +26,29 @@ getrandom = "0.3.4"
 jiff = "0.2.15"
 libcrux-ml-dsa = { version = "=0.0.11", default-features = false }
 ml-dsa = "=0.1.1"
+p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa", "std"] }
+ciborium = "=0.2.2"
+url = "2.5"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 sha2 = "0.10.9"
 rusqlite = { version = "0.37.0", features = ["bundled"] }
+rustix = { version = "=1.1.4", features = ["fs", "process"] }
 thiserror = "2.0.17"
 tokio = { version = "1.53.3", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tar = "0.4.44"
 toml = "0.8.23"
 tempfile = "3.23.0"
-wasmtime = "48.0.7"
+# Preserve the 48.x default feature set except the unused compiled-module disk
+# cache. MCT compiles verified component bytes and never configures this cache;
+# omitting it also removes the vulnerable zstd family, without an audit waiver.
+wasmtime = { version = "48.0.7", default-features = false, features = [
+    "anyhow", "async", "backtrace", "gc", "gc-copying", "gc-drc", "gc-null",
+    "wat", "profiling", "parallel-compilation", "cranelift", "pooling-allocator",
+    "demangle", "addr2line", "coredump", "debug-builtins", "runtime",
+    "component-model", "component-model-async", "threads", "stack-switching",
+    "std", "debug", "compile-time-builtins", "wit-parser",
+] }
 wasmtime-wasi = "48.0.7"
 wat = "1.241.2"
 

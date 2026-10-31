@@ -50,6 +50,8 @@ pub struct MctInFlightCallIdempotencyEntry {
     pub caller_scope: String,
     pub idempotency_key: String,
     pub fingerprint: MctIdempotencyFingerprint,
+    /// Mother execution identity, separate from the caller's fingerprint correlation.
+    pub recovery_call_id: CallId,
     pub created_at: String,
 }
 
@@ -377,19 +379,37 @@ pub struct MctCompositionRunRecord {
     pub updated_at: String,
 }
 
+fn verify_sqlite_sidecars(path: &Path) -> Result<()> {
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(suffix);
+        mct_observation::private_fs::verify_optional_metadata(Path::new(&name))
+            .with_context(|| format!("unsafe SQLite sidecar {suffix}"))?;
+    }
+    Ok(())
+}
+
 impl MctRuntimeStateStore {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("create runtime state dir {}", parent.display()))?;
+        use mct_observation::private_fs;
+        verify_sqlite_sidecars(&path)?;
+        let before = private_fs::ensure_private_file(&path)
+            .with_context(|| format!("verify private runtime state {}", path.display()))?;
+        let conn = Connection::open_with_flags(
+            &path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .with_context(|| format!("open runtime state {}", path.display()))?;
+        let after = private_fs::private_file_identity(&path)?;
+        if before != after {
+            bail!("runtime state pathname changed while opening SQLite");
         }
-        let conn = Connection::open(&path)
-            .with_context(|| format!("open runtime state {}", path.display()))?;
         conn.busy_timeout(std::time::Duration::from_secs(5))
             .context("set runtime state busy timeout")?;
         let store = Self { path, conn };
         store.migrate()?;
+        verify_sqlite_sidecars(&store.path)?;
         Ok(store)
     }
 
@@ -1121,6 +1141,12 @@ impl MctRuntimeStateStore {
             END;
             "#,
         )?;
+        if !self.column_exists("call_idempotency_entries", "execution_call_id")? {
+            self.conn.execute(
+                "ALTER TABLE call_idempotency_entries ADD COLUMN execution_call_id TEXT",
+                [],
+            )?;
+        }
         self.migrate_runtime_run_child_invocation_provenance()?;
         self.migrate_artifact_acquisition_provenance()?;
         self.conn.execute(
@@ -1177,6 +1203,12 @@ impl MctRuntimeStateStore {
     }
 
     fn migrate_artifact_acquisition_provenance(&self) -> Result<()> {
+        if !self.column_exists(
+            "operator_pointed_artifact_acquisition_decisions",
+            "expected_manifest_digest",
+        )? {
+            self.conn.execute("ALTER TABLE operator_pointed_artifact_acquisition_decisions ADD COLUMN expected_manifest_digest TEXT", [])?;
+        }
         if !self.column_exists("component_artifacts", "provenance_status")? {
             self.conn.execute(
                 "ALTER TABLE component_artifacts ADD COLUMN provenance_status TEXT NOT NULL DEFAULT 'historical_unknown'",
@@ -1886,23 +1918,33 @@ impl MctRuntimeStateStore {
         &self,
         trigger_authority_id: &CallTriggerAuthorityId,
     ) -> Result<u64> {
-        let sequence: i64 = self.conn.query_row(
-            r#"
-            SELECT COALESCE(MAX(admission_sequence), 0) + 1
+        self.conn
+            .query_row(
+                r#"
+            SELECT MAX(admission_sequence) AS admission_sequence
             FROM call_trigger_pending_occurrences
             WHERE trigger_authority_id = ?1
             "#,
-            params![trigger_authority_id.as_str()],
-            |row| row.get(0),
-        )?;
-        Ok(sequence.max(1) as u64)
+                params![trigger_authority_id.as_str()],
+                |row| match row.get::<_, Option<i64>>(0)? {
+                    None => Ok(1),
+                    Some(value) if value >= 0 => value
+                        .checked_add(1)
+                        .map(|value| value as u64)
+                        .ok_or_else(|| {
+                            corrupt_cell(row, 0, "nonnegative sequence with room to increment")
+                        }),
+                    Some(_) => Err(corrupt_cell(row, 0, "nonnegative admission sequence")),
+                },
+            )
+            .context("read next trigger pending sequence")
     }
 
     pub fn call_trigger_pending_counts(
         &self,
         trigger_authority_id: &CallTriggerAuthorityId,
     ) -> Result<(usize, usize)> {
-        let per_record: i64 = self.conn.query_row(
+        let per_record: usize = self.conn.query_row(
             r#"
             SELECT COUNT(*) FROM call_trigger_pending_occurrences
             WHERE trigger_authority_id = ?1 AND state = 'pending'
@@ -1910,12 +1952,12 @@ impl MctRuntimeStateStore {
             params![trigger_authority_id.as_str()],
             |row| row.get(0),
         )?;
-        let resident: i64 = self.conn.query_row(
+        let resident: usize = self.conn.query_row(
             "SELECT COUNT(*) FROM call_trigger_pending_occurrences WHERE state = 'pending'",
             [],
             |row| row.get(0),
         )?;
-        Ok((per_record.max(0) as usize, resident.max(0) as usize))
+        Ok((per_record, resident))
     }
 
     pub fn insert_call_trigger_pending_occurrence(
@@ -2559,6 +2601,34 @@ impl MctRuntimeStateStore {
         Ok(())
     }
 
+    /// Bind only a fresh reservation, before the canonical dispatch and effect.
+    pub fn bind_call_execution_identity(
+        &self,
+        scope: &str,
+        key: &str,
+        fingerprint: &MctIdempotencyFingerprint,
+        execution: &CallId,
+    ) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE call_idempotency_entries SET execution_call_id = ?1
+             WHERE caller_scope = ?2 AND idempotency_key = ?3 AND target_identity = ?4
+             AND call_id = ?5 AND payload_digest = ?6 AND entry_state = 'in_flight'
+             AND execution_call_id IS NULL",
+            params![
+                execution.as_str(),
+                scope,
+                key,
+                fingerprint.target,
+                fingerprint.call_id.as_str(),
+                fingerprint.payload_digest
+            ],
+        )?;
+        if changed != 1 {
+            bail!("execution identity requires exactly one fresh matching reservation");
+        }
+        Ok(())
+    }
+
     /// Every reservation still marked in flight, oldest first. Unlike
     /// [`Self::reserve_call_idempotency`] this applies no TTL eviction: a
     /// restarting Mother must see each reservation a prior tenure left open.
@@ -2568,7 +2638,7 @@ impl MctRuntimeStateStore {
         let mut stmt = self.conn.prepare(
             r#"
             SELECT caller_scope, idempotency_key, target_identity, call_id,
-                   payload_digest, created_at
+                   payload_digest, created_at, execution_call_id
             FROM call_idempotency_entries
             WHERE entry_state = 'in_flight'
             ORDER BY created_at, caller_scope, idempotency_key
@@ -2583,13 +2653,38 @@ impl MctRuntimeStateStore {
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
                 ))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         rows.into_iter()
             .map(
-                |(caller_scope, idempotency_key, target, call_id, payload_digest, created_at)| {
+                |(
+                    caller_scope,
+                    idempotency_key,
+                    target,
+                    call_id,
+                    payload_digest,
+                    created_at,
+                    execution_call_id,
+                )| {
+                    // Never guess that an old peer's raw correlation names a local run.
+                    let recovery_call_id = match execution_call_id {
+                        Some(id) => CallId::new(id)?,
+                        None if caller_scope.starts_with("peer-binding:") => CallId::new(format!(
+                            "legacy-peer-reservation:{}",
+                            blake3::hash(&serde_json::to_vec(&(
+                                &caller_scope,
+                                &idempotency_key,
+                                &call_id,
+                                &created_at
+                            ))?)
+                            .to_hex()
+                        ))?,
+                        None => CallId::new(call_id.clone())?,
+                    };
                     Ok(MctInFlightCallIdempotencyEntry {
+                        recovery_call_id,
                         caller_scope,
                         idempotency_key,
                         fingerprint: MctIdempotencyFingerprint {
@@ -2774,8 +2869,8 @@ impl MctRuntimeStateStore {
             INSERT INTO operator_pointed_artifact_acquisition_decisions(
                 decision_id, source_ref, claimed_child_name, claimed_artifact_version,
                 expected_digest, issuer_principal_ref, policy_revision, decision_state,
-                authority_observation_id, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                authority_observation_id, updated_at, expected_manifest_digest
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             "#,
             params![
                 decision.decision_id.as_str(),
@@ -2788,6 +2883,7 @@ impl MctRuntimeStateStore {
                 json_atom(&decision.decision_state)?,
                 decision.authority_observation_id.as_str(),
                 current_timestamp_string(),
+                decision.expected_manifest_digest,
             ],
         )?;
         Ok(())
@@ -2818,7 +2914,7 @@ impl MctRuntimeStateStore {
             r#"
             SELECT decision_id, source_ref, claimed_child_name, claimed_artifact_version,
                    expected_digest, issuer_principal_ref, policy_revision, decision_state,
-                   authority_observation_id
+                   authority_observation_id, expected_manifest_digest
             FROM operator_pointed_artifact_acquisition_decisions
             ORDER BY updated_at, decision_id
             "#,
@@ -2826,17 +2922,16 @@ impl MctRuntimeStateStore {
         stmt.query_map([], |row| {
             let state: String = row.get(7)?;
             Ok(OperatorPointedArtifactAcquisitionDecision {
-                decision_id: ArtifactAcquisitionDecisionId::new(row.get::<_, String>(0)?)
-                    .expect("stored operator decision id is non-empty"),
+                expected_manifest_digest: row.get(9)?,
+                decision_id: decode_cell(row, 0, ArtifactAcquisitionDecisionId::new)?,
                 source_ref: row.get(1)?,
                 claimed_child_name: row.get(2)?,
                 claimed_artifact_version: row.get(3)?,
                 expected_digest: row.get(4)?,
                 issuer_principal_ref: row.get(5)?,
-                policy_revision: row.get::<_, i64>(6)?.max(0) as u64,
+                policy_revision: row.get::<_, u64>(6)?,
                 decision_state: from_json_atom(&state).map_err(to_sql_error)?,
-                authority_observation_id: ObservationId::new(row.get::<_, String>(8)?)
-                    .expect("stored operator authority observation id is non-empty"),
+                authority_observation_id: decode_cell(row, 8, ObservationId::new)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()
@@ -2989,8 +3084,7 @@ impl MctRuntimeStateStore {
                 params![artifact_id.as_str()],
                 |row| {
                     Ok(MctArtifactPackageRecord {
-                        artifact_id: ComponentArtifactId::new(row.get::<_, String>(0)?)
-                            .expect("stored artifact id is non-empty"),
+                        artifact_id: decode_cell(row, 0, ComponentArtifactId::new)?,
                         package_path: PathBuf::from(row.get::<_, String>(1)?),
                         published_at: row.get(2)?,
                     })
@@ -3631,8 +3725,7 @@ impl MctRuntimeStateStore {
         let (primary_export, additional_exports) =
             component_exports_from_allowed_operations(&child.allowed_operations);
         let artifact = ComponentArtifact {
-            artifact_id: ComponentArtifactId::new(child.artifact_id.clone())
-                .expect("string ID literal/generated value must be non-empty"),
+            artifact_id: ComponentArtifactId::new(child.artifact_id.clone())?,
             child_name: child.name.clone(),
             artifact_version: child.version.clone(),
             content_hash: format!("sha256:{}", child.wasm_digest.sha256),
@@ -3934,7 +4027,7 @@ impl MctRuntimeStateStore {
     }
 
     pub fn get_child_offset(&self, child_name: &str, stream: &str) -> Result<Option<u64>> {
-        let value: Option<i64> = self
+        let value: Option<u64> = self
             .conn
             .query_row(
                 "SELECT acked_offset FROM child_offsets WHERE child_name = ?1 AND stream = ?2",
@@ -3943,7 +4036,7 @@ impl MctRuntimeStateStore {
             )
             .optional()
             .context("read child offset")?;
-        Ok(value.map(|value| value.max(0) as u64))
+        Ok(value)
     }
 
     pub fn enqueue_task(
@@ -4117,7 +4210,8 @@ impl MctRuntimeStateStore {
             Ok(MctMetricPoint {
                 metric_name: row.get(0)?,
                 metric_value: row.get(1)?,
-                labels: serde_json::from_str(&labels).unwrap_or(serde_json::Value::Null),
+                labels: serde_json::from_str(&labels)
+                    .map_err(|_| corrupt_cell(row, 2, "valid metric labels JSON"))?,
                 observed_at: row.get(3)?,
             })
         })?
@@ -4383,6 +4477,9 @@ impl MctRuntimeStateStore {
         replay: &mct_observation::AuthorityReplayV1,
         before_commit: impl FnOnce() -> Result<()>,
     ) -> Result<AuthorityProjectionCursorV1> {
+        if replay.state.passkey_admin.is_some() {
+            bail!("legacy SQLite projection cannot activate passkey administration");
+        }
         let authority = replay
             .current_authority
             .clone()
@@ -4698,7 +4795,7 @@ impl MctRuntimeStateStore {
                 Ok(AuthorityCanonicalFactRecordV1 {
                     fact_id: row.get(0)?,
                     fact_kind: row.get(1)?,
-                    source_sequence: row.get::<_, i64>(2)?.max(0) as u64,
+                    source_sequence: row.get::<_, u64>(2)?,
                     source_entry_hash: row.get(3)?,
                     canonical_payload: row.get(4)?,
                 })
@@ -4715,6 +4812,7 @@ impl MctRuntimeStateStore {
                 guardian_recovery: None,
                 admin_issuance: Default::default(),
                 admin_genesis: None,
+                passkey_admin: None,
             },
             facts,
         }))
@@ -4823,49 +4921,33 @@ fn trigger_occurrence_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<MctTriggerOccurrenceRecord> {
     Ok(MctTriggerOccurrenceRecord {
-        occurrence_id: CallTriggerOccurrenceId::new(row.get::<_, String>(0)?)
-            .expect("stored trigger occurrence id must be non-empty"),
-        trigger_authority_id: CallTriggerAuthorityId::new(row.get::<_, String>(1)?)
-            .expect("stored trigger authority id must be non-empty"),
-        record_revision: row.get::<_, i64>(2)?.max(0) as u64,
-        nominal_at: row
-            .get::<_, Option<String>>(3)?
-            .map(|value| Timestamp::new(value).expect("stored nominal_at must be RFC3339")),
+        occurrence_id: decode_cell(row, 0, CallTriggerOccurrenceId::new)?,
+        trigger_authority_id: decode_cell(row, 1, CallTriggerAuthorityId::new)?,
+        record_revision: row.get::<_, u64>(2)?,
+        nominal_at: decode_optional_cell(row, 3, Timestamp::new)?,
         represented_set: from_json_cell(&row.get::<_, String>(4)?).map_err(to_sql_error)?,
         missed_fire_result: row.get(5)?,
         overlap_result: row.get(6)?,
         final_disposition: from_json_atom(&row.get::<_, String>(7)?).map_err(to_sql_error)?,
-        disposition_observation_id: ObservationId::new(row.get::<_, String>(8)?)
-            .expect("stored trigger disposition observation id must be non-empty"),
-        created_at: Timestamp::new(row.get::<_, String>(9)?)
-            .expect("stored trigger occurrence created_at must be RFC3339"),
+        disposition_observation_id: decode_cell(row, 8, ObservationId::new)?,
+        created_at: decode_cell(row, 9, Timestamp::new)?,
     })
 }
 
 fn trigger_firing_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MctTriggerFiringRecord> {
     Ok(MctTriggerFiringRecord {
-        firing_id: CallTriggerFiringId::new(row.get::<_, String>(0)?)
-            .expect("stored trigger firing id must be non-empty"),
-        occurrence_id: CallTriggerOccurrenceId::new(row.get::<_, String>(1)?)
-            .expect("stored trigger occurrence id must be non-empty"),
-        trigger_authority_id: CallTriggerAuthorityId::new(row.get::<_, String>(2)?)
-            .expect("stored trigger authority id must be non-empty"),
-        record_revision: row.get::<_, i64>(3)?.max(0) as u64,
-        policy_revision: row.get::<_, i64>(4)?.max(0) as u64,
-        call_id: CallId::new(row.get::<_, String>(5)?)
-            .expect("stored trigger call id must be non-empty"),
+        firing_id: decode_cell(row, 0, CallTriggerFiringId::new)?,
+        occurrence_id: decode_cell(row, 1, CallTriggerOccurrenceId::new)?,
+        trigger_authority_id: decode_cell(row, 2, CallTriggerAuthorityId::new)?,
+        record_revision: row.get::<_, u64>(3)?,
+        policy_revision: row.get::<_, u64>(4)?,
+        call_id: decode_cell(row, 5, CallId::new)?,
         idempotency_key_ref: row.get(6)?,
-        firing_observation_id: ObservationId::new(row.get::<_, String>(7)?)
-            .expect("stored trigger firing observation id must be non-empty"),
-        target_result_ref: row
-            .get::<_, Option<String>>(8)?
-            .map(|value| ResultRef::new(value).expect("stored result ref must be non-empty")),
+        firing_observation_id: decode_cell(row, 7, ObservationId::new)?,
+        target_result_ref: decode_optional_cell(row, 8, ResultRef::new)?,
         state: row.get(9)?,
-        fired_at: Timestamp::new(row.get::<_, String>(10)?)
-            .expect("stored fired_at must be RFC3339"),
-        completed_at: row
-            .get::<_, Option<String>>(11)?
-            .map(|value| Timestamp::new(value).expect("stored completed_at must be RFC3339")),
+        fired_at: decode_cell(row, 10, Timestamp::new)?,
+        completed_at: decode_optional_cell(row, 11, Timestamp::new)?,
     })
 }
 
@@ -4875,25 +4957,18 @@ fn trigger_pending_from_row(
     let pending_reason = from_json_atom(&row.get::<_, String>(6)?).map_err(to_sql_error)?;
     let represented_set = from_json_cell(&row.get::<_, String>(7)?).map_err(to_sql_error)?;
     Ok(MctTriggerPendingOccurrenceRecord {
-        pending_occurrence_id: CallTriggerPendingOccurrenceId::new(row.get::<_, String>(0)?)
-            .expect("stored trigger pending id must be non-empty"),
-        occurrence_id: CallTriggerOccurrenceId::new(row.get::<_, String>(1)?)
-            .expect("stored trigger occurrence id must be non-empty"),
-        trigger_authority_id: CallTriggerAuthorityId::new(row.get::<_, String>(2)?)
-            .expect("stored trigger authority id must be non-empty"),
-        record_revision: row.get::<_, i64>(3)?.max(0) as u64,
-        policy_revision: row.get::<_, i64>(4)?.max(0) as u64,
-        admission_sequence: row.get::<_, i64>(5)?.max(0) as u64,
+        pending_occurrence_id: decode_cell(row, 0, CallTriggerPendingOccurrenceId::new)?,
+        occurrence_id: decode_cell(row, 1, CallTriggerOccurrenceId::new)?,
+        trigger_authority_id: decode_cell(row, 2, CallTriggerAuthorityId::new)?,
+        record_revision: row.get::<_, u64>(3)?,
+        policy_revision: row.get::<_, u64>(4)?,
+        admission_sequence: row.get::<_, u64>(5)?,
         pending_reason,
         represented_set,
-        admission_observation_id: ObservationId::new(row.get::<_, String>(8)?)
-            .expect("stored trigger pending observation id must be non-empty"),
+        admission_observation_id: decode_cell(row, 8, ObservationId::new)?,
         state: row.get(9)?,
-        admitted_at: Timestamp::new(row.get::<_, String>(10)?)
-            .expect("stored admitted_at must be RFC3339"),
-        consumed_at: row
-            .get::<_, Option<String>>(11)?
-            .map(|value| Timestamp::new(value).expect("stored consumed_at must be RFC3339")),
+        admitted_at: decode_cell(row, 10, Timestamp::new)?,
+        consumed_at: decode_optional_cell(row, 11, Timestamp::new)?,
     })
 }
 
@@ -4926,24 +5001,18 @@ fn remote_callable_surface_from_row(
 ) -> rusqlite::Result<MctRemoteCallableSurfaceRecord> {
     let runtime_kind: String = row.get(7)?;
     Ok(MctRemoteCallableSurfaceRecord {
-        peer_node_id: MctNodeId::new(row.get::<_, String>(0)?)
-            .expect("string ID literal/generated value must be non-empty"),
-        binding_id: PeerBindingId::new(row.get::<_, String>(1)?)
-            .expect("string ID literal/generated value must be non-empty"),
-        endpoint_id: EndpointIdText::new(row.get::<_, String>(2)?)
-            .expect("string ID literal/generated value must be non-empty"),
-        vision_id: VisionId::new(row.get::<_, String>(3)?)
-            .expect("string ID literal/generated value must be non-empty"),
-        publisher_policy_revision: row.get::<_, i64>(4)?.max(0) as u64,
+        peer_node_id: decode_cell(row, 0, MctNodeId::new)?,
+        binding_id: decode_cell(row, 1, PeerBindingId::new)?,
+        endpoint_id: decode_cell(row, 2, EndpointIdText::new)?,
+        vision_id: decode_cell(row, 3, VisionId::new)?,
+        publisher_policy_revision: row.get::<_, u64>(4)?,
         child_name: row.get(5)?,
         operation_id: row.get(6)?,
         runtime_kind: from_json_atom(&runtime_kind).map_err(to_sql_error)?,
-        surface_policy_revision: row.get::<_, i64>(8)?.max(0) as u64,
+        surface_policy_revision: row.get::<_, u64>(8)?,
         visibility: row.get(9)?,
-        received_at: Timestamp::new(row.get::<_, String>(10)?)
-            .expect("stored received_at timestamp is RFC3339"),
-        stale_at: Timestamp::new(row.get::<_, String>(11)?)
-            .expect("stored stale_at timestamp is RFC3339"),
+        received_at: decode_cell(row, 10, Timestamp::new)?,
+        stale_at: decode_cell(row, 11, Timestamp::new)?,
     })
 }
 
@@ -5183,15 +5252,14 @@ fn acquisition_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArtifactAcq
     let acquisition_outcome: String = row.get(10)?;
     let verification_outcome: String = row.get(11)?;
     Ok(ArtifactAcquisition {
-        acquisition_id: ArtifactAcquisitionId::new(row.get::<_, String>(0)?)
-            .expect("stored acquisition id is non-empty"),
+        acquisition_id: decode_cell(row, 0, ArtifactAcquisitionId::new)?,
         authority_path: from_json_atom(&authority_path).map_err(to_sql_error)?,
-        standing_source_authority_id: row.get::<_, Option<String>>(2)?.map(|value| {
-            ArtifactSourceAuthorityId::new(value).expect("stored source authority id is non-empty")
-        }),
-        operator_pointed_decision_id: row.get::<_, Option<String>>(3)?.map(|value| {
-            ArtifactAcquisitionDecisionId::new(value).expect("stored decision id is non-empty")
-        }),
+        standing_source_authority_id: decode_optional_cell(row, 2, ArtifactSourceAuthorityId::new)?,
+        operator_pointed_decision_id: decode_optional_cell(
+            row,
+            3,
+            ArtifactAcquisitionDecisionId::new,
+        )?,
         adapter_effect_authority_ref: row.get(4)?,
         source_ref: row.get(5)?,
         claimed_child_name: row.get(6)?,
@@ -5200,14 +5268,9 @@ fn acquisition_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArtifactAcq
         observed_digest: row.get(9)?,
         acquisition_outcome: from_json_atom(&acquisition_outcome).map_err(to_sql_error)?,
         verification_outcome: from_json_atom(&verification_outcome).map_err(to_sql_error)?,
-        verification_observation_id: row.get::<_, Option<String>>(12)?.map(|value| {
-            ObservationId::new(value).expect("stored verification observation id is non-empty")
-        }),
-        acquisition_observation_id: ObservationId::new(row.get::<_, String>(13)?)
-            .expect("stored acquisition observation id is non-empty"),
-        component_artifact_id: row.get::<_, Option<String>>(14)?.map(|value| {
-            ComponentArtifactId::new(value).expect("stored component artifact id is non-empty")
-        }),
+        verification_observation_id: decode_optional_cell(row, 12, ObservationId::new)?,
+        acquisition_observation_id: decode_cell(row, 13, ObservationId::new)?,
+        component_artifact_id: decode_optional_cell(row, 14, ComponentArtifactId::new)?,
     })
 }
 
@@ -5218,8 +5281,7 @@ fn source_authority_from_row(
     let authority_state: String = row.get(7)?;
     Ok((
         ArtifactSourceAuthority {
-            source_authority_id: ArtifactSourceAuthorityId::new(row.get::<_, String>(0)?)
-                .expect("stored source authority id is non-empty"),
+            source_authority_id: decode_cell(row, 0, ArtifactSourceAuthorityId::new)?,
             source_ref: row.get(1)?,
             scope: from_json_cell(&scope_json).map_err(to_sql_error)?,
             integrity_policy_ref: row.get(3)?,
@@ -5227,12 +5289,9 @@ fn source_authority_from_row(
             issuer_principal_ref: row.get(5)?,
             policy_revision: row.get(6)?,
             authority_state: from_json_atom(&authority_state).map_err(to_sql_error)?,
-            issued_at: Timestamp::new(row.get::<_, String>(8)?)
-                .expect("stored issuance timestamp is RFC3339"),
-            expires_at: Timestamp::new(row.get::<_, String>(9)?)
-                .expect("stored expiry timestamp is RFC3339"),
-            authority_observation_id: ObservationId::new(row.get::<_, String>(10)?)
-                .expect("stored source observation id is non-empty"),
+            issued_at: decode_cell(row, 8, Timestamp::new)?,
+            expires_at: decode_cell(row, 9, Timestamp::new)?,
+            authority_observation_id: decode_cell(row, 10, ObservationId::new)?,
         },
         row.get(11)?,
     ))
@@ -5314,8 +5373,7 @@ fn artifact_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ComponentArtif
     let provenance_status: String = row.get(10)?;
     let acquisition_ids_json: String = row.get(11)?;
     Ok(ComponentArtifact {
-        artifact_id: ComponentArtifactId::new(row.get::<_, String>(0)?)
-            .expect("string ID literal/generated value must be non-empty"),
+        artifact_id: decode_cell(row, 0, ComponentArtifactId::new)?,
         child_name: row.get(1)?,
         artifact_version: row.get(2)?,
         content_hash: row.get(3)?,
@@ -5328,8 +5386,7 @@ fn artifact_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ComponentArtif
         verification_status: from_json_atom(&verification_status).map_err(to_sql_error)?,
         provenance_status: from_json_atom(&provenance_status).map_err(to_sql_error)?,
         acquisition_ids: from_json_cell(&acquisition_ids_json).map_err(to_sql_error)?,
-        created_by_observation_id: ObservationId::new(row.get::<_, String>(12)?)
-            .expect("string ID literal/generated value must be non-empty"),
+        created_by_observation_id: decode_cell(row, 12, ObservationId::new)?,
     })
 }
 
@@ -5343,8 +5400,7 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MctRuntimeRunRecord
     let result_json: Option<String> = row.get(12)?;
     Ok(MctRuntimeRunRecord {
         run_id: row.get(0)?,
-        call_id: CallId::new(row.get::<_, String>(1)?)
-            .expect("string ID literal/generated value must be non-empty"),
+        call_id: decode_cell(row, 1, CallId::new)?,
         runtime_kind: from_json_atom(&runtime_kind).map_err(to_sql_error)?,
         child_name: row.get(3)?,
         child_instance_id: child_instance_id
@@ -5355,8 +5411,7 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MctRuntimeRunRecord
             .map(|value| DecisionId::new(value).context("decode authority_decision_id"))
             .transpose()
             .map_err(to_sql_error)?,
-        trace_id: TraceId::new(row.get::<_, String>(6)?)
-            .expect("string ID literal/generated value must be non-empty"),
+        trace_id: decode_cell(row, 6, TraceId::new)?,
         state: from_json_atom(&state).map_err(to_sql_error)?,
         started_at: row.get(8)?,
         completed_at: row.get(9)?,
@@ -5386,7 +5441,8 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MctQueuedTaskRecor
         status: from_json_atom(&status).map_err(to_sql_error)?,
         lease_owner: row.get(6)?,
         lease_until: row.get(7)?,
-        attempts: attempts.max(0) as u64,
+        attempts: u64::try_from(attempts)
+            .map_err(|_| corrupt_cell(row, 8, "nonnegative attempt count"))?,
         last_error: row.get(9)?,
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
@@ -5416,12 +5472,12 @@ fn authority_cursor_from_row(
         }
     };
     Ok(AuthorityProjectionCursorV1 {
-        schema_version: row.get::<_, i64>(0)?.max(0) as u64,
+        schema_version: row.get::<_, u64>(0)?,
         projection_id: row.get(1)?,
         projection_kind: row.get(2)?,
         source_mother_node_id: row.get(3)?,
         source_ledger_id: row.get(4)?,
-        through_sequence: row.get::<_, i64>(5)?.max(0) as u64,
+        through_sequence: row.get::<_, u64>(5)?,
         through_observation_id: row.get(6)?,
         through_entry_hash: row.get(7)?,
         grants_authority: from_json_cell(&authority_json).map_err(to_sql_error)?,
@@ -5436,13 +5492,15 @@ fn toy_contract_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CanonicalT
     let contract_json: String = row.get(1)?;
     let authority_bearing: i64 = row.get(2)?;
     Ok(CanonicalToyContract {
-        toy_id: ToyId::new(row.get::<_, String>(0)?)
-            .expect("string ID literal/generated value must be non-empty"),
+        toy_id: decode_cell(row, 0, ToyId::new)?,
         contract: from_json_cell(&contract_json).map_err(to_sql_error)?,
-        authority_bearing: authority_bearing != 0,
-        catalog_revision: row.get::<_, i64>(3)?.max(0) as u64,
-        admitted_by_observation_id: ObservationId::new(row.get::<_, String>(4)?)
-            .expect("string ID literal/generated value must be non-empty"),
+        authority_bearing: match authority_bearing {
+            0 => false,
+            1 => true,
+            _ => return Err(corrupt_cell(row, 2, "boolean integer 0 or 1")),
+        },
+        catalog_revision: row.get::<_, u64>(3)?,
+        admitted_by_observation_id: decode_cell(row, 4, ObservationId::new)?,
     })
 }
 
@@ -5452,19 +5510,16 @@ fn toy_grant_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToyGrant> {
     let constraints_json: String = row.get(4)?;
     let grant_state: String = row.get(5)?;
     Ok(ToyGrant {
-        grant_id: ToyGrantId::new(row.get::<_, String>(0)?)
-            .expect("string ID literal/generated value must be non-empty"),
-        toy_id: ToyId::new(row.get::<_, String>(1)?)
-            .expect("string ID literal/generated value must be non-empty"),
+        grant_id: decode_cell(row, 0, ToyGrantId::new)?,
+        toy_id: decode_cell(row, 1, ToyId::new)?,
         subject: from_json_cell(&subject_json).map_err(to_sql_error)?,
         scope: from_json_cell(&scope_json).map_err(to_sql_error)?,
         constraints: from_json_cell(&constraints_json).map_err(to_sql_error)?,
         grant_state: from_json_atom(&grant_state).map_err(to_sql_error)?,
         issuer_id: row.get(6)?,
-        policy_revision: row.get::<_, i64>(7)?.max(0) as u64,
-        grants_revision: row.get::<_, i64>(8)?.max(0) as u64,
-        authority_observation_id: ObservationId::new(row.get::<_, String>(9)?)
-            .expect("string ID literal/generated value must be non-empty"),
+        policy_revision: row.get::<_, u64>(7)?,
+        grants_revision: row.get::<_, u64>(8)?,
+        authority_observation_id: decode_cell(row, 9, ObservationId::new)?,
     })
 }
 
@@ -5526,8 +5581,57 @@ fn from_json_atom<T: DeserializeOwned>(value: &str) -> Result<T> {
     serde_json::from_str(&quoted).context("decode json atom")
 }
 
-fn to_sql_error(error: anyhow::Error) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, error.into())
+/// Corrupt projections are preserved and denied, never repaired by guessing.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "corrupt SQLite state at {column}: expected {expected}; preserve state and enter degraded deny"
+)]
+pub struct MctCorruptStateError {
+    pub column: String,
+    pub expected: &'static str,
+}
+
+fn corrupt_cell(row: &rusqlite::Row<'_>, column: usize, expected: &'static str) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        column,
+        rusqlite::types::Type::Text,
+        Box::new(MctCorruptStateError {
+            column: row
+                .as_ref()
+                .column_name(column)
+                .unwrap_or("unknown column")
+                .into(),
+            expected,
+        }),
+    )
+}
+fn decode_cell<T>(
+    row: &rusqlite::Row<'_>,
+    column: usize,
+    parse: impl FnOnce(String) -> mct_kernel::MctKernelResult<T>,
+) -> rusqlite::Result<T> {
+    parse(row.get(column)?).map_err(|_| corrupt_cell(row, column, std::any::type_name::<T>()))
+}
+fn decode_optional_cell<T>(
+    row: &rusqlite::Row<'_>,
+    column: usize,
+    parse: impl FnOnce(String) -> mct_kernel::MctKernelResult<T>,
+) -> rusqlite::Result<Option<T>> {
+    row.get::<_, Option<String>>(column)?
+        .map(parse)
+        .transpose()
+        .map_err(|_| corrupt_cell(row, column, std::any::type_name::<T>()))
+}
+
+fn to_sql_error(_error: anyhow::Error) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        0,
+        rusqlite::types::Type::Text,
+        Box::new(MctCorruptStateError {
+            column: "encoded row value".into(),
+            expected: "valid typed SQLite value",
+        }),
+    )
 }
 
 fn component_exports_from_allowed_operations(
@@ -5556,6 +5660,7 @@ pub fn default_state_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod local_storage;
 
     fn trigger_authority(revision: u64, state: CallTriggerAuthorityState) -> CallTriggerAuthority {
         CallTriggerAuthority {
@@ -5878,6 +5983,7 @@ mod tests {
             let authority = evaluate_child_call_authority(
                 &call(),
                 &ChildCallAuthorityRequest {
+                    data_authority: None,
                     instance_id: ChildInstanceId::new("instance-a").unwrap(),
                     node_id: MctNodeId::new("node-a").unwrap(),
                     ids: ChildCallAuthorityIds {
@@ -6938,9 +7044,12 @@ mod tests {
                 "body": {}
             })
         ));
-        ledger
-            .append_before_effect(observation, "2026-08-03T19:20:00Z")
-            .unwrap();
+        crate::authority_test_fixture::append_forensic_observation(
+            &mut ledger,
+            &ledger_path,
+            observation,
+            "2026-08-03T19:20:00Z",
+        );
 
         let error = store
             .publish_authority_projection(&ledger.entries().unwrap())
@@ -7022,9 +7131,12 @@ mod tests {
                 }
             })
         ));
-        ledger
-            .append_before_effect(observation, "2026-08-05T12:02:00Z")
-            .unwrap();
+        crate::authority_test_fixture::append_forensic_observation(
+            &mut ledger,
+            &ledger_path,
+            observation,
+            "2026-08-05T12:02:00Z",
+        );
 
         let error = store
             .publish_authority_projection(&ledger.entries().unwrap())

@@ -16,6 +16,7 @@ mod children;
 mod composition;
 mod config;
 mod control;
+pub mod control_transport;
 mod cycle;
 #[cfg(test)]
 mod fake;
@@ -25,6 +26,7 @@ mod lifecycle;
 mod metrics;
 mod registry;
 mod release;
+mod resource_bounds;
 mod startup;
 mod state;
 mod status;
@@ -100,6 +102,7 @@ pub use control::{
     handle_control_plane_path, handle_control_plane_path_result_with_auth,
     handle_control_plane_path_with_auth, handle_local_control_request, serve_http_control_once,
     serve_http_control_once_with_auth, serve_http_control_once_with_snapshot_result,
+    serve_http_control_stream_with_snapshot_result,
 };
 #[cfg(unix)]
 pub use control::{
@@ -161,11 +164,11 @@ pub use startup::{
 pub use state::{
     AuthorityProjectionSnapshotV1, ChildInvocationProvenance,
     MCT_IDEMPOTENCY_MAX_ENTRIES_PER_CALLER, MCT_IDEMPOTENCY_TTL_SECONDS, MctArtifactPackageRecord,
-    MctCompositionRunRecord, MctIdempotencyReservation, MctInFlightCallIdempotencyEntry,
-    MctMetricPoint, MctQueuedTaskRecord, MctRecordedCallReply, MctRegistrySourceRecord,
-    MctRemoteCallableSurfaceRecord, MctRemoteSurfaceRefresh, MctRuntimeRunRecord,
-    MctRuntimeRunState, MctRuntimeStateStore, MctRuntimeStateSummary, MctTaskIntentRecord,
-    MctTaskStatus, MctTriggerFiringRecord, MctTriggerOccurrenceDisposition,
+    MctCompositionRunRecord, MctCorruptStateError, MctIdempotencyReservation,
+    MctInFlightCallIdempotencyEntry, MctMetricPoint, MctQueuedTaskRecord, MctRecordedCallReply,
+    MctRegistrySourceRecord, MctRemoteCallableSurfaceRecord, MctRemoteSurfaceRefresh,
+    MctRuntimeRunRecord, MctRuntimeRunState, MctRuntimeStateStore, MctRuntimeStateSummary,
+    MctTaskIntentRecord, MctTaskStatus, MctTriggerFiringRecord, MctTriggerOccurrenceDisposition,
     MctTriggerOccurrenceRecord, MctTriggerPendingOccurrenceRecord, default_state_path,
 };
 pub use status::{
@@ -185,11 +188,11 @@ pub use wasm::{
     DEFAULT_WASM_MEMORY_LIMIT_BYTES, MctWasiHostConfig, MctWasiPreopen, MctWasiPreopenAccess,
     MctWasmComponentDiagnosticIds, MctWasmComponentInvocationIds, MctWasmComponentInvocationReport,
     MctWasmComponentRuntime, MctWasmComponentRuntimeError, MctWasmComponentToyInvocation,
-    MctWasmHostConfig, MctWasmToyHostImport, MctWitComponentInvocationReport,
-    MctWitHostImportAdapters, MctWitKeyvalueHostAdapter, MctWitMessagingHostAdapter,
-    MctWitProducedMessage, MctWitResolvedOperation, MctWitToyHostAdapter,
-    MctWitWatchCallOutWireEvent, MctWitWatchMessageAdmission, MctWitWatchMessageRefusal,
-    resolve_wit_operation_target, validate_wit_watch_message_admission,
+    MctWasmHostConfig, MctWasmInvocationLimits, MctWasmToyHostImport,
+    MctWitComponentInvocationReport, MctWitHostImportAdapters, MctWitKeyvalueHostAdapter,
+    MctWitMessagingHostAdapter, MctWitProducedMessage, MctWitResolvedOperation,
+    MctWitToyHostAdapter, MctWitWatchCallOutWireEvent, MctWitWatchMessageAdmission,
+    MctWitWatchMessageRefusal, resolve_wit_operation_target, validate_wit_watch_message_admission,
     wasm_component_runtime_error_observation, wit_operation_id_from_target,
 };
 

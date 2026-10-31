@@ -945,7 +945,15 @@ pub(crate) fn resident_iroh_observation_sink(
             let observations = batch
                 .facts
                 .iter()
-                .map(|fact| fact.to_observation(observed_at.clone()))
+                .map(|fact| {
+                    let mut observation = fact.to_observation(observed_at.clone());
+                    if let Some(caller_call_id) = observation.call_id.take() {
+                        observation.detail_ref = Some(format!("mct-peer-transport-correlation-v1:{}", serde_json::json!({
+                            "caller_call_id": caller_call_id, "transport_detail": observation.detail_ref
+                        })));
+                    }
+                    observation
+                })
                 .collect();
             ledger
                 .append_with_durability(observations, durability)

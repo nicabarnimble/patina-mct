@@ -18,12 +18,16 @@ run_clippy() {
   cargo clippy --workspace --all-targets -- -D warnings
 }
 
-run_test() {
+run_test() (
+  # Legacy fixtures write files/directories directly: provision them as private
+  # storage. Production does not change umask; dedicated subprocess tests use 000.
+  umask 077
+  export TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
   # Resident integration tests own real UDS and Iroh endpoint lifecycles. Serialize the
   # Tier-0 harness so constrained CI runners do not make those independent lifecycles
   # contend with one another; product-level concurrency remains covered inside tests.
   cargo test --workspace -- --test-threads=1
-}
+)
 
 run_audit() {
   cargo audit
@@ -44,6 +48,9 @@ run_specs() {
   run_vocabulary || status=1
   python3 scripts/check-finish.py validate || status=1
   python3 scripts/test-check-finish.py || status=1
+  python3 scripts/test-low-security-boundaries.py || status=1
+  python3 scripts/test-scan-osv.py || status=1
+  node --test scripts/passkey-admin.test.mjs || status=1
   return "$status"
 }
 

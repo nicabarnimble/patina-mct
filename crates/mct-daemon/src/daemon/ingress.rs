@@ -296,6 +296,7 @@ pub(super) fn current_timestamp_after(budget: jiff::SignedDuration) -> Timestamp
 pub(super) fn default_wasm_host_config() -> MctWasmHostConfig {
     MctWasmHostConfig {
         memory_limit_bytes: DEFAULT_WASM_MEMORY_LIMIT_BYTES,
+        ..MctWasmHostConfig::default_local()
     }
 }
 
@@ -883,6 +884,7 @@ pub(super) fn default_observation_ledger_path() -> PathBuf {
     PathBuf::from(".mct").join("observations.jsonl")
 }
 
+#[cfg(test)]
 pub(super) fn iroh_config(secret_key_hex: String, relay_default: bool) -> MotherIrohEndpointConfig {
     iroh_config_with_bind(secret_key_hex, relay_default, Vec::new())
 }

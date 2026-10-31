@@ -434,6 +434,7 @@ mod tests {
         let result = evaluate_child_call_authority(
             &call,
             &ChildCallAuthorityRequest {
+                data_authority: None,
                 instance_id: projection.instances[0].instance_id.clone(),
                 node_id: projection.local_node_id.clone(),
                 ids: ChildCallAuthorityIds {

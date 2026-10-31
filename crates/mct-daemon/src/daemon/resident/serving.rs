@@ -1,4 +1,7 @@
 use super::*;
+#[cfg(unix)]
+#[path = "serving/startup_control.rs"]
+mod startup_control;
 
 #[derive(Clone, Debug)]
 pub(crate) struct IrohVerifiedInlineBytes {
@@ -429,100 +432,7 @@ async fn run_isolated_startup_plane<S>(
 where
     S: std::future::Future<Output = ()> + Send,
 {
-    use std::{fs, os::unix::fs::PermissionsExt as _};
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-
-    if let Some(parent) = socket_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("create isolated startup UDS parent {}", parent.display()))?;
-    }
-    if socket_path.exists() {
-        if tokio::net::UnixStream::connect(&socket_path).await.is_ok() {
-            bail!("isolated startup UDS is already owned by an active listener");
-        }
-        fs::remove_file(&socket_path)
-            .with_context(|| format!("remove stale startup UDS {}", socket_path.display()))?;
-    }
-    let listener = UnixListener::bind(&socket_path)
-        .with_context(|| format!("bind isolated startup UDS {}", socket_path.display()))?;
-    fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))?;
-    tokio::pin!(shutdown);
-    loop {
-        let (mut stream, _) = tokio::select! {
-            accepted = listener.accept() => accepted.context("accept isolated startup UDS")?,
-            _ = &mut shutdown => break,
-        };
-        let peer_uid = stream
-            .peer_cred()
-            .context("authenticate isolated startup UDS peer")?
-            .uid();
-        let mut headers = Vec::new();
-        let mut byte = [0_u8; 1];
-        while !headers.ends_with(b"\r\n\r\n") {
-            if headers.len() == 4096 {
-                bail!("isolated startup request headers exceed bounded budget");
-            }
-            if stream.read(&mut byte).await? == 0 {
-                bail!("isolated startup request ended before headers");
-            }
-            headers.push(byte[0]);
-        }
-        let request = String::from_utf8_lossy(&headers);
-        let mut line = request
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .split_whitespace();
-        let method = line.next().unwrap_or_default();
-        let path = line.next().unwrap_or_default();
-        let content_length = request
-            .lines()
-            .skip(1)
-            .find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                name.eq_ignore_ascii_case("content-length")
-                    .then(|| value.trim().parse::<usize>().ok())
-                    .flatten()
-            })
-            .unwrap_or(0);
-        if content_length > 64 * 1024 {
-            bail!("isolated startup request body exceeds bounded budget");
-        }
-        let mut body = vec![0; content_length];
-        stream.read_exact(&mut body).await?;
-        let response = plane.handle(peer_uid, method, path, &body);
-        let reason = match response.status_code() {
-            200 => "OK",
-            400 => "Bad Request",
-            403 => "Forbidden",
-            404 => "Not Found",
-            409 => "Conflict",
-            _ => "Service Unavailable",
-        };
-        let extra_headers = response
-            .headers()
-            .iter()
-            .map(|(name, value)| format!("{name}: {value}\r\n"))
-            .collect::<String>();
-        let head = format!(
-            "HTTP/1.1 {} {}\r\ncontent-type: {}\r\ncontent-length: {}\r\n{}connection: close\r\n\r\n",
-            response.status_code(),
-            reason,
-            response.content_type(),
-            response.body_bytes().len(),
-            extra_headers,
-        );
-        stream.write_all(head.as_bytes()).await?;
-        stream.write_all(response.body_bytes()).await?;
-        let gate_accepted =
-            method == "POST" && path == "/startup/operator-gate" && response.status_code() == 200;
-        if gate_accepted {
-            break;
-        }
-    }
-    drop(listener);
-    let _ = fs::remove_file(&socket_path);
-    Ok(())
+    startup_control::run(plane, socket_path, shutdown).await
 }
 
 async fn run_resident_mother_with_trigger_runtime<S>(
@@ -750,6 +660,7 @@ where
         );
     }
     let ticket = endpoint.ticket();
+    let forwarding_client = endpoint.client()?;
     let load_report = load_children_from_dir(MctChildLoadOptions::new(config.children_dir.clone()));
     reconcile_trigger_projection(&config.state_path, &config.ledger_path, &mother_node_id)
         .context("reconcile trigger ledger projection before resident readiness")?;
@@ -816,24 +727,26 @@ where
             config.config_path.clone(),
             config.children_dir.clone(),
             config.state_path.clone(),
-        ),
+        )
+        .with_forwarding_client(forwarding_client.clone()),
         ledger.clone(),
         shutdown_tx.subscribe(),
         trigger_clock,
         trigger_limits,
     ));
-    let control_task = spawn_resident_control_task(
+    let (control_task, control_bound) = spawn_resident_control_task(
         config.control.clone(),
         ResidentRuntimePaths::new(
             config.config_path.clone(),
             config.children_dir.clone(),
             config.state_path.clone(),
-        ),
+        )
+        .with_forwarding_client(forwarding_client.clone()),
         ledger.clone(),
         config.max_concurrent_connections,
         shutdown_tx.subscribe(),
         Some(status_source),
-    )?;
+    );
 
     println!("mct resident mother endpoint_id={}", snapshot.endpoint_id);
     println!("ticket={}", ticket.to_json()?.replace('\n', ""));
@@ -841,17 +754,21 @@ where
         "mct resident mother children loaded={} failed={} bindings={} max_connections={}",
         loaded_child_count, load_report.failed, binding_count, config.max_concurrent_connections
     );
-    if let ResidentControlTransport::Uds(path) = &config.control {
-        for _ in 0..200 {
-            if path.exists() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+    let control_task = match wait_for_resident_control_bound(control_task, control_bound).await {
+        Ok(task) => task,
+        Err(error) => {
+            // Startup must not leave detached schedulers or a live endpoint
+            // behind when the control listener cannot become ready.
+            let _ = shutdown_tx.send(());
+            trigger_task.abort();
+            event_task.abort();
+            let _ = trigger_task.await;
+            let _ = event_task.await;
+            endpoint.close().await;
+            ledger.close().await;
+            return Err(error);
         }
-        if !path.exists() {
-            bail!("resident control socket did not bind before readiness");
-        }
-    }
+    };
     if let Some(instance) = &supervised_instance {
         record_supervised_resident_ready(instance, &ledger).await?;
     }
@@ -864,7 +781,8 @@ where
         config.config_path.clone(),
         config.children_dir.clone(),
         config.state_path.clone(),
-    );
+    )
+    .with_forwarding_client(forwarding_client);
     let execution_ledger = ledger.clone();
     let receiver_authority_paths = (
         config.ledger_path.clone(),
@@ -1036,7 +954,9 @@ async fn refresh_admitted_peers(
             &peer.vision_id,
             &trace_id,
             Some(outbound.signature_ref),
-            capability_view.clone(),
+            capability_view
+                .clone()
+                .and_then(|view| view.for_vision(&peer.vision_id)),
         );
         hello.presented_binding.policy_revision = Some(outbound.policy_revision);
         hello.presented_binding.expires_at = Some(outbound.expires_at);
@@ -1064,18 +984,23 @@ fn spawn_resident_control_task(
     max_concurrent_connections: usize,
     shutdown: broadcast::Receiver<()>,
     status_source: Option<Arc<ResidentStatusSource>>,
-) -> Result<tokio::task::JoinHandle<Result<()>>> {
-    match control {
-        ResidentControlTransport::Http(addr) => Ok(tokio::spawn(async move {
+) -> (
+    tokio::task::JoinHandle<Result<()>>,
+    tokio::sync::oneshot::Receiver<()>,
+) {
+    let (bound, received) = tokio::sync::oneshot::channel();
+    let task = match control {
+        ResidentControlTransport::Http(addr) => tokio::spawn(async move {
             serve_http_control_loop_until(
                 paths.state_path().to_path_buf(),
                 addr,
                 shutdown,
                 status_source,
+                bound,
             )
             .await
-        })),
-        ResidentControlTransport::Uds(path) => Ok(tokio::spawn(async move {
+        }),
+        ResidentControlTransport::Uds(path) => tokio::spawn(async move {
             run_control_serve_uds_with_state_until(
                 paths,
                 path,
@@ -1083,9 +1008,37 @@ fn spawn_resident_control_task(
                 max_concurrent_connections,
                 shutdown,
                 status_source,
+                bound,
             )
             .await
-        })),
+        }),
+    };
+    (task, received)
+}
+
+async fn wait_for_resident_control_bound(
+    mut task: tokio::task::JoinHandle<Result<()>>,
+    bound: tokio::sync::oneshot::Receiver<()>,
+) -> Result<tokio::task::JoinHandle<Result<()>>> {
+    // Readiness is a receipt from this tenure's initialized listener, never a
+    // pathname observation: a SIGKILL leaves a stale socket that startup unlinks.
+    // Propagate real startup errors/panics instead of hiding them behind a
+    // fixed pathname timeout. Prefer a known task failure over a queued receipt.
+    tokio::select! {
+        biased;
+        result = &mut task => {
+            result.context("join resident control startup task")??;
+            bail!("resident control stopped before readiness");
+        }
+        result = bound => {
+            if result.is_err() {
+                // The sender is owned by the control task. Joining preserves
+                // its original bind, snapshot, or durable-admission error.
+                task.await.context("join resident control startup task")??;
+                bail!("resident control stopped before readiness");
+            }
+            Ok(task)
+        }
     }
 }
 
@@ -1179,6 +1132,11 @@ pub(super) fn resident_observations_for_served_protocol(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    mod call_origin;
+    #[cfg(unix)]
+    mod readiness;
+
     use super::*;
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 
@@ -2489,13 +2447,7 @@ mod tests {
                 .unwrap();
         let lifecycle_kinds = entries
             .iter()
-            .filter(|entry| {
-                entry
-                    .observation
-                    .call_id
-                    .as_ref()
-                    .is_some_and(|call_id| call_id.as_str() == "call-resident-payload-e2e")
-            })
+            .filter(|entry| entry.observation.trace.trace_id == call.call.trace_context.trace_id)
             .map(|entry| entry.observation.kind)
             .filter(|kind| {
                 matches!(
@@ -2518,6 +2470,7 @@ mod tests {
                 ObservationKind::PeerCallReceived,
                 ObservationKind::CallConstructed,
                 ObservationKind::CallAuthorized,
+                ObservationKind::CallConstructed, // Mother execution / caller correlation binding
                 ObservationKind::CallConstructed, // durable keyed dispatch, before route/effect
                 ObservationKind::RouteRevalidated,
                 ObservationKind::RouteSelected,

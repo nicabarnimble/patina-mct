@@ -668,6 +668,11 @@ pub fn classify_authority_startup(
     // Recovery facts are understood by storage but live canonical consumers and
     // authenticated ingress are not enabled yet. Never serve legacy UID/admin
     // paths through this authority; unsupported is not absent or virgin.
+    if replay.state.passkey_admin.is_some() {
+        return Err(MctStartupClassificationErrorV1::AuthorityReplayBlocked(
+            "passkey administration cannot run through legacy UID/offline runtime".into(),
+        ));
+    }
     if replay.state.admin_genesis.is_some() {
         return Err(MctStartupClassificationErrorV1::AuthorityReplayBlocked(
             "strict admin genesis requires the authenticated cutover runtime".into(),
@@ -1608,6 +1613,7 @@ pub fn finalize_authority_startup(
         guardian_recovery: None,
         admin_issuance: Default::default(),
         admin_genesis: None,
+        passkey_admin: None,
     };
     let sqlite_hash = authority_state_hash(&sqlite_authority)?;
     let sqlite_comparison = if !pre_observation_replay.imported
@@ -1686,7 +1692,7 @@ pub fn finalize_authority_startup(
                     blocking_reasons.join(",")
                 ),
                 format!(
-                    "mct-authority-drift-v1:{}",
+                    "mct-startup-drift-v1:{}",
                     serde_json::to_string(&normalized_inputs)?
                 ),
             ),
@@ -2307,9 +2313,12 @@ mod tests {
         forged.detail_ref = Some(format!("ledger-tail-recovery-v1:{digest}"));
         let mut writer =
             JsonlObservationLedger::open(&paths.ledger, "ledger-a", "mother-a").unwrap();
-        let entry = writer
-            .append_before_effect(forged, "2026-10-17T00:00:00Z")
-            .unwrap();
+        let entry = crate::authority_test_fixture::append_forensic_observation(
+            &mut writer,
+            &paths.ledger,
+            forged,
+            "2026-10-17T00:00:00Z",
+        );
         drop(writer);
         assert!(is_tail_recovery_entry(&entry));
         assert!(!is_valid_tail_recovery_entry(&entry));
@@ -2336,9 +2345,12 @@ mod tests {
         exact.detail_ref = Some(format!("ledger-tail-recovery-v1:{digest}"));
         let mut writer =
             JsonlObservationLedger::open(&paths.ledger, "ledger-a", "mother-a").unwrap();
-        let entry = writer
-            .append_before_effect(exact, "2026-10-17T00:00:00Z")
-            .unwrap();
+        let entry = crate::authority_test_fixture::append_forensic_observation(
+            &mut writer,
+            &paths.ledger,
+            exact,
+            "2026-10-17T00:00:00Z",
+        );
         drop(writer);
         assert!(is_valid_tail_recovery_entry(&entry));
         assert!(

@@ -563,6 +563,7 @@ fn resident_required_toy_authority(
             evaluate_toy_grant_for_route_snapshot(
                 call,
                 &ToyGrantEvaluationRequest {
+                    data_authority: None,
                     toy_id,
                     subject: ToyGrantSubject {
                         child_name: child.name.clone(),
@@ -777,6 +778,7 @@ mod tests {
             guardian_recovery: None,
             admin_issuance: Default::default(),
             admin_genesis: None,
+            passkey_admin: None,
         }
     }
 

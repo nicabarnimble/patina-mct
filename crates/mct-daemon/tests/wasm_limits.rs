@@ -58,13 +58,17 @@ fn call(deadline: Timestamp) -> MctCall {
     }
 }
 
-fn authorized(deadline: Timestamp) -> AuthorizedChildInvocation {
+fn authorized(deadline: Timestamp, path: &std::path::Path) -> AuthorizedChildInvocation {
+    use sha2::{Digest, Sha256};
+    let artifact = format!("sha256:{:x}", Sha256::digest(fs::read(path).unwrap()));
     let call = call(deadline);
-    authority_test_fixture::authorized_child_for_call(
+    authority_test_fixture::authorized_child_for_artifact(
         &call,
         "wasm-limit",
         MctNodeId::new("mother-a").expect("string ID literal/generated value must be non-empty"),
         "wasm-limit",
+        &artifact,
+        "sha256:manifest-wasm-limit",
     )
 }
 
@@ -107,11 +111,12 @@ fn looping_component_times_out_instead_of_hanging() {
     std::thread::spawn(move || {
         let runtime = MctWasmComponentRuntime::new(MctWasmHostConfig {
             memory_limit_bytes: DEFAULT_WASM_MEMORY_LIMIT_BYTES,
+            ..MctWasmHostConfig::default_local()
         })
         .unwrap();
         let invocation_call = call(timestamp_after_millis(100));
         let report = runtime.invoke_authorized_s32_export(
-            authorized(invocation_call.deadline.clone()),
+            authorized(invocation_call.deadline.clone(), &component_path),
             &invocation_call,
             component_path,
             "spin",
@@ -153,12 +158,13 @@ fn component_allocation_over_memory_cap_fails() {
     let component_path = write_component(&dir, "large-memory.component.wasm", component_wat);
     let runtime = MctWasmComponentRuntime::new(MctWasmHostConfig {
         memory_limit_bytes: DEFAULT_WASM_MEMORY_LIMIT_BYTES,
+        ..MctWasmHostConfig::default_local()
     })
     .unwrap();
 
     let invocation_call = call(timestamp_after_millis(5_000));
     let result = runtime.invoke_authorized_s32_export(
-        authorized(invocation_call.deadline.clone()),
+        authorized(invocation_call.deadline.clone(), &component_path),
         &invocation_call,
         component_path,
         "run",
