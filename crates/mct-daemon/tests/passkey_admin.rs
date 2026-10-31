@@ -138,6 +138,11 @@ fn refused_genesis_can_retry(refusal: GenesisRefusal) {
     )
     .unwrap();
     assert_eq!(ledger.entries().unwrap().len(), 1);
+    let path = root.join("observations.jsonl");
+    let before = std::fs::read(&path).unwrap();
+    assert!(!call(&prepare).status.success());
+    assert!(!call(&bootstrap).status.success());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
 }
 
 struct AdminServer(std::process::Child);

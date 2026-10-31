@@ -173,8 +173,8 @@ pub(super) async fn run_passkey_admin(args: Vec<String>) -> Result<()> {
             print_prepared(intent, &registered, "root")?;
         } else {
             let request = read_json(&flags["--request"])?;
-            let mut writer = JsonlObservationLedger::open(&paths.ledger, ledger_id, mother)?;
-            let entry = writer.execute_passkey_genesis(&setup, request)?;
+            let entry =
+                JsonlObservationLedger::create_passkey_genesis(&paths.ledger, &setup, request)?;
             println!("{}", serde_json::to_string_pretty(&entry)?);
         }
         return Ok(());
