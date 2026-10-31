@@ -40,6 +40,106 @@ fn sign_root(prepared: Value, key: &p256::ecdsa::SigningKey) -> Value {
     json!({"intent":prepared["intent"],"proof":{"scheme":"webauthn-p256-day-key/v1","credential_id":prepared["root"]["credential_id"],"authenticator_data":URL_SAFE_NO_PAD.encode(auth),"client_data_json":URL_SAFE_NO_PAD.encode(client),"signature":URL_SAFE_NO_PAD.encode(sig.to_der().as_bytes())}})
 }
 
+#[derive(Clone, Copy, Debug)]
+enum GenesisRefusal {
+    Expired,
+    InvalidNonce,
+    BadSignature,
+}
+
+#[test]
+fn passkey_cli_expired_genesis_preserves_virgin_root_for_retry() {
+    refused_genesis_can_retry(GenesisRefusal::Expired);
+}
+
+#[test]
+fn passkey_cli_invalid_nonce_genesis_preserves_virgin_root_for_retry() {
+    refused_genesis_can_retry(GenesisRefusal::InvalidNonce);
+}
+
+#[test]
+fn passkey_cli_bad_signature_genesis_preserves_virgin_root_for_retry() {
+    refused_genesis_can_retry(GenesisRefusal::BadSignature);
+}
+
+fn refused_genesis_can_retry(refusal: GenesisRefusal) {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().join("mother");
+    private_fs::ensure_directory(&root).unwrap();
+    let pin = d.path().join("pin.json");
+    let request = d.path().join("request.json");
+    let key = p256::ecdsa::SigningKey::from_slice(&[7; 32]).unwrap();
+    let registered = WebAuthnP256DayKeyV1 {
+        credential_id: URL_SAFE_NO_PAD.encode([8; 32]),
+        public_key_sec1: const_hex::encode(key.verifying_key().to_sec1_bytes()),
+        rp_id: "admin.example.test".into(),
+        origin: "https://admin.example.test".into(),
+    };
+    put(&pin, &registered);
+    let common = [
+        "--root",
+        root.to_str().unwrap(),
+        "--mother",
+        "mother-a",
+        "--ledger-id",
+        "ledger-a",
+        "--registered-root",
+        pin.to_str().unwrap(),
+    ];
+    let prepare = [&["prepare-genesis"][..], &common].concat();
+    let bootstrap = [
+        &["bootstrap"][..],
+        &common,
+        &["--request", request.to_str().unwrap()],
+    ]
+    .concat();
+    let mut prepared = ok(&prepare);
+    match refusal {
+        GenesisRefusal::Expired => {
+            prepared["intent"]["issued_at"] = "2000-01-01T00:00:00Z".into();
+            prepared["intent"]["expires_at"] = "2000-01-01T00:05:00Z".into();
+        }
+        GenesisRefusal::InvalidNonce => prepared["intent"]["nonce"] = "invalid".into(),
+        GenesisRefusal::BadSignature => {}
+    }
+    let intent = serde_json::from_value(prepared["intent"].clone()).unwrap();
+    prepared["challenge"] =
+        mct_kernel::admin_sig::webauthn_admin_challenge(&intent, &registered.credential_id)
+            .unwrap()
+            .into();
+    let wrong_key = p256::ecdsa::SigningKey::from_slice(&[9; 32]).unwrap();
+    let signer = if matches!(refusal, GenesisRefusal::BadSignature) {
+        &wrong_key
+    } else {
+        &key
+    };
+    put(&request, &sign_root(prepared, signer));
+    let denied = call(&bootstrap);
+    assert!(!denied.status.success(), "{refusal:?} was admitted");
+    let error = String::from_utf8_lossy(&denied.stderr);
+    let expected = if matches!(refusal, GenesisRefusal::BadSignature) {
+        "ES256 signature denied"
+    } else {
+        "invalid target, nonce or intent window"
+    };
+    assert!(error.contains(expected), "{refusal:?}: {error}");
+    assert!(
+        !root.join("observations.jsonl").exists(),
+        "{refusal:?} refusal created a ledger before admitting genesis"
+    );
+    let fresh = ok(&prepare);
+    put(&request, &sign_root(fresh, &key));
+    let birth = ok(&bootstrap);
+    assert_eq!(birth["local_sequence"], 0);
+    let ledger = mct_observation::JsonlObservationLedger::open_read_only(
+        root.join("observations.jsonl"),
+        "ledger-a",
+        "mother-a",
+    )
+    .unwrap();
+    assert_eq!(ledger.entries().unwrap().len(), 1);
+}
+
 struct AdminServer(std::process::Child);
 impl Drop for AdminServer {
     fn drop(&mut self) {
