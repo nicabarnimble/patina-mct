@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 import shlex
+import os
+import shutil
+import subprocess
+import sys
 import importlib.util
 import stat
 from types import SimpleNamespace
@@ -19,6 +23,20 @@ INSTALLER_SPEC.loader.exec_module(installer)
 
 
 class UnitTests(unittest.TestCase):
+    def test_installer_does_not_write_bytecode_into_its_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name in ('mother-admin-service.py', 'mother_systemd.py', 'passkey_queue.py'):
+                shutil.copyfile(Path(__file__).with_name(name), root / name)
+            before = {path.name: path.read_bytes() for path in root.iterdir()}
+            env = dict(os.environ)
+            env.pop('PYTHONDONTWRITEBYTECODE', None)
+            env.pop('PYTHONPYCACHEPREFIX', None)
+            subprocess.run([sys.executable, str(root / 'mother-admin-service.py'), '--help'],
+                           env=env, check=True, capture_output=True)
+            self.assertEqual(sorted(path.name for path in root.iterdir()), sorted(before))
+            self.assertEqual({path.name: path.read_bytes() for path in root.iterdir()}, before)
+
     def test_removal_uses_the_host_systemctl_not_a_newer_nix_client(self):
         with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as tmp:
             package = Path('/nix/store/example')

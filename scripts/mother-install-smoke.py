@@ -201,6 +201,8 @@ def main():
         execute(["nix-store", "--verify-path", package])
     binary, probe = trusted_program(args.binary, verify_contents), trusted_program(args.probe, verify_contents)
     installer = trusted_program(args.installer, verify_contents)
+    script_inputs = Path(__file__).resolve().parent
+    verify_contents(script_inputs)
     home = safe_directory(Path.home())
     filesystem = execute(["findmnt", "-n", "-o", "FSTYPE", "-T", home]).stdout.strip()
     require(filesystem in {"ext4", "xfs", "btrfs"}, "gate requires a local supported filesystem")
@@ -288,6 +290,8 @@ def main():
                  "--expected-identity", json.dumps(identity)])
         require(properties(unit).get("MainPID") == "0", "service did not stop")
         require(not os.path.lexists(unit_path), "test unit still installed")
+    verify_contents(script_inputs)
+    print("PASS immutable installer inputs", flush=True)
     print("PASS isolated service cleanup; private evidence preserved", flush=True)
 
 
