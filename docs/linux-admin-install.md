@@ -1,9 +1,9 @@
 # Linux ARM64 admin Mother
 
-**Blocked on the current nicamaster configuration.** The native package builds,
-but the user-service namespace hides host-root ownership and Mother refuses
-startup. Do not remove the ownership check or the sandbox to force a pass.
-See the [hardware evidence and required owner decision](linux-admin-install-evidence.md).
+The hardware gate passes on nicamaster with a system-level unit running as
+`User=pi` and `Group=pi`. The system manager establishes filesystem confinement
+without `PrivateUsers`; Mother's ownership check remains unchanged. No linger
+is needed. See the [hardware evidence](linux-admin-install-evidence.md).
 
 This slice packages the **admin-only** Mother on Debian with Nix, not NixOS.
 Each Mother keeps its own identity and canonical state on local storage. It does
@@ -25,10 +25,11 @@ parallel compilation on the initial four-gigabyte builder; this is not a claim
 that the build fits one gigabyte. Pi 3 nodes should consume a separately
 configured trusted cache rather than compile locally.
 
-The gate requires an unprivileged user, a running systemd user manager and an
-ext4, XFS or Btrfs home filesystem. It creates a unique private directory under
+Run the gate as `pi`, with noninteractive sudo authorized for system-unit
+management, the host's `/usr/bin/systemctl`, and an ext4, XFS or Btrfs home
+filesystem. It does not configure sudo policy. It creates a unique private directory under
 that home, uses **software test credentials only**, installs a uniquely named
-unit through `mother-admin-service`, and tests real signed administration over
+root-owned system unit through `mother-admin-service`, and tests signed administration over
 loopback Iroh. It does not establish actual 1Password behavior or external
 network reachability.
 
@@ -68,7 +69,7 @@ procedure in [passkey administration](passkey-admin.md) and
 **your default browser with 1Password**; the headless Mother does not need the
 administrator's private day key. Root trust/CA installation is never implicit.
 
-For an **already provisioned** private local root:
+As `pi`, for an **already provisioned** private local root owned by `pi`:
 
 ```sh
 nix profile add .#mother
@@ -80,31 +81,48 @@ nix run .#mother-admin-service -- \
 
 Use lowercase letters, numbers and hyphens in these identifiers. The installer
 checks the canonical target and passkey provenance by read-only replay before
-publishing a new unit. Existing units/package roots are refused, not replaced.
-It retains the exact Nix package through an indirect GC root under
-`$XDG_CONFIG_HOME/mct/package-roots/` (default `~/.config`). It does not start the
-service, generate keys, install a root, change network settings or enable linger.
+publishing a new unit. This replay runs as `pi`, not root. Sudo runs the immutable
+installer only for privileged publication and removal. Units are root-owned 0644
+files in `/etc/systemd/system/`; they contain paths and IDs, never signing keys.
+Existing units/package roots are refused, not replaced, including transient or
+vendor units already known to the system manager. The exact package is
+retained through a root-owned indirect GC root under `/var/lib/mct/package-roots/`.
+The installer does not start the service, generate keys, install a trust root,
+change network settings or configure linger.
 
 Then explicitly start/enable it:
 
 ```sh
-systemctl --user enable --now mct-admin-YOUR-NAME.service
-systemctl --user status mct-admin-YOUR-NAME.service
+sudo /usr/bin/systemctl enable --now mct-admin-YOUR-NAME.service
+sudo /usr/bin/systemctl status mct-admin-YOUR-NAME.service
 ```
 
-For unattended boot/logout operation, an operator must explicitly authorize
-`sudo loginctl enable-linger "$USER"`. The hardware gate can run in an existing
-user-manager session without enabling linger. It does not claim reboot proof.
+The unit belongs to `multi-user.target`, not a user manager. Enabling it provides
+boot activation independently of login sessions; no linger is required. The gate
+proves forced process restart, not a host reboot or power loss.
 The canonical root and endpoint identity survive service restart; the authority
 epoch advances. Public ticket output is `ROOT/admin-ticket.json`, mode 0600.
 Intent preparation still needs local canonical access; remote preparation and
 external exposure are not added here.
 
-To uninstall, explicitly stop/disable that exact unit, inspect its unit and
-package-root paths, then remove only those two installer artifacts and run
-`systemctl --user daemon-reload`. **Keep canonical state and identity.** No
-upgrade/replacement or automatic recovery of partially installed artifacts is
-implemented; inspect interrupted installation evidence before manual action.
+The installer prints the unit's `[device,inode,sha256]` identity. Preserve that
+receipt. To remove the same unchanged unit:
+
+```sh
+nix run .#mother-admin-service -- --operation remove \
+  --unit-name mct-admin-YOUR-NAME.service \
+  --expected-identity '[DEVICE,INODE,"SHA256"]'
+```
+
+The helper verifies the root-owned unit and package-root target before it stops
+and disables the service. It then removes only those two installer artifacts and
+reloads the system manager. Changed units are preserved for inspection.
+**Canonical state and identity are never removed.** No upgrade/replacement or
+automatic recovery of partially installed artifacts is implemented. Inspect an
+interrupted installation before manual action.
+
+Lifecycle commands use the root-owned host `/usr/bin/systemctl`, not a newer Nix
+client whose D-Bus methods may be incompatible with the installed manager.
 
 ## Security and resource envelope
 
@@ -119,10 +137,12 @@ Existing Darwin release verification and launchd lifecycle are unchanged; this
 path directly supervises the foreground admin-only server.
 
 The unit uses a read-only system/home view with only its canonical root writable,
-private user namespaces and temporary storage, no-new-privileges, empty capability
-sets, restricted address families and a 0077 service umask. AF_NETLINK permits
+a private mount namespace and temporary storage, no-new-privileges, empty capability
+sets, restricted address families and a 0077 service umask. It does not create a
+user namespace, so filesystem ownership remains visible without translation. AF_NETLINK permits
 Iroh's unprivileged Linux route monitor; it does not grant CAP_NET_ADMIN. The gate
-checks live mount flags, UID, capabilities and the actual route-monitor socket. A 512 MiB service memory ceiling reserves half the smallest
+checks live mount flags, UID/GID, root ownership, namespace identities, private
+temporary storage, effective/ambient/bounding capabilities and the actual route-monitor socket. A 512 MiB service memory ceiling reserves half the smallest
 planned one-gigabyte host for the OS/other work; it is a containment budget, **not
 measured proof of fit**. TasksMax=64 is a conservative admin-only thread ceiling,
 not a Child concurrency limit. Crashes restart after one second, bounded to three
@@ -132,6 +152,6 @@ starts per minute, so corrupt state cannot spin indefinitely. SIGINT gets up to
 The new explicit `serve-iroh --bind-address` accepts only loopback addresses.
 Omitting it preserves the existing command's behavior. Units always specify
 `127.0.0.1:0`. No firewall ports, public relay, Tailscale join or CA is installed.
-If user namespaces/systemd sandbox facilities are unavailable, service startup
+If the required systemd sandbox facilities are unavailable, service startup
 fails; do not remove hardening just to make the gate pass. Root/host compromise
 and hostile same-UID processes remain outside the local isolation boundary.

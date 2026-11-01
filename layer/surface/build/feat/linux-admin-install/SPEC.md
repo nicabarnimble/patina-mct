@@ -18,7 +18,7 @@ exit_criteria:
     verify: cargo test -p mct-daemon --bin mct-daemon passkey_admin_optional_bind_is_loopback_only
   - id: native-hardware-gate
     text: The pinned Nix package builds and the isolated systemd gate passes on native nicamaster with resource and durable-write measurements.
-    checked: false
+    checked: true
     verify: nix run .#mother-install-smoke
 ---
 
