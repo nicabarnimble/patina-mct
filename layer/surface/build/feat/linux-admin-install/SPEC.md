@@ -8,8 +8,8 @@ related:
   - docs/linux-admin-install.md
   - layer/core/safety-boundaries.md
 exit_criteria:
-  - id: exclusive-user-unit
-    text: Linux user-unit installation refuses existing files, unsafe ancestry and directive injection without provisioning authority.
+  - id: exclusive-system-unit
+    text: Root-owned system-unit installation for pi:pi refuses existing files, unsafe ancestry and directive injection without provisioning authority.
     checked: true
     verify: python3 scripts/test-mother-systemd.py
   - id: bounded-local-admin
@@ -32,15 +32,17 @@ not a replicated authority database, Pi integration, or task continuation.
 
 - Pin nixpkgs, Rust 1.96.0 and Cargo inputs. Build natively on ARM64 Linux.
 - Package the existing bounded admin-only foreground server behind systemd's
-  user manager. Do not route passkey authority through legacy launchd lifecycle,
+  system manager with User=pi and Group=pi. Do not route passkey authority through legacy launchd lifecycle,
   release ingestion or UID/offline administration.
 - Nix store integrity/root ownership and systemd sandboxing are this delivery
   path's provenance and service controls. Darwin release/codesign checks remain
   intact for Darwin delivery; they are not deleted or bypassed.
 - Installation consumes an already provisioned, independently trusted passkey
   genesis. It performs read-only validation, exclusively installs a new unit and
-  retains the package with a Nix GC root. Starting, enabling and enabling linger
-  are explicit operator actions. Never overwrite identity or bootstrap silently.
+  retains the package with a root-owned Nix GC root. Publication and removal use
+  explicit sudo; canonical replay and administration run as pi, never root.
+  Starting and enabling are explicit operator actions. No linger is needed.
+  Never overwrite identity or bootstrap silently.
 - Admin binds loopback in these units, with no new relay, firewall, CA, trust-root,
   Tailscale, or public-network setup. Transport possession remains insufficient.
 - SIGINT is graceful stop; SIGKILL exercises automatic process recovery. Lock,
@@ -48,20 +50,20 @@ not a replicated authority database, Pi integration, or task continuation.
 - Linux Git Toy remains denied. No AOT deserialization, full Child cutover,
   migration of existing authorities, network-mounted state or Pi 3 rollout.
 
-## Current blocker
+## Approved service correction
 
-The native package builds on nicamaster, but the full gate exits 1. Its user
-namespace maps host-root ownership to overflow UID 65534; the existing canonical
-filesystem guard correctly refuses it. The host kernel has no Landlock support.
-Changing to a system-level unit running as `pi`, or adding a supported alternative
-user-unit confinement implementation, requires owner approval. Do not relax the
-ownership check. See [hardware evidence](../../../../../docs/linux-admin-install-evidence.md).
+The owner approved a system-level unit running as pi:pi after the user namespace
+mapped host-root ownership to overflow UID 65534. Keep ProtectSystem=strict,
+ProtectHome=read-only, explicit ReadWritePaths, NoNewPrivileges, PrivateTmp and
+loopback binding. Do not use PrivateUsers or alter Mother's ownership check.
+The gate must verify the original user namespace, root ownership, service UID/GID
+and actual confinement. See [hardware evidence](../../../../../docs/linux-admin-install-evidence.md).
 
 ## Hardware gate
 
 Each run creates new private local state, synthetic ES256 root and one-hour
-status-only Ed25519 lease, then uses the packaged installer and actual user
-service. It proves signed status, bad-signature denial, exclusive writer refusal,
+status-only Ed25519 lease, then uses the packaged installer and actual system
+service running as pi:pi. It proves signed status, bad-signature denial, exclusive writer refusal,
 root revocation, forced restart, unchanged endpoint identity and canonical prefix,
 fresh authority epoch and a fresh revoked-key denial. It never retries an
 indeterminate submission. Cleanup stops/removes only the unique verified unit

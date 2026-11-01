@@ -1,15 +1,16 @@
 [Unit]
-Description=Isolated MCT admin Mother
+Description=MCT admin Mother
 StartLimitIntervalSec=60
 StartLimitBurst=3
 
 [Service]
 Type=exec
+User=pi
+Group=pi
 ExecStart=@EXEC@
 WorkingDirectory=/
 UMask=0077
 NoNewPrivileges=yes
-PrivateUsers=yes
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=@ROOT@
@@ -30,4 +31,4 @@ StandardOutput=journal
 StandardError=journal
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target

@@ -36,9 +36,9 @@
         name = "mother-admin-service";
         runtimeInputs = [ pkgs.systemd pkgs.nix pkgs.util-linux ];
         text = ''
-          exec ${python}/bin/python3 ${./scripts}/mother-admin-service.py \
+          exec ${python}/bin/python3 ${./scripts}/mother-admin-service.py "$@" \
             --binary ${mother}/bin/mct-daemon \
-            --unit-template ${./nix/mother-admin.service.in} "$@"
+            --unit-template ${./nix/mother-admin.service.in} --entrypoint "$0"
         '';
       };
       smoke = pkgs.writeShellApplication {

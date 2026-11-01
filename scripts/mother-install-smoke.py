@@ -10,13 +10,14 @@ import os
 from pathlib import Path
 import platform
 import secrets
+import shutil
 import subprocess
 import tempfile
 import time
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from mother_systemd import mount_options, remove_unit, render_unit, safe_directory, trusted_program, unit_identity
+from mother_systemd import SystemUnit, mount_options, render_unit, safe_directory, trusted_program, unit_identity
 from passkey_queue import read_private, write_new
 
 
@@ -33,7 +34,7 @@ def execute(argv, success=True, timeout=60):
 
 
 def systemctl(*args, **kwargs):
-    return execute(["systemctl", "--user", *args], **kwargs)
+    return execute(["sudo", "-n", shutil.which("systemctl"), *args], **kwargs)
 
 
 def properties(unit):
@@ -60,6 +61,11 @@ def verify_sandbox(pid, root, outside):
     status = dict(line.split(":", 1) for line in Path(f"/proc/{pid}/status").read_text().splitlines() if ":" in line)
     require(status["NoNewPrivs"].strip() == "1", "no-new-privileges not active")
     require(set(status["Uid"].split()) == {str(os.geteuid())}, "service UID mismatch")
+    require(set(status["Gid"].split()) == {str(os.getegid())}, "service GID mismatch")
+    require(os.readlink(f"/proc/{pid}/ns/user") == os.readlink("/proc/self/ns/user"), "unexpected user namespace")
+    require(os.readlink(f"/proc/{pid}/ns/mnt") != os.readlink("/proc/self/ns/mnt"), "missing mount namespace")
+    require(Path(f"/proc/{pid}/root").stat().st_uid == 0, "host-root ownership changed")
+    require(Path(f"/proc/{pid}/root/tmp").stat().st_ino != Path("/tmp").stat().st_ino, "temporary directory is not private")
     require(int(status["CapEff"], 16) == 0 and int(status["CapAmb"], 16) == 0, "unexpected service capabilities")
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
@@ -169,7 +175,7 @@ def wait_ready(unit, unit_path, binary, ticket, previous_pid=0, previous_mtime=0
         state = properties(unit)
         require(state.get("FragmentPath") == str(unit_path), "systemd loaded a different unit")
         pid = int(state.get("MainPID", "0"))
-        require(state.get("ActiveState") != "failed", "user service failed; inspect its journal")
+        require(state.get("ActiveState") != "failed", "system service failed; inspect its journal")
         if pid and pid != previous_pid and ticket.exists() and ticket.stat().st_mtime_ns > previous_mtime:
             require(Path(f"/proc/{pid}/exe").resolve() == binary, "service executable mismatch")
             address = read_private(ticket)
@@ -203,17 +209,17 @@ def main():
     print("Software test authority only; not a 1Password ceremony or production identity.", flush=True)
     ceremony = Ceremony(binary, directory)
     ceremony.bootstrap()
-    config = Path(os.environ.get("XDG_CONFIG_HOME", str(home / ".config")))
-    unit = "mct-admin-smoke-" + secrets.token_hex(12) + ".service"
-    unit_path = config / "systemd/user" / unit
+    service = SystemUnit("mct-admin-smoke-" + secrets.token_hex(12) + ".service")
+    unit, unit_path = service.name, service.path
+    write_new(directory / "service.json", {"unit": unit, "path": str(unit_path)})
     text = render_unit(Path(args.unit_template).read_text(), str(binary), str(ceremony.root),
                        ceremony.mother, ceremony.ledger)
     execute([installer, "--root", ceremony.root, "--mother", ceremony.mother,
              "--ledger-id", ceremony.ledger, "--unit-name", unit])
-    identity = unit_identity(unit_path)
+    identity = unit_identity(unit_path, owner_uid=0)
     require(identity[2] == hashlib.sha256(text.encode()).hexdigest(), "installer unit mismatch")
-    gcroot = config / "mct/package-roots" / unit
-    require(gcroot.is_symlink() and gcroot.resolve() == binary.parent.parent, "package retention missing")
+    retained = execute(["sudo", "-n", shutil.which("readlink"), service.gcroot]).stdout.strip()
+    require(retained == str(binary.parent.parent), "package retention missing")
     metrics = {}
     try:
         systemctl("daemon-reload")
@@ -223,7 +229,7 @@ def main():
         first_epoch = ceremony.status()
         metrics["cold_readiness_ms"] = (time.monotonic() - started) * 1000
         verify_sandbox(pid, ceremony.root, directory)
-        print("PASS install/start the user service", flush=True)
+        print("PASS install/start the system service as pi:pi", flush=True)
         idle = []
         for _ in range(5):
             idle.append(rss(pid)["VmRSS"])
@@ -275,13 +281,11 @@ def main():
         durable = metrics["durable_write"]
         print(f"METRIC durable-write p50={durable['p50_ms']:.3f} ms p95={durable['p95_ms']:.3f} ms max={durable['max_ms']:.3f} ms (n=40; append+sync_data, verified reopen)", flush=True)
     finally:
-        require(unit_identity(unit_path) == identity, "unit changed; cleanup refused")
-        systemctl("stop", unit)
+        require(unit_identity(unit_path, owner_uid=0) == identity, "unit changed; cleanup refused")
+        execute([installer, "--operation", "remove", "--unit-name", unit,
+                 "--expected-identity", json.dumps(identity)])
         require(properties(unit).get("MainPID") == "0", "service did not stop")
-        remove_unit(unit_path, identity)
-        require(gcroot.is_symlink() and gcroot.resolve() == binary.parent.parent, "package root changed")
-        gcroot.unlink()
-        systemctl("daemon-reload")
+        require(not os.path.lexists(unit_path), "test unit still installed")
     print("PASS isolated service cleanup; private evidence preserved", flush=True)
 
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import shlex
+import importlib.util
 import stat
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -12,7 +13,27 @@ from mother_systemd import render_unit, install_unit, remove_unit, mount_options
 TEMPLATE = Path(__file__).resolve().parent.parent / "nix/mother-admin.service.in"
 
 
+INSTALLER_SPEC = importlib.util.spec_from_file_location("installer", Path(__file__).with_name("mother-admin-service.py"))
+installer = importlib.util.module_from_spec(INSTALLER_SPEC)
+INSTALLER_SPEC.loader.exec_module(installer)
+
+
 class UnitTests(unittest.TestCase):
+    def test_changed_system_unit_is_not_stopped_or_removed(self):
+        unit = mother_systemd.SystemUnit("mct-admin-test.service")
+        with patch.object(installer, "unit_identity", return_value=(1, 2, "changed")), patch.object(installer, "run") as command:
+            with self.assertRaisesRegex(ValueError, "unit changed"):
+                installer.remove_system_unit(unit, (1, 2, "original"), Path("/nix/store/package"))
+            command.assert_not_called()
+
+    def test_system_publication_requires_root_before_creating_files(self):
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as tmp:
+            path = Path(tmp) / "unit.service"
+            with patch.object(mother_systemd.os, "geteuid", return_value=1000):
+                with self.assertRaises(PermissionError):
+                    install_unit(path, b"unit", system=True)
+            self.assertFalse(path.exists())
+
     def test_exec_arguments_cannot_inject_systemd_directives_or_expansions(self):
         unit = render_unit(TEMPLATE.read_text(), "/nix/store/example/bin/mct-daemon",
                            '/private/a "%x$HOME', "mother-test", "ledger-test")
@@ -22,12 +43,39 @@ class UnitTests(unittest.TestCase):
         self.assertIn('WorkingDirectory=/\n', unit)
         self.assertIn('KillSignal=SIGINT', unit)
         self.assertIn('NoNewPrivileges=yes', unit)
-        self.assertIn('PrivateUsers=yes', unit)
+        self.assertIn('User=pi\nGroup=pi\n', unit)
+        self.assertNotIn('PrivateUsers=', unit)
+        self.assertIn('ProtectSystem=strict', unit)
+        self.assertIn('ReadWritePaths=', unit)
+        self.assertIn('PrivateTmp=yes', unit)
+        self.assertIn('WantedBy=multi-user.target', unit)
         self.assertIn('RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK', unit)
         self.assertIn('CapabilityBoundingSet=\n', unit)
         for root in ["relative", "/tmp/a\nExecStart=/bin/evil", "/tmp/a\x00"]:
             with self.assertRaises(ValueError):
                 render_unit(TEMPLATE.read_text(), "/nix/store/example/bin/mct-daemon", root, "m", "l")
+
+    def test_system_unit_paths_are_fixed_and_names_cannot_escape(self):
+        unit = mother_systemd.SystemUnit('mct-admin-test.service')
+        self.assertEqual(unit.path, Path('/etc/systemd/system/mct-admin-test.service'))
+        self.assertEqual(unit.gcroot, Path('/var/lib/mct/package-roots/mct-admin-test.service'))
+        for name in ['../other.service', 'other.service', 'mct-admin-x.service\nUser=root', 'mct-admin-x.target']:
+            with self.assertRaises(ValueError):
+                mother_systemd.SystemUnit(name)
+
+    def test_root_owned_unit_identity_rejects_writable_or_wrong_owner(self):
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as tmp:
+            unit = Path(tmp) / 'unit.service'
+            unit.write_bytes(b'unit')
+            unit.chmod(0o644)
+            with self.assertRaises(ValueError):
+                mother_systemd.unit_identity(unit, owner_uid=0)
+            metadata = SimpleNamespace(st_uid=0, st_mode=stat.S_IFREG | 0o644, st_nlink=1, st_dev=1, st_ino=2)
+            with patch.object(mother_systemd.os, 'fstat', return_value=metadata):
+                self.assertEqual(mother_systemd.unit_identity(unit, owner_uid=0)[:2], (1, 2))
+                metadata.st_mode |= 0o020
+                with self.assertRaises(ValueError):
+                    mother_systemd.unit_identity(unit, owner_uid=0)
 
     def test_program_content_verification_must_succeed_before_use(self):
         binary = Path('/nix/store/example/bin/mct-daemon')
