@@ -36,6 +36,16 @@ class UnitTests(unittest.TestCase):
             self.assertEqual([call[1] for call in calls], ['stop', 'show', 'disable', 'daemon-reload'])
             self.assertFalse(unit.gcroot.is_symlink())
 
+    def test_transient_or_vendor_unit_cannot_be_shadowed_by_installation(self):
+        unit = mother_systemd.SystemUnit('mct-admin-unpublished-test.service')
+        with patch.object(installer.os.path, 'lexists', return_value=False), patch.object(installer, 'run') as command, patch.object(installer, 'trusted_systemctl', return_value=Path('/usr/bin/systemctl')):
+            for state in ['loaded\n', 'masked\n', 'bad-setting\n', '']:
+                command.return_value = SimpleNamespace(stdout=state)
+                with self.assertRaises(FileExistsError):
+                    installer.require_new_unit(unit)
+            command.return_value = SimpleNamespace(stdout='not-found\n')
+            installer.require_new_unit(unit)
+
     def test_changed_system_unit_is_not_stopped_or_removed(self):
         unit = mother_systemd.SystemUnit("mct-admin-test.service")
         with patch.object(installer, "unit_identity", return_value=(1, 2, "changed")), patch.object(installer, "run") as command:

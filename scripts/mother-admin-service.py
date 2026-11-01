@@ -27,6 +27,14 @@ def root_command(entrypoint, *args):
     return run(sudo, "-n", entrypoint, *args)
 
 
+def require_new_unit(unit):
+    if os.path.lexists(unit.gcroot) or os.path.lexists(unit.path):
+        raise FileExistsError("unit/package root exists; inspect it rather than replacing it")
+    state = run(trusted_systemctl(), "show", unit.name, "-p", "LoadState", "--value").stdout.strip()
+    if state != "not-found":
+        raise FileExistsError("unit name is already known to the system manager")
+
+
 def remove_system_unit(unit, expected, package):
     if unit_identity(unit.path, owner_uid=0) != expected:
         raise ValueError("unit changed; preserve it for inspection")
@@ -97,8 +105,7 @@ def main():
     contents = render_unit(Path(args.unit_template).read_text(), str(binary), str(root), args.mother, args.ledger_id)
     safe_directory(unit.gcroot.parent, create=True)
     safe_directory(unit.path.parent)
-    if os.path.lexists(unit.gcroot) or os.path.lexists(unit.path):
-        raise FileExistsError("unit/package root exists; inspect it rather than replacing it")
+    require_new_unit(unit)
     run("nix-store", "--add-root", unit.gcroot, "--indirect", "--realise", binary.parent.parent)
     identity = install_unit(unit.path, contents.encode(), system=True)
     run(trusted_systemctl(), "daemon-reload")

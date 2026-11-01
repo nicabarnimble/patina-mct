@@ -55,6 +55,7 @@ def rss(pid):
 
 def verify_sandbox(pid, root, outside):
     mountinfo = Path(f"/proc/{pid}/mountinfo").read_text()
+    require("ro" in mount_options(mountinfo, "/"), "system root is not read-only")
     require("rw" in mount_options(mountinfo, root), "canonical root is not writable")
     require("ro" in mount_options(mountinfo, outside), "home sandbox is not read-only")
     require("ro" in mount_options(mountinfo, "/nix/store"), "package store is not read-only")
@@ -66,7 +67,7 @@ def verify_sandbox(pid, root, outside):
     require(os.readlink(f"/proc/{pid}/ns/mnt") != os.readlink("/proc/self/ns/mnt"), "missing mount namespace")
     require(Path(f"/proc/{pid}/root").stat().st_uid == 0, "host-root ownership changed")
     require(Path(f"/proc/{pid}/root/tmp").stat().st_ino != Path("/tmp").stat().st_ino, "temporary directory is not private")
-    require(int(status["CapEff"], 16) == 0 and int(status["CapAmb"], 16) == 0, "unexpected service capabilities")
+    require(all(int(status[field], 16) == 0 for field in ("CapEff", "CapAmb", "CapBnd")), "unexpected service capabilities")
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         sockets = set()
