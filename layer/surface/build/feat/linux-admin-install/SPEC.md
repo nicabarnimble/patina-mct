@@ -12,6 +12,14 @@ exit_criteria:
     text: Root-owned system-unit installation for pi:pi refuses existing files, unsafe ancestry and directive injection without provisioning authority.
     checked: true
     verify: python3 scripts/test-mother-systemd.py
+  - id: immutable-installer-inputs
+    text: Privileged installation leaves packaged Python inputs unchanged and the physical gate verifies their hashes after cleanup.
+    checked: true
+    verify: python3 scripts/test-mother-systemd.py
+  - id: pi3-hardware-gate
+    text: The admin-only gate passes on physical nicanode0 using prebuilt packages, with measured resources and verified cleanup.
+    checked: true
+    verify: nix run --offline --max-jobs 0 --builders "" .#mother-install-smoke
   - id: bounded-local-admin
     text: Explicit loopback binding preserves signed admission and default CLI compatibility.
     checked: true
@@ -79,4 +87,6 @@ Report process-cold signed readiness (not cold disk), five idle RSS samples,
 Mother high-water RSS across both tenures, isolated component compile time and
 helper-process high-water RSS, and durable-write nearest-rank p50/p95/max with
 raw samples. These are hardware observations, not power-loss guarantees or a
-one-gigabyte fitness claim. Physical Pi 3 acceptance remains required separately.
+one-gigabyte workload-capacity claim. The first physical Pi 3 admin-only gate
+passed with the installer input fix; see [nicanode0 evidence](../../../../../docs/nicanode0-install-evidence.md).
+This does not authorize additional host rollout.

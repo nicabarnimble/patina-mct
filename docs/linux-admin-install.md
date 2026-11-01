@@ -3,7 +3,9 @@
 The hardware gate passes on nicamaster with a system-level unit running as
 `User=pi` and `Group=pi`. The system manager establishes filesystem confinement
 without `PrivateUsers`; Mother's ownership check remains unchanged. No linger
-is needed. See the [hardware evidence](linux-admin-install-evidence.md).
+is needed. See the [nicamaster evidence](linux-admin-install-evidence.md) and
+[first Pi 3 acceptance](nicanode0-install-evidence.md). The Pi 3 run required the
+privileged-installer bytecode fix; the unchanged Rust package came from PR #91.
 
 This slice packages the **admin-only** Mother on Debian with Nix, not NixOS.
 Each Mother keeps its own identity and canonical state on local storage. It does
@@ -38,7 +40,10 @@ refusal, revocation, forced restart, fresh revoked-key denial and WASI execution
 It exits nonzero on a missing measurement, timeout, wrong result, transport
 failure masquerading as rejection, or cleanup failure. An indeterminate signed
 submission is not retried. Successful cleanup stops/removes only its own unit and
-package retention link. The printed private evidence directory remains; it
+package retention link, then verifies that the packaged script inputs still
+match their Nix hash. Privileged Python installation disables bytecode writes;
+root must not add `__pycache__` to immutable package inputs. The printed private
+evidence directory remains; it
 contains test key material and must **not** be uploaded wholesale.
 
 Measurements:
