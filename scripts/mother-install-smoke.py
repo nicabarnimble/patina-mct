@@ -204,14 +204,14 @@ def main():
     home = safe_directory(Path.home())
     filesystem = execute(["findmnt", "-n", "-o", "FSTYPE", "-T", home]).stdout.strip()
     require(filesystem in {"ext4", "xfs", "btrfs"}, "gate requires a local supported filesystem")
+    service = SystemUnit("mct-admin-smoke-" + secrets.token_hex(12) + ".service")
+    unit, unit_path = service.name, service.path
     systemctl("show", unit, "-p", "LoadState")
     directory = Path(tempfile.mkdtemp(prefix=".mct-install-smoke-", dir=home))
     print(f"Private test evidence: {directory}", flush=True)
     print("Software test authority only; not a 1Password ceremony or production identity.", flush=True)
     ceremony = Ceremony(binary, directory)
     ceremony.bootstrap()
-    service = SystemUnit("mct-admin-smoke-" + secrets.token_hex(12) + ".service")
-    unit, unit_path = service.name, service.path
     write_new(directory / "service.json", {"unit": unit, "path": str(unit_path)})
     text = render_unit(Path(args.unit_template).read_text(), str(binary), str(ceremony.root),
                        ceremony.mother, ceremony.ledger)
