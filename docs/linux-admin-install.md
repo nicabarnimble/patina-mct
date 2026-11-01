@@ -4,8 +4,10 @@ The hardware gate passes on nicamaster with a system-level unit running as
 `User=pi` and `Group=pi`. The system manager establishes filesystem confinement
 without `PrivateUsers`; Mother's ownership check remains unchanged. No linger
 is needed. See the [nicamaster evidence](linux-admin-install-evidence.md) and
-[first Pi 3 acceptance](nicanode0-install-evidence.md). The Pi 3 run required the
-privileged-installer bytecode fix; the unchanged Rust package came from PR #91.
+[first Pi 3 acceptance](nicanode0-install-evidence.md). That run required the
+privileged-installer bytecode fix, since merged in PR #92. The unchanged Rust
+package came from PR #91. [Nicanode1 acceptance](nicanode1-install-evidence.md)
+records the same sequence and passing gate on merged main.
 
 This slice packages the **admin-only** Mother on Debian with Nix, not NixOS.
 Each Mother keeps its own identity and canonical state on local storage. It does

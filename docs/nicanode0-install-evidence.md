@@ -198,3 +198,10 @@ This proves the bounded admin-only gate on one Pi 3. It does not prove full Chil
 workloads, large-history startup, power-loss recovery, replication, AOT safety or
 fleet capacity. The installer correction requires its own review and merge;
 no merge or additional host rollout was authorized.
+
+## Subsequent delivery
+
+PR #92 later merged at `d3e93b5` with owner authorization. The next authorized
+host, nicanode1, passed the same sequence on that merged implementation.
+See the [nicanode1 evidence](nicanode1-install-evidence.md). The original failed
+imports and this first-host evidence remain historical records.
