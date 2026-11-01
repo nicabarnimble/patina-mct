@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 """Install a root-owned system unit for a provisioned Mother running as pi:pi."""
+import sys
+
+# Root can otherwise add __pycache__ to read-only Nix store inputs.
+sys.dont_write_bytecode = True
+
 import argparse
 import json
 import os
