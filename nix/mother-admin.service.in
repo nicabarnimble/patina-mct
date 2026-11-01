@@ -1,0 +1,34 @@
+[Unit]
+Description=MCT admin Mother
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=exec
+User=pi
+Group=pi
+ExecStart=@EXEC@
+WorkingDirectory=/
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@ROOT@
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=yes
+MemoryAccounting=yes
+MemoryMax=512M
+TasksMax=64
+KillSignal=SIGINT
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

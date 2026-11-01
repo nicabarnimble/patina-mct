@@ -35,7 +35,13 @@ fn options(args: Vec<String>) -> Result<(String, BTreeMap<String, String>)> {
         anyhow!("expected prepare-genesis, bootstrap, prepare, apply, day-keygen or sign-day")
     })?;
     let allowed: &[&str] = match command.as_str() {
-        "serve-iroh" => &["--root", "--mother", "--ledger-id", "--ticket-output"],
+        "serve-iroh" => &[
+            "--root",
+            "--mother",
+            "--ledger-id",
+            "--ticket-output",
+            "--bind-address",
+        ],
         "send-iroh" => &["--ticket", "--request"],
         "day-keygen" => &["--secret-output"],
         "sign-day" => &["--intent", "--grant", "--secret"],
@@ -64,8 +70,14 @@ fn options(args: Vec<String>) -> Result<(String, BTreeMap<String, String>)> {
         }
     }
     for flag in allowed {
-        if !flags.contains_key(*flag) {
+        if *flag != "--bind-address" && !flags.contains_key(*flag) {
             bail!("missing {flag}");
+        }
+    }
+    if let Some(address) = flags.get("--bind-address") {
+        let address: std::net::SocketAddr = address.parse()?;
+        if !address.ip().is_loopback() {
+            bail!("explicit admin bind address must be loopback");
         }
     }
     Ok((command, flags))
@@ -78,6 +90,7 @@ pub(super) async fn run_passkey_admin(args: Vec<String>) -> Result<()> {
             flags["--mother"].clone(),
             flags["--ledger-id"].clone(),
             PathBuf::from(&flags["--ticket-output"]),
+            flags.get("--bind-address").map(|s| s.parse()).transpose()?,
         )
         .await;
     }
@@ -241,6 +254,30 @@ fn print_prepared(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn passkey_admin_optional_bind_is_loopback_only() {
+        let base = vec![
+            "serve-iroh",
+            "--root",
+            "/private/test",
+            "--mother",
+            "m",
+            "--ledger-id",
+            "l",
+            "--ticket-output",
+            "/private/ticket",
+        ];
+        assert!(options(base.iter().map(|s| (*s).into()).collect()).is_ok());
+        for address in ["127.0.0.1:0", "[::1]:1234"] {
+            let args = [base.clone(), vec!["--bind-address", address]].concat();
+            assert!(options(args.into_iter().map(String::from).collect()).is_ok());
+        }
+        for address in ["0.0.0.0:0", "10.10.10.15:1234", "invalid"] {
+            let args = [base.clone(), vec!["--bind-address", address]].concat();
+            assert!(options(args.into_iter().map(String::from).collect()).is_err());
+        }
+    }
+
     #[test]
     fn passkey_cli_requires_explicit_trust_and_rejects_unknown_duplicate_options() {
         assert!(

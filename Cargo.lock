@@ -2617,6 +2617,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mct-install-probe"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "mct-kernel",
+ "mct-observation",
+ "serde_json",
+ "wasmtime",
+ "wasmtime-wasi",
+ "wat",
+]
+
+[[package]]
 name = "mct-iroh"
 version = "0.2.0"
 dependencies = [

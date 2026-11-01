@@ -62,6 +62,7 @@ pub(crate) async fn run_passkey_admin_server(
     mother: String,
     ledger_id: String,
     ticket_output: PathBuf,
+    bind_address: Option<std::net::SocketAddr>,
 ) -> Result<()> {
     let path = root.join("observations.jsonl");
     let ledger = ResidentLedgerWriter::open_passkey_admin(path, &ledger_id, &mother)?;
@@ -82,6 +83,9 @@ pub(crate) async fn run_passkey_admin_server(
             Err(error) => return Err(error.into()),
         };
         let mut endpoint_config = MotherIrohEndpointConfig::local_mct().with_secret_key_hex(secret);
+        if let Some(address) = bind_address {
+            endpoint_config = endpoint_config.with_bind_addr(address);
+        }
         // No peer/call/legacy-control serving on this bounded initial mode.
         endpoint_config.accepted_alpns = vec![MCT_ADMIN_ALPN.into()];
         let mut endpoint = MotherIrohEndpoint::bind(endpoint_config).await?;

@@ -5,6 +5,7 @@ members = [
     "crates/mct-iroh",
     "crates/mct-daemon",
     "crates/phase3-measure",
+    "crates/mct-install-probe",
 ]
 resolver = "2"
 
