@@ -204,7 +204,7 @@ def main():
     home = safe_directory(Path.home())
     filesystem = execute(["findmnt", "-n", "-o", "FSTYPE", "-T", home]).stdout.strip()
     require(filesystem in {"ext4", "xfs", "btrfs"}, "gate requires a local supported filesystem")
-    systemctl("show-environment")
+    systemctl("show", unit, "-p", "LoadState")
     directory = Path(tempfile.mkdtemp(prefix=".mct-install-smoke-", dir=home))
     print(f"Private test evidence: {directory}", flush=True)
     print("Software test authority only; not a 1Password ceremony or production identity.", flush=True)
