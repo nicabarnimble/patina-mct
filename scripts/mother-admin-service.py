@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import tempfile
 
-from mother_systemd import SystemUnit, install_unit, remove_unit, render_unit, safe_directory, trusted_program, unit_identity
+from mother_systemd import SystemUnit, install_unit, remove_unit, render_unit, safe_directory, trusted_program, trusted_systemctl, unit_identity
 from passkey_queue import write_new
 
 
@@ -33,13 +33,13 @@ def remove_system_unit(unit, expected, package):
     safe_directory(unit.gcroot.parent)
     if not unit.gcroot.is_symlink() or unit.gcroot.resolve() != package:
         raise ValueError("package root changed; cleanup refused")
-    run("systemctl", "stop", unit.name)
-    if run("systemctl", "show", unit.name, "-p", "MainPID", "--value").stdout.strip() != "0":
+    run(trusted_systemctl(), "stop", unit.name)
+    if run(trusted_systemctl(), "show", unit.name, "-p", "MainPID", "--value").stdout.strip() != "0":
         raise RuntimeError("service did not stop")
-    run("systemctl", "disable", unit.name)
+    run(trusted_systemctl(), "disable", unit.name)
     remove_unit(unit.path, expected, owner_uid=0)
     unit.gcroot.unlink()
-    run("systemctl", "daemon-reload")
+    run(trusted_systemctl(), "daemon-reload")
 
 
 def main():
@@ -101,7 +101,7 @@ def main():
         raise FileExistsError("unit/package root exists; inspect it rather than replacing it")
     run("nix-store", "--add-root", unit.gcroot, "--indirect", "--realise", binary.parent.parent)
     identity = install_unit(unit.path, contents.encode(), system=True)
-    run("systemctl", "daemon-reload")
+    run(trusted_systemctl(), "daemon-reload")
     print(json.dumps({"unit": unit.name, "identity": identity, "package_root": str(unit.gcroot)}))
     print(f"Start explicitly: sudo systemctl enable --now {unit.name}")
 

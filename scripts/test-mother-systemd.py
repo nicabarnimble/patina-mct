@@ -19,6 +19,23 @@ INSTALLER_SPEC.loader.exec_module(installer)
 
 
 class UnitTests(unittest.TestCase):
+    def test_removal_uses_the_host_systemctl_not_a_newer_nix_client(self):
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as tmp:
+            package = Path('/nix/store/example')
+            unit = SimpleNamespace(name='mct-admin-test.service', path=Path(tmp)/'unit', gcroot=Path(tmp)/'gcroot')
+            unit.gcroot.symlink_to(package)
+            calls = []
+            def command(*args):
+                calls.append(tuple(map(str, args)))
+                if str(args[0]) != '/usr/bin/systemctl':
+                    raise RuntimeError('client does not match the system manager')
+                return SimpleNamespace(stdout='0\n')
+            with patch.object(installer, 'unit_identity', return_value=(1, 2, 'hash')), patch.object(installer, 'run', side_effect=command), patch.object(installer, 'remove_unit') as remove, patch.object(installer, 'trusted_systemctl', return_value=Path('/usr/bin/systemctl'), create=True):
+                installer.remove_system_unit(unit, (1, 2, 'hash'), package)
+                remove.assert_called_once_with(unit.path, (1, 2, 'hash'), owner_uid=0)
+            self.assertEqual([call[1] for call in calls], ['stop', 'show', 'disable', 'daemon-reload'])
+            self.assertFalse(unit.gcroot.is_symlink())
+
     def test_changed_system_unit_is_not_stopped_or_removed(self):
         unit = mother_systemd.SystemUnit("mct-admin-test.service")
         with patch.object(installer, "unit_identity", return_value=(1, 2, "changed")), patch.object(installer, "run") as command:

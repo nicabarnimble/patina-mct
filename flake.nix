@@ -34,7 +34,7 @@
       python = pkgs.python3.withPackages (p: [ p.cryptography ]);
       service = pkgs.writeShellApplication {
         name = "mother-admin-service";
-        runtimeInputs = [ pkgs.systemd pkgs.nix pkgs.util-linux ];
+        runtimeInputs = [ pkgs.nix pkgs.util-linux ];
         text = ''
           exec ${python}/bin/python3 ${./scripts}/mother-admin-service.py "$@" \
             --binary ${mother}/bin/mct-daemon \
@@ -43,7 +43,7 @@
       };
       smoke = pkgs.writeShellApplication {
         name = "mother-install-smoke";
-        runtimeInputs = [ pkgs.systemd pkgs.nix pkgs.util-linux pkgs.coreutils ];
+        runtimeInputs = [ pkgs.nix pkgs.util-linux pkgs.coreutils ];
         text = ''
           exec ${python}/bin/python3 ${./scripts}/mother-install-smoke.py \
             --binary ${mother}/bin/mct-daemon \

@@ -17,7 +17,7 @@ import time
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from mother_systemd import SystemUnit, mount_options, render_unit, safe_directory, trusted_program, unit_identity
+from mother_systemd import SystemUnit, mount_options, render_unit, safe_directory, trusted_program, trusted_systemctl, unit_identity
 from passkey_queue import read_private, write_new
 
 
@@ -34,7 +34,7 @@ def execute(argv, success=True, timeout=60):
 
 
 def systemctl(*args, **kwargs):
-    return execute(["sudo", "-n", shutil.which("systemctl"), *args], **kwargs)
+    return execute(["sudo", "-n", trusted_systemctl(), *args], **kwargs)
 
 
 def properties(unit):
@@ -217,6 +217,7 @@ def main():
     execute([installer, "--root", ceremony.root, "--mother", ceremony.mother,
              "--ledger-id", ceremony.ledger, "--unit-name", unit])
     identity = unit_identity(unit_path, owner_uid=0)
+    write_new(directory / "installed-unit.json", {"unit": unit, "identity": identity})
     require(identity[2] == hashlib.sha256(text.encode()).hexdigest(), "installer unit mismatch")
     retained = execute(["sudo", "-n", shutil.which("readlink"), service.gcroot]).stdout.strip()
     require(retained == str(binary.parent.parent), "package retention missing")
@@ -257,7 +258,7 @@ def main():
         endpoint_identity = hashlib.sha256((ceremony.root / "identity/admin-iroh-secret.hex").read_bytes()).digest()
         old_mtime = ceremony.ticket.stat().st_mtime_ns
         peaks = [rss(pid)["VmHWM"]]
-        systemctl("kill", "--signal=SIGKILL", "--kill-whom=main", unit)
+        systemctl("kill", "--signal=SIGKILL", "--kill-who=main", unit)
         pid = wait_ready(unit, unit_path, binary, ceremony.ticket, pid, old_mtime)
         require((ceremony.root / "observations.jsonl").read_bytes().startswith(before), "restart lost canonical history")
         require(hashlib.sha256((ceremony.root / "identity/admin-iroh-secret.hex").read_bytes()).digest() == endpoint_identity,

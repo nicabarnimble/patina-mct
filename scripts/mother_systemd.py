@@ -78,6 +78,15 @@ def trusted_program(path, verify_contents):
     return path
 
 
+def trusted_systemctl():
+    path = Path("/usr/bin/systemctl").resolve(strict=True)
+    safe_directory(path.parent, owner_uid=0)
+    info = path.stat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        raise ValueError("systemctl must be owned by root and not writable by others")
+    return path
+
+
 def mount_options(mountinfo, path):
     """Select the effective (longest ancestor) mount, decoding procfs escapes."""
     candidates = []
