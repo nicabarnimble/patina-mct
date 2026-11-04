@@ -1,5 +1,7 @@
 # NIC-53 nicanode5 acceptance on merged main
 
+Operator update for 2026-11-03. All nodes moved to Debian 13 (trixie), and the Mother smoke test was re-run. Refs NIC-53.
+
 ## Verdict
 
 Nicanode5 passed the physical Pi 3 Mother smoke on 2026-11-01 UTC, exit 0.
