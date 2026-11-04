@@ -75,6 +75,18 @@ The unchanged checker lists each filter, enforces its minimum, runs it serially,
 and requires every selected test to pass with zero ignored or measured tests.
 It retains its 900-second per-command timeout and process-group cleanup.
 
+Publication review found that an option such as `--ignored` could enter through
+an option-like filter, although it was already refused after the separator.
+The attached dispatcher now rejects filters beginning with `-`. The original
+Pi run predates this guard; none of its selected filters begins with `-`, so
+its dispatched arguments and recorded results are unchanged. The regression
+check covers both argument forms for all six mapped targets, option-like
+filters, and exit-status preservation:
+
+```sh
+node --test docs/evidence/nic63-slice1/prebuilt-cargo.test.mjs
+```
+
 ## Results
 
 Both `check-finish.py proofs` runs exited **0** on the first attempt. Each

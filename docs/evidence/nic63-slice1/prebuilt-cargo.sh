@@ -16,7 +16,7 @@ case "$key" in
 esac
 filter=$1
 shift
-case "$filter" in ''|*[!A-Za-z0-9_:-]*) fail ;; esac
+case "$filter" in ''|-*|*[!A-Za-z0-9_:-]*) fail ;; esac
 [ "$1" = -- ] || fail
 shift
 if [ "$#" = 1 ]; then
