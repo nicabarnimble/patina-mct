@@ -435,9 +435,9 @@ are not proof that their runtime consumers and production ingress are complete.
 | F3 | `final-admission` | [ ] Fence final Child/effect execution against concurrent revocation and stale authority; bind executed artifact identity. Define task/invocation/effect/checkpoint recovery boundaries without inventing exactly-once execution, global call-ID fencing or changing the 720-second keyed retry contract. |
 | F4 | `key-recovery` | [ ] Passkey root-loss/replacement policy remains separate. The D-54/D-55 guardian ceremony is archived under D-58, with code/spec/tests retained for reference; it is not required for day-key administration. No implicit recovery or legacy-root promotion. |
 | F5 | `fleet-operations` | [ ] Provision, inspect, revoke, stop, quarantine, recover and upgrade independent instances without identity/path/service collisions. Inventory is not authority and must not become a required shared coordinator. |
-| F6 | `distributed-failures` | [ ] Obtain approved disposable hosts/actions and exercise partition, reconnect, stale bindings, lost replies, retry correlation, peer restart and rolling upgrade. Prove unavailable peers do not stop unrelated local work. Same-host six-process tests are not physical multi-host evidence. |
+| F6 | `distributed-failures` | [x] Disposable Pi hosts/actions approved in the [NIC-63 amendment](DECISIONS.md#nic-63-amendment-supported-target-and-disposable-pi-testing). [ ] Exercise partition, reconnect, stale bindings, lost replies, retry correlation, peer restart and rolling upgrade. Prove unavailable peers do not stop unrelated local work. Same-host six-process tests are not physical multi-host evidence. |
 | F7 | `useful-workflow` | [ ] Produce a real artifact and authorize publication against its exact digest; reject unauthorized requester/artifact. Demonstrate independent work during outage and no blind replay of unknown external effects. |
-| F8 | `release-evidence` | [ ] Verify supported macOS arm64 artifacts, custody/setup/upgrade/recovery procedures, security claims and host matrix; finish relevant security investigations; run full release acceptance and obtain owner evidence review. No release/deployment is authorized by creating this plan. |
+| F8 | `release-evidence` | [ ] Verify supported macOS arm64 and Linux arm64 artifacts, custody/setup/upgrade/recovery procedures, security claims and host matrix; finish relevant security investigations; run full release acceptance and obtain owner evidence review. No release/deployment is authorized by creating this plan. |
 
 ### Decisions and external access still needed
 
@@ -447,9 +447,11 @@ are not proof that their runtime consumers and production ingress are complete.
 - [ ] Trusted setup/supervisor lifecycle: resolve pin acquisition, virgin-state
   inventory, publication/race fencing and lifecycle authority. The existing
   proposal is not approval; genesis setup construction remains test-only.
-- [ ] Identify approved disposable multi-host macOS targets, permitted actions
-  and evidence to return through Devin. Do not assume direct remote access or
-  extend release support to Linux/Unraid without explicit scope and proof.
+- [x] Doug approved disposable Pi tests and Linux arm64 support. Record platform
+  evidence separately from release completion; see [NIC-63 slice 1](nic63-slice1-nicamaster.md).
+- [ ] Identify any additional disposable macOS targets, permitted actions and
+  evidence to return through Devin. Do not assume that Pi approval authorizes
+  production or PiD/Unraid deployments.
 - [x] H3 rejection-observation contract resolved by the owner on 2026-10-25:
   retain Rule 3 and mandatory `BeforeEffect` rejection facts; write failure
   denies the effect. No doctrine amendment or silent evidence suppression.

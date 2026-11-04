@@ -16,11 +16,15 @@ evidence to explain every authority decision and effect.
   execution configuration.
 - Perform rollback explicitly; upgrade never silently rolls back.
 
-## Current platform
+## Supported platforms
 
-The proven 0.2.0 lifecycle is a macOS user-launchd service on
-`aarch64-apple-darwin`. Other platforms are not implied by portable Rust source
-alone.
+MCT supports macOS `aarch64-apple-darwin` and Linux `aarch64-unknown-linux-gnu`.
+The macOS lifecycle uses user launchd. Linux has a bounded Nix/systemd
+admin-only lifecycle. The repository contains its procedure in
+`docs/linux-admin-install.md` and hardware evidence in
+`docs/linux-admin-install-evidence.md`. NIC-63 slice 1 compares same-host proof
+tests in `docs/nic63-slice1-nicamaster.md`. It does not establish multi-host
+partitions, rolling upgrades or the full passkey Child runtime.
 
 Detailed procedures will be added only with executable validation or linked
 release evidence. Focused tasks belong in [How-to guides](../how-to/index.md).

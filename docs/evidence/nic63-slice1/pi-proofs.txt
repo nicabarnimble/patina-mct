@@ -1,0 +1,253 @@
+=== completion proof: genesis-writer ===
++ cargo test --locked -p mct-observation --lib admin_genesis_tests:: -- --list
+prebuilt dispatch: target/debug/deps/mct_observation-38d5c750245bd6a1 admin_genesis_tests::
+admin_genesis_tests::admin_genesis_atomic_birth_sets_root_epoch_nonce_and_distinct_hash_domain: test
+admin_genesis_tests::admin_genesis_birth_time_fences_backdated_issuance: test
+admin_genesis_tests::admin_genesis_both_halves_signer_nonce_and_domain_are_required: test
+admin_genesis_tests::admin_genesis_corpus_roundtrip_and_explicit_export: test
+admin_genesis_tests::admin_genesis_current_root_issues_under_d56_and_birth_nonce_stays_consumed: test
+admin_genesis_tests::admin_genesis_exact_retry_is_historical_and_changes_conflict_after_tenure_and_issuance: test
+admin_genesis_tests::admin_genesis_existing_zero_byte_file_is_not_virgin_even_with_asserted_setup: test
+admin_genesis_tests::admin_genesis_hash_denies_missing_or_replaced_root_without_recovery: test
+admin_genesis_tests::admin_genesis_legacy_mutations_and_imports_cannot_mutate_or_install_profile: test
+admin_genesis_tests::admin_genesis_partial_and_complete_frame_crashes_never_create_a_second_origin: test
+admin_genesis_tests::admin_genesis_pin_is_separate_from_self_signed_request_including_each_key_half: test
+admin_genesis_tests::admin_genesis_replay_rejects_carrier_tampering_and_birth_epoch_reuse: test
+admin_genesis_tests::admin_genesis_replay_rejects_grafting_after_legacy_or_noncanonical_prefix: test
+admin_genesis_tests::admin_genesis_requires_exact_target_inventory_and_strict_root_shape: test
+admin_genesis_tests::admin_genesis_setup_refuses_inferred_virgin_operator_gate_and_stale_inventory_state: test
+admin_genesis_tests::admin_genesis_unsigned_epoch_cannot_be_promoted_even_with_empty_grants: test
+admin_genesis_tests::admin_genesis_wire_is_strict_and_legacy_state_omits_profile: test
++ cargo test --locked -p mct-observation --lib admin_genesis_tests:: -- --nocapture --test-threads=1
+prebuilt dispatch: target/debug/deps/mct_observation-38d5c750245bd6a1 admin_genesis_tests::
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 137 filtered out; finished in 25.05s
+=== completion proof: genesis-runtime-deny ===
++ cargo test --locked -p mct-daemon --lib strict_admin_genesis_cannot_start_through_legacy_runtime -- --list
+prebuilt dispatch: target/debug/deps/mct_daemon-c560a4d61f72da89 strict_admin_genesis_cannot_start_through_legacy_runtime
+startup::tests::strict_admin_genesis_cannot_start_through_legacy_runtime: test
++ cargo test --locked -p mct-daemon --lib strict_admin_genesis_cannot_start_through_legacy_runtime -- --nocapture --test-threads=1
+prebuilt dispatch: target/debug/deps/mct_daemon-c560a4d61f72da89 strict_admin_genesis_cannot_start_through_legacy_runtime
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 235 filtered out; finished in 0.15s
+=== completion proof: recovery-writer ===
++ cargo test --locked -p mct-observation --lib guardian_recovery_tests::canonical_recovery_ -- --list
+prebuilt dispatch: target/debug/deps/mct_observation-38d5c750245bd6a1 guardian_recovery_tests::canonical_recovery_
+guardian_recovery_tests::canonical_recovery_absent_hash_is_identical_and_new_hash_covers_replay_protection: test
+guardian_recovery_tests::canonical_recovery_cancel_requires_quorum_and_keeps_consumed_id_and_maintenance: test
+guardian_recovery_tests::canonical_recovery_cannot_mix_with_ordinary_mutations_or_use_legacy_writer_ingress: test
+guardian_recovery_tests::canonical_recovery_completion_acks_lost_on_either_side_of_sync_replay_exactly_once: test
+guardian_recovery_tests::canonical_recovery_corpus_records_replay: test
+guardian_recovery_tests::canonical_recovery_enrollment_targets_actual_root_and_actual_ledger_tenure: test
+guardian_recovery_tests::canonical_recovery_expiry_is_terminal_and_does_not_resume_work: test
+guardian_recovery_tests::canonical_recovery_owner_cannot_resume_around_pending_quorum: test
+guardian_recovery_tests::canonical_recovery_parser_rejects_unknown_and_duplicate_fields_in_commands: test
+guardian_recovery_tests::canonical_recovery_partial_frame_preserves_residue_without_consuming_request: test
+guardian_recovery_tests::canonical_recovery_reissued_challenge_invalidates_old_quorum_and_old_nonce: test
+guardian_recovery_tests::canonical_recovery_replaces_root_and_all_day_grants_atomically_then_requires_new_root_snapshot: test
+guardian_recovery_tests::canonical_recovery_requires_all_enrollment_acceptances_and_current_canonical_root: test
+guardian_recovery_tests::canonical_recovery_restart_discards_challenge_and_requires_full_new_wait_without_extending_expiry: test
+guardian_recovery_tests::canonical_recovery_snapshot_approval_does_not_survive_a_concurrent_rebase: test
+guardian_recovery_tests::canonical_recovery_stale_state_and_duplicate_enrollment_deny_without_writes: test
+guardian_recovery_tests::canonical_recovery_strict_origin_is_history_not_an_old_root_veto_or_grant: test
+guardian_recovery_tests::canonical_recovery_wall_jump_or_monotonic_jump_alone_cannot_shorten_delay: test
++ cargo test --locked -p mct-observation --lib guardian_recovery_tests::canonical_recovery_ -- --nocapture --test-threads=1
+prebuilt dispatch: target/debug/deps/mct_observation-38d5c750245bd6a1 guardian_recovery_tests::canonical_recovery_
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 136 filtered out; finished in 135.13s
+=== completion proof: recovery-policy ===
++ cargo test --locked -p mct-observation --lib guardian_recovery_tests::policy_tests:: -- --list
+prebuilt dispatch: target/debug/deps/mct_observation-38d5c750245bd6a1 guardian_recovery_tests::policy_tests::
+guardian_recovery_tests::policy_tests::policy_edit_activation_uncertainty_replays_once_on_both_sides_of_ack: test
+guardian_recovery_tests::policy_tests::policy_edit_active_cancellation_uses_current_quorum_not_owner_or_proposed_roster: test
+guardian_recovery_tests::policy_tests::policy_edit_active_replacement_needs_owner_old_quorum_and_newcomer_acceptance: test
+guardian_recovery_tests::policy_tests::policy_edit_after_root_recovery_uses_new_root_not_genesis_or_retired_root: test
+guardian_recovery_tests::policy_tests::policy_edit_and_recovery_do_not_credit_time_spent_waiting_for_durability_ack: test
+guardian_recovery_tests::policy_tests::policy_edit_cancel_activation_race_has_exactly_one_winner: test
+guardian_recovery_tests::policy_tests::policy_edit_cancel_withdraw_and_rebase_durability_matrix: test
+guardian_recovery_tests::policy_tests::policy_edit_corpus_records_replay_and_can_be_exported_explicitly: test
+guardian_recovery_tests::policy_tests::policy_edit_disabled_owner_can_withdraw_reenable_without_former_guardian_veto: test
+guardian_recovery_tests::policy_tests::policy_edit_disablement_releases_old_guardians_but_preserves_history: test
+guardian_recovery_tests::policy_tests::policy_edit_parser_and_retained_slice_two_corpus_remain_strict: test
+guardian_recovery_tests::policy_tests::policy_edit_pending_edit_and_recovery_exclude_each_other: test
+guardian_recovery_tests::policy_tests::policy_edit_proposal_fault_matrix_preserves_only_complete_canonical_authorization: test
+guardian_recovery_tests::policy_tests::policy_edit_reenable_requires_fresh_all_three_acceptances_even_for_same_roster: test
+guardian_recovery_tests::policy_tests::policy_edit_reenable_with_new_roster_does_not_inherit_former_votes: test
+guardian_recovery_tests::policy_tests::policy_edit_rejects_stale_expired_duplicate_and_cross_binding_proofs: test
+guardian_recovery_tests::policy_tests::policy_edit_restart_rebases_full_delay_and_invalidates_uncommitted_cancel_votes: test
+guardian_recovery_tests::policy_tests::policy_edit_torn_activation_preserves_active_policy_and_requires_new_wait: test
++ cargo test --locked -p mct-observation --lib guardian_recovery_tests::policy_tests:: -- --nocapture --test-threads=1
+prebuilt dispatch: target/debug/deps/mct_observation-38d5c750245bd6a1 guardian_recovery_tests::policy_tests::
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 136 filtered out; finished in 254.22s
+=== completion proof: issuance-kernel ===
++ cargo test --locked -p mct-kernel --lib admin_issuance:: -- --list
+prebuilt dispatch: target/debug/deps/mct_kernel-e86c010314a1e9eb admin_issuance::
+admin_issuance::tests::admin_issuance_all_route_scope_pairs_preserve_the_ceiling_boundary: test
+admin_issuance::tests::admin_issuance_ceiling_does_not_grant_execution_and_need_not_match_issuer_routes: test
+admin_issuance::tests::admin_issuance_ceiling_shape_rejects_unsorted_duplicate_startup_and_hidden_authority: test
+admin_issuance::tests::admin_issuance_does_not_union_same_key_grants: test
+admin_issuance::tests::admin_issuance_expiry_is_mandatory_future_and_bounded_by_day_issuer: test
+admin_issuance::tests::admin_issuance_explicit_empty_ceiling_is_revoke_only: test
+admin_issuance::tests::admin_issuance_never_creates_recovery_or_reuses_root_credential_for_execution: test
+admin_issuance::tests::admin_issuance_new_managers_must_declare_their_ceiling: test
+admin_issuance::tests::admin_issuance_recipient_delegation_is_independently_bounded: test
+admin_issuance::tests::admin_issuance_recipient_execution_cannot_exceed_ceiling: test
+admin_issuance::tests::admin_issuance_revoked_expired_and_nonmanager_issuers_deny: test
+admin_issuance::tests::admin_issuance_root_issues_day_scopes_but_cannot_execute_them: test
+admin_issuance::tests::admin_issuance_route_scope_cannot_substitute_for_missing_ceiling: test
+admin_issuance::tests::admin_issuance_weak_recipient_key_denies: test
+admin_issuance::tests::admin_issuance_wire_is_strict_and_legacy_omission_is_stable: test
++ cargo test --locked -p mct-kernel --lib admin_issuance:: -- --nocapture --test-threads=1
+prebuilt dispatch: target/debug/deps/mct_kernel-e86c010314a1e9eb admin_issuance::
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 162 filtered out; finished in 0.25s
+=== completion proof: issuance-writer ===
++ cargo test --locked -p mct-observation --lib admin_issuance_tests:: -- --list
+prebuilt dispatch: target/debug/deps/mct_observation-38d5c750245bd6a1 admin_issuance_tests::
+guardian_recovery_tests::admin_issuance_tests::admin_issuance_cannot_squat_future_recovery_root_ids: test
+guardian_recovery_tests::admin_issuance_tests::admin_issuance_canonical_denies_execution_delegation_expiry_and_root_escalation: test
+guardian_recovery_tests::admin_issuance_tests::admin_issuance_canonical_root_and_bounded_delegation_preserve_distinct_execution_rights: test
+guardian_recovery_tests::admin_issuance_tests::admin_issuance_clock_rollback_denies_new_authority_but_not_historical_receipts: test
+guardian_recovery_tests::admin_issuance_tests::admin_issuance_corpus_roundtrip_and_explicit_export: test
+guardian_recovery_tests::admin_issuance_tests::admin_issuance_during_policy_wait_is_not_overwritten_by_policy_activation: test
+guardian_recovery_tests::admin_issuance_tests::admin_issuance_expected_target_epoch_generation_snapshot_and_signed_fields_are_exact: test
+guardian_recovery_tests::admin_issuance_tests::admin_issuance_expired_issuer_denies_new_grants_but_committed_retry_resolves_history: test
+guardian_recovery_tests::admin_issuance_tests::admin_issuance_generated_root_id_is_not_truncated_to_the_binding_id_bound: test
+guardian_recovery_tests::admin_issuance_tests::admin_issuance_legacy_key_manage_does_not_gain_an_implicit_ceiling: test
+guardian_recovery_tests::admin_issuance_tests::admin_issuance_legacy_paths_cannot_smuggle_ceilings_or_mutate_enrolled_state: test
+guardian_recovery_tests::admin_issuance_tests::admin_issuance_never_issues_current_root_credentials_as_day_keys: test
+guardian_recovery_tests::admin_issuance_tests::admin_issuance_nonce_replay_duplicate_grant_and_changed_id_payload_conflict: test
+guardian_recovery_tests::admin_issuance_tests::admin_issuance_partial_and_complete_frame_faults_replay_without_double_grants: test
+guardian_recovery_tests::admin_issuance_tests::admin_issuance_provenance_and_parser_are_strict: test
+guardian_recovery_tests::admin_issuance_tests::admin_issuance_recovery_maintenance_denies_and_replacement_invalidates_issued_grants: test
+guardian_recovery_tests::admin_issuance_tests::admin_issuance_requires_actual_issuer_not_recipient_self_signature_or_partial_hybrid: test
+guardian_recovery_tests::admin_issuance_tests::admin_issuance_same_key_grants_cannot_union_their_ceilings: test
+guardian_recovery_tests::admin_issuance_tests::admin_issuance_two_requests_against_one_snapshot_have_one_winner: test
+guardian_recovery_tests::admin_issuance_tests::l10_d56_held_intents_require_current_epoch_and_snapshot_but_nonces_need_not_increase: test
++ cargo test --locked -p mct-observation --lib admin_issuance_tests:: -- --nocapture --test-threads=1
+prebuilt dispatch: target/debug/deps/mct_observation-38d5c750245bd6a1 admin_issuance_tests::
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 134 filtered out; finished in 95.53s
+=== completion proof: issuance-runtime-deny ===
++ cargo test --locked -p mct-daemon --lib bounded_issuance_ledger_cannot_start_through_legacy_runtime -- --list
+prebuilt dispatch: target/debug/deps/mct_daemon-c560a4d61f72da89 bounded_issuance_ledger_cannot_start_through_legacy_runtime
+startup::tests::bounded_issuance_ledger_cannot_start_through_legacy_runtime: test
++ cargo test --locked -p mct-daemon --lib bounded_issuance_ledger_cannot_start_through_legacy_runtime -- --nocapture --test-threads=1
+prebuilt dispatch: target/debug/deps/mct_daemon-c560a4d61f72da89 bounded_issuance_ledger_cannot_start_through_legacy_runtime
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 235 filtered out; finished in 0.72s
+=== completion proof: recovery-runtime-deny ===
++ cargo test --locked -p mct-daemon --lib enrolled_guardian_recovery_ledger_cannot_start_through_legacy_runtime -- --list
+prebuilt dispatch: target/debug/deps/mct_daemon-c560a4d61f72da89 enrolled_guardian_recovery_ledger_cannot_start_through_legacy_runtime
+startup::tests::enrolled_guardian_recovery_ledger_cannot_start_through_legacy_runtime: test
++ cargo test --locked -p mct-daemon --lib enrolled_guardian_recovery_ledger_cannot_start_through_legacy_runtime -- --nocapture --test-threads=1
+prebuilt dispatch: target/debug/deps/mct_daemon-c560a4d61f72da89 enrolled_guardian_recovery_ledger_cannot_start_through_legacy_runtime
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 235 filtered out; finished in 4.27s
+=== completion proof: recovery-kernel ===
++ cargo test --locked -p mct-kernel --lib recovery:: -- --list
+prebuilt dispatch: target/debug/deps/mct_kernel-e86c010314a1e9eb recovery::
+recovery::tests::altered_request_id_or_replacement_requires_new_guardian_signatures: test
+recovery::tests::approval_expiry_is_exclusive_and_future_issuance_denies: test
+recovery::tests::approval_lifetime_cannot_exceed_ten_minutes_even_when_signed: test
+recovery::tests::changing_guardian_identity_or_approval_expiry_invalidates_signature: test
+recovery::tests::digest_identifiers_reject_labels_wrong_domains_uppercase_and_bad_lengths: test
+recovery::tests::duplicate_approvals_cannot_count_twice: test
+recovery::tests::each_signature_half_is_required_on_replacement_and_guardian_proofs: test
+recovery::tests::initiate_cancel_complete_and_completion_challenges_are_not_interchangeable: test
+recovery::tests::insufficient_and_oversized_approval_sets_deny: test
+recovery::tests::intent_validity_is_bounded_and_timestamp_overflow_denies: test
+recovery::tests::invalid_extra_approval_is_not_ignored_after_a_valid_quorum: test
+recovery::tests::length_prefixed_domains_do_not_alias_and_reordered_approvals_are_equivalent: test
+recovery::tests::malformed_empty_control_and_oversized_identifiers_deny: test
+recovery::tests::old_root_or_guardian_key_half_cannot_be_reused_as_replacement: test
+recovery::tests::policy_rejects_duplicate_nodes_either_key_half_and_self_guardianship: test
+recovery::tests::policy_roster_order_is_canonical_and_generations_are_positive: test
+recovery::tests::request_cannot_change_target_mother_ledger_epoch_binding_or_voice: test
+recovery::tests::same_voice_is_required_for_every_appointed_guardian: test
+recovery::tests::signature_codec_is_bounded_normalized_and_rejects_downgrades: test
+recovery::tests::stale_canonical_root_policy_and_guardian_generation_deny: test
+recovery::tests::strict_json_rejects_unknown_fields_missing_halves_and_wrong_roster_size: test
+recovery::tests::two_of_three_and_all_three_return_bounded_exact_evidence: test
+recovery::tests::voice_genesis_is_stable_and_binds_both_key_halves: test
+recovery::tests::voice_genesis_rejects_signatures_from_other_domains: test
+recovery::tests::weak_ed25519_genesis_or_policy_keys_are_rejected: test
++ cargo test --locked -p mct-kernel --lib recovery:: -- --nocapture --test-threads=1
+prebuilt dispatch: target/debug/deps/mct_kernel-e86c010314a1e9eb recovery::
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 152 filtered out; finished in 21.43s
+=== completion proof: revisions ===
++ cargo test --locked -p mct-daemon --bin mct-daemon federation_revision_ -- --list
+prebuilt dispatch: target/debug/deps/mct_daemon-a2e108e835cb3f24 federation_revision_
+resident::candidates::tests::federation_revision_counters_are_independent: test
+resident::candidates::tests::federation_revision_newer_remote_does_not_refresh_local_admission: test
+resident::candidates::tests::federation_revision_remote_publication_must_match_remote_binding: test
++ cargo test --locked -p mct-daemon --bin mct-daemon federation_revision_ -- --nocapture --test-threads=1
+prebuilt dispatch: target/debug/deps/mct_daemon-a2e108e835cb3f24 federation_revision_
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 199 filtered out; finished in 0.54s
+=== completion proof: local-stale ===
++ cargo test --locked -p mct-daemon --bin mct-daemon remote_policy_mismatch_denies_even_when_caller_echo_matches_stale_peer -- --list
+prebuilt dispatch: target/debug/deps/mct_daemon-a2e108e835cb3f24 remote_policy_mismatch_denies_even_when_caller_echo_matches_stale_peer
+resident::candidates::tests::remote_policy_mismatch_denies_even_when_caller_echo_matches_stale_peer: test
++ cargo test --locked -p mct-daemon --bin mct-daemon remote_policy_mismatch_denies_even_when_caller_echo_matches_stale_peer -- --nocapture --test-threads=1
+prebuilt dispatch: target/debug/deps/mct_daemon-a2e108e835cb3f24 remote_policy_mismatch_denies_even_when_caller_echo_matches_stale_peer
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 201 filtered out; finished in 0.07s
+=== completion proof: fleet ===
++ cargo test --locked -p mct-daemon --test federation_fleet six_mothers_independent_revisions_survive_peer_loss_and_restart -- --list
+prebuilt dispatch: target/debug/deps/federation_fleet-565b47d42c6e3002 six_mothers_independent_revisions_survive_peer_loss_and_restart
+six_mothers_independent_revisions_survive_peer_loss_and_restart: test
++ cargo test --locked -p mct-daemon --test federation_fleet six_mothers_independent_revisions_survive_peer_loss_and_restart -- --nocapture --test-threads=1
+prebuilt dispatch: target/debug/deps/federation_fleet-565b47d42c6e3002 six_mothers_independent_revisions_survive_peer_loss_and_restart
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 85.95s
+=== completion proof: two-mother ===
++ cargo test --locked -p mct-daemon --bin mct-daemon two_mother -- --list
+prebuilt dispatch: target/debug/deps/mct_daemon-a2e108e835cb3f24 two_mother
+resident::candidates::tests::two_mother_revoked_or_expired_binding_fails_closed: test
+resident::candidates::tests::two_mother_unauthorized_operation_fails_closed: test
+resident::candidates::tests::two_mother_wrong_vision_fails_closed: test
+resident::forwarding::tests::two_mother_bad_payload_fails_closed: test
+resident::forwarding::tests::two_mother_forwarding_carries_execution_interrupted_from_the_executor: test
+resident::forwarding::tests::two_mother_forwarding_denies_when_executor_revokes_binding_after_hello: test
+resident::forwarding::tests::two_mother_forwarding_preserves_cancelled_reply: test
+resident::forwarding::tests::two_mother_forwards_selected_call_over_iroh_and_maps_reply: test
+resident::forwarding::tests::two_mother_learns_catalog_after_approve_and_drops_it_on_revoke: test
+resident::forwarding::tests::two_mother_mutual_publication_with_unready_children_terminates_single_hop: test
+resident::forwarding::tests::two_mother_remote_denial_fails_closed: test
++ cargo test --locked -p mct-daemon --bin mct-daemon two_mother -- --nocapture --test-threads=1
+prebuilt dispatch: target/debug/deps/mct_daemon-a2e108e835cb3f24 two_mother
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 191 filtered out; finished in 6.95s
+=== completion proof: refresh ===
++ cargo test --locked -p mct-daemon --bin mct-daemon federation_refresh_ -- --list
+prebuilt dispatch: target/debug/deps/mct_daemon-a2e108e835cb3f24 federation_refresh_
+resident::serving::tests::federation_refresh_stall_does_not_block_serving: test
+resident::serving::tests::federation_refresh_stall_does_not_block_shutdown: test
+resident::serving::tests::federation_refresh_starts_immediately_not_after_first_period: test
+resident::serving::tests::federation_refresh_unexpected_exit_is_an_error: test
++ cargo test --locked -p mct-daemon --bin mct-daemon federation_refresh_ -- --nocapture --test-threads=1
+prebuilt dispatch: target/debug/deps/mct_daemon-a2e108e835cb3f24 federation_refresh_
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 198 filtered out; finished in 0.00s
+=== completion proof: dispatch-parser ===
++ cargo test --locked -p mct-daemon --lib call_dispatch -- --list
+prebuilt dispatch: target/debug/deps/mct_daemon-c560a4d61f72da89 call_dispatch
+call_dispatch::tests::call_dispatch_complete_unacknowledged_fact_and_release_replay: test
+call_dispatch::tests::call_dispatch_fuzz_seed_reaches_the_semantic_parser: test
+call_dispatch::tests::call_dispatch_parser_rejects_malformed_unknown_and_wrong_envelopes: test
+call_dispatch::tests::call_dispatch_scope_fingerprint_expiry_and_exact_release: test
+call_dispatch::tests::call_dispatch_torn_reservation_is_not_committed_but_torn_release_keeps_fence: test
++ cargo test --locked -p mct-daemon --lib call_dispatch -- --nocapture --test-threads=1
+prebuilt dispatch: target/debug/deps/mct_daemon-c560a4d61f72da89 call_dispatch
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 231 filtered out; finished in 0.03s
+=== completion proof: dispatch-writer ===
++ cargo test --locked -p mct-daemon --bin mct-daemon call_dispatch -- --list
+prebuilt dispatch: target/debug/deps/mct_daemon-a2e108e835cb3f24 call_dispatch
+resident::idempotency::tests::call_dispatch_mismatch_after_projection_loss_does_not_pin_wrong_fingerprint: test
+resident::idempotency::tests::call_dispatch_serializes_competing_missing_projections: test
+resident::idempotency::tests::call_dispatch_writer_failure_suppresses_execution: test
+resident::observation::tests::call_dispatch_unknown_schema_blocks_writer_reopen: test
++ cargo test --locked -p mct-daemon --bin mct-daemon call_dispatch -- --nocapture --test-threads=1
+prebuilt dispatch: target/debug/deps/mct_daemon-a2e108e835cb3f24 call_dispatch
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 198 filtered out; finished in 0.44s
+=== completion proof: sqlite-rollback ===
++ cargo test --locked -p mct-daemon --test mother_restart sqlite_rollback -- --list
+prebuilt dispatch: target/debug/deps/mother_restart-14921cd4f789f39e sqlite_rollback
+sqlite_rollback_after_completed_call_never_reexecutes: test
+sqlite_rollback_after_sigkill_never_reexecutes: test
++ cargo test --locked -p mct-daemon --test mother_restart sqlite_rollback -- --nocapture --test-threads=1
+prebuilt dispatch: target/debug/deps/mother_restart-14921cd4f789f39e sqlite_rollback
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 3.97s
+Implemented proof groups: 17 passed; 0 failed.
+Implemented proofs only; this is NOT release readiness.
+
+check-finish.py proofs exit: 0

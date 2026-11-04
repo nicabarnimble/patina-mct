@@ -1,5 +1,9 @@
 # Federation finish — implementation evidence
 
+For later Linux arm64 validation of the unchanged proof groups, see
+[NIC-63 slice 1](../../../../../docs/nic63-slice1-nicamaster.md). The results
+below remain the original Mac receipt, not the current platform support matrix.
+
 Base: `ba685af` (`fix/ledger-first-call-recovery`). Isolated clone/branch:
 `patina-mct-finish`, `feat/finish-mct-federation`. Local work only.
 

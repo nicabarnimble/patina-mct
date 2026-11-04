@@ -1,5 +1,10 @@
 # Admin keys code map
 
+NIC-63 update: Linux arm64 is now a supported target, and a bounded
+[Nix/systemd admin-only lifecycle](../linux-admin-install.md) exists. The Linux
+supervisor gap below describes the imported snapshot, not current platform
+support. See [current proof evidence](../nic63-slice1-nicamaster.md).
+
 > **Imported 2026-10-18** from working notes (2026-10-14). **Stale line numbers**: they are from `main` at `784c5ed` and have shifted. Use it as a list of what has to change and what has to be deleted, then re-locate every symbol on current `main` before you edit. Phases 1–2 and the optional hybrid signature have landed since. The removal targets for the hard cutover (Phase 4) are still present on `main` at `49dfacd`.
 
 

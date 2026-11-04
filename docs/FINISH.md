@@ -37,8 +37,10 @@ open. No permanent failing completion job is added to ordinary CI.
 for recovery compromise, issuance ceilings, signature/legacy handling,
 recipient-bound handles, and trusted supervisor lifecycle. Recovery is ratified
 in D-54/D-55, issuance ceilings in D-56, and strict hybrid/fresh cutover in D-57.
-Child-handle and trusted-supervisor decisions remain pending owner confirmation. Multi-host
-partition and upgrade evidence also requires approved disposable test hosts.
+Child-handle and trusted-supervisor decisions remain pending owner confirmation.
+Doug approved disposable Pi tests, including Mother kills, network cuts and
+reboots, and Linux arm64 support in the [NIC-63 amendment](DECISIONS.md#nic-63-amendment-supported-target-and-disposable-pi-testing).
+Multi-host partition and upgrade evidence remains to be collected.
 Remote macOS execution is to be handed off to Devin with explicit actions and
 required evidence, not assumed direct access from this session.
 
@@ -66,10 +68,12 @@ explicit; the full `release` check and final evidence review remain required.
   it, not unrelated local work elsewhere. No takeover or guessed effect replay.
 - Keep today's one-local-Vision and recorded identity immutability for this
   release. Multi-Vision hosting and membership changes are not prerequisites.
-- Current release target is macOS arm64. Six local subprocesses are executable
-  evidence, not proof of multi-host isolation or supported Linux installation.
-  If Unraid/Linux Mothers are chosen, add Linux supervisor/package/upgrade
-  evidence to `release-evidence`; do not relabel existing macOS proof.
+- Supported targets are macOS arm64 (`aarch64-apple-darwin`) and Linux arm64
+  (`aarch64-unknown-linux-gnu`). Linux has a bounded [Nix/systemd admin-only
+  installation](linux-admin-install.md). [NIC-63 slice 1](nic63-slice1-nicamaster.md)
+  compares the existing proofs on Mac and nicamaster. Same-host subprocesses
+  do not prove multi-host isolation. Platform support does not close package,
+  upgrade, confinement or release-evidence obligations.
 
 ## Ordered completion checklist
 
