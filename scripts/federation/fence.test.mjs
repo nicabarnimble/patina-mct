@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { assertNoPeerGateway } from './fence.mjs';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { EventEmitter } from 'node:events';
@@ -256,6 +257,15 @@ test('unit: unfenced transport does not inspect or add guards merely because a b
 
 test('unit: absent subprocess injection fails locally before any real process', async () => {
   await assert.rejects(createSshTransport({ requireNetworkFence: true }).connect(config, config.hosts[0]), /forbid real subprocesses/);
+});
+
+test('unit: legacy mapping fence refuses a peer that is any default gateway', () => {
+  const config = { hosts: [{ address: '192.168.50.10' }] };
+  assert.doesNotThrow(() => assertNoPeerGateway(config, '[{"gateway":"192.168.50.1"}]'));
+  assert.doesNotThrow(() => assertNoPeerGateway(config, '[]'));
+  assert.throws(() => assertNoPeerGateway(config, '[{"gateway":"192.168.50.10"}]'), /gateway/);
+  assert.throws(() => assertNoPeerGateway(config, '[{"nexthops":[{"gateway":"192.168.50.10"}]}]'), /gateway/);
+  assert.throws(() => assertNoPeerGateway(config, '{}'));
 });
 
 test('unit: main requires the fence only for upgrade and publishes the proof stage', () => {

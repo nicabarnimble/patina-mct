@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { stageCommand, cleanupStagedCommand, stagedPath } from './stage.mjs';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { createNetworkFence, inspectNetworkFence } from './fence.mjs';
+import { assertNoPeerGateway, createNetworkFence, inspectNetworkFence } from './fence.mjs';
 
 const exec = promisify(execFile);
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -194,6 +194,10 @@ export function createSshTransport({ onDiagnostic = () => {}, onFence = () => {}
       const hashes = lines.slice(1).map(line => {
         const match = /^([a-f0-9]{64})\s+-?$/.exec(line); assert.ok(match, 'invalid binary SHA256'); return match[1];
       });
+      if (requireNetworkFence) {
+        const routes = await execute('ssh', sshArgs(config, host, ['ip', '-j', 'route', 'show', 'default']), { timeout: 15_000, maxBuffer: 1024 * 1024 });
+        assertNoPeerGateway(config, routes.stdout);
+      }
       return { hostname: lines[0], physical_id: hashes[0], candidate_sha256: hashes[1], baseline_sha256: hashes[2] };
     },
     async connect(config, host) {

@@ -26,6 +26,18 @@ export function createNetworkFence(config, unit) {
   };
 }
 
+export function assertNoPeerGateway(config, stdout) {
+  const routes = JSON.parse(stdout);
+  assert.ok(Array.isArray(routes), 'invalid default-route response');
+  const peers = new Set(config.hosts.map(host => host.address));
+  const visit = value => {
+    if (!value || typeof value !== 'object') return;
+    if (Object.hasOwn(value, 'gateway')) assert.ok(!peers.has(value.gateway), 'a configured peer is a gateway; legacy router mapping would not be fenced');
+    for (const child of Object.values(value)) visit(child);
+  };
+  visit(routes);
+}
+
 function exactSet(value, expected) {
   const entries = value.trim() ? value.trim().split(/\s+/) : [];
   return entries.length === expected.length && new Set(entries).size === entries.length &&

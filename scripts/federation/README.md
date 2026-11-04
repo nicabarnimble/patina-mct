@@ -102,7 +102,9 @@ The older package may retain public discovery and router mapping defaults.
 Before any baseline Mother starts, its transient test service must have an
 exact LAN-host IP allowlist and deny-all for other IPv4/IPv6 addresses. The
 controller verifies both directly attached kernel filtering programs, not just
-requested systemd properties. Missing enforcement blocks the upgrade. No
+requested systemd properties. A configured peer must not be a default gateway,
+otherwise the old router-mapping traffic could escape that IP fence. Missing
+enforcement or an overlapping gateway blocks the upgrade. No
 persistent network policy, Tailscale configuration, or service installation is
 changed. Kernel BTF is not needed to inspect cgroup program attachment.
 
