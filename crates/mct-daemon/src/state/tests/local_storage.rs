@@ -87,6 +87,45 @@ fn l1_config_database_and_sidecar_links_refuse_without_touching_targets() {
 }
 
 #[test]
+fn l1_sqlite_concurrent_open_close_preserves_state() {
+    let dir = private_tempdir();
+    let path = dir.path().canonicalize().unwrap().join("state.sqlite");
+    let state = MctRuntimeStateStore::open(&path).unwrap();
+    state
+        .conn
+        .execute(
+            "INSERT INTO mct_state_meta VALUES ('concurrent-test', 'preserved')",
+            [],
+        )
+        .unwrap();
+    drop(state);
+    let barrier = std::sync::Barrier::new(2);
+    std::thread::scope(|scope| {
+        let probe = || {
+            barrier.wait();
+            for _ in 0..64 {
+                let state = MctRuntimeStateStore::open(&path).unwrap();
+                state.summary().unwrap();
+                drop(state);
+                std::thread::yield_now();
+            }
+        };
+        scope.spawn(probe);
+        probe();
+    });
+    let state = MctRuntimeStateStore::open(&path).unwrap();
+    let value: String = state
+        .conn
+        .query_row(
+            "SELECT value FROM mct_state_meta WHERE key = 'concurrent-test'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(value, "preserved");
+}
+
+#[test]
 fn l1_sqlite_metadata_preflight_preserves_live_posix_locks() {
     const DB: &str = "MCT_SQLITE_LOCK_CHILD";
     if let Some(path) = std::env::var_os(DB) {
