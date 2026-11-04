@@ -28,8 +28,11 @@ cloud control plane.
 
 ## Status
 
-MCT 0.2.0 is pre-GA and currently targets `aarch64-apple-darwin`. Its
-WASM/WIT path enforces capability-mediated host access and records MCT
+MCT 0.2.0 is pre-GA. Supported targets are `aarch64-apple-darwin` and
+`aarch64-unknown-linux-gnu`. Linux arm64 support is owner-approved; platform
+support does not mean all release obligations are complete. The repository
+contains the installation guide in `docs/linux-admin-install.md` and proof
+evidence in `docs/nic63-slice1-nicamaster.md`. The WASM/WIT path enforces capability-mediated host access and records MCT
 authority decisions and mediated effects in an append-only, hash-chained
 observation ledger.
 

@@ -1,0 +1,6 @@
+mct-kernel:lib	target/debug/deps/mct_kernel-e86c010314a1e9eb
+mct-observation:lib	target/debug/deps/mct_observation-38d5c750245bd6a1
+mct-daemon:--test:mother_restart	target/debug/deps/mother_restart-14921cd4f789f39e
+mct-daemon:lib	target/debug/deps/mct_daemon-c560a4d61f72da89
+mct-daemon:--test:federation_fleet	target/debug/deps/federation_fleet-565b47d42c6e3002
+mct-daemon:--bin:mct-daemon	target/debug/deps/mct_daemon-a2e108e835cb3f24

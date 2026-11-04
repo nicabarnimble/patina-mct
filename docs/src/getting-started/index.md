@@ -1,7 +1,12 @@
 # Getting started
 
-MCT 0.2.0 is a pre-GA release for `aarch64-apple-darwin`. The release archive,
-its SHA-256 sidecar, and provenance sidecar are a single verification set.
+MCT 0.2.0 is pre-GA and supports macOS arm64 and Linux arm64. For Linux
+`aarch64-unknown-linux-gnu`, follow the Nix/systemd admin-only installation
+procedure in the repository's `docs/linux-admin-install.md`.
+The full passkey Child runtime remains closed.
+
+The following archive procedure is for macOS `aarch64-apple-darwin`. Its release
+archive, SHA-256 sidecar and provenance sidecar are a single verification set.
 Verify them from a trusted checkout before extracting the archive.
 
 ```bash
