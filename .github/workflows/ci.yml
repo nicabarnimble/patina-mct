@@ -69,6 +69,12 @@ jobs:
       - name: cargo test
         run: bash scripts/ci-tier0.sh test
 
+      - name: Federation controller unit tests
+        run: node --test scripts/federation/*.test.mjs
+
+      - name: Federation host helper unit tests
+        run: cargo test --locked -p mct-daemon --example federation_host
+
       - name: Browser passkey approval ceremony
         run: node --test scripts/passkey-approval.e2e.test.mjs
 

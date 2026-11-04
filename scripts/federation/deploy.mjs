@@ -18,14 +18,16 @@ export function cacheCommand(packagePath) {
   return ['bash', '-c', `set -euo pipefail
 umask 077
 package=$1
+nix=$(readlink -f "$(command -v nix)")
+[[ $nix =~ ^/nix/store/[a-z0-9]{32}-[a-zA-Z0-9.+_-]+/bin/nix$ ]] || exit 72
 root=$(mktemp -d "$HOME/.mct-federation-cache.XXXXXXXX")
 printf 'mct-federation-cache-v1\\n' > "$root/.mct-federation-owned"
 trap 'rm -rf -- "$root"' ERR
 nix-store --generate-binary-cache-key "mct-federation-$(basename "$root")" "$root/secret" "$root/public"
-sudo -n nix store sign --key-file "$root/secret" "$package" >&2
-nix copy --to "file://$root/cache" "$package" >&2
-read -r key < "$root/public"
-sudo -n nix store verify --recursive --option extra-trusted-public-keys "$key" "$package" >&2
+sudo -n "$nix" store sign --key-file "$root/secret" "$package" >&2
+nix copy --to "file://$root/cache?compression=zstd&compression-level=1" "$package" >&2
+key=$(< "$root/public")
+sudo -n "$nix" store verify --recursive --offline --option substituters "" --option builders "" --option extra-trusted-public-keys "$key" "$package" >&2
 printf '%s\\n%s\\n' "$root" "$key"
 `, '--', packagePath];
 }
@@ -44,10 +46,13 @@ export function importCommand(packagePath, cacheRoot, publicKey) {
   assert.match(publicKey, KEY, 'invalid cache public key');
   return ['bash', '-c', `set -euo pipefail
 package=$1
+nix=$(readlink -f "$(command -v nix)")
+[[ $nix =~ ^/nix/store/[a-z0-9]{32}-[a-zA-Z0-9.+_-]+/bin/nix$ ]] || exit 72
 cache=$2
 key=$3
-sudo -n nix copy --from "file://$cache" --option max-jobs 0 --option builders '' --option require-sigs true --option extra-trusted-public-keys "$key" "$package"
-sudo -n nix store verify --recursive --option extra-trusted-public-keys "$key" "$package"
+sudo -n "$nix" copy --offline --from "file://$cache" --option substituters "" --option max-jobs 0 --option builders '' --option require-sigs true --option extra-trusted-public-keys "$key" "$package"
+sudo -n "$nix" store copy-sigs --offline --substituter "file://$cache" --option substituters "" --option extra-trusted-public-keys "$key" "$package"
+sudo -n "$nix" store verify --recursive --offline --option substituters "" --option builders "" --option extra-trusted-public-keys "$key" "$package"
 `, '--', packagePath, cacheRoot, publicKey];
 }
 
@@ -98,7 +103,7 @@ export async function deploy(input, slice, emit = () => {}) {
     const failures = [];
     try {
       await streamRemote(config, builder, ['tar', '-cf', '-', '-C', `${receipt.root}/cache`, '.'], null, createWriteStream(archive, { mode: 0o600, flags: 'wx' }));
-      emit({ stage: 'cache-exported', builder: builder.id, package: packagePath });
+      emit({ stage: 'cache-exported', builder: builder.id, package: packagePath, public_key: receipt.publicKey });
       const results = await Promise.allSettled(hosts.slice(1).map(async host => {
         const root = (await remote(config, host, ['bash', '-c', 'set -eu; umask 077; root=$(mktemp -d "$HOME/.mct-federation-import.XXXXXXXX"); printf "mct-federation-import-v1\\n" > "$root/.mct-federation-owned"; printf "%s\\n" "$root"'])).stdout.trim();
         const cleanup = cleanupCommand(root, 'import');

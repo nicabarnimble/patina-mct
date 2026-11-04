@@ -18,6 +18,10 @@ export function parseArgs(args) {
   return result;
 }
 
+export function errorDetails(error) {
+  return [error.message, ...(error.errors ?? []).map(errorDetails)].join('\n');
+}
+
 export async function run(args = process.argv.slice(2)) {
   const values = parseArgs(args);
   assert.ok(!existsSync(values.evidence), 'evidence directory must be new');
@@ -32,5 +36,5 @@ let entrypoint;
 try { entrypoint = process.argv[1] ? pathToFileURL(realpathSync(process.argv[1])).href : undefined; }
 catch { entrypoint = undefined; }
 if (import.meta.url === entrypoint) {
-  run().catch(error => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
+  run().catch(error => { process.stderr.write(`${errorDetails(error)}\n`); process.exitCode = 1; });
 }

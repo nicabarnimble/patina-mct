@@ -247,6 +247,8 @@ test('SSH uses strict nonmultiplexed authentication and quotes remote arguments'
 function fakeTransport(overrides = {}) {
   const state = { requests: [], running: new Set(), crashed: new Set(), sessions: [], observations: new Map(), binaries: new Map(), checkpoints: new Map(), serial: 0, revoked: false };
   const transport = {
+    async stageBinary(c, h, source, kind) { return `${h.root}-executables/${kind}/mct-daemon`; },
+    async cleanupBinaries() {},
     async preflight(c, h) { return { hostname: h.hostname, physical_id: `${h.id}`.repeat(64), candidate_sha256: 'c'.repeat(64), baseline_sha256: 'b'.repeat(64) }; },
     async connect(c, h) {
       state.sessions.push(h.id); state.observations.set(h.id, []);
@@ -412,6 +414,17 @@ test('receiver revocation cannot pass on caller no_route fallback', async () => 
   await assert.rejects(runSlice(config(), 'two', { transport, pollMs: 0 }));
 });
 
+test('private staging failure prevents every init and launch', async () => {
+  const cleaned = [];
+  const { transport, state } = fakeTransport({ transport: {
+    async stageBinary() { throw Error('copy digest mismatch'); },
+    async cleanupBinaries(c, h) { cleaned.push(h.id); },
+  } });
+  await assert.rejects(runSlice(config(), 'two', { transport }), /staging/);
+  assert.ok(!state.requests.some(request => ['init', 'start'].includes(request.op)));
+  assert.deepEqual(cleaned.sort(), ['a', 'b']);
+});
+
 test('three-host lifecycle calls both survivors while each victim is stopped, then resumes without re-admission', async () => {
   const { transport, state } = fakeTransport();
   const result = await runSlice(config(), 'three', { transport, pollMs: 0 });
@@ -434,7 +447,7 @@ test('rolling replacement records distinct hashes and calls survivors and mixed 
   const result = await runSlice(config(), 'upgrade', { transport, pollMs: 0 });
   assert.equal(result.status, 'passed');
   assert.ok(result.binaries.every(b => b.candidate_sha256 !== b.baseline_sha256));
-  assert.equal(state.requests.filter(r => r.op === 'start' && r.binary === '/nix/store/candidate/bin/mct-daemon').length, 3);
+  assert.equal(state.requests.filter(r => r.op === 'start' && r.binary?.endsWith('/candidate/mct-daemon')).length, 3);
   assert.ok(state.requests.some(r => r.op === 'call' && r.label.includes('mixed-a')));
 });
 
@@ -521,7 +534,7 @@ test('partition hook is explicit and is not silently promoted to proof', async (
 
 test('startup digest must equal preflight, not just name the intended binary', async () => {
   const { transport, state } = fakeTransport({ request(h, r) {
-    if (r.op === 'start') return { ...started({ ...h, endpoint: `endpoint-${h.id}` }), binary_sha256: 'd'.repeat(64) };
+    if (r.op === 'start') return { ...started({ ...h, endpoint: `endpoint-${h.id}` }), binary: state.binaries.get(h.id), binary_sha256: 'd'.repeat(64) };
   } });
   await assert.rejects(runSlice(config(), 'two', { transport, pollMs: 0 }), /digest/);
   assert.equal(state.running.size, 0);

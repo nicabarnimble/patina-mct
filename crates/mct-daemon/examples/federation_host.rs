@@ -195,6 +195,30 @@ fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+fn file_sha256(file: fs::File) -> Result<String> {
+    let mut command = if cfg!(target_os = "linux") {
+        Command::new("sha256sum")
+    } else {
+        let mut command = Command::new("shasum");
+        command.args(["-a", "256"]);
+        command
+    };
+    let output = command.stdin(Stdio::from(file)).output()?;
+    ensure!(output.status.success(), "executable SHA256 command failed");
+    let text = std::str::from_utf8(&output.stdout)?;
+    let mut fields = text.split_whitespace();
+    let digest = fields.next().context("missing executable SHA256")?;
+    ensure!(
+        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "invalid executable SHA256"
+    );
+    ensure!(
+        fields.next() == Some("-") && fields.next().is_none(),
+        "unexpected SHA256 output"
+    );
+    Ok(digest.to_owned())
+}
+
 fn hash_reader(mut reader: impl Read) -> Result<(u64, String)> {
     let mut hasher = Sha256::new();
     let mut length = 0;
@@ -413,6 +437,13 @@ fn mother_pids() -> Result<Vec<u32>> {
     }
 }
 
+fn auxiliary_path(root: &Path, name: &str) -> PathBuf {
+    let mut path = root.as_os_str().to_os_string();
+    path.push(".");
+    path.push(name);
+    PathBuf::from(path)
+}
+
 impl Host {
     fn init(
         root: PathBuf,
@@ -454,7 +485,7 @@ impl Host {
         }
         fs::DirBuilder::new().mode(0o700).create(&root)?;
         private_fs::ensure_directory(&root)?;
-        let source = root.join("source");
+        let source = auxiliary_path(&root, "source");
         private_fs::ensure_directory(&source)?;
         for (name, bytes) in [
             ("worker.wasm", component.as_slice()),
@@ -563,12 +594,12 @@ impl Host {
         );
         let binary = binary.unwrap_or_else(|| self.binary.clone());
         validate_absolute(&binary)?;
-        let (_, binary_sha256) = hash_reader(private_fs::executable(&binary)?)?;
+        let binary_sha256 = file_sha256(private_fs::executable(&binary)?)?;
         if self.endpoint_id.is_some() {
             self.identity()?;
         }
         self.boot += 1;
-        let log_path = self.root.join(format!("boot-{}.log", self.boot));
+        let log_path = auxiliary_path(&self.root, &format!("boot-{}.log", self.boot));
         let log = private_fs::create_new(&log_path)?;
         let child = Command::new(&binary)
             .args([
@@ -634,7 +665,7 @@ impl Host {
                     let identity = self.identity()?;
                     let ticket = lan_ticket(&snapshot, &identity.endpoint_id, self.bind)?;
                     self.endpoint_id = Some(identity.endpoint_id.to_string());
-                    let (_, after) = hash_reader(private_fs::executable(&self.binary)?)?;
+                    let after = file_sha256(private_fs::executable(&self.binary)?)?;
                     ensure!(
                         after == binary_sha256,
                         "daemon executable changed during startup"
@@ -650,7 +681,7 @@ impl Host {
                         "binary": self.binary, "binary_sha256": binary_sha256, "boot": self.boot}),
                     );
                 }
-                Ok(_) => last = "daemon is not ready".into(),
+                Ok(status) => last = format!("daemon readiness: {}", status["readiness"]),
                 Err(error) => last = format!("{error:#}"),
             }
             thread::sleep(Duration::from_millis(100));
@@ -675,7 +706,7 @@ impl Host {
     fn provision(&mut self) -> Result<Value> {
         self.require_running()?;
         let stage = self.request("POST", "/artifacts/stage", Some(&json!({
-            "source_root": self.root.join("source"), "manifest_path": "child.toml", "component_path": "worker.wasm",
+            "source_root": auxiliary_path(&self.root, "source"), "manifest_path": "child.toml", "component_path": "worker.wasm",
             "claimed_child_name": "worker", "claimed_artifact_version": "0.1.0",
             "expected_digest": format!("blake3:{}", self.fixture.component_blake3),
             "expected_manifest_digest": format!("sha256:{}", self.fixture.manifest_sha256),
@@ -993,6 +1024,33 @@ mod tests {
             assert!(validate_absolute(Path::new(path)).is_err(), "{path:?}");
         }
         assert!(validate_absolute(Path::new("/tmp/federation-root")).is_ok());
+    }
+
+    #[test]
+    fn optimized_file_digest_matches_canonical_sha256() {
+        use std::io::Seek as _;
+        let bytes = b"fixture executable bytes";
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(bytes).unwrap();
+        file.rewind().unwrap();
+        assert_eq!(
+            file_sha256(file).unwrap(),
+            format!("{:x}", Sha256::digest(bytes))
+        );
+    }
+
+    #[test]
+    fn auxiliary_files_leave_the_authority_root_virgin() {
+        let root = Path::new("/home/operator/run/0");
+        for name in ["source", "boot-1.log"] {
+            let auxiliary = auxiliary_path(root, name);
+            assert_eq!(auxiliary.parent(), root.parent());
+            assert!(!auxiliary.starts_with(root));
+            assert_eq!(
+                auxiliary,
+                PathBuf::from(format!("{}.{}", root.display(), name))
+            );
+        }
     }
 
     #[test]

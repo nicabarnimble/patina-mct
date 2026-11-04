@@ -6,7 +6,9 @@ import { isIP } from 'node:net';
 import { posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import { stageCommand, cleanupStagedCommand, stagedPath } from './stage.mjs';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { createNetworkFence, inspectNetworkFence } from './fence.mjs';
 
 const exec = promisify(execFile);
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -162,8 +164,17 @@ export function sshArgs(config, host, command) {
     '-i', config.sshIdentity, '--', host.ssh, command.map(quote).join(' ')];
 }
 
-export function createSshTransport({ onDiagnostic = () => {}, spawn: spawnProcess = spawn, exec: execute = exec } = {}) {
+export function createSshTransport({ onDiagnostic = () => {}, onFence = () => {}, requireNetworkFence = false, spawn: spawnProcess = spawn, exec: execute = exec } = {}) {
   return {
+    async stageBinary(config, host, source, kind, digest) {
+      const { stdout, stderr } = await execute('ssh', sshArgs(config, host, stageCommand(source, host.root, kind, digest)), { timeout: 120_000, maxBuffer: 1024 * 1024 });
+      if (stderr) onDiagnostic(host.id, stderr);
+      assert.equal(stdout.trim(), stagedPath(host.root, kind), 'unexpected staged executable path');
+      return stdout.trim();
+    },
+    async cleanupBinaries(config, host) {
+      await execute('ssh', sshArgs(config, host, cleanupStagedCommand(host.root)), { timeout: 60_000, maxBuffer: 1024 * 1024 });
+    },
     async preflight(config, host) {
       const binaries = [posix.join(config.package, 'bin/mct-daemon')];
       if (config.baselinePackage) binaries.push(posix.join(config.baselinePackage, 'bin/mct-daemon'));
@@ -189,12 +200,14 @@ export function createSshTransport({ onDiagnostic = () => {}, spawn: spawnProces
       const username = host.ssh.split('@')[0];
       assert.match(username, /^[a-zA-Z_][a-zA-Z0-9_-]*$/, 'invalid service username');
       const unit = `mct-federation-${randomUUID()}.service`;
+      const fence = requireNetworkFence ? createNetworkFence(config, unit) : null;
       const command = ['sudo', '-n', 'systemd-run', '--quiet', '--pipe', '--wait', '--collect',
         `--uid=${username}`, `--unit=${unit}`, '--property=KillMode=control-group',
         '--property=TimeoutStopSec=35s', '--property=RuntimeMaxSec=900s',
+        ...(fence?.properties ?? []),
         '--', posix.join(config.package, 'bin/mct-federation-host')];
       const child = spawnProcess('ssh', sshArgs(config, host, command), { stdio: ['pipe', 'pipe', 'pipe'] });
-      return new JsonLineSession(child, {
+      const session = new JsonLineSession(child, {
         onStderr: text => onDiagnostic(host.id, text),
         async stopUnit() {
           const script = [
@@ -210,6 +223,19 @@ export function createSshTransport({ onDiagnostic = () => {}, spawn: spawnProces
           assert.ok(['inactive', 'absent'].includes(stdout.trim()), 'owned unit cleanup not confirmed inactive or absent');
         },
       });
+      if (fence) {
+        try {
+          const proof = await inspectNetworkFence(fence, command => execute('ssh', sshArgs(config, host, command), { timeout: 5_000, maxBuffer: 1024 * 1024 }));
+          if (session.failure) throw Error('helper failed during network fence inspection');
+          await onFence(host.id, proof);
+          if (session.failure) throw Error('helper failed during network fence proof publication');
+        } catch (error) {
+          try { await session.close(); }
+          catch (cleanupError) { throw new AggregateError([error, cleanupError], 'network fence failed and owned unit cleanup failed'); }
+          throw error;
+        }
+      }
+      return session;
     },
   };
 }
@@ -473,7 +499,10 @@ export async function createFleet(input, slice = 'two', options = {}) {
         }
         catch (error) { errors.push({ node: host.node, error: error.message }); }
         finally {
-          try { await host.session.close(); } catch (error) { errors.push({ node: host.node, error: error.message }); }
+          try {
+            await host.session.close();
+            if (host.stagingRequested) await transport.cleanupBinaries(config, host);
+          } catch (error) { errors.push({ node: host.node, error: error.message }); }
           host.state = 'closed';
         }
       }));
@@ -507,8 +536,20 @@ export async function createFleet(input, slice = 'two', options = {}) {
       assert.ok(nonempty(fixture.component_base64) && nonempty(fixture.manifest) && nonempty(fixture.component_blake3) && nonempty(fixture.manifest_sha256), 'incomplete fixture');
       fixtures.push(fixture);
     }
+    const staging = await Promise.allSettled(hosts.map(async host => {
+      host.stagingRequested = true;
+      const binaries = fleet.binaries.find(item => item.node === host.node);
+      for (const kind of slice === 'upgrade' ? ['candidate', 'baseline'] : ['candidate']) {
+        binaries[`${kind}_source`] = binaries[kind];
+        binaries[kind] = await transport.stageBinary(config, host, binaries[kind], kind, binaries[`${kind}_sha256`]);
+        assert.equal(binaries[kind], stagedPath(host.root, kind), 'executable staging escaped owned root');
+      }
+      fleet.emit('executables-staged', binaries);
+    }));
+    const stagingErrors = staging.filter(result => result.status === 'rejected');
+    if (stagingErrors.length) throw new AggregateError(stagingErrors.map(result => result.reason), 'private executable staging failed');
     for (const host of hosts) {
-      host.binary = posix.join(slice === 'upgrade' ? config.baselinePackage : config.package, 'bin/mct-daemon');
+      host.binary = fleet.binaries.find(item => item.node === host.node)[slice === 'upgrade' ? 'baseline' : 'candidate'];
       await fleet.request(host, { op: 'init', root: host.root, node: host.node, vision: config.vision,
         bind: `${host.address}:${host.port}`, binary: host.binary, fixture: fixtures[host.index] });
       host.state = 'stopped'; await fleet.start(host);
@@ -565,7 +606,7 @@ export async function runSlice(config, slice, options = {}) {
         if (slice === 'three') { await fleet.start(victim); await fleet.stop(victim, { crash: true }); }
         await runCalls(fleet, fleet.hosts.filter(h => h !== victim), `down-${victim.node}`);
         fleet.emit('survivors', { victim: victim.node });
-        await fleet.start(victim, slice === 'upgrade' ? posix.join(fleet.config.package, 'bin/mct-daemon') : undefined);
+        await fleet.start(victim, slice === 'upgrade' ? fleet.binaries.find(item => item.node === victim.node).candidate : undefined);
         await runCalls(fleet, fleet.hosts, `${slice === 'upgrade' ? 'mixed' : 'resumed'}-${victim.node}`, { local: true, refresh: true });
         if (slice === 'three') { await fleet.stop(victim); await fleet.verify(victim); await fleet.start(victim); }
         fleet.emit(slice === 'upgrade' ? 'replaced' : 'restarted', { node: victim.node });
@@ -638,16 +679,20 @@ export async function main(args = process.argv.slice(2)) {
   const abort = new AbortController();
   const stop = () => abort.abort(Error('controller interrupted'));
   process.once('SIGINT', stop); process.once('SIGTERM', stop);
-  const transport = createSshTransport({ onDiagnostic: (node, text) => emit({ stage: 'diagnostic', node, text }) });
+  const transport = createSshTransport({
+    requireNetworkFence: values['--slice'] === 'upgrade',
+    onFence: (node, proof) => emit({ stage: 'network_fence', node, proof }),
+    onDiagnostic: (node, text) => emit({ stage: 'diagnostic', node, text }),
+  });
   try {
     const scenarioHook = values['--slice'] === 'three' ? (await import('./partition.mjs')).runPartitions : undefined;
     const report = await runSlice(config, values['--slice'], { transport, onStage: emit, signal: abort.signal, scenarioHook });
     assert.equal(report.status, 'passed', 'slice gates are incomplete');
     writeFileSync(posix.join(evidence, 'result.json'), JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
   } catch (error) {
-    const failure = sanitize({ status: 'failed', error: error.message, slice: values['--slice'], partition: { status: 'not_verified' } }, config);
+    const failure = sanitize({ status: 'failed', error: error.message, causes: (error.errors ?? []).map(cause => cause.message), slice: values['--slice'], partition: { status: 'not_verified' } }, config);
     writeFileSync(posix.join(evidence, 'result.json'), JSON.stringify(failure, null, 2) + '\n', { mode: 0o600 });
-    emit({ stage: 'failed', ...failure }); throw Error(failure.error);
+    emit({ stage: 'failed', ...failure }); throw Error([failure.error, ...failure.causes].join('\n'));
   } finally { process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); }
 }
 

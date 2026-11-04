@@ -3,7 +3,7 @@
   "sshIdentity": "/absolute/path/to/operator-key",
   "package": "/nix/store/candidate-federation-closure",
   "baselinePackage": "/nix/store/eligible-baseline-closure",
-  "runRoot": "/tmp/mct-federation",
+  "runRoot": "/home/operator/.mct-federation-runs",
   "vision": "vision-fleet",
   "hosts": [
     {
