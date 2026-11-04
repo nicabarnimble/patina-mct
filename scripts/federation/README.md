@@ -11,6 +11,18 @@ all example values. Use actual RFC1918 addresses, matching SSH destinations,
 unique expected hostnames, and an immutable package produced on the configured
 builder. Keep the SSH identity and host inventory out of git.
 
+Run the full consecutive sequence with one fail-fast command. Configure the
+baseline package before starting; do not edit the inventory during the run.
+The evidence parent must already exist, but the final directory must be new.
+
+```sh
+bash scripts/federation/suite.sh \
+  /absolute/private/fleet.json /absolute/private/new-suite-evidence
+```
+
+The suite stops at the first failure and writes its aggregate `result.json` only
+after all three slices pass. To run one slice independently:
+
 ```sh
 node scripts/federation/run.mjs \
   --config /absolute/private/fleet.json \
