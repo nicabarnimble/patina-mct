@@ -224,28 +224,64 @@ pub fn verify_optional(path: &Path) -> io::Result<()> {
     clippy::unnecessary_cast,
     reason = "Unix stat field widths differ across targets"
 )]
-fn stat_private_at(dir: &File, name: &OsStr) -> io::Result<(u64, u64)> {
-    let stat = rfs::statat(dir, name, rfs::AtFlags::SYMLINK_NOFOLLOW)?;
-    if rfs::FileType::from_raw_mode(stat.st_mode) != rfs::FileType::RegularFile
-        || stat.st_nlink != 1
-        || !private_file_facts(stat.st_uid, stat.st_mode as u32, current_uid())
-    {
-        return Err(refused(
-            "SQLite storage must be a single-link current-UID regular file, mode 0600",
-        ));
+fn validate_private_stat(stat: &rfs::Stat) -> io::Result<(u64, u64)> {
+    if stat.st_nlink != 1 || !private_regular_sqlite_file(stat) {
+        return Err(refused(&format!(
+            "SQLite storage must be a single-link current-UID regular file, mode 0600; observed mode={:o}, uid={}, links={}",
+            stat.st_mode, stat.st_uid, stat.st_nlink,
+        )));
     }
     Ok((stat.st_dev as u64, stat.st_ino as u64))
+}
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "Unix stat field widths differ across targets"
+)]
+fn private_regular_sqlite_file(stat: &rfs::Stat) -> bool {
+    rfs::FileType::from_raw_mode(stat.st_mode) == rfs::FileType::RegularFile
+        && private_file_facts(stat.st_uid, stat.st_mode as u32, current_uid())
+}
+fn stat_private_at(dir: &File, name: &OsStr) -> io::Result<(u64, u64)> {
+    validate_private_stat(&rfs::statat(dir, name, rfs::AtFlags::SYMLINK_NOFOLLOW)?)
 }
 pub fn private_file_identity(path: &Path) -> io::Result<(u64, u64)> {
     let (dir, name) = parent(path, false, true, false)?;
     stat_private_at(&dir, &name)
 }
+/// Recheck only private, zero-link sidecar snapshots. Persistent pathname churn
+/// returns WouldBlock; it is not permission to use an unlinked or unsafe file.
 pub fn verify_optional_metadata(path: &Path) -> io::Result<()> {
-    match private_file_identity(path) {
-        Ok(_) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e),
+    let (dir, name) = match parent(path, false, true, false) {
+        Ok(parent) => parent,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    verify_optional_stat(|| {
+        rfs::statat(&dir, &name, rfs::AtFlags::SYMLINK_NOFOLLOW).map_err(Into::into)
+    })
+}
+fn verify_optional_stat(mut lookup: impl FnMut() -> io::Result<rfs::Stat>) -> io::Result<()> {
+    for attempt in 0..3 {
+        let stat = match lookup() {
+            Ok(stat) => stat,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        // SQLite can unlink a sidecar after pathname lookup but before stat copies
+        // its facts. Immediate rechecks can keep observing the unfinished unlink.
+        // Give it a bounded backoff; never authorize the unlinked snapshot.
+        if stat.st_nlink == 0 && private_regular_sqlite_file(&stat) {
+            if attempt < 2 {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            continue;
+        }
+        return validate_private_stat(&stat).map(|_| ());
     }
+    Err(io::Error::new(
+        io::ErrorKind::WouldBlock,
+        "SQLite sidecar pathname remained unstable (zero-link private inode)",
+    ))
 }
 
 /// Publish a closed, private empty inode without replacing any existing file.

@@ -384,7 +384,7 @@ fn verify_sqlite_sidecars(path: &Path) -> Result<()> {
         let mut name = path.as_os_str().to_os_string();
         name.push(suffix);
         mct_observation::private_fs::verify_optional_metadata(Path::new(&name))
-            .with_context(|| format!("unsafe SQLite sidecar {suffix}"))?;
+            .with_context(|| format!("validate SQLite sidecar {suffix}"))?;
     }
     Ok(())
 }

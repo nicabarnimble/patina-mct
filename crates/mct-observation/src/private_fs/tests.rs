@@ -1,4 +1,122 @@
 use super::*;
+
+#[test]
+fn sqlite_sidecar_rechecks_an_unlinked_private_snapshot() {
+    let root = private_tempdir();
+    let path = root.path().canonicalize().unwrap().join("state-wal");
+    let (dir, name) = parent(&path, false, true, false).unwrap();
+    let old = create_new(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(rfs::fstat(&old).unwrap().st_nlink, 0);
+    for replacement in [false, true] {
+        let _current = replacement.then(|| create_new(&path).unwrap());
+        let mut lookups = 0;
+        let result = verify_optional_stat(|| {
+            lookups += 1;
+            if lookups == 1 {
+                return Ok(rfs::fstat(&old)?);
+            }
+            Ok(rfs::statat(&dir, &name, rfs::AtFlags::SYMLINK_NOFOLLOW)?)
+        });
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(lookups, 2);
+    }
+}
+
+#[test]
+fn sqlite_sidecar_recheck_never_accepts_unsafe_metadata_or_io_errors() {
+    let root = private_tempdir();
+    let path = root.path().canonicalize().unwrap().join("state-wal");
+    let file = create_new(&path).unwrap();
+    for bad in ["mode", "owner", "type", "hardlink", "io"] {
+        let mut lookups = 0;
+        let result = verify_optional_stat(|| {
+            lookups += 1;
+            let mut stat = rfs::fstat(&file)?;
+            if lookups == 1 {
+                stat.st_nlink = 0;
+                return Ok(stat);
+            }
+            match bad {
+                "mode" => stat.st_mode = 0o100644,
+                "owner" => stat.st_uid = current_uid().wrapping_add(1),
+                "type" => stat.st_mode = 0o120600,
+                "hardlink" => stat.st_nlink = 2,
+                "io" => return Err(io::Error::other("injected storage failure")),
+                _ => unreachable!(),
+            }
+            Ok(stat)
+        });
+        assert!(result.is_err(), "accepted {bad}");
+        assert_eq!(lookups, 2);
+    }
+    for bad in ["mode", "owner", "type"] {
+        let mut lookups = 0;
+        assert!(
+            verify_optional_stat(|| {
+                lookups += 1;
+                let mut stat = rfs::fstat(&file)?;
+                stat.st_nlink = 0;
+                match bad {
+                    "mode" => stat.st_mode = 0o100644,
+                    "owner" => stat.st_uid = current_uid().wrapping_add(1),
+                    "type" => stat.st_mode = 0o120600,
+                    _ => unreachable!(),
+                }
+                Ok(stat)
+            })
+            .is_err()
+        );
+        assert_eq!(lookups, 1, "unsafe zero-link snapshot was retried");
+    }
+}
+
+#[test]
+fn sqlite_sidecar_unstable_path_is_bounded_and_database_guard_stays_strict() {
+    let root = private_tempdir();
+    let path = root.path().canonicalize().unwrap().join("state-wal");
+    let file = create_new(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert!(validate_private_stat(&rfs::fstat(&file).unwrap()).is_err());
+    let mut lookups = 0;
+    let error = verify_optional_stat(|| {
+        lookups += 1;
+        Ok(rfs::fstat(&file)?)
+    })
+    .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    assert_eq!(lookups, 3);
+}
+
+#[test]
+fn sqlite_sidecar_public_path_recovers_after_churn_stops() {
+    let root = private_tempdir();
+    let path = root.path().canonicalize().unwrap().join("state-wal");
+    std::thread::scope(|scope| {
+        let writer = scope.spawn(|| {
+            for _ in 0..256 {
+                drop(create_new(&path).unwrap());
+                std::fs::remove_file(&path).unwrap();
+            }
+        });
+        while !writer.is_finished() {
+            if let Err(error) = verify_optional_metadata(&path) {
+                assert_eq!(error.kind(), io::ErrorKind::WouldBlock, "{error}");
+            }
+        }
+        writer.join().unwrap();
+    });
+    verify_optional_metadata(&path).unwrap();
+    drop(create_new(&path).unwrap());
+    verify_optional_metadata(&path).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(
+        verify_optional_metadata(&path).unwrap_err().kind(),
+        io::ErrorKind::PermissionDenied
+    );
+    assert_eq!(std::fs::metadata(&path).unwrap().mode() & 0o7777, 0o644);
+}
+
 fn private_tempdir() -> tempfile::TempDir {
     use std::os::unix::fs::PermissionsExt as _;
     tempfile::Builder::new()
