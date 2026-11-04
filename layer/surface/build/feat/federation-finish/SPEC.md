@@ -74,6 +74,11 @@ automatic work migration, transitive routing, cross-Vision sharing, deployment
 to live services, new admin-key policy, or whole-Pi-in-WASM dependency. Linux
 release support and real multi-host network partitions require separate proof.
 
+NIC-63 subsequently approves Linux arm64 as a supported target and disposable
+Pi testing. [Slice 1 evidence](../../../../../docs/nic63-slice1-nicamaster.md)
+compares these proofs on Mac and nicamaster. It does not close multi-host
+partition, package, upgrade or release acceptance obligations.
+
 ## Evidence obligations
 
 Reproduce unequal-revision failure before changing runtime code. Retain stale

@@ -85,9 +85,12 @@ Eight completion obligations remain open: `administration`,
 - Fleet route revalidation also intermittently denied `mother-0 -> 2` during
   PR #82 validation. Passing reruns did not establish a fix. Retain R1/R2 as
   separate investigations in the work index.
-- Multi-host macOS partition/upgrade validation requires approved disposable
-  hosts, actions and evidence returned through Devin. No assumed remote access,
-  production deployment, PiD/Unraid changes or unsupported Linux release claims.
+- Linux arm64 is now a supported target. Doug approved disposable Pi tests,
+  including Mother kills, network cuts and reboots. See the
+  [NIC-63 decisions and evidence](nic63-slice1-nicamaster.md). Same-host proofs
+  on nicamaster do not close multi-host partition/upgrade validation. Remote
+  macOS validation still requires explicit access and evidence through Devin.
+  No production deployment or PiD/Unraid changes are authorized.
 
 ## Validation and continuation
 

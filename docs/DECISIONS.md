@@ -638,6 +638,21 @@ All six were locked on 2026-10-14 in the admin-keys design. Full text:
   exclusion during this completion effort. This authorizes active design;
   protocol and release-obligation amendments must be explicit before building.
 
+#### NIC-63 amendment: supported target and disposable Pi testing
+
+Doug's decisions, quoted verbatim from the owner-relayed chat at 7:18 PM ET
+(calendar date not supplied in the request):
+
+- "Yes, Pis are disposable: Mother kills, network cuts, reboots are fine"
+- "Linux arm64 is a supported target"
+
+Linux `aarch64-unknown-linux-gnu` joins macOS arm64 as a supported target.
+The Pi fleet is authorized for those destructive test actions. This does not
+close the release inventory or establish multi-host partition/upgrade evidence.
+NIC-63 slice 1 runs existing proofs on nicamaster. No `rpi-update` or EEPROM
+changes are authorized; a hung Pi is recovered by power cycling only. See
+[the slice evidence](nic63-slice1-nicamaster.md).
+
 ### D-53 Bring guardian recovery into active multi-Mother completion design
 
 - **Date:** 2026-10-19.

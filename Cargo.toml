@@ -12,7 +12,7 @@ resolver = "2"
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.96"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/nicabarnimble/patina-mct"
 
@@ -43,14 +43,14 @@ tempfile = "3.23.0"
 # Preserve the 48.x default feature set except the unused compiled-module disk
 # cache. MCT compiles verified component bytes and never configures this cache;
 # omitting it also removes the vulnerable zstd family, without an audit waiver.
-wasmtime = { version = "48.0.8", default-features = false, features = [
+wasmtime = { version = "49.0.5", default-features = false, features = [
     "anyhow", "async", "backtrace", "gc", "gc-copying", "gc-drc", "gc-null",
     "wat", "profiling", "parallel-compilation", "cranelift", "pooling-allocator",
     "demangle", "addr2line", "coredump", "debug-builtins", "runtime",
     "component-model", "component-model-async", "threads", "stack-switching",
     "std", "debug", "compile-time-builtins", "wit-parser",
 ] }
-wasmtime-wasi = "48.0.8"
+wasmtime-wasi = "49.0.5"
 wat = "1.241.2"
 
 # Size-oriented release profile. Panic stays unwind: wasmtime catches

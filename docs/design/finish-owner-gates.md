@@ -96,12 +96,13 @@ bounded by the current finish plan, not new owner choices.
 
 ## External validation access
 
-The supported release target remains macOS arm64. The current evidence covers
-six real processes on one host, not a physical multi-host network partition or
-rolling upgrade. To close `distributed-failures` and `release-evidence`, identify
-approved disposable test hosts and permitted test actions. Do not use production
-Mothers, deploy to PiD/Unraid, or claim Linux release support without the relevant
-approval and platform evidence.
+Supported targets are macOS arm64 and Linux arm64. Doug approved disposable
+Pi testing, including Mother kills, network cuts and reboots; see the
+[NIC-63 amendment](../DECISIONS.md#nic-63-amendment-supported-target-and-disposable-pi-testing).
+[NIC-63 slice 1](../nic63-slice1-nicamaster.md) covers existing same-host proofs
+on nicamaster, not physical multi-host network partitions or rolling upgrades.
+Those measurements remain required for `distributed-failures` and
+`release-evidence`. No production Mothers or PiD/Unraid deployments are authorized.
 
 The external Patina spec-manager is also currently unavailable. Local tests
 remain executable without it; no daemon should be started simply to satisfy
