@@ -386,6 +386,13 @@ function assertLedgers(fleet) {
     }
   }
   for (const denied of fleet.calls.filter(c => c.outcome === 'denied' || c.expect_no_execution)) {
+    if (denied.partition_probe) {
+      const caller = fleet.hosts.find(host => host.node === denied.caller);
+      const destination = fleet.hosts.find(host => host.node === denied.destination);
+      assert.equal(denied.outcome, 'failed', 'partition probe did not fail in transport');
+      assert.equal(denied.safe_message, 'remote peer unavailable', 'unrelated partition probe failure');
+      assertForwarding(caller.checkpoint.observations, denied, caller, destination);
+    }
     const all = fleet.hosts.flatMap(h => h.checkpoint.observations);
     const ids = new Set([denied.call_id, ...all.filter(o => o.peer_correlation &&
       (o.peer_correlation.caller_call_id === denied.call_id || traceId(o) === denied.trace_id)).map(o => o.call_id)]);

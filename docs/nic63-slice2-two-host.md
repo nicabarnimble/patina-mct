@@ -5,8 +5,8 @@
 Nicamaster (`a`) and nicanode0 (`b`) ran independently identified Mothers.
 The configured LAN sockets and public tickets were exchanged explicitly;
 receiver-issued signed binding proofs were admitted through real Iroh hello.
-No public discovery, relay, router mapping, or optional internet probe was used
-by the local-only candidate.
+The local-only candidate disables public discovery, relays, router mapping,
+and optional internet probes.
 
 ## Observed gates
 
@@ -20,8 +20,9 @@ by the local-only candidate.
 | Revocation | B revoked A; A's very next call was denied, with receiver `BindingRevoked` evidence and no execution under the denied trace |
 | Cleanup | Graceful stops without escalation; owned transient helper services confirmed inactive/absent; executable scratch copies removed |
 
-Each ledger has two canonical execution facts: its own local control and its
-execution for the other caller. Forwarding receipts are not attributed as local
+Each ledger records two completed child-execution observations: its own local
+control and its execution for the other caller. The verifier's separate
+`canonical_fact_count` counts authority facts, not executions. Forwarding receipts are not attributed as local
 child execution. Receiver-minted call IDs are joined to the original caller IDs
 through actual `mct-peer-call-correlation-v1` constructed observations.
 

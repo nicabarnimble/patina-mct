@@ -414,6 +414,14 @@ test('receiver revocation cannot pass on caller no_route fallback', async () => 
   await assert.rejects(runSlice(config(), 'two', { transport, pollMs: 0 }));
 });
 
+test('a failed partition probe without its exact forwarding observation cannot pass', async () => {
+  const { transport } = fakeTransport();
+  await assert.rejects(runSlice(config(), 'two', { transport, async scenarioHook(fleet) {
+    fleet.calls.push({ caller: 'a', destination: 'b', outcome: 'failed', safe_message: 'remote peer unavailable',
+      call_id: 'blocked-probe', trace_id: 'blocked-trace', partition_probe: true, expect_no_execution: true });
+  } }), /missing or duplicate caller forwarding/);
+});
+
 test('private staging failure prevents every init and launch', async () => {
   const cleaned = [];
   const { transport, state } = fakeTransport({ transport: {

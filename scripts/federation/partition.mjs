@@ -54,6 +54,13 @@ export function droppedPackets(value) {
   visit(value); return count;
 }
 
+export function assertBlockedProbe(reply) {
+  assert.equal(reply.outcome, 'failed', 'partition probe must reach a transport failure');
+  assert.equal(reply.safe_message, 'remote peer unavailable', 'partition probe failed for an unrelated reason');
+  assert.ok(reply.submitted_call_id && reply.submitted_trace_id, 'partition probe lacks correlation');
+  assert.ok(reply.decoded_result == null && reply.inline_result_payload_base64 == null, 'partition probe returned execution bytes');
+}
+
 async function remote(fleet, host, command) {
   const { stdout } = await exec('ssh', sshArgs(fleet.config, host, command), { timeout: 60_000, maxBuffer: 4 * 1024 * 1024 });
   return stdout;
@@ -83,13 +90,13 @@ export async function runPartitions(fleet) {
       if (blocked.status === 'rejected') throw blocked.reason;
       if (serving.status === 'rejected') throw serving.reason;
       const reply = blocked.value;
-      assert.ok(['failed', 'timed_out'].includes(reply.outcome), 'partition must cause transport failure, not completion or policy denial');
-      assert.ok(reply.submitted_call_id && reply.submitted_trace_id, 'partition probe lacks correlation');
-      assert.ok(reply.decoded_result == null && reply.inline_result_payload_base64 == null, 'partition probe returned execution bytes');
+      assertBlockedProbe(reply);
+      assert.ok(!fleet.callIds.has(reply.submitted_call_id) && !fleet.traceIds.has(reply.submitted_trace_id), 'partition probe reused an ID');
+      fleet.callIds.add(reply.submitted_call_id); fleet.traceIds.add(reply.submitted_trace_id);
       const counters = JSON.parse(await remote(fleet, victim, ['sudo', '-n', nft, '-j', 'list', 'table', 'inet', table]));
       const packets = droppedPackets(counters);
       assert.ok(packets > 0, 'no actual dropped packets observed');
-      fleet.calls.push({ caller: peers[0].node, destination: victim.node, label: 'partition-probe', outcome: reply.outcome, call_id: reply.submitted_call_id, trace_id: reply.submitted_trace_id, expect_no_execution: true });
+      fleet.calls.push({ caller: peers[0].node, destination: victim.node, label: 'partition-probe', outcome: reply.outcome, call_id: reply.submitted_call_id, trace_id: reply.submitted_trace_id, safe_message: reply.safe_message, partition_probe: true, expect_no_execution: true });
       result = { victim: victim.node, dropped_packets: packets, blocked_outcome: reply.outcome, survivors_served: true };
     } catch (error) { failure = error; }
     finally {

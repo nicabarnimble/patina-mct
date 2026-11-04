@@ -30,6 +30,7 @@ use std::{
 
 const MAX_LINE: usize = 1024 * 1024;
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
+const CALL_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(90);
 const READY_TIMEOUT: Duration = Duration::from_secs(120);
 const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -762,7 +763,7 @@ impl Host {
             "trace_context": {"trace_id": trace_id, "span_id": format!("span-{id}")},
             "payload": {"payload_kind": "inline_payload", "inline_payload_ref": format!("payload-{id}"), "content_type": "application/json", "size_bytes": payload.len(), "blake3_digest_hex": blake3::hash(payload).to_hex().to_string()},
             "inline_payload_base64": BASE64.encode(payload), "idempotency_key": format!("key-{id}")
-        })), CONTROL_TIMEOUT)?;
+        })), CALL_EXCHANGE_TIMEOUT)?;
         let decoded = match reply.get("inline_result_payload_base64") {
             Some(Value::String(encoded)) => {
                 serde_json::from_slice::<Value>(&BASE64.decode(encoded)?)?
@@ -1024,6 +1025,14 @@ mod tests {
             assert!(validate_absolute(Path::new(path)).is_err(), "{path:?}");
         }
         assert!(validate_absolute(Path::new("/tmp/federation-root")).is_ok());
+    }
+
+    #[test]
+    fn call_exchange_outlives_hello_and_call_transport_bounds() {
+        let outbound_hello_bound = Duration::from_secs(30);
+        let outbound_call_bound = Duration::from_secs(30);
+        assert!(CALL_EXCHANGE_TIMEOUT > outbound_hello_bound + outbound_call_bound);
+        assert!(CALL_EXCHANGE_TIMEOUT < Duration::from_secs(150));
     }
 
     #[test]
