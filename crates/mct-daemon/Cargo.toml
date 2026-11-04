@@ -36,6 +36,7 @@ wasmtime = { workspace = true, features = ["call-hook"] }
 wasmtime-wasi.workspace = true
 
 [dev-dependencies]
+rustix.workspace = true
 p256.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 mct-observation = { path = "../mct-observation" }

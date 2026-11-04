@@ -35,7 +35,8 @@ Persisted identity provides a stable endpoint key. Static tickets provide today'
 reachability. Restart on the same configured LAN socket can retain both.
 Inspection found that the current N0 preset retains public PKARR and DNS lookup
 even when relays are disabled. Clear those services for local-only operation
-before launching the fleet. Public discovery is not an acceptable LAN-only
+before launching the fleet. Disable automatic UPnP, PCP, and NAT-PMP port mapping
+and optional internet probes too, so the test does not alter router mappings. Public discovery is not an acceptable LAN-only
 fallback. There is no configured LAN-local key-only lookup service to repair an
 obsolete ticket after an address changes. Capability refresh is not address
 discovery. OCI-118 needs an explicit discovery or address-update mechanism,
@@ -67,8 +68,13 @@ Build the candidate once on nicamaster. Never compile packages or Rust on the
 Pi 3s or the Mac. Reuse the existing Nix toolchain and trusted cache. Package the
 daemon, fixture helper, and script dependencies in an immutable closure. Copy it
 to target hosts in parallel and verify closure contents and executable digests.
-Use an existing recorded older package for the rolling-upgrade baseline. A
-same-binary restart does not count as an upgrade.
+Reuse the recorded older package for the rolling-upgrade baseline. Its legacy
+public discovery needs a temporary test-process network fence. Permit only the
+configured LAN peers and verify that kernel ingress and egress filters are
+attached before starting a Mother. This also prevents legacy router port mapping.
+If that fence cannot be verified, the upgrade gate is blocked. Do not build on
+other hosts or relabel a same-binary restart as an upgrade. This is test-managed
+process replacement, not the macOS-only product upgrade command.
 
 The critical path is the nicamaster build, closure delivery, then real remote
 acceptance. In parallel, inspect transport guarantees and test the controller.

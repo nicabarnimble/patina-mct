@@ -1,0 +1,31 @@
+{
+  "builder": "a",
+  "sshIdentity": "/absolute/path/to/operator-key",
+  "package": "/nix/store/candidate-federation-closure",
+  "baselinePackage": "/nix/store/eligible-baseline-closure",
+  "runRoot": "/tmp/mct-federation",
+  "vision": "vision-fleet",
+  "hosts": [
+    {
+      "id": "a",
+      "ssh": "operator@192.168.50.10",
+      "hostname": "builder",
+      "address": "192.168.50.10",
+      "port": 24863
+    },
+    {
+      "id": "b",
+      "ssh": "operator@192.168.50.11",
+      "hostname": "second-host",
+      "address": "192.168.50.11",
+      "port": 24863
+    },
+    {
+      "id": "c",
+      "ssh": "operator@192.168.50.12",
+      "hostname": "third-host",
+      "address": "192.168.50.12",
+      "port": 24863
+    }
+  ]
+}

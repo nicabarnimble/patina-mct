@@ -263,7 +263,10 @@ impl MotherIrohEndpoint {
                     .build(),
             );
         if matches!(relay_mode, MotherIrohRelayMode::Disabled) {
-            builder = builder.clear_address_lookup();
+            builder = builder
+                .clear_address_lookup()
+                .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
+                .net_report_config(iroh::endpoint::NetReportConfig::minimal());
         }
         if let Some(secret_key_hex) = config.secret_key_hex {
             builder = builder.secret_key(secret_key_from_hex(&secret_key_hex)?);
