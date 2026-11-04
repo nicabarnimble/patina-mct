@@ -1866,7 +1866,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn echo_latency_stays_flat_as_the_ledger_grows() {
+    async fn echo_does_not_rehash_the_ledger_prefix_as_history_grows() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.json");
         let children_dir = dir.path().join("children");
@@ -1913,7 +1913,6 @@ mod tests {
         let hashed_at_small = mct_observation::ledger_prefix_bytes_hashed_for(&ledger_path);
         let before_small = ledger_line_count(&ledger_path);
         let (request, payload) = echo("call-echo-small-ledger");
-        let started = std::time::Instant::now();
         let small = execute_resident_call(
             paths.clone(),
             ledger.clone(),
@@ -1921,8 +1920,11 @@ mod tests {
             ResidentPayloadIngress::local(Some(payload)),
         )
         .await;
-        let small_elapsed = started.elapsed();
         assert_eq!(small.outcome, CallProtocolOutcome::Completed);
+        assert_eq!(
+            small.inline_result_payload.as_deref(),
+            Some(br#"{"results":[41]}"#.as_slice())
+        );
         let entries_per_echo = ledger_line_count(&ledger_path) - before_small;
         assert_eq!(
             entries_per_echo, 11,
@@ -1939,7 +1941,6 @@ mod tests {
         assert!(large_entries >= 2_000, "ledger has {large_entries} entries");
         let hashed_at_large = mct_observation::ledger_prefix_bytes_hashed_for(&ledger_path);
         let (request, payload) = echo("call-echo-large-ledger");
-        let started = std::time::Instant::now();
         let large = execute_resident_call(
             paths,
             ledger.clone(),
@@ -1947,19 +1948,21 @@ mod tests {
             ResidentPayloadIngress::local(Some(payload)),
         )
         .await;
-        let large_elapsed = started.elapsed();
         ledger.close().await;
         assert_eq!(large.outcome, CallProtocolOutcome::Completed);
+        assert_eq!(
+            large.inline_result_payload.as_deref(),
+            Some(br#"{"results":[41]}"#.as_slice())
+        );
+        assert_eq!(
+            ledger_line_count(&ledger_path) - large_entries,
+            entries_per_echo,
+            "ledger growth must not change the observations emitted by an echo"
+        );
         assert_eq!(
             mct_observation::ledger_prefix_bytes_hashed_for(&ledger_path),
             hashed_at_large,
             "echo at {large_entries} entries rehashed the ledger prefix"
-        );
-        let small_ns = small_elapsed.as_nanos().max(1);
-        let large_ns = large_elapsed.as_nanos();
-        assert!(
-            large_ns <= small_ns.saturating_mul(4),
-            "echo at {large_entries} entries took {large_elapsed:?}; echo near 100 entries took {small_elapsed:?} ({entries_per_echo} entries per echo)"
         );
     }
 }
