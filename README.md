@@ -62,6 +62,10 @@ explicitly trusted Mother-side adapter; it does not become a local Child.
 
 ## Quick start
 
+Supported targets are macOS arm64 (`aarch64-apple-darwin`) and Linux arm64
+(`aarch64-unknown-linux-gnu`). See [NIC-63 proof evidence](docs/nic63-slice1-nicamaster.md)
+for the bounded test slice. Supported does not mean release-ready.
+
 For a **Linux ARM64 admin-only Mother**, use the [Nix/systemd installation and
 hardware gate](docs/linux-admin-install.md). This is separate from the legacy
 macOS runtime below and does not enable the full passkey Child runtime.
