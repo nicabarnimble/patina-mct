@@ -267,7 +267,7 @@ function fakeTransport(overrides = {}) {
         }
         if (r.op === 'stop') {
           state.running.delete(h.id); if (r.crash) state.crashed.add(h.id);
-          return { stopped: true, mode: r.crash ? 'crash' : 'graceful', escalated: false, recovery_required: state.crashed.has(h.id) };
+          return { stopped: true, mode: r.crash ? 'crash' : 'graceful', escalated: false, exit_signal: r.crash ? 9 : null, recovery_required: state.crashed.has(h.id) };
         }
         if (r.op === 'provision') return { verification_outcome: 'verified', approval_state: 'approved' };
         if (r.op === 'control') {
@@ -412,6 +412,23 @@ test('receiver revocation cannot pass on caller no_route fallback', async () => 
     if (r.op === 'call' && state.revoked) return { outcome: 'denied', protocol_reason: 'no_route', submitted_call_id: 'fallback', submitted_trace_id: 'fallback-trace' };
   } });
   await assert.rejects(runSlice(config(), 'two', { transport, pollMs: 0 }));
+});
+
+test('crash mode without an observed SIGKILL exit cannot pass', async () => {
+  const { transport } = fakeTransport({ request(h, r) {
+    if (r.op === 'stop' && r.crash) return { stopped: true, mode: 'crash', escalated: false, recovery_required: true, exit_signal: null };
+  } });
+  await assert.rejects(runSlice(config(), 'three', { transport }), /SIGKILL/);
+});
+
+test('a markerless caller execution cannot masquerade as remote-only execution', async () => {
+  const { transport } = fakeTransport({ reduce(h, observations) {
+    if (h.node !== 'a') return;
+    const sent = observations.find(o => o.kind === 'peer_call_sent');
+    observations.push({ kind: 'runtime_execution_completed', source_plane: 'child', outcome: 'completed',
+      call_id: sent.call_id, trace_id: sent.trace_id, local_sequence: observations.length });
+  } });
+  await assert.rejects(runSlice(config(), 'two', { transport }), /caller locally executed remote operation/);
 });
 
 test('a failed partition probe without its exact forwarding observation cannot pass', async () => {

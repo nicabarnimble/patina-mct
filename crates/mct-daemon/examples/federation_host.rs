@@ -21,7 +21,7 @@ use std::{
     fs,
     io::{self, BufRead, BufReader, Read, Write},
     net::SocketAddr,
-    os::unix::fs::DirBuilderExt,
+    os::unix::{fs::DirBuilderExt, process::ExitStatusExt},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     thread,
@@ -395,19 +395,22 @@ fn acquire_host_lock(home: &Path) -> Result<fs::File> {
 struct ChildStop {
     escalated: bool,
     recovery_required: bool,
+    exit_signal: Option<i32>,
 }
 
 fn stop_owned_child(child: &mut Child, crash: bool, timeout: Duration) -> Result<ChildStop> {
     let mut escalated = false;
-    if child.try_wait()?.is_none() {
+    let running = child.try_wait()?.is_none();
+    ensure!(!crash || running, "crash requires a live owned child");
+    if running {
         if crash {
             child.kill()?;
         } else {
             // The unreaped Child retains PID ownership until wait observes exit.
-            if let Err(error) = kill_process(Pid::from_child(child), Signal::TERM) {
-                if child.try_wait()?.is_none() {
-                    return Err(error.into());
-                }
+            if let Err(error) = kill_process(Pid::from_child(child), Signal::TERM)
+                && child.try_wait()?.is_none()
+            {
+                return Err(error.into());
             }
             let deadline = Instant::now() + timeout;
             while child.try_wait()?.is_none() && Instant::now() < deadline {
@@ -420,9 +423,15 @@ fn stop_owned_child(child: &mut Child, crash: bool, timeout: Duration) -> Result
         }
     }
     let status = child.wait()?;
+    let exit_signal = status.signal();
+    ensure!(
+        !crash || exit_signal == Some(9),
+        "crash did not terminate with SIGKILL"
+    );
     Ok(ChildStop {
         escalated,
         recovery_required: crash || escalated || !status.success(),
+        exit_signal,
     })
 }
 
@@ -691,16 +700,22 @@ impl Host {
     }
 
     fn stop(&mut self, crash: bool) -> Result<Value> {
+        ensure!(
+            !crash || self.process.is_some(),
+            "crash requires an owned child"
+        );
         let mut escalated = false;
+        let mut exit_signal = None;
         if let Some(child) = self.process.as_mut() {
             let stopped = stop_owned_child(child, crash, STOP_TIMEOUT)?;
             escalated = stopped.escalated;
+            exit_signal = stopped.exit_signal;
             self.recovery_required |= stopped.recovery_required;
             self.process = None;
         }
         Ok(
             json!({"stopped": true, "mode": if crash { "crash" } else { "graceful" },
-            "escalated": escalated, "recovery_required": self.recovery_required}),
+            "escalated": escalated, "exit_signal": exit_signal, "recovery_required": self.recovery_required}),
         )
     }
 
@@ -1234,6 +1249,14 @@ mod tests {
     }
 
     #[test]
+    fn crash_rejects_an_already_exited_child() {
+        let mut child = Command::new("sh").args(["-c", "exit 0"]).spawn().unwrap();
+        assert!(child.wait().unwrap().success());
+        assert!(stop_owned_child(&mut child, true, Duration::from_secs(1)).is_err());
+        assert!(stop_owned_child(&mut child, false, Duration::from_secs(1)).is_ok());
+    }
+
+    #[test]
     fn owned_child_stop_distinguishes_drain_crash_and_escalation() {
         for (crash, ignore_term, timeout, expected_escalation) in [
             (false, false, Duration::from_secs(2), false),
@@ -1257,6 +1280,14 @@ mod tests {
             let result = stop_owned_child(&mut child, crash, timeout).unwrap();
             assert_eq!(result.escalated, expected_escalation);
             assert_eq!(result.recovery_required, crash || expected_escalation);
+            assert_eq!(
+                result.exit_signal,
+                if crash || expected_escalation {
+                    Some(9)
+                } else {
+                    None
+                }
+            );
             assert!(child.try_wait().unwrap().is_some());
         }
     }

@@ -356,7 +356,7 @@ function assertForwarding(observations, call, caller, destination) {
   assert.deepEqual(markers(sent[0]), { forwarded_from: caller.node, forwarded_to: destination.node, operation: operation(destination) }, 'wrong forwarding provenance or operation');
 }
 
-function assertLedgers(fleet) {
+export function assertLedgers(fleet) {
   const directions = [];
   for (const caller of fleet.hosts) {
     const own = caller.checkpoint.observations;
@@ -371,7 +371,7 @@ function assertLedgers(fleet) {
       let forwarded = 0; let executed = 0;
       for (const call of calls) {
         assertForwarding(own, call, caller, destination);
-        assert.ok(!own.some(o => markers(o).executed_on && (o.call_id === call.call_id || traceId(o) === call.trace_id || markers(o).operation === operation(destination))), 'caller locally executed remote operation');
+        assert.ok(!own.some(o => (executionKinds.has(o.kind) || markers(o).executed_on) && (o.call_id === call.call_id || traceId(o) === call.trace_id || markers(o).operation === operation(destination))), 'caller locally executed remote operation');
         const receiver = destination.checkpoint.observations;
         const correlations = receiver.filter(o => o.peer_correlation &&
           (o.peer_correlation.caller_call_id === call.call_id || traceId(o) === call.trace_id));
@@ -462,6 +462,7 @@ export async function createFleet(input, slice = 'two', options = {}) {
       assert.equal(reply?.stopped, true, 'stop was not confirmed');
       assert.equal(reply.mode, crash ? 'crash' : 'graceful', 'wrong stop mode');
       assert.equal(typeof reply.escalated, 'boolean', 'missing stop escalation evidence');
+      if (crash) assert.equal(reply.exit_signal, 9, 'crash requires an observed SIGKILL exit');
       host.state = crash || reply.escalated || reply.recovery_required || host.state === 'crashed' ? 'crashed' : 'stopped';
       this.emit('stopped', { node: host.node, ...reply });
       return reply;
