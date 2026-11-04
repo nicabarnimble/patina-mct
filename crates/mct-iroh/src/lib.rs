@@ -98,6 +98,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn local_endpoint_has_no_address_lookup_services() {
+        let mut endpoint = MotherIrohEndpoint::bind(
+            MotherIrohEndpointConfig::local_mct()
+                .with_bind_addr("127.0.0.1:0".parse().unwrap()),
+        )
+        .await
+        .unwrap();
+        assert!(
+            endpoint.endpoint.as_ref().unwrap().address_lookup().unwrap().is_empty(),
+            "local-only endpoints must not publish or resolve through public lookup services"
+        );
+        endpoint.close().await;
+    }
+
+    #[tokio::test]
     async fn endpoint_binds_configured_udp_address() {
         let probe = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let port = probe.local_addr().unwrap().port();

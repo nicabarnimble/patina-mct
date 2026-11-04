@@ -33,8 +33,11 @@ ceremony or an installed production identity.
 
 Persisted identity provides a stable endpoint key. Static tickets provide today's
 reachability. Restart on the same configured LAN socket can retain both.
-The current local endpoint does not supply a key-only lookup service that repairs
-an obsolete ticket after an address changes. Capability refresh is not address
+Inspection found that the current N0 preset retains public PKARR and DNS lookup
+even when relays are disabled. Clear those services for local-only operation
+before launching the fleet. Public discovery is not an acceptable LAN-only
+fallback. There is no configured LAN-local key-only lookup service to repair an
+obsolete ticket after an address changes. Capability refresh is not address
 discovery. OCI-118 needs an explicit discovery or address-update mechanism,
 authenticated freshness and expiry, key-rotation behavior, and changed-address
 acceptance tests. This run does not claim a Tailscale replacement is complete.
