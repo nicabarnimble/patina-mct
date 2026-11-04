@@ -17,7 +17,7 @@ function fixture(t) {
     encoding: 'utf8', env: { ...process.env, PATH: `${bin}:/usr/bin:/bin`, CALL_LOG: log, FAIL_SLICE: fail },
   }); } };
 }
-test('suite invokes every real CLI surface in order before reporting success', t => {
+test('mocked suite invokes slice commands in order before reporting success', t => {
   const f = fixture(t); const result = f.run(); assert.equal(result.status, 0, result.stderr);
   assert.equal(readFileSync(f.log, 'utf8'), 'two\nthree\nupgrade\n');
   assert.equal(JSON.parse(readFileSync(join(f.evidence, 'result.json'))).status, 'passed');

@@ -22,8 +22,8 @@ and optional internet probes.
 
 Each ledger records two completed child-execution observations: its own local
 control and its execution for the other caller. The verifier's separate
-`canonical_fact_count` counts authority facts, not executions. Forwarding receipts are not attributed as local
-child execution. Receiver-minted call IDs are joined to the original caller IDs
+`canonical_fact_count` counts authority facts, not executions. Forwarding
+receipts are not attributed as local child execution. Receiver-minted call IDs are joined to the original caller IDs
 through actual `mct-peer-call-correlation-v1` constructed observations.
 
 The endpoint keys persisted across the setup restart:
@@ -85,8 +85,12 @@ Tests now block real subprocess transport before importing the controller.
 
 ## Limits and continuation
 
+The [final one-command suite](nic63-acceptance-suite.md) repeated this slice
+with the final helper before its three-host and rolling-replacement runs.
+
 This slice is not partition, three-host survival, or rolling-upgrade proof.
-Those gates run next, without a plan-review pause. Each scenario uses fresh
+See the separate [three-host](nic63-slice3-three-host.md) and
+[rolling-replacement](nic63-rolling-upgrade.md) evidence. Each scenario uses fresh
 private roots; key continuity is checked within its restart/replacement sequence.
 
 Stable keys at fixed LAN addresses passed. Changed-address key-only discovery,

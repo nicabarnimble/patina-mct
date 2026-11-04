@@ -1,0 +1,758 @@
+{
+  "status": "passed",
+  "slice": "two",
+  "run": "fleet-0f8f19a3-2dfc-4e92-a65e-f2f5e9484c84",
+  "nodes": [
+    "a",
+    "b"
+  ],
+  "partition": {
+    "status": "not_run"
+  },
+  "binaries": [
+    {
+      "node": "a",
+      "candidate": "[test-root]/fleet-0f8f19a3-2dfc-4e92-a65e-f2f5e9484c84/0-executables/candidate/mct-daemon",
+      "candidate_sha256": "66b4dff183c36fccfc5d3d6c37b3a5b8458f898a318bbe243e6dab8e82e3cfd3",
+      "candidate_source": "/nix/store/ia51gj5lmgc036j5spxprgv9q1hqkhcy-mct-federation-test-bundle/bin/mct-daemon"
+    },
+    {
+      "node": "b",
+      "candidate": "[test-root]/fleet-0f8f19a3-2dfc-4e92-a65e-f2f5e9484c84/1-executables/candidate/mct-daemon",
+      "candidate_sha256": "66b4dff183c36fccfc5d3d6c37b3a5b8458f898a318bbe243e6dab8e82e3cfd3",
+      "candidate_source": "/nix/store/ia51gj5lmgc036j5spxprgv9q1hqkhcy-mct-federation-test-bundle/bin/mct-daemon"
+    }
+  ],
+  "calls": [
+    {
+      "caller": "a",
+      "destination": "a",
+      "label": "connected-bcd9d199-2ed4-44eb-9f50-a804499cc19d",
+      "outcome": "completed",
+      "call_id": "a-to-0-connected-bcd9d199-2ed4-44eb-9f50-a804499cc19d-288030988117df4f572de56d1e54d59f",
+      "trace_id": "trace-a-to-0-connected-bcd9d199-2ed4-44eb-9f50-a804499cc19d-288030988117df4f572de56d1e54d59f",
+      "protocol_reason": null,
+      "route": {
+        "child_id": "worker",
+        "node_id": "a",
+        "runtime_kind": "wasm_component"
+      },
+      "result": {
+        "results": [
+          41
+        ]
+      }
+    },
+    {
+      "caller": "a",
+      "destination": "b",
+      "label": "connected-8d3afa70-9074-4800-b06b-d178b267d792",
+      "outcome": "completed",
+      "call_id": "a-to-1-connected-8d3afa70-9074-4800-b06b-d178b267d792-03ded1b7e5534df41261d51ca2f3e865",
+      "trace_id": "trace-a-to-1-connected-8d3afa70-9074-4800-b06b-d178b267d792-03ded1b7e5534df41261d51ca2f3e865",
+      "protocol_reason": null,
+      "route": {
+        "child_id": "worker",
+        "node_id": "b",
+        "runtime_kind": "remote_peer"
+      },
+      "result": {
+        "results": [
+          42
+        ]
+      }
+    },
+    {
+      "caller": "b",
+      "destination": "a",
+      "label": "connected-6efe9e06-3acb-4cae-a619-052440a1d0a0",
+      "outcome": "completed",
+      "call_id": "b-to-0-connected-6efe9e06-3acb-4cae-a619-052440a1d0a0-7ebcb677c4217c1ec9eb82e2e6aca70c",
+      "trace_id": "trace-b-to-0-connected-6efe9e06-3acb-4cae-a619-052440a1d0a0-7ebcb677c4217c1ec9eb82e2e6aca70c",
+      "protocol_reason": null,
+      "route": {
+        "child_id": "worker",
+        "node_id": "a",
+        "runtime_kind": "remote_peer"
+      },
+      "result": {
+        "results": [
+          41
+        ]
+      }
+    },
+    {
+      "caller": "b",
+      "destination": "b",
+      "label": "connected-5ef8868e-e95c-43ac-9a11-5b4706b8775a",
+      "outcome": "completed",
+      "call_id": "b-to-1-connected-5ef8868e-e95c-43ac-9a11-5b4706b8775a-83203e63b65e37e6359f9b111ab6b0b0",
+      "trace_id": "trace-b-to-1-connected-5ef8868e-e95c-43ac-9a11-5b4706b8775a-83203e63b65e37e6359f9b111ab6b0b0",
+      "protocol_reason": null,
+      "route": {
+        "child_id": "worker",
+        "node_id": "b",
+        "runtime_kind": "wasm_component"
+      },
+      "result": {
+        "results": [
+          42
+        ]
+      }
+    },
+    {
+      "caller": "a",
+      "destination": "b",
+      "label": "revoked-f578e4ad-be98-4bdf-9b75-39f099d676e7",
+      "outcome": "denied",
+      "call_id": "a-to-1-revoked-f578e4ad-be98-4bdf-9b75-39f099d676e7-69cd30bb90f5c787de865c1aaecdf56a",
+      "trace_id": "trace-a-to-1-revoked-f578e4ad-be98-4bdf-9b75-39f099d676e7-69cd30bb90f5c787de865c1aaecdf56a",
+      "protocol_reason": null,
+      "route": null,
+      "result": null
+    }
+  ],
+  "directions": [
+    {
+      "caller": "a",
+      "destination": "b",
+      "calls": 1,
+      "forwarded": 1,
+      "executed": 1
+    },
+    {
+      "caller": "b",
+      "destination": "a",
+      "calls": 1,
+      "forwarded": 1,
+      "executed": 1
+    }
+  ],
+  "ledgers": [
+    {
+      "node": "a",
+      "root": "[test-root]/fleet-0f8f19a3-2dfc-4e92-a65e-f2f5e9484c84/0",
+      "endpoint_id": "e9a317033e47894a411f05e3d1374b920ba5d8d8638e0318d8cbcdaae69a6d68",
+      "ledger_bytes": 94140,
+      "ledger_sha256": "42f3ff180f043b6718d723d67de23c12f598ec9e51d4ac1d7fee3c891a1ae0ee",
+      "node_id": "a",
+      "observations": [
+        {
+          "call_id": null,
+          "decision_id": "decision:peer-mutation-2026-11-04T18:04:33.064263986Z-1",
+          "detail_ref": null,
+          "grants_revision": null,
+          "kind": "peer_binding_recorded",
+          "local_sequence": 11,
+          "observation_id": "obs:peer-mutation-2026-11-04T18:04:33.064263986Z-1",
+          "observed_at": "2026-11-04T18:04:33.064263986Z",
+          "outcome": "allowed",
+          "policy_revision": 1,
+          "provenance": {},
+          "resource_id": "a-admits-b",
+          "source_plane": "kernel",
+          "subject_id": "b",
+          "trace_id": "trace:peer-mutation-2026-11-04T18:04:33.064263986Z-1"
+        },
+        {
+          "call_id": null,
+          "decision_id": "decision:peer-mutation-2026-11-04T18:04:33.225603578Z-2",
+          "detail_ref": null,
+          "grants_revision": null,
+          "kind": "peer_binding_recorded",
+          "local_sequence": 12,
+          "observation_id": "obs:peer-mutation-2026-11-04T18:04:33.225603578Z-2",
+          "observed_at": "2026-11-04T18:04:33.225603578Z",
+          "outcome": "allowed",
+          "policy_revision": 1,
+          "provenance": {},
+          "resource_id": "b-admits-a",
+          "source_plane": "kernel",
+          "subject_id": "b",
+          "trace_id": "trace:peer-mutation-2026-11-04T18:04:33.225603578Z-2"
+        },
+        {
+          "call_id": null,
+          "decision_id": "decision-iroh-hello-2d17b9da9119ee8b-0",
+          "detail_ref": "hello_reason:ActiveBinding",
+          "grants_revision": null,
+          "kind": "peer_admitted",
+          "local_sequence": 19,
+          "observation_id": "obs-iroh-hello-2d17b9da9119ee8b-1",
+          "observed_at": "2026-11-04T18:04:39.591172595Z",
+          "outcome": "allowed",
+          "policy_revision": null,
+          "provenance": {},
+          "resource_id": null,
+          "source_plane": "kernel",
+          "subject_id": "a-admits-b",
+          "trace_id": "trace-refresh-a"
+        },
+        {
+          "call_id": "a-to-0-connected-bcd9d199-2ed4-44eb-9f50-a804499cc19d-288030988117df4f572de56d1e54d59f",
+          "decision_id": "decision:a-to-0-connected-bcd9d199-2ed4-44eb-9f50-a804499cc19d-288030988117df4f572de56d1e54d59f:worker",
+          "detail_ref": null,
+          "grants_revision": 0,
+          "kind": "runtime_execution_started",
+          "local_sequence": 28,
+          "observation_id": "obs-resident-wasm-wit-started:a-to-0-connected-bcd9d199-2ed4-44eb-9f50-a804499cc19d-288030988117df4f572de56d1e54d59f",
+          "observed_at": "2026-11-04T18:04:41.921620671Z",
+          "outcome": "started",
+          "policy_revision": 1,
+          "provenance": {},
+          "resource_id": "instance:worker:1",
+          "source_plane": "adapter",
+          "subject_id": "worker",
+          "trace_id": "trace-a-to-0-connected-bcd9d199-2ed4-44eb-9f50-a804499cc19d-288030988117df4f572de56d1e54d59f"
+        },
+        {
+          "call_id": "a-to-0-connected-bcd9d199-2ed4-44eb-9f50-a804499cc19d-288030988117df4f572de56d1e54d59f",
+          "decision_id": "decision:a-to-0-connected-bcd9d199-2ed4-44eb-9f50-a804499cc19d-288030988117df4f572de56d1e54d59f:worker",
+          "detail_ref": null,
+          "grants_revision": 0,
+          "kind": "runtime_execution_completed",
+          "local_sequence": 29,
+          "observation_id": "obs-resident-wasm-wit-completed:a-to-0-connected-bcd9d199-2ed4-44eb-9f50-a804499cc19d-288030988117df4f572de56d1e54d59f",
+          "observed_at": "2026-11-04T18:04:41.921733596Z",
+          "outcome": "completed",
+          "policy_revision": 1,
+          "provenance": {},
+          "resource_id": "instance:worker:1",
+          "source_plane": "adapter",
+          "subject_id": "worker",
+          "trace_id": "trace-a-to-0-connected-bcd9d199-2ed4-44eb-9f50-a804499cc19d-288030988117df4f572de56d1e54d59f"
+        },
+        {
+          "call_id": "a-to-0-connected-bcd9d199-2ed4-44eb-9f50-a804499cc19d-288030988117df4f572de56d1e54d59f",
+          "decision_id": null,
+          "detail_ref": "executed_on:a;forwarded_from:a;operation:patina:fleet-n0/work@0.1.0.step",
+          "grants_revision": 0,
+          "kind": "runtime_execution_completed",
+          "local_sequence": 30,
+          "observation_id": "obs-executed-on:a-to-0-connected-bcd9d199-2ed4-44eb-9f50-a804499cc19d-288030988117df4f572de56d1e54d59f",
+          "observed_at": "2026-11-04T18:04:41.946557486Z",
+          "outcome": "completed",
+          "policy_revision": 1,
+          "provenance": {
+            "executed_on": "a",
+            "forwarded_from": "a",
+            "operation": "patina:fleet-n0/work@0.1.0.step"
+          },
+          "resource_id": "node:a;runtime:WasmComponent",
+          "source_plane": "child",
+          "subject_id": "worker",
+          "trace_id": "trace-a-to-0-connected-bcd9d199-2ed4-44eb-9f50-a804499cc19d-288030988117df4f572de56d1e54d59f"
+        },
+        {
+          "call_id": "a-to-1-connected-8d3afa70-9074-4800-b06b-d178b267d792-03ded1b7e5534df41261d51ca2f3e865",
+          "decision_id": null,
+          "detail_ref": "forwarded_from:a;forwarded_to:b;operation:patina:fleet-n1/work@0.1.0.step",
+          "grants_revision": 0,
+          "kind": "peer_call_sent",
+          "local_sequence": 40,
+          "observation_id": "obs-peer-call-sent:a-to-1-connected-8d3afa70-9074-4800-b06b-d178b267d792-03ded1b7e5534df41261d51ca2f3e865",
+          "observed_at": "2026-11-04T18:04:42.297088239Z",
+          "outcome": "started",
+          "policy_revision": 1,
+          "provenance": {
+            "forwarded_from": "a",
+            "forwarded_to": "b",
+            "operation": "patina:fleet-n1/work@0.1.0.step"
+          },
+          "resource_id": "peer:b:a-admits-b:patina:fleet-n1/work@0.1.0.step:worker",
+          "source_plane": "adapter",
+          "subject_id": "a",
+          "trace_id": "trace-a-to-1-connected-8d3afa70-9074-4800-b06b-d178b267d792-03ded1b7e5534df41261d51ca2f3e865"
+        },
+        {
+          "call_id": "a-to-1-connected-8d3afa70-9074-4800-b06b-d178b267d792-03ded1b7e5534df41261d51ca2f3e865",
+          "decision_id": "decision-iroh-call-1ee6ea38e27f74a7-9",
+          "detail_ref": "forwarded_from:a;forwarded_to:b;remote_reply:Success;remote_reason:none",
+          "grants_revision": 0,
+          "kind": "peer_call_replied",
+          "local_sequence": 41,
+          "observation_id": "obs-peer-call-replied:a-to-1-connected-8d3afa70-9074-4800-b06b-d178b267d792-03ded1b7e5534df41261d51ca2f3e865",
+          "observed_at": "2026-11-04T18:04:43.297254038Z",
+          "outcome": "completed",
+          "policy_revision": 1,
+          "provenance": {
+            "forwarded_from": "a",
+            "forwarded_to": "b"
+          },
+          "resource_id": "peer:b:a-admits-b:patina:fleet-n1/work@0.1.0.step:worker",
+          "source_plane": "adapter",
+          "subject_id": "b",
+          "trace_id": "trace-a-to-1-connected-8d3afa70-9074-4800-b06b-d178b267d792-03ded1b7e5534df41261d51ca2f3e865"
+        },
+        {
+          "call_id": null,
+          "decision_id": "decision-iroh-hello-2d17b9da9119ee8b-4",
+          "detail_ref": "hello_reason:ActiveBinding",
+          "grants_revision": null,
+          "kind": "peer_admitted",
+          "local_sequence": 43,
+          "observation_id": "obs-iroh-hello-2d17b9da9119ee8b-5",
+          "observed_at": "2026-11-04T18:04:43.879250161Z",
+          "outcome": "allowed",
+          "policy_revision": null,
+          "provenance": {},
+          "resource_id": null,
+          "source_plane": "kernel",
+          "subject_id": "a-admits-b",
+          "trace_id": "trace-b-to-0-connected-6efe9e06-3acb-4cae-a619-052440a1d0a0-7ebcb677c4217c1ec9eb82e2e6aca70c"
+        },
+        {
+          "call_id": "mct-peer-execution-v1:.peer-execution-850614247595259185d87ba65ac94636",
+          "decision_id": null,
+          "detail_ref": null,
+          "grants_revision": null,
+          "kind": "call_constructed",
+          "local_sequence": 47,
+          "observation_id": "obs:mct-peer-execution-v1:.peer-execution-850614247595259185d87ba65ac94636:correlation",
+          "observed_at": "2026-11-04T18:04:44.019488202Z",
+          "outcome": "informational",
+          "peer_correlation": {
+            "caller_call_id": "b-to-0-connected-6efe9e06-3acb-4cae-a619-052440a1d0a0-7ebcb677c4217c1ec9eb82e2e6aca70c",
+            "caller_node_id": "b",
+            "caller_vision_id": "vision-nic63",
+            "peer_binding_id": "a-admits-b"
+          },
+          "policy_revision": null,
+          "provenance": {},
+          "resource_id": null,
+          "source_plane": "kernel",
+          "subject_id": null,
+          "trace_id": "trace-b-to-0-connected-6efe9e06-3acb-4cae-a619-052440a1d0a0-7ebcb677c4217c1ec9eb82e2e6aca70c"
+        },
+        {
+          "call_id": "mct-peer-execution-v1:.peer-execution-850614247595259185d87ba65ac94636",
+          "decision_id": "decision:mct-peer-execution-v1:.peer-execution-850614247595259185d87ba65ac94636:worker",
+          "detail_ref": null,
+          "grants_revision": 0,
+          "kind": "runtime_execution_started",
+          "local_sequence": 54,
+          "observation_id": "obs-resident-wasm-wit-started:mct-peer-execution-v1:.peer-execution-850614247595259185d87ba65ac94636",
+          "observed_at": "2026-11-04T18:04:44.312650495Z",
+          "outcome": "started",
+          "policy_revision": 1,
+          "provenance": {},
+          "resource_id": "instance:worker:1",
+          "source_plane": "adapter",
+          "subject_id": "worker",
+          "trace_id": "trace-b-to-0-connected-6efe9e06-3acb-4cae-a619-052440a1d0a0-7ebcb677c4217c1ec9eb82e2e6aca70c"
+        },
+        {
+          "call_id": "mct-peer-execution-v1:.peer-execution-850614247595259185d87ba65ac94636",
+          "decision_id": "decision:mct-peer-execution-v1:.peer-execution-850614247595259185d87ba65ac94636:worker",
+          "detail_ref": null,
+          "grants_revision": 0,
+          "kind": "runtime_execution_completed",
+          "local_sequence": 55,
+          "observation_id": "obs-resident-wasm-wit-completed:mct-peer-execution-v1:.peer-execution-850614247595259185d87ba65ac94636",
+          "observed_at": "2026-11-04T18:04:44.312765309Z",
+          "outcome": "completed",
+          "policy_revision": 1,
+          "provenance": {},
+          "resource_id": "instance:worker:1",
+          "source_plane": "adapter",
+          "subject_id": "worker",
+          "trace_id": "trace-b-to-0-connected-6efe9e06-3acb-4cae-a619-052440a1d0a0-7ebcb677c4217c1ec9eb82e2e6aca70c"
+        },
+        {
+          "call_id": "mct-peer-execution-v1:.peer-execution-850614247595259185d87ba65ac94636",
+          "decision_id": null,
+          "detail_ref": "executed_on:a;forwarded_from:b;operation:patina:fleet-n0/work@0.1.0.step",
+          "grants_revision": 0,
+          "kind": "runtime_execution_completed",
+          "local_sequence": 56,
+          "observation_id": "obs-executed-on:mct-peer-execution-v1:.peer-execution-850614247595259185d87ba65ac94636",
+          "observed_at": "2026-11-04T18:04:44.336193087Z",
+          "outcome": "completed",
+          "policy_revision": 1,
+          "provenance": {
+            "executed_on": "a",
+            "forwarded_from": "b",
+            "operation": "patina:fleet-n0/work@0.1.0.step"
+          },
+          "resource_id": "node:a;runtime:WasmComponent",
+          "source_plane": "child",
+          "subject_id": "worker",
+          "trace_id": "trace-b-to-0-connected-6efe9e06-3acb-4cae-a619-052440a1d0a0-7ebcb677c4217c1ec9eb82e2e6aca70c"
+        },
+        {
+          "call_id": null,
+          "decision_id": "decision-iroh-call-2d17b9da9119ee8b-9",
+          "detail_ref": null,
+          "grants_revision": 0,
+          "kind": "peer_call_replied",
+          "local_sequence": 60,
+          "observation_id": "obs-iroh-call-reply-2d17b9da9119ee8b-12",
+          "observed_at": "2026-11-04T18:04:44.410621719Z",
+          "outcome": "completed",
+          "policy_revision": 1,
+          "provenance": {},
+          "resource_id": "proto-forwarded:b-to-0-connected-6efe9e06-3acb-4cae-a619-052440a1d0a0-7ebcb677c4217c1ec9eb82e2e6aca70c",
+          "source_plane": "peer",
+          "subject_id": null,
+          "trace_id": "trace-b-to-0-connected-6efe9e06-3acb-4cae-a619-052440a1d0a0-7ebcb677c4217c1ec9eb82e2e6aca70c"
+        },
+        {
+          "call_id": "a-to-1-revoked-f578e4ad-be98-4bdf-9b75-39f099d676e7-69cd30bb90f5c787de865c1aaecdf56a",
+          "decision_id": null,
+          "detail_ref": "forwarded_from:a;forwarded_to:b;operation:patina:fleet-n1/work@0.1.0.step",
+          "grants_revision": 0,
+          "kind": "peer_call_sent",
+          "local_sequence": 67,
+          "observation_id": "obs-peer-call-sent:a-to-1-revoked-f578e4ad-be98-4bdf-9b75-39f099d676e7-69cd30bb90f5c787de865c1aaecdf56a",
+          "observed_at": "2026-11-04T18:04:45.437770416Z",
+          "outcome": "started",
+          "policy_revision": 1,
+          "provenance": {
+            "forwarded_from": "a",
+            "forwarded_to": "b",
+            "operation": "patina:fleet-n1/work@0.1.0.step"
+          },
+          "resource_id": "peer:b:a-admits-b:patina:fleet-n1/work@0.1.0.step:worker",
+          "source_plane": "adapter",
+          "subject_id": "a",
+          "trace_id": "trace-a-to-1-revoked-f578e4ad-be98-4bdf-9b75-39f099d676e7-69cd30bb90f5c787de865c1aaecdf56a"
+        }
+      ],
+      "prefix_preserved": true,
+      "previous_checkpoint_bytes": null,
+      "verification": {
+        "canonical_fact_count": 2,
+        "entry_count": 70,
+        "head": {
+          "entry_hash": "59083bbb1b159b4874d4493c7a8882a41bc52418e80fe6d88d9953ed41235a47",
+          "ledger_id": "ledger-local",
+          "local_sequence": 69,
+          "mother_node_id": "a",
+          "observation_id": "obs-resident-mother-endpoint-closed"
+        },
+        "prefix_blake3": "8794c1ac5fa32a90704a45702e79c1126e1b77a7cfdb6f15009e3386b251e2d5",
+        "verified": true
+      },
+      "verified": true
+    },
+    {
+      "node": "b",
+      "root": "[test-root]/fleet-0f8f19a3-2dfc-4e92-a65e-f2f5e9484c84/1",
+      "endpoint_id": "a53837dc0b5246ec5a751a9d6ceedacafbf1bf2b2366a677e6c4cccf0eba3337",
+      "ledger_bytes": 85001,
+      "ledger_sha256": "5c41ae9e815d2ee97a2d400b4e6afa8f7656e4a246265e582eb045ccd01cf73a",
+      "node_id": "b",
+      "observations": [
+        {
+          "call_id": null,
+          "decision_id": "decision:peer-mutation-2026-11-04T18:04:33.132648447Z-1",
+          "detail_ref": null,
+          "grants_revision": null,
+          "kind": "peer_binding_recorded",
+          "local_sequence": 11,
+          "observation_id": "obs:peer-mutation-2026-11-04T18:04:33.132648447Z-1",
+          "observed_at": "2026-11-04T18:04:33.132648447Z",
+          "outcome": "allowed",
+          "policy_revision": 1,
+          "provenance": {},
+          "resource_id": "b-admits-a",
+          "source_plane": "kernel",
+          "subject_id": "a",
+          "trace_id": "trace:peer-mutation-2026-11-04T18:04:33.132648447Z-1"
+        },
+        {
+          "call_id": null,
+          "decision_id": "decision:peer-mutation-2026-11-04T18:04:33.189829405Z-2",
+          "detail_ref": null,
+          "grants_revision": null,
+          "kind": "peer_binding_recorded",
+          "local_sequence": 12,
+          "observation_id": "obs:peer-mutation-2026-11-04T18:04:33.189829405Z-2",
+          "observed_at": "2026-11-04T18:04:33.189829405Z",
+          "outcome": "allowed",
+          "policy_revision": 1,
+          "provenance": {},
+          "resource_id": "a-admits-b",
+          "source_plane": "kernel",
+          "subject_id": "a",
+          "trace_id": "trace:peer-mutation-2026-11-04T18:04:33.189829405Z-2"
+        },
+        {
+          "call_id": null,
+          "decision_id": "decision-iroh-hello-1ee6ea38e27f74a7-0",
+          "detail_ref": "hello_reason:ActiveBinding",
+          "grants_revision": null,
+          "kind": "peer_admitted",
+          "local_sequence": 19,
+          "observation_id": "obs-iroh-hello-1ee6ea38e27f74a7-1",
+          "observed_at": "2026-11-04T18:04:41.748118538Z",
+          "outcome": "allowed",
+          "policy_revision": null,
+          "provenance": {},
+          "resource_id": null,
+          "source_plane": "kernel",
+          "subject_id": "b-admits-a",
+          "trace_id": "trace-refresh-b"
+        },
+        {
+          "call_id": null,
+          "decision_id": "decision-iroh-hello-1ee6ea38e27f74a7-4",
+          "detail_ref": "hello_reason:ActiveBinding",
+          "grants_revision": null,
+          "kind": "peer_admitted",
+          "local_sequence": 20,
+          "observation_id": "obs-iroh-hello-1ee6ea38e27f74a7-5",
+          "observed_at": "2026-11-04T18:04:42.460252116Z",
+          "outcome": "allowed",
+          "policy_revision": null,
+          "provenance": {},
+          "resource_id": null,
+          "source_plane": "kernel",
+          "subject_id": "b-admits-a",
+          "trace_id": "trace-a-to-1-connected-8d3afa70-9074-4800-b06b-d178b267d792-03ded1b7e5534df41261d51ca2f3e865"
+        },
+        {
+          "call_id": "mct-peer-execution-v1:.peer-execution-6b06d2a9c9c29f0444d94dcdcca23657",
+          "decision_id": null,
+          "detail_ref": null,
+          "grants_revision": null,
+          "kind": "call_constructed",
+          "local_sequence": 24,
+          "observation_id": "obs:mct-peer-execution-v1:.peer-execution-6b06d2a9c9c29f0444d94dcdcca23657:correlation",
+          "observed_at": "2026-11-04T18:04:42.632051659Z",
+          "outcome": "informational",
+          "peer_correlation": {
+            "caller_call_id": "a-to-1-connected-8d3afa70-9074-4800-b06b-d178b267d792-03ded1b7e5534df41261d51ca2f3e865",
+            "caller_node_id": "a",
+            "caller_vision_id": "vision-nic63",
+            "peer_binding_id": "b-admits-a"
+          },
+          "policy_revision": null,
+          "provenance": {},
+          "resource_id": null,
+          "source_plane": "kernel",
+          "subject_id": null,
+          "trace_id": "trace-a-to-1-connected-8d3afa70-9074-4800-b06b-d178b267d792-03ded1b7e5534df41261d51ca2f3e865"
+        },
+        {
+          "call_id": "mct-peer-execution-v1:.peer-execution-6b06d2a9c9c29f0444d94dcdcca23657",
+          "decision_id": "decision:mct-peer-execution-v1:.peer-execution-6b06d2a9c9c29f0444d94dcdcca23657:worker",
+          "detail_ref": null,
+          "grants_revision": 0,
+          "kind": "runtime_execution_started",
+          "local_sequence": 31,
+          "observation_id": "obs-resident-wasm-wit-started:mct-peer-execution-v1:.peer-execution-6b06d2a9c9c29f0444d94dcdcca23657",
+          "observed_at": "2026-11-04T18:04:43.153445236Z",
+          "outcome": "started",
+          "policy_revision": 1,
+          "provenance": {},
+          "resource_id": "instance:worker:1",
+          "source_plane": "adapter",
+          "subject_id": "worker",
+          "trace_id": "trace-a-to-1-connected-8d3afa70-9074-4800-b06b-d178b267d792-03ded1b7e5534df41261d51ca2f3e865"
+        },
+        {
+          "call_id": "mct-peer-execution-v1:.peer-execution-6b06d2a9c9c29f0444d94dcdcca23657",
+          "decision_id": "decision:mct-peer-execution-v1:.peer-execution-6b06d2a9c9c29f0444d94dcdcca23657:worker",
+          "detail_ref": null,
+          "grants_revision": 0,
+          "kind": "runtime_execution_completed",
+          "local_sequence": 32,
+          "observation_id": "obs-resident-wasm-wit-completed:mct-peer-execution-v1:.peer-execution-6b06d2a9c9c29f0444d94dcdcca23657",
+          "observed_at": "2026-11-04T18:04:43.153583621Z",
+          "outcome": "completed",
+          "policy_revision": 1,
+          "provenance": {},
+          "resource_id": "instance:worker:1",
+          "source_plane": "adapter",
+          "subject_id": "worker",
+          "trace_id": "trace-a-to-1-connected-8d3afa70-9074-4800-b06b-d178b267d792-03ded1b7e5534df41261d51ca2f3e865"
+        },
+        {
+          "call_id": "mct-peer-execution-v1:.peer-execution-6b06d2a9c9c29f0444d94dcdcca23657",
+          "decision_id": null,
+          "detail_ref": "executed_on:b;forwarded_from:a;operation:patina:fleet-n1/work@0.1.0.step",
+          "grants_revision": 0,
+          "kind": "runtime_execution_completed",
+          "local_sequence": 33,
+          "observation_id": "obs-executed-on:mct-peer-execution-v1:.peer-execution-6b06d2a9c9c29f0444d94dcdcca23657",
+          "observed_at": "2026-11-04T18:04:43.192218184Z",
+          "outcome": "completed",
+          "policy_revision": 1,
+          "provenance": {
+            "executed_on": "b",
+            "forwarded_from": "a",
+            "operation": "patina:fleet-n1/work@0.1.0.step"
+          },
+          "resource_id": "node:b;runtime:WasmComponent",
+          "source_plane": "child",
+          "subject_id": "worker",
+          "trace_id": "trace-a-to-1-connected-8d3afa70-9074-4800-b06b-d178b267d792-03ded1b7e5534df41261d51ca2f3e865"
+        },
+        {
+          "call_id": null,
+          "decision_id": "decision-iroh-call-1ee6ea38e27f74a7-9",
+          "detail_ref": null,
+          "grants_revision": 0,
+          "kind": "peer_call_replied",
+          "local_sequence": 37,
+          "observation_id": "obs-iroh-call-reply-1ee6ea38e27f74a7-12",
+          "observed_at": "2026-11-04T18:04:43.298039534Z",
+          "outcome": "completed",
+          "policy_revision": 1,
+          "provenance": {},
+          "resource_id": "proto-forwarded:a-to-1-connected-8d3afa70-9074-4800-b06b-d178b267d792-03ded1b7e5534df41261d51ca2f3e865",
+          "source_plane": "peer",
+          "subject_id": null,
+          "trace_id": "trace-a-to-1-connected-8d3afa70-9074-4800-b06b-d178b267d792-03ded1b7e5534df41261d51ca2f3e865"
+        },
+        {
+          "call_id": "b-to-0-connected-6efe9e06-3acb-4cae-a619-052440a1d0a0-7ebcb677c4217c1ec9eb82e2e6aca70c",
+          "decision_id": null,
+          "detail_ref": "forwarded_from:b;forwarded_to:a;operation:patina:fleet-n0/work@0.1.0.step",
+          "grants_revision": 0,
+          "kind": "peer_call_sent",
+          "local_sequence": 44,
+          "observation_id": "obs-peer-call-sent:b-to-0-connected-6efe9e06-3acb-4cae-a619-052440a1d0a0-7ebcb677c4217c1ec9eb82e2e6aca70c",
+          "observed_at": "2026-11-04T18:04:43.78734016Z",
+          "outcome": "started",
+          "policy_revision": 1,
+          "provenance": {
+            "forwarded_from": "b",
+            "forwarded_to": "a",
+            "operation": "patina:fleet-n0/work@0.1.0.step"
+          },
+          "resource_id": "peer:a:b-admits-a:patina:fleet-n0/work@0.1.0.step:worker",
+          "source_plane": "adapter",
+          "subject_id": "b",
+          "trace_id": "trace-b-to-0-connected-6efe9e06-3acb-4cae-a619-052440a1d0a0-7ebcb677c4217c1ec9eb82e2e6aca70c"
+        },
+        {
+          "call_id": "b-to-0-connected-6efe9e06-3acb-4cae-a619-052440a1d0a0-7ebcb677c4217c1ec9eb82e2e6aca70c",
+          "decision_id": "decision-iroh-call-2d17b9da9119ee8b-9",
+          "detail_ref": "forwarded_from:b;forwarded_to:a;remote_reply:Success;remote_reason:none",
+          "grants_revision": 0,
+          "kind": "peer_call_replied",
+          "local_sequence": 45,
+          "observation_id": "obs-peer-call-replied:b-to-0-connected-6efe9e06-3acb-4cae-a619-052440a1d0a0-7ebcb677c4217c1ec9eb82e2e6aca70c",
+          "observed_at": "2026-11-04T18:04:44.426654926Z",
+          "outcome": "completed",
+          "policy_revision": 1,
+          "provenance": {
+            "forwarded_from": "b",
+            "forwarded_to": "a"
+          },
+          "resource_id": "peer:a:b-admits-a:patina:fleet-n0/work@0.1.0.step:worker",
+          "source_plane": "adapter",
+          "subject_id": "a",
+          "trace_id": "trace-b-to-0-connected-6efe9e06-3acb-4cae-a619-052440a1d0a0-7ebcb677c4217c1ec9eb82e2e6aca70c"
+        },
+        {
+          "call_id": "b-to-1-connected-5ef8868e-e95c-43ac-9a11-5b4706b8775a-83203e63b65e37e6359f9b111ab6b0b0",
+          "decision_id": "decision:b-to-1-connected-5ef8868e-e95c-43ac-9a11-5b4706b8775a-83203e63b65e37e6359f9b111ab6b0b0:worker",
+          "detail_ref": null,
+          "grants_revision": 0,
+          "kind": "runtime_execution_started",
+          "local_sequence": 55,
+          "observation_id": "obs-resident-wasm-wit-started:b-to-1-connected-5ef8868e-e95c-43ac-9a11-5b4706b8775a-83203e63b65e37e6359f9b111ab6b0b0",
+          "observed_at": "2026-11-04T18:04:44.988774837Z",
+          "outcome": "started",
+          "policy_revision": 1,
+          "provenance": {},
+          "resource_id": "instance:worker:1",
+          "source_plane": "adapter",
+          "subject_id": "worker",
+          "trace_id": "trace-b-to-1-connected-5ef8868e-e95c-43ac-9a11-5b4706b8775a-83203e63b65e37e6359f9b111ab6b0b0"
+        },
+        {
+          "call_id": "b-to-1-connected-5ef8868e-e95c-43ac-9a11-5b4706b8775a-83203e63b65e37e6359f9b111ab6b0b0",
+          "decision_id": "decision:b-to-1-connected-5ef8868e-e95c-43ac-9a11-5b4706b8775a-83203e63b65e37e6359f9b111ab6b0b0:worker",
+          "detail_ref": null,
+          "grants_revision": 0,
+          "kind": "runtime_execution_completed",
+          "local_sequence": 56,
+          "observation_id": "obs-resident-wasm-wit-completed:b-to-1-connected-5ef8868e-e95c-43ac-9a11-5b4706b8775a-83203e63b65e37e6359f9b111ab6b0b0",
+          "observed_at": "2026-11-04T18:04:44.988920045Z",
+          "outcome": "completed",
+          "policy_revision": 1,
+          "provenance": {},
+          "resource_id": "instance:worker:1",
+          "source_plane": "adapter",
+          "subject_id": "worker",
+          "trace_id": "trace-b-to-1-connected-5ef8868e-e95c-43ac-9a11-5b4706b8775a-83203e63b65e37e6359f9b111ab6b0b0"
+        },
+        {
+          "call_id": "b-to-1-connected-5ef8868e-e95c-43ac-9a11-5b4706b8775a-83203e63b65e37e6359f9b111ab6b0b0",
+          "decision_id": null,
+          "detail_ref": "executed_on:b;forwarded_from:b;operation:patina:fleet-n1/work@0.1.0.step",
+          "grants_revision": 0,
+          "kind": "runtime_execution_completed",
+          "local_sequence": 57,
+          "observation_id": "obs-executed-on:b-to-1-connected-5ef8868e-e95c-43ac-9a11-5b4706b8775a-83203e63b65e37e6359f9b111ab6b0b0",
+          "observed_at": "2026-11-04T18:04:45.034294344Z",
+          "outcome": "completed",
+          "policy_revision": 1,
+          "provenance": {
+            "executed_on": "b",
+            "forwarded_from": "b",
+            "operation": "patina:fleet-n1/work@0.1.0.step"
+          },
+          "resource_id": "node:b;runtime:WasmComponent",
+          "source_plane": "child",
+          "subject_id": "worker",
+          "trace_id": "trace-b-to-1-connected-5ef8868e-e95c-43ac-9a11-5b4706b8775a-83203e63b65e37e6359f9b111ab6b0b0"
+        },
+        {
+          "call_id": null,
+          "decision_id": "decision:peer-mutation-2026-11-04T18:04:45.163872089Z-1",
+          "detail_ref": null,
+          "grants_revision": null,
+          "kind": "peer_binding_revoked",
+          "local_sequence": 61,
+          "observation_id": "obs:peer-mutation-2026-11-04T18:04:45.163872089Z-1",
+          "observed_at": "2026-11-04T18:04:45.163872089Z",
+          "outcome": "allowed",
+          "policy_revision": 1,
+          "provenance": {},
+          "resource_id": "b-admits-a",
+          "source_plane": "kernel",
+          "subject_id": "a",
+          "trace_id": "trace:peer-mutation-2026-11-04T18:04:45.163872089Z-1"
+        },
+        {
+          "call_id": null,
+          "decision_id": "decision-iroh-hello-1ee6ea38e27f74a7-14",
+          "detail_ref": "hello_reason:BindingRevoked",
+          "grants_revision": null,
+          "kind": "peer_rejected",
+          "local_sequence": 62,
+          "observation_id": "obs-iroh-hello-1ee6ea38e27f74a7-15",
+          "observed_at": "2026-11-04T18:04:45.50869998Z",
+          "outcome": "denied",
+          "policy_revision": null,
+          "provenance": {},
+          "resource_id": null,
+          "source_plane": "kernel",
+          "subject_id": null,
+          "trace_id": "trace-a-to-1-revoked-f578e4ad-be98-4bdf-9b75-39f099d676e7-69cd30bb90f5c787de865c1aaecdf56a"
+        }
+      ],
+      "prefix_preserved": true,
+      "previous_checkpoint_bytes": null,
+      "verification": {
+        "canonical_fact_count": 2,
+        "entry_count": 64,
+        "head": {
+          "entry_hash": "3efc49016b82d956d3a03ec0fe4f347a6f6f17917d1bd3f004915676151beaab",
+          "ledger_id": "ledger-local",
+          "local_sequence": 63,
+          "mother_node_id": "b",
+          "observation_id": "obs-resident-mother-endpoint-closed"
+        },
+        "prefix_blake3": "f725cb63d67e149546135b3c0f795af0dceaa3eed57af485007fc6334ba7ce01",
+        "verified": true
+      },
+      "verified": true
+    }
+  ]
+}
