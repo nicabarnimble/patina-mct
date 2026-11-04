@@ -1,5 +1,8 @@
 # NIC-63 physical acceptance suite
 
+This is the historical 18:12 suite. The [post-review rerun](nic63-post-review-suite.md)
+records acceptance after the dependency rebase and SQLite-sidecar correction.
+
 **PASS. The one-command suite completed on 2026-11-04 at 18:12:23 UTC.**
 
 The operator can rerun the complete sequence against another configured Linux

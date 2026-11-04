@@ -61,4 +61,5 @@ synchronous backoff tradeoff and the original CI predicate's uncertainty. The
 reviewer did not execute the tests. Temporary stress-probe source and raw logs
 remain private; the probe is not part of the shipped test suite. Final combined
 CI and physical evidence must be read with their own source revisions, not
-inferred from these targeted checks.
+inferred from these targeted checks. The [post-review suite](nic63-post-review-suite.md)
+records the combined-source CI and physical rerun.
