@@ -2073,6 +2073,11 @@ pub(super) fn unimported_legacy_authority_requires_gate(
     state_path: &Path,
     ledger: &ResidentLedgerWriter,
 ) -> bool {
+    match state_path.try_exists() {
+        Ok(false) => return false,
+        Ok(true) => {}
+        Err(_) => return true,
+    }
     let Ok(state) = legacy_authority_state(state_path) else {
         return true;
     };
