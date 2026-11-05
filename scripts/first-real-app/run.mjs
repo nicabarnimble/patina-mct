@@ -17,4 +17,10 @@ async function main() {
   const {result,source}=await getOrRun(config.jobs_root,job,()=>freshRun(config,job,bytes));
   console.log(JSON.stringify({durable_job_id:job.job_id,source,report:result.report,route:result.route,worker_execution_count:result.worker_summary.runtime_started}));
 }
-main().catch(e => { console.error(e.stack ?? String(e)); process.exitCode=1; });
+function printError(error, prefix = '') {
+  console.error(`${prefix}${error?.stack ?? String(error)}`);
+  if (error instanceof AggregateError) {
+    for (const nested of error.errors) printError(nested, `${prefix}caused by: `);
+  }
+}
+main().catch(error => { printError(error); process.exitCode=1; });

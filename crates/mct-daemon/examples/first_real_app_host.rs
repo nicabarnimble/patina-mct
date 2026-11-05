@@ -665,6 +665,90 @@ impl Counts {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PeerCorrelation {
+    caller_call_id: String,
+    caller_node_id: String,
+    caller_vision_id: String,
+    peer_binding_id: String,
+}
+
+#[derive(Default)]
+struct CorrelatedCounts {
+    counts: Counts,
+    correlated_id: Option<String>,
+    direct_runtime: bool,
+}
+
+impl CorrelatedCounts {
+    fn correlate(&mut self, observation: &MctObservation, id: &str) -> Result<()> {
+        if observation.kind != ObservationKind::CallConstructed {
+            return Ok(());
+        }
+        let Some(payload) = observation
+            .detail_ref
+            .as_deref()
+            .and_then(|detail| detail.strip_prefix("mct-peer-call-correlation-v1:"))
+        else {
+            return Ok(());
+        };
+        // An invalid payload cannot safely be attributed to another caller.
+        let correlation: PeerCorrelation =
+            serde_json::from_str(payload).context("invalid peer call correlation")?;
+        for field in [
+            &correlation.caller_call_id,
+            &correlation.caller_node_id,
+            &correlation.caller_vision_id,
+            &correlation.peer_binding_id,
+        ] {
+            ensure!(
+                !field.trim().is_empty() && field.len() <= 1024,
+                "invalid peer call correlation field"
+            );
+        }
+        if correlation.caller_call_id != id {
+            return Ok(());
+        }
+        let execution = observation
+            .call_id
+            .as_ref()
+            .map(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty() && value.len() <= 1024)
+            .context("missing or invalid correlation execution ID")?;
+        if let Some(previous) = &self.correlated_id {
+            ensure!(previous == execution, "conflicting peer call correlation");
+        } else {
+            self.correlated_id = Some(execution.to_owned());
+        }
+        Ok(())
+    }
+
+    fn count(&mut self, observation: &MctObservation, id: &str) {
+        let call = observation.call_id.as_ref().map(|value| value.as_str());
+        if call == Some(id) {
+            if matches!(
+                observation.kind,
+                ObservationKind::RuntimeExecutionStarted
+                    | ObservationKind::RuntimeExecutionCompleted
+                    | ObservationKind::RuntimeExecutionFailed
+                    | ObservationKind::RuntimeExecutionTimedOut
+            ) {
+                self.direct_runtime = true;
+            }
+            self.counts.add(observation, id);
+        } else if let Some(execution) = &self.correlated_id {
+            self.counts.add(observation, execution);
+        }
+    }
+
+    fn execution_call_id<'a>(&'a self, id: &'a str) -> Option<&'a str> {
+        self.correlated_id
+            .as_deref()
+            .or(if self.direct_runtime { Some(id) } else { None })
+    }
+}
+
 impl Host {
     fn call(&mut self, job: &str, payload: &str, target: &Target) -> Result<Value> {
         self.require_running()?;
@@ -704,35 +788,44 @@ impl Host {
         ensure!(self.process.is_none(), "stop daemon before reading ledger");
         let path = self.root.join("observations.jsonl");
         let verified = verify_ledger_streaming(&path, "ledger-local", self.node.as_str())?;
-        let mut reader = BufReader::new(private_fs::read_file(&path)?);
-        let mut counts = Counts::default();
-        let mut hasher = blake3::Hasher::new();
-        let mut length = 0u64;
-        loop {
-            let mut line = Vec::new();
-            let n = (&mut reader)
-                .take(1024 * 1024 + 1)
-                .read_until(b'\n', &mut line)?;
-            if n == 0 {
-                break;
+        let mut counts = CorrelatedCounts::default();
+        // Each pass is checked against the verified ledger, including the counting pass.
+        for correlation_pass in [true, false] {
+            let mut reader = BufReader::new(private_fs::read_file(&path)?);
+            let mut hasher = blake3::Hasher::new();
+            let mut length = 0u64;
+            loop {
+                let mut line = Vec::new();
+                let n = (&mut reader)
+                    .take(1024 * 1024 + 1)
+                    .read_until(b'\n', &mut line)?;
+                if n == 0 {
+                    break;
+                }
+                ensure!(
+                    n <= 1024 * 1024 && line.last() == Some(&b'\n'),
+                    "ledger line too long or unterminated"
+                );
+                hasher.update(&line);
+                length += n as u64;
+                let entry: MctObservationLedgerEntry = serde_json::from_slice(&line)?;
+                if correlation_pass {
+                    counts.correlate(&entry.observation, id)?;
+                } else {
+                    counts.count(&entry.observation, id);
+                }
             }
             ensure!(
-                n <= 1024 * 1024 && line.last() == Some(&b'\n'),
-                "ledger line too long or unterminated"
+                length == verified.prefix_len
+                    && hasher.finalize().to_hex().as_str() == verified.prefix_blake3,
+                "ledger changed after verification"
             );
-            hasher.update(&line);
-            length += n as u64;
-            let entry: MctObservationLedgerEntry = serde_json::from_slice(&line)?;
-            counts.add(&entry.observation, id);
         }
-        ensure!(
-            length == verified.prefix_len
-                && hasher.finalize().to_hex().as_str() == verified.prefix_blake3,
-            "ledger changed after verification"
-        );
-        Ok(
-            json!({"call_id": id, "ledger_length": verified.head.as_ref().map_or(0, |h| h.local_sequence), "ledger_head_hash": verified.head.as_ref().map(|h| &h.entry_hash), "runtime_started": counts.started, "runtime_completed": counts.completed, "runtime_failed": counts.failed, "toy_allowed": counts.allowed, "toy_denied": counts.denied}),
-        )
+        let mut result = json!({"call_id": id, "ledger_length": verified.head.as_ref().map_or(0, |h| h.local_sequence), "ledger_head_hash": verified.head.as_ref().map(|h| &h.entry_hash), "runtime_started": counts.counts.started, "runtime_completed": counts.counts.completed, "runtime_failed": counts.counts.failed, "toy_allowed": counts.counts.allowed, "toy_denied": counts.counts.denied});
+        if let Some(execution) = counts.execution_call_id(id) {
+            result["execution_call_id"] = json!(execution);
+        }
+        Ok(result)
     }
 }
 
@@ -891,13 +984,19 @@ mod tests {
     fn rejects_unknown_fields() {
         assert!(serde_json::from_str::<Request>(r#"{"op":"start","unexpected":1}"#).is_err());
     }
+    fn private_tempdir(prefix: &str) -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in(std::env::var_os("HOME").unwrap())
+            .unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        dir
+    }
+
     #[test]
     fn open_reuse_and_lock() {
-        let home = std::env::var_os("HOME").unwrap();
-        let dir = tempfile::Builder::new()
-            .prefix("mct-test-")
-            .tempdir_in(home)
-            .unwrap();
+        let dir = private_tempdir("mct-test-");
         let root = dir.path().join("root");
         let data = dir.path().join("data");
         let make_request = || Request::Open {
@@ -933,10 +1032,7 @@ mod tests {
     #[test]
     fn put_validation_and_reuse() {
         use std::os::unix::fs::{PermissionsExt, symlink};
-        let dir = tempfile::Builder::new()
-            .prefix("mct-put-")
-            .tempdir_in(std::env::var_os("HOME").unwrap())
-            .unwrap();
+        let dir = private_tempdir("mct-put-");
         let root = dir.path().join("data");
         private_fs::ensure_directory(&root).unwrap();
         let digest = format!("{:x}", Sha256::digest(b"hello"));
@@ -1020,13 +1116,152 @@ mod tests {
         assert_eq!((counts.started, counts.failed, counts.allowed), (1, 1, 1));
     }
 
+    fn observation(kind: ObservationKind, call: Option<&str>, detail: &str) -> MctObservation {
+        use mct_kernel::{ObservationId, Timestamp, TraceId};
+        let mut observation = MctObservation::informational(
+            ObservationId::new("obs").unwrap(),
+            Timestamp::new("2025-01-01T00:00:00Z").unwrap(),
+            kind,
+            TraceId::new("trace").unwrap(),
+            detail,
+        );
+        observation.call_id = call.map(|id| CallId::new(id).unwrap());
+        observation.detail_ref = Some(detail.to_owned());
+        observation
+    }
+
+    fn correlation(caller: &str, execution: Option<&str>) -> MctObservation {
+        observation(
+            ObservationKind::CallConstructed,
+            execution,
+            &format!(
+                "mct-peer-call-correlation-v1:{{\"caller_call_id\":\"{caller}\",\"caller_node_id\":\"node\",\"caller_vision_id\":\"vision\",\"peer_binding_id\":\"binding\"}}"
+            ),
+        )
+    }
+
+    #[test]
+    fn correlated_counts_direct() {
+        let mut counts = CorrelatedCounts::default();
+        let fact = observation(
+            ObservationKind::RuntimeExecutionStarted,
+            Some("job"),
+            "test",
+        );
+        counts.count(&fact, "job");
+        assert_eq!(counts.counts.started, 1);
+        assert_eq!(counts.execution_call_id("job"), Some("job"));
+    }
+
+    #[test]
+    fn correlated_counts_forwarded_even_when_facts_precede_mapping() {
+        let facts = [
+            observation(
+                ObservationKind::RuntimeExecutionStarted,
+                Some("internal"),
+                "test",
+            ),
+            observation(
+                ObservationKind::RuntimeExecutionCompleted,
+                Some("internal"),
+                "test",
+            ),
+            observation(ObservationKind::ToyGrantAllowed, Some("internal"), "test"),
+            correlation("job", Some("internal")),
+        ];
+        let mut counts = CorrelatedCounts::default();
+        for fact in &facts {
+            counts.correlate(fact, "job").unwrap();
+        }
+        for fact in &facts {
+            counts.count(fact, "job");
+        }
+        assert_eq!(
+            (
+                counts.counts.started,
+                counts.counts.completed,
+                counts.counts.allowed
+            ),
+            (1, 1, 1)
+        );
+        assert_eq!(counts.execution_call_id("job"), Some("internal"));
+    }
+
+    #[test]
+    fn correlated_counts_reject_malformed_matching_details() {
+        for detail in [
+            "mct-peer-call-correlation-v1:{\"caller_call_id\":\"job\"}",
+            "mct-peer-call-correlation-v1:{\"caller_call_id\":\"job\",\"caller_node_id\":\"node\",\"caller_vision_id\":\"vision\",\"peer_binding_id\":\"binding\",\"extra\":1}",
+            "mct-peer-call-correlation-v1:{\"caller_call_id\":\"job\"",
+            "mct-peer-call-correlation-v1:{\"caller_call_id\":\"job\",\"caller_node_id\":\"\",\"caller_vision_id\":\"vision\",\"peer_binding_id\":\"binding\"}",
+        ] {
+            assert!(
+                CorrelatedCounts::default()
+                    .correlate(
+                        &observation(ObservationKind::CallConstructed, Some("internal"), detail),
+                        "job"
+                    )
+                    .is_err()
+            );
+        }
+        assert!(
+            CorrelatedCounts::default()
+                .correlate(&correlation("job", None), "job")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn correlated_counts_reject_conflicting_mapping() {
+        let mut counts = CorrelatedCounts::default();
+        counts
+            .correlate(&correlation("job", Some("one")), "job")
+            .unwrap();
+        counts
+            .correlate(&correlation("job", Some("one")), "job")
+            .unwrap();
+        assert!(
+            counts
+                .correlate(&correlation("job", Some("two")), "job")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn correlated_counts_ignore_unrelated_mapping() {
+        let mut counts = CorrelatedCounts::default();
+        counts
+            .correlate(&correlation("other", None), "job")
+            .unwrap();
+        counts
+            .correlate(&correlation("other", Some("internal")), "job")
+            .unwrap();
+        counts.count(
+            &observation(
+                ObservationKind::RuntimeExecutionStarted,
+                Some("internal"),
+                "test",
+            ),
+            "job",
+        );
+        counts
+            .correlate(
+                &observation(
+                    ObservationKind::CallConstructed,
+                    Some("internal"),
+                    "other mct-peer-call-correlation-v1:invalid",
+                ),
+                "job",
+            )
+            .unwrap();
+        assert_eq!(counts.counts.started, 0);
+        assert_eq!(counts.execution_call_id("job"), None);
+    }
+
     #[test]
     fn stale_socket_is_removed_but_live_and_regular_paths_are_not() {
         use std::os::unix::net::UnixListener;
-        let dir = tempfile::Builder::new()
-            .prefix("mct-socket-")
-            .tempdir_in(std::env::var_os("HOME").unwrap())
-            .unwrap();
+        let dir = private_tempdir("mct-socket-");
         let root = dir.path().join("root");
         let data = dir.path().join("data");
         let host = Host::open(

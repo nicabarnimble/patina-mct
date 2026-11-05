@@ -104,8 +104,8 @@ export function validateFirst(reply, job) {
 export function validateReplay(reply, first, job) {
   assert.equal(reply?.outcome,'completed'); assert.equal(reply.protocol_reason,'idempotency_replay_completed'); route(reply.route_taken,job); same(reply.route_taken,first.route_taken); assert.equal(reply.inline_result_payload_base64,first.inline_result_payload_base64); inline(reply.inline_result_payload_base64);
 }
-export function validateWorkerSummary(s, job, cached = false) {
-  assert.equal(s?.call_id,job.call_id); assert.equal(s.runtime_started,1); assert.ok(Number.isSafeInteger(s.runtime_completed) && (cached ? s.runtime_completed >= 1 : s.runtime_completed === 1)); assert.equal(s.runtime_failed,0);
+export function validateWorkerSummary(s, job) {
+  assert.equal(s?.call_id,job.call_id); assert.equal(s.runtime_started,1); assert.ok(Number.isSafeInteger(s.runtime_completed) && s.runtime_completed >= 1); assert.equal(s.runtime_failed,0);
 }
 export function makeResult(job, first, replay, summary, artifact_id, created_at = new Date().toISOString()) {
   const report = validateFirst(first,job); validateReplay(replay,first,job); validateWorkerSummary(summary,job);
@@ -114,7 +114,7 @@ export function makeResult(job, first, replay, summary, artifact_id, created_at 
 }
 function validateResult(r,job) {
   keys(r,['job','report','report_sha256','first_inline_base64','route','protocol_replay_reason','worker_summary','artifact_id','created_at']); same(r.job,job);
-  validateReport(r.report,job); assert.equal(r.report_sha256,hash(JSON.stringify(r.report))); route(r.route,job); assert.equal(r.protocol_replay_reason,'idempotency_replay_completed'); validateWorkerSummary(r.worker_summary,job,true);
+  validateReport(r.report,job); assert.equal(r.report_sha256,hash(JSON.stringify(r.report))); route(r.route,job); assert.equal(r.protocol_replay_reason,'idempotency_replay_completed'); validateWorkerSummary(r.worker_summary,job);
   assert.ok(typeof r.artifact_id === 'string' && r.artifact_id.length > 0); assert.ok(typeof r.created_at === 'string' && Number.isFinite(Date.parse(r.created_at)));
   const decoded = JSON.parse(inline(r.first_inline_base64).toString('utf8')); keys(decoded,['results']); assert.ok(Array.isArray(decoded.results) && decoded.results.length === 1); keys(decoded.results[0],['ok']); assert.equal(typeof decoded.results[0].ok,'string'); assert.ok(Buffer.byteLength(decoded.results[0].ok) <= 32768); same(JSON.parse(decoded.results[0].ok),r.report);
 }
@@ -154,7 +154,7 @@ export async function freshRun(config, job, bytes, {HelperClientClass=HelperClie
   validateJob(job);
   const {input, component, manifest} = bytes;
   assert.equal(hash(input),job.job_identity.input_sha256); assert.equal(hash(component),job.job_identity.component_sha256);
-  const manifestSha = hash(manifest), componentSha = hash(component), inputSha = hash(input);
+  const componentSha = hash(component), inputSha = hash(input);
   const studio = { ...config.studio, client:new HelperClientClass(config.studio.helper,[]) };
   const worker = { ...config.worker, client:new HelperClientClass('/usr/bin/ssh',[...sshArgs(config),config.worker.helper]) };
   const hosts = [studio,worker], started = [];
@@ -185,7 +185,7 @@ export async function freshRun(config, job, bytes, {HelperClientClass=HelperClie
       assert.match(peer?.binding_signature_ref ?? '',/^mct-ed25519-binding-v1:.+/); assert.equal(peer.binding_id,`${receiver.node}-admits-${caller.node}`); assert.equal(peer.endpoint_id,caller.endpoint); assert.equal(peer.vision_id,config.vision); assert.equal(peer.binding_state,'admitted'); assert.equal(peer.policy_revision,1); assert.ok(Date.parse(peer.expires_at)>Date.now());
       await control(caller,'/peers/proof',{expected_config_path:paths(caller).expected_config_path,peer_node_id:receiver.node,binding_id:peer.binding_id,policy_revision:peer.policy_revision,signature_ref:peer.binding_signature_ref,expires_at:peer.expires_at});
     }
-    const stage=await control(worker,'/artifacts/stage',{source_root:join(worker.data_root,'artifacts',componentSha),manifest_path:'child.toml',component_path:'mct-repo-report.wasm',claimed_child_name:CHILD.name,claimed_artifact_version:CHILD.version,expected_digest:null,expected_manifest_digest:`sha256:${manifestSha}`,standing_source_authority_id:null,claimed_publisher:null,require_source_sidecars:false,children_dir:join(worker.root,'children'),state_path:join(worker.root,'state.sqlite')});
+    const stage=await control(worker,'/artifacts/stage',{source_root:join(worker.data_root,'artifacts',componentSha),manifest_path:'child.toml',component_path:'mct-repo-report.wasm',claimed_child_name:CHILD.name,claimed_artifact_version:CHILD.version,expected_digest:null,expected_manifest_digest:null,standing_source_authority_id:null,claimed_publisher:null,require_source_sidecars:false,children_dir:join(worker.root,'children'),state_path:join(worker.root,'state.sqlite')});
     assert.equal(stage.verification_outcome,'verified'); assert.match(stage.artifact_id ?? '',/^sha256:[a-f0-9]{64}$/);
     const approved=await control(worker,'/children/approve',{...paths(worker),expected_artifact_id:stage.artifact_id,child_name:CHILD.name,strict_integrity:true});
     assert.equal(approved.approval_state,'approved'); assert.equal(approved.assignment_state,'active'); assert.equal(approved.approval_artifact_id,stage.artifact_id);

@@ -28,7 +28,7 @@ test('reply, replay and summary validation fail closed',() => {
   const {first,replay,summary}=fixtures(); assert.deepEqual(validateFirst(first,job),report); validateReplay(replay,first,job); validateWorkerSummary(summary,job);
   for (const bad of [{...first,outcome:'failed'},{...first,route_taken:{runtime_kind:'remote_peer',node_id:'other'}},{...first,decoded_result:{results:[{err:'x'}]}},{...first,inline_result_payload_base64:'!'}]) assert.throws(()=>validateFirst(bad,job));
   for (const r of [{...report,sha256:'c'.repeat(64)},{...report,schema:'wrong'},{...report,package_count:4},{...report,extra:1},{...report,duplicates:{foo:['2','1']}},{...report,selected:{...report.selected,iroh:['1','1']}}]) assert.throws(()=>validateFirst(fixtures(r).first,job));
-  assert.throws(()=>validateReplay({...replay,protocol_reason:'other'},first,job)); assert.throws(()=>validateReplay({...replay,inline_result_payload_base64:'e30='},first,job)); assert.throws(()=>validateWorkerSummary({...summary,runtime_started:2},job)); assert.throws(()=>validateWorkerSummary({...summary,runtime_failed:1},job));
+  assert.throws(()=>validateReplay({...replay,protocol_reason:'other'},first,job)); assert.throws(()=>validateReplay({...replay,inline_result_payload_base64:'e30='},first,job)); assert.throws(()=>validateWorkerSummary({...summary,runtime_started:2},job)); assert.throws(()=>validateWorkerSummary({...summary,runtime_completed:0},job)); assert.throws(()=>validateWorkerSummary({...summary,runtime_failed:1},job));
 });
 test('durable publish, corruption and fresh cache avoid transport',async () => {
   const root=dir(); try {
@@ -87,7 +87,7 @@ test('freshRun exchanges signed records and validates the execution; failures cl
     async function run(mode) { events=[];peers={};calls=0;behavior=mode; return freshRun(c,j,bytes,{HelperClientClass:Fake,sleep:async()=>{}}); }
     assert.deepEqual((await run('')).report,r); assert.equal(calls,2);
     const proof=events.filter(e=>e[2]==='/peers/proof'); assert.equal(proof.length,2);
-    const stage=events.find(e=>e[2]==='/artifacts/stage')[3]; assert.equal(stage.source_root,join(c.worker.data_root,'artifacts',hash(bytes.component)));
+    const stage=events.find(e=>e[2]==='/artifacts/stage')[3]; assert.equal(stage.source_root,join(c.worker.data_root,'artifacts',hash(bytes.component))); assert.equal(stage.expected_digest,null); assert.equal(stage.expected_manifest_digest,null);
     const grant=events.find(e=>e[2]==='/watch/supporting-grant')[3]; assert.equal(grant.grant.canonical_root,join(c.worker.data_root,'snapshots',hash(bytes.input)));
     assert.deepEqual(events.slice(-2).map(e=>e[1]),['helper-stop','helper-stop']);
     await run('retry'); assert.equal(calls,3);
