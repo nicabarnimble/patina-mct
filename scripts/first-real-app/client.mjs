@@ -189,6 +189,7 @@ export async function freshRun(config, job, bytes, {HelperClientClass=HelperClie
     assert.equal(stage.verification_outcome,'verified'); assert.match(stage.artifact_id ?? '',/^sha256:[a-f0-9]{64}$/);
     const approved=await control(worker,'/children/approve',{...paths(worker),expected_artifact_id:stage.artifact_id,child_name:CHILD.name,strict_integrity:true});
     assert.equal(approved.approval_state,'approved'); assert.equal(approved.assignment_state,'active'); assert.equal(approved.approval_artifact_id,stage.artifact_id);
+    await stop(studio); await stop(worker); await start(worker); await start(studio);
     const root=join(worker.data_root,'snapshots',inputSha);
     const grant=await control(worker,'/watch/supporting-grant',{caller_node_id:studio.node,mutation_id:`first-real-app-directory:${job.job_id}`,...paths(worker),child_name:CHILD.name,expires_at,grant:{kind:'directory_read',canonical_root:root}});
     assert.equal(grant.grants?.length,1); const g=grant.grants[0]; assert.equal(g.grant_state,'active'); assert.equal(g.subject?.caller_node_id,studio.node); assert.equal(g.subject?.child_name,CHILD.name); assert.equal(g.scope?.resource_id,`file://${root}`); same(g.scope?.allowed_actions,['read-content']);

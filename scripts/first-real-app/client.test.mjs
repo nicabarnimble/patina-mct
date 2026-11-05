@@ -85,7 +85,7 @@ test('freshRun exchanges signed records and validates the execution; failures cl
       }
     }
     async function run(mode) { events=[];peers={};calls=0;behavior=mode; return freshRun(c,j,bytes,{HelperClientClass:Fake,sleep:async()=>{}}); }
-    assert.deepEqual((await run('')).report,r); assert.equal(calls,2);
+    assert.deepEqual((await run('')).report,r); assert.equal(calls,2); assert.equal(events.filter(e=>e[0]==='studio'&&e[1]==='start').length,3); assert.equal(events.filter(e=>e[0]==='worker'&&e[1]==='start').length,3);
     const proof=events.filter(e=>e[2]==='/peers/proof'); assert.equal(proof.length,2);
     const stage=events.find(e=>e[2]==='/artifacts/stage')[3]; assert.equal(stage.source_root,join(c.worker.data_root,'artifacts',hash(bytes.component))); assert.equal(stage.expected_digest,null); assert.equal(stage.expected_manifest_digest,null);
     const grant=events.find(e=>e[2]==='/watch/supporting-grant')[3]; assert.equal(grant.grant.canonical_root,join(c.worker.data_root,'snapshots',hash(bytes.input)));
