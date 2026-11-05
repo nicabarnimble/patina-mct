@@ -2073,9 +2073,11 @@ pub(super) fn unimported_legacy_authority_requires_gate(
     state_path: &Path,
     ledger: &ResidentLedgerWriter,
 ) -> bool {
-    let Some(ledger_path) = ledger.path() else {
-        return false;
-    };
+    match state_path.try_exists() {
+        Ok(false) => return false,
+        Ok(true) => {}
+        Err(_) => return true,
+    }
     let Ok(state) = legacy_authority_state(state_path) else {
         return true;
     };
@@ -2083,13 +2085,25 @@ pub(super) fn unimported_legacy_authority_requires_gate(
     {
         return false;
     }
-    let Ok(entries) = read_ledger_entries(ledger_path, "ledger-local", "local-mct") else {
+    let (Some(ledger_path), Some(mother_node_id)) = (ledger.path(), ledger.mother_node_id()) else {
+        return true;
+    };
+    let Ok(entries) = read_ledger_entries(ledger_path, "ledger-local", &mother_node_id) else {
         return true;
     };
     let Ok(replay) = replay_authority_entries(&entries) else {
         return true;
     };
-    !replay.imported && replay.mutations.is_empty()
+    if !replay.imported && replay.mutations.is_empty() {
+        return true;
+    }
+    match (
+        authority_state_hash(&state),
+        authority_state_hash(&replay.state),
+    ) {
+        (Ok(state_hash), Ok(replay_hash)) => state_hash != replay_hash,
+        _ => true,
+    }
 }
 
 async fn execute_resident_authority_import(
@@ -4382,6 +4396,7 @@ mod tests {
             (
                 "/watch/supporting-grant",
                 serde_json::to_value(SupportingToyGrantRequest {
+                    caller_node_id: None,
                     mutation_id: "phase-i-directory".into(),
                     expected_config_path: config_path.clone(),
                     expected_children_dir: children_dir.clone(),
@@ -4397,6 +4412,7 @@ mod tests {
             (
                 "/watch/supporting-grant",
                 serde_json::to_value(SupportingToyGrantRequest {
+                    caller_node_id: None,
                     mutation_id: "phase-i-keyvalue".into(),
                     expected_config_path: config_path.clone(),
                     expected_children_dir: children_dir.clone(),
@@ -4412,6 +4428,7 @@ mod tests {
             (
                 "/watch/supporting-grant",
                 serde_json::to_value(SupportingToyGrantRequest {
+                    caller_node_id: None,
                     mutation_id: "phase-i-observe-log".into(),
                     expected_config_path: config_path.clone(),
                     expected_children_dir: children_dir.clone(),
@@ -4428,6 +4445,7 @@ mod tests {
             (
                 "/watch/supporting-grant",
                 serde_json::to_value(SupportingToyGrantRequest {
+                    caller_node_id: None,
                     mutation_id: "phase-i-observe-measure".into(),
                     expected_config_path: config_path.clone(),
                     expected_children_dir: children_dir.clone(),
@@ -4444,6 +4462,7 @@ mod tests {
             (
                 "/watch/supporting-grant",
                 serde_json::to_value(SupportingToyGrantRequest {
+                    caller_node_id: None,
                     mutation_id: "phase-i-observe-both".into(),
                     expected_config_path: config_path.clone(),
                     expected_children_dir: children_dir.clone(),
@@ -4650,6 +4669,7 @@ mod tests {
                         (
                             "/watch/supporting-grant",
                             serde_json::to_value(SupportingToyGrantRequest {
+                                caller_node_id: None,
                                 mutation_id: format!("failed-{surface:?}"),
                                 expected_config_path: config_path.clone(),
                                 expected_children_dir: children_dir.clone(),
@@ -4883,6 +4903,107 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn authority_gate_recognizes_canonical_projection_and_rejects_drift() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.json");
+        let children = dir.path().join("children");
+        let state = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let socket = dir.path().join("control.sock");
+        write_resident_wasm_child(&children);
+        let child = load_children_from_dir(MctChildLoadOptions::new(&children).strict_integrity())
+            .children
+            .into_iter()
+            .next()
+            .unwrap();
+        let config_store = MctDaemonConfigStore::new(&config);
+        config_store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity.hex"),
+            )
+            .unwrap();
+        config_store
+            .approve_and_assign_loaded_child(&child, MctOperatorChildScope::default())
+            .unwrap();
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
+        assert!(!unimported_legacy_authority_requires_gate(&state, &ledger));
+        let listener = Arc::new(UnixListener::bind(&socket).unwrap());
+        let handler = resident_observed_mutation_handler(
+            config.clone(),
+            children.clone(),
+            state.clone(),
+            ledger.clone(),
+        );
+        let request = |id: &str| {
+            serde_json::to_value(SupportingToyGrantRequest {
+                caller_node_id: None,
+                mutation_id: id.into(),
+                expected_config_path: config.clone(),
+                expected_children_dir: children.clone(),
+                expected_state_path: state.clone(),
+                child_name: "resident-echo".into(),
+                expires_at: Timestamp::new("2026-08-05T13:00:00Z").unwrap(),
+                grant: SupportingToyGrantKind::Observability {
+                    logging: true,
+                    measure: false,
+                },
+            })
+            .unwrap()
+        };
+        let (status, response) = post_mutation(
+            Arc::clone(&listener),
+            handler.clone(),
+            &socket,
+            "/watch/supporting-grant",
+            request("gate-first"),
+        )
+        .await;
+        assert_eq!(status, 200, "{response}");
+        let replay = replay_authority_entries(
+            &read_ledger_entries(&ledger_path, "ledger-local", "local-mct").unwrap(),
+        )
+        .unwrap();
+        assert!(!replay.imported);
+        assert_eq!(replay.mutations.len(), 1);
+        assert_eq!(
+            authority_state_hash(&legacy_authority_state(&state).unwrap()).unwrap(),
+            authority_state_hash(&replay.state).unwrap()
+        );
+        assert!(!unimported_legacy_authority_requires_gate(&state, &ledger));
+
+        let (status, response) = post_mutation(
+            Arc::clone(&listener),
+            handler.clone(),
+            &socket,
+            "/watch/supporting-grant",
+            request("gate-second"),
+        )
+        .await;
+        assert_eq!(status, 200, "{response}");
+        let missing = dir.path().join("missing.sqlite");
+        let missing_store = MctRuntimeStateStore::open(&missing).unwrap();
+        missing_store
+            .upsert_toy_contract(replay.state.toy_catalog.values().next().unwrap())
+            .unwrap();
+        assert!(unimported_legacy_authority_requires_gate(&missing, &ledger));
+        MctRuntimeStateStore::open(&state)
+            .unwrap()
+            .upsert_toy_contract(&mct_secrets_toy_contract())
+            .unwrap();
+        assert!(unimported_legacy_authority_requires_gate(&state, &ledger));
+        let (status, response) = post_mutation(
+            listener,
+            handler,
+            &socket,
+            "/watch/supporting-grant",
+            request("gate-third"),
+        )
+        .await;
+        assert_eq!(status, 409, "{response}");
+    }
+
+    #[tokio::test]
     async fn operator_imports_legacy_toy_authority_once_before_enveloped_mutation() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.json");
@@ -4935,6 +5056,10 @@ mod tests {
         let blocked: serde_json::Value = serde_json::from_str(&blocked).unwrap();
         assert_eq!(blocked["reason"], "import_required");
 
+        assert!(unimported_legacy_authority_requires_gate(
+            &state_path,
+            &ledger
+        ));
         let imported_state = legacy_authority_state(&state_path).unwrap();
         let import = serde_json::to_value(LegacyAuthorityImportRequestV1 {
             schema: "mct-legacy-authority-import-request/v1".into(),
@@ -4958,6 +5083,19 @@ mod tests {
         assert_eq!(import_status, 200, "{imported}");
         let imported: serde_json::Value = serde_json::from_str(&imported).unwrap();
         assert_eq!(imported["status"], "committed");
+        assert!(!unimported_legacy_authority_requires_gate(
+            &state_path,
+            &ledger
+        ));
+        let drift_path = dir.path().join("import-drift.sqlite");
+        MctRuntimeStateStore::open(&drift_path)
+            .unwrap()
+            .upsert_toy_contract(&contract)
+            .unwrap();
+        assert!(unimported_legacy_authority_requires_gate(
+            &drift_path,
+            &ledger
+        ));
 
         let (second_status, second) = post_mutation(
             Arc::clone(&listener),

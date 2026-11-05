@@ -54,6 +54,8 @@ pub(super) struct SupportingToyGrantRequest {
     pub(super) expected_state_path: PathBuf,
     pub(super) child_name: String,
     pub(super) expires_at: Timestamp,
+    #[serde(default)]
+    pub(super) caller_node_id: Option<MctNodeId>,
     pub(super) grant: SupportingToyGrantKind,
 }
 
@@ -260,6 +262,44 @@ pub(super) fn build_scope_and_grant(
     Ok((scope, watch_toy_contract(), grant))
 }
 
+fn resolve_supporting_caller(
+    config: &mct_daemon::MctDaemonConfig,
+    caller: Option<&MctNodeId>,
+    grant: &SupportingToyGrantKind,
+    now: &Timestamp,
+) -> Result<MctNodeId> {
+    let identity = config
+        .local_identity
+        .as_ref()
+        .context("supporting Toy authority requires current local identity")?;
+    let Some(caller) = caller else {
+        return Ok(identity.node_id.clone());
+    };
+    if !matches!(grant, SupportingToyGrantKind::DirectoryRead { .. }) {
+        bail!("explicit caller is only supported for directory read");
+    }
+    let now = now
+        .as_str()
+        .parse::<jiff::Timestamp>()
+        .context("parse current timestamp")?;
+    for entry in config.peers.values() {
+        if entry.peer_node_id == *caller
+            && entry.vision_id == identity.vision_id
+            && entry.binding_state == BindingState::Admitted
+        {
+            let expires = entry
+                .expires_at
+                .as_str()
+                .parse::<jiff::Timestamp>()
+                .context("parse peer binding expiration")?;
+            if expires > now {
+                return Ok(caller.clone());
+            }
+        }
+    }
+    bail!("explicit caller requires an active unexpired peer binding in the local vision")
+}
+
 fn supporting_grants(
     request: &SupportingToyGrantRequest,
     peer: &MctUdsPeerCredentials,
@@ -268,6 +308,12 @@ fn supporting_grants(
         &request.expected_config_path,
         &request.expected_children_dir,
         &request.child_name,
+    )?;
+    let caller = resolve_supporting_caller(
+        &config,
+        request.caller_node_id.as_ref(),
+        &request.grant,
+        &current_timestamp(),
     )?;
     let identity = config
         .local_identity
@@ -289,11 +335,11 @@ fn supporting_grants(
                     child.artifact_id, assignment_id, bucket_name
                 ),
                 vec![
-                    "get".into(),
-                    "set".into(),
                     "delete".into(),
                     "exists".into(),
+                    "get".into(),
                     "list-keys".into(),
+                    "set".into(),
                 ],
             )]
         }
@@ -339,7 +385,7 @@ fn supporting_grants(
                 artifact_id: child.artifact_id.clone(),
                 artifact_version: child.version.clone(),
                 assignment_id: Some(assignment_id.clone()),
-                caller_node_id: Some(identity.node_id.clone()),
+                caller_node_id: Some(caller.clone()),
             },
             scope: ToyGrantScope {
                 vision_id: identity.vision_id.clone(),
@@ -1052,6 +1098,7 @@ pub(super) fn run_watch_toy_command(command: &str, mut args: Vec<String>) -> Res
                     expected_state_path: state_path,
                     child_name,
                     expires_at,
+                    caller_node_id: None,
                     grant,
                 },
             )?
@@ -1069,6 +1116,156 @@ pub(super) fn run_watch_toy_command(command: &str, mut args: Vec<String>) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn supporting_grant_caller_requires_current_same_vision_peer() {
+        let local = MctNodeId::new("local").unwrap();
+        let remote = MctNodeId::new("remote").unwrap();
+        let vision = VisionId::new("vision").unwrap();
+        let mut config = mct_daemon::MctDaemonConfig {
+            local_identity: Some(mct_daemon::MctLocalNodeIdentity {
+                node_id: local.clone(),
+                vision_id: vision.clone(),
+                endpoint_id: EndpointIdText::new("endpoint").unwrap(),
+                identity_path: PathBuf::from("identity"),
+                policy_revision: 1,
+                updated_at: "2020-01-01T00:00:00Z".into(),
+            }),
+            ..Default::default()
+        };
+        let directory = SupportingToyGrantKind::DirectoryRead {
+            canonical_root: PathBuf::from("/"),
+        };
+        let now = Timestamp::new("2026-01-01T00:00:00Z").unwrap();
+        assert_eq!(
+            resolve_supporting_caller(&config, None, &directory, &now).unwrap(),
+            local
+        );
+        assert!(resolve_supporting_caller(&config, Some(&remote), &directory, &now).is_err());
+        let entry = mct_daemon::MctPeerAddressBookEntry {
+            peer_node_id: remote.clone(),
+            binding_id: PeerBindingId::new("binding").unwrap(),
+            endpoint_id: EndpointIdText::new("endpoint").unwrap(),
+            vision_id: vision,
+            ticket: None,
+            binding_signature_ref: None,
+            outbound_binding: None,
+            binding_state: BindingState::Admitted,
+            policy_revision: 1,
+            expires_at: Timestamp::new("2027-01-01T00:00:00Z").unwrap(),
+            updated_at: "2020-01-01T00:00:00Z".into(),
+        };
+        config.peers.insert("peer".into(), entry);
+        assert_eq!(
+            resolve_supporting_caller(&config, Some(&remote), &directory, &now).unwrap(),
+            remote
+        );
+        for kind in [
+            SupportingToyGrantKind::Keyvalue {
+                bucket_name: "bucket".into(),
+            },
+            SupportingToyGrantKind::Observability {
+                logging: true,
+                measure: false,
+            },
+        ] {
+            assert!(resolve_supporting_caller(&config, Some(&remote), &kind, &now).is_err());
+        }
+        config.peers.get_mut("peer").unwrap().binding_state = BindingState::Revoked;
+        assert!(resolve_supporting_caller(&config, Some(&remote), &directory, &now).is_err());
+        let entry = config.peers.get_mut("peer").unwrap();
+        entry.binding_state = BindingState::Admitted;
+        entry.expires_at = now.clone();
+        assert!(resolve_supporting_caller(&config, Some(&remote), &directory, &now).is_err());
+        let entry = config.peers.get_mut("peer").unwrap();
+        entry.expires_at = Timestamp::new("2027-01-01T00:00:00Z").unwrap();
+        entry.vision_id = VisionId::new("other").unwrap();
+        assert!(resolve_supporting_caller(&config, Some(&remote), &directory, &now).is_err());
+    }
+
+    #[test]
+    fn supporting_directory_grant_subject_and_scope_use_resolved_nodes() {
+        let dir = tempfile::Builder::new()
+            .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
+            .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let children_dir = dir.path().join("children");
+        write_test_wasm_child(&children_dir, "resident-echo");
+        let child =
+            load_children_from_dir(MctChildLoadOptions::new(&children_dir).strict_integrity())
+                .children
+                .into_iter()
+                .next()
+                .unwrap();
+        let config_path = dir.path().join("config.json");
+        let store = MctDaemonConfigStore::new(&config_path);
+        store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity.hex"),
+            )
+            .unwrap();
+        store
+            .approve_and_assign_loaded_child(&child, MctOperatorChildScope::default())
+            .unwrap();
+        let mut config = store.load().unwrap();
+        let identity = config.local_identity.as_ref().unwrap().clone();
+        let remote = MctNodeId::new("remote").unwrap();
+        config.peers.insert(
+            "remote".into(),
+            mct_daemon::MctPeerAddressBookEntry {
+                peer_node_id: remote.clone(),
+                binding_id: PeerBindingId::new("binding").unwrap(),
+                endpoint_id: EndpointIdText::new("endpoint").unwrap(),
+                vision_id: identity.vision_id.clone(),
+                ticket: None,
+                binding_signature_ref: None,
+                outbound_binding: None,
+                binding_state: BindingState::Admitted,
+                policy_revision: 1,
+                expires_at: Timestamp::new("2099-01-01T00:00:00Z").unwrap(),
+                updated_at: "2020-01-01T00:00:00Z".into(),
+            },
+        );
+        store.save(&config).unwrap();
+        let mut request = SupportingToyGrantRequest {
+            mutation_id: "test".into(),
+            expected_config_path: config_path,
+            expected_children_dir: children_dir,
+            expected_state_path: dir.path().join("state.sqlite"),
+            child_name: "resident-echo".into(),
+            expires_at: Timestamp::new("2099-01-01T00:00:00Z").unwrap(),
+            caller_node_id: None,
+            grant: SupportingToyGrantKind::DirectoryRead {
+                canonical_root: dir.path().to_path_buf(),
+            },
+        };
+        let peer = MctUdsPeerCredentials {
+            uid: 1,
+            gid: 1,
+            pid: None,
+        };
+        let (_, grants) = supporting_grants(&request, &peer).unwrap();
+        assert_eq!(
+            grants[0].subject.caller_node_id,
+            Some(identity.node_id.clone())
+        );
+        request.caller_node_id = Some(remote.clone());
+        let (_, grants) = supporting_grants(&request, &peer).unwrap();
+        assert_eq!(grants[0].subject.caller_node_id, Some(remote));
+        assert_eq!(grants[0].scope.node_id, Some(identity.node_id));
+        assert_eq!(grants[0].scope.vision_id, identity.vision_id);
+        request.caller_node_id = None;
+        request.grant = SupportingToyGrantKind::Keyvalue {
+            bucket_name: "bucket".into(),
+        };
+        let (_, grants) = supporting_grants(&request, &peer).unwrap();
+        assert_eq!(
+            grants[0].scope.allowed_actions,
+            vec!["delete", "exists", "get", "list-keys", "set"]
+        );
+    }
 
     fn watch_test_call() -> MctCall {
         MctCall {

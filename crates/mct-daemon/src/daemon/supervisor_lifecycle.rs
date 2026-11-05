@@ -5059,16 +5059,10 @@ status = "active"
             )
             .await
         });
-        let restart_error = tokio::time::timeout(Duration::from_secs(15), restarted_resident)
+        tokio::time::timeout(Duration::from_secs(15), restart_ready_rx)
             .await
-            .expect("broader legacy authority must degrade before readiness")
-            .unwrap()
-            .unwrap_err();
-        assert!(
-            format!("{restart_error:#}").contains("sqlite_authority_broader_than_canonical"),
-            "deferred legacy grant writers must not be mistaken for canonical readiness"
-        );
-        assert!(restart_ready_rx.await.is_err());
+            .expect("canonical authority projection must reopen")
+            .unwrap();
         assert_eq!(
             MctRuntimeStateStore::open(&paths.state)
                 .unwrap()
@@ -5080,12 +5074,16 @@ status = "active"
         let restart_stop_paths = paths.clone();
         let restart_stop_adapter = Arc::clone(&adapter);
         tokio::task::spawn_blocking(move || {
-            let record = validate_supervisor_record_for_stop(&restart_stop_paths.record)?;
-            restart_stop_adapter.stop(&record)
+            stop_with_adapter(
+                &restart_stop_paths,
+                current_uid().unwrap(),
+                restart_stop_adapter.as_ref(),
+            )
         })
         .await
         .unwrap()
         .unwrap();
+        restarted_resident.await.unwrap().unwrap();
 
         let package_manifest_before_uninstall = fs::read(package_path.join("child.toml")).unwrap();
         let package_component_before_uninstall =
