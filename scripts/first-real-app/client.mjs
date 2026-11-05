@@ -160,6 +160,7 @@ export async function freshRun(config, job, bytes, {HelperClientClass=HelperClie
   const hosts = [studio,worker], started = [];
   const req = (h,v) => h.client.request(v);
   const control = (h,path,body) => req(h,{op:'control',method:'POST',path,body});
+  const readControl = (h,path) => req(h,{op:'control',method:'GET',path,body:null});
   const paths = h => ({expected_config_path:join(h.root,'config.json'),expected_children_dir:join(h.root,'children'),expected_state_path:join(h.root,'state.sqlite')});
   async function start(h) {
     const r = await req(h,{op:'start'}); assert.ok(typeof r.endpoint_id === 'string' && r.endpoint_id.length); assert.equal(r.ticket?.endpoint_id,r.endpoint_id); assert.match(r.binary_sha256,hex);
@@ -193,7 +194,9 @@ export async function freshRun(config, job, bytes, {HelperClientClass=HelperClie
     const root=join(worker.data_root,'snapshots',inputSha);
     const grant=await control(worker,'/watch/supporting-grant',{caller_node_id:studio.node,mutation_id:`first-real-app-directory:${job.job_id}`,...paths(worker),child_name:CHILD.name,expires_at,grant:{kind:'directory_read',canonical_root:root}});
     assert.equal(grant.grants?.length,1); const g=grant.grants[0]; assert.equal(g.grant_state,'active'); assert.equal(g.subject?.caller_node_id,studio.node); assert.equal(g.subject?.child_name,CHILD.name); assert.equal(g.scope?.resource_id,`file://${root}`); same(g.scope?.allowed_actions,['read-content']);
+    const mutation=grant.mutation_result; assert.equal(mutation?.status,'committed'); assert.equal(mutation.mutation_id,`first-real-app-directory:${job.job_id}`); assert.ok(mutation.grants_authority && typeof mutation.grants_authority==='object');
     await stop(studio); await stop(worker); await start(worker); await start(studio);
+    const authorityDeadline=Date.now()+120000; for (;;) { try { const current=await readControl(worker,'/receiver-authority'); assert.equal(current?.mother_node_id,mutation.grants_authority.mother_node_id); assert.ok(Number.isSafeInteger(current?.generation) && current.generation>=mutation.grants_authority.generation); assert.ok(typeof current.authority_epoch==='string' && current.authority_epoch.length>0); assert.ok(typeof current.source_authority_observation_id==='string' && current.source_authority_observation_id.length>0); break; } catch (error) { assert.ok(Date.now()<authorityDeadline,'receiver authority readiness deadline exceeded'); await sleep(500); } }
     const call={op:'call',job_id:job.job_id,payload_json:job.payload_json,target:TARGET}; let first;
     const deadline=Date.now()+120000;
     for (let attempts=0;;attempts++) { first=await req(studio,call); if (first?.outcome !== 'denied' || first.protocol_reason !== 'no_route') break; assert.ok(attempts<239 && Date.now()<deadline,'no_route deadline exceeded'); await sleep(500); }

@@ -61,6 +61,7 @@ test('freshRun exchanges signed records and validates the execution; failures cl
     const side=node=>({node,root:`${root}/${node}`,data_root:`${root}/${node}-data`,binary,helper:`${root}/helper`,bind:'10.0.0.1:1234'});
     const c={vision:'vision',studio:side('studio'),worker:{...side('worker'),binary_sha256:hash('daemon'),ssh:{user:'user',host:'host',identity:'/key'}}};
     let events=[], peers={}, behavior='', calls=0;
+    const authority={mother_node_id:'worker',authority_epoch:'epoch',generation:2,source_authority_observation_id:'observation'};
     class Fake {
       constructor(cmd) { this.node=cmd==='/usr/bin/ssh'?'worker':'studio'; }
       start() { events.push([this.node,'helper-start']); }
@@ -77,7 +78,8 @@ test('freshRun exchanges signed records and validates the execution; failures cl
           if(q.path==='/peers/proof') { assert.equal(q.body.signature_ref,'mct-ed25519-binding-v1:signed'); return {}; }
           if(q.path==='/artifacts/stage') return {verification_outcome:behavior==='stage'?'rejected':'verified',artifact_id:`sha256:${'f'.repeat(64)}`};
           if(q.path==='/children/approve') return {approval_state:'approved',assignment_state:'active',approval_artifact_id:q.body.expected_artifact_id};
-          if(q.path==='/watch/supporting-grant') return {grants:behavior==='grant'?[]:[{grant_state:'active',subject:{caller_node_id:'studio',child_name:'mct-repo-report'},scope:{resource_id:`file://${q.body.grant.canonical_root}`,allowed_actions:['read-content']}}]};
+          if(q.path==='/watch/supporting-grant') return {grants:behavior==='grant'?[]:[{grant_state:'active',subject:{caller_node_id:'studio',child_name:'mct-repo-report'},scope:{resource_id:`file://${q.body.grant.canonical_root}`,allowed_actions:['read-content']}}],mutation_result:{status:'committed',mutation_id:`first-real-app-directory:${j.job_id}`,grants_authority:authority}};
+          if(q.path==='/receiver-authority') return authority;
         }
         if(q.op==='call') { calls++; if (behavior==='denied') return {outcome:'denied',protocol_reason:'other'}; if (behavior==='retry' && calls===1) return {outcome:'denied',protocol_reason:'no_route'}; if (behavior==='bounded') return {outcome:'denied',protocol_reason:'no_route'}; return calls===1 || (behavior==='retry' && calls===2) ? first : {...first,protocol_reason:behavior==='replay'?'wrong':'idempotency_replay_completed'}; }
         if(q.op==='ledger_call_summary') return {call_id:j.call_id,runtime_started:behavior==='count'?2:1,runtime_completed:1,runtime_failed:0};
