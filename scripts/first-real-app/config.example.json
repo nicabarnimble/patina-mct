@@ -20,6 +20,7 @@
     "binary": "EDIT-ME",
     "helper": "EDIT-ME",
     "bind": "EDIT-ME",
+    "binary_sha256": "EDIT-WITH-64-LOWERCASE-HEX",
     "ssh": { "host": "EDIT-ME", "user": "EDIT-ME", "identity": "EDIT-ME" }
   }
 }

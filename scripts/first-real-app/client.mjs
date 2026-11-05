@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { constants, lstatSync, fstatSync, mkdirSync, openSync, closeSync, readFileSync, writeFileSync, fsyncSync, linkSync, unlinkSync } from 'node:fs';
-import { dirname, join, resolve, isAbsolute } from 'node:path';
+import { dirname, join, resolve, isAbsolute, basename } from 'node:path';
 import { spawn } from 'node:child_process';
 
 export const TARGET = Object.freeze({ namespace: 'patina:repo-report', interface_name: 'report@0.1.0', function_name: 'inspect' });
@@ -24,7 +24,7 @@ function privateDir(p, create = false) {
   if (create) { noSymlinks(dirname(p)); try { mkdirSync(p, { mode: 0o700 }); } catch (e) { if (e.code !== 'EEXIST') throw e; } }
   noSymlinks(p); const s = lstatSync(p); assert.ok(s.isDirectory() && s.uid === process.getuid() && (s.mode & 0o7777) === 0o700, `private directory required: ${p}`);
 }
-function file(p, max, privateMode = false) {
+export function file(p, max, privateMode = false) {
   noSymlinks(p); const s = lstatSync(p);
   assert.ok(s.isFile() && s.size <= max && (!privateMode || (s.uid === process.getuid() && (s.mode & 0o7777) === 0o600 && s.nlink === 1)), `invalid file: ${p}`);
   const fd = openSync(p, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -37,15 +37,17 @@ function bind(s) {
 export function loadConfig(path) {
   safePath(path); privateDir(dirname(path)); const c = JSON.parse(file(path, 65536, true));
   keys(c, ['version','vision','input','component','manifest','jobs_root','studio','worker']); assert.equal(c.version, 1);
-  assert.ok(typeof c.vision === 'string' && c.vision.length > 0 && c.vision.length <= 256 && !/[\x00-\x1f]/.test(c.vision));
-  for (const p of [c.input,c.component,c.manifest]) file(p, 16 * 1024 * 1024);
+  assert.match(c.vision, portable);
+  for (const p of [c.input,c.component,c.manifest]) file(p, 2 * 1024 * 1024);
+  assert.equal(basename(c.component), 'mct-repo-report.wasm'); assert.equal(basename(c.manifest), 'child.toml');
   for (const [name, side] of [['studio',c.studio],['worker',c.worker]]) {
-    keys(side, ['node','root','data_root','binary','helper','bind', ...(name === 'worker' ? ['ssh'] : [])]);
+    keys(side, ['node','root','data_root','binary','helper','bind', ...(name === 'worker' ? ['ssh','binary_sha256'] : [])]);
+    if (name === 'worker') assert.match(side.binary_sha256, hex);
     assert.match(side.node, portable); for (const p of [side.root,side.data_root,side.binary,side.helper]) { safePath(p); assert.match(p, /^\/[A-Za-z0-9_./-]+$/); }
     assert.ok(Buffer.byteLength(join(side.root,'control.sock')) < 104); bind(side.bind);
   }
   keys(c.worker.ssh, ['host','user','identity']); assert.match(c.worker.ssh.host, /^[A-Za-z0-9][A-Za-z0-9.-]*$/); assert.match(c.worker.ssh.user, portable); file(c.worker.ssh.identity, 1024 * 1024, true);
-  for (const k of ['node','root','bind']) assert.notEqual(c.studio[k], c.worker[k]);
+  for (const k of ['node','root','data_root','bind']) assert.notEqual(c.studio[k], c.worker[k]);
   privateDir(c.jobs_root, true); return c;
 }
 export function sshArgs(config) {
@@ -122,13 +124,12 @@ export function loadResult(root,job) {
   try { bytes = file(join(root,`${job.job_id}.result.json`),65536,true); } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
   const result = JSON.parse(bytes); validateResult(result,job); return result;
 }
-// Transport orchestration is intentionally delegated to the next unit.
 export async function getOrRun(root,job,startTransport) {
-  return withJobLock(root,job,async () => { const cached = loadResult(root,job); if (cached) return cached; saveRequest(root,job); const result = await startTransport(job); saveResult(root,job,result); return result; });
+  return withJobLock(root,job,async () => { const cached = loadResult(root,job); if (cached) return {result:cached,source:'durable_cache'}; saveRequest(root,job); const result = await startTransport(job); saveResult(root,job,result); return {result,source:'executed'}; });
 }
 
 export class HelperClient {
-  constructor(command,args = [],{spawnImpl = spawn, timeout = 30000} = {}) { this.command=command; this.args=args; this.spawnImpl=spawnImpl; this.timeout=timeout; this.stderr=''; this.buffer=''; this.pending=null; this.child=null; this.failure=null; }
+  constructor(command,args = [],{spawnImpl = spawn, timeout = 150000} = {}) { this.command=command; this.args=args; this.spawnImpl=spawnImpl; this.timeout=timeout; this.stderr=''; this.buffer=''; this.pending=null; this.child=null; this.failure=null; }
   start() {
     assert.ok(!this.child); const c = this.child = this.spawnImpl(this.command,this.args,{stdio:['pipe','pipe','pipe']});
     this.exit = new Promise(resolve => { c.once('error',e => { this.fail(e); resolve({error:e}); }); c.once('close',(code,signal) => { if (code !== 0 || signal || this.pending || !this.stopping) this.fail(new Error(`helper exited: ${code ?? signal}`)); resolve({code,signal}); }); });
@@ -143,8 +144,64 @@ export class HelperClient {
     return new Promise((resolve,reject) => { const timer=setTimeout(() => this.fail(new Error('helper request timeout')),timeout); this.pending={resolve,reject,timer}; this.child.stdin.write(line); });
   }
   async stop(stopRequest = {op:'stop'}) {
-    assert.ok(this.child && !this.pending); this.stopping = true; let error; try { if (!this.failure && !this.child.stdin.destroyed) await this.request(stopRequest); } catch(e) { error=e; }
+    assert.ok(this.child && !this.pending); this.stopping = true; let error; try { if (!this.failure && !this.child.stdin.destroyed) { const reply = await this.request(stopRequest); if (stopRequest.op === 'stop') { assert.equal(reply?.stopped,true); assert.equal(reply.escalated,false); assert.equal(reply.recovery_required,false); } } } catch(e) { error=e; }
     this.child.stdin.end(); let timer; const outcome = await Promise.race([this.exit,new Promise(resolve => { timer=setTimeout(() => resolve(null),this.timeout); })]); clearTimeout(timer);
     if (!outcome) { this.child.kill(); throw new Error('helper exit timeout'); } if (error) throw error; if (this.failure || outcome.error || outcome.code !== 0 || outcome.signal) throw this.failure ?? outcome.error ?? new Error('uncertain helper exit');
   }
+}
+
+export async function freshRun(config, job, bytes, {HelperClientClass=HelperClient, sleep=ms => new Promise(r => setTimeout(r,ms))} = {}) {
+  validateJob(job);
+  const {input, component, manifest} = bytes;
+  assert.equal(hash(input),job.job_identity.input_sha256); assert.equal(hash(component),job.job_identity.component_sha256);
+  const manifestSha = hash(manifest), componentSha = hash(component), inputSha = hash(input);
+  const studio = { ...config.studio, client:new HelperClientClass(config.studio.helper,[]) };
+  const worker = { ...config.worker, client:new HelperClientClass('/usr/bin/ssh',[...sshArgs(config),config.worker.helper]) };
+  const hosts = [studio,worker], started = [];
+  const req = (h,v) => h.client.request(v);
+  const control = (h,path,body) => req(h,{op:'control',method:'POST',path,body});
+  const paths = h => ({expected_config_path:join(h.root,'config.json'),expected_children_dir:join(h.root,'children'),expected_state_path:join(h.root,'state.sqlite')});
+  async function start(h) {
+    const r = await req(h,{op:'start'}); assert.ok(typeof r.endpoint_id === 'string' && r.endpoint_id.length); assert.equal(r.ticket?.endpoint_id,r.endpoint_id); assert.match(r.binary_sha256,hex);
+    if (h.endpoint) { assert.equal(r.endpoint_id,h.endpoint); assert.equal(r.binary_sha256,h.binarySha); }
+    else { h.endpoint=r.endpoint_id; h.binarySha=r.binary_sha256; }
+    assert.equal(r.binary_sha256,h === studio ? hash(readFileSync(studio.binary)) : worker.binary_sha256); h.ticket=r.ticket;
+  }
+  async function stop(h) { const r=await req(h,{op:'stop'}); assert.equal(r?.stopped,true); assert.equal(r.escalated,false); assert.equal(r.recovery_required,false); }
+  let result, failure;
+  try {
+    for (const h of hosts) { h.client.start(); started.push(h); }
+    for (const h of hosts) await req(h,{op:'open',root:h.root,data_root:h.data_root,binary:h.binary,node:h.node,vision:config.vision,bind:h.bind});
+    for (const h of hosts) await start(h);
+    assert.notEqual(studio.endpoint,worker.endpoint);
+    for (const [relative_path,data] of [[`snapshots/${inputSha}/Cargo.lock`,input],[`artifacts/${componentSha}/mct-repo-report.wasm`,component],[`artifacts/${componentSha}/child.toml`,manifest]]) {
+      const sha256=hash(data), r=await req(worker,{op:'put',relative_path,sha256,content_base64:data.toString('base64')});
+      assert.equal(r.path,relative_path); assert.equal(r.sha256,sha256); assert.equal(r.size_bytes,data.length); assert.equal(typeof r.reused,'boolean');
+    }
+    const expires_at=new Date(Date.now()+86400000).toISOString();
+    for (const [receiver,caller] of [[studio,worker],[worker,studio]]) await control(receiver,'/peers/add',{expected_config_path:paths(receiver).expected_config_path,peer_node_id:caller.node,binding_id:`${receiver.node}-admits-${caller.node}`,endpoint_id:caller.endpoint,vision_id:config.vision,ticket:caller.ticket,binding_signature_ref:null,policy_revision:1,expires_at});
+    for (const [receiver,caller] of [[studio,worker],[worker,studio]]) {
+      const peer=(await req(receiver,{op:'peers'}))?.[caller.node];
+      assert.match(peer?.binding_signature_ref ?? '',/^mct-ed25519-binding-v1:.+/); assert.equal(peer.binding_id,`${receiver.node}-admits-${caller.node}`); assert.equal(peer.endpoint_id,caller.endpoint); assert.equal(peer.vision_id,config.vision); assert.equal(peer.binding_state,'admitted'); assert.equal(peer.policy_revision,1); assert.ok(Date.parse(peer.expires_at)>Date.now());
+      await control(caller,'/peers/proof',{expected_config_path:paths(caller).expected_config_path,peer_node_id:receiver.node,binding_id:peer.binding_id,policy_revision:peer.policy_revision,signature_ref:peer.binding_signature_ref,expires_at:peer.expires_at});
+    }
+    const stage=await control(worker,'/artifacts/stage',{source_root:join(worker.data_root,'artifacts',componentSha),manifest_path:'child.toml',component_path:'mct-repo-report.wasm',claimed_child_name:CHILD.name,claimed_artifact_version:CHILD.version,expected_digest:null,expected_manifest_digest:`sha256:${manifestSha}`,standing_source_authority_id:null,claimed_publisher:null,require_source_sidecars:false,children_dir:join(worker.root,'children'),state_path:join(worker.root,'state.sqlite')});
+    assert.equal(stage.verification_outcome,'verified'); assert.match(stage.artifact_id ?? '',/^sha256:[a-f0-9]{64}$/);
+    const approved=await control(worker,'/children/approve',{...paths(worker),expected_artifact_id:stage.artifact_id,child_name:CHILD.name,strict_integrity:true});
+    assert.equal(approved.approval_state,'approved'); assert.equal(approved.assignment_state,'active'); assert.equal(approved.approval_artifact_id,stage.artifact_id);
+    const root=join(worker.data_root,'snapshots',inputSha);
+    const grant=await control(worker,'/watch/supporting-grant',{caller_node_id:studio.node,mutation_id:`first-real-app-directory:${job.job_id}`,...paths(worker),child_name:CHILD.name,expires_at,grant:{kind:'directory_read',canonical_root:root}});
+    assert.equal(grant.grants?.length,1); const g=grant.grants[0]; assert.equal(g.grant_state,'active'); assert.equal(g.subject?.caller_node_id,studio.node); assert.equal(g.subject?.child_name,CHILD.name); assert.equal(g.scope?.resource_id,`file://${root}`); same(g.scope?.allowed_actions,['read-content']);
+    await stop(studio); await stop(worker); await start(worker); await start(studio);
+    const call={op:'call',job_id:job.job_id,payload_json:job.payload_json,target:TARGET}; let first;
+    const deadline=Date.now()+120000;
+    for (let attempts=0;;attempts++) { first=await req(studio,call); if (first?.outcome !== 'denied' || first.protocol_reason !== 'no_route') break; assert.ok(attempts<239 && Date.now()<deadline,'no_route deadline exceeded'); await sleep(500); }
+    validateFirst(first,job); const replay=await req(studio,call); validateReplay(replay,first,job);
+    await stop(worker); await stop(studio); const summary=await req(worker,{op:'ledger_call_summary',call_id:job.call_id}); validateWorkerSummary(summary,job);
+    result=makeResult(job,first,replay,summary,stage.artifact_id);
+  } catch (e) { failure=e; }
+  const errors=[]; for (const h of started) { try { await h.client.stop(); } catch (e) { errors.push(e); } }
+  if (errors.length) throw new AggregateError([...(failure ? [failure] : []),...errors],'helper cleanup uncertain');
+  if (failure) throw failure;
+  return result;
 }
