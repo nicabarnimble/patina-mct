@@ -1,0 +1,22 @@
+[child]
+name = "mct-repo-report"
+version = "0.1.0"
+kind = "child"
+role = "app"
+patina_min = "0.71.0"
+
+[child.ingress]
+mode = "wit-only"
+
+[child.contract]
+default = "patina:repo-report/report@0.1.0.inspect"
+allow = ["patina:repo-report/report@0.1.0.inspect"]
+
+[needs]
+toys = ["filesystem"]
+
+[needs.scopes.filesystem]
+path = "/project"
+
+[child.artifact]
+wasm = "mct-repo-report.wasm"
