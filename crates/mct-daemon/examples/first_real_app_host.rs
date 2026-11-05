@@ -10,13 +10,19 @@ use mct_iroh::{
     MotherIrohEndpointLifecycle, MotherIrohEndpointSnapshot, MotherIrohEndpointTicket,
     MotherIrohRelayMode,
 };
-use mct_kernel::{CallId, MctNodeId, MctObservation, ObservationKind, OperationTarget, VisionId};
-use mct_observation::{MctObservationLedgerEntry, private_fs, verify_ledger_streaming};
+use mct_kernel::{
+    CallId, MctNodeId, MctObservation, ObservationKind, ObservationOutcome, OperationTarget,
+    VisionId,
+};
+use mct_observation::{
+    MctObservationLedgerEntry, VerifiedLedgerReplay, private_fs, verify_ledger_streaming,
+};
 use rustix::process::{Pid, Signal, kill_process};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeSet,
     fs,
     io::{self, BufRead, BufReader, Read, Write},
     net::{IpAddr, SocketAddr},
@@ -64,6 +70,17 @@ enum Request {
     Stop {},
     LedgerCallSummary {
         call_id: String,
+    },
+    LedgerHead {
+        baseline_sequence: u64,
+        baseline_head_hash: Option<String>,
+    },
+    LedgerRevocationSummary {
+        call_id: String,
+        binding_id: String,
+        peer_node_id: String,
+        after_sequence: u64,
+        baseline_head_hash: Option<String>,
     },
 }
 
@@ -130,6 +147,7 @@ fn allowed_control(method: &str, path: &str) -> bool {
                 "POST",
                 "/peers/add"
                     | "/peers/proof"
+                    | "/peers/revoke"
                     | "/artifacts/stage"
                     | "/children/approve"
                     | "/watch/supporting-grant"
@@ -182,6 +200,7 @@ struct Host {
     boot: u64,
     endpoint_id: Option<String>,
     recovery_required: bool,
+    helper_sha256: String,
     ownership_lock: fs::File,
 }
 
@@ -230,6 +249,8 @@ impl Host {
         let parent = root.parent().context("root has no parent")?;
         private_fs::ensure_directory(parent).context("private root parent")?;
         let ownership_lock = acquire_lock(&root)?;
+        let helper_sha256 =
+            binary_hash(&std::env::current_exe()?).context("hash acceptance helper executable")?;
         private_fs::ensure_directory(&data_root).context("private data root")?;
         private_fs::ensure_directory(&root).context("private daemon root")?;
         for entry in fs::read_dir(&root)? {
@@ -263,6 +284,7 @@ impl Host {
             boot: 0,
             endpoint_id: None,
             recovery_required: false,
+            helper_sha256,
             ownership_lock,
         };
         host.ensure_no_resident()?;
@@ -463,7 +485,7 @@ impl Host {
                     self.endpoint_id = Some(identity.endpoint_id.to_string());
                     self.recovery_required = false;
                     return Ok(
-                        json!({"pid": pid, "status": status, "endpoint_id": self.endpoint_id, "ticket": ticket, "binary_sha256": digest, "boot": self.boot}),
+                        json!({"pid": pid, "status": status, "endpoint_id": self.endpoint_id, "ticket": ticket, "binary_sha256": digest, "helper_sha256": self.helper_sha256, "boot": self.boot}),
                     );
                 }
                 Ok(status) => last = format!("readiness: {}", status["readiness"]),
@@ -655,9 +677,9 @@ impl Counts {
         match observation.kind {
             ObservationKind::RuntimeExecutionStarted => self.started += 1,
             ObservationKind::RuntimeExecutionCompleted => self.completed += 1,
-            ObservationKind::RuntimeExecutionFailed | ObservationKind::RuntimeExecutionTimedOut => {
-                self.failed += 1
-            }
+            ObservationKind::RuntimeExecutionFailed
+            | ObservationKind::RuntimeExecutionTrapped
+            | ObservationKind::RuntimeExecutionTimedOut => self.failed += 1,
             ObservationKind::ToyGrantAllowed => self.allowed += 1,
             ObservationKind::ToyGrantDenied => self.denied += 1,
             _ => {}
@@ -677,7 +699,7 @@ struct PeerCorrelation {
 #[derive(Default)]
 struct CorrelatedCounts {
     counts: Counts,
-    correlated_id: Option<String>,
+    correlated_ids: BTreeSet<String>,
     direct_runtime: bool,
 }
 
@@ -716,11 +738,7 @@ impl CorrelatedCounts {
             .map(|value| value.as_str())
             .filter(|value| !value.trim().is_empty() && value.len() <= 1024)
             .context("missing or invalid correlation execution ID")?;
-        if let Some(previous) = &self.correlated_id {
-            ensure!(previous == execution, "conflicting peer call correlation");
-        } else {
-            self.correlated_id = Some(execution.to_owned());
-        }
+        self.correlated_ids.insert(execution.to_owned());
         Ok(())
     }
 
@@ -732,21 +750,119 @@ impl CorrelatedCounts {
                 ObservationKind::RuntimeExecutionStarted
                     | ObservationKind::RuntimeExecutionCompleted
                     | ObservationKind::RuntimeExecutionFailed
+                    | ObservationKind::RuntimeExecutionTrapped
                     | ObservationKind::RuntimeExecutionTimedOut
             ) {
                 self.direct_runtime = true;
             }
             self.counts.add(observation, id);
-        } else if let Some(execution) = &self.correlated_id {
+        } else if let Some(execution) = self
+            .correlated_ids
+            .iter()
+            .find(|execution| call == Some(execution.as_str()))
+        {
             self.counts.add(observation, execution);
         }
     }
 
-    fn execution_call_id<'a>(&'a self, id: &'a str) -> Option<&'a str> {
-        self.correlated_id
-            .as_deref()
-            .or(if self.direct_runtime { Some(id) } else { None })
+    fn execution_call_ids(&self, id: &str) -> Vec<String> {
+        let mut ids = self.correlated_ids.iter().cloned().collect::<Vec<_>>();
+        if self.direct_runtime && !ids.iter().any(|value| value == id) {
+            ids.push(id.to_owned());
+            ids.sort();
+        }
+        ids
     }
+}
+
+fn canonical_revocation_sequences(revocations: &[u64], rejections: &[u64]) -> Result<(u64, u64)> {
+    let rejection = rejections
+        .first()
+        .copied()
+        .context("expected at least one revoked-binding rejection")?;
+    let revocation = revocations
+        .iter()
+        .copied()
+        .take_while(|sequence| *sequence < rejection)
+        .last()
+        .context("expected at least one binding revocation before rejection")?;
+    Ok((revocation, rejection))
+}
+
+fn hello_reason(observation: &MctObservation) -> Result<Option<&str>> {
+    let mut found = None;
+    for part in observation
+        .detail_ref
+        .as_deref()
+        .unwrap_or_default()
+        .split(';')
+    {
+        if let Some(value) = part.strip_prefix("hello_reason:") {
+            ensure!(
+                !value.is_empty() && found.is_none(),
+                "invalid hello reason marker"
+            );
+            found = Some(value);
+        }
+    }
+    Ok(found)
+}
+
+fn verify_ledger_baseline(
+    path: &Path,
+    verified: &VerifiedLedgerReplay,
+    baseline_sequence: u64,
+    baseline_head_hash: Option<&str>,
+) -> Result<()> {
+    if baseline_sequence == 0 {
+        ensure!(
+            baseline_head_hash.is_none(),
+            "empty baseline must not have a head hash"
+        );
+        return Ok(());
+    }
+    let expected = baseline_head_hash.context("non-empty baseline requires a head hash")?;
+    ensure!(
+        expected.len() == 64
+            && expected
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "invalid baseline head hash"
+    );
+    let mut reader = BufReader::new(private_fs::read_file(path)?);
+    let mut hasher = blake3::Hasher::new();
+    let mut length = 0u64;
+    let mut matched = false;
+    loop {
+        let mut line = Vec::new();
+        let n = (&mut reader)
+            .take(1024 * 1024 + 1)
+            .read_until(b'\n', &mut line)?;
+        if n == 0 {
+            break;
+        }
+        ensure!(
+            n <= 1024 * 1024 && line.last() == Some(&b'\n'),
+            "ledger line too long or unterminated"
+        );
+        hasher.update(&line);
+        length += n as u64;
+        let entry: MctObservationLedgerEntry = serde_json::from_slice(&line)?;
+        if entry.local_sequence == baseline_sequence {
+            ensure!(
+                entry.entry_hash == expected,
+                "ledger baseline head hash changed"
+            );
+            matched = true;
+        }
+    }
+    ensure!(
+        length == verified.prefix_len
+            && hasher.finalize().to_hex().as_str() == verified.prefix_blake3,
+        "ledger changed after verification"
+    );
+    ensure!(matched, "ledger baseline sequence is not canonical");
+    Ok(())
 }
 
 impl Host {
@@ -822,10 +938,141 @@ impl Host {
             );
         }
         let mut result = json!({"call_id": id, "ledger_length": verified.head.as_ref().map_or(0, |h| h.local_sequence), "ledger_head_hash": verified.head.as_ref().map(|h| &h.entry_hash), "runtime_started": counts.counts.started, "runtime_completed": counts.counts.completed, "runtime_failed": counts.counts.failed, "toy_allowed": counts.counts.allowed, "toy_denied": counts.counts.denied});
-        if let Some(execution) = counts.execution_call_id(id) {
-            result["execution_call_id"] = json!(execution);
+        let execution_call_ids = counts.execution_call_ids(id);
+        if execution_call_ids.len() == 1 {
+            result["execution_call_id"] = json!(execution_call_ids[0]);
+        }
+        if !execution_call_ids.is_empty() {
+            result["execution_call_ids"] = json!(execution_call_ids);
         }
         Ok(result)
+    }
+
+    fn ledger_head(
+        &self,
+        baseline_sequence: u64,
+        baseline_head_hash: Option<&str>,
+    ) -> Result<Value> {
+        ensure!(self.process.is_none(), "stop daemon before reading ledger");
+        let path = self.root.join("observations.jsonl");
+        let verified = verify_ledger_streaming(&path, "ledger-local", self.node.as_str())?;
+        verify_ledger_baseline(&path, &verified, baseline_sequence, baseline_head_hash)?;
+        Ok(json!({
+            "ledger_sequence": verified.head.as_ref().map_or(0, |head| head.local_sequence),
+            "ledger_head_hash": verified.head.as_ref().map(|head| &head.entry_hash)
+        }))
+    }
+
+    fn ledger_revocation_summary(
+        &self,
+        id: &str,
+        binding_id: &str,
+        peer_node_id: &str,
+        after_sequence: u64,
+        baseline_head_hash: Option<&str>,
+    ) -> Result<Value> {
+        validate_job(id)?;
+        validate_name(peer_node_id)?;
+        ensure!(
+            !binding_id.is_empty()
+                && binding_id.len() <= 192
+                && binding_id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+            "invalid binding ID"
+        );
+        ensure!(self.process.is_none(), "stop daemon before reading ledger");
+        let path = self.root.join("observations.jsonl");
+        let verified = verify_ledger_streaming(&path, "ledger-local", self.node.as_str())?;
+        verify_ledger_baseline(&path, &verified, after_sequence, baseline_head_hash)?;
+        let mut counts = CorrelatedCounts::default();
+        let mut revocations = Vec::new();
+        let mut rejections = Vec::new();
+        for correlation_pass in [true, false] {
+            let mut reader = BufReader::new(private_fs::read_file(&path)?);
+            let mut hasher = blake3::Hasher::new();
+            let mut length = 0u64;
+            loop {
+                let mut line = Vec::new();
+                let n = (&mut reader)
+                    .take(1024 * 1024 + 1)
+                    .read_until(b'\n', &mut line)?;
+                if n == 0 {
+                    break;
+                }
+                ensure!(
+                    n <= 1024 * 1024 && line.last() == Some(&b'\n'),
+                    "ledger line too long or unterminated"
+                );
+                hasher.update(&line);
+                length += n as u64;
+                let entry: MctObservationLedgerEntry = serde_json::from_slice(&line)?;
+                if entry.local_sequence <= after_sequence {
+                    continue;
+                }
+                let observation = &entry.observation;
+                if correlation_pass {
+                    counts.correlate(observation, id)?;
+                } else {
+                    counts.count(observation, id);
+                    if observation.kind == ObservationKind::PeerBindingRevoked
+                        && observation.outcome == ObservationOutcome::Allowed
+                        && observation.subject_id.as_deref() == Some(peer_node_id)
+                        && observation.resource_id.as_deref() == Some(binding_id)
+                    {
+                        revocations.push(entry.local_sequence);
+                    }
+                    if observation.kind == ObservationKind::PeerRejected
+                        && observation.outcome == ObservationOutcome::Denied
+                        && observation.trace.trace_id.as_str() == format!("trace-{id}")
+                        && (observation.subject_id.is_none()
+                            || observation.subject_id.as_deref() == Some(binding_id))
+                        && hello_reason(observation)? == Some("BindingRevoked")
+                    {
+                        rejections.push(entry.local_sequence);
+                    }
+                }
+            }
+            ensure!(
+                length == verified.prefix_len
+                    && hasher.finalize().to_hex().as_str() == verified.prefix_blake3,
+                "ledger changed after verification"
+            );
+        }
+        let (revocation_sequence, rejection_sequence) =
+            canonical_revocation_sequences(&revocations, &rejections)?;
+        let revocation_count = revocations
+            .iter()
+            .take_while(|sequence| **sequence < rejection_sequence)
+            .count();
+        ensure!(
+            counts.counts.started == 0
+                && counts.counts.completed == 0
+                && counts.counts.failed == 0
+                && counts.counts.allowed == 0
+                && counts.counts.denied == 0
+                && counts.execution_call_ids(id).is_empty(),
+            "revocation probe executed"
+        );
+        Ok(json!({
+            "call_id": id,
+            "binding_id": binding_id,
+            "peer_node_id": peer_node_id,
+            "ledger_length": verified.head.as_ref().map_or(0, |h| h.local_sequence),
+            "ledger_head_hash": verified.head.as_ref().map(|h| &h.entry_hash),
+            "baseline_sequence": after_sequence,
+            "baseline_head_hash": baseline_head_hash,
+            "revocation_count": revocation_count,
+            "rejection_count": rejections.len(),
+            "revocation_sequence": revocation_sequence,
+            "rejection_sequence": rejection_sequence,
+            "hello_reason": "BindingRevoked",
+            "runtime_started": 0,
+            "runtime_completed": 0,
+            "runtime_failed": 0,
+            "toy_allowed": 0,
+            "toy_denied": 0
+        }))
     }
 }
 
@@ -859,7 +1106,7 @@ fn dispatch(host: &mut Option<Host>, request: Request) -> Result<Value> {
                 vision,
                 bind,
             )?;
-            let metadata = json!({"root": opened.root, "data_root": opened.data_root, "binary": opened.binary, "node": opened.node.as_str(), "vision": opened.vision.as_str(), "bind": opened.bind});
+            let metadata = json!({"root": opened.root, "data_root": opened.data_root, "binary": opened.binary, "node": opened.node.as_str(), "vision": opened.vision.as_str(), "bind": opened.bind, "helper_sha256": opened.helper_sha256});
             *host = Some(opened);
             Ok(metadata)
         }
@@ -897,6 +1144,23 @@ fn dispatch(host: &mut Option<Host>, request: Request) -> Result<Value> {
                     target,
                 } => host.call(&job_id, &payload_json, &target),
                 Request::LedgerCallSummary { call_id } => host.ledger_summary(&call_id),
+                Request::LedgerHead {
+                    baseline_sequence,
+                    baseline_head_hash,
+                } => host.ledger_head(baseline_sequence, baseline_head_hash.as_deref()),
+                Request::LedgerRevocationSummary {
+                    call_id,
+                    binding_id,
+                    peer_node_id,
+                    after_sequence,
+                    baseline_head_hash,
+                } => host.ledger_revocation_summary(
+                    &call_id,
+                    &binding_id,
+                    &peer_node_id,
+                    after_sequence,
+                    baseline_head_hash.as_deref(),
+                ),
                 Request::Open { .. } => unreachable!(),
             }
         }
@@ -977,6 +1241,8 @@ mod tests {
     fn allowlist() {
         assert!(allowed_control("GET", "/status"));
         assert!(allowed_control("POST", "/calls"));
+        assert!(allowed_control("POST", "/peers/revoke"));
+        assert!(!allowed_control("POST", "/peers/remove"));
         assert!(!allowed_control("POST", "/status"));
         assert!(!allowed_control("GET", "/calls"));
     }
@@ -1008,7 +1274,8 @@ mod tests {
             bind: "192.168.1.2:1234".parse().unwrap(),
         };
         let mut first = None;
-        dispatch(&mut first, make_request()).unwrap();
+        let opened = dispatch(&mut first, make_request()).unwrap();
+        assert_eq!(opened["helper_sha256"].as_str().unwrap().len(), 64);
         assert!(data.is_dir());
         let mut second = None;
         assert!(dispatch(&mut second, make_request()).is_err());
@@ -1109,11 +1376,22 @@ mod tests {
         let mut counts = Counts::default();
         counts.add(&o, "other");
         counts.add(&o, "job");
+        o.kind = ObservationKind::RuntimeExecutionCompleted;
+        counts.add(&o, "job");
+        counts.add(&o, "job");
         o.kind = ObservationKind::RuntimeExecutionTimedOut;
         counts.add(&o, "job");
         o.kind = ObservationKind::ToyGrantAllowed;
         counts.add(&o, "job");
-        assert_eq!((counts.started, counts.failed, counts.allowed), (1, 1, 1));
+        assert_eq!(
+            (
+                counts.started,
+                counts.completed,
+                counts.failed,
+                counts.allowed
+            ),
+            (1, 2, 1, 1)
+        );
     }
 
     fn observation(kind: ObservationKind, call: Option<&str>, detail: &str) -> MctObservation {
@@ -1150,7 +1428,7 @@ mod tests {
         );
         counts.count(&fact, "job");
         assert_eq!(counts.counts.started, 1);
-        assert_eq!(counts.execution_call_id("job"), Some("job"));
+        assert_eq!(counts.execution_call_ids("job"), vec!["job"]);
     }
 
     #[test]
@@ -1184,7 +1462,7 @@ mod tests {
             ),
             (1, 1, 1)
         );
-        assert_eq!(counts.execution_call_id("job"), Some("internal"));
+        assert_eq!(counts.execution_call_ids("job"), vec!["internal"]);
     }
 
     #[test]
@@ -1212,19 +1490,64 @@ mod tests {
     }
 
     #[test]
-    fn correlated_counts_reject_conflicting_mapping() {
-        let mut counts = CorrelatedCounts::default();
-        counts
-            .correlate(&correlation("job", Some("one")), "job")
-            .unwrap();
-        counts
-            .correlate(&correlation("job", Some("one")), "job")
-            .unwrap();
-        assert!(
-            counts
-                .correlate(&correlation("job", Some("two")), "job")
-                .is_err()
+    fn revocation_recovery_selects_last_before_first_rejection() {
+        assert_eq!(
+            canonical_revocation_sequences(&[10], &[11, 12, 13]).unwrap(),
+            (10, 11)
         );
+        assert_eq!(
+            canonical_revocation_sequences(&[10, 12], &[13, 14]).unwrap(),
+            (12, 13)
+        );
+        assert_eq!(
+            canonical_revocation_sequences(&[10, 14], &[13, 15]).unwrap(),
+            (10, 13)
+        );
+        assert!(canonical_revocation_sequences(&[], &[11]).is_err());
+        assert!(canonical_revocation_sequences(&[10], &[9]).is_err());
+    }
+
+    #[test]
+    fn revoked_hello_reason_is_exact_and_unambiguous() {
+        let valid = observation(
+            ObservationKind::PeerRejected,
+            Some("probe"),
+            "remote_reason:denied;hello_reason:BindingRevoked",
+        );
+        assert_eq!(hello_reason(&valid).unwrap(), Some("BindingRevoked"));
+        let duplicate = observation(
+            ObservationKind::PeerRejected,
+            Some("probe"),
+            "hello_reason:BindingRevoked;hello_reason:BindingRevoked",
+        );
+        assert!(hello_reason(&duplicate).is_err());
+    }
+
+    #[test]
+    fn correlated_counts_include_recomputed_execution_ids() {
+        let facts = [
+            correlation("job", Some("one")),
+            observation(
+                ObservationKind::RuntimeExecutionStarted,
+                Some("one"),
+                "test",
+            ),
+            correlation("job", Some("two")),
+            observation(
+                ObservationKind::RuntimeExecutionStarted,
+                Some("two"),
+                "test",
+            ),
+        ];
+        let mut counts = CorrelatedCounts::default();
+        for fact in &facts {
+            counts.correlate(fact, "job").unwrap();
+        }
+        for fact in &facts {
+            counts.count(fact, "job");
+        }
+        assert_eq!(counts.counts.started, 2);
+        assert_eq!(counts.execution_call_ids("job"), vec!["one", "two"]);
     }
 
     #[test]
@@ -1255,7 +1578,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(counts.counts.started, 0);
-        assert_eq!(counts.execution_call_id("job"), None);
+        assert!(counts.execution_call_ids("job").is_empty());
     }
 
     #[test]

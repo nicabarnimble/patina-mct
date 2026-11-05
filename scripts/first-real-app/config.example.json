@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "vision": "EDIT-ME",
   "input": "EDIT-ME",
   "component": "EDIT-ME",
@@ -19,8 +19,20 @@
     "data_root": "EDIT-ME",
     "binary": "EDIT-ME",
     "helper": "EDIT-ME",
-    "bind": "EDIT-ME",
-    "binary_sha256": "EDIT-WITH-64-LOWERCASE-HEX",
-    "ssh": { "host": "EDIT-ME", "user": "EDIT-ME", "identity": "EDIT-ME" }
+    "bind": "EDIT-WITH-EXACT-LUME-NAT-IP:PORT",
+    "binary_sha256": "EDIT-WITH-DAEMON-64-LOWERCASE-HEX",
+    "helper_sha256": "EDIT-WITH-HELPER-64-LOWERCASE-HEX",
+    "ssh": {
+      "host": "EDIT-WITH-EXACT-LUME-NAT-IP",
+      "user": "EDIT-ME",
+      "identity": "EDIT-ME",
+      "known_hosts": "EDIT-WITH-PRIVATE-EXACT-SINGLE-ED25519-NAT-IP-PIN"
+    },
+    "lume": {
+      "vm_name": "EDIT-ME",
+      "machine_identifier_sha256": "EDIT-WITH-64-LOWERCASE-HEX",
+      "hardware_uuid_sha256": "EDIT-WITH-64-LOWERCASE-HEX",
+      "nat_ip": "EDIT-ME"
+    }
   }
 }
