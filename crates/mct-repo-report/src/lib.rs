@@ -14,6 +14,8 @@ const INPUT_LIMIT: usize = 1024 * 1024;
 const OUTPUT_LIMIT: usize = 32768;
 const PACKAGE_LIMIT: usize = 8192;
 
+type PackageFact = (String, String, Option<String>);
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReportRequestV1 {
@@ -63,10 +65,7 @@ fn value(line: &str) -> Result<String, &'static str> {
     }
     Ok(s)
 }
-fn finish(
-    p: Package,
-    packages: &mut Vec<(String, String, Option<String>)>,
-) -> Result<(), &'static str> {
+fn finish(p: Package, packages: &mut Vec<PackageFact>) -> Result<(), &'static str> {
     if packages.len() >= PACKAGE_LIMIT {
         return Err("too many packages");
     }
@@ -79,7 +78,7 @@ fn finish(
 }
 
 // Cargo-generated lockfiles use this deliberately narrow subset of TOML.
-fn parse(bytes: &[u8]) -> Result<Vec<(String, String, Option<String>)>, &'static str> {
+fn parse(bytes: &[u8]) -> Result<Vec<PackageFact>, &'static str> {
     let text = core::str::from_utf8(bytes).map_err(|_| "invalid lockfile")?;
     let mut packages = Vec::new();
     let mut current: Option<Package> = None;
