@@ -206,7 +206,52 @@ pub(super) fn execute_authorized_resident_child(
     Ok(report)
 }
 
-fn authorize_resident_watch_toy(
+#[cfg(test)]
+#[test]
+fn ordinary_directory_imports_are_strict() {
+    let imports = BTreeSet::from([
+        "wasi:filesystem/types@0.2.3".to_owned(),
+        "wasi:filesystem/preopens@0.2.3".to_owned(),
+        "patina:child/runtime-types@0.1.0".to_owned(),
+    ]);
+    assert!(ordinary_directory_imports_supported(&imports));
+    let mut unsupported = imports.clone();
+    unsupported.insert("wasi:sockets/network@0.2.3".into());
+    assert!(!ordinary_directory_imports_supported(&unsupported));
+    unsupported = imports;
+    unsupported.insert("wasi:logging/logging@0.1.0".into());
+    assert!(!ordinary_directory_imports_supported(&unsupported));
+}
+
+fn resident_toy_grant_matches(
+    grant: &ToyGrant,
+    snapshot: &LocalExecutionAuthoritySnapshot,
+    child: &mct_daemon::MctLoadedChild,
+    authorized_child: &AuthorizedChildInvocation,
+    call: &MctCall,
+    toy_id: &str,
+    action: &str,
+) -> bool {
+    grant.toy_id.as_str() == toy_id
+        && grant.subject.child_name == child.name
+        && grant.subject.artifact_id == child.artifact_id
+        && grant.subject.artifact_version == child.version
+        && grant.subject.assignment_id.as_ref() == Some(authorized_child.assignment_id())
+        && grant.subject.caller_node_id.as_ref() == Some(&call.caller.node_id)
+        && grant.scope.vision_id == *snapshot.child_policy().vision_id()
+        && grant
+            .scope
+            .node_id
+            .as_ref()
+            .is_none_or(|node| node == snapshot.child_policy().local_node_id())
+        && grant
+            .scope
+            .allowed_actions
+            .iter()
+            .any(|allowed| allowed == action)
+}
+
+fn authorize_resident_toy(
     snapshot: &LocalExecutionAuthoritySnapshot,
     child: &mct_daemon::MctLoadedChild,
     authorized_child: &AuthorizedChildInvocation,
@@ -223,26 +268,31 @@ fn authorize_resident_watch_toy(
     }
     let grants = snapshot.canonical_grants().toy_grants();
     let toy_id = ToyId::new(toy_id).map_err(|error| cli_adapter_error(error.into()))?;
-    let resource_id = grants
+    let resources: BTreeSet<_> = grants
         .iter()
-        .find(|grant| {
-            grant.toy_id == toy_id
-                && grant.subject.child_name == child.name
-                && grant.subject.artifact_id == child.artifact_id
-                && grant.subject.artifact_version == child.version
-                && grant.subject.assignment_id.as_ref() == Some(authorized_child.assignment_id())
-                && grant.grant_state == ToyGrantState::Active
-                && grant
-                    .scope
-                    .allowed_actions
-                    .iter()
-                    .any(|allowed| allowed == action)
+        .filter(|grant| {
+            grant.grant_state == ToyGrantState::Active
+                && resident_toy_grant_matches(
+                    grant,
+                    snapshot,
+                    child,
+                    authorized_child,
+                    call,
+                    toy_id.as_str(),
+                    action,
+                )
         })
-        .and_then(|grant| grant.scope.resource_id.clone())
-        .ok_or_else(|| CliToyAuthorizationError {
-            safe_message: format!("current exact {label} Toy grant not found"),
-            observations: Vec::new(),
-        })?;
+        .map(|grant| grant.scope.resource_id.clone())
+        .collect();
+    let resource_id = if resources.len() == 1 {
+        resources.into_iter().next().flatten()
+    } else {
+        None
+    }
+    .ok_or_else(|| CliToyAuthorizationError {
+        safe_message: format!("current exact {label} Toy grant missing or ambiguous"),
+        observations: Vec::new(),
+    })?;
     let request = ToyGrantEvaluationRequest {
         data_authority: authorized_child.data_authority().cloned(),
         toy_id,
@@ -291,6 +341,109 @@ fn authorize_resident_watch_toy(
     })
 }
 
+fn ordinary_directory_imports_supported(imports: &BTreeSet<String>) -> bool {
+    imports_need_wasi_filesystem(imports)
+        && imports.iter().all(|name| {
+            matches!(
+                name.as_str(),
+                "patina:child/runtime-types@0.1.0"
+                    | "wasi:cli/environment@0.2.3"
+                    | "wasi:cli/exit@0.2.3"
+                    | "wasi:cli/stdin@0.2.3"
+                    | "wasi:cli/stdout@0.2.3"
+                    | "wasi:cli/stderr@0.2.3"
+                    | "wasi:cli/terminal-input@0.2.3"
+                    | "wasi:cli/terminal-output@0.2.3"
+                    | "wasi:cli/terminal-stdin@0.2.3"
+                    | "wasi:cli/terminal-stdout@0.2.3"
+                    | "wasi:cli/terminal-stderr@0.2.3"
+                    | "wasi:clocks/monotonic-clock@0.2.3"
+                    | "wasi:clocks/wall-clock@0.2.3"
+                    | "wasi:filesystem/types@0.2.3"
+                    | "wasi:filesystem/preopens@0.2.3"
+                    | "wasi:io/error@0.2.3"
+                    | "wasi:io/streams@0.2.3"
+                    | "wasi:random/random@0.2.3"
+            )
+        })
+}
+
+fn resident_directory_read_host_adapters(
+    state: &LocalExecutionAuthoritySnapshot,
+    child: &mct_daemon::MctLoadedChild,
+    authorized_child: &AuthorizedChildInvocation,
+    call: &MctCall,
+    imports: &BTreeSet<String>,
+) -> std::result::Result<CliWitHostAdapterBuild, CliToyAuthorizationError> {
+    let deny = |message: &str, observations| CliToyAuthorizationError {
+        safe_message: message.into(),
+        observations,
+    };
+    if !ordinary_directory_imports_supported(imports) {
+        return Err(deny(
+            "unsupported ordinary directory-read imports",
+            Vec::new(),
+        ));
+    }
+    let content = authorize_resident_toy(
+        state,
+        child,
+        authorized_child,
+        call,
+        MCT_DIRECTORY_READ_TOY_ID,
+        "read-content",
+        "directory-read",
+    )?;
+    let observations = vec![toy_grant_evaluation_observation(
+        call.trace_context.trace_id.clone(),
+        state.mother_clock().evaluated_at().clone(),
+        &content.evaluation,
+    )];
+    let root = content
+        .authorized
+        .resource_id()
+        .and_then(|resource| resource.strip_prefix("file://"))
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            deny(
+                "directory-read root is not a file URL",
+                observations.clone(),
+            )
+        })?;
+    if !root.is_absolute()
+        || root.to_str().is_none()
+        || mct_observation::private_fs::trusted_directory(&root).is_err()
+        || std::fs::canonicalize(&root)
+            .ok()
+            .is_none_or(|canonical| canonical.as_os_str() != root.as_os_str())
+    {
+        return Err(deny(
+            "directory-read root is not a trusted canonical directory",
+            observations,
+        ));
+    }
+    Ok(CliWitHostAdapterBuild {
+        adapters: MctWitHostImportAdapters {
+            toy_registry: MctToyAdapterRegistry::new(),
+            effect_authority: None,
+            logging: None,
+            measure: None,
+            git: None,
+            keyvalue: None,
+            messaging: None,
+            wasi: Some(MctWasiHostConfig {
+                preopens: vec![MctWasiPreopen {
+                    host_path: root,
+                    guest_path: "/project".into(),
+                    access: MctWasiPreopenAccess::ReadOnly,
+                    authorized_toy_call: content.authorized,
+                }],
+            }),
+        },
+        observations,
+    })
+}
+
 fn resident_watch_host_adapters(
     runtime_state: &MctRuntimeStateStore,
     state: &LocalExecutionAuthoritySnapshot,
@@ -321,7 +474,7 @@ fn resident_watch_host_adapters(
         current_observer: scope.observer_ref.clone(),
         now: now.clone(),
     };
-    let watch_preopen = authorize_resident_watch_toy(
+    let watch_preopen = authorize_resident_toy(
         state,
         child,
         authorized_child,
@@ -355,7 +508,7 @@ fn resident_watch_host_adapters(
             safe_message: "Watch root is not a canonical local directory reference".into(),
             observations: observations.clone(),
         })?;
-    let content = authorize_resident_watch_toy(
+    let content = authorize_resident_toy(
         state,
         child,
         authorized_child,
@@ -399,7 +552,7 @@ fn resident_watch_host_adapters(
         ),
     ] {
         if imports.contains(import) {
-            let authorized = authorize_resident_watch_toy(
+            let authorized = authorize_resident_toy(
                 state,
                 child,
                 authorized_child,
@@ -425,7 +578,7 @@ fn resident_watch_host_adapters(
     }
 
     let keyvalue = if imports.contains("wasi:keyvalue/store@0.2.0") {
-        let get = authorize_resident_watch_toy(
+        let get = authorize_resident_toy(
             state,
             child,
             authorized_child,
@@ -434,7 +587,7 @@ fn resident_watch_host_adapters(
             "get",
             "watch-keyvalue-get",
         )?;
-        let set = authorize_resident_watch_toy(
+        let set = authorize_resident_toy(
             state,
             child,
             authorized_child,
@@ -480,7 +633,7 @@ fn resident_watch_host_adapters(
     };
 
     let messaging = if imports.contains("wasi:messaging/producer@0.2.0") {
-        let callout = authorize_resident_watch_toy(
+        let callout = authorize_resident_toy(
             state,
             child,
             authorized_child,
@@ -599,11 +752,38 @@ fn execute_resident_wit_child(
         .map(PathBuf::from);
     let adapter_build = match if imports.contains("wasi:keyvalue/store@0.2.0")
         || imports.contains("wasi:messaging/producer@0.2.0")
+        || imports.contains("wasi:messaging/types@0.2.0")
+        || imports.contains("patina:watch/types@0.1.0")
     {
         resident_watch_host_adapters(
             &state,
             effect_snapshot,
             paths.state_path(),
+            &execution.child,
+            &execution.authorized,
+            call,
+            &imports,
+        )
+    } else if imports_need_wasi_filesystem(&imports)
+        && (project_root.is_none()
+            || effect_snapshot
+                .canonical_grants()
+                .toy_grants()
+                .iter()
+                .any(|grant| {
+                    resident_toy_grant_matches(
+                        grant,
+                        effect_snapshot,
+                        &execution.child,
+                        &execution.authorized,
+                        call,
+                        MCT_DIRECTORY_READ_TOY_ID,
+                        "read-content",
+                    )
+                }))
+    {
+        resident_directory_read_host_adapters(
+            effect_snapshot,
             &execution.child,
             &execution.authorized,
             call,
@@ -973,6 +1153,243 @@ pub(super) fn result_to_call_handler_result(
 mod tests {
     use super::*;
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+
+    fn test_call() -> MctCall {
+        MctCall {
+            call_id: CallId::new("call-cli-toy-expiry")
+                .expect("string ID literal/generated value must be non-empty"),
+            caller: CallerIdentity {
+                node_id: MctNodeId::new("local-mct")
+                    .expect("string ID literal/generated value must be non-empty"),
+                user_id: None,
+                vision_id: VisionId::new("vision-local")
+                    .expect("string ID literal/generated value must be non-empty"),
+                project_id: None,
+            },
+            target: OperationTarget {
+                namespace: "patina:demo".into(),
+                interface_name: "control@0.1.0".into(),
+                function_name: "run".into(),
+            },
+            payload_metadata: PayloadMetadata {
+                data_classification: "public".into(),
+                size_bytes: 0,
+                contains_secret_scoped_material: false,
+            },
+            authority_context: AuthorityContextSnapshot {
+                policy_revision: 1,
+                expected_receiver_grants_authority: test_grants_authority_identity(1),
+                vision_policy_revision: 1,
+            },
+            deadline: Timestamp::new("2026-07-02T00:01:00Z").unwrap(),
+            trace_context: TraceContext {
+                trace_id: TraceId::new("trace-cli-toy-expiry")
+                    .expect("string ID literal/generated value must be non-empty"),
+                span_id: SpanId::new("span-cli-toy-expiry")
+                    .expect("string ID literal/generated value must be non-empty"),
+            },
+            origin: CallOrigin::Cli,
+        }
+    }
+    fn test_child() -> mct_daemon::MctLoadedChild {
+        mct_daemon::MctLoadedChild {
+            child_id: ChildId::new("child-demo")
+                .expect("string ID literal/generated value must be non-empty"),
+            name: "child-demo".into(),
+            version: "0.1.0".into(),
+            description: None,
+            kind: "wasm".into(),
+            role: None,
+            wasm_path: PathBuf::from("child-demo.wasm"),
+            manifest_path: PathBuf::from("child.toml"),
+            wasm_digest: mct_daemon::MctChildFileDigest {
+                sha256: "wasm".into(),
+                sidecar_present: true,
+                verified: true,
+            },
+            manifest_digest: mct_daemon::MctChildFileDigest {
+                sha256: "manifest".into(),
+                sidecar_present: true,
+                verified: true,
+            },
+            artifact_id: "artifact-demo".into(),
+            ingress_mode: mct_daemon::MctChildIngressMode::WitOnly,
+            allowed_operations: vec!["patina:demo/control@0.1.0.run".into()],
+            requested_toys: Vec::new(),
+            subscribed_streams: Vec::new(),
+            relationship_listens: Vec::new(),
+            wasm_size_bytes: 1,
+            instance_state: mct_daemon::MctChildInstanceState::Ready,
+        }
+    }
+    fn test_contract(toy_id: &ToyId) -> CanonicalToyContract {
+        CanonicalToyContract {
+            toy_id: toy_id.clone(),
+            contract: ToyContractIdentity {
+                namespace: "patina".into(),
+                interface_name: "demo-toy".into(),
+                version: "0.1.0".into(),
+                function_name: Some("read".into()),
+                resource_name: None,
+            },
+            authority_bearing: true,
+            catalog_revision: 1,
+            admitted_by_observation_id: ObservationId::new("obs-contract")
+                .expect("string ID literal/generated value must be non-empty"),
+        }
+    }
+    fn expired_grant(toy_id: &ToyId) -> ToyGrant {
+        ToyGrant {
+            grant_id: ToyGrantId::new("grant-expired")
+                .expect("string ID literal/generated value must be non-empty"),
+            toy_id: toy_id.clone(),
+            subject: ToyGrantSubject {
+                child_name: "child-demo".into(),
+                artifact_id: "artifact-demo".into(),
+                artifact_version: "0.1.0".into(),
+                assignment_id: Some(
+                    ChildAssignmentId::new("assignment-child")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
+                caller_node_id: Some(
+                    MctNodeId::new("local-mct")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
+            },
+            scope: ToyGrantScope {
+                vision_id: VisionId::new("vision-local")
+                    .expect("string ID literal/generated value must be non-empty"),
+                node_id: Some(
+                    MctNodeId::new("local-mct")
+                        .expect("string ID literal/generated value must be non-empty"),
+                ),
+                project_id: None,
+                data_classification: Some("public".into()),
+                resource_id: Some("resource-a".into()),
+                allowed_actions: vec!["read".into()],
+            },
+            constraints: ToyGrantConstraints {
+                starts_at: None,
+                expires_at: Some(Timestamp::new("2026-06-01T00:00:00Z").unwrap()),
+                max_uses: None,
+                max_duration_ms: None,
+                locality_required: false,
+            },
+            grant_state: ToyGrantState::Active,
+            issuer_id: "issuer".into(),
+            policy_revision: 1,
+            grants_revision: 1,
+            authority_observation_id: ObservationId::new("obs-grant")
+                .expect("string ID literal/generated value must be non-empty"),
+        }
+    }
+
+    fn test_snapshot(
+        toy_catalog: Vec<CanonicalToyContract>,
+        toy_grants: Vec<ToyGrant>,
+    ) -> LocalExecutionAuthoritySnapshot {
+        assemble_local_execution_authority_snapshot(LocalExecutionAuthoritySnapshotPartsV1 {
+            executing_mother_node_id: "local-mct".into(),
+            grants_authority_mother_node_id: "local-mct".into(),
+            grants_authority_epoch: "epoch-test".into(),
+            grants_authority_generation: 1,
+            grants_authority_observation_id: "obs-authority-test-1".into(),
+            toy_catalog,
+            toy_grants,
+            watch_scopes: Vec::new(),
+            policy_revision: 1,
+            vision_policy_revision: 1,
+            child_local_node_id: MctNodeId::new("local-mct").unwrap(),
+            child_vision_id: VisionId::new("vision-local").unwrap(),
+            child_artifacts: Vec::new(),
+            child_approvals: Vec::new(),
+            child_assignments: Vec::new(),
+            child_instances: Vec::new(),
+            peer_local_node_id: MctNodeId::new("local-mct").unwrap(),
+            peer_local_vision_id: VisionId::new("vision-local").unwrap(),
+            peer_local_endpoint_id: EndpointIdText::new("endpoint-local").unwrap(),
+            peer_records: Vec::new(),
+            callable_surfaces: Vec::new(),
+            evaluated_at: Timestamp::new("2026-07-01T00:00:00Z").unwrap(),
+            projection_id: "projection-test".into(),
+            projection_source_mother_node_id: "local-mct".into(),
+            projection_source_ledger_id: "ledger-local".into(),
+            through_sequence: 1,
+            through_observation_id: "obs-authority-test-1".into(),
+            through_entry_hash: "hash-test".into(),
+            authority_state_hash: "authority-state-test".into(),
+            projection_hash: "projection-hash-test".into(),
+        })
+    }
+
+    #[test]
+    fn resident_directory_read_uses_exact_grant_and_read_only_preopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let child = test_child();
+        let mut call = test_call();
+        call.caller.node_id = MctNodeId::new("remote-caller").unwrap();
+        let authorized = authority_test_fixture::authorized_child_for_call(
+            &call,
+            "child-demo",
+            MctNodeId::new("local-mct").unwrap(),
+            "child",
+        );
+        let toy_id = ToyId::new(MCT_DIRECTORY_READ_TOY_ID).unwrap();
+        let mut grant = expired_grant(&toy_id);
+        grant.subject.caller_node_id = Some(call.caller.node_id.clone());
+        grant.scope.resource_id = Some(format!("file://{}", root.display()));
+        grant.scope.allowed_actions = vec!["read-content".into()];
+        grant.constraints.expires_at = None;
+        let imports = BTreeSet::from([
+            "wasi:filesystem/types@0.2.3".into(),
+            "wasi:filesystem/preopens@0.2.3".into(),
+        ]);
+        let build = |grants| {
+            resident_directory_read_host_adapters(
+                &test_snapshot(vec![test_contract(&toy_id)], grants),
+                &child,
+                &authorized,
+                &call,
+                &imports,
+            )
+        };
+        let result =
+            build(vec![grant.clone()]).unwrap_or_else(|error| panic!("{}", error.safe_message));
+        let preopens = result.adapters.wasi.unwrap().preopens;
+        assert_eq!(preopens.len(), 1);
+        assert_eq!(preopens[0].host_path, root);
+        assert_eq!(preopens[0].guest_path, "/project");
+        assert!(matches!(preopens[0].access, MctWasiPreopenAccess::ReadOnly));
+        assert_eq!(result.observations.len(), 1);
+        let mut wrong = grant.clone();
+        wrong.subject.caller_node_id = Some(MctNodeId::new("other-caller").unwrap());
+        assert!(build(vec![wrong]).is_err());
+        let mut second = grant.clone();
+        second.scope.resource_id = Some("file:///another-root".into());
+        assert!(build(vec![grant.clone(), second]).is_err());
+        let mut malformed = grant.clone();
+        malformed.scope.resource_id = Some("file://relative".into());
+        assert!(build(vec![malformed]).is_err());
+        let mut noncanonical = grant.clone();
+        noncanonical.scope.resource_id = Some(format!("file://{}/.", root.display()));
+        assert!(build(vec![noncanonical]).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o777)).unwrap();
+            assert!(build(vec![grant.clone()]).is_err());
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        assert!(build(vec![grant.clone(), grant.clone()]).is_ok());
+        let mut expired = grant.clone();
+        expired.constraints.expires_at = Some(Timestamp::new("2026-06-01T00:00:00Z").unwrap());
+        let error = build(vec![expired]).err().unwrap();
+        assert!(error.safe_message.contains("ExpiredGrant"));
+        assert_eq!(error.observations.len(), 1);
+        grant.grant_state = ToyGrantState::Revoked;
+        assert!(build(vec![grant]).is_err());
+    }
 
     fn resident_test_call(trace_id: TraceId) -> MctCall {
         let mut call = local_wasm_call(
