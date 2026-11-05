@@ -731,6 +731,11 @@ impl ResidentLedgerWriter {
         self.cached_tip.lock().map(|tip| tip.sequence).unwrap_or(0)
     }
 
+    pub(crate) fn mother_node_id(&self) -> Option<String> {
+        let node = self.cached_tip.lock().ok()?.mother_node_id.clone();
+        (!node.is_empty()).then_some(node)
+    }
+
     pub(crate) fn cached_receiver_authority(&self) -> Option<GrantsAuthorityIdentity> {
         let tip = self.cached_tip.lock().ok()?;
         let authority = tip.authority.clone()?;

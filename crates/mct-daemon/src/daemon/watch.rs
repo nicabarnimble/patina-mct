@@ -335,11 +335,11 @@ fn supporting_grants(
                     child.artifact_id, assignment_id, bucket_name
                 ),
                 vec![
-                    "get".into(),
-                    "set".into(),
                     "delete".into(),
                     "exists".into(),
+                    "get".into(),
                     "list-keys".into(),
+                    "set".into(),
                 ],
             )]
         }
@@ -1256,6 +1256,15 @@ mod tests {
         assert_eq!(grants[0].subject.caller_node_id, Some(remote));
         assert_eq!(grants[0].scope.node_id, Some(identity.node_id));
         assert_eq!(grants[0].scope.vision_id, identity.vision_id);
+        request.caller_node_id = None;
+        request.grant = SupportingToyGrantKind::Keyvalue {
+            bucket_name: "bucket".into(),
+        };
+        let (_, grants) = supporting_grants(&request, &peer).unwrap();
+        assert_eq!(
+            grants[0].scope.allowed_actions,
+            vec!["delete", "exists", "get", "list-keys", "set"]
+        );
     }
 
     fn watch_test_call() -> MctCall {
