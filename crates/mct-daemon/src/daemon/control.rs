@@ -4382,6 +4382,7 @@ mod tests {
             (
                 "/watch/supporting-grant",
                 serde_json::to_value(SupportingToyGrantRequest {
+                    caller_node_id: None,
                     mutation_id: "phase-i-directory".into(),
                     expected_config_path: config_path.clone(),
                     expected_children_dir: children_dir.clone(),
@@ -4397,6 +4398,7 @@ mod tests {
             (
                 "/watch/supporting-grant",
                 serde_json::to_value(SupportingToyGrantRequest {
+                    caller_node_id: None,
                     mutation_id: "phase-i-keyvalue".into(),
                     expected_config_path: config_path.clone(),
                     expected_children_dir: children_dir.clone(),
@@ -4412,6 +4414,7 @@ mod tests {
             (
                 "/watch/supporting-grant",
                 serde_json::to_value(SupportingToyGrantRequest {
+                    caller_node_id: None,
                     mutation_id: "phase-i-observe-log".into(),
                     expected_config_path: config_path.clone(),
                     expected_children_dir: children_dir.clone(),
@@ -4428,6 +4431,7 @@ mod tests {
             (
                 "/watch/supporting-grant",
                 serde_json::to_value(SupportingToyGrantRequest {
+                    caller_node_id: None,
                     mutation_id: "phase-i-observe-measure".into(),
                     expected_config_path: config_path.clone(),
                     expected_children_dir: children_dir.clone(),
@@ -4444,6 +4448,7 @@ mod tests {
             (
                 "/watch/supporting-grant",
                 serde_json::to_value(SupportingToyGrantRequest {
+                    caller_node_id: None,
                     mutation_id: "phase-i-observe-both".into(),
                     expected_config_path: config_path.clone(),
                     expected_children_dir: children_dir.clone(),
@@ -4650,6 +4655,7 @@ mod tests {
                         (
                             "/watch/supporting-grant",
                             serde_json::to_value(SupportingToyGrantRequest {
+                                caller_node_id: None,
                                 mutation_id: format!("failed-{surface:?}"),
                                 expected_config_path: config_path.clone(),
                                 expected_children_dir: children_dir.clone(),
