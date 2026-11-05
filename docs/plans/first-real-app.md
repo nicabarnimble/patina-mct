@@ -2,8 +2,9 @@
 
 Goal: a Studio client submits useful work to its Mother, nicamaster's Mother
 executes it over Iroh under existing authority, and the client keeps the real
-result under a stable job ID. This plan starts from `0cef2dbc`. Implementation
-and physical acceptance cover only Studio → nicamaster in slice 1.
+result under a stable job ID. This plan starts from `0cef2dbc`. Slice 1 delivered Studio → nicamaster;
+NIC-73 adds the separately keyed single-Lume-VM executor described in
+[`docs/nic73-lume-mother.md`](../nic73-lume-mother.md).
 
 ## Gap list
 
@@ -48,7 +49,7 @@ does not bypass placement by executing over SSH.
 | nicanode3 | Linux arm64. Additional bounded worker. | Historical NIC-53 installation evidence; application enrollment and current service state unverified. |
 | nicanode4 | Linux arm64. Additional bounded worker. | NIC-53 acceptance was merged in #96; application enrollment and current service state unverified. |
 | nicanode5 | Linux arm64. Additional bounded worker. | NIC-53 acceptance was merged in #98; application enrollment and current service state unverified. |
-| Lume macOS VMs on Studio | Separate macOS nodes for isolated Mac-only capabilities and future macOS matrix jobs. | Planned, not verified as enrolled Mothers. `lume` was not found on PATH. NIC-73 remains an enrollment gate, not a completed deployment. |
+| Lume macOS VMs on Studio | Separate macOS nodes for isolated Mac-only capabilities and future macOS matrix jobs. | NIC-73 defines and physically exercises one disposable, independently keyed Lume Mother through the existing dependency-report contract. This does not enroll a second VM or authorize native build execution. |
 
 Host capability availability is narrower than OS command availability:
 
@@ -56,7 +57,7 @@ Host capability availability is narrower than OS command availability:
 | --- | --- | --- |
 | Studio | Directory read, child keyvalue, logging and measurement through existing application adapters; confined Git operations on macOS. | Ordinary directory-read calls need the adapter above. Arbitrary shell, Xcode, HTTP fetch and a general build/test runner are not implied. |
 | All seven Linux Pis | Directory read, child keyvalue, logging and measurement through existing application adapters. Each node needs its own grants and resources. | Native Git confinement fails closed on Linux. Wasm support does not authorize native compilation or shell commands. |
-| Enrolled Lume macOS VM | Candidate for the same Mac adapters as Studio, with independent authority and local resources. | VM installation and capability acceptance are unverified. Native Mac test execution needs a separately defined build Toy. |
+| Enrolled Lume macOS VM | The dependency-report Child and its caller-scoped directory-read Toy, under an independent Mother identity. | Native Mac test execution remains unverified and needs a separately defined build Toy. |
 
 The supporting Toy contracts are in `crates/mct-daemon/src/daemon/watch.rs`;
 selection and preopens are in
@@ -66,8 +67,9 @@ claims of active grants on every host.
 
 Each VM needs its own compatible Mother binary, persistent private root and
 endpoint key, reachable Iroh address, receiver-issued peer proofs, Child admission
-and scoped Toy grants. Slice 3 must prove execution inside the VM, durable
-results, restart, and revocation. A VM's NAT address or cloned key is not enrollment.
+and scoped Toy grants. NIC-73 proves execution inside one VM, durable results,
+restart, and receiver revocation through the documented acceptance command. A
+VM's NAT address or cloned key is not enrollment.
 No Tailscale, DNS, Caddy, routing, VM creation, or fleet-wide rollout belongs to
 slice 1. Admin-only NIC-53 acceptance is not resident Child/Toy enrollment:
 `docs/passkey-admin.md` records that the runtime cutover is not built. Reuse the
@@ -141,5 +143,7 @@ receipts. Lost replies can be retried within Mother's dedupe window. After expir
 recomputation is safe only because this selected workload reads an immutable input
 and has no mutating effects. Interrupted or denied jobs must not become success.
 
-This is a plan, not acceptance evidence. No physical application run, PiD tool
-integration, or Lume enrollment is claimed here.
+This plan does not embed machine-specific acceptance evidence. The Lume operator
+procedure is [`docs/nic73-lume-mother.md`](../nic73-lume-mother.md); the pull
+request ledger records the physical run. PiD integration and native Mac build
+capabilities remain separate slices.
