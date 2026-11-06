@@ -151,8 +151,8 @@
       "check": "C7",
       "step": "unkeyed-single-launch-after-state-loss",
       "reason": "child-start-ledger-fact-missing",
-      "owner": "unassigned:D-40",
-      "note": "Declared: D-40 is proposed and no NIC-123 piece builds it. Scope decision for Doug."
+      "owner": "NIC-126",
+      "note": "Declared: D-40 Child-start ledger fact is assigned to NIC-126; power-cut qualification stays NIC-129."
     },
     {
       "check": "C7",
