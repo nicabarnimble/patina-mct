@@ -85,6 +85,9 @@ other host writers. Path confinement cannot distinguish two authorized names
 for the same inode, or undo a host administrator exposing another dataset
 inside a granted root. Start with regular files/directories, no symlink
 following, explicit mount policy and separately tested root-open races.
+On a dataset that exposes `.zfs/snapshot`, a raw preopen can also grant access
+to history. Hiding those entries in a UI does not enforce denial. Exclude that
+namespace from the delegated host view or explicitly authorize history access.
 Existing guest SMB access remains an independent writer and access path; this
 review neither changes it nor claims Mother has replaced it.
 
@@ -216,6 +219,113 @@ The countermeasure is one adversarial, operator-facing acceptance per piece:
 Ship those proofs in order. Do not promise universal exactly-once effects,
 immediate descriptor revocation, or data recovery beyond the mechanism tested.
 
+## Response to Astra
+
+Reviewed [Astra's design at `a1380d8`](https://github.com/nicabarnimble/patina-mct/blob/a1380d8bcd927ce5bfc87798ebe3e4cdeef6def5/docs/design/nic-118-host-fs.md).
+The seventh fetch found it at 2026-11-06 16:23:41 UTC. Polling began at
+16:05:28 UTC and stopped on arrival. My independent review was already committed
+and pushed as `679f015`. No Astra checkout or branch was modified.
+
+### Where I agree
+
+- **The architecture.** One Mother, a portable bounded Child, read-only standard
+  WASI, and guarded native mutations is the right split. Astra explicitly
+  rejects writable preopens even at the highest level because they bypass
+  recovery and evidence policy. That is stronger and clearer than making
+  unlink the only distinction between the tiers.
+- **The actual authority gaps.** G03 through G05 correctly identify the separate
+  admin cutover, authenticated principal and named-root problems. A proxy UID
+  or node is not a human. A root name is not a host path or grant.
+- **The ZFS shape.** A separately granted read-only query Toy and constrained
+  host helper should come first. The optional reporting Child earns its place
+  through computation, not by being a wrapper around native commands. Keep
+  snapshot scheduling external initially and require exact recovery coverage
+  before destructive effects rely on it.
+- **The mutation contract.** No-replace rename, stable effect identity, an honest
+  unknown outcome, no automatic copy/delete fallback, and controlled external
+  writers are essential. Astra already addresses weak live-file version tags,
+  guest-writable SMB and trash/staging visibility. Those are not omissions.
+- **No multi-Mother prerequisite.** We give the same answer. Neither the Mac
+  client nor the ZFS helper needs a Mother. Multi-Vision membership is a
+  separate question and does not change that answer.
+
+### Where I disagree
+
+1. **Make one update a piece-1 gate.** Astra marks G10/G11 as later work, before
+   the ongoing-service claim. I would require one distinct-image replacement
+   and an explicit compatible rollback/refusal drill before calling the first
+   persistent installation usable. Otherwise the first security update becomes
+   an untested migration. A release feed, cadence and seamless update service
+   can remain later; the minimal manual procedure cannot.
+2. **Pull Pi feasibility forward.** Astra qualifies Pi after the Unraid app and
+   ongoing-operations pieces. Small-device-first should prove one authenticated
+   list/read path on the target Pi during the first vertical slice, before
+   freezing the transfer/API design. This is not a request for fleet fan-out or
+   on-device compilation. Use the trusted AOT pipeline, not a compiler fallback.
+3. **Choose upload durability deliberately.** Section 3 syncs every staged chunk
+   before acknowledgment, but promises no upload resume after Mother restart.
+   I prefer either resumable durable chunks or explicitly volatile staging
+   followed by whole-content verification and fsync before publish admission.
+   The latter avoids paying for a resume guarantee the product declines to
+   offer. It still needs the required durable call result, effect identity and
+   receipt. A receipt for volatile progress must say so; it must not pretend
+   that acknowledged staged bytes will survive restart. This is a proposed
+   contract change, not permission to weaken the current durability wording.
+
+One feasibility question also deserves an early test. Astra's proposed 64 MiB
+transfer at 4 KiB per call entails 16,384 Child invocations and signed terminal
+results before retries or control traffic. That is arithmetic from its own
+limits, not a performance measurement. Its bounds are explicitly unmeasured;
+measure end-to-end Pi latency, synced writes and ledger growth together before
+approving that shape. Do not waive NIC-110's per-call receipt to make it fast.
+
+### What it missed
+
+- **The snapshot namespace can bypass the proposed ZFS API entirely.** Section
+  3 protects reserved staging/trash paths, but does not apply that reasoning
+  to `.zfs/snapshot`. Where the mounted root exposes that namespace, a malicious
+  guest can try historical paths through the ordinary read preopen. Hiding
+  snapshots from listings or omitting a ZFS import does not remove that reach.
+  Root enrollment needs an explicit live-data-versus-history policy and a
+  direct-guest denial test. If the effective host view cannot exclude history,
+  grant it explicitly or refuse that root profile. This blocks read-only
+  acceptance when live-only access is promised, not merely a later ZFS feature.
+- **An interrupted directory rename needs a subtree conflict definition.** The
+  design fences conflicting writes on “affected entries” after uncertain
+  dispatch, but its API does not limit rename to regular files. A fence on the
+  two path names alone does not cover a concurrent operation on a descendant
+  or ancestor. Specify canonical ancestor/subtree conflict scopes, or initially
+  restrict move/rename to regular files. Add a two-operation crash/race test;
+  the included model honestly covers only one operation and does not prove this
+  property. This blocks directory move/rename, not piece 1.
+
+### What Astra corrected or added to my review
+
+Astra brought newer planning evidence that was absent from my baseline reading.
+I checked [NIC-104's locked decisions](https://linear.app/nicabar/issue/NIC-104),
+[NIC-110](https://linear.app/nicabar/issue/NIC-110), and the relevant receipt,
+budget and AOT sections of the [shared contract at `5486458`](https://github.com/nicabarnimble/patina-mct/blob/5486458dab6ec760caa89995532eb7aa1a585035/docs/design/small-device/nic-110-shared-contract.md).
+
+- NIC-104 explicitly requires the D-58 runtime cutover. My earlier suggestion
+  that an explicitly bounded profile might avoid the full cutover is not an
+  available milestone shortcut without a fresh owner decision. Adopt Astra's
+  G03, with no same-UID or admin-only-to-legacy bridge.
+- NIC-110 requires signed receipts per call for small-device Children. My gap
+  table omitted that shared dependency. Its bounded signer/result-delivery
+  subset **blocks piece 1** when using that contract. Reuse it, rather than
+  inventing an FS receipt format. Fleet fan-out remains unnecessary.
+- The trusted `.cwasm` loader is a real missing prerequisite for Pi qualification,
+  not just a performance optimization. My capacity row understated that work.
+  It **blocks later** if Unraid ships alone first, and **blocks piece 1** under
+  my recommended early-Pi acceptance. Hashing an arbitrary serialized component
+  does not authorize loading its native code.
+
+These corrections preserve the independent review's central recommendation.
+They also reinforce the biggest risk. Implement the smallest approved shared
+boundary, then prove it on the file user's path. Do not replace owner decisions
+with convenience exceptions or turn every shared design into an FS-specific
+framework project.
+
 ## Evidence and limits
 
 This review inspected repository documents, Mother/Child/Toy source and test
@@ -224,6 +334,13 @@ nica-unraid's mounts/architecture, test Pocket ID, run a physical Pi workload,
 or execute ZFS. Capacity and deployment judgments above are proposed gates,
 not measured results. Patina context returned no indexed knowledge, scry no
 results, and assay lacked `index_state`; source inspection supplied the evidence.
+
+Document checks passed for the four sections, explicit multi-Mother answer,
+16 classified gaps, local links, whitespace and comparative vocabulary. The
+spec wrapper exited zero but printed release-version failures. Running that
+gate directly exited one because `mct-repo-report` is version 0.1.0 while the
+workspace is 0.2.0. Those files are unchanged from the reviewed baseline. This
+is not a claim that all repository gates passed; no Rust runtime code changed.
 
 - [E1] [README](../../README.md), including current runtime and security limits.
 - [E2] [Resident execution](../../crates/mct-daemon/src/daemon/resident/execution.rs), especially `resident_directory_read_host_adapters`, `authorize_resident_toy` and `execute_resident_wit_child`.
