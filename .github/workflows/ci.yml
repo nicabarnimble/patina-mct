@@ -11,10 +11,76 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  changes:
+    name: changes
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      docs: ${{ steps.filter.outputs.docs }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Classify changed paths
+        id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "pull_request" ]; then
+            base="$PR_BASE"
+            head="$SHA"
+          elif [ -z "${BEFORE:-}" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            if git rev-parse --verify "${SHA}^" >/dev/null 2>&1; then
+              base="$(git rev-parse "${SHA}^")"
+            else
+              base="$SHA"
+            fi
+            head="$SHA"
+          else
+            base="$BEFORE"
+            head="$SHA"
+          fi
+          files="$(git diff --name-only "$base" "$head")"
+          printf 'Comparing %s..%s\n' "$base" "$head"
+          printf '%s\n' "$files"
+          rust=false
+          docs=false
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in
+              *.rs|Cargo.toml|Cargo.lock|*/Cargo.toml|rust-toolchain.toml|flake.nix|flake.lock|osv-scanner.toml|crates/*|scripts/*|layer/*|fuzz/*|nix/*|.github/actions/*)
+                rust=true
+                ;;
+            esac
+            case "$f" in
+              *.md|docs/*)
+                docs=true
+                ;;
+            esac
+          done <<< "$files"
+          printf 'rust=%s\ndocs=%s\n' "$rust" "$docs"
+          {
+            echo "rust=$rust"
+            echo "docs=$docs"
+          } >> "$GITHUB_OUTPUT"
+
   fmt:
     name: fmt
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: github.event_name != 'schedule' && needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -30,7 +96,8 @@ jobs:
 
   clippy:
     name: clippy
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: github.event_name != 'schedule' && needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -46,7 +113,8 @@ jobs:
 
   test:
     name: test
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: github.event_name != 'schedule' && needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     env:
       # Supervisor tests copy the daemon binary into private fixtures. Full DWARF
@@ -86,7 +154,8 @@ jobs:
 
   specs:
     name: vocabulary, release, docs
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: github.event_name != 'schedule' && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.docs == 'true')
     runs-on: ubuntu-latest
     env:
       CARGO_HTTP_MULTIPLEXING: "false"
@@ -117,7 +186,8 @@ jobs:
 
   ledger-benchmark:
     name: Ledger open benchmark
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: github.event_name != 'schedule' && needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -134,7 +204,8 @@ jobs:
 
   audit:
     name: audit
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: github.event_name != 'schedule' && needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -163,6 +234,8 @@ jobs:
 
   osv-scan:
     name: osv-scanner
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

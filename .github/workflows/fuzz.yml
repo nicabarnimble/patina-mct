@@ -2,17 +2,29 @@ name: Fuzz smoke
 
 on:
   push:
-    tags-ignore:
-      - "v*"
+    branches: [main]
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
   pull_request:
     branches: [patina, main, master]
+    types: [opened, synchronize, reopened, labeled]
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   fuzz-smoke:
     name: Bounded fuzz smoke — hostile-input parsers
+    if: >
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'fuzz'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
