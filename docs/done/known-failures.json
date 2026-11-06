@@ -1,0 +1,170 @@
+{
+  "schema": "mct-done-known-failures/v1",
+  "parent": "NIC-123",
+  "failures": [
+    {
+      "check": "C1",
+      "step": "governed-runtime-startup",
+      "reason": "runtime-refuses-passkey-ledger",
+      "owner": "NIC-126"
+    },
+    {
+      "check": "C1",
+      "step": "pi-installed-governed-mother",
+      "reason": "blocked:governed-runtime-startup",
+      "owner": "NIC-129"
+    },
+    {
+      "check": "C1",
+      "step": "pi-call-within-budget",
+      "reason": "blocked:pi-installed-governed-mother",
+      "owner": "NIC-129"
+    },
+    {
+      "check": "C2",
+      "step": "governed-runtime-startup",
+      "reason": "runtime-refuses-passkey-ledger",
+      "owner": "NIC-126"
+    },
+    {
+      "check": "C2",
+      "step": "toy-grant-expiry-mandatory",
+      "reason": "toy-grant-without-expiry-admitted",
+      "owner": "NIC-125"
+    },
+    {
+      "check": "C2",
+      "step": "day-key-approval-and-grant-chain",
+      "reason": "blocked:governed-runtime-startup",
+      "owner": "NIC-126"
+    },
+    {
+      "check": "C2",
+      "step": "unix-socket-mutation-refused",
+      "reason": "blocked:governed-runtime-startup",
+      "owner": "NIC-126"
+    },
+    {
+      "check": "C3",
+      "step": "governed-runtime-startup",
+      "reason": "runtime-refuses-passkey-ledger",
+      "owner": "NIC-126"
+    },
+    {
+      "check": "C3",
+      "step": "hostile-sockets-on-governed-pi",
+      "reason": "blocked:governed-runtime-startup",
+      "owner": "NIC-129"
+    },
+    {
+      "check": "C3",
+      "step": "hostile-http-on-governed-pi",
+      "reason": "blocked:governed-runtime-startup",
+      "owner": "NIC-129"
+    },
+    {
+      "check": "C3",
+      "step": "hostile-ungranted-path-on-governed-pi",
+      "reason": "blocked:governed-runtime-startup",
+      "owner": "NIC-129"
+    },
+    {
+      "check": "C3",
+      "step": "hostile-dotdot-escape-on-governed-pi",
+      "reason": "blocked:governed-runtime-startup",
+      "owner": "NIC-129"
+    },
+    {
+      "check": "C3",
+      "step": "hostile-symlink-escape-on-governed-pi",
+      "reason": "blocked:governed-runtime-startup",
+      "owner": "NIC-129"
+    },
+    {
+      "check": "C3",
+      "step": "hostile-no-grant-call-on-governed-pi",
+      "reason": "blocked:governed-runtime-startup",
+      "owner": "NIC-129"
+    },
+    {
+      "check": "C3",
+      "step": "hostile-forged-principal-on-governed-pi",
+      "reason": "blocked:governed-runtime-startup",
+      "owner": "NIC-127"
+    },
+    {
+      "check": "C4",
+      "step": "governed-runtime-startup",
+      "reason": "runtime-refuses-passkey-ledger",
+      "owner": "NIC-126"
+    },
+    {
+      "check": "C4",
+      "step": "signed-receipt-per-outcome",
+      "reason": "receipts-not-implemented",
+      "owner": "NIC-128",
+      "note": "Declared: no receipt signer or offline verifier exists to observe."
+    },
+    {
+      "check": "C4",
+      "step": "receipt-tamper-fails",
+      "reason": "blocked:signed-receipt-per-outcome",
+      "owner": "NIC-128"
+    },
+    {
+      "check": "C5",
+      "step": "governed-runtime-startup",
+      "reason": "runtime-refuses-passkey-ledger",
+      "owner": "NIC-126"
+    },
+    {
+      "check": "C5",
+      "step": "person-revokes-grant",
+      "reason": "blocked:governed-runtime-startup",
+      "owner": "NIC-126"
+    },
+    {
+      "check": "C5",
+      "step": "revocation-survives-sigkill-restart",
+      "reason": "blocked:person-revokes-grant",
+      "owner": "NIC-129"
+    },
+    {
+      "check": "C6",
+      "step": "governed-runtime-startup",
+      "reason": "runtime-refuses-passkey-ledger",
+      "owner": "NIC-126"
+    },
+    {
+      "check": "C6",
+      "step": "signed-peer-admission",
+      "reason": "blocked:governed-runtime-startup",
+      "owner": "NIC-126"
+    },
+    {
+      "check": "C6",
+      "step": "two-mother-governed-pi-run",
+      "reason": "blocked:signed-peer-admission",
+      "owner": "NIC-129"
+    },
+    {
+      "check": "C7",
+      "step": "governed-runtime-startup",
+      "reason": "runtime-refuses-passkey-ledger",
+      "owner": "NIC-126"
+    },
+    {
+      "check": "C7",
+      "step": "unkeyed-single-launch-after-state-loss",
+      "reason": "child-start-ledger-fact-missing",
+      "owner": "unassigned:D-40",
+      "note": "Declared: D-40 is proposed and no NIC-123 piece builds it. Scope decision for Doug."
+    },
+    {
+      "check": "C7",
+      "step": "power-cut-on-pi",
+      "reason": "blocked:governed-runtime-startup",
+      "owner": "NIC-129"
+    }
+  ]
+}
