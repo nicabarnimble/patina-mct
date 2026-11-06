@@ -17,23 +17,23 @@ related:
 exit_criteria:
   - id: one-job-two-pieces
     text: One authenticated local submission to Mother A names a bounded ordered set of pieces; Mother expands each piece into the existing immutable MctCall pipeline and returns one aggregate result without creating a second authority or execution model.
-    checked: false
+    checked: true
     verify: cargo test -p mct-daemon --bin mct-daemon resident_mesh_job_
   - id: local-and-remote-execution
     text: The NIC-63 physical run completes one piece on Mother A and one single-hop forwarded piece on Mother B, with exact job/piece correlation and no execution attribution to the forwarding Mother for B's piece.
-    checked: false
+    checked: true
     verify: node --test scripts/federation/mesh-job.test.mjs && physical evidence document
   - id: existing-toy-coverage
     text: Mother B reuses the mct-repo-report Child and scoped directory-read ToyGrant from the first-real-app proof; a covered piece runs before grant expiry and a later piece is refused after expiry with the typed ToyGrantExpired fact and zero runtime starts. No board.post Toy is added.
-    checked: false
+    checked: true
     verify: physical evidence document plus canonical ledger summaries
   - id: build-once-delivery
     text: The daemon and helper are built once on nicamaster; the exact previously accepted PR #107 mct-repo-report component is reused there with its pinned digest. Native artifacts, manifest, component, and input fixture are packaged in one signed immutable closure and imported on nicanode0 without Cargo or Nix compilation there.
-    checked: false
+    checked: true
     verify: package provenance and deployment receipts in physical evidence
   - id: repository-gates
     text: The requested repository gates pass on the final diff.
-    checked: false
+    checked: true
     verify: cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && bash scripts/ci-tier0.sh specs && git diff --check
 ---
 
