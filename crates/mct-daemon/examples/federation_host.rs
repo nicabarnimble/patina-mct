@@ -490,6 +490,33 @@ fn retain_observation(
         )
 }
 
+fn reduced_detail(
+    kind: ObservationKind,
+    raw_detail: &str,
+    markers: &BTreeMap<String, String>,
+) -> String {
+    if raw_detail.starts_with("local_mesh_job_") {
+        return raw_detail.to_owned();
+    }
+    raw_detail
+        .split(';')
+        .filter(|part| {
+            part.split_once(':').is_some_and(|(key, _)| {
+                markers.contains_key(key)
+                    || (key == "hello_reason"
+                        && matches!(
+                            kind,
+                            ObservationKind::PeerAdmitted | ObservationKind::PeerRejected
+                        ))
+                    || (matches!(key, "remote_reply" | "remote_reason")
+                        && kind == ObservationKind::PeerCallReplied)
+                    || key == "toy_grant_reason"
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
 fn acquire_host_lock(home: &Path) -> Result<fs::File> {
     ensure!(home.is_absolute(), "HOME must be absolute");
     private_fs::trusted_directory(home)?;
@@ -1134,28 +1161,7 @@ impl Host {
                 raw_detail.contains("local_mesh_job_"),
             );
             if relevant {
-                let detail = observation
-                    .detail_ref
-                    .as_deref()
-                    .unwrap_or("")
-                    .split(';')
-                    .filter(|part| {
-                        part.split_once(':').is_some_and(|(key, _)| {
-                            markers.contains_key(key)
-                                || (key == "hello_reason"
-                                    && matches!(
-                                        observation.kind,
-                                        ObservationKind::PeerAdmitted
-                                            | ObservationKind::PeerRejected
-                                    ))
-                                || (matches!(key, "remote_reply" | "remote_reason")
-                                    && observation.kind == ObservationKind::PeerCallReplied)
-                                || key == "toy_grant_reason"
-                                || key.starts_with("local_mesh_job_")
-                        })
-                    })
-                    .collect::<Vec<_>>()
-                    .join(";");
+                let detail = reduced_detail(observation.kind, raw_detail, &markers);
                 let mut reduced = json!({
                     "local_sequence": entry.local_sequence, "observation_id": observation.observation_id,
                     "kind": observation.kind, "source_plane": observation.source_plane, "outcome": observation.outcome,
@@ -1621,6 +1627,14 @@ mod tests {
             false,
             false
         ));
+        assert_eq!(
+            reduced_detail(
+                ObservationKind::ResultRecorded,
+                "local_mesh_job_result:completed=2;denied=0;failed=0",
+                &BTreeMap::new(),
+            ),
+            "local_mesh_job_result:completed=2;denied=0;failed=0"
+        );
     }
 
     #[test]
