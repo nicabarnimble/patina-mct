@@ -11,7 +11,9 @@
     let
       system = "aarch64-linux";
       pkgs = import nixpkgs { inherit system; overlays = [ rust-overlay.overlays.default ]; };
-      toolchain = pkgs.rust-bin.stable."1.96.0".minimal;
+      toolchain = pkgs.rust-bin.stable."1.96.0".minimal.override {
+        targets = [ "wasm32-wasip1" ];
+      };
       rustPlatform = pkgs.makeRustPlatform { cargo = toolchain; rustc = toolchain; };
       mother = rustPlatform.buildRustPackage {
         pname = "mct-admin-mother";
